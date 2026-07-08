@@ -1,0 +1,16 @@
+[project]
+name = "cuttle"
+version = "0.0.1"
+description = "CCC front-door CLI (Python core)"
+requires-python = ">=3.12"
+dependencies = ["typer>=0.12", "pyyaml>=6.0"]
+
+[project.scripts]
+cuttle = "cuttle.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cuttle"]
