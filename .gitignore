@@ -1,0 +1,42 @@
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+
+# --- Go (cli/launcher) ---
+/cli/launcher/bin/
+*.exe
+*.test
+*.out
+
+# --- Python (cli/core, karma, telemetry daemons) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- uv ---
+# lockfile IS committed; caches are not
+.uv_cache/
+
+# --- Secrets / local state ---
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# --- Runtime / data ---
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sif
+*.log
