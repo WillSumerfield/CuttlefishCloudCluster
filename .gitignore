@@ -34,6 +34,12 @@ venv/
 .env.*
 !.env.example
 
+# --- Temp / scratch plans ---
+temp/
+
+# --- W&B run output ---
+wandb/
+
 # --- Runtime / data ---
 *.sqlite
 *.sqlite-wal
