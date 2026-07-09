@@ -82,11 +82,29 @@ the **munge key** — the cluster-wide shared secret. Anyone with it can authent
 as any node *or any user*. Today that key sits readable on every donor box.
 
 Needed before donors are anything less than fully trusted:
-- Re-enrollment credential is **per-Arm, revocable, and distinct from the join token** (not a
-  reusable preauth key sitting in `config.yaml`).
+- Re-enrollment credential is **per-Arm and revocable**. Note the Arm's `tailscaled` state already
+  *is* such a credential (its node key re-authenticates it to the mesh unattended) — so revocation
+  means expiring that node in Headscale, not just deleting a file.
 - Head can revoke a single Arm without re-keying the cluster.
 - Rotate munge, or stop relying on it as the only thing between a donor and `slurmctld`.
 - Re-enrollment re-derives the Head address rather than trusting the stale one.
+
+## Security: `/enroll` gives the munge key to any mesh member (accepted for Phase 1)
+
+Enrollment serves `/etc/munge/munge.key` over a Head API bound to the mesh address only, so the sole
+authorization is *being on the mesh*. Deliberate, and accepted while every Arm is a machine we own.
+
+Consequence, stated plainly: **mesh compromise == Slurm compromise.** There is no second factor. A
+stale Arm enrolled months ago can re-fetch the key; so can any machine that ever spent a preauth
+key. This doesn't widen exposure (an enrolled Arm holds the key on disk regardless) but it doesn't
+narrow it either — and munge is cluster-wide and root-equivalent: whoever holds it authenticates to
+`slurmctld` as any node or any user.
+
+Mesh admission is an operator decision (`cuttle arm approve`), not a secret — so nothing *leaks* a
+way in. But once in, a machine may fetch the munge key, and that says nothing about what it may then
+take from the **cluster**. Closing the gap is the per-Arm revocable-credential item above. Until
+then, treat mesh membership as full cluster trust: approve a machine only if you'd hand its owner
+the cluster's root credential, because you are.
 
 ## Security: coordinator + control-plane transport
 
@@ -107,3 +125,9 @@ Needed before donors are anything less than fully trusted:
 MVP `slurm.conf` has **no** `ConstrainDevices` (single GPU, single user → nothing to isolate).
 Before real sharing, add `cgroup.conf` with `ConstrainDevices=yes` so a Spawn only sees its
 allotted GPU(s). Depends on host cgroup v2 + Slurm cgroup plugin.
+
+**Measured, and awkward:** the WSL2 Arm reports cgroup **v1** (`stat -fc %T /sys/fs/cgroup` → `tmpfs`).
+So `ConstrainDevices` cannot work there at all, and its GPU is `/dev/dxg` — a single device node for
+*all* GPUs, which device cgroups cannot partition per-GPU even under v2. A WSL Arm therefore can
+never isolate GPUs. Either WSL Arms stay single-GPU-exclusive forever, or they're excluded from
+shared-GPU scheduling. Decide when GPU sharing becomes real.
