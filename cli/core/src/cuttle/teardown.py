@@ -22,6 +22,25 @@ def stop_daemons() -> None:
     run(["systemctl", "disable", "--now", *_SERVICES], sudo=True, check=False)
 
 
+def remove_mesh(keep_packages: bool = False) -> None:
+    """Unwind the CCC mesh layer. Only ever touches CCC's OWN isolated tailscaled instance +
+    Headscale — never the default/personal tailscaled or the shared `tailscale` package (the box is
+    administered over its personal tailnet). Headscale is CCC-only, so it's safe to purge."""
+    # CCC's isolated tailscaled instance (targeted by socket) — personal daemon left running.
+    run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", "down"], sudo=True, check=False)
+    run(["systemctl", "disable", "--now", config.CCC_TS_SERVICE], sudo=True, check=False)
+    run(["rm", "-f", str(config.CCC_TS_UNIT)], sudo=True, check=False)
+    run(["rm", "-rf", str(config.CCC_TS_STATEDIR)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+    # Headscale coordinator (CCC-only).
+    run(["systemctl", "disable", "--now", "headscale"], sudo=True, check=False)
+    run(["rm", "-rf", str(config.HEADSCALE_CONF.parent), str(config.HEADSCALE_LIB)],
+        sudo=True, check=False)
+    if not keep_packages:
+        run(["apt-get", "purge", "-y", "headscale"], sudo=True, check=False)
+        # NOTE: `tailscale` package + repo left in place — shared with the personal daemon.
+
+
 def remove_slurm_config() -> None:
     run(["rm", "-rf",
          str(config.SLURM_CONF.parent),  # /etc/slurm
@@ -57,6 +76,7 @@ def remove_user_dirs() -> None:
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
+    remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()
     if not keep_packages:
         purge_packages()

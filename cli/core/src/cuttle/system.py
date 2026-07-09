@@ -25,6 +25,14 @@ def hostname() -> str:
     return socket.gethostname()
 
 
+def primary_ip() -> str:
+    """The host's primary outbound IPv4 (the `src` of the default route). Default advertised
+    address for the Headscale coordinator — override with `--address` for a public/DDNS addr."""
+    out = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"],
+                         check=True, capture_output=True, text=True).stdout
+    return out.split("src", 1)[1].split()[0]
+
+
 def cpu_count() -> int:
     import os
 

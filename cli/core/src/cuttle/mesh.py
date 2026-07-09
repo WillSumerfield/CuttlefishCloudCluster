@@ -1,0 +1,176 @@
+"""Mesh layer (Phase 1 substrate).
+
+Self-hosted **Headscale** coordinator on the Head + **Tailscale** client on every node. The Head
+runs its own control server; all nodes (including the co-located Arm) join that tailnet. Arms
+enroll with a preauth key minted by the Head under the CCC user.
+
+Intended path only — no fallbacks (test box; failures decided live).
+"""
+
+import json
+import shutil
+import subprocess
+import urllib.request
+
+from . import config
+from .system import run, sh
+
+
+# --- install ---------------------------------------------------------------
+
+def _latest_headscale() -> tuple[str, str]:
+    """(version_tag, amd64_deb_url) for the newest Headscale GitHub release."""
+    with urllib.request.urlopen(config.HEADSCALE_RELEASES) as r:
+        rel = json.load(r)
+    deb = next(a["browser_download_url"] for a in rel["assets"]
+               if a["name"].endswith("_linux_amd64.deb"))
+    return rel["tag_name"], deb
+
+
+def install_headscale() -> str:
+    """Install the latest Headscale .deb (not carried in apt). Returns the version tag."""
+    tag, url = _latest_headscale()
+    print(f"headscale: installing {tag}")
+    sh(f"curl -fsSL -o /tmp/headscale.deb {url} && apt-get install -y /tmp/headscale.deb", sudo=True)
+    return tag
+
+
+def install_tailscale() -> None:
+    """Install the Tailscale client (provides the `tailscaled` binary + CLI). Skipped if already
+    present — never touch an existing install (it may be carrying the admin's personal tailnet)."""
+    if shutil.which("tailscale"):
+        print("tailscale already installed — skipping (won't disturb the personal daemon)")
+        return
+    sh(f"curl -fsSL {config.TAILSCALE_REPO_KEY} -o {config.TAILSCALE_KEYRING} && "
+       f"curl -fsSL {config.TAILSCALE_REPO_LIST} -o {config.TAILSCALE_REPO_FILE}", sudo=True)
+    run(["apt-get", "update"], sudo=True)
+    run(["apt-get", "install", "-y", "tailscale"], sudo=True)
+
+
+# --- CCC's own isolated tailscaled instance --------------------------------
+# A second tailscaled with its own socket/state/tun/port. The default (personal) tailscaled is
+# never referenced, so the admin's connection to the box cannot be affected.
+
+_CCC_TAILSCALED_UNIT = f"""\
+[Unit]
+Description=CCC Tailscale agent (isolated instance — does not touch the default tailscaled)
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+ExecStart=/usr/sbin/tailscaled --state={config.CCC_TS_STATE} --socket={config.CCC_TS_SOCKET} \
+--tun={config.CCC_TS_TUN} --port={config.CCC_TS_PORT}
+RuntimeDirectory={config.CCC_TS_RUNDIR.name}
+StateDirectory={config.CCC_TS_STATEDIR.name}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def start_ccc_tailscaled(write_unit) -> None:
+    """Install + start CCC's dedicated tailscaled instance. `write_unit` is a callable that writes
+    a root-owned file (setup._write_root_file) — passed in to avoid a setup↔mesh import cycle."""
+    write_unit(config.CCC_TS_UNIT, _CCC_TAILSCALED_UNIT, "644")
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", config.CCC_TS_SERVICE], sudo=True)
+    run(["systemctl", "restart", config.CCC_TS_SERVICE], sudo=True)
+
+
+# --- Headscale coordinator (Head only) -------------------------------------
+
+def configure_headscale(server_url: str) -> None:
+    """Patch the package-shipped config: server_url, bind-all, and the CCC IP prefixes.
+
+    We edit the shipped /etc/headscale/config.yaml rather than render our own — robust to
+    Headscale's config-schema drift across versions (only well-known keys touched). The prefixes
+    are set OUTSIDE Tailscale's CGNAT so CCC routes never collide with a personal tailnet.
+    """
+    run(["install", "-d", "-o", "root", "-g", "root", str(config.HEADSCALE_LIB)], sudo=True)
+    # magic_dns/override_local_dns OFF: a node accepting them claims resolved's `~.` default-route
+    # domain and hijacks host-wide DNS. Nodes address each other by mesh IP; MagicDNS is unwanted.
+    sh(f"sed -ri "
+       f"-e 's#^server_url:.*#server_url: {server_url}#' "
+       f"-e 's#^listen_addr:.*#listen_addr: 0.0.0.0:{config.HEADSCALE_PORT}#' "
+       f"-e 's#^([[:space:]]*)v4:.*#\\1v4: {config.MESH_V4_PREFIX}#' "
+       f"-e 's#^([[:space:]]*)v6:.*#\\1v6: {config.MESH_V6_PREFIX}#' "
+       f"-e 's#^([[:space:]]*)magic_dns:.*#\\1magic_dns: false#' "
+       f"-e 's#^([[:space:]]*)override_local_dns:.*#\\1override_local_dns: false#' "
+       f"{config.HEADSCALE_CONF}", sudo=True)
+
+
+def start_headscale() -> None:
+    run(["systemctl", "enable", "headscale"], sudo=True)
+    run(["systemctl", "restart", "headscale"], sudo=True)
+
+
+def ensure_user() -> None:
+    """Create the Headscale user/namespace Arms enroll under (idempotent — ignore 'exists')."""
+    run(["headscale", "users", "create", config.HEADSCALE_USER], sudo=True, check=False)
+
+
+def _user_id() -> str:
+    """Numeric id of the CCC Headscale user (recent headscale wants id, not name, for keys)."""
+    r = run(["headscale", "users", "list", "--output", "json"],
+            sudo=True, capture_output=True, text=True)
+    for u in json.loads(r.stdout):
+        if u["name"] == config.HEADSCALE_USER:
+            return str(u["id"])
+    raise RuntimeError(f"headscale user {config.HEADSCALE_USER!r} not found")
+
+
+def mint_preauthkey(reusable: bool = False, hours: int = 1) -> str:
+    """Mint a preauth key under the CCC user (goes into the Arm join token)."""
+    args = ["headscale", "preauthkeys", "create", "--user", _user_id(),
+            "--expiration", f"{hours}h", "--output", "json"]
+    if reusable:
+        args.append("--reusable")
+    r = run(args, sudo=True, capture_output=True, text=True)
+    return json.loads(r.stdout)["key"]
+
+
+# --- Tailscale client (every node) -----------------------------------------
+
+def join_mesh(login_server: str, authkey: str) -> None:
+    """`tailscale up` on CCC's isolated instance (targeted via --socket). Runs unechoed — the
+    authkey is a secret. `--reset` only affects CCC's own instance; the personal daemon is untouched.
+
+    Three flags keep CCC off host-global resources a second tailscaled would otherwise fight over:
+    - `--accept-dns=false`: accepting DNS makes CCC claim systemd-resolved's `~.` default-route
+      domain and point all lookups at its own MagicDNS, killing name resolution host-wide.
+    - `--netfilter-mode=off`: tailscaled installs `ts-input`/`ts-forward`/`ts-postrouting` chains
+      under fixed names; two daemons rewrite each other's, breaking unrelated traffic. CCC runs no
+      subnet router or exit node, so it needs no firewall rules.
+    - `--accept-routes=false`: no subnet routers here; keeps CCC out of the host route table.
+    CCC addresses Arms by mesh IP, so it loses nothing.
+    """
+    print(f"$ sudo tailscale --socket={config.CCC_TS_SOCKET} up --reset "
+          f"--login-server {login_server} --authkey <redacted> "
+          f"--accept-dns=false --netfilter-mode=off")
+    subprocess.run(["sudo", "tailscale", f"--socket={config.CCC_TS_SOCKET}", "up", "--reset",
+                    "--login-server", login_server, "--authkey", authkey,
+                    "--accept-dns=false", "--accept-routes=false", "--netfilter-mode=off"],
+                   check=True)
+
+
+def tailscale_ip() -> str:
+    """CCC mesh IP (from CCC's isolated instance, not the personal daemon)."""
+    r = run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", "ip", "-4"],
+            capture_output=True, text=True)
+    return r.stdout.strip().splitlines()[0]
+
+
+# --- orchestration ---------------------------------------------------------
+
+def up_head(server_url: str, write_unit) -> tuple[str, str]:
+    """Bring up the Head's coordinator and join it via CCC's isolated tailscaled instance.
+    `write_unit` writes a root-owned file (setup._write_root_file). Returns (headscale_version, mesh_ip)."""
+    hs_ver = install_headscale()
+    configure_headscale(server_url)
+    start_headscale()
+    ensure_user()
+    install_tailscale()
+    start_ccc_tailscaled(write_unit)
+    join_mesh(server_url, mint_preauthkey())
+    return hs_ver, tailscale_ip()

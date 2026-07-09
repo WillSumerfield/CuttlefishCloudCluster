@@ -16,14 +16,28 @@ def _root() -> None:
 
 @app.command()
 def setup(
+    head: bool = typer.Option(
+        False, "--head", help="Provision this box as the Head (control plane + co-located Arm)."
+    ),
     local: bool = typer.Option(
-        False, "--local", help="Provision this box as a combined Head+Arm (MVP)."
+        False, "--local", help="Alias for --head (single-box case)."
+    ),
+    arm: bool = typer.Option(
+        False, "--arm", help="Enroll this box as a remote Arm (needs --token)."
+    ),
+    address: str = typer.Option(
+        None, "--address",
+        help="Head: coordinator's advertised host (default: primary IP; use a public/DDNS addr "
+             "so remote Arms can reach it).",
     ),
 ):
-    """Provision a node. MVP supports --local only."""
-    if not local:
-        raise typer.BadParameter("MVP supports only: cuttle setup --local")
-    setup_mod.setup_local()
+    """Provision a node. --head (or --local) for the Head; --arm to enroll a compute node."""
+    if head or local:
+        setup_mod.setup_head(address)
+    elif arm:
+        raise typer.BadParameter("`--arm` enrollment lands in the next step (needs --token).")
+    else:
+        raise typer.BadParameter("specify a role: cuttle setup --head | --arm")
 
 
 @app.command()

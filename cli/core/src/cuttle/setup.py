@@ -1,13 +1,15 @@
-"""`cuttle setup --local` — provision a single native-Linux box (Head+Arm combined).
+"""`cuttle setup --head` — provision the Head (control plane + co-located Arm) on a native-Linux box.
 
-Drives apt+sudo directly, renders Slurm config, builds the base Pod image, starts daemons.
-Intended path only — no fallbacks (this is a test box; failures decided live).
+Drives apt+sudo directly, renders Slurm config, builds the base Pod image, starts daemons, then
+stands up the self-hosted Headscale mesh and joins its own tailnet. `--local` is an alias (the
+single-box case is just a Head with its co-located Arm). Intended path only — no fallbacks (this is
+a test box; failures decided live).
 """
 
 import tempfile
 from pathlib import Path
 
-from . import config, settings, system, templates
+from . import config, mesh, settings, system, templates
 from .system import run, sh
 
 
@@ -92,7 +94,20 @@ def verify() -> None:
     run(["sinfo", "-N", "-o", "%N %t %C %G"])
 
 
-def setup_local() -> None:
+def mesh_up_head(address: str | None) -> None:
+    """Self-host Headscale + join our own tailnet. `address` = coordinator's advertised host
+    (default: primary outbound IP; pass a public/DDNS addr so remote Arms can reach it)."""
+    addr = address or system.primary_ip()
+    server_url = f"http://{addr}:{config.HEADSCALE_PORT}"
+    hs_ver, ts_ip = mesh.up_head(server_url, _write_root_file)
+    # Persist for later Arm enrollment (join token) + reproducibility.
+    data = settings.load()
+    data["mesh"] = {"head_address": addr, "coordinator": server_url, "headscale_version": hs_ver}
+    settings.save(data)
+    print(f"cuttle: Head on mesh — tailscale IP {ts_ip}, coordinator {server_url}")
+
+
+def setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
     preflight()
@@ -101,5 +116,10 @@ def setup_local() -> None:
     write_slurm_config()
     start_daemons()
     build_base_sif()
+    mesh_up_head(address)
     verify()
-    print("\ncuttle: local cluster up. Node should read 'idle' above.")
+    print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
+
+
+# `--local` is just the single-box Head (Head + its co-located Arm).
+setup_local = setup_head
