@@ -3,20 +3,25 @@
 import platform
 import socket
 import subprocess
+import sys
 
 
 def run(cmd: list[str], sudo: bool = False, check: bool = True, **kw) -> subprocess.CompletedProcess:
-    """Run a command, echoing it. Raises on non-zero unless check=False (e.g. teardown)."""
+    """Run a command, echoing it. Raises on non-zero unless check=False (e.g. teardown).
+
+    The echo goes to stderr: it is progress noise, so commands whose *stdout is data* (`cuttle
+    token`) stay pipeable.
+    """
     if sudo:
         cmd = ["sudo", *cmd]
-    print(f"$ {' '.join(cmd)}")
+    print(f"$ {' '.join(cmd)}", file=sys.stderr)
     return subprocess.run(cmd, check=check, **kw)
 
 
 def sh(script: str, sudo: bool = False) -> subprocess.CompletedProcess:
-    """Run a bash snippet (for pipes/redirects). Echoes it."""
+    """Run a bash snippet (for pipes/redirects). Echoes it (to stderr; see `run`)."""
     prefix = "sudo " if sudo else ""
-    print(f"$ {prefix}bash -c {script!r}")
+    print(f"$ {prefix}bash -c {script!r}", file=sys.stderr)
     argv = (["sudo"] if sudo else []) + ["bash", "-euc", script]
     return subprocess.run(argv, check=True)
 
