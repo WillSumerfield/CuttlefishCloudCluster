@@ -62,6 +62,13 @@ MVP setup just echoes shell commands + apt spew. Make it a proper installer, oh-
 - clear final summary (node state, versions, config path)
 Applies to prompts too (see W&B key prompt) — group prompts up front, validate, then run unattended.
 
+## Polish: `cuttle` on PATH (CLI distribution)
+
+Today `cuttle` lives only in the project venv (`cli/core/.venv/bin/cuttle`) — users must call the
+full path or activate the venv. Ship a real install: an installer/bootstrap that puts `cuttle` on
+PATH (symlink into `~/.local/bin`, a `pipx`/`uv tool install`, or a one-line curl bootstrap), so
+donors running `cuttle setup --arm` don't need to know the repo layout. Ties into the enrollment UX.
+
 ## Before multi-node / multi-user: GPU cgroup isolation
 
 MVP `slurm.conf` has **no** `ConstrainDevices` (single GPU, single user → nothing to isolate).
