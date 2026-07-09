@@ -85,10 +85,20 @@ CCC_TS_STATEDIR = Path("/var/lib/tailscale-ccc")
 CCC_TS_STATE = CCC_TS_STATEDIR / "tailscaled.state"
 CCC_TS_TUN = "ccc0"
 CCC_TS_PORT = 41642  # default tailscaled uses 41641 — keep them distinct
-# Mesh IP ranges — deliberately OUTSIDE Tailscale's 100.64.0.0/10 CGNAT so CCC routes never
-# collide with a personal tailnet on the same host (v6 = a distinct ULA from fd7a:115c:a1e0::/48).
-MESH_V4_PREFIX = "10.99.0.0/16"
-MESH_V6_PREFIX = "fdcc:cc::/48"
+# Mesh IP ranges. These MUST sit inside Tailscale's own ranges (v4 100.64.0.0/10, v6
+# fd7a:115c:a1e0::/48): tailscaled runs every *peer* address through tsaddr.IsTailscaleIP() before
+# installing a route, and silently drops the rest. A node accepts its own out-of-range address, so
+# a one-node mesh looks healthy — then no peer is ever routable. Measured on v1.98.8 with
+# 10.99.0.0/16: WireGuard configured the peer, `ip route show dev ccc0` was empty, and pings left
+# via the default gateway.
+#
+# So isolation from a personal tailnet is by *sub-range*, not by disjoint space. Tailscale installs
+# per-peer /32s (never one route for the whole /10), so both daemons coexist unless they claim the
+# same address. Headscale allocates sequentially from the bottom of this prefix; Tailscale assigns
+# pseudo-randomly across the /10. A collision needs an unlucky draw inside this /16, and would
+# break one /32 rather than the mesh.
+MESH_V4_PREFIX = "100.100.0.0/16"
+MESH_V6_PREFIX = "fd7a:115c:a1e0:cc::/64"
 
 # --- CCC user artifacts ---
 CCC_HOME = Path.home() / ".ccc"
