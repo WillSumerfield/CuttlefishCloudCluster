@@ -106,25 +106,95 @@ take from the **cluster**. Closing the gap is the per-Arm revocable-credential i
 then, treat mesh membership as full cluster trust: approve a machine only if you'd hand its owner
 the cluster's root credential, because you are.
 
+## Blocker: the coordinator must be reachable before an Arm is on the mesh
+
+An Arm reaches Headscale to *get* a mesh address, so the coordinator address can never be a mesh
+address. Today the Head owns exactly two others: its LAN IP (useless to Arms off that LAN) and its
+personal-tailnet IP (useless unless the Arm is already on the operator's personal tailnet).
+
+Measured while enrolling the WSL Arm: no LAN path (different networks), and no route to
+`100.114.172.14` until that box joined the personal tailnet. We joined it — a **test-only shortcut**.
+It makes personal-tailnet membership a prerequisite for becoming an Arm, which is exactly the grant
+the CCC mesh exists to avoid asking a donor for. So remote enrollment is *not* proven end-to-end:
+the mesh join, approval, `/enroll`, munge fetch, and `slurmd -Z` are all exercised faithfully; only
+the first hop — how a donor finds the coordinator — is faked.
+
+Real options: port-forward + DDNS (needs router access; makes the TLS item below a hard blocker,
+since node keys would cross the internet in cleartext), or a tunnel (Cloudflare Tunnel / `tailscale
+funnel`) for public HTTPS with no port-forward. A funnel keeps the personal tailnet load-bearing for
+coordinator *availability*, though not for Arm membership. Decide before any donor enrols.
+
 ## Security: coordinator + control-plane transport
 
 - **Headscale is served over plain `http://<addr>:8080`.** Node keys and preauth keys cross the
   public internet in cleartext, *before* the mesh exists to protect them. Needs TLS (Let's Encrypt,
   or a pinned self-signed cert shipped in the join token) before any real donor enrols.
-- **`slurmctld`/`slurmd` bind `0.0.0.0`** — reachable from the LAN and from the operator's personal
-  tailnet, not just the CCC mesh. Measured: setting `SlurmctldHost=<host>(<mesh-ip>)` does *not*
-  narrow the bind (slurm-wlm 23.11.4 still listens on all interfaces). So this needs a firewall rule
-  restricting 6817/6818 to the mesh interface, not a config knob. Note the cost: whatever does the
-  restricting makes the mesh a startup dependency of the scheduler.
+- **`slurmctld`/`slurmd` bind `0.0.0.0`.** Measured: setting `SlurmctldHost=<host>(<mesh-ip>)` does
+  *not* narrow the bind (slurm-wlm 23.11.4 still listens on all interfaces). Correction to an
+  earlier claim here: the ports are not actually LAN-reachable, because the Head runs `ufw` with
+  `default deny incoming`. The bind is wide; the reachable surface is not. That's luck, not design —
+  nothing in `cuttle setup` puts that firewall there or checks it (see the ufw item below).
 - **Headscale ACLs**: Arms should reach the Head's Slurm ports and nothing else; Arm→Arm traffic
   should be denied by default. Currently the mesh is flat.
 - **slurmrestd JWT** (Phase 1 ⑤): key storage/rotation on the Head.
+
+## Mesh prefix swallows Tailscale's MagicDNS address
+
+`100.100.0.0/16` contains `100.100.100.100`, and `tailscaled-ccc` installs a route for it
+(`100.100.100.100 dev ccc0`, route table 52) even with `--accept-dns=false` and `magic_dns: false`.
+IP connectivity on the personal tailnet is unaffected, but a MagicDNS *name* looked up from the Head
+would now be sent toward CCC. Nothing queries it today.
+
+Moving the mesh to `100.99.0.0/16` sidesteps it: one constant plus a re-registration of every node.
+Do it before there are enough Arms to make re-registration painful.
+
+## `cuttle setup` should own the `ccc0` firewall rule
+
+The Head's `ufw` drops inbound on `ccc0`, so an Arm can join the mesh, get an address, ping nothing,
+and fail `/enroll` with a bare timeout. Cost us an hour. The mesh interface must be open for the
+cluster to work at all:
+
+    sudo ufw allow in on ccc0 comment 'ccc mesh (slurm + head api)'
+
+Interface-scoped, not port-scoped: `srun` allocates ephemeral ports for task I/O, and multi-node
+jobs need Arm↔Arm traffic. This grants the mesh nothing it didn't already have — `docs/TODO.md`
+already states mesh membership means full cluster trust.
+
+Make `setup_head` add it **only if ufw is already active**. Enabling a default-deny firewall on a
+donor's box is exactly the host-global mutation the tailscaled isolation exists to avoid. If ufw is
+inactive, do nothing and say so.
+
+Not in scope: the coordinator's own rule (`allow in on tailscale0 to any port 8080`) — that depends
+on how the coordinator gets exposed, which is the reachability item above.
+
+## Arm re-enrollment needs a state wipe
+
+`setup_arm` assumes a virgin `tailscaled-ccc`. If the Head ever deleted the Arm's node (`cuttle arm
+remove`, a prefix change, a rebuilt Headscale DB), the Arm's state file still holds a node key
+Headscale no longer knows; `tailscale up` then blocks forever with no auth URL and no error. The
+Head already handles the mirror-image case in `mesh.forget_state()`.
+
+Give the Arm the same: detect a rejected/unknown node key (or just always `--reset` from a wiped
+state on an explicit `cuttle setup --arm --re-enroll`) instead of requiring a hand-run
+`rm /var/lib/tailscale-ccc/tailscaled.state`. Ties into the re-enrollment credential item above.
+
+## `preflight()`'s native-Linux assert doesn't detect WSL
+
+`assert system.is_native_linux_x86()` passed on a WSL2 Ubuntu 24.04 Arm, which is precisely the
+platform it exists to reject. The guard is decorative today. Either make it real (check
+`/proc/sys/kernel/osrelease` for `microsoft`, or `/run/WSL`) and gate WSL behind an explicit flag,
+or delete it and admit WSL is supported. Right now it neither rejects nor blesses.
 
 ## Before multi-node / multi-user: GPU cgroup isolation
 
 MVP `slurm.conf` has **no** `ConstrainDevices` (single GPU, single user → nothing to isolate).
 Before real sharing, add `cgroup.conf` with `ConstrainDevices=yes` so a Spawn only sees its
 allotted GPU(s). Depends on host cgroup v2 + Slurm cgroup plugin.
+
+**Measured on the first remote job:** `srun -w will-personal --gres=gpu:1` succeeded, but
+`SLURM_JOB_GPUS` came back **empty**. Slurm counts the GRES for scheduling and never binds a device
+or tells the step which GPU it holds. GPU allocation is therefore *advisory* — a job can touch a GPU
+it wasn't given. Harmless at one GPU per node; disqualifying the moment two Spawns share a box.
 
 **Measured, and awkward:** the WSL2 Arm reports cgroup **v1** (`stat -fc %T /sys/fs/cgroup` → `tmpfs`).
 So `ConstrainDevices` cannot work there at all, and its GPU is `/dev/dxg` — a single device node for
