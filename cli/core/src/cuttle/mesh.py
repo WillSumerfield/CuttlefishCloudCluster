@@ -20,13 +20,24 @@ from .system import hostname, run, sh
 
 # --- install ---------------------------------------------------------------
 
-def _latest_headscale() -> tuple[str, str]:
-    """(version_tag, amd64_deb_url) for the newest Headscale GitHub release."""
-    with urllib.request.urlopen(config.HEADSCALE_RELEASES) as r:
+def _release(url: str) -> tuple[str, str]:
+    """(version_tag, amd64_deb_url) for a Headscale GitHub release."""
+    with urllib.request.urlopen(url) as r:
         rel = json.load(r)
     deb = next(a["browser_download_url"] for a in rel["assets"]
                if a["name"].endswith("_linux_amd64.deb"))
     return rel["tag_name"], deb
+
+
+def _latest_headscale() -> tuple[str, str]:
+    return _release(config.HEADSCALE_RELEASES)
+
+
+def _install_deb(url: str, reinstall: bool = False) -> None:
+    """--force-confmiss restores conffiles the admin deleted (dpkg won't, by default)."""
+    opts = "--reinstall " if reinstall else ""
+    sh(f"curl -fsSL -o /tmp/headscale.deb {url} && "
+       f'apt-get install -y {opts}-o Dpkg::Options::=--force-confmiss /tmp/headscale.deb', sudo=True)
 
 
 def installed_headscale() -> str | None:
@@ -48,11 +59,21 @@ def install_headscale() -> str:
     incidentally.
     """
     if (have := installed_headscale()) is not None:
-        print(f"headscale already installed ({have}) — skipping (upgrade deliberately)")
+        # `teardown --keep-packages` removes /etc/headscale but leaves the package, so a re-setup
+        # finds the binary and no config, then seds a file that isn't there. Re-fetch the deb for
+        # the version that is *already installed* — never `_latest_headscale()` here, or a missing
+        # config would silently upgrade Headscale and migrate the node database.
+        # (`apt-get install --reinstall headscale` can't work: the deb came from a URL, not a repo.)
+        if not config.HEADSCALE_CONF.exists():
+            print(f"headscale {have} installed but {config.HEADSCALE_CONF} is missing — "
+                  f"re-fetching {have} to restore the shipped config")
+            _install_deb(config.HEADSCALE_DEB.format(tag=have, ver=have.lstrip("v")), reinstall=True)
+        else:
+            print(f"headscale already installed ({have}) — skipping (upgrade deliberately)")
         return have
     tag, url = _latest_headscale()
     print(f"headscale: installing {tag}")
-    sh(f"curl -fsSL -o /tmp/headscale.deb {url} && apt-get install -y /tmp/headscale.deb", sudo=True)
+    _install_deb(url)
     return tag
 
 

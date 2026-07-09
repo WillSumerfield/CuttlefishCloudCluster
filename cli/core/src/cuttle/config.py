@@ -64,6 +64,9 @@ NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 # --- mesh (Phase 1 substrate: self-hosted Headscale coordinator + Tailscale client) ---
 # Headscale isn't in apt — install the newest GitHub-release .deb (version recorded, pinned later).
 HEADSCALE_RELEASES = "https://api.github.com/repos/juanfont/headscale/releases/latest"
+# Deterministic asset URL for a known tag — no API call, so no unauthenticated rate limit.
+HEADSCALE_DEB = ("https://github.com/juanfont/headscale/releases/download/"
+                 "{tag}/headscale_{ver}_linux_amd64.deb")
 HEADSCALE_USER = "ccc"  # the Headscale user/namespace Arms enroll under
 HEADSCALE_PORT = 8080
 HEADSCALE_CONF = Path("/etc/headscale/config.yaml")
@@ -98,7 +101,11 @@ CCC_TS_PORT = 41642  # default tailscaled uses 41641 — keep them distinct
 # same address. Headscale allocates sequentially from the bottom of this prefix; Tailscale assigns
 # pseudo-randomly across the /10. A collision needs an unlucky draw inside this /16, and would
 # break one /32 rather than the mesh.
-MESH_V4_PREFIX = "100.100.0.0/16"
+#
+# Avoids 100.100.0.0/16, which would contain Tailscale's MagicDNS resolver at 100.100.100.100.
+# Cosmetic only: measured, tailscaled routes quad100 into its tun whatever the prefix, so both
+# daemons fight over it either way (see docs/TODO.md).
+MESH_V4_PREFIX = "100.99.0.0/16"
 MESH_V6_PREFIX = "fd7a:115c:a1e0:cc::/64"
 
 # --- CCC user artifacts ---
