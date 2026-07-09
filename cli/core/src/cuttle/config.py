@@ -20,7 +20,15 @@ CLUSTER_NAME = "ccc"
 PARTITION = "ccc"
 
 # --- GPU device (distro Slurm lacks NVML; map GRES to the device node explicitly) ---
+# One line, no NodeName= → applies to every node. Any single-GPU Arm matches it unchanged.
+# Multi-GPU Arms need per-node lines (deferred; see docs/TODO.md NVML entry).
 GPU_DEVICE = "/dev/nvidia0"
+
+# --- Slurm dynamic nodes (donor Arms self-register via `slurmd -Z`) ---
+# MaxNodeCount is a ceiling on static+dynamic nodes; raising it later needs a slurmctld restart.
+MAX_NODE_COUNT = 64
+# Talk to every node directly instead of fanning messages out through a tree of donor boxes.
+TREE_WIDTH = 65533
 
 # --- Slurm FHS paths (distro-standard) ---
 SLURM_CONF = Path("/etc/slurm/slurm.conf")

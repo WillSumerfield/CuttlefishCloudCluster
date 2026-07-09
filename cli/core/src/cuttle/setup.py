@@ -60,12 +60,12 @@ def install_packages() -> None:
     print(f"recorded {len(added)} newly-installed packages → {config.APT_MANIFEST}")
 
 
-def write_slurm_config() -> None:
+def write_slurm_config(mesh_ip: str) -> None:
     for d, owner in ((config.SLURM_STATE_DIR, "slurm"),
                      (config.SLURM_LOG_DIR, "slurm"),
                      (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
-    _write_root_file(config.SLURM_CONF, templates.render_slurm_conf())
+    _write_root_file(config.SLURM_CONF, templates.render_slurm_conf(mesh_ip))
     _write_root_file(config.GRES_CONF, templates.render_gres_conf())
 
 
@@ -94,29 +94,39 @@ def verify() -> None:
     run(["sinfo", "-N", "-o", "%N %t %C %G"])
 
 
-def mesh_up_head(address: str | None) -> None:
+def mesh_up_head(address: str | None) -> str:
     """Self-host Headscale + join our own tailnet. `address` = coordinator's advertised host
-    (default: primary outbound IP; pass a public/DDNS addr so remote Arms can reach it)."""
+    (default: primary outbound IP; pass a public/DDNS addr so remote Arms can reach it).
+    Returns the Head's mesh IP.
+
+    Two addresses, two jobs: `address` is where Arms reach the coordinator *before* they're on the
+    mesh (public/DDNS); the returned mesh IP is where they reach slurmctld *after*.
+    """
     addr = address or system.primary_ip()
     server_url = f"http://{addr}:{config.HEADSCALE_PORT}"
-    hs_ver, ts_ip = mesh.up_head(server_url, _write_root_file)
+    hs_ver, mesh_ip = mesh.up_head(server_url, _write_root_file)
     # Persist for later Arm enrollment (join token) + reproducibility.
     data = settings.load()
-    data["mesh"] = {"head_address": addr, "coordinator": server_url, "headscale_version": hs_ver}
+    data["mesh"] = {"head_address": addr, "coordinator": server_url,
+                    "headscale_version": hs_ver, "mesh_ip": mesh_ip}
     settings.save(data)
-    print(f"cuttle: Head on mesh — tailscale IP {ts_ip}, coordinator {server_url}")
+    print(f"cuttle: Head on mesh — mesh IP {mesh_ip}, coordinator {server_url}")
+    return mesh_ip
 
 
 def setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
     preflight()
+    # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
+    # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
+    # rather than dying at `add-apt-repository`.
+    mesh_ip = mesh_up_head(address)
     add_repos()
     install_packages()
-    write_slurm_config()
+    write_slurm_config(mesh_ip)
     start_daemons()
     build_base_sif()
-    mesh_up_head(address)
     verify()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
 
