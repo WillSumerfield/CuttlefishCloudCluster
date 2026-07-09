@@ -16,6 +16,21 @@
   - *volatile* — reclaimable at any time by its owner; adds preemption + the reclaim panic-switch.
   Arms may run on **any OS** (Linux/Windows/Mac/other).
 - **Gateway** — the authenticated network entryway that fronts all access to the cluster.
+  Distinct from the **Mesh**: the Gateway fronts human/CLI access, the Mesh is node-to-node.
+
+## Network concepts
+
+- **Mesh** — the cluster's private encrypted network. Every Head and Arm is a member, and members
+  address each other only by their **mesh address**. Each cluster has exactly one Mesh; two
+  clusters' Meshes never see each other.
+- **Coordinator** — the Head-hosted service that admits machines to the Mesh and assigns each one a
+  stable mesh address.
+- **Enrollment** — a machine becoming an Arm of a cluster: it joins the Mesh, then registers with
+  the scheduler.
+- **Registration** — an Arm's node agent announcing its own hardware to the scheduler at runtime,
+  rather than being declared in advance by the Head.
+- **Join token** — the single secret a donor supplies to enrol; it carries everything a machine
+  needs to reach the Coordinator and enter the cluster.
 
 ## Front-end tool
 

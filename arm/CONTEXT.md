@@ -8,6 +8,8 @@ A compute node donating resources. One role, `--volatile` flag; runs on any OS v
 - **Linux layer** — the always-Linux execution env: native, WSL2 (Windows), or VM (macOS).
   Everything below runs inside it.
 - **Node agent** — `slurmd` registered to the Head, plus the Apptainer runtime for Pods.
+- **Node name** — the Arm's identity in the scheduler, chosen by its owner at Enrollment and
+  fixed thereafter. Unique within a cluster.
 - **Retract** — volatile-owner instant reclaim: drain, grace-checkpoint, release.
 - **Staging** — stage-in/stage-out of Spawn data for remote/volatile Arms (no live mount).
 - **Preemption** — volatile Arms use Slurm `PreemptMode` (REQUEUE / SUSPEND).
