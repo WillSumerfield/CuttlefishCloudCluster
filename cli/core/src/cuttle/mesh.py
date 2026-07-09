@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 
 from . import config
@@ -96,6 +97,16 @@ def start_ccc_tailscaled(write_unit) -> None:
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", config.CCC_TS_SERVICE], sudo=True)
     run(["systemctl", "restart", config.CCC_TS_SERVICE], sudo=True)
+
+    # `systemctl restart` exits 0 for a unit that starts and then dies, so its status says nothing
+    # about liveness. Without this, a dead daemon surfaces three steps later as a baffling
+    # "no such file: tailscaled.sock" from `tailscale up`.
+    time.sleep(2)
+    if run(["systemctl", "is-active", config.CCC_TS_SERVICE],
+           sudo=True, check=False, capture_output=True, text=True).stdout.strip() != "active":
+        run(["systemctl", "status", config.CCC_TS_SERVICE, "--no-pager", "-l"],
+            sudo=True, check=False)
+        raise RuntimeError(f"{config.CCC_TS_SERVICE} died on startup — see status above")
 
 
 # --- Headscale coordinator (Head only) -------------------------------------
