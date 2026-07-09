@@ -252,8 +252,14 @@ def up_arm(coordinator: str, node_name: str, write_unit) -> str:
 
 
 def register_node(auth_id: str) -> None:
-    """Grant a pending mesh-admission request. The cluster's front door, opened by hand."""
-    run(["headscale", "auth", "register", "--auth-id", auth_id, "--user", _user_id()], sudo=True)
+    """Grant a pending mesh-admission request. The cluster's front door, opened by hand.
+
+    `--user` takes the user *name* here, unlike `preauthkeys create`, which takes the numeric id
+    (see mint_preauthkey). Headscale 0.29 is inconsistent across subcommands; an id here fails with
+    `looking up user: user not found`. Don't "fix" the asymmetry — it's load-bearing.
+    """
+    run(["headscale", "auth", "register", "--auth-id", auth_id,
+         "--user", config.HEADSCALE_USER], sudo=True)
 
 
 def forget_state() -> None:
