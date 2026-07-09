@@ -68,6 +68,7 @@ HEADSCALE_USER = "ccc"  # the Headscale user/namespace Arms enroll under
 HEADSCALE_PORT = 8080
 HEADSCALE_CONF = Path("/etc/headscale/config.yaml")
 HEADSCALE_LIB = Path("/var/lib/headscale")
+HEADSCALE_POLICY = Path("/etc/headscale/policy.hujson")  # empty policy == deny-all; see mesh._POLICY
 # Tailscale client ships from its own apt repo (noble). Keyring + list installed by setup.
 TAILSCALE_REPO_KEY = "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg"
 TAILSCALE_REPO_LIST = "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list"

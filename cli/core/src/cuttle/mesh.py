@@ -111,14 +111,37 @@ def start_ccc_tailscaled(write_unit) -> None:
 
 # --- Headscale coordinator (Head only) -------------------------------------
 
-def configure_headscale(server_url: str) -> None:
-    """Patch the package-shipped config: server_url, bind-all, and the CCC IP prefixes.
+_POLICY = """\
+{
+  // Approved CCC nodes reach each other on every port. `cuttle arm approve` is the trust gate;
+  // this file must not pretend to be a second one. See docs/TODO.md — mesh membership already
+  // means full cluster trust (an Arm can fetch the munge key), so a port list here would buy no
+  // security while breaking srun's ephemeral task-I/O ports and Arm<->Arm traffic in multi-node
+  // jobs. Scoped to the `ccc` user, so it grants nothing to nodes outside this mesh.
+  // The trailing `@` marks these as usernames. A bare name is parsed as a *host* alias, and
+  // headscale refuses to start: `host not defined in policy: "ccc"`.
+  "acls": [
+    { "action": "accept", "src": ["%(user)s@"], "dst": ["%(user)s@:*"] }
+  ]
+}
+""" % {"user": config.HEADSCALE_USER}
+
+
+def configure_headscale(server_url: str, write_root_file) -> None:
+    """Patch the package-shipped config: server_url, bind-all, the CCC IP prefixes, and the policy.
 
     We edit the shipped /etc/headscale/config.yaml rather than render our own — robust to
     Headscale's config-schema drift across versions (only well-known keys touched). The prefixes
-    are set OUTSIDE Tailscale's CGNAT so CCC routes never collide with a personal tailnet.
+    carve a sub-range out of Tailscale's own space; see config.MESH_V4_PREFIX for why they cannot
+    sit outside it.
+
+    The policy is not optional. `policy.mode: file` ships with an empty `path`, and an empty policy
+    is **deny-all**: nodes register, get addresses, and establish DERP, but every peer arrives in the
+    netmap with no allowed IPs, so nothing can route to anything. Invisible on a one-node Head (a
+    node always reaches itself) and total the moment a second node joins.
     """
     run(["install", "-d", "-o", "root", "-g", "root", str(config.HEADSCALE_LIB)], sudo=True)
+    write_root_file(config.HEADSCALE_POLICY, _POLICY, "644")
     # magic_dns/override_local_dns OFF: a node accepting them claims resolved's `~.` default-route
     # domain and hijacks host-wide DNS. Nodes address each other by mesh IP; MagicDNS is unwanted.
     sh(f"sed -ri "
@@ -128,6 +151,7 @@ def configure_headscale(server_url: str) -> None:
        f"-e 's#^([[:space:]]*)v6:.*#\\1v6: {config.MESH_V6_PREFIX}#' "
        f"-e 's#^([[:space:]]*)magic_dns:.*#\\1magic_dns: false#' "
        f"-e 's#^([[:space:]]*)override_local_dns:.*#\\1override_local_dns: false#' "
+       f"-e '/^policy:/,/^[a-z_]*:/ s#^([[:space:]]*)path:.*#\\1path: {config.HEADSCALE_POLICY}#' "
        f"{config.HEADSCALE_CONF}", sudo=True)
 
 
@@ -227,7 +251,7 @@ def up_head(server_url: str, write_unit) -> tuple[str, str]:
     """Bring up the Head's coordinator and join it via CCC's isolated tailscaled instance.
     `write_unit` writes a root-owned file (setup._write_root_file). Returns (headscale_version, mesh_ip)."""
     hs_ver = install_headscale()
-    configure_headscale(server_url)
+    configure_headscale(server_url, write_unit)
     start_headscale()
     ensure_user()
     install_tailscale()
