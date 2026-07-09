@@ -44,8 +44,10 @@ RealMemory={mem} Gres=gpu:1 State=UNKNOWN
 PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 """
 
-# Distro slurm-wlm is built without NVML → AutoDetect=nvml is fatal. Map the device explicitly.
-GRES_CONF_TMPL = "Name=gpu File={device}\n"
+# Distro slurm-wlm is built without NVML → AutoDetect=nvml is fatal. Map each node's device
+# explicitly. Per-node lines are unavoidable once Arms disagree about the device path: native Linux
+# has /dev/nvidia0, WSL2 has /dev/dxg. Served to Arms over configless, so the Head authors all of it.
+GRES_CONF_LINE = "NodeName={node} Name=gpu File={device}\n"
 
 # Base Pod image: official PyTorch + pinned wandb (so Spawns can log W&B out of the box).
 BASE_DEF_TMPL = """\
@@ -83,5 +85,11 @@ def render_slurm_conf(mesh_ip: str) -> str:
     )
 
 
-def render_gres_conf() -> str:
-    return GRES_CONF_TMPL.format(device=config.GPU_DEVICE)
+def render_gres_conf(nodes: list[tuple[str, str]]) -> str:
+    """`nodes` = [(node_name, gpu_device)], the Head plus every admitted Arm."""
+    header = "# Rendered by `cuttle setup --head` / `cuttle arm admit`. Do not hand-edit.\n"
+    return header + "".join(GRES_CONF_LINE.format(node=n, device=d) for n, d in nodes)
+
+
+def head_gres_node() -> tuple[str, str]:
+    return system.hostname(), config.GPU_DEVICE

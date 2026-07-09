@@ -7,6 +7,7 @@ from pathlib import Path
 
 # --- pinned system stack (Ubuntu 24.04 noble / amd64) ---
 SLURM_PKG = "slurm-wlm=23.11.4-1.2ubuntu5"
+SLURMD_PKG = "slurmd=23.11.4-1.2ubuntu5"  # Arms need the node daemon only, not slurmctld
 APPTAINER_PKG = "apptainer=1.5.2-1~noble"
 NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"
 MUNGE_PKG = "munge"  # auth; distro version fine
@@ -36,6 +37,29 @@ GRES_CONF = Path("/etc/slurm/gres.conf")
 SLURM_STATE_DIR = Path("/var/spool/slurmctld")
 SLURMD_SPOOL_DIR = Path("/var/spool/slurmd")
 SLURM_LOG_DIR = Path("/var/log/slurm")
+SLURMCTLD_PORT = 6817
+# Ubuntu's slurmd.service does `ExecStart=/usr/sbin/slurmd --systemd $SLURMD_OPTIONS` with
+# `EnvironmentFile=-/etc/default/slurmd` — the supported hook for an Arm's `-Z --conf-server` flags.
+SLURMD_DEFAULTS = Path("/etc/default/slurmd")
+MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, never expires
+
+# --- Head API (Phase 1 ③: /enroll; ⑤ grows it into the slurmrestd-backed API) ---
+# Bound to the Head's MESH address only: being on the mesh is the entire authorization.
+HEAD_API_PORT = 8081
+HEAD_API_SERVICE = "ccc-head-api"
+HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
+HEAD_API_VENV = Path("/opt/ccc/head-api/.venv")
+# Runs as munge: the only user that can read munge.key without chmod'ing it or running as root.
+# It is otherwise UNPRIVILEGED — it records enrolling Arms into the registry below, and an operator
+# admits them with `cuttle arm admit`. No sudoers rule, so no root path out of a POST body.
+HEAD_API_USER = "munge"
+CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the API's only writable location
+ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {gpu_device, mesh_ip, admitted}}
+
+# An Arm's GPU device node. Native Linux exposes /dev/nvidiaN; WSL2 exposes /dev/dxg with CUDA
+# shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
+GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
+NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 
 # --- mesh (Phase 1 substrate: self-hosted Headscale coordinator + Tailscale client) ---
 # Headscale isn't in apt — install the newest GitHub-release .deb (version recorded, pinned later).

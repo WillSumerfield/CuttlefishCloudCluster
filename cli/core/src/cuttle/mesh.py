@@ -10,10 +10,11 @@ Intended path only — no fallbacks (test box; failures decided live).
 import json
 import shutil
 import subprocess
+import sys
 import urllib.request
 
 from . import config
-from .system import run, sh
+from .system import hostname, run, sh
 
 
 # --- install ---------------------------------------------------------------
@@ -27,8 +28,27 @@ def _latest_headscale() -> tuple[str, str]:
     return rel["tag_name"], deb
 
 
+def installed_headscale() -> str | None:
+    """Version tag of the installed Headscale, or None. (`headscale version` prints a paragraph;
+    we want the `vX.Y.Z` off the first line, to match the GitHub release tag we record.)"""
+    if not shutil.which("headscale"):
+        return None
+    r = run(["headscale", "version"], capture_output=True, text=True, check=False)
+    first = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
+    return first.split()[-1] if first else None
+
+
 def install_headscale() -> str:
-    """Install the latest Headscale .deb (not carried in apt). Returns the version tag."""
+    """Install the latest Headscale .deb (not carried in apt). Returns the version tag.
+
+    Skipped if already installed: `_latest_headscale()` tracks upstream, so re-running setup would
+    otherwise upgrade Headscale and migrate its database — the database holding every node's mesh IP
+    — as a side effect of, say, changing the coordinator address. Upgrade deliberately, not
+    incidentally.
+    """
+    if (have := installed_headscale()) is not None:
+        print(f"headscale already installed ({have}) — skipping (upgrade deliberately)")
+        return have
     tag, url = _latest_headscale()
     print(f"headscale: installing {tag}")
     sh(f"curl -fsSL -o /tmp/headscale.deb {url} && apt-get install -y /tmp/headscale.deb", sudo=True)
@@ -132,9 +152,19 @@ def mint_preauthkey(reusable: bool = False, hours: int = 1) -> str:
 
 # --- Tailscale client (every node) -----------------------------------------
 
-def join_mesh(login_server: str, authkey: str) -> None:
-    """`tailscale up` on CCC's isolated instance (targeted via --socket). Runs unechoed — the
-    authkey is a secret. `--reset` only affects CCC's own instance; the personal daemon is untouched.
+def join_mesh(login_server: str, hostname: str, authkey: str | None = None) -> None:
+    """`tailscale up` on CCC's isolated instance (targeted via --socket). `--reset` only affects
+    CCC's own instance; the personal daemon is untouched.
+
+    With `authkey`: unattended join. Only the Head does this — it registers against its own
+    Headscale, and there is no operator to ask.
+
+    Without: **this call blocks**, printing an auth URL containing an auth-id, until an operator runs
+    `cuttle arm approve`. That wait is the cluster's front door. No secret is involved: the auth-id
+    names a pending request from this specific machine, and only the Head operator can grant it.
+
+    `hostname` names the node in Headscale. We pass the Slurm node name so one string identifies the
+    machine in both systems — `cuttle arm remove <name>` can then reap it from each.
 
     Three flags keep CCC off host-global resources a second tailscaled would otherwise fight over:
     - `--accept-dns=false`: accepting DNS makes CCC claim systemd-resolved's `~.` default-route
@@ -145,13 +175,15 @@ def join_mesh(login_server: str, authkey: str) -> None:
     - `--accept-routes=false`: no subnet routers here; keeps CCC out of the host route table.
     CCC addresses Arms by mesh IP, so it loses nothing.
     """
-    print(f"$ sudo tailscale --socket={config.CCC_TS_SOCKET} up --reset "
-          f"--login-server {login_server} --authkey <redacted> "
-          f"--accept-dns=false --netfilter-mode=off")
-    subprocess.run(["sudo", "tailscale", f"--socket={config.CCC_TS_SOCKET}", "up", "--reset",
-                    "--login-server", login_server, "--authkey", authkey,
-                    "--accept-dns=false", "--accept-routes=false", "--netfilter-mode=off"],
-                   check=True)
+    cmd = ["sudo", "tailscale", f"--socket={config.CCC_TS_SOCKET}", "up", "--reset",
+           "--login-server", login_server, "--hostname", hostname,
+           "--accept-dns=false", "--accept-routes=false", "--netfilter-mode=off"]
+    shown = " ".join(cmd)
+    if authkey:  # never echo the key
+        cmd += ["--authkey", authkey]
+        shown += " --authkey <redacted>"
+    print(f"$ {shown}", file=sys.stderr)
+    subprocess.run(cmd, check=True)  # blocks here awaiting approval when authkey is None
 
 
 def tailscale_ip() -> str:
@@ -159,6 +191,23 @@ def tailscale_ip() -> str:
     r = run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", "ip", "-4"],
             capture_output=True, text=True)
     return r.stdout.strip().splitlines()[0]
+
+
+# --- node removal (Head only) ----------------------------------------------
+
+def delete_node(name: str) -> None:
+    """Evict a node from the mesh by its Headscale name (== its Slurm node name; see join_mesh).
+
+    Half of `cuttle arm remove`. Skipping this half leaves a departed donor holding a live mesh
+    address — and the mesh is what authorizes `GET /enroll`, i.e. the munge key.
+    """
+    r = run(["headscale", "nodes", "list", "--output", "json"],
+            sudo=True, capture_output=True, text=True)
+    for n in json.loads(r.stdout):
+        if n.get("given_name") == name or n.get("name") == name:
+            run(["headscale", "nodes", "delete", "--identifier", str(n["id"]), "--force"], sudo=True)
+            return
+    print(f"mesh: no node named {name!r} — nothing to evict")
 
 
 # --- orchestration ---------------------------------------------------------
@@ -172,5 +221,41 @@ def up_head(server_url: str, write_unit) -> tuple[str, str]:
     ensure_user()
     install_tailscale()
     start_ccc_tailscaled(write_unit)
-    join_mesh(server_url, mint_preauthkey())
+    # The Head registers against its own Headscale: nobody to approve it, so it uses a preauth key.
+    join_mesh(server_url, hostname(), authkey=mint_preauthkey())
     return hs_ver, tailscale_ip()
+
+
+def up_arm(coordinator: str, node_name: str, write_unit) -> str:
+    """Join an Arm to an existing mesh. Returns its mesh IP.
+
+    BLOCKS inside join_mesh until the Head operator approves this machine. No key is presented —
+    admission is a decision someone makes, not a secret someone holds.
+    """
+    install_tailscale()
+    start_ccc_tailscaled(write_unit)
+    print("\ncuttle: requesting mesh admission — send the auth-id below to the Head operator,\n"
+          f"        who runs:  cuttle arm approve {node_name} --auth-id <id>\n")
+    join_mesh(coordinator, node_name)
+    return tailscale_ip()
+
+
+def register_node(auth_id: str) -> None:
+    """Grant a pending mesh-admission request. The cluster's front door, opened by hand."""
+    run(["headscale", "auth", "register", "--auth-id", auth_id, "--user", _user_id()], sudo=True)
+
+
+def forget_state() -> None:
+    """Wipe this node's CCC mesh identity so it can register against a *different* coordinator.
+
+    Required, not hygiene: on start, tailscaled auto-reconnects to the control URL in its state
+    file. That successful noise dial makes the dialer force port 443 for any subsequently-supplied
+    login server, so `tailscale up --login-server <new>` hangs forever retrying HTTPS against a
+    plain-HTTP Headscale. A daemon with no prior control URL registers over HTTP:8080 happily.
+
+    Deletes the Headscale node too, so the address it held is released and we reclaim it on re-join
+    (verified: Headscale frees the IP on node delete).
+    """
+    run(["systemctl", "stop", config.CCC_TS_SERVICE], sudo=True, check=False)
+    delete_node(hostname())  # before the state wipe: the node is named after this host
+    run(["rm", "-f", str(config.CCC_TS_STATE)], sudo=True, check=False)

@@ -10,8 +10,8 @@ import shutil
 from . import config
 from .system import run
 
-_SERVICES = ["munge", "slurmctld", "slurmd"]
-_PACKAGES = ["slurm-wlm", "apptainer", "nvidia-container-toolkit", "munge"]
+_SERVICES = [config.HEAD_API_SERVICE, "munge", "slurmctld", "slurmd"]
+_PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
 _NVIDIA_REPO_FILES = [
     "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
     "/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
@@ -41,6 +41,12 @@ def remove_mesh(keep_packages: bool = False) -> None:
         # NOTE: `tailscale` package + repo left in place — shared with the personal daemon.
 
 
+def remove_head_api() -> None:
+    run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
+    run(["rm", "-rf", str(config.HEAD_API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
 def remove_slurm_config() -> None:
     run(["rm", "-rf",
          str(config.SLURM_CONF.parent),  # /etc/slurm
@@ -48,6 +54,8 @@ def remove_slurm_config() -> None:
          str(config.SLURMD_SPOOL_DIR),
          str(config.SLURM_LOG_DIR)],
         sudo=True, check=False)
+    # Arm-only: the configless `-Z --conf-server` flags.
+    run(["rm", "-f", str(config.SLURMD_DEFAULTS)], sudo=True, check=False)
 
 
 def purge_packages() -> None:
@@ -76,6 +84,7 @@ def remove_user_dirs() -> None:
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
+    remove_head_api()
     remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()
     if not keep_packages:

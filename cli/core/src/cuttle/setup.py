@@ -1,15 +1,18 @@
-"""`cuttle setup --head` — provision the Head (control plane + co-located Arm) on a native-Linux box.
+"""`cuttle setup` — provision a node in one of two roles, on a native-Linux box.
 
-Drives apt+sudo directly, renders Slurm config, builds the base Pod image, starts daemons, then
-stands up the self-hosted Headscale mesh and joins its own tailnet. `--local` is an alias (the
-single-box case is just a Head with its co-located Arm). Intended path only — no fallbacks (this is
-a test box; failures decided live).
+`--head`: self-hosts the Headscale coordinator + the Head API, runs slurmctld, and carries a
+co-located Arm as a *static* Slurm node. `--local` is an alias (a single box is just a Head).
+
+`--arm`: joins an existing cluster with a join token, pulls the munge key from the Head API over the
+mesh, and registers as a *dynamic* Slurm node (`slurmd -Z`) fetching its config from slurmctld.
+
+Drives apt+sudo directly. Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import tempfile
 from pathlib import Path
 
-from . import config, mesh, settings, system, templates
+from . import config, enroll, headapi, mesh, settings, system, templates
 from .system import run, sh
 
 
@@ -45,12 +48,13 @@ def add_repos() -> None:
     )
 
 
-def install_packages() -> None:
+def install_packages(slurm_pkg: str = config.SLURM_PKG) -> None:
+    """`slurm_pkg` is the full suite on a Head, just the node daemon on an Arm."""
     run(["apt-get", "update"], sudo=True)
     before = system.installed_packages()
     run(
         ["apt-get", "install", "-y",
-         config.SLURM_PKG, config.APPTAINER_PKG, config.NVIDIA_CTK_PKG, config.MUNGE_PKG],
+         slurm_pkg, config.APPTAINER_PKG, config.NVIDIA_CTK_PKG, config.MUNGE_PKG],
         sudo=True,
     )
     # Record exactly what we added (incl. pulled deps) so teardown removes only these.
@@ -66,7 +70,17 @@ def write_slurm_config(mesh_ip: str) -> None:
                      (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     _write_root_file(config.SLURM_CONF, templates.render_slurm_conf(mesh_ip))
-    _write_root_file(config.GRES_CONF, templates.render_gres_conf())
+    # The Head plus any Arms already admitted (a re-run must not un-admit them).
+    reg = enroll.load_registry()
+    nodes = [templates.head_gres_node()]
+    nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items()) if e["admitted"]]
+    _write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
+
+
+def make_registry_dir() -> None:
+    """The API's only writable location — it runs as munge and owns nothing else."""
+    run(["install", "-d", "-m", "0755", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+         str(config.CCC_LIB)], sudo=True)
 
 
 def start_daemons() -> None:
@@ -104,6 +118,14 @@ def mesh_up_head(address: str | None) -> str:
     """
     addr = address or system.primary_ip()
     server_url = f"http://{addr}:{config.HEADSCALE_PORT}"
+
+    # Re-pointing at a different coordinator requires forgetting the old one first, or `tailscale up`
+    # hangs forcing HTTPS:443 at a plain-HTTP Headscale. See mesh.forget_state().
+    old = settings.load().get("mesh", {}).get("coordinator")
+    if old and old != server_url:
+        print(f"cuttle: coordinator changed ({old} -> {server_url}); re-registering on the mesh")
+        mesh.forget_state()
+
     hs_ver, mesh_ip = mesh.up_head(server_url, _write_root_file)
     # Persist for later Arm enrollment (join token) + reproducibility.
     data = settings.load()
@@ -126,10 +148,69 @@ def setup_head(address: str | None = None) -> None:
     install_packages()
     write_slurm_config(mesh_ip)
     start_daemons()
+    make_registry_dir()
+    headapi.install(_write_root_file, mesh_ip)  # after munge: the API serves munge.key
     build_base_sif()
     verify()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
+    print(f"cuttle: mint an Arm's join token with `cuttle token` (coordinator {mesh_ip})")
 
 
 # `--local` is just the single-box Head (Head + its co-located Arm).
 setup_local = setup_head
+
+
+def prompt_node_name() -> str:
+    """Required, no default. The Arm's identity in both Slurm and the mesh, fixed thereafter.
+    A collision with an existing Arm is rejected by slurmctld at registration."""
+    name = input("Node name for this Arm (unique in the cluster): ").strip()
+    assert name, "a node name is required"
+    return name
+
+
+def setup_arm(invite: str) -> None:
+    """Enroll this box as an Arm of the cluster named by `invite`.
+
+    Order is the security model. We ask to join the mesh and BLOCK until an operator approves; only
+    then can we route to the Head API to collect the munge key. No secret ever crosses the internet:
+    the invite is public, and the auth-id we print authorizes nothing by itself.
+    """
+    make_user_dirs()
+    node_name = prompt_node_name()
+    settings.prompt_wandb()
+    preflight()
+
+    t = enroll.decode_invite(invite)
+    mesh_ip = mesh.up_arm(t["coordinator"], node_name, _write_root_file)  # blocks on approval
+    print(f"cuttle: Arm on mesh as {node_name} — mesh IP {mesh_ip}")
+
+    add_repos()
+    install_packages(config.SLURMD_PKG)
+
+    # Now on the mesh: the Head API is routable, so the munge key can be fetched. This POST also
+    # records our GPU device — /dev/nvidia0 natively, /dev/dxg under WSL2 — which the Head needs to
+    # author our gres.conf line.
+    info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
+    enroll.write_munge_key(info["munge_key"])
+
+    data = settings.load()
+    data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
+                   "ctld_addr": info["ctld_addr"], "gpu_device": enroll.gpu_device()}
+    settings.save(data)
+
+    build_base_sif()
+
+    # Mesh admission (above) and Slurm admission are separate: `cuttle arm approve` grants the first
+    # immediately, then waits for this POST before writing our gres.conf line. Starting slurmd early
+    # would register a node the Head has no GRES for.
+    if not info["admitted"]:
+        enroll.wait_for_admit(t["mesh_ip"], node_name)
+
+    # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
+    for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
+        run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
+    _write_root_file(config.SLURMD_DEFAULTS, enroll.slurmd_defaults(node_name, info["ctld_addr"]))
+    run(["systemctl", "enable", "slurmd"], sudo=True)
+    run(["systemctl", "restart", "slurmd"], sudo=True)
+
+    print(f"\ncuttle: Arm '{node_name}' enrolled. Check `sinfo` on the Head.")
