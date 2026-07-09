@@ -69,6 +69,39 @@ full path or activate the venv. Ship a real install: an installer/bootstrap that
 PATH (symlink into `~/.local/bin`, a `pipx`/`uv tool install`, or a one-line curl bootstrap), so
 donors running `cuttle setup --arm` don't need to know the repo layout. Ties into the enrollment UX.
 
+## Security: Arm re-enrollment must not become a permanent impersonation credential
+
+Phase 1 wants **easy recovery**: if the Head's mesh IP ever moves (tailscaled state lost while the
+Headscale DB survives, prefix change, DB migration), every Arm is stranded — its `--conf-server`
+address is baked into its systemd unit and nothing refetches it. Fixing that by hand, per donor, is
+untenable, so re-enrollment should be one command with no fresh token.
+
+That convenience is the security problem. Whatever the Arm keeps on disk to re-enrol unattended is,
+by definition, a credential that re-admits that machine to the cluster. Worse, an Arm already holds
+the **munge key** — the cluster-wide shared secret. Anyone with it can authenticate to `slurmctld`
+as any node *or any user*. Today that key sits readable on every donor box.
+
+Needed before donors are anything less than fully trusted:
+- Re-enrollment credential is **per-Arm, revocable, and distinct from the join token** (not a
+  reusable preauth key sitting in `config.yaml`).
+- Head can revoke a single Arm without re-keying the cluster.
+- Rotate munge, or stop relying on it as the only thing between a donor and `slurmctld`.
+- Re-enrollment re-derives the Head address rather than trusting the stale one.
+
+## Security: coordinator + control-plane transport
+
+- **Headscale is served over plain `http://<addr>:8080`.** Node keys and preauth keys cross the
+  public internet in cleartext, *before* the mesh exists to protect them. Needs TLS (Let's Encrypt,
+  or a pinned self-signed cert shipped in the join token) before any real donor enrols.
+- **`slurmctld`/`slurmd` bind `0.0.0.0`** — reachable from the LAN and from the operator's personal
+  tailnet, not just the CCC mesh. Measured: setting `SlurmctldHost=<host>(<mesh-ip>)` does *not*
+  narrow the bind (slurm-wlm 23.11.4 still listens on all interfaces). So this needs a firewall rule
+  restricting 6817/6818 to the mesh interface, not a config knob. Note the cost: whatever does the
+  restricting makes the mesh a startup dependency of the scheduler.
+- **Headscale ACLs**: Arms should reach the Head's Slurm ports and nothing else; Arm→Arm traffic
+  should be denied by default. Currently the mesh is flat.
+- **slurmrestd JWT** (Phase 1 ⑤): key storage/rotation on the Head.
+
 ## Before multi-node / multi-user: GPU cgroup isolation
 
 MVP `slurm.conf` has **no** `ConstrainDevices` (single GPU, single user → nothing to isolate).
