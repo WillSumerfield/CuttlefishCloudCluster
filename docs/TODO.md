@@ -138,15 +138,23 @@ coordinator *availability*, though not for Arm membership. Decide before any don
   should be denied by default. Currently the mesh is flat.
 - **slurmrestd JWT** (Phase 1 ⑤): key storage/rotation on the Head.
 
-## Mesh prefix swallows Tailscale's MagicDNS address
+## Two tailscaled daemons both claim MagicDNS's `100.100.100.100`
 
-`100.100.0.0/16` contains `100.100.100.100`, and `tailscaled-ccc` installs a route for it
-(`100.100.100.100 dev ccc0`, route table 52) even with `--accept-dns=false` and `magic_dns: false`.
-IP connectivity on the personal tailnet is unaffected, but a MagicDNS *name* looked up from the Head
-would now be sent toward CCC. Nothing queries it today.
+`tailscaled-ccc` installs `100.100.100.100 dev ccc0` (route table 52) even with
+`--accept-dns=false` and Headscale `magic_dns: false`. The personal daemon wants that route too, for
+the personal tailnet's MagicDNS. **Last daemon to start wins** — so this flips across reboots.
 
-Moving the mesh to `100.99.0.0/16` sidesteps it: one constant plus a re-registration of every node.
-Do it before there are enough Arms to make re-registration painful.
+Measured, and it corrects an earlier theory: this is *not* caused by the mesh prefix containing the
+address. We moved the mesh from `100.100.0.0/16` to `100.99.0.0/16` and the route persisted.
+tailscaled routes quad100 into its tun unconditionally.
+
+Harmless today: nothing on the Head queries `100.100.100.100` (CCC never touches systemd-resolved,
+and everything addresses machines by IP). It bites the day MagicDNS is used on the personal tailnet
+from a CCC box, as an intermittent, reboot-dependent DNS failure that looks nothing like CCC.
+
+No known fix from our side — tailscaled has no flag to suppress the quad100 route. Options if it
+ever matters: a routing rule pinning quad100 to the personal tun, or accepting that a CCC box can't
+use personal MagicDNS.
 
 ## `cuttle setup` should own the `ccc0` firewall rule
 
