@@ -31,8 +31,9 @@ def preflight() -> None:
 def add_repos() -> None:
     run(["add-apt-repository", "-y", "ppa:apptainer/ppa"], sudo=True)
     sh(
+        # --yes: clobber the keyring on re-run instead of prompting (public repo key; setup is idempotent).
         "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey "
-        "| gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && "
+        "| gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && "
         "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/"
         "nvidia-container-toolkit.list "
         "| sed 's#deb https://#deb [signed-by=/usr/share/keyrings/"
