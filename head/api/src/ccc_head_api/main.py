@@ -1,7 +1,9 @@
-"""CCC Head API.
+"""CCC Head enrollment API.
 
-Phase 1 ③ ships enrollment. Phase 1 ⑤ grows this into the Slurm/Spawn API (via slurmrestd) that the
-SPA reads.
+Phase 1 ③ ships enrollment. This app stays **enrollment-only**: the read/Spawn views the SPA consumes
+live in a *separate* dashboard app (`ccc_head_api.dashboard`), because they have opposite exposure
+needs — enrollment hands out the munge key and must stay mesh-only, while the dashboard must reach the
+LAN. Splitting them keeps the secret physically off every non-mesh interface.
 
 **The security model is the bind address.** uvicorn listens on the Head's *mesh* address only, an
 address that exists solely on the `ccc0` interface. Nothing on the LAN, on the operator's personal
@@ -24,7 +26,6 @@ import json
 import os
 import re
 import socket
-import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,7 +34,6 @@ from pydantic import BaseModel
 MUNGE_KEY = Path("/etc/munge/munge.key")
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
-PARTITION = os.environ.get("CCC_PARTITION", "ccc")
 
 # Mirrors cuttle.config; re-validated root-side by `cuttle arm admit` before reaching gres.conf.
 NODE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$")
@@ -117,83 +117,3 @@ def enroll(req: EnrollRequest) -> dict:
         "partition": os.environ["CCC_PARTITION"],
         "admitted": reg[req.node_name]["admitted"],
     }
-
-
-# --- read API (⑤): the SPA's JSON contract ----------------------------------
-# Slurm is read by shelling out to `--json` (identical data model slurmrestd serves; no daemon/JWT).
-# Every response is a hand-picked CCC-domain projection — Slurm job -> Spawn, node -> Arm — so the SPA
-# never couples to Slurm's ~120-field, versioned schema. Read-only and safe as the unprivileged munge
-# user; nothing here touches ~/.ccc/spawns (which munge can't read), so completed-Spawn history/logs
-# are out until Phase 3 slurmdbd gives a real accounting source.
-
-def _slurm_json(*cmd: str) -> dict:
-    """Run a Slurm CLI with --json and parse it. Surfaces failures as 503 rather than a 500 stack —
-    the likely cause is slurmctld being down, which the SPA should show as 'cluster unreachable'."""
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=True)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-        raise HTTPException(503, f"slurm unreachable ({' '.join(cmd)}): {e}")
-    return json.loads(r.stdout)
-
-
-def _num(v):
-    """Unwrap Slurm's `{set,infinite,number}` scalar. Returns the int when set+finite, else None."""
-    if isinstance(v, dict):
-        if not v.get("set", True) or v.get("infinite"):
-            return None
-        return v.get("number")
-    return v
-
-
-def _gpu_count(gres: str) -> int:
-    """Sum GPU counts from any Slurm gres string form: 'gpu:1', 'gres/gpu:1' (tres_per_node),
-    'gres/gpu=2', or typed 'gpu:a100:2'. Returns 0 when there's no gpu term."""
-    return sum(int(n) for n in re.findall(r"gpu(?::[a-z0-9_]+)?[:=](\d+)", gres or "", re.I))
-
-
-@app.get("/arms")
-def arms() -> list[dict]:
-    """The Arms screen: every compute node's live Slurm status, enriched with enrollment facts the
-    scheduler never sees (mesh address, admitted). `sinfo` is the authoritative node list — it
-    includes the Head's own co-located Arm, which never enrolls, so it simply has no registry row."""
-    reg = _load()
-    out = []
-    for rec in _slurm_json("sinfo", "--json").get("sinfo", []):
-        state = "+".join(s.lower() for s in rec.get("node", {}).get("state", []))
-        gpus = _gpu_count(rec.get("gres", {}).get("total", ""))
-        for name in rec.get("nodes", {}).get("nodes", []):
-            e = reg.get(name, {})
-            out.append({
-                "name": name,
-                "state": state,
-                "gpus": gpus,
-                # Registry-only facts; the Head's own Arm has no row -> implicitly admitted, no mesh IP.
-                "mesh_ip": e.get("mesh_ip"),
-                "gpu_device": e.get("gpu_device"),
-                "admitted": e.get("admitted", True),
-            })
-    return sorted(out, key=lambda a: a["name"])
-
-
-@app.get("/spawns")
-def spawns() -> list[dict]:
-    """The live Spawn queue — pending/running jobs in the CCC partition. Completed Spawns drop out of
-    squeue after MinJobAge; durable history waits for Phase 3 slurmdbd (see module docstring)."""
-    out = []
-    for j in _slurm_json("squeue", "--json").get("jobs", []):
-        if j.get("partition") != PARTITION:
-            continue
-        # tres_per_node ('gres/gpu:1') is the reliable GPU source — the *allocated* TRES omits gpu
-        # (no gres accounting), and gres_detail is empty until/unless the step runs.
-        gres = ",".join(j.get("gres_detail") or []) or j.get("tres_per_node", "")
-        out.append({
-            "id": _num(j.get("job_id")),
-            "name": j.get("name"),
-            "state": "+".join(s.lower() for s in j.get("job_state", [])),
-            "node": j.get("nodes") or None,
-            "gpus": _gpu_count(gres),
-            "user": j.get("user_name"),
-            "submit_time": _num(j.get("submit_time")),
-            "start_time": _num(j.get("start_time")),
-        })
-    return sorted(out, key=lambda s: s["id"] or 0)
