@@ -14,16 +14,23 @@ from pathlib import Path
 from . import config, settings
 
 # W&B env is injected into the job process; the wrapper forwards it into the Pod via --env.
+#
+# The image is resolved on the NODE, not baked in from the submitter. sbatch exports the submitter's
+# environment (--export=ALL), so $HOME on a remote Arm is the *Head user's* home, which doesn't exist
+# there. getent asks the node's own passwd for the job user's home. (Until ④ gives us shared storage,
+# every Arm holds its own copy of base.sif, built by `cuttle setup --arm`.)
 JOB_SCRIPT = """\
 #!/bin/bash
 #SBATCH --job-name=ccc-spawn
 #SBATCH --gres=gpu:{gpu}
 #SBATCH --output={spawns}/%j.out
 #SBATCH --error={spawns}/%j.err
+node_home=$(getent passwd "$(id -un)" | cut -d: -f6)
+sif="$node_home/{sif_rel}"
 apptainer exec --nv \
   --env WANDB_API_KEY="${{WANDB_API_KEY:-}}",WANDB_PROJECT="${{WANDB_PROJECT:-}}",\
 WANDB_MODE="${{WANDB_MODE:-}}",WANDB_NAME="spawn-$SLURM_JOB_ID" \
-  {sif} python {script} {args}
+  "$sif" python {script} {args}
 rc=$?
 echo $rc > {spawns}/$SLURM_JOB_ID.exit
 exit $rc
@@ -48,7 +55,8 @@ def _active_state(spawn_id: int) -> str | None:
 def submit(script: str, gpu: int, follow: bool, args: list[str]) -> None:
     config.SPAWNS_DIR.mkdir(parents=True, exist_ok=True)
     body = JOB_SCRIPT.format(
-        gpu=gpu, spawns=config.SPAWNS_DIR, sif=config.BASE_SIF,
+        gpu=gpu, spawns=config.SPAWNS_DIR,
+        sif_rel=config.BASE_SIF.relative_to(Path.home()),  # resolved against the node's own $HOME
         script=script, args=" ".join(args),
     )
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
