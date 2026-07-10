@@ -41,17 +41,12 @@ them with `apt-mark hold` (don't compile all of Slurm on every box). Then switch
 to `AutoDetect=nvml`. Note: this takes the stack off the pure apt pin (unavoidable — NVML isn't in
 the stock repo), so pin our build recipe instead.
 
-## W&B project + entity should be per-Spawn, not per-machine
+## ~~W&B project + entity should be per-Spawn, not per-machine~~ — DONE (⑦)
 
-MVP stores `wandb.project` in `~/.ccc/config/config.yaml` (prompted at setup). Project belongs to
-the run, not the box. Move it to `cuttle run --project <name>` (config value becomes the default /
-fallback). API key stays in config (it's a machine/user secret); only project moves to run-time.
-
-Entity: same treatment — `cuttle run --entity <slug>` injecting `WANDB_ENTITY` (config default,
-fallback to the account default). Currently the account has no default entity, so the validation
-script `examples/train.py` hardcodes `entity="Will@ARIA"` — remove that hack once injection exists.
-Note: wandb wants the entity **slug** (from the run URL `wandb.ai/<slug>/<project>`), not the
-display name.
+`cuttle run --project/--entity` inject `WANDB_PROJECT`/`WANDB_ENTITY` per-Spawn (CLI flag → config
+default → project 'ccc' / entity account-default; empty entity is omitted, not passed). API key stays
+in config. The `examples/train.py` `entity="Will@ARIA"` hack is gone. Reminder kept for users: wandb
+wants the entity **slug** (`wandb.ai/<slug>/<project>`), not the display name.
 
 ## Polish: nicer `cuttle setup` UX (install log + TUI)
 
