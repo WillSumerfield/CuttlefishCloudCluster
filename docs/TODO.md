@@ -233,6 +233,15 @@ Fix later: have the job push `.out`/`.err` to the Head periodically (background 
 seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
 racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
 
+## setup_arm interleaves apt install with Head enrollment (CLI-cleanup item)
+
+`setup_arm` order is: mesh-admission gate (`up_arm` blocks on approval) → **apt install slurmd +
+apptainer + build base.sif** → fetch munge key → slurm-admission gate (`wait_for_admit`) → start
+slurmd. The local install work has no dependency on either Head gate, yet sits between them, so a
+package install runs mid-conversation with the Head. Cleaner: do all local heavy-lifting (install,
+base.sif) as one block either fully before or fully after the enroll/approval exchange. Fold into the
+planned full CLI cleanup, not a standalone fix.
+
 ## Remote scratch orphans on SIGKILL
 
 ④ wipes a remote Spawn's node-local scratch (`~/.ccc/scratch/<jobid>`) with a bash `trap ... EXIT`.
