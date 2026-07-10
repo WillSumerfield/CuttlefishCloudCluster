@@ -28,7 +28,8 @@ if os.environ.get("WANDB_MODE") != "disabled":
     try:
         import wandb
 
-        wandb.init(entity="Will@ARIA", name=os.environ.get("WANDB_NAME"))
+        # entity + project come from WANDB_ENTITY / WANDB_PROJECT, injected per-Spawn by `cuttle run`.
+        wandb.init(name=os.environ.get("WANDB_NAME"))
         for step in range(10):
             wandb.log({"loss": 1.0 / (step + 1)}, step=step)
         wandb.finish()

@@ -118,10 +118,13 @@ def run(
     script: str = typer.Argument(..., help="Python script to run inside the Pod."),
     gpu: int = typer.Option(1, "--gpu", help="GPUs to request (GRES gpu:N)."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
+    project: str = typer.Option(None, "--project", help="W&B project for this Spawn (default: config)."),
+    entity: str = typer.Option(
+        None, "--entity", help="W&B entity/slug for this Spawn (default: config, then account default)."),
 ):
     """Submit a Spawn: sbatch → apptainer exec --nv base.sif python <script>. Extra args after
     the script are passed through (e.g. `cuttle run train.py --gpu 1 -- --epochs 5`)."""
-    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args)
+    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity)
 
 
 @app.command()

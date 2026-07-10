@@ -21,7 +21,10 @@ def save(data: dict) -> None:
 
 
 def prompt_wandb() -> None:
-    """Prompt (up front) for W&B key + project, persist to config.yaml."""
+    """Prompt (up front) for the W&B key + default project/entity, persist to config.yaml.
+
+    The key is a machine/user secret, so it lives here. Project + entity belong to the *run*, not the
+    box — these are only the per-run defaults; `cuttle run --project/--entity` overrides either."""
     data = load()
     wandb = data.get("wandb", {})
     have = "set" if wandb.get("api_key") else "unset"
@@ -31,21 +34,34 @@ def prompt_wandb() -> None:
     )
     if key:
         wandb["api_key"] = key
-    wandb.setdefault("project", typer.prompt("W&B project", default=wandb.get("project", "ccc")))
+    wandb.setdefault("project", typer.prompt("Default W&B project", default=wandb.get("project", "ccc")))
+    # Entity is the URL slug (wandb.ai/<slug>/<project>), NOT the display name. Blank = the account's
+    # own default entity — leave WANDB_ENTITY unset rather than storing an empty one.
+    entity = typer.prompt("Default W&B entity/slug (blank = account default)",
+                          default=wandb.get("entity", ""), show_default=False)
+    if entity:
+        wandb["entity"] = entity
     data["wandb"] = wandb
     save(data)
     print(f"wandb: api_key {'set' if wandb.get('api_key') else 'disabled'}, "
-          f"project={wandb['project']} → {config.CONFIG_FILE}")
+          f"project={wandb['project']}, entity={wandb.get('entity', '(account default)')} "
+          f"→ {config.CONFIG_FILE}")
 
 
-def wandb_env() -> dict[str, str]:
-    """Env vars to inject into a Spawn Pod for W&B (or disable it if no key)."""
+def wandb_env(project: str | None = None, entity: str | None = None) -> dict[str, str]:
+    """Env vars to inject into a Spawn Pod for W&B (or disable it if no key). `project`/`entity` are
+    the `cuttle run` overrides; each falls back to the config default, then project to 'ccc' and
+    entity to the account default (WANDB_ENTITY left unset — an empty one breaks wandb.init)."""
     wandb = load().get("wandb", {})
     key = wandb.get("api_key") or os.environ.get("WANDB_API_KEY")
     if not key:
         return {"WANDB_MODE": "disabled"}
-    return {
+    env = {
         "WANDB_API_KEY": key,
-        "WANDB_PROJECT": wandb.get("project", "ccc"),
+        "WANDB_PROJECT": project or wandb.get("project", "ccc"),
         "WANDB_MODE": "online",
     }
+    entity = entity or wandb.get("entity")
+    if entity:
+        env["WANDB_ENTITY"] = entity
+    return env

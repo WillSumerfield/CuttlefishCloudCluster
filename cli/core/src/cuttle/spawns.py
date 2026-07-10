@@ -82,9 +82,11 @@ CCC_FILELIST
 fi
 
 cd "$proj"
-apptainer exec --nv \
-  --env WANDB_API_KEY="${WANDB_API_KEY:-}",WANDB_PROJECT="${WANDB_PROJECT:-}",\
-WANDB_MODE="${WANDB_MODE:-}",WANDB_NAME="spawn-$jid",CCC_OUT="$ccc_out" \
+# Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
+# fail rather than fall back to the account default.
+wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MODE=${WANDB_MODE:-},WANDB_NAME=spawn-$jid"
+[ -n "${WANDB_ENTITY:-}" ] && wenv="$wenv,WANDB_ENTITY=$WANDB_ENTITY"
+apptainer exec --nv --env "$wenv,CCC_OUT=$ccc_out" \
   "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err"
 rc=$?
 echo $rc > "$exitf"
@@ -147,7 +149,8 @@ def _render_script(gpu: int, submit_dir: Path, proj_rel: Path, head_ip: str,
     return body
 
 
-def submit(script: str, gpu: int, follow: bool, args: list[str]) -> None:
+def submit(script: str, gpu: int, follow: bool, args: list[str],
+           project: str | None = None, entity: str | None = None) -> None:
     project_root = Path.cwd()
     try:
         proj_rel = project_root.relative_to(Path.home())
@@ -168,7 +171,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str]) -> None:
         job_file = f.name
 
     # W&B vars go into sbatch's env; Slurm's default --export=ALL forwards them to the job.
-    env = {**os.environ, **settings.wandb_env()}
+    env = {**os.environ, **settings.wandb_env(project, entity)}
     r = subprocess.run(["sbatch", "--parsable", job_file],
                        capture_output=True, text=True, check=True, env=env)
     spawn_id = int(r.stdout.strip())
