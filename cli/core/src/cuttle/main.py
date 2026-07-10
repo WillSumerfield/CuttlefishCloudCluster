@@ -89,7 +89,10 @@ def arm_remove(name: str = typer.Argument(..., help="The Arm's node name.")):
 @app.command()
 def teardown(
     local: bool = typer.Option(
-        False, "--local", help="Tear down this box's combined Head+Arm (MVP)."
+        False, "--local", help="Tear down this box's combined Head+Arm."
+    ),
+    arm: bool = typer.Option(
+        False, "--arm", help="Tear down this box's Arm role (reverse `setup --arm`)."
     ),
     keep_packages: bool = typer.Option(
         False, "--keep-packages", help="Leave apt packages + repos installed (fast config reset)."
@@ -98,10 +101,15 @@ def teardown(
         False, "--all", help="Also remove ~/.ccc (deletes base.sif — full clean slate)."
     ),
 ):
-    """Reverse setup. MVP supports --local only."""
-    if not local:
-        raise typer.BadParameter("MVP supports only: cuttle teardown --local")
-    teardown_mod.teardown_local(keep_packages=keep_packages, all_=all_)
+    """Reverse setup: --local (Head+Arm) or --arm (remote Arm)."""
+    if local and arm:
+        raise typer.BadParameter("pick one role: --local or --arm")
+    if local:
+        teardown_mod.teardown_local(keep_packages=keep_packages, all_=all_)
+    elif arm:
+        teardown_mod.teardown_arm(keep_packages=keep_packages, all_=all_)
+    else:
+        raise typer.BadParameter("specify a role: cuttle teardown --local | --arm")
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
