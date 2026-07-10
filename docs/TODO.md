@@ -193,18 +193,54 @@ interface, so a Tailscale upgrade may change or drop it. If it ever returns noth
 not dangerous. The safe fallback if that day comes is to parse the state file, or to accept the
 extra approval.
 
-## `cuttle run` only works on the Head
+## `cuttle run` on a remote Arm — RESOLVED by ④ (stage-in/out)
 
-`spawns.py` renders one sbatch script whose paths are the *submitter's*, but the script executes on
-whichever node Slurm picks. `--output`, `--error`, and the `.exit` write all name
-`~submitter/.ccc/spawns/`, and `python <script>` resolves against a working directory that doesn't
-exist on an Arm (measured: `slurmstepd: couldn't chdir`). sbatch's `--export=ALL` even carries the
-submitter's `$HOME` over, so `~` expands wrong there.
+Was: `spawns.py` rendered one sbatch script whose paths were the *submitter's*, but the script runs
+on whichever node Slurm picks — `--output`/`--error`/`.exit`/`python <script>` all resolved to Head
+paths absent on an Arm (`slurmstepd: couldn't chdir`).
 
-The `base.sif` path was the one piece fixable without shared storage, and is fixed: the job now
-resolves the image against the *node's* passwd home via `getent`, since each Arm builds its own copy.
-Everything else here is exactly what ④ (stage-in/out) exists to solve. Until then, a Spawn that lands
-on a remote Arm fails, and `cuttle run` is single-box only.
+Now: the job branches on `[ -d "$submit_dir" ]`. Local (Head) runs in place. Remote stages the
+project IN from the Head's mesh-bound rsync daemon into node-local scratch, runs, and stages
+out/err/exit/outputs BACK to the daemon's [spawns] module. Both produce the same Head-side layout
+`~/.ccc/spawns/<id>/{out,err,exit,outputs}`. Results are collected from `$CCC_OUT` (injected into the
+Pod) — narrows the roadmap's "`$CCC_OUT` / `./outputs`" to just `$CCC_OUT`, so per-Spawn isolation
+(layout A) holds and nothing writes into the source tree.
+
+Leftover litter, not blocking: the sbatch wrapper's own stdout/stderr go to `/tmp/ccc-<jobid>.slurm`
+on the node (rsync diagnostics) and are never reaped.
+
+## Phase 4: Sweep staging reuses one dir across trials
+
+④ (Phase 1) stages per **Spawn = per Slurm job**: one ephemeral node-local dir, wiped when the job
+exits. Deliberately no persistent per-project cache — leaving multi-GB working dirs on donor boxes is
+bad tenancy, so each Spawn copies fresh. That re-transfers the project on every Spawn; accepted, the
+priority is not hogging donor disk.
+
+A **Sweep** (Phase 4) is multiple trials, each its own Slurm job under Slurm dependencies. Staging
+per-job would re-transfer the dataset once *per trial* — the hogging-vs-re-transfer tension, back at
+sweep granularity. Phase 4 should stage the project **once per Sweep** and reuse it across trials
+(stage inside a single allocation that fans out trials, or a sweep-keyed dir with a "sweep done →
+wipe" signal), so a sweep neither re-transfers nor leaves persistent state behind.
+
+## Live log streaming for remote Spawns
+
+④ stages `.out`/`.err`/`.exit` home **at job end** (Option 1). So `cuttle logs -f` on a *remote*
+Spawn shows nothing until the job finishes — a 6-hour run is blind until it exits. `cuttle status`
+still works live (that reads `squeue` + the staged `.exit`, not log contents); only live scrollback
+is missing. Local Spawns (Head's co-located Arm) already stream, since the file is written in place.
+
+Fix later: have the job push `.out`/`.err` to the Head periodically (background rsync loop, every few
+seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
+racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
+
+## Remote scratch orphans on SIGKILL
+
+④ wipes a remote Spawn's node-local scratch (`~/.ccc/scratch/<jobid>`) with a bash `trap ... EXIT`.
+That fires on normal exit and ordinary signals, but **not** SIGKILL — OOM-killer, `scancel -9`, and
+(Phase 2) a Retract all bypass it, orphaning the scratch dir on the donor. Fix with a Slurm epilog
+that `rm -rf`s the job's scratch, or a boot-time sweep of `~/.ccc/scratch/*`. Pairs naturally with
+Phase-2 Retract (which needs an epilog anyway). Until then a hard-killed Spawn leaves its staged
+files behind — the one case that violates "don't hog donor disk".
 
 ## WSL2 Arms: supported, with one permanent limit
 
