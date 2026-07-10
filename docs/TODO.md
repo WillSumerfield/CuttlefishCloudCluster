@@ -193,12 +193,32 @@ interface, so a Tailscale upgrade may change or drop it. If it ever returns noth
 not dangerous. The safe fallback if that day comes is to parse the state file, or to accept the
 extra approval.
 
-## `preflight()`'s native-Linux assert doesn't detect WSL
+## `cuttle run` only works on the Head
 
-`assert system.is_native_linux_x86()` passed on a WSL2 Ubuntu 24.04 Arm, which is precisely the
-platform it exists to reject. The guard is decorative today. Either make it real (check
-`/proc/sys/kernel/osrelease` for `microsoft`, or `/run/WSL`) and gate WSL behind an explicit flag,
-or delete it and admit WSL is supported. Right now it neither rejects nor blesses.
+`spawns.py` renders one sbatch script whose paths are the *submitter's*, but the script executes on
+whichever node Slurm picks. `--output`, `--error`, and the `.exit` write all name
+`~submitter/.ccc/spawns/`, and `python <script>` resolves against a working directory that doesn't
+exist on an Arm (measured: `slurmstepd: couldn't chdir`). sbatch's `--export=ALL` even carries the
+submitter's `$HOME` over, so `~` expands wrong there.
+
+The `base.sif` path was the one piece fixable without shared storage, and is fixed: the job now
+resolves the image against the *node's* passwd home via `getent`, since each Arm builds its own copy.
+Everything else here is exactly what ④ (stage-in/out) exists to solve. Until then, a Spawn that lands
+on a remote Arm fails, and `cuttle run` is single-box only.
+
+## WSL2 Arms: supported, with one permanent limit
+
+`preflight()` now detects WSL (`/proc/sys/kernel/osrelease` contains `microsoft`) and allows it as an
+Arm, never as a Head — headscale and slurmctld have never run there. `setup_arm` adds two lines to
+Apptainer's config on WSL boxes (`bind path = /usr/lib/wsl`, `libdxcore.so` in `nvliblist.conf`),
+after which plain `apptainer exec --nv` behaves as on native Linux. Verified: `torch.cuda` sees the
+RTX 4090 and a matmul runs. The platform quirk stops at the Arm; no job-layer flags.
+
+Permanent limit, not a TODO: `/dev/dxg` is a single device node for **all** GPUs, so device cgroups
+can never partition GPUs per-Spawn on WSL. See the cgroup item below — a WSL Arm is single-GPU-
+exclusive forever, or excluded from multi-user sharing.
+
+An `apt` upgrade of apptainer will raise a dpkg conffile prompt on both edited files.
 
 ## Before multi-node / multi-user: GPU cgroup isolation
 
