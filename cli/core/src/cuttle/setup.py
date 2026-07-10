@@ -169,12 +169,14 @@ def prompt_node_name() -> str:
     return name
 
 
-def setup_arm(invite: str) -> None:
+def setup_arm(invite: str, re_enroll: bool = False) -> None:
     """Enroll this box as an Arm of the cluster named by `invite`.
 
     Order is the security model. We ask to join the mesh and BLOCK until an operator approves; only
     then can we route to the Head API to collect the munge key. No secret ever crosses the internet:
     the invite is public, and the auth-id we print authorizes nothing by itself.
+
+    `re_enroll` forces a fresh mesh identity even if this box looks already-joined.
     """
     make_user_dirs()
     node_name = prompt_node_name()
@@ -182,7 +184,8 @@ def setup_arm(invite: str) -> None:
     preflight()
 
     t = enroll.decode_invite(invite)
-    mesh_ip = mesh.up_arm(t["coordinator"], node_name, _write_root_file)  # blocks on approval
+    # blocks on approval unless already joined to this coordinator
+    mesh_ip = mesh.up_arm(t["coordinator"], node_name, _write_root_file, re_enroll=re_enroll)
     print(f"cuttle: Arm on mesh as {node_name} — mesh IP {mesh_ip}")
     system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
 

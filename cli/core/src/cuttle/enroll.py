@@ -178,8 +178,31 @@ def approve_arm(name: str, auth_id: str, write_root_file) -> None:
     2. once the Arm reports in, give it a GRES line and reconfigure Slurm.
 
     Deliberately the *only* privileged step. The API cannot do either half.
+
+    A re-enrolling Arm wipes its own state but cannot delete its Headscale node (no `headscale`
+    binary), so approving would otherwise leave a superseded node holding a live mesh address — and
+    mesh membership is what authorizes fetching the munge key. Approving a name means "this machine,
+    now": anything older under that name is dead by definition.
+
+    Order matters. We reap *after* registering, never before: a mistyped or already-consumed auth-id
+    then fails harmlessly instead of evicting a healthy Arm. The cost is that Headscale, seeing the
+    old node still holding `name`, calls the new one `name-1` — so we rename it back.
     """
-    mesh.register_node(auth_id)
+    stale = set(mesh.node_ids_named(name))
+    mesh.register_node(auth_id)  # fails here if the auth-id is bad — nothing deleted yet
+
+    if stale:
+        # Whatever Headscale called the new node (`name-1`, or another suffix), it is the one that
+        # wasn't there a moment ago. Don't guess the suffix; diff against the snapshot.
+        fresh = [n for n in mesh.list_nodes() if str(n["id"]) not in stale
+                 and n.get("given_name", "").startswith(name)]
+        for node_id in stale:
+            print(f"cuttle: reaping superseded mesh node {node_id} ({name})")
+            mesh.delete_node_id(node_id)
+        for n in fresh:
+            if n["given_name"] != name:
+                mesh.rename_node(str(n["id"]), name)
+
     reg = _await_enrollment(name)
     reg[name]["admitted"] = True
     save_registry(reg)

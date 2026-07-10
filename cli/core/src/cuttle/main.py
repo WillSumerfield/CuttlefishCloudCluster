@@ -34,14 +34,21 @@ def setup(
              "so remote Arms can reach it).",
     ),
     invite: str = typer.Option(None, "--invite", help="Arm: invite printed by `cuttle invite`."),
+    re_enroll: bool = typer.Option(
+        False, "--re-enroll",
+        help="Arm: discard this box's mesh identity and re-join from scratch (needs re-approval). "
+             "For a corrupt state file, or a Head rebuilt behind the same coordinator URL.",
+    ),
 ):
     """Provision a node. --head (or --local) for the Head; --arm to enroll a compute node."""
     if head or local:
+        if re_enroll:
+            raise typer.BadParameter("--re-enroll is an Arm flag; the Head re-registers itself")
         setup_mod.setup_head(address)
     elif arm:
         if not invite:
             raise typer.BadParameter("`--arm` needs --invite (get one from the Head: `cuttle invite`)")
-        setup_mod.setup_arm(invite)
+        setup_mod.setup_arm(invite, re_enroll=re_enroll)
     else:
         raise typer.BadParameter("specify a role: cuttle setup --head | --arm")
 

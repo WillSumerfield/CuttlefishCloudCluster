@@ -249,7 +249,61 @@ def tailscale_ip() -> str:
     return r.stdout.strip().splitlines()[0]
 
 
+def _ts_json(*args: str) -> dict | None:
+    """Query CCC's tailscaled. None if the daemon can't answer — which we read as 'not joined'."""
+    r = run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", *args],
+            capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return None
+    return json.loads(r.stdout)
+
+
+def joined_to(coordinator: str) -> bool:
+    """Is this node already on the mesh, registered against *this* coordinator?
+
+    The coordinator URL lives only in `debug prefs` — `status --json` has no ControlURL field
+    (checked on 1.98.8). `debug` is an unstable interface; there is no stable one that exposes it.
+    Neither command needs sudo: the socket is 0666.
+    """
+    prefs = _ts_json("debug", "prefs")
+    status = _ts_json("status", "--json")
+    if prefs is None or status is None:
+        return False
+    return (prefs.get("ControlURL") == coordinator
+            and not prefs.get("LoggedOut", False)
+            and status.get("BackendState") == "Running")
+
+
+def _wipe_local_state() -> None:
+    """Stop CCC's tailscaled and delete its identity. The Arm half of forget_state()."""
+    run(["systemctl", "stop", config.CCC_TS_SERVICE], sudo=True, check=False)
+    run(["rm", "-f", str(config.CCC_TS_STATE)], sudo=True, check=False)
+
+
 # --- node removal (Head only) ----------------------------------------------
+
+def list_nodes() -> list[dict]:
+    r = run(["headscale", "nodes", "list", "--output", "json"],
+            sudo=True, capture_output=True, text=True)
+    return json.loads(r.stdout)
+
+
+def node_ids_named(name: str) -> list[str]:
+    """Ids of every node Headscale knows by this name. Normally 0 or 1; 2 while an Arm re-enrolls."""
+    return [str(n["id"]) for n in list_nodes()
+            if n.get("given_name") == name or n.get("name") == name]
+
+
+def delete_node_id(node_id: str) -> None:
+    run(["headscale", "nodes", "delete", "--identifier", node_id, "--force"], sudo=True)
+
+
+def rename_node(node_id: str, name: str) -> None:
+    """Headscale forces unique given_names: registering while an old node still holds `name` yields
+    `name-1`. One string must identify a machine in both Slurm and the mesh (see join_mesh), so we
+    rename it back once the old node is gone."""
+    run(["headscale", "nodes", "rename", "--identifier", node_id, name], sudo=True)
+
 
 def delete_node(name: str) -> None:
     """Evict a node from the mesh by its Headscale name (== its Slurm node name; see join_mesh).
@@ -257,13 +311,11 @@ def delete_node(name: str) -> None:
     Half of `cuttle arm remove`. Skipping this half leaves a departed donor holding a live mesh
     address — and the mesh is what authorizes `GET /enroll`, i.e. the munge key.
     """
-    r = run(["headscale", "nodes", "list", "--output", "json"],
-            sudo=True, capture_output=True, text=True)
-    for n in json.loads(r.stdout):
-        if n.get("given_name") == name or n.get("name") == name:
-            run(["headscale", "nodes", "delete", "--identifier", str(n["id"]), "--force"], sudo=True)
-            return
-    print(f"mesh: no node named {name!r} — nothing to evict")
+    ids = node_ids_named(name)
+    if not ids:
+        print(f"mesh: no node named {name!r} — nothing to evict")
+    for node_id in ids:
+        delete_node_id(node_id)
 
 
 # --- orchestration ---------------------------------------------------------
@@ -282,14 +334,35 @@ def up_head(server_url: str, write_unit) -> tuple[str, str]:
     return hs_ver, tailscale_ip()
 
 
-def up_arm(coordinator: str, node_name: str, write_unit) -> str:
+def up_arm(coordinator: str, node_name: str, write_unit, re_enroll: bool = False) -> str:
     """Join an Arm to an existing mesh. Returns its mesh IP.
 
     BLOCKS inside join_mesh until the Head operator approves this machine. No key is presented —
     admission is a decision someone makes, not a secret someone holds.
+
+    A state file naming a node key the Head no longer knows (it ran `cuttle arm remove`, or rebuilt
+    its database) makes `tailscale up` hang forever: no auth URL, no error, nothing to diagnose. So
+    we wipe unless the daemon is demonstrably already joined to *this* coordinator — in which case
+    there is nothing to do, and re-running setup costs the operator no second approval.
+
+    `re_enroll` forces the wipe, for the cases the check can't see: a corrupt state file, or a Head
+    that was rebuilt but still answers at the same URL.
     """
     install_tailscale()
     start_ccc_tailscaled(write_unit)
+
+    if not re_enroll and joined_to(coordinator):
+        ip = tailscale_ip()
+        print(f"cuttle: already on the mesh at {ip} via {coordinator} — skipping join")
+        return ip
+
+    # Unconditional: `rm -f` of an absent state file is a no-op, and testing for it would depend on
+    # the root-owned state dir staying world-readable.
+    why = "--re-enroll" if re_enroll else "not joined to this coordinator"
+    print(f"cuttle: starting from a clean mesh identity — {why}")
+    _wipe_local_state()
+    start_ccc_tailscaled(write_unit)
+
     print("\ncuttle: requesting mesh admission — send the auth-id below to the Head operator,\n"
           f"        who runs:  cuttle arm approve {node_name} --auth-id <id>\n")
     join_mesh(coordinator, node_name)
@@ -316,7 +389,8 @@ def forget_state() -> None:
     plain-HTTP Headscale. A daemon with no prior control URL registers over HTTP:8080 happily.
 
     Deletes the Headscale node too, so the address it held is released and we reclaim it on re-join
-    (verified: Headscale frees the IP on node delete).
+    (verified: Headscale frees the IP on node delete). Head-only: an Arm has no `headscale` binary,
+    and uses _wipe_local_state() alone — the Head reaps its stale node in `cuttle arm approve`.
     """
     run(["systemctl", "stop", config.CCC_TS_SERVICE], sudo=True, check=False)
     delete_node(hostname())  # before the state wipe: the node is named after this host
