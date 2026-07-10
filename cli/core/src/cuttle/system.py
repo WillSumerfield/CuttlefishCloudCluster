@@ -1,6 +1,7 @@
 """Shell + host-detection helpers."""
 
 import platform
+import shutil
 import socket
 import subprocess
 import sys
@@ -84,3 +85,47 @@ def os_release() -> dict[str, str]:
 
 def is_native_linux_x86() -> bool:
     return platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
+# --- firewall ---------------------------------------------------------------
+
+def ufw_active() -> bool:
+    """True only if ufw is installed AND enforcing. Absent/inactive is not a problem to solve.
+
+    Raises if `ufw status` itself fails (e.g. sudo unavailable): an unreadable firewall must never
+    be reported as an absent one, or setup silently skips the mesh rule and says it wasn't needed.
+    """
+    if not shutil.which("ufw"):
+        return False
+    r = run(["ufw", "status"], sudo=True, capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"`ufw status` failed (rc={r.returncode}) — cannot tell if it is active")
+    return r.stdout.strip().startswith("Status: active")
+
+
+def allow_mesh_iface(iface: str) -> None:
+    """Open inbound on the mesh interface — required on BOTH roles, not just the Head: slurmctld
+    dials each slurmd on 6818, so a firewalled Arm registers and then goes DOWN minutes later.
+
+    Interface-scoped, not port-scoped: srun allocates ephemeral ports for task I/O, and multi-node
+    jobs need Arm<->Arm traffic. Grants the mesh nothing it didn't have — mesh membership already
+    means full cluster trust (docs/TODO.md).
+
+    Only if ufw is already enforcing. *Enabling* a default-deny firewall on a donor's box is exactly
+    the host-global mutation the isolated tailscaled exists to avoid.
+    """
+    if not ufw_active():
+        print(f"ufw inactive or absent — leaving the host firewall alone (nothing blocks {iface})")
+        return
+    run(["ufw", "allow", "in", "on", iface, "comment", "ccc mesh (slurm + head api)"], sudo=True)
+
+
+def deny_mesh_iface(iface: str) -> None:
+    """Reverse of allow_mesh_iface. Same rule spec, so ufw matches and removes the one we added.
+
+    Doesn't consult ufw_active(): teardown must tolerate partial state, and a `delete` of a rule that
+    was never added is a harmless no-op.
+    """
+    if not shutil.which("ufw"):
+        return
+    run(["ufw", "delete", "allow", "in", "on", iface], sudo=True, check=False)

@@ -23,13 +23,15 @@ import base64
 import json
 import os
 import re
+import socket
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 MUNGE_KEY = Path("/etc/munge/munge.key")
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
+SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
 
 # Mirrors cuttle.config; re-validated root-side by `cuttle arm admit` before reaching gres.conf.
 NODE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$")
@@ -55,6 +57,26 @@ def _save(reg: dict) -> None:
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}
+
+
+@app.get("/probe")
+def probe(request: Request) -> dict:
+    """Can the Head open a connection back to the caller's slurmd? Only the Head can answer this,
+    and an Arm cannot test its own inbound reachability — hence an endpoint.
+
+    Takes **no address**. We dial the source address of this very request, which a caller cannot
+    forge (a forged source gets no TCP handshake, so there is no request to serve). An endpoint that
+    accepted a target would turn this mesh-privileged host into a connect-anywhere probe.
+
+    Answers the question `POST /enroll` cannot: enrollment proves Arm->Head, while slurmctld needs
+    Head->Arm. A node that registers but is unreachable goes DOWN minutes later, far from the cause.
+    """
+    peer = request.client.host
+    try:
+        with socket.create_connection((peer, SLURMD_PORT), timeout=3):
+            return {"reachable": True, "peer": peer, "port": SLURMD_PORT}
+    except OSError as e:
+        return {"reachable": False, "peer": peer, "port": SLURMD_PORT, "error": str(e)}
 
 
 @app.get("/arms/{name}")

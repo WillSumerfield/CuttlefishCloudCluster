@@ -7,7 +7,7 @@ Default: full uninstall (daemons + packages + repos + Slurm config/state), but k
 
 import shutil
 
-from . import config
+from . import config, system
 from .system import run
 
 _SERVICES = [config.HEAD_API_SERVICE, "munge", "slurmctld", "slurmd"]
@@ -26,6 +26,9 @@ def remove_mesh(keep_packages: bool = False) -> None:
     """Unwind the CCC mesh layer. Only ever touches CCC's OWN isolated tailscaled instance +
     Headscale — never the default/personal tailscaled or the shared `tailscale` package (the box is
     administered over its personal tailnet). Headscale is CCC-only, so it's safe to purge."""
+    # Drop the rule setup added, before ccc0 disappears. Inert afterwards, but setup's mutations are
+    # reversed exactly, the same reason purge_packages works off a recorded manifest.
+    system.deny_mesh_iface(config.CCC_TS_TUN)
     # CCC's isolated tailscaled instance (targeted by socket) — personal daemon left running.
     run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", "down"], sudo=True, check=False)
     run(["systemctl", "disable", "--now", config.CCC_TS_SERVICE], sudo=True, check=False)

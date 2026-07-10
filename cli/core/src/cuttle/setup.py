@@ -144,6 +144,7 @@ def setup_head(address: str | None = None) -> None:
     # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
     # rather than dying at `add-apt-repository`.
     mesh_ip = mesh_up_head(address)
+    system.allow_mesh_iface(config.CCC_TS_TUN)
     add_repos()
     install_packages()
     write_slurm_config(mesh_ip)
@@ -183,6 +184,7 @@ def setup_arm(invite: str) -> None:
     t = enroll.decode_invite(invite)
     mesh_ip = mesh.up_arm(t["coordinator"], node_name, _write_root_file)  # blocks on approval
     print(f"cuttle: Arm on mesh as {node_name} — mesh IP {mesh_ip}")
+    system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
 
     add_repos()
     install_packages(config.SLURMD_PKG)
@@ -212,5 +214,8 @@ def setup_arm(invite: str) -> None:
     _write_root_file(config.SLURMD_DEFAULTS, enroll.slurmd_defaults(node_name, info["ctld_addr"]))
     run(["systemctl", "enable", "slurmd"], sudo=True)
     run(["systemctl", "restart", "slurmd"], sudo=True)
+
+    # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
+    enroll.check_head_can_reach_us(t["mesh_ip"])
 
     print(f"\ncuttle: Arm '{node_name}' enrolled. Check `sinfo` on the Head.")

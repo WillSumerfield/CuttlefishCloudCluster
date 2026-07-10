@@ -38,6 +38,8 @@ SLURM_STATE_DIR = Path("/var/spool/slurmctld")
 SLURMD_SPOOL_DIR = Path("/var/spool/slurmd")
 SLURM_LOG_DIR = Path("/var/log/slurm")
 SLURMCTLD_PORT = 6817
+# slurmctld dials every slurmd here. Inbound on each Arm — see system.allow_mesh_iface.
+SLURMD_PORT = 6818
 # Ubuntu's slurmd.service does `ExecStart=/usr/sbin/slurmd --systemd $SLURMD_OPTIONS` with
 # `EnvironmentFile=-/etc/default/slurmd` — the supported hook for an Arm's `-Z --conf-server` flags.
 SLURMD_DEFAULTS = Path("/etc/default/slurmd")

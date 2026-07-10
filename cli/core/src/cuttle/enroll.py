@@ -83,6 +83,31 @@ def wait_for_admit(head_mesh_ip: str, node_name: str, timeout_s: int = 900) -> N
     raise TimeoutError(f"not admitted within {timeout_s}s — run `cuttle arm admit {node_name}`")
 
 
+def check_head_can_reach_us(head_mesh_ip: str) -> None:
+    """Ask the Head to connect back to our slurmd. Run *after* slurmd starts, or nothing listens.
+
+    `fetch_enrollment` proved Arm->Head. This proves Head->Arm, the direction slurmctld needs and the
+    only one nothing else exercises: a node that registers but can't be reached simply drops to DOWN
+    a few minutes later, with no hint that a firewall did it.
+
+    Deliberately reports the observation, not a diagnosis — a firewall is only one of the causes.
+    """
+    with urllib.request.urlopen(f"{headapi.url(head_mesh_ip)}/probe", timeout=20) as r:
+        res = json.load(r)
+    if res["reachable"]:
+        print(f"cuttle: Head can reach this Arm at {res['peer']}:{res['port']} — good")
+        return
+    raise RuntimeError(
+        f"the Head cannot reach this Arm at {res['peer']}:{res['port']} ({res.get('error')}).\n"
+        f"  slurmd registered, but slurmctld will mark this node DOWN within minutes.\n"
+        f"  The mesh itself is fine — this Arm just reached the Head API to run the check.\n"
+        f"  Common causes:\n"
+        f"    - a firewall other than ufw (firewalld, nftables, an endpoint agent)\n"
+        f"    - a ufw deny rule ahead of ours (`sudo ufw status numbered`)\n"
+        f"    - slurmd died after starting (`systemctl status slurmd`)"
+    )
+
+
 def write_munge_key(b64_key: str) -> None:
     """The cluster-wide shared secret. 0400 munge:munge, same as the Head's."""
     with tempfile.NamedTemporaryFile("wb", suffix=".ccc", delete=False) as f:
