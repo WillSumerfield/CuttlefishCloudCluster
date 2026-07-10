@@ -87,6 +87,13 @@ def is_native_linux_x86() -> bool:
     return platform.system() == "Linux" and platform.machine() == "x86_64"
 
 
+def is_wsl() -> bool:
+    """WSL2 satisfies is_native_linux_x86() completely, so that check cannot see it. The kernel
+    release is the giveaway: `...-microsoft-standard-WSL2`."""
+    with open("/proc/sys/kernel/osrelease") as f:
+        return "microsoft" in f.read().lower()
+
+
 # --- firewall ---------------------------------------------------------------
 
 def ufw_active() -> bool:

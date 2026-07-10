@@ -61,6 +61,17 @@ ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {gpu_device, mesh_ip, admitted}
 # An Arm's GPU device node. Native Linux exposes /dev/nvidiaN; WSL2 exposes /dev/dxg with CUDA
 # shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
 GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
+
+# --- WSL2 Arms (see setup.configure_apptainer_wsl) ---
+# `apptainer exec --nv` alone yields torch.cuda.is_available() == False on WSL. Measured: --nv finds
+# libcuda.so.1 (ldconfig knows /usr/lib/wsl/lib) and injects it, but WSL's libcuda is a shim that
+# loads libdxcore.so, which is absent from nvliblist AND enumerates GPUs from /usr/lib/wsl/DRIVERS —
+# a directory of Windows driver files no library list can supply. cuInit then returns 100
+# (CUDA_ERROR_NO_DEVICE). Binding the parent /usr/lib/wsl + listing libdxcore.so gives cuInit 0.
+APPTAINER_CONF = Path("/etc/apptainer/apptainer.conf")
+APPTAINER_NVLIBLIST = Path("/etc/apptainer/nvliblist.conf")
+WSL_LIB_ROOT = "/usr/lib/wsl"  # holds both lib/ and drivers/ — bind the parent, not lib/
+WSL_EXTRA_NVLIB = "libdxcore.so"
 NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 
 # --- mesh (Phase 1 substrate: self-hosted Headscale coordinator + Tailscale client) ---

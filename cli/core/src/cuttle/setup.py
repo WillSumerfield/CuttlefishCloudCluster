@@ -24,13 +24,36 @@ def _write_root_file(path: Path, content: str, mode: str = "644") -> None:
     run(["install", "-D", "-m", mode, tmp, str(path)], sudo=True)
 
 
-def preflight() -> None:
+def preflight(role: str) -> None:
+    """`role` is "head" or "arm". WSL2 is a proven Arm platform (mesh, slurmd, and CUDA inside a Pod
+    all verified on an RTX 4090) but an unproven Head: headscale and slurmctld have never run there,
+    and a Head is expected to stay up."""
     rel = system.os_release()
     print(f"host={system.hostname()} os={rel.get('PRETTY_NAME')} "
           f"cpus={system.cpu_count()} mem={system.real_memory_mb()}MB")
-    assert system.is_native_linux_x86(), "MVP supports native Linux x86_64 only"
+    assert system.is_native_linux_x86(), "MVP supports Linux x86_64 only"
     assert rel.get("VERSION_ID") == "24.04", "MVP pinned to Ubuntu 24.04"
+    if system.is_wsl():
+        assert role == "arm", "WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven)"
+        print("cuttle: WSL2 detected. Supported as an Arm, with one permanent limit: /dev/dxg is a\n"
+              "        single node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here.")
     run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"])
+
+
+def configure_apptainer_wsl() -> None:
+    """Make `apptainer exec --nv` work on a WSL Arm, so nothing above the node ever learns what WSL
+    is. Contains the platform quirk at the platform boundary: `cuttle run`, Tide Pools, and any
+    future API-launched job all keep emitting one portable exec line.
+
+    Two additive lines (see config.WSL_LIB_ROOT for the measurements). Idempotent: `setup --arm`
+    re-runs, and a duplicate `bind path` would be applied twice.
+    """
+    sh(f"grep -qxF 'bind path = {config.WSL_LIB_ROOT}' {config.APPTAINER_CONF} || "
+       f"echo 'bind path = {config.WSL_LIB_ROOT}' >> {config.APPTAINER_CONF}", sudo=True)
+    sh(f"grep -qxF '{config.WSL_EXTRA_NVLIB}' {config.APPTAINER_NVLIBLIST} || "
+       f"echo '{config.WSL_EXTRA_NVLIB}' >> {config.APPTAINER_NVLIBLIST}", sudo=True)
+    print(f"cuttle: WSL Arm — Apptainer now binds {config.WSL_LIB_ROOT} and injects "
+          f"{config.WSL_EXTRA_NVLIB}; `--nv` behaves as on native Linux")
 
 
 def add_repos() -> None:
@@ -139,7 +162,7 @@ def mesh_up_head(address: str | None) -> str:
 def setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
-    preflight()
+    preflight("head")
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
     # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
     # rather than dying at `add-apt-repository`.
@@ -181,7 +204,7 @@ def setup_arm(invite: str, re_enroll: bool = False) -> None:
     make_user_dirs()
     node_name = prompt_node_name()
     settings.prompt_wandb()
-    preflight()
+    preflight("arm")
 
     t = enroll.decode_invite(invite)
     # blocks on approval unless already joined to this coordinator
@@ -191,6 +214,8 @@ def setup_arm(invite: str, re_enroll: bool = False) -> None:
 
     add_repos()
     install_packages(config.SLURMD_PKG)
+    if system.is_wsl():
+        configure_apptainer_wsl()  # after apptainer is installed, before base.sif is built
 
     # Now on the mesh: the Head API is routable, so the munge key can be fetched. This POST also
     # records our GPU device — /dev/nvidia0 natively, /dev/dxg under WSL2 — which the Head needs to
