@@ -183,16 +183,15 @@ So the check passes during `cuttle setup --arm` only because a human is running 
 shell. It would fail from any non-interactive context, and it isn't really verifying the GPU.
 Fix: fall back to `/usr/lib/wsl/lib/nvidia-smi` when `is_wsl()` and the binary isn't on `PATH`.
 
-## Arm re-enrollment needs a state wipe
+## Arm re-enrollment reads the coordinator URL out of a `debug` command
 
-`setup_arm` assumes a virgin `tailscaled-ccc`. If the Head ever deleted the Arm's node (`cuttle arm
-remove`, a prefix change, a rebuilt Headscale DB), the Arm's state file still holds a node key
-Headscale no longer knows; `tailscale up` then blocks forever with no auth URL and no error. The
-Head already handles the mirror-image case in `mesh.forget_state()`.
-
-Give the Arm the same: detect a rejected/unknown node key (or just always `--reset` from a wiped
-state on an explicit `cuttle setup --arm --re-enroll`) instead of requiring a hand-run
-`rm /var/lib/tailscale-ccc/tailscaled.state`. Ties into the re-enrollment credential item above.
+`mesh.joined_to()` decides whether to wipe an Arm's mesh identity by comparing the daemon's
+`ControlURL` against the invite's coordinator. That field is exposed only by `tailscale debug prefs`
+— `status --json` has no `ControlURL` (checked on 1.98.8). `debug` is explicitly an unstable
+interface, so a Tailscale upgrade may change or drop it. If it ever returns nothing parseable,
+`joined_to()` reports `False` and every `setup --arm` wipes and asks for a fresh approval: annoying,
+not dangerous. The safe fallback if that day comes is to parse the state file, or to accept the
+extra approval.
 
 ## `preflight()`'s native-Linux assert doesn't detect WSL
 
