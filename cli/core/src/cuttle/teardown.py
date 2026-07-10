@@ -10,7 +10,7 @@ import shutil
 from . import config, system
 from .system import run
 
-_SERVICES = [config.HEAD_API_SERVICE, "munge", "slurmctld", "slurmd"]
+_SERVICES = [config.HEAD_API_SERVICE, config.RSYNCD_SERVICE, "munge", "slurmctld", "slurmd"]
 _PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
 _NVIDIA_REPO_FILES = [
     "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
@@ -47,6 +47,13 @@ def remove_mesh(keep_packages: bool = False) -> None:
 def remove_head_api() -> None:
     run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
+def remove_rsyncd() -> None:
+    """Stage-in/out daemon (Head-only, CCC-only — safe to remove wholesale). The service was already
+    stopped/disabled by stop_daemons; drop its unit + config."""
+    run(["rm", "-f", str(config.RSYNCD_UNIT), str(config.RSYNCD_CONF)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -88,6 +95,7 @@ def remove_user_dirs() -> None:
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
     remove_head_api()
+    remove_rsyncd()
     remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()
     if not keep_packages:

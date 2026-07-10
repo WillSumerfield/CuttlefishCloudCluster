@@ -9,6 +9,7 @@ mesh, and registers as a *dynamic* Slurm node (`slurmd -Z`) fetching its config 
 Drives apt+sudo directly. Intended path only — no fallbacks (test box; failures decided live).
 """
 
+import getpass
 import tempfile
 from pathlib import Path
 
@@ -112,6 +113,20 @@ def start_daemons() -> None:
     run(["systemctl", "restart", "munge", "slurmctld", "slurmd"], sudo=True)
 
 
+def install_rsyncd(mesh_ip: str) -> None:
+    """Stage-in/out daemon, bound to the Head's mesh address only. Idle until a remote Arm uses it;
+    started on every Head so admitting the first Arm needs no reconfigure. Runs as root (873 is
+    privileged) but serves each module as the Head user, so files stay owned by them."""
+    user = getpass.getuser()
+    config.SPAWNS_DIR.mkdir(parents=True, exist_ok=True)  # the [spawns] module root must exist
+    _write_root_file(config.RSYNCD_CONF,
+                     templates.render_rsyncd_conf(mesh_ip, user, str(Path.home())))
+    _write_root_file(config.RSYNCD_UNIT, templates.render_rsyncd_unit())
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", config.RSYNCD_SERVICE], sudo=True)
+    run(["systemctl", "restart", config.RSYNCD_SERVICE], sudo=True)
+
+
 def build_base_sif() -> None:
     config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     if config.BASE_SIF.exists():
@@ -172,6 +187,7 @@ def setup_head(address: str | None = None) -> None:
     install_packages()
     write_slurm_config(mesh_ip)
     start_daemons()
+    install_rsyncd(mesh_ip)  # stage-in/out, mesh-bound; idle until a remote Arm submits
     make_registry_dir()
     headapi.install(_write_root_file, mesh_ip)  # after munge: the API serves munge.key
     build_base_sif()

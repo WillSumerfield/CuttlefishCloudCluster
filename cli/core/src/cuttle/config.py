@@ -121,10 +121,28 @@ CCC_TS_PORT = 41642  # default tailscaled uses 41641 — keep them distinct
 MESH_V4_PREFIX = "100.99.0.0/16"
 MESH_V6_PREFIX = "fd7a:115c:a1e0:cc::/64"
 
+# --- stage-in/out (Phase 1 ④): rsync daemon on the Head, bound to the mesh ---
+# A Spawn on a remote Arm has none of the submitter's files. The Head runs an rsync daemon on its
+# mesh address ONLY (never 0.0.0.0 / the personal tailnet); the job pulls the project in and pushes
+# results back. Auth == being on the mesh (hosts allow = the mesh prefixes), same model as /enroll.
+# Two modules: [project] read-only at the Head user's $HOME (a job can't corrupt the source tree),
+# [spawns] read-write at $HOME/.ccc/spawns (the one place a job may write home). rsync 873 is
+# privileged, so the daemon runs as root and each module drops to the Head user via uid=/gid=.
+RSYNCD_CONF = Path("/etc/ccc-rsyncd.conf")
+RSYNCD_SERVICE = "ccc-rsyncd"
+RSYNCD_UNIT = Path("/etc/systemd/system/ccc-rsyncd.service")
+RSYNCD_PORT = 873
+RSYNC_MODULE_PROJECT = "project"  # ro, rooted at the Head user's $HOME (projects must live here)
+RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at $HOME/.ccc/spawns — stage-out target
+
 # --- CCC user artifacts ---
 CCC_HOME = Path.home() / ".ccc"
 IMAGES_DIR = CCC_HOME / "images"
 SPAWNS_DIR = CCC_HOME / "spawns"
+# Ephemeral per-Spawn staging on a remote Arm (node-local, resolved against the NODE's $HOME). One
+# job = one dir, wiped on exit (trap). No persistent cache — leaving multi-GB dirs on donor boxes is
+# bad tenancy, so each Spawn copies fresh. Path is relative to the node home; see spawns.JOB_SCRIPT.
+SCRATCH_REL = ".ccc/scratch"
 CONFIG_DIR = CCC_HOME / "config"
 BASE_SIF = IMAGES_DIR / "base.sif"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"

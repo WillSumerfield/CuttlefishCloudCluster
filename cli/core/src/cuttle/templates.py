@@ -60,6 +60,58 @@ From: {image}
 """
 
 
+# rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the
+# LAN or the personal tailnet. `hosts allow` = the mesh prefixes: being on the mesh IS the authz,
+# same as /enroll. Runs as root (873 is privileged) but each module drops to the Head user, so files
+# are read/written as them. `use chroot = no`: no root chroot into $HOME (simpler; the mesh is the
+# boundary). [project] read-only guarantees a job can never write back into the source tree.
+RSYNCD_CONF_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+address = {mesh_ip}
+port = {port}
+use chroot = no
+uid = {user}
+gid = {group}
+read only = true
+[{project_mod}]
+    path = {home}
+    read only = true
+    hosts allow = {v4} {v6}
+[{spawns_mod}]
+    path = {spawns_dir}
+    read only = false
+    hosts allow = {v4} {v6}
+"""
+
+RSYNCD_UNIT_TMPL = """\
+[Unit]
+Description=CCC stage-in/out rsync daemon (mesh-bound)
+# ccc0 must exist before we can bind the mesh address.
+After=network-online.target {ts_service}.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/rsync --daemon --no-detach --config={conf}
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def render_rsyncd_conf(mesh_ip: str, user: str, home: str) -> str:
+    return RSYNCD_CONF_TMPL.format(
+        mesh_ip=mesh_ip, port=config.RSYNCD_PORT, user=user, group=user, home=home,
+        project_mod=config.RSYNC_MODULE_PROJECT, spawns_mod=config.RSYNC_MODULE_SPAWNS,
+        spawns_dir=config.SPAWNS_DIR, v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
+    )
+
+
+def render_rsyncd_unit() -> str:
+    return RSYNCD_UNIT_TMPL.format(ts_service=config.CCC_TS_SERVICE, conf=config.RSYNCD_CONF)
+
+
 def render_base_def() -> str:
     return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER, wandb=config.WANDB_PKG)
 
