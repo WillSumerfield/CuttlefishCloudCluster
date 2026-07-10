@@ -156,24 +156,32 @@ No known fix from our side — tailscaled has no flag to suppress the quad100 ro
 ever matters: a routing rule pinning quad100 to the personal tun, or accepting that a CCC box can't
 use personal MagicDNS.
 
-## `cuttle setup` should own the `ccc0` firewall rule
+## Firewalls other than ufw are invisible to us
 
-The Head's `ufw` drops inbound on `ccc0`, so an Arm can join the mesh, get an address, ping nothing,
-and fail `/enroll` with a bare timeout. Cost us an hour. The mesh interface must be open for the
-cluster to work at all:
-
-    sudo ufw allow in on ccc0 comment 'ccc mesh (slurm + head api)'
-
-Interface-scoped, not port-scoped: `srun` allocates ephemeral ports for task I/O, and multi-node
-jobs need Arm↔Arm traffic. This grants the mesh nothing it didn't already have — `docs/TODO.md`
-already states mesh membership means full cluster trust.
-
-Make `setup_head` add it **only if ufw is already active**. Enabling a default-deny firewall on a
-donor's box is exactly the host-global mutation the tailscaled isolation exists to avoid. If ufw is
-inactive, do nothing and say so.
+`system.allow_mesh_iface()` opens `ccc0` on both roles, but only when **ufw** is already enforcing.
+A donor running firewalld, bare nftables, or an endpoint agent gets no rule and no warning. The
+`GET /probe` check at the end of `setup_arm` catches the *symptom* (the Head can't reach our slurmd)
+regardless of cause, which is why detecting every firewall was judged not worth it. Revisit if a
+real donor ever trips it.
 
 Not in scope: the coordinator's own rule (`allow in on tailscale0 to any port 8080`) — that depends
 on how the coordinator gets exposed, which is the reachability item above.
+
+## `cuttle teardown --arm` does not exist
+
+`teardown_local` is the only teardown. A donor who wants to leave has no supported path: stop and
+disable slurmd, drop `/etc/default/slurmd`, leave the mesh (`tailscale down` + wipe CCC state),
+remove the `ccc0` ufw rule, and undo the WSL Apptainer config if it was applied. The Head half
+(`cuttle arm remove`) already exists and is what evicts the node from the mesh and Slurm — an Arm
+tearing itself down cannot do that for itself, so the two commands are complements, not substitutes.
+
+## `preflight()`'s GPU check passes on WSL for the wrong reason
+
+`preflight()` runs `nvidia-smi`. On WSL that binary lives in `/usr/lib/wsl/lib`, which is **not** on
+`PATH` except in an interactive login shell (measured: `command not found` inside an `srun` job).
+So the check passes during `cuttle setup --arm` only because a human is running it from a login
+shell. It would fail from any non-interactive context, and it isn't really verifying the GPU.
+Fix: fall back to `/usr/lib/wsl/lib/nvidia-smi` when `is_wsl()` and the binary isn't on `PATH`.
 
 ## Arm re-enrollment needs a state wipe
 
