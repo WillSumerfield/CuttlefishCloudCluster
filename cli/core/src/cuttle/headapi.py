@@ -60,3 +60,43 @@ def install(write_unit, mesh_ip: str) -> None:
 
 def url(mesh_ip: str) -> str:
     return f"http://{mesh_ip}:{config.HEAD_API_PORT}"
+
+
+# --- dashboard service (⑥): read API + SPA, bound to LAN + mesh --------------
+# A second unit off the SAME venv (main app = enroll, dashboard app = read+SPA). Runs as `nobody`:
+# it holds no secrets, only shells out to read-only squeue/sinfo and serves static files. Binds
+# 0.0.0.0 so a LAN box reaches it too (the enroll API stays mesh-only). See config.DASHBOARD_*.
+
+def _dashboard_unit() -> str:
+    return f"""\
+[Unit]
+Description=CCC Dashboard (read API + SPA; bound to LAN + mesh)
+# squeue/sinfo need munge to authenticate and slurmctld to answer; until they're up we just 503.
+After=munge.service slurmctld.service
+Wants=slurmctld.service
+
+[Service]
+User={config.DASHBOARD_USER}
+Environment=CCC_PARTITION={config.PARTITION}
+Environment=CCC_WEB_DIR={config.DASHBOARD_WEB_DIR}
+ExecStart={config.HEAD_API_VENV}/bin/uvicorn ccc_head_api.dashboard:app \
+--host 0.0.0.0 --port {config.DASHBOARD_PORT}
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def install_dashboard(write_unit) -> None:
+    """Install + start the dashboard unit. Assumes `install()` already built the shared venv and that
+    the SPA has been staged into config.DASHBOARD_WEB_DIR (setup.build_spa)."""
+    write_unit(config.DASHBOARD_UNIT, _dashboard_unit(), "644")
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", config.DASHBOARD_SERVICE], sudo=True)
+    run(["systemctl", "restart", config.DASHBOARD_SERVICE], sudo=True)
+
+
+def dashboard_url(host: str) -> str:
+    return f"http://{host}:{config.DASHBOARD_PORT}"

@@ -136,3 +136,21 @@ def deny_mesh_iface(iface: str) -> None:
     if not shutil.which("ufw"):
         return
     run(["ufw", "delete", "allow", "in", "on", iface], sudo=True, check=False)
+
+
+def allow_tcp_port(port: int, comment: str) -> None:
+    """Open one inbound TCP port on all interfaces — for the dashboard, which unlike Slurm/the mesh
+    must be reachable from the LAN, not just `ccc0`. Port-scoped (not interface-scoped) precisely
+    because the point is to admit the LAN. Only if ufw is already enforcing — same reason as
+    allow_mesh_iface: setup never *enables* a firewall on a box that had none."""
+    if not ufw_active():
+        print(f"ufw inactive or absent — leaving the host firewall alone (nothing blocks :{port})")
+        return
+    run(["ufw", "allow", f"{port}/tcp", "comment", comment], sudo=True)
+
+
+def deny_tcp_port(port: int) -> None:
+    """Reverse of allow_tcp_port. Tolerant of partial state (teardown), like deny_mesh_iface."""
+    if not shutil.which("ufw"):
+        return
+    run(["ufw", "delete", "allow", f"{port}/tcp"], sudo=True, check=False)

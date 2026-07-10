@@ -137,6 +137,21 @@ def build_base_sif() -> None:
     run(["apptainer", "build", str(config.BASE_SIF), str(def_file)])
 
 
+def build_spa() -> None:
+    """Build the read-only dashboard SPA and stage it where the (nobody) dashboard service reads it.
+    Node is needed only on the Head; a donor Arm never builds this. Staged OUTSIDE the user's 0750
+    home — `nobody` can't traverse there — into a world-readable /opt path."""
+    web_src = headapi.REPO_ROOT / "head" / "web"
+    run(["npm", "ci"], cwd=str(web_src))
+    run(["npm", "run", "build"], cwd=str(web_src))
+    run(["rm", "-rf", str(config.DASHBOARD_WEB_DIR)], sudo=True)
+    run(["install", "-d", str(config.DASHBOARD_WEB_DIR.parent)], sudo=True)
+    run(["cp", "-r", str(web_src / "dist"), str(config.DASHBOARD_WEB_DIR)], sudo=True)
+    run(["chmod", "-R", "a+rX", str(config.DASHBOARD_WEB_DIR.parent)], sudo=True)
+    system.allow_tcp_port(config.DASHBOARD_PORT, "ccc dashboard (LAN+mesh)")
+    print(f"cuttle: dashboard SPA built → {config.DASHBOARD_WEB_DIR}")
+
+
 def make_user_dirs() -> None:
     for d in (config.IMAGES_DIR, config.SPAWNS_DIR, config.CONFIG_DIR):
         d.mkdir(parents=True, exist_ok=True)
@@ -189,11 +204,16 @@ def setup_head(address: str | None = None) -> None:
     start_daemons()
     install_rsyncd(mesh_ip)  # stage-in/out, mesh-bound; idle until a remote Arm submits
     make_registry_dir()
-    headapi.install(_write_root_file, mesh_ip)  # after munge: the API serves munge.key
+    headapi.install(_write_root_file, mesh_ip)  # after munge: the enroll API serves munge.key
+    build_spa()                                 # build + stage the dashboard SPA (Node, Head-only)
+    headapi.install_dashboard(_write_root_file)  # read API + SPA on LAN+mesh; needs the venv + SPA
     build_base_sif()
     verify()
+    lan = system.primary_ip()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
-    print(f"cuttle: mint an Arm's join token with `cuttle token` (coordinator {mesh_ip})")
+    print(f"cuttle: invite an Arm with `cuttle invite` (coordinator {mesh_ip})")
+    print(f"cuttle: dashboard at {headapi.dashboard_url(lan)} (LAN) / "
+          f"{headapi.dashboard_url(mesh_ip)} (mesh)")
 
 
 # `--local` is just the single-box Head (Head + its co-located Arm).

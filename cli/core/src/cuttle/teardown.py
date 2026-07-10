@@ -10,7 +10,8 @@ import shutil
 from . import config, system
 from .system import run
 
-_SERVICES = [config.HEAD_API_SERVICE, config.RSYNCD_SERVICE, "munge", "slurmctld", "slurmd"]
+_SERVICES = [config.HEAD_API_SERVICE, config.DASHBOARD_SERVICE, config.RSYNCD_SERVICE,
+             "munge", "slurmctld", "slurmd"]
 _ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / head-api / rsyncd / headscale
 _PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
 _NVIDIA_REPO_FILES = [
@@ -52,6 +53,15 @@ def remove_mesh(keep_packages: bool = False) -> None:
 def remove_head_api() -> None:
     run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
+def remove_dashboard() -> None:
+    """Dashboard service (Head-only, CCC-only). Drop its ufw port rule, unit, and the staged SPA.
+    Already stopped/disabled by stop_daemons."""
+    system.deny_tcp_port(config.DASHBOARD_PORT)
+    run(["rm", "-f", str(config.DASHBOARD_UNIT)], sudo=True, check=False)
+    run(["rm", "-rf", str(config.DASHBOARD_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/dashboard
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -147,6 +157,7 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
     remove_head_api()
+    remove_dashboard()
     remove_rsyncd()
     remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()

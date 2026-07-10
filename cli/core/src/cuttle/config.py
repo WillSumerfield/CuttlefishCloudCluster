@@ -62,6 +62,18 @@ ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {gpu_device, mesh_ip, admitted}
 # shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
 GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
 
+# --- Dashboard service (Phase 1 ⑥): read API + SPA, bound to LAN+mesh ---
+# Split from the enroll API on purpose: /enroll hands out the munge key and MUST stay mesh-only, but
+# the dashboard (read-only node/Spawn views + static SPA, no secrets) must reach the LAN too. So it
+# is its own service — unprivileged `nobody` (just runs read-only squeue/sinfo + serves files),
+# bound to 0.0.0.0. Reuses the Head API venv (same package, different app object). A remote Arm sees
+# it over the mesh; a LAN box sees it too (needs a ufw port rule — see system.allow_tcp_port).
+DASHBOARD_PORT = 8082  # 8080 = headscale, 8081 = enroll API
+DASHBOARD_SERVICE = "ccc-dashboard"
+DASHBOARD_UNIT = Path("/etc/systemd/system/ccc-dashboard.service")
+DASHBOARD_USER = "nobody"
+DASHBOARD_WEB_DIR = Path("/opt/ccc/dashboard/web")  # built SPA, world-readable (served as nobody)
+
 # --- WSL2 Arms (see setup.configure_apptainer_wsl) ---
 # `apptainer exec --nv` alone yields torch.cuda.is_available() == False on WSL. Measured: --nv finds
 # libcuda.so.1 (ldconfig knows /usr/lib/wsl/lib) and injects it, but WSL's libcuda is a shim that
