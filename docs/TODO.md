@@ -136,7 +136,9 @@ coordinator *availability*, though not for Arm membership. Decide before any don
   nothing in `cuttle setup` puts that firewall there or checks it (see the ufw item below).
 - **Headscale ACLs**: Arms should reach the Head's Slurm ports and nothing else; Arm→Arm traffic
   should be denied by default. Currently the mesh is flat.
-- **slurmrestd JWT** (Phase 1 ⑤): key storage/rotation on the Head.
+- **slurmrestd JWT** (deferred from ⑤ to **Phase 3**): ⑤ reads Slurm by shelling out to
+  `squeue`/`sinfo --json` (identical data model, no daemon/JWT). slurmrestd lands with job submission
+  in Phase 3, where its JWT key storage/rotation gets done properly rather than as a stopgap here.
 
 ## Two tailscaled daemons both claim MagicDNS's `100.100.100.100`
 
