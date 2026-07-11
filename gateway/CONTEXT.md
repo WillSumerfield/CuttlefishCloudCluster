@@ -7,6 +7,8 @@ The authenticated network entryway and cluster fabric.
 
 - **Mesh** — WireGuard mesh (Tailscale / self-hosted Headscale) putting every node on one flat
   encrypted network with NAT traversal, so remote Arms reach the Head like a LAN.
-- **SSO** — Imperial OIDC/SSO gating node enrolment and human access (auth layer on top of the mesh).
+- **Sign-on** — built-in username/password auth on the Head (own user table, argon2 + Sessions) that
+  gates human access + job submission. *Not* Imperial SSO or any external IdP. Distinct from the
+  **Mesh**, which authorizes machines, not people (see root glossary: User, Session).
 
 Provisioned via `setup/`.

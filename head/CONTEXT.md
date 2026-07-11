@@ -12,6 +12,8 @@ The cluster control plane. One logical role, Linux-only. Owns:
 - **Dashboard** — read-only web view of live node + Spawn state (the enrollment-free read API + SPA),
   served on the CCC mesh **and** the LAN. A separate service from the Enroll API, since it holds no
   secret and must reach the LAN.
+- **Accounts** — the Head is the cluster's identity store: the **User** table (argon2 hashes) +
+  **Sessions** live here, authenticating logins and authorizing job submission. *(Auth phase.)*
 - **Accounting** — `slurmdbd` + MariaDB: job accounting and FairShare (drives the Karma sync). *(Economy phase.)*
 - **Prolog / Epilog** — Slurm job hooks used for setup, teardown, and webhook fires.
 

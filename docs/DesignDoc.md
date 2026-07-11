@@ -24,12 +24,14 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
 *   **Tech Stack:** Slurm Preemption Daemon configured with `PreemptMode=REQUEUE` or `SUSPEND`.
 
 ### The Gateway (Secure Access)
-*   **Purpose:** Zero-trust, authenticated network entryway protecting the cluster from hackers and enforcing Imperial College Single Sign-On (SSO) or Multi-Factor Authentication (MFA). Required for all usage.
+*   **Purpose:** Zero-trust, authenticated network entryway protecting the cluster from hackers and enforcing **built-in Head authentication** (admin-provisioned username/password; MFA possible later). Required for all human usage.
 *   **Tech Stack (locked):** **WireGuard mesh** (Tailscale, or self-hosted **Headscale**) as the
     cluster fabric: every node — Head and all Arms, including remote/NAT'd volatile desktops — joins
     one flat encrypted network with automatic NAT traversal, so `slurmd`↔`slurmctld` and storage
-    mounts behave like a LAN. Node enrolment and human access gated by Imperial SSO/OIDC (an
-    SSO/MFA auth layer, optionally Teleport, may sit on top for user-facing access).
+    mounts behave like a LAN. **Node enrolment** is authorized by an Admin-minted one-time token (which
+    also names the Arm's owner); **human access + job submission** are gated by **built-in auth on the
+    Head** (own user table, argon2 + sessions) — *not* Imperial SSO. TLS for the human surface is
+    terminated by a tunnel (Cloudflare Tunnel / `tailscale funnel`) — a real cert without managed DNS.
 
 ---
 

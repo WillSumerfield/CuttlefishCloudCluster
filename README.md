@@ -18,7 +18,7 @@ Monorepo, split by **deployment context**. Each top-level dir is one bounded con
 | [`arm/`](arm/) | Compute node: Linux-layer bring-up (WSL2/VM), `slurmd`, Apptainer, Retract, staging. |
 | [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, FairShare sync, override (SQLite). |
 | [`telemetry/`](telemetry/) | Exporters, rogue-actor detection, W&B injection, alerts/webhooks, Grafana. |
-| [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + SSO. |
+| [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). |
 | [`shared/`](shared/) | Cross-context code: CLI↔Head protocol, common types, metric schemas. |
 | [`docs/`](docs/) | Design spec and documentation. |
 

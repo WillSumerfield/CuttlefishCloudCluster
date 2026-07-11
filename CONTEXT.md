@@ -25,14 +25,15 @@
   clusters' Meshes never see each other.
 - **Coordinator** — the Head-hosted service that admits machines to the Mesh and assigns each one a
   stable mesh address.
-- **Enrollment** — a machine becoming an Arm of a cluster: it joins the Mesh, then registers with
-  the scheduler.
+- **Enrollment** — a machine becoming an Arm of a cluster: authorized by the **Admin**, it joins the
+  Mesh, then registers with the scheduler.
 - **Registration** — an Arm's node agent announcing its own hardware to the scheduler at runtime,
   rather than being declared in advance by the Head.
-- **Invite** — the *public* blob `cuttle invite` prints (Coordinator URL + Head mesh IP). Not a
-  secret and safe to publish: it lets a machine *ask* to join but carries no credential. Admission is
-  two operator decisions — mesh approval, then Slurm approval (`cuttle arm approve`) — never a bearer
-  token. (Earlier drafts called this a "join token"; there is no secret token.)
+- **Enrollment token** — a one-time, single-Arm, short-lived credential the **Admin** mints to
+  authorize one machine's enrollment. It also names the Arm's **owner** (a User, chosen by the Admin at
+  mint), so the donor redeems it and declares nothing while the Head **auto-accepts** (no manual
+  approval). It is the only thing that admits a new Arm; the Admin's own password never leaves the
+  Head. (Supersedes the earlier public-invite + two-gate-approval model.)
 
 ## Front-end tool
 
@@ -41,6 +42,16 @@
   - job submission and interactive/testing sessions,
   - recipe management.
   Communicates with the **Head** over the network (CLI → Head messaging).
+
+## People & access
+
+- **User** — a person with an account on the Head (admin-provisioned: username + password, argon2
+  hash). A User's identity ties every Spawn they submit to them, marks any Arms they **own** (donate),
+  and anchors their Karma wallet.
+- **Admin / Maintainer** — the privileged User (the operator) who provisions accounts, mints
+  **enrollment tokens** (naming each Arm's owner), and can **override** Karma. One person today.
+- **Session** — a User's authenticated login (a token) carrying the authority to submit jobs and read
+  their own data. Distinct from **Mesh** membership, which authorizes *machines*, not people.
 
 ## Domains (bounded contexts that may deploy across roles)
 
