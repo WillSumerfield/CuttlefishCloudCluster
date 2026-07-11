@@ -128,6 +128,17 @@ def undo_apptainer_wsl() -> None:
           f"{config.WSL_EXTRA_NVLIB})")
 
 
+def remove_wsl_dashboard_forward() -> None:
+    """Reverse install_wsl_dashboard_forward. Tolerant of partial state (a native Arm never had it,
+    so these are harmless no-ops) — no is_wsl guard needed, matching the rest of teardown."""
+    run(["systemctl", "disable", "--now",
+         f"{config.DASH_FORWARD_SERVICE}.socket", f"{config.DASH_FORWARD_SERVICE}.service"],
+        sudo=True, check=False)
+    run(["rm", "-f", str(config.DASH_FORWARD_SOCKET_UNIT), str(config.DASH_FORWARD_SERVICE_UNIT)],
+        sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
 def remove_munge_key() -> None:
     """The cluster-wide shared secret this Arm was seeded with. Purging the munge package would drop
     it too, but --keep-packages must not leave a live key behind on a departed Arm."""
@@ -142,6 +153,7 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     _leave_ccc_mesh()
     remove_slurm_config()
     undo_apptainer_wsl()
+    remove_wsl_dashboard_forward()
     remove_munge_key()
     if not keep_packages:
         purge_packages()

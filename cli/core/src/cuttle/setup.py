@@ -152,6 +152,40 @@ def build_spa() -> None:
     print(f"cuttle: dashboard SPA built → {config.DASHBOARD_WEB_DIR}")
 
 
+def install_wsl_dashboard_forward(head_mesh_ip: str) -> None:
+    """WSL-only: forward a local port to the Head's dashboard so the Arm's owner can open it from
+    their Windows browser at http://localhost:<DASHBOARD_PORT>/. The CCC mesh lives inside WSL and
+    Windows can't reach the Head's mesh IP, but WSL2 forwards Windows localhost to WSL listeners —
+    so a listener here bridges the gap. Socket-activated proxy (systemd-socket-proxyd, no package).
+    Idempotent: `enable --now` on re-run is a no-op."""
+    socket_unit = f"""\
+[Unit]
+Description=CCC dashboard forward (WSL->Windows localhost bridge)
+
+[Socket]
+ListenStream={config.DASHBOARD_PORT}
+
+[Install]
+WantedBy=sockets.target
+"""
+    # No [Install]: this is started on demand by the .socket (names match), never enabled directly.
+    service_unit = f"""\
+[Unit]
+Description=CCC dashboard forward: proxy to the Head dashboard over the mesh
+Requires={config.DASH_FORWARD_SERVICE}.socket
+After={config.DASH_FORWARD_SERVICE}.socket {config.CCC_TS_SERVICE}.service
+
+[Service]
+ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.DASHBOARD_PORT}
+"""
+    _write_root_file(config.DASH_FORWARD_SOCKET_UNIT, socket_unit)
+    _write_root_file(config.DASH_FORWARD_SERVICE_UNIT, service_unit)
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
+    print(f"cuttle: WSL dashboard forward up — open http://localhost:{config.DASHBOARD_PORT}/ "
+          f"in your Windows browser")
+
+
 def make_user_dirs() -> None:
     for d in (config.IMAGES_DIR, config.SPAWNS_DIR, config.CONFIG_DIR):
         d.mkdir(parents=True, exist_ok=True)
@@ -281,5 +315,8 @@ def setup_arm(invite: str, re_enroll: bool = False) -> None:
 
     # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
     enroll.check_head_can_reach_us(t["mesh_ip"])
+
+    if system.is_wsl():
+        install_wsl_dashboard_forward(t["mesh_ip"])  # let Windows browse the dashboard via localhost
 
     print(f"\ncuttle: Arm '{node_name}' enrolled. Check `sinfo` on the Head.")

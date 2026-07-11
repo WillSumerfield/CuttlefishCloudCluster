@@ -74,6 +74,17 @@ DASHBOARD_UNIT = Path("/etc/systemd/system/ccc-dashboard.service")
 DASHBOARD_USER = "nobody"
 DASHBOARD_WEB_DIR = Path("/opt/ccc/dashboard/web")  # built SPA, world-readable (served as nobody)
 
+# --- WSL Arm dashboard forward (⑥ convenience) ---
+# A WSL Arm's owner can't browse the Head dashboard from Windows: the CCC mesh lives INSIDE WSL, and
+# Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head's
+# dashboard — WSL2's localhost-forwarding then surfaces it at http://localhost:DASHBOARD_PORT/ in the
+# Windows browser. Socket-activated proxy: no extra package (systemd-socket-proxyd ships with
+# systemd). WSL-only — a native-Linux Arm reaches the mesh dashboard directly.
+DASH_FORWARD_SERVICE = "ccc-dash-forward"  # the .socket/.service basename (they must match to pair)
+DASH_FORWARD_SOCKET_UNIT = Path("/etc/systemd/system/ccc-dash-forward.socket")
+DASH_FORWARD_SERVICE_UNIT = Path("/etc/systemd/system/ccc-dash-forward.service")
+SOCKET_PROXYD = "/usr/lib/systemd/systemd-socket-proxyd"
+
 # --- WSL2 Arms (see setup.configure_apptainer_wsl) ---
 # `apptainer exec --nv` alone yields torch.cuda.is_available() == False on WSL. Measured: --nv finds
 # libcuda.so.1 (ldconfig knows /usr/lib/wsl/lib) and injects it, but WSL's libcuda is a shim that
