@@ -61,8 +61,10 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
     *   **Remote / volatile Arms:** **no live mount.** `cuttle` **stages in** the job's inputs to local
         disk at start and **stages out** results/checkpoints at end (rsync / object pull over the mesh).
         Robust to disconnects and WAN latency; Retract checkpoints to local disk then best-effort pushes.
-*   **Open sub-topic:** exact stage-in/stage-out mechanics on Spawn start/stop — what gets copied,
-    how inputs/outputs are declared, dedup/caching, and partial-result handling on Retract.
+*   **Resolved (Phase 1 ④):** the gitignore-aware project dir is staged in over an rsync daemon bound
+    to the Head's mesh address, into node-local scratch, then a designated `$CCC_OUT`/`outputs` dir is
+    staged back at the end. Per-Spawn, fresh copy (no persistent cache yet). Still open: dedup/caching
+    for sweeps, live log streaming, and partial-result handling on Retract.
 
 ---
 
@@ -84,7 +86,9 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
         Retract hotkey, and drives stage-in/stage-out.
     *   **Python core** — recipes, job submit, static-analysis auto-detect, and W&B injection (`typer`),
         running inside the Linux layer where Python is trivial.
-    *   Web dashboard (Open OnDemand) optional/deferred.
+    *   Web dashboard — a read-only React/Vite SPA over a FastAPI Head API (live node + Spawn state),
+        served on the CCC mesh + LAN; grows submission/management in later phases. (Open OnDemand was
+        considered and dropped in favour of a purpose-built SPA.)
 
 ### Interactive / Testing Mode (Tide Pool)
 *   **Purpose:** Lets a user drop directly into a live Pod on an allocated Arm to run code interactively, debug, and probe hardware behaviour before committing a full Spawn. Motivated by heterogeneous hardware not behaving identically (differing GPU archs, driver versions, node-locked licences) — a run that works on one node may fail on another.
@@ -96,7 +100,9 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
 
 ### System Logging & Metric Integration
 *   **Purpose:** Captures live training statistics, flags code errors, and measures hardware health (power usage, temperature, VRAM) over time per individual Spawn.
-*   **Tech Stack:** **Weights & Biases (W&B) Core API Engine**. Environment variables (`WANDB_API_KEY`, `WANDB_RUN_GROUP`) are automatically injected by `cuttle` into the sandboxed container at runtime.
+*   **Tech Stack:** **Weights & Biases (W&B) Core API Engine**. `cuttle` injects the W&B env into the
+    sandboxed container at runtime — `WANDB_API_KEY` from config, plus per-Spawn `WANDB_PROJECT`,
+    `WANDB_ENTITY`, and `WANDB_NAME` (`cuttle run --project/--entity`).
 
 ### Configurable Warnings & Webhooks
 *   **Purpose:** Pings the user immediately via email, Slack, or Discord if code throws a `NaN` error, freezes, or if a volatile Arm is forcefully retracted.

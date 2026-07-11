@@ -1,6 +1,7 @@
 # cli/core — `cuttle` (Python)
 
-The Python (`typer`) core of the `cuttle` front door. MVP scope: single-node local cluster.
+The Python (`typer`) core of the `cuttle` front door: provisions nodes, enrolls remote Arms, submits
+Spawns. (A host-native Go launcher is in the design — see `docs/DesignDoc.md` — but not yet built.)
 
 ## Dev
 
@@ -12,24 +13,39 @@ uv run cuttle --help
 
 ## Commands
 
-- `cuttle setup --local` — provision **this** box as a combined Head+Arm (native Ubuntu 24.04,
-  x86_64, NVIDIA GPU). Drives `apt`+`sudo`, renders `/etc/slurm/{slurm,gres}.conf`, starts
-  `munge`+`slurmctld`+`slurmd`, builds `~/.ccc/images/base.sif`. **Modifies the system (sudo).**
-  Idempotent — re-run to reload config.
-- `cuttle teardown --local` — reverse setup: stop+disable daemons, purge apt packages + repos,
-  remove Slurm config/state. Keeps `~/.ccc` (base.sif) by default. `--keep-packages` for a fast
-  config-only reset; `--all` to also delete `~/.ccc`. Tolerant of partial state (safe to re-run).
-  Purges **only** packages setup recorded as newly installed (`~/.ccc/config/apt-installed.txt`) —
-  never pre-existing packages, and no global `autoremove` (won't touch unrelated system orphans).
+### Setup / teardown
+- `cuttle setup --head [--address <host>]` — provision **this** box as the Head: self-hosted Headscale
+  coordinator + isolated `tailscaled-ccc` mesh, `slurmctld` + munge, the mesh-only enroll API, the
+  LAN+mesh web dashboard, rsync stage-in/out, and a co-located Arm. Builds `~/.ccc/images/base.sif`.
+  `--address` = the coordinator's advertised host (default: primary IP; use a host remote Arms can
+  actually reach). `--local` is an alias for the single-box case. Idempotent.
+- `cuttle setup --arm --invite <blob> [--re-enroll]` — enroll **this** box as a remote Arm: join the
+  mesh (blocks for operator approval), fetch the munge key, register a dynamic `slurmd -Z`. On WSL it
+  also forwards the Head dashboard to `localhost` for the Windows browser.
+- `cuttle teardown --local | --arm [--keep-packages] [--all]` — reverse setup. Default keeps `~/.ccc`
+  (base.sif); `--keep-packages` = fast config-only reset; `--all` also deletes `~/.ccc`. Purges only
+  the packages setup recorded (`~/.ccc/config/apt-installed.txt`). Never touches personal Tailscale.
 
-- `cuttle run <script> [--gpu N] [-f] [-- ARGS]` — submit a **Spawn**: `sbatch` → `apptainer exec
-  --nv base.sif python <script>`. Prints `submitted spawn <id>` (job id) and detaches; `-f`/`--follow`
-  streams stdout until it ends. W&B env injected from config. Slurm job id = spawn id.
-- `cuttle status <id>` — queued/running state, or `DONE exit N` after it finishes (read from the
-  `<id>.exit` file the wrapper writes — survives `scontrol` forgetting the job; no slurmdbd).
-- `cuttle logs <id> [-f]` — print/tail the Spawn's stdout (`~/.ccc/spawns/<id>.out`).
+### Enrollment (Head-side)
+- `cuttle invite` — print the cluster invite (Coordinator URL + Head mesh IP). Public, not a secret.
+- `cuttle arm list` — enrolled Arms and whether they're admitted.
+- `cuttle arm approve <name> --auth-id <id>` — grant a pending Arm's mesh + Slurm admission.
+- `cuttle arm remove <name>` — delete an Arm from Slurm, the registry, and the mesh.
 
-Config: `cuttle setup` prompts for the W&B API key + project → `~/.ccc/config/config.yaml` (0600).
-Spawn artifacts: `~/.ccc/spawns/<id>.{out,err,exit}`.
+### Spawns
+- `cuttle run <script> [--gpu N] [-f] [--project P] [--entity E] [-- ARGS]` — submit a **Spawn**:
+  `sbatch` → `apptainer exec --nv base.sif python <script>`. Stages the project in/out for remote
+  Arms. `--project`/`--entity` set W&B per-Spawn. `-f`/`--follow` streams stdout. Job id = spawn id.
+- `cuttle status <id>` — queued/running, or `DONE exit N` (read from `~/.ccc/spawns/<id>/exit`, which
+  survives `scontrol` forgetting the job — no slurmdbd yet).
+- `cuttle logs <id> [-f]` — print/tail the Spawn's stdout (`~/.ccc/spawns/<id>/out`).
 
-Pinned versions live in `src/cuttle/config.py` (mirrored in `docs/TODO.md`).
+## Dashboard
+`cuttle setup --head` runs a read-only web dashboard (Vite/React) at `http://<head>:8082/`, reachable
+over the LAN and the CCC mesh — live Arms + Spawn queue. Enrollment stays on a separate **mesh-only**
+API (`:8081`) so the munge-key handout never touches the LAN.
+
+## Config / artifacts
+- `cuttle setup` prompts for the W&B API key + default project/entity → `~/.ccc/config/config.yaml` (0600).
+- Per-Spawn artifacts: `~/.ccc/spawns/<id>/{out,err,exit,outputs}`.
+- Pinned versions live in `src/cuttle/config.py` (mirrored in `docs/TODO.md`).

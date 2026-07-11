@@ -29,8 +29,10 @@
   the scheduler.
 - **Registration** — an Arm's node agent announcing its own hardware to the scheduler at runtime,
   rather than being declared in advance by the Head.
-- **Join token** — the single secret a donor supplies to enrol; it carries everything a machine
-  needs to reach the Coordinator and enter the cluster.
+- **Invite** — the *public* blob `cuttle invite` prints (Coordinator URL + Head mesh IP). Not a
+  secret and safe to publish: it lets a machine *ask* to join but carries no credential. Admission is
+  two operator decisions — mesh approval, then Slurm approval (`cuttle arm approve`) — never a bearer
+  token. (Earlier drafts called this a "join token"; there is no secret token.)
 
 ## Front-end tool
 

@@ -14,7 +14,7 @@ Monorepo, split by **deployment context**. Each top-level dir is one bounded con
 | Context | Role |
 |---|---|
 | [`cli/`](cli/) | The `cuttle` tool — Go host launcher + Python core (recipes, submit, auto-detect). |
-| [`head/`](head/) | Control plane: `slurmctld`, `slurmdbd` + MariaDB, scheduler config, prolog/epilog. |
+| [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out; `slurmdbd`+MariaDB (economy phase). |
 | [`arm/`](arm/) | Compute node: Linux-layer bring-up (WSL2/VM), `slurmd`, Apptainer, Retract, staging. |
 | [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, FairShare sync, override (SQLite). |
 | [`telemetry/`](telemetry/) | Exporters, rogue-actor detection, W&B injection, alerts/webhooks, Grafana. |
