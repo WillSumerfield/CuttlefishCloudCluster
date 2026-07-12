@@ -10,9 +10,9 @@ import shutil
 from . import config, system
 from .system import run
 
-_SERVICES = [config.HEAD_API_SERVICE, config.DASHBOARD_SERVICE, config.RSYNCD_SERVICE,
+_SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.RSYNCD_SERVICE,
              "munge", "slurmctld", "slurmd"]
-_ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / head-api / rsyncd / headscale
+_ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / API / rsyncd / headscale
 _PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
 _NVIDIA_REPO_FILES = [
     "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
@@ -50,18 +50,20 @@ def remove_mesh(keep_packages: bool = False) -> None:
         # NOTE: `tailscale` package + repo left in place — shared with the personal daemon.
 
 
-def remove_head_api() -> None:
-    run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
-    run(["rm", "-rf", str(config.HEAD_API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
+def remove_enroll_api() -> None:
+    """Enroll API (Head-only, CCC-only). Drop its unit, the shared API venv (install_enroll built it),
+    and the munge-owned registry dir."""
+    run(["rm", "-f", str(config.ENROLL_API_UNIT)], sudo=True, check=False)
+    run(["rm", "-rf", str(config.API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
-def remove_dashboard() -> None:
-    """Dashboard service (Head-only, CCC-only). Drop its ufw port rule, unit, and the staged SPA.
+def remove_head_api() -> None:
+    """Head API service (Head-only, CCC-only). Drop its ufw port rule, unit, and the staged SPA.
     Already stopped/disabled by stop_daemons."""
-    system.deny_tcp_port(config.DASHBOARD_PORT)
-    run(["rm", "-f", str(config.DASHBOARD_UNIT)], sudo=True, check=False)
-    run(["rm", "-rf", str(config.DASHBOARD_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/dashboard
+    system.deny_tcp_port(config.HEAD_API_PORT)
+    run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
+    run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -168,8 +170,8 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
+    remove_enroll_api()
     remove_head_api()
-    remove_dashboard()
     remove_rsyncd()
     remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()

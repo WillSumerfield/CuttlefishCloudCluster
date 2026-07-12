@@ -102,8 +102,8 @@ def write_slurm_config(mesh_ip: str) -> None:
 
 
 def make_registry_dir() -> None:
-    """The API's only writable location — it runs as munge and owns nothing else."""
-    run(["install", "-d", "-m", "0755", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+    """The Enroll API's only writable location — it runs as munge and owns nothing else."""
+    run(["install", "-d", "-m", "0755", "-o", config.ENROLL_API_USER, "-g", config.ENROLL_API_USER,
          str(config.CCC_LIB)], sudo=True)
 
 
@@ -138,23 +138,23 @@ def build_base_sif() -> None:
 
 
 def build_spa() -> None:
-    """Build the read-only dashboard SPA and stage it where the (nobody) dashboard service reads it.
-    Node is needed only on the Head; a donor Arm never builds this. Staged OUTSIDE the user's 0750
-    home — `nobody` can't traverse there — into a world-readable /opt path."""
+    """Build the Dashboard SPA and stage it where the Head API service reads it. Node is needed only
+    on the Head; a donor Arm never builds this. Staged OUTSIDE the user's 0750 home — the service
+    user can't traverse there — into a world-readable /opt path."""
     web_src = headapi.REPO_ROOT / "head" / "web"
     run(["npm", "ci"], cwd=str(web_src))
     run(["npm", "run", "build"], cwd=str(web_src))
-    run(["rm", "-rf", str(config.DASHBOARD_WEB_DIR)], sudo=True)
-    run(["install", "-d", str(config.DASHBOARD_WEB_DIR.parent)], sudo=True)
-    run(["cp", "-r", str(web_src / "dist"), str(config.DASHBOARD_WEB_DIR)], sudo=True)
-    run(["chmod", "-R", "a+rX", str(config.DASHBOARD_WEB_DIR.parent)], sudo=True)
-    system.allow_tcp_port(config.DASHBOARD_PORT, "ccc dashboard (LAN+mesh)")
-    print(f"cuttle: dashboard SPA built → {config.DASHBOARD_WEB_DIR}")
+    run(["rm", "-rf", str(config.HEAD_API_WEB_DIR)], sudo=True)
+    run(["install", "-d", str(config.HEAD_API_WEB_DIR.parent)], sudo=True)
+    run(["cp", "-r", str(web_src / "dist"), str(config.HEAD_API_WEB_DIR)], sudo=True)
+    run(["chmod", "-R", "a+rX", str(config.HEAD_API_WEB_DIR.parent)], sudo=True)
+    system.allow_tcp_port(config.HEAD_API_PORT, "ccc head api (LAN+mesh)")
+    print(f"cuttle: Dashboard SPA built → {config.HEAD_API_WEB_DIR}")
 
 
 def install_wsl_dashboard_forward(head_mesh_ip: str) -> None:
-    """WSL-only: forward a local port to the Head's dashboard so the Arm's owner can open it from
-    their Windows browser at http://localhost:<DASHBOARD_PORT>/. The CCC mesh lives inside WSL and
+    """WSL-only: forward a local port to the Head API so the Arm's owner can open the Dashboard from
+    their Windows browser at http://localhost:<HEAD_API_PORT>/. The CCC mesh lives inside WSL and
     Windows can't reach the Head's mesh IP, but WSL2 forwards Windows localhost to WSL listeners —
     so a listener here bridges the gap. Socket-activated proxy (systemd-socket-proxyd, no package).
     Idempotent: `enable --now` on re-run is a no-op."""
@@ -163,7 +163,7 @@ def install_wsl_dashboard_forward(head_mesh_ip: str) -> None:
 Description=CCC dashboard forward (WSL->Windows localhost bridge)
 
 [Socket]
-ListenStream={config.DASHBOARD_PORT}
+ListenStream={config.HEAD_API_PORT}
 
 [Install]
 WantedBy=sockets.target
@@ -171,18 +171,18 @@ WantedBy=sockets.target
     # No [Install]: this is started on demand by the .socket (names match), never enabled directly.
     service_unit = f"""\
 [Unit]
-Description=CCC dashboard forward: proxy to the Head dashboard over the mesh
+Description=CCC dashboard forward: proxy to the Head API over the mesh
 Requires={config.DASH_FORWARD_SERVICE}.socket
 After={config.DASH_FORWARD_SERVICE}.socket {config.CCC_TS_SERVICE}.service
 
 [Service]
-ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.DASHBOARD_PORT}
+ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
 """
     _write_root_file(config.DASH_FORWARD_SOCKET_UNIT, socket_unit)
     _write_root_file(config.DASH_FORWARD_SERVICE_UNIT, service_unit)
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
-    print(f"cuttle: WSL dashboard forward up — open http://localhost:{config.DASHBOARD_PORT}/ "
+    print(f"cuttle: WSL dashboard forward up — open http://localhost:{config.HEAD_API_PORT}/ "
           f"in your Windows browser")
 
 
@@ -238,16 +238,16 @@ def setup_head(address: str | None = None) -> None:
     start_daemons()
     install_rsyncd(mesh_ip)  # stage-in/out, mesh-bound; idle until a remote Arm submits
     make_registry_dir()
-    headapi.install(_write_root_file, mesh_ip)  # after munge: the enroll API serves munge.key
-    build_spa()                                 # build + stage the dashboard SPA (Node, Head-only)
-    headapi.install_dashboard(_write_root_file)  # read API + SPA on LAN+mesh; needs the venv + SPA
+    headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: the Enroll API serves munge.key
+    build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
+    headapi.install_head(_write_root_file)       # Head API (read board + SPA) on LAN+mesh; needs venv + SPA
     build_base_sif()
     verify()
     lan = system.primary_ip()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
     print(f"cuttle: invite an Arm with `cuttle invite` (coordinator {mesh_ip})")
-    print(f"cuttle: dashboard at {headapi.dashboard_url(lan)} (LAN) / "
-          f"{headapi.dashboard_url(mesh_ip)} (mesh)")
+    print(f"cuttle: dashboard at {headapi.head_url(lan)} (LAN) / "
+          f"{headapi.head_url(mesh_ip)} (mesh)")
 
 
 # `--local` is just the single-box Head (Head + its co-located Arm).

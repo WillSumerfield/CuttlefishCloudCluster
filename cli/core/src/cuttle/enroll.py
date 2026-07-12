@@ -63,7 +63,7 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str) -> dict
     inside the mesh — which is exactly why the munge key is safe to send here and nowhere else."""
     body = json.dumps({"node_name": node_name, "gpu_device": gpu_device(),
                        "mesh_ip": my_mesh_ip}).encode()
-    req = urllib.request.Request(f"{headapi.url(head_mesh_ip)}/enroll", data=body,
+    req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
@@ -75,7 +75,7 @@ def wait_for_admit(head_mesh_ip: str, node_name: str, timeout_s: int = 900) -> N
     print(f"\ncuttle: waiting to be admitted. On the Head, run:  cuttle arm admit {node_name}")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        with urllib.request.urlopen(f"{headapi.url(head_mesh_ip)}/arms/{node_name}", timeout=10) as r:
+        with urllib.request.urlopen(f"{headapi.enroll_url(head_mesh_ip)}/arms/{node_name}", timeout=10) as r:
             if json.load(r)["admitted"]:
                 print("cuttle: admitted.")
                 return
@@ -92,7 +92,7 @@ def check_head_can_reach_us(head_mesh_ip: str) -> None:
 
     Deliberately reports the observation, not a diagnosis — a firewall is only one of the causes.
     """
-    with urllib.request.urlopen(f"{headapi.url(head_mesh_ip)}/probe", timeout=20) as r:
+    with urllib.request.urlopen(f"{headapi.enroll_url(head_mesh_ip)}/probe", timeout=20) as r:
         res = json.load(r)
     if res["reachable"]:
         print(f"cuttle: Head can reach this Arm at {res['peer']}:{res['port']} — good")
@@ -140,7 +140,7 @@ def save_registry(reg: dict) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".ccc", delete=False) as f:
         f.write(json.dumps(reg, indent=2, sort_keys=True) + "\n")
         tmp = f.name
-    run(["install", "-D", "-m", "0644", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+    run(["install", "-D", "-m", "0644", "-o", config.ENROLL_API_USER, "-g", config.ENROLL_API_USER,
          tmp, str(config.ARMS_REGISTRY)], sudo=True)
 
 

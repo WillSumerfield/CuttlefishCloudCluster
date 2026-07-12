@@ -1,7 +1,7 @@
 [project]
 name = "ccc-head-api"
 version = "0.1.0"
-description = "CCC Head API — Arm enrollment now; Slurm/Spawn views (via slurmrestd) next."
+description = "CCC head-side APIs — Enroll API (mesh-only, munge key) + Head API (LAN+mesh read board, auth next)."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

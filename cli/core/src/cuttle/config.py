@@ -45,41 +45,47 @@ SLURMD_PORT = 6818
 SLURMD_DEFAULTS = Path("/etc/default/slurmd")
 MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, never expires
 
-# --- Head API (Phase 1 ③: /enroll; ⑤ grows it into the slurmrestd-backed API) ---
-# Bound to the Head's MESH address only: being on the mesh is the entire authorization.
-HEAD_API_PORT = 8081
-HEAD_API_SERVICE = "ccc-head-api"
-HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
-HEAD_API_VENV = Path("/opt/ccc/head-api/.venv")
+# --- Shared API package venv (Phase 1) ---
+# Both head-side FastAPI apps live in one package (`ccc_head_api`) and run from this one venv, kept
+# out of the CLI's own venv. The Enroll API app and the Head API app are two ASGI targets off it.
+API_VENV = Path("/opt/ccc/api/.venv")
+
+# --- Enroll API (Phase 1 ③: /enroll; mesh-only, serves the munge key) ---
+# Bound to the Head's MESH address only: being on the mesh is the entire authorization. Glossary
+# (head/CONTEXT.md): the *Enroll API* is the durable, mesh-only trust boundary (holds the munge key).
+ENROLL_API_PORT = 8081
+ENROLL_API_SERVICE = "ccc-enroll-api"
+ENROLL_API_UNIT = Path("/etc/systemd/system/ccc-enroll-api.service")
 # Runs as munge: the only user that can read munge.key without chmod'ing it or running as root.
 # It is otherwise UNPRIVILEGED — it records enrolling Arms into the registry below, and an operator
-# admits them with `cuttle arm admit`. No sudoers rule, so no root path out of a POST body.
-HEAD_API_USER = "munge"
-CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the API's only writable location
+# admits them with `cuttle arm approve`. No sudoers rule, so no root path out of a POST body.
+ENROLL_API_USER = "munge"
+CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only writable location
 ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {gpu_device, mesh_ip, admitted}}
 
 # An Arm's GPU device node. Native Linux exposes /dev/nvidiaN; WSL2 exposes /dev/dxg with CUDA
 # shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
 GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
 
-# --- Dashboard service (Phase 1 ⑥): read API + SPA, bound to LAN+mesh ---
-# Split from the enroll API on purpose: /enroll hands out the munge key and MUST stay mesh-only, but
-# the dashboard (read-only node/Spawn views + static SPA, no secrets) must reach the LAN too. So it
-# is its own service — unprivileged `nobody` (just runs read-only squeue/sinfo + serves files),
-# bound to 0.0.0.0. Reuses the Head API venv (same package, different app object). A remote Arm sees
-# it over the mesh; a LAN box sees it too (needs a ufw port rule — see system.allow_tcp_port).
-DASHBOARD_PORT = 8082  # 8080 = headscale, 8081 = enroll API
-DASHBOARD_SERVICE = "ccc-dashboard"
-DASHBOARD_UNIT = Path("/etc/systemd/system/ccc-dashboard.service")
-DASHBOARD_USER = "nobody"
-DASHBOARD_WEB_DIR = Path("/opt/ccc/dashboard/web")  # built SPA, world-readable (served as nobody)
+# --- Head API (Phase 1 ⑥: read board + SPA; Phase 3a: auth + submission): LAN+mesh ---
+# The LAN+mesh service backing both the web Dashboard and the CLI (glossary: *Head API*). Split from
+# the Enroll API on purpose: /enroll hands out the munge key and MUST stay mesh-only, but the Head
+# API must reach the LAN too. Bound 0.0.0.0. Reuses API_VENV (same package, different app object). A
+# remote Arm sees it over the mesh; a LAN box sees it too (needs a ufw port rule — system.allow_tcp_port).
+HEAD_API_PORT = 8082  # 8080 = headscale, 8081 = enroll API
+HEAD_API_SERVICE = "ccc-head-api"
+HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
+# Phase 1 runs the read-only board as `nobody`. Phase 3a (identity spine) flips this to a dedicated
+# `ccc` service account that owns the auth DB (head.db) and (later) submits via the munge socket.
+HEAD_API_USER = "nobody"
+HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
 
 # --- WSL Arm dashboard forward (⑥ convenience) ---
-# A WSL Arm's owner can't browse the Head dashboard from Windows: the CCC mesh lives INSIDE WSL, and
-# Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head's
-# dashboard — WSL2's localhost-forwarding then surfaces it at http://localhost:DASHBOARD_PORT/ in the
+# A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
+# Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head
+# API — WSL2's localhost-forwarding then surfaces it at http://localhost:HEAD_API_PORT/ in the
 # Windows browser. Socket-activated proxy: no extra package (systemd-socket-proxyd ships with
-# systemd). WSL-only — a native-Linux Arm reaches the mesh dashboard directly.
+# systemd). WSL-only — a native-Linux Arm reaches the mesh Dashboard directly.
 DASH_FORWARD_SERVICE = "ccc-dash-forward"  # the .socket/.service basename (they must match to pair)
 DASH_FORWARD_SOCKET_UNIT = Path("/etc/systemd/system/ccc-dash-forward.socket")
 DASH_FORWARD_SERVICE_UNIT = Path("/etc/systemd/system/ccc-dash-forward.service")
