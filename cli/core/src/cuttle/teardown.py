@@ -182,6 +182,9 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
         remove_repos()
     if all_:
         remove_user_dirs()
+        # The Head's shared base.sif (built to /opt for the home-less ccc). Kept unless --all, same as
+        # ~/.ccc, so a config-only re-verify doesn't trigger a multi-GB apptainer rebuild.
+        run(["rm", "-rf", str(config.HEAD_IMAGES_DIR)], sudo=True, check=False)
     print("\ncuttle: local cluster torn down"
           + (" (packages/repos kept)" if keep_packages else "")
           + (" (~/.ccc removed)" if all_ else " (~/.ccc kept)"))

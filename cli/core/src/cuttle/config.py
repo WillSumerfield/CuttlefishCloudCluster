@@ -78,12 +78,30 @@ HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
 # Dedicated `ccc` service account: owns the auth DB (head.db) and (later) submits via the munge
 # socket — never reads the munge key. Phase 1 ran this read-only board as `nobody`.
 HEAD_API_USER = "ccc"
+# The first CCC login account, seeded at `setup --head`. A fixed name (NOT the operator's OS username):
+# it's an app-level account in head.db, unrelated to any Unix uid. Spawns show `submitted_by: admin`.
+FIRST_ADMIN_USER = "admin"
 HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
 # Auth store (Phase 3a): the User + Session tables behind login. Its own ccc-owned subdir (0700) —
 # NOT loose in the munge-owned CCC_LIB, since SQLite writes WAL/journal sidecars beside the db and
 # `ccc` can't create files in a munge-owned dir. 0600 db, seeded at `setup --head`.
 HEAD_STATE_DIR = CCC_LIB / "head"
 HEAD_DB = HEAD_STATE_DIR / "head.db"
+# Slice 2 submission (all ccc-owned, 0700, under HEAD_STATE_DIR so `ccc` can create/traverse them):
+#   projects/<uuid>/  — an uploaded project tree, unpacked by the Head API from a `cuttle run` tar.
+#                       Also the rsync [project] module root (a remote Arm pulls <uuid>/... from here).
+#   spawns/<id>/      — a Spawn's out/err/exit/outputs (the rsync [spawns] stage-out target). The CLI
+#                       reads these back over the API, never off local disk (jobs run as ccc now).
+#   scratch/<id>/     — the co-located Arm's per-Spawn run dir. A job NEVER runs in the served
+#                       projects tree (that would mutate the rsync source); it's copied here first.
+HEAD_PROJECTS_DIR = HEAD_STATE_DIR / "projects"
+HEAD_SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
+HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
+# base.sif for ccc-run jobs on the Head. The operator's ~/.ccc/images copy is unreadable to the
+# home-less `ccc` account, and post-slice-2 the operator never runs jobs directly — so the Head builds
+# a world-readable copy here (same /opt/ccc tree as the venv + SPA). Remote Arms keep BASE_SIF.
+HEAD_IMAGES_DIR = Path("/opt/ccc/images")
+HEAD_SIF = HEAD_IMAGES_DIR / "base.sif"
 
 # --- WSL Arm dashboard forward (⑥ convenience) ---
 # A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
@@ -166,8 +184,8 @@ RSYNCD_CONF = Path("/etc/ccc-rsyncd.conf")
 RSYNCD_SERVICE = "ccc-rsyncd"
 RSYNCD_UNIT = Path("/etc/systemd/system/ccc-rsyncd.service")
 RSYNCD_PORT = 873
-RSYNC_MODULE_PROJECT = "project"  # ro, rooted at the Head user's $HOME (projects must live here)
-RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at $HOME/.ccc/spawns — stage-out target
+RSYNC_MODULE_PROJECT = "project"  # ro, rooted at HEAD_PROJECTS_DIR (a remote Arm pulls <uuid>/...)
+RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at HEAD_SPAWNS_DIR — stage-out target
 
 # --- CCC user artifacts ---
 CCC_HOME = Path.home() / ".ccc"

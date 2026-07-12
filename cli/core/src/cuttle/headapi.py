@@ -73,11 +73,11 @@ def enroll_url(mesh_ip: str) -> str:
 # as `nobody` (holds no secrets; only read-only squeue/sinfo + static files). Binds 0.0.0.0 so a LAN
 # box reaches it too (the Enroll API stays mesh-only). See config.HEAD_API_*.
 
-def _head_unit() -> str:
+def _head_unit(mesh_ip: str) -> str:
     return f"""\
 [Unit]
-Description=CCC Head API (read board + SPA; bound to LAN + mesh)
-# squeue/sinfo need munge to authenticate and slurmctld to answer; until they're up we just 503.
+Description=CCC Head API (board + SPA + auth + submit; bound to LAN + mesh)
+# squeue/sinfo/sbatch need munge to authenticate and slurmctld to answer; until they're up we just 503.
 After=munge.service slurmctld.service
 Wants=slurmctld.service
 
@@ -86,6 +86,11 @@ User={config.HEAD_API_USER}
 Environment=CCC_PARTITION={config.PARTITION}
 Environment=CCC_WEB_DIR={config.HEAD_API_WEB_DIR}
 Environment=CCC_HEAD_DB={config.HEAD_DB}
+# Slice 2 submission: the Head's mesh IP is baked into each rendered job script so a remote Arm can
+# rsync results home. Fixed submission paths (state dir, sif) match cuttle.config defaults.
+Environment=CCC_MESH_IP={mesh_ip}
+Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
+Environment=CCC_HEAD_SIF={config.HEAD_SIF}
 ExecStart={config.API_VENV}/bin/uvicorn ccc_head_api.main:app \
 --host 0.0.0.0 --port {config.HEAD_API_PORT}
 Restart=on-failure
@@ -96,10 +101,10 @@ WantedBy=multi-user.target
 """
 
 
-def install_head(write_unit) -> None:
+def install_head(write_unit, mesh_ip: str) -> None:
     """Install + start the Head API unit. Assumes `install_enroll()` already built the shared venv and
     that the SPA has been staged into config.HEAD_API_WEB_DIR (setup.build_spa)."""
-    write_unit(config.HEAD_API_UNIT, _head_unit(), "644")
+    write_unit(config.HEAD_API_UNIT, _head_unit(mesh_ip), "644")
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", config.HEAD_API_SERVICE], sudo=True)
     run(["systemctl", "restart", config.HEAD_API_SERVICE], sudo=True)

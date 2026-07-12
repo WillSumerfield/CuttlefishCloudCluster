@@ -109,13 +109,16 @@ def make_registry_dir() -> None:
 
 def provision_head_auth() -> None:
     """Phase 3a identity spine: the `ccc` service account + auth store (head.db). `ccc` runs the Head
-    API and owns head.db. Called after the API venv is built (seeding the admin runs from it) and
-    before the Head API unit starts (its User=ccc must exist). Idempotent on re-run."""
+    API and owns head.db plus the slice-2 submission dirs (uploaded projects, Spawn results, scratch).
+    Called after the API venv is built (seeding the admin runs from it) and before the Head API unit
+    and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
     run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin",
          config.HEAD_API_USER], sudo=True, check=False)  # non-fatal if the user already exists
-    run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
-         str(config.HEAD_STATE_DIR)], sudo=True)
-    admin_user = getpass.getuser()
+    for d in (config.HEAD_STATE_DIR, config.HEAD_PROJECTS_DIR, config.HEAD_SPAWNS_DIR,
+              config.HEAD_SCRATCH_DIR):
+        run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+             str(d)], sudo=True)
+    admin_user = config.FIRST_ADMIN_USER
     auth.seed_admin(admin_user)  # prints a one-time temp password (or 'already exists' on re-run)
     print(f"cuttle: auth store {config.HEAD_DB}; first admin '{admin_user}' — log in with "
           f"`cuttle login --head <url>` and change the temp password shown above")
@@ -130,25 +133,34 @@ def start_daemons() -> None:
 def install_rsyncd(mesh_ip: str) -> None:
     """Stage-in/out daemon, bound to the Head's mesh address only. Idle until a remote Arm uses it;
     started on every Head so admitting the first Arm needs no reconfigure. Runs as root (873 is
-    privileged) but serves each module as the Head user, so files stay owned by them."""
-    user = getpass.getuser()
-    config.SPAWNS_DIR.mkdir(parents=True, exist_ok=True)  # the [spawns] module root must exist
-    _write_root_file(config.RSYNCD_CONF,
-                     templates.render_rsyncd_conf(mesh_ip, user, str(Path.home())))
+    privileged) but serves each module as `ccc`, so files stay ccc-owned. Both module roots (projects,
+    spawns) are created ccc-owned by provision_head_auth, which must run first."""
+    _write_root_file(config.RSYNCD_CONF, templates.render_rsyncd_conf(mesh_ip))
     _write_root_file(config.RSYNCD_UNIT, templates.render_rsyncd_unit())
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", config.RSYNCD_SERVICE], sudo=True)
     run(["systemctl", "restart", config.RSYNCD_SERVICE], sudo=True)
 
 
-def build_base_sif() -> None:
-    config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    if config.BASE_SIF.exists():
-        print(f"base.sif exists ({config.BASE_SIF}) — skipping build")
+def build_base_sif(images_dir: Path = config.IMAGES_DIR, sif: Path = config.BASE_SIF,
+                   shared: bool = False) -> None:
+    """Build the base Pod image. `shared=True` (the Head) targets a world-readable /opt path so the
+    home-less `ccc` account can read it when it runs Spawns — the operator's 0750 home is off-limits,
+    and post-slice-2 the operator never runs jobs directly. An Arm keeps its own ~/.ccc copy."""
+    if shared:
+        # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
+        run(["install", "-d", "-o", getpass.getuser(), "-g", getpass.getuser(), str(images_dir)],
+            sudo=True)
+    else:
+        images_dir.mkdir(parents=True, exist_ok=True)
+    if sif.exists():
+        print(f"base.sif exists ({sif}) — skipping build")
         return
-    def_file = config.IMAGES_DIR / "base.def"
+    def_file = images_dir / "base.def"
     def_file.write_text(templates.render_base_def())
-    run(["apptainer", "build", str(config.BASE_SIF), str(def_file)])
+    run(["apptainer", "build", str(sif), str(def_file)])
+    if shared:
+        run(["chmod", "-R", "a+rX", str(images_dir)], sudo=True)
 
 
 def build_spa() -> None:
@@ -250,13 +262,13 @@ def setup_head(address: str | None = None) -> None:
     install_packages()
     write_slurm_config(mesh_ip)
     start_daemons()
-    install_rsyncd(mesh_ip)  # stage-in/out, mesh-bound; idle until a remote Arm submits
     make_registry_dir()
     headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: the Enroll API serves munge.key
-    provision_head_auth()                        # ccc service account + head.db + first admin (needs venv)
+    provision_head_auth()                        # ccc account + head.db + submission dirs (needs venv)
+    install_rsyncd(mesh_ip)                      # stage-in/out, mesh-bound; needs ccc + its dirs first
     build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
-    headapi.install_head(_write_root_file)       # Head API (read board + SPA + auth) on LAN+mesh
-    build_base_sif()
+    headapi.install_head(_write_root_file, mesh_ip)  # Head API (board + SPA + auth + submit) LAN+mesh
+    build_base_sif(config.HEAD_IMAGES_DIR, config.HEAD_SIF, shared=True)  # ccc-readable for Spawns
     verify()
     lan = system.primary_ip()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")

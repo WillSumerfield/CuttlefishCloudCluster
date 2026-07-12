@@ -62,9 +62,10 @@ From: {image}
 
 # rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the
 # LAN or the personal tailnet. `hosts allow` = the mesh prefixes: being on the mesh IS the authz,
-# same as /enroll. Runs as root (873 is privileged) but each module drops to the Head user, so files
-# are read/written as them. `use chroot = no`: no root chroot into $HOME (simpler; the mesh is the
-# boundary). [project] read-only guarantees a job can never write back into the source tree.
+# same as /enroll. Runs as root (873 is privileged) but each module drops to `ccc` (the service
+# account that owns the Head state), so files are read/written as ccc. `use chroot = no`: no root
+# chroot (simpler; the mesh is the boundary). Both module roots live under HEAD_STATE_DIR (ccc-owned);
+# [project] is read-only so a job can never write back into a served upload.
 RSYNCD_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 address = {mesh_ip}
@@ -74,7 +75,7 @@ uid = {user}
 gid = {group}
 read only = true
 [{project_mod}]
-    path = {home}
+    path = {projects_dir}
     read only = true
     hosts allow = {v4} {v6}
 [{spawns_mod}]
@@ -100,11 +101,13 @@ WantedBy=multi-user.target
 """
 
 
-def render_rsyncd_conf(mesh_ip: str, user: str, home: str) -> str:
+def render_rsyncd_conf(mesh_ip: str) -> str:
     return RSYNCD_CONF_TMPL.format(
-        mesh_ip=mesh_ip, port=config.RSYNCD_PORT, user=user, group=user, home=home,
-        project_mod=config.RSYNC_MODULE_PROJECT, spawns_mod=config.RSYNC_MODULE_SPAWNS,
-        spawns_dir=config.SPAWNS_DIR, v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
+        mesh_ip=mesh_ip, port=config.RSYNCD_PORT,
+        user=config.HEAD_API_USER, group=config.HEAD_API_USER,
+        project_mod=config.RSYNC_MODULE_PROJECT, projects_dir=config.HEAD_PROJECTS_DIR,
+        spawns_mod=config.RSYNC_MODULE_SPAWNS, spawns_dir=config.HEAD_SPAWNS_DIR,
+        v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
     )
 
 
