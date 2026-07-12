@@ -173,10 +173,14 @@ def run(
     project: str = typer.Option(None, "--project", help="W&B project for this Spawn (default: config)."),
     entity: str = typer.Option(
         None, "--entity", help="W&B entity/slug for this Spawn (default: config, then account default)."),
+    no_gitignore: bool = typer.Option(
+        False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
 ):
-    """Submit a Spawn: sbatch → apptainer exec --nv base.sif python <script>. Extra args after
-    the script are passed through (e.g. `cuttle run train.py --gpu 1 -- --epochs 5`)."""
-    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity)
+    """Submit a Spawn: uploads the working dir to the Head, which runs
+    apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
+    script are passed through (e.g. `cuttle run train.py --gpu 1 -- --epochs 5`)."""
+    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
+                      no_gitignore=no_gitignore)
 
 
 @app.command()
@@ -192,6 +196,12 @@ def logs(
 ):
     """Print (or follow) a Spawn's stdout."""
     spawns_mod.logs(spawn_id, follow=follow)
+
+
+@app.command()
+def outputs(spawn_id: int = typer.Argument(..., help="Spawn (Slurm job) id.")):
+    """Download a Spawn's $CCC_OUT dir as a tar into the current directory."""
+    spawns_mod.outputs(spawn_id)
 
 
 def main() -> None:
