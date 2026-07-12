@@ -9,9 +9,14 @@ The cluster control plane. One logical role, Linux-only. Owns:
 - **Coordinator** — self-hosted Headscale admitting nodes to the CCC mesh (root term in `../CONTEXT.md`).
 - **Enroll API** — mesh-only service that admits an approved Arm: hands it the munge key + `slurmctld`
   address. Being on the mesh *is* the authorization; no token.
-- **Dashboard** — read-only web view of live node + Spawn state (the enrollment-free read API + SPA),
-  served on the CCC mesh **and** the LAN. A separate service from the Enroll API, since it holds no
-  secret and must reach the LAN.
+- **Head API** — the LAN+mesh service that backs both the web **Dashboard** and the **CLI** (one API,
+  two clients). Serves the Dashboard SPA and exposes cluster state; from the auth phase it also carries
+  authenticated job submission (login, project upload, submit). A separate service from the **Enroll
+  API** — the Enroll API is mesh-only and holds the munge key (a durable boundary), while the Head API
+  must reach the LAN.
+- **Dashboard** — the web app (SPA) over the Head API: the **primary** surface for viewing cluster +
+  Spawn state and, from the auth phase, submitting/managing jobs. Started read-only (Phase 1); grows
+  interactive per phase. Reachable on the CCC mesh **and** the LAN.
 - **Accounts** — the Head is the cluster's identity store: the **User** table (argon2 hashes) +
   **Sessions** live here, authenticating logins and authorizing job submission. *(Auth phase.)*
 - **Accounting** — `slurmdbd` + MariaDB: job accounting and FairShare (drives the Karma sync). *(Economy phase.)*
