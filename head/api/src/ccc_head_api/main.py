@@ -14,14 +14,17 @@ Transit: served plain HTTP for now (LAN TLS is a later slice — self-signed + C
 session cookie is therefore not yet marked Secure; flip `_COOKIE_SECURE` when TLS lands.
 """
 
+import json
 import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, slurm
+from . import spawns as spawns_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
@@ -84,8 +87,45 @@ def arms() -> list[dict]:
 
 @app.get("/spawns")
 def spawns() -> list[dict]:
-    """The live Spawn queue (pending/running, CCC partition). See slurm.spawns()."""
-    return slurm.spawns()
+    """The live Spawn queue (pending/running, CCC partition), enriched with app-level attribution.
+    Every job runs as `ccc` now, so Slurm's own user field is useless — the ledger says who submitted
+    it. See slurm.spawns()."""
+    rows = slurm.spawns()
+    ids = [r["id"] for r in rows if r["id"] is not None]
+    with db.connect() as conn:
+        submitters = db.spawn_submitters(conn, ids)
+    for r in rows:
+        r["submitted_by"] = submitters.get(r["id"])
+    return rows
+
+
+@app.get("/spawns/{job_id}")
+def spawn_status(job_id: int) -> dict:
+    """A single Spawn's state: still queued/running, or done with an exit code. Anonymous in slice 2
+    (reads stay open until the browser-login slice gates them)."""
+    state = spawns_mod.active_state(job_id)
+    if state is not None:
+        return {"id": job_id, "done": False, "state": state}
+    rc = spawns_mod.exit_code(job_id)
+    if rc is not None:
+        return {"id": job_id, "done": True, "state": "done", "exit": rc}
+    raise HTTPException(404, f"unknown spawn {job_id} (not queued; no exit record)")
+
+
+@app.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
+def spawn_logs(job_id: int) -> str:
+    """The Spawn's stdout so far (a remote Spawn's arrives only at stage-out — post-hoc)."""
+    return spawns_mod.out_text(job_id) or ""
+
+
+@app.get("/spawns/{job_id}/outputs")
+def spawn_outputs(job_id: int) -> Response:
+    """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back."""
+    data = spawns_mod.outputs_tar(job_id)
+    if data is None:
+        raise HTTPException(404, f"no outputs for spawn {job_id}")
+    return Response(data, media_type="application/gzip", headers={
+        "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
 
 
 # --- auth routes ------------------------------------------------------------
@@ -131,6 +171,25 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
             raise HTTPException(401, "current password is wrong")
         db.set_password(conn, user["username"], req.new_password)
     return {"ok": True}
+
+
+# --- submission (authed) ----------------------------------------------------
+
+@app.post("/submit")
+async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
+    """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
+    authed mutation in slice 2. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
+    {script, gpu, args, wandb_env} — metadata in a header (not query params) keeps the W&B key out of
+    access logs. Runs the render/sbatch/ledger as ccc; returns the Spawn id."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
+    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
+    if not meta.get("script"):
+        raise HTTPException(422, "missing 'script' in X-CCC-Meta")
+    tar_bytes = await request.body()
+    job_id = spawns_mod.submit(user["id"], meta["script"], int(meta.get("gpu", 1)),
+                               meta.get("args", []), meta.get("wandb_env", {}), tar_bytes)
+    return {"id": job_id}
 
 
 # Mounted LAST so the API routes above win. html=True serves index.html at `/`. Guarded so the app
