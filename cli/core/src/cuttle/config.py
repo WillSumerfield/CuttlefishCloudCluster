@@ -75,10 +75,15 @@ GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
 HEAD_API_PORT = 8082  # 8080 = headscale, 8081 = enroll API
 HEAD_API_SERVICE = "ccc-head-api"
 HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
-# Phase 1 runs the read-only board as `nobody`. Phase 3a (identity spine) flips this to a dedicated
-# `ccc` service account that owns the auth DB (head.db) and (later) submits via the munge socket.
-HEAD_API_USER = "nobody"
+# Dedicated `ccc` service account: owns the auth DB (head.db) and (later) submits via the munge
+# socket — never reads the munge key. Phase 1 ran this read-only board as `nobody`.
+HEAD_API_USER = "ccc"
 HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
+# Auth store (Phase 3a): the User + Session tables behind login. Its own ccc-owned subdir (0700) —
+# NOT loose in the munge-owned CCC_LIB, since SQLite writes WAL/journal sidecars beside the db and
+# `ccc` can't create files in a munge-owned dir. 0600 db, seeded at `setup --head`.
+HEAD_STATE_DIR = CCC_LIB / "head"
+HEAD_DB = HEAD_STATE_DIR / "head.db"
 
 # --- WSL Arm dashboard forward (⑥ convenience) ---
 # A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
@@ -175,5 +180,8 @@ SCRATCH_REL = ".ccc/scratch"
 CONFIG_DIR = CCC_HOME / "config"
 BASE_SIF = IMAGES_DIR / "base.sif"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
+# CLI session bearer (Phase 3a): the token `cuttle login` stores, 0600, kept out of config.yaml so a
+# submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
+CREDENTIALS_FILE = CCC_HOME / "credentials"
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"

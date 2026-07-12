@@ -13,7 +13,7 @@ import getpass
 import tempfile
 from pathlib import Path
 
-from . import config, enroll, headapi, mesh, settings, system, templates
+from . import auth, config, enroll, headapi, mesh, settings, system, templates
 from .system import run, sh
 
 
@@ -105,6 +105,20 @@ def make_registry_dir() -> None:
     """The Enroll API's only writable location — it runs as munge and owns nothing else."""
     run(["install", "-d", "-m", "0755", "-o", config.ENROLL_API_USER, "-g", config.ENROLL_API_USER,
          str(config.CCC_LIB)], sudo=True)
+
+
+def provision_head_auth() -> None:
+    """Phase 3a identity spine: the `ccc` service account + auth store (head.db). `ccc` runs the Head
+    API and owns head.db. Called after the API venv is built (seeding the admin runs from it) and
+    before the Head API unit starts (its User=ccc must exist). Idempotent on re-run."""
+    run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin",
+         config.HEAD_API_USER], sudo=True, check=False)  # non-fatal if the user already exists
+    run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+         str(config.HEAD_STATE_DIR)], sudo=True)
+    admin_user = getpass.getuser()
+    auth.seed_admin(admin_user)  # prints a one-time temp password (or 'already exists' on re-run)
+    print(f"cuttle: auth store {config.HEAD_DB}; first admin '{admin_user}' — log in with "
+          f"`cuttle login --head <url>` and change the temp password shown above")
 
 
 def start_daemons() -> None:
@@ -239,8 +253,9 @@ def setup_head(address: str | None = None) -> None:
     install_rsyncd(mesh_ip)  # stage-in/out, mesh-bound; idle until a remote Arm submits
     make_registry_dir()
     headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: the Enroll API serves munge.key
+    provision_head_auth()                        # ccc service account + head.db + first admin (needs venv)
     build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
-    headapi.install_head(_write_root_file)       # Head API (read board + SPA) on LAN+mesh; needs venv + SPA
+    headapi.install_head(_write_root_file)       # Head API (read board + SPA + auth) on LAN+mesh
     build_base_sif()
     verify()
     lan = system.primary_ip()

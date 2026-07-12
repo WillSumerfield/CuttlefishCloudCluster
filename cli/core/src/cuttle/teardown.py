@@ -59,11 +59,13 @@ def remove_enroll_api() -> None:
 
 
 def remove_head_api() -> None:
-    """Head API service (Head-only, CCC-only). Drop its ufw port rule, unit, and the staged SPA.
-    Already stopped/disabled by stop_daemons."""
+    """Head API service (Head-only, CCC-only). Drop its ufw port rule, unit, the staged SPA, and the
+    `ccc` service account. Already stopped/disabled by stop_daemons; head.db (under CCC_LIB) is swept
+    by remove_enroll_api."""
     system.deny_tcp_port(config.HEAD_API_PORT)
     run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
+    run(["userdel", config.HEAD_API_USER], sudo=True, check=False)  # created by provision_head_auth
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 

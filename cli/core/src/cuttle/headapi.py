@@ -85,6 +85,7 @@ Wants=slurmctld.service
 User={config.HEAD_API_USER}
 Environment=CCC_PARTITION={config.PARTITION}
 Environment=CCC_WEB_DIR={config.HEAD_API_WEB_DIR}
+Environment=CCC_HEAD_DB={config.HEAD_DB}
 ExecStart={config.API_VENV}/bin/uvicorn ccc_head_api.main:app \
 --host 0.0.0.0 --port {config.HEAD_API_PORT}
 Restart=on-failure

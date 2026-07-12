@@ -2,6 +2,7 @@
 
 import typer
 
+from . import auth as auth_mod
 from . import enroll as enroll_mod
 from . import setup as setup_mod
 from . import spawns as spawns_mod
@@ -10,6 +11,8 @@ from . import teardown as teardown_mod
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CCC front door.")
 arm_app = typer.Typer(no_args_is_help=True, help="Manage Arms (run on the Head).")
 app.add_typer(arm_app, name="arm")
+user_app = typer.Typer(no_args_is_help=True, help="Manage users (run on the Head).")
+app.add_typer(user_app, name="user")
 
 
 @app.callback()
@@ -84,6 +87,55 @@ def arm_remove(name: str = typer.Argument(..., help="The Arm's node name.")):
     """Delete an Arm from Slurm, the registry, AND the mesh. All three, or the departed donor keeps
     a live mesh address — and mesh membership is what authorizes fetching the munge key."""
     enroll_mod.remove_arm(name, setup_mod._write_root_file)
+
+
+@app.command()
+def login(
+    head: str = typer.Option(
+        None, "--head", help="Head API URL (e.g. http://<host>:8082); saved for next time."),
+):
+    """Log in to the Head and store a session token (~/.ccc/credentials). Forces a password change on
+    first login."""
+    auth_mod.login(head)
+
+
+@app.command()
+def logout():
+    """Revoke this box's session on the Head and delete the local token."""
+    auth_mod.logout()
+
+
+@app.command()
+def whoami():
+    """Print the currently logged-in user."""
+    auth_mod.whoami()
+
+
+@app.command()
+def passwd():
+    """Change your password."""
+    auth_mod.passwd()
+
+
+@user_app.command("add")
+def user_add(
+    username: str = typer.Argument(..., help="New user's login name."),
+    admin: bool = typer.Option(False, "--admin", help="Grant admin."),
+):
+    """Create a user (prints a one-time temp password they must change on first login)."""
+    auth_mod.user_add(username, admin=admin)
+
+
+@user_app.command("list")
+def user_list():
+    """List users."""
+    auth_mod.user_list()
+
+
+@user_app.command("remove")
+def user_remove(username: str = typer.Argument(..., help="User to delete (and their sessions).")):
+    """Delete a user."""
+    auth_mod.user_remove(username)
 
 
 @app.command()
