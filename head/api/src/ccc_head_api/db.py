@@ -25,13 +25,16 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SESSION_TTL_DAYS = 30
 _TOKEN_BYTES = 32  # secrets.token_urlsafe → ~43 url-safe chars, 256 bits
 
 _ph = PasswordHasher()
 
-_SCHEMA = """
+# Schema as a migration ladder keyed by PRAGMA user_version: each step takes the DB from version N-1
+# to N, so a fresh DB runs the whole ladder and a deployed one runs only what it's missing (slice 1
+# shipped v1; slice 2 adds the spawns ledger as v2).
+_SCHEMA_V1 = """
 CREATE TABLE users (
   id                   INTEGER PRIMARY KEY,
   username             TEXT    NOT NULL UNIQUE,
@@ -49,6 +52,23 @@ CREATE TABLE sessions (
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 """
 
+# The attribution ledger: one row per submitted Spawn, keyed by the Slurm job id (the spawn id).
+# user_id is ON DELETE SET NULL so removing a user keeps the historical attribution row (shown as
+# "unknown" rather than vanishing). This is the single source of truth for who submitted what — no
+# sbatch --comment stamp to drift against.
+_SCHEMA_V2 = """
+CREATE TABLE spawns (
+  job_id       INTEGER PRIMARY KEY,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  submitted_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  script       TEXT    NOT NULL,
+  staging_uuid TEXT    NOT NULL
+);
+CREATE INDEX idx_spawns_user ON spawns(user_id);
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]  # index i takes user_version i -> i+1
+
 
 # --- connection + schema ----------------------------------------------------
 
@@ -62,11 +82,11 @@ def connect() -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Idempotent: create the schema once, tracked by PRAGMA user_version."""
+    """Idempotent: run any migrations the DB is behind on, tracked by PRAGMA user_version. A fresh DB
+    (version 0) runs the whole ladder; a deployed v1 DB runs only the v2 step."""
     (ver,) = conn.execute("PRAGMA user_version").fetchone()
-    if ver >= SCHEMA_VERSION:
-        return
-    conn.executescript(_SCHEMA)
+    for step in _MIGRATIONS[ver:]:
+        conn.executescript(step)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
 
@@ -171,3 +191,33 @@ def purge_expired(conn: sqlite3.Connection) -> int:
     )
     conn.commit()
     return cur.rowcount
+
+
+# --- spawn ledger (slice 2) -------------------------------------------------
+
+def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
+                 staging_uuid: str) -> None:
+    """Attribute a submitted Spawn to its user, keyed by the Slurm job id."""
+    conn.execute(
+        "INSERT INTO spawns (job_id, user_id, script, staging_uuid) VALUES (?,?,?,?)",
+        (job_id, user_id, script, staging_uuid),
+    )
+    conn.commit()
+
+
+def get_spawn(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM spawns WHERE job_id=?", (job_id,)).fetchone()
+
+
+def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str | None]:
+    """Map job_id -> submitter username for the given ids (None if the user was since deleted).
+    Used to enrich the live `GET /spawns` queue with app-level attribution."""
+    if not job_ids:
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    rows = conn.execute(
+        f"""SELECT s.job_id, u.username FROM spawns s
+            LEFT JOIN users u ON u.id = s.user_id WHERE s.job_id IN ({marks})""",
+        job_ids,
+    ).fetchall()
+    return {r["job_id"]: r["username"] for r in rows}
