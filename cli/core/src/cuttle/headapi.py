@@ -86,11 +86,12 @@ User={config.HEAD_API_USER}
 Environment=CCC_PARTITION={config.PARTITION}
 Environment=CCC_WEB_DIR={config.HEAD_API_WEB_DIR}
 Environment=CCC_HEAD_DB={config.HEAD_DB}
-# Slice 2 submission: the Head's mesh IP is baked into each rendered job script so a remote Arm can
-# rsync results home. Fixed submission paths (state dir, sif) match cuttle.config defaults.
+# Submission: the Head's mesh IP is baked into each rendered job script so a remote Arm can rsync
+# results home. Fixed submission paths (state dir, sif) match cuttle.config defaults. CCC_SIF is the
+# cluster-wide image path — the same on every node, so the script names it once.
 Environment=CCC_MESH_IP={mesh_ip}
 Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
-Environment=CCC_HEAD_SIF={config.HEAD_SIF}
+Environment=CCC_SIF={config.CCC_SIF}
 ExecStart={config.API_VENV}/bin/uvicorn ccc_head_api.main:app \
 --host 0.0.0.0 --port {config.HEAD_API_PORT}
 Restart=on-failure

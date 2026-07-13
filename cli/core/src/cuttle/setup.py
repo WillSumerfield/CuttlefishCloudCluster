@@ -107,13 +107,41 @@ def make_registry_dir() -> None:
          str(config.CCC_LIB)], sudo=True)
 
 
+def provision_mantle() -> None:
+    """Create the **Mantle** — the one identity every Spawn executes as — on THIS node, Head or Arm.
+
+    The uid is pinned (config.CCC_UID), not distro-allocated, and that is the whole point: Slurm runs a
+    job as the *submitting* uid, so slurmctld records the Head API's uid at sbatch and every slurmd
+    setuid()s to it. A dynamically-allocated `ccc` would get a different uid on each box and a Spawn
+    scheduled onto a remote Arm would setuid() to a user that doesn't exist there. One pinned uid,
+    cluster-wide, is what makes a Spawn the same Spawn on any node.
+
+    Home-less on purpose: the Mantle owns no per-node state anywhere. It reads base.sif from the
+    world-readable CCC_IMAGES_DIR and scratches in /tmp (see the API's JOB_SCRIPT), so a donor box is
+    left with nothing. `nologin` is fine — slurmd execs the batch script by its shebang, not a shell.
+
+    Idempotent (re-runs are non-fatal), but a uid/gid COLLISION is fatal by design: useradd fails,
+    setup halts, and we decide live rather than silently landing on a mismatched uid.
+    """
+    run(["groupadd", "--gid", str(config.CCC_GID), config.HEAD_API_USER], sudo=True, check=False)
+    run(["useradd", "--uid", str(config.CCC_UID), "--gid", str(config.CCC_GID), "--system",
+         "--no-create-home", "--shell", "/usr/sbin/nologin", config.HEAD_API_USER],
+        sudo=True, check=False)  # non-fatal if the account already exists
+    # useradd's failure is non-fatal above (re-run), so verify the uid we actually ended up with —
+    # a pre-existing `ccc` at some OTHER uid would silently break remote Spawns.
+    uid = run(["id", "-u", config.HEAD_API_USER], capture_output=True, text=True).stdout.strip()
+    assert uid == str(config.CCC_UID), (
+        f"the `{config.HEAD_API_USER}` account on this box has uid {uid}, but CCC pins it to "
+        f"{config.CCC_UID}. Every node must agree or Slurm cannot run a Spawn here. Remove the "
+        f"conflicting account (`sudo userdel {config.HEAD_API_USER}`) and re-run setup.")
+
+
 def provision_head_auth() -> None:
-    """Phase 3a identity spine: the `ccc` service account + auth store (head.db). `ccc` runs the Head
-    API and owns head.db plus the slice-2 submission dirs (uploaded projects, Spawn results, scratch).
-    Called after the API venv is built (seeding the admin runs from it) and before the Head API unit
-    and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
-    run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin",
-         config.HEAD_API_USER], sudo=True, check=False)  # non-fatal if the user already exists
+    """Head-side identity spine: the Mantle's Head state + auth store (head.db). On the Head the Mantle
+    also runs the Head API and owns head.db plus the submission dirs (uploaded projects, Spawn results,
+    scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
+    API unit and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
+    provision_mantle()
     for d in (config.HEAD_STATE_DIR, config.HEAD_PROJECTS_DIR, config.HEAD_SPAWNS_DIR,
               config.HEAD_SCRATCH_DIR):
         run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
@@ -142,25 +170,27 @@ def install_rsyncd(mesh_ip: str) -> None:
     run(["systemctl", "restart", config.RSYNCD_SERVICE], sudo=True)
 
 
-def build_base_sif(images_dir: Path = config.IMAGES_DIR, sif: Path = config.BASE_SIF,
-                   shared: bool = False) -> None:
-    """Build the base Pod image. `shared=True` (the Head) targets a world-readable /opt path so the
-    home-less `ccc` account can read it when it runs Spawns — the operator's 0750 home is off-limits,
-    and post-slice-2 the operator never runs jobs directly. An Arm keeps its own ~/.ccc copy."""
-    if shared:
-        # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
-        run(["install", "-d", "-o", getpass.getuser(), "-g", getpass.getuser(), str(images_dir)],
-            sudo=True)
-    else:
-        images_dir.mkdir(parents=True, exist_ok=True)
-    if sif.exists():
-        print(f"base.sif exists ({sif}) — skipping build")
+def build_base_sif() -> None:
+    """Build the base Pod image at CCC_SIF — the SAME path on every node, Head or Arm.
+
+    It lands in a world-readable /opt tree rather than the operator's ~/.ccc because Spawns run as the
+    home-less **Mantle**, which cannot traverse a 0750 home. One path cluster-wide means the rendered
+    job script names the sif identically wherever Slurm places the Spawn.
+
+    Built locally on each node (apptainer build) — deliberately NOT shipped from the Head, which would
+    push a multi-GB image over the mesh at every enrollment. Skipped if already present (a re-run must
+    not trigger a multi-GB rebuild; teardown keeps it unless --all).
+    """
+    # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
+    run(["install", "-d", "-o", getpass.getuser(), "-g", getpass.getuser(),
+         str(config.CCC_IMAGES_DIR)], sudo=True)
+    if config.CCC_SIF.exists():
+        print(f"base.sif exists ({config.CCC_SIF}) — skipping build")
         return
-    def_file = images_dir / "base.def"
+    def_file = config.CCC_IMAGES_DIR / "base.def"
     def_file.write_text(templates.render_base_def())
-    run(["apptainer", "build", str(sif), str(def_file)])
-    if shared:
-        run(["chmod", "-R", "a+rX", str(images_dir)], sudo=True)
+    run(["apptainer", "build", str(config.CCC_SIF), str(def_file)])
+    run(["chmod", "-R", "a+rX", str(config.CCC_IMAGES_DIR)], sudo=True)
 
 
 def build_spa() -> None:
@@ -213,8 +243,10 @@ ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
 
 
 def make_user_dirs() -> None:
-    for d in (config.IMAGES_DIR, config.SPAWNS_DIR, config.CONFIG_DIR):
-        d.mkdir(parents=True, exist_ok=True)
+    """The operator's own ~/.ccc — settings + credentials only. No images/ or spawns/ here: Pod images
+    live in the world-readable CCC_IMAGES_DIR (the home-less Mantle must read them) and Spawn results
+    live on the Head, fetched over the API."""
+    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def verify() -> None:
@@ -268,7 +300,7 @@ def setup_head(address: str | None = None) -> None:
     install_rsyncd(mesh_ip)                      # stage-in/out, mesh-bound; needs ccc + its dirs first
     build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
     headapi.install_head(_write_root_file, mesh_ip)  # Head API (board + SPA + auth + submit) LAN+mesh
-    build_base_sif(config.HEAD_IMAGES_DIR, config.HEAD_SIF, shared=True)  # ccc-readable for Spawns
+    build_base_sif()                             # Mantle-readable Pod image at the cluster-wide path
     verify()
     lan = system.primary_ip()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
@@ -325,6 +357,11 @@ def setup_arm(invite: str, re_enroll: bool = False) -> None:
                    "ctld_addr": info["ctld_addr"], "gpu_device": enroll.gpu_device()}
     settings.save(data)
 
+    # The Mantle must exist here BEFORE slurmd can accept a Spawn: slurmd setuid()s to the submitting
+    # uid, which is the Head API's pinned CCC_UID. Without this account a Spawn scheduled onto this Arm
+    # would run as an unknown numeric uid. Its Pod image must be readable by it, at the same path the
+    # Head renders into the job script.
+    provision_mantle()
     build_base_sif()
 
     # Mesh admission (above) and Slurm admission are separate: `cuttle arm approve` grants the first

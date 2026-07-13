@@ -60,12 +60,12 @@ def remove_enroll_api() -> None:
 
 def remove_head_api() -> None:
     """Head API service (Head-only, CCC-only). Drop its ufw port rule, unit, the staged SPA, and the
-    `ccc` service account. Already stopped/disabled by stop_daemons; head.db (under CCC_LIB) is swept
-    by remove_enroll_api."""
+    Mantle account. Already stopped/disabled by stop_daemons; head.db (under CCC_LIB) is swept by
+    remove_enroll_api."""
     system.deny_tcp_port(config.HEAD_API_PORT)
     run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
-    run(["userdel", config.HEAD_API_USER], sudo=True, check=False)  # created by provision_head_auth
+    remove_mantle()  # created by provision_head_auth -> provision_mantle
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -111,6 +111,13 @@ def remove_user_dirs() -> None:
     shutil.rmtree(config.CCC_HOME, ignore_errors=True)
 
 
+def remove_images() -> None:
+    """The node's base.sif (built to /opt so the home-less Mantle can read it). Every node has one —
+    Head and Arm alike — so both teardowns drop it, and both only under --all: it is multi-GB, and a
+    config-only re-verify must not trigger an apptainer rebuild."""
+    run(["rm", "-rf", str(config.CCC_IMAGES_DIR)], sudo=True, check=False)
+
+
 # --- Arm-only teardown -------------------------------------------------------
 
 def stop_arm_daemons() -> None:
@@ -149,6 +156,13 @@ def remove_munge_key() -> None:
     run(["rm", "-f", str(config.MUNGE_KEY)], sudo=True, check=False)
 
 
+def remove_mantle() -> None:
+    """The Spawn-execution identity `setup` created on this node (provision_mantle). Dropped on both
+    the Head and an Arm — a departed node must not keep a cluster account at a pinned uid."""
+    run(["userdel", config.HEAD_API_USER], sudo=True, check=False)
+    run(["groupdel", config.HEAD_API_USER], sudo=True, check=False)
+
+
 def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     """Reverse `setup --arm`. Leaves the mesh and wipes local state, so the Arm's Headscale node goes
     stale on the Head — reaped on next `cuttle arm approve` (see enroll.approve_arm), or now with
@@ -159,15 +173,17 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     undo_apptainer_wsl()
     remove_wsl_dashboard_forward()
     remove_munge_key()
+    remove_mantle()  # created by setup_arm.provision_mantle
     if not keep_packages:
         purge_packages()
         remove_repos()
     if all_:
         remove_user_dirs()
+        remove_images()
     print("\ncuttle: Arm torn down (left the mesh; its Head-side node is now stale — reap with "
           "`cuttle arm remove <name>` or let re-enrollment do it)"
           + (" (packages/repos kept)" if keep_packages else "")
-          + (" (~/.ccc removed)" if all_ else " (~/.ccc kept)"))
+          + (" (~/.ccc + base.sif removed)" if all_ else " (~/.ccc + base.sif kept)"))
 
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
@@ -182,9 +198,7 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
         remove_repos()
     if all_:
         remove_user_dirs()
-        # The Head's shared base.sif (built to /opt for the home-less ccc). Kept unless --all, same as
-        # ~/.ccc, so a config-only re-verify doesn't trigger a multi-GB apptainer rebuild.
-        run(["rm", "-rf", str(config.HEAD_IMAGES_DIR)], sudo=True, check=False)
+        remove_images()
     print("\ncuttle: local cluster torn down"
           + (" (packages/repos kept)" if keep_packages else "")
-          + (" (~/.ccc removed)" if all_ else " (~/.ccc kept)"))
+          + (" (~/.ccc + base.sif removed)" if all_ else " (~/.ccc + base.sif kept)"))

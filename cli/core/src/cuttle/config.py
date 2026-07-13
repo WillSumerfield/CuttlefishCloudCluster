@@ -75,9 +75,17 @@ GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
 HEAD_API_PORT = 8082  # 8080 = headscale, 8081 = enroll API
 HEAD_API_SERVICE = "ccc-head-api"
 HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
-# Dedicated `ccc` service account: owns the auth DB (head.db) and (later) submits via the munge
-# socket — never reads the munge key. Phase 1 ran this read-only board as `nobody`.
+# The **Mantle** (glossary): the single service identity every Spawn executes as, on every node. On the
+# Head it also runs the Head API, owns the auth DB (head.db), and submits via the munge socket — never
+# reading the munge key. Phase 1 ran the read-only board as `nobody`.
 HEAD_API_USER = "ccc"
+# Slurm runs a job as the *submitting uid*: slurmctld records the Head API's uid at sbatch, and every
+# slurmd setuid()s to it before launching. So that uid MUST resolve to the same account on every node —
+# a cluster-wide pin, not a per-box `useradd --system` (which allocates dynamically). 60000 sits in
+# Debian's reserved block AND below systemd's DynamicUser range (61184–65519), so no transient service
+# can have taken it. Collision ⇒ useradd fails and setup halts (no fallback; decide live).
+CCC_UID = 60000
+CCC_GID = 60000
 # The first CCC login account, seeded at `setup --head`. A fixed name (NOT the operator's OS username):
 # it's an app-level account in head.db, unrelated to any Unix uid. Spawns show `submitted_by: admin`.
 FIRST_ADMIN_USER = "admin"
@@ -97,11 +105,13 @@ HEAD_DB = HEAD_STATE_DIR / "head.db"
 HEAD_PROJECTS_DIR = HEAD_STATE_DIR / "projects"
 HEAD_SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
 HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
-# base.sif for ccc-run jobs on the Head. The operator's ~/.ccc/images copy is unreadable to the
-# home-less `ccc` account, and post-slice-2 the operator never runs jobs directly — so the Head builds
-# a world-readable copy here (same /opt/ccc tree as the venv + SPA). Remote Arms keep BASE_SIF.
-HEAD_IMAGES_DIR = Path("/opt/ccc/images")
-HEAD_SIF = HEAD_IMAGES_DIR / "base.sif"
+# base.sif, at the SAME path on every node (Head and every Arm) — Spawns run as the home-less Mantle,
+# which can't read an operator's 0750 home, so the image lives in a world-readable /opt tree (same
+# /opt/ccc as the venv + SPA) instead. One constant path cluster-wide means the rendered job script
+# names the sif identically wherever Slurm places it. Each node BUILDS its own (apptainer build at
+# setup); nothing ships a multi-GB image over the mesh.
+CCC_IMAGES_DIR = Path("/opt/ccc/images")
+CCC_SIF = CCC_IMAGES_DIR / "base.sif"
 
 # --- WSL Arm dashboard forward (⑥ convenience) ---
 # A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
@@ -188,15 +198,11 @@ RSYNC_MODULE_PROJECT = "project"  # ro, rooted at HEAD_PROJECTS_DIR (a remote Ar
 RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at HEAD_SPAWNS_DIR — stage-out target
 
 # --- CCC user artifacts ---
+# The OPERATOR's own dir — settings + credentials only. It holds no Spawn machinery: images live in
+# CCC_IMAGES_DIR (world-readable, so the home-less Mantle can read them) and Spawn results live on the
+# Head under HEAD_SPAWNS_DIR, fetched over the API. A submitter never needs a local .ccc/spawns.
 CCC_HOME = Path.home() / ".ccc"
-IMAGES_DIR = CCC_HOME / "images"
-SPAWNS_DIR = CCC_HOME / "spawns"
-# Ephemeral per-Spawn staging on a remote Arm (node-local, resolved against the NODE's $HOME). One
-# job = one dir, wiped on exit (trap). No persistent cache — leaving multi-GB dirs on donor boxes is
-# bad tenancy, so each Spawn copies fresh. Path is relative to the node home; see spawns.JOB_SCRIPT.
-SCRATCH_REL = ".ccc/scratch"
 CONFIG_DIR = CCC_HOME / "config"
-BASE_SIF = IMAGES_DIR / "base.sif"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 # CLI session bearer (Phase 3a): the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
