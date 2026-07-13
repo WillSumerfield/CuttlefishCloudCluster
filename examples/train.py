@@ -1,14 +1,22 @@
-"""Minimal CCC validation Spawn: prove GPU reaches the Pod + (optionally) log to W&B.
+"""Minimal CCC validation Spawn: prove GPU reaches the Pod, results come back, and (optionally) W&B.
 
 Run via:  cuttle run examples/train.py --gpu 1 -f
+          cuttle outputs <id>          # result.txt, written below
 Exits non-zero if CUDA isn't visible inside the Pod (that's the thing we're validating).
+
+Writing to $CCC_OUT is the whole return path: on a remote Arm that directory is what rsync stages back
+to the Head, so a validation Spawn that only printed would leave the results path untested.
 """
 
 import os
 import time
+from pathlib import Path
 
 import torch
 
+# The Mantle: every Spawn on every node executes as this one pinned uid (60000), never as the
+# submitter. Printed because it must be identical on the Head and on any donor's Arm.
+print(f"uid {os.getuid()} ({os.environ.get('SLURMD_NODENAME', '?')})")
 print(f"torch {torch.__version__}")
 assert torch.cuda.is_available(), "CUDA not visible in Pod — GPU passthrough failed"
 dev = torch.device("cuda")
@@ -21,7 +29,20 @@ t0 = time.time()
 for _ in range(20):
     c = a @ b
 torch.cuda.synchronize()
-print(f"20x 4096^2 matmul on GPU: {time.time() - t0:.3f}s  (checksum {c.sum().item():.1f})")
+elapsed, checksum = time.time() - t0, c.sum().item()
+print(f"20x 4096^2 matmul on GPU: {elapsed:.3f}s  (checksum {checksum:.1f})")
+
+# The result the Spawn hands back. $CCC_OUT is bound into the Pod by the job script and is the ONLY
+# path out — anything written elsewhere dies with the scratch dir.
+out = Path(os.environ["CCC_OUT"])
+(out / "result.txt").write_text(
+    f"node {os.environ.get('SLURMD_NODENAME', '?')}\n"
+    f"uid {os.getuid()}\n"
+    f"device {torch.cuda.get_device_name(dev)}\n"
+    f"20x 4096^2 matmul {elapsed:.3f}s\n"
+    f"checksum {checksum:.1f}\n"
+)
+print(f"wrote {out}/result.txt")
 
 # Optional W&B — base image may not ship wandb; log only if importable + enabled.
 if os.environ.get("WANDB_MODE") != "disabled":
