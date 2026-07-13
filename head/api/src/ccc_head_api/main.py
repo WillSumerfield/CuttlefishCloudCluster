@@ -184,10 +184,15 @@ def me(user: dict = Depends(current_user)) -> dict:
 @app.post("/passwd")
 def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
     """Rotate own password (also the forced-first-login path). Verifies the old password, clears the
-    must-change flag. Existing sessions stay valid — the client keeps using its token."""
+    must-change flag. Existing sessions stay valid — the client keeps using its token.
+
+    A wrong old password is **403, not 401**: the caller's session is fine, this one act is refused.
+    401 is the clients' "your session is dead, log in again" signal (the SPA drops to its login form
+    on any 401), so answering it here made a typo'd password report itself as `not logged in`.
+    """
     with db.connect() as conn:
         if db.verify_password(conn, user["username"], req.old_password) is None:
-            raise HTTPException(401, "current password is wrong")
+            raise HTTPException(403, "current password is wrong")
         db.set_password(conn, user["username"], req.new_password)
     return {"ok": True}
 
