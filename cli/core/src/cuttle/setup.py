@@ -242,10 +242,13 @@ def build_spa() -> None:
 
 def install_wsl_dashboard_forward(head_mesh_ip: str) -> None:
     """WSL-only: forward a local port to the Head API so the Arm's owner can open the Dashboard from
-    their Windows browser at http://localhost:<HEAD_API_PORT>/. The CCC mesh lives inside WSL and
+    their Windows browser at https://localhost:<HEAD_API_PORT>/. The CCC mesh lives inside WSL and
     Windows can't reach the Head's mesh IP, but WSL2 forwards Windows localhost to WSL listeners —
     so a listener here bridges the gap. Socket-activated proxy (systemd-socket-proxyd, no package).
-    Idempotent: `enable --now` on re-run is a no-op."""
+    Idempotent: `enable --now` on re-run is a no-op.
+
+    HTTPS, not HTTP: the proxy is raw TCP so it carries TLS untouched, and the Head speaks nothing but
+    TLS now. `localhost`/127.0.0.1 are in the cert's SANs for exactly this path (see provision_tls)."""
     socket_unit = f"""\
 [Unit]
 Description=CCC dashboard forward (WSL->Windows localhost bridge)
@@ -270,8 +273,8 @@ ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
     _write_root_file(config.DASH_FORWARD_SERVICE_UNIT, service_unit)
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
-    print(f"cuttle: WSL dashboard forward up — open http://localhost:{config.HEAD_API_PORT}/ "
-          f"in your Windows browser")
+    print(f"cuttle: WSL dashboard forward up — open https://localhost:{config.HEAD_API_PORT}/ "
+          f"in your Windows browser (self-signed cert: click through the warning once)")
 
 
 def make_user_dirs() -> None:
