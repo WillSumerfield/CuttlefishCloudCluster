@@ -193,6 +193,36 @@ def build_base_sif() -> None:
     run(["chmod", "-R", "a+rX", str(config.CCC_IMAGES_DIR)], sudo=True)
 
 
+def install_tls(mesh_ip: str) -> None:
+    """Generate the Head's self-signed TLS cert, so the LAN path stops carrying passwords in the clear.
+
+    Every address a client might dial the Head at must be in the cert's SANs, or TLS rejects the
+    connection with a name mismatch *on top of* the self-signed warning:
+      - the LAN IP + hostname  — a browser or CLI on the local network,
+      - the mesh IP            — a remote Arm's owner browsing over the mesh,
+      - localhost/127.0.0.1    — a WSL Arm's dashboard forward, which surfaces the Head at
+                                 https://localhost:8082 in the Windows browser.
+
+    Generated only if absent: regenerating would change the cert's fingerprint and invalidate the pin
+    every client stored (see cuttle/tls.py), so a routine teardown+setup must not churn it. The key is
+    readable only by the Mantle, which is the user the Head API runs as.
+    """
+    if config.HEAD_CERT.exists():
+        print(f"cuttle: TLS cert exists ({config.HEAD_CERT}) — keeping it (clients have pinned it)")
+        return
+    host, lan = system.hostname(), system.primary_ip()
+    san = (f"DNS:{host},DNS:localhost,IP:{lan},IP:{mesh_ip},IP:127.0.0.1")
+    run(["install", "-d", "-m", "0755", str(config.CCC_TLS_DIR)], sudo=True)
+    run(["openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
+         "-days", str(config.CERT_DAYS),
+         "-subj", f"/CN={host}", "-addext", f"subjectAltName={san}",
+         "-keyout", str(config.HEAD_KEY), "-out", str(config.HEAD_CERT)], sudo=True)
+    run(["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(config.HEAD_KEY)], sudo=True)
+    run(["chmod", "0600", str(config.HEAD_KEY)], sudo=True)  # the private half: Mantle-only
+    run(["chmod", "0644", str(config.HEAD_CERT)], sudo=True)  # the public ID card: anyone may read
+    print(f"cuttle: TLS cert for {san}")
+
+
 def build_spa() -> None:
     """Build the Dashboard SPA and stage it where the Head API service reads it. Node is needed only
     on the Head; a donor Arm never builds this. Staged OUTSIDE the user's 0750 home — the service
@@ -299,6 +329,7 @@ def setup_head(address: str | None = None) -> None:
     provision_head_auth()                        # ccc account + head.db + submission dirs (needs venv)
     install_rsyncd(mesh_ip)                      # stage-in/out, mesh-bound; needs ccc + its dirs first
     build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
+    install_tls(mesh_ip)                         # self-signed cert; must exist before uvicorn starts
     headapi.install_head(_write_root_file, mesh_ip)  # Head API (board + SPA + auth + submit) LAN+mesh
     build_base_sif()                             # Mantle-readable Pod image at the cluster-wide path
     verify()
@@ -307,6 +338,11 @@ def setup_head(address: str | None = None) -> None:
     print(f"cuttle: invite an Arm with `cuttle invite` (coordinator {mesh_ip})")
     print(f"cuttle: dashboard at {headapi.head_url(lan)} (LAN) / "
           f"{headapi.head_url(mesh_ip)} (mesh)")
+    print("\ncuttle: the Head signs its own TLS certificate (no public domain = no CA can sign it).\n"
+          "        BROWSER — the first visit warns 'your connection is not private'. That is EXPECTED.\n"
+          "        Click Advanced -> Proceed; the browser remembers, and you see it once per browser.\n"
+          "        CLI     — `cuttle login` shows the certificate's fingerprint once and asks you to\n"
+          "        confirm it. After that it is pinned, and a changed certificate is refused.")
 
 
 # `--local` is just the single-box Head (Head + its co-located Arm).

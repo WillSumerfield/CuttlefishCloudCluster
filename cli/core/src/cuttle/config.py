@@ -90,6 +90,21 @@ CCC_GID = 60000
 # it's an app-level account in head.db, unrelated to any Unix uid. Spawns show `submitted_by: admin`.
 FIRST_ADMIN_USER = "admin"
 HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
+# LAN TLS. The Head API carries passwords and session tokens on `0.0.0.0`, so the LAN path must be
+# encrypted. No CA will sign a cert for a box with no public domain (that's item #8), so the Head signs
+# its OWN — which gives encryption but no identity: anyone can self-sign a cert claiming to be the
+# Head. Identity comes back from PINNING (see cuttle/tls.py): the CLI remembers this exact cert the
+# first time it sees it, exactly like SSH's known_hosts. Browsers can't pin, so they show the
+# "not private" warning once and the user adds an exception (setup prints that this is expected).
+# Lives in /opt (not CCC_LIB) so a plain teardown preserves it, like base.sif — regenerating the cert
+# would invalidate every client's pin.
+CCC_TLS_DIR = Path("/opt/ccc/tls")
+HEAD_CERT = CCC_TLS_DIR / "head.crt"   # 0644, the public ID card clients pin
+HEAD_KEY = CCC_TLS_DIR / "head.key"    # 0600 ccc — only the Head API may read it
+CERT_DAYS = 3650                       # effectively never expires; a pin outliving the cert is worse
+# Cap an upload rather than buffering whatever arrives: the Head API streams the body to disk, and the
+# Head is the one box that must stay up. A browser folder-picker makes a huge accidental selection easy.
+MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB
 # Auth store (Phase 3a): the User + Session tables behind login. Its own ccc-owned subdir (0700) —
 # NOT loose in the munge-owned CCC_LIB, since SQLite writes WAL/journal sidecars beside the db and
 # `ccc` can't create files in a munge-owned dir. 0600 db, seeded at `setup --head`.
@@ -204,6 +219,10 @@ RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at HEAD_SPAWNS_DIR — stage-out 
 CCC_HOME = Path.home() / ".ccc"
 CONFIG_DIR = CCC_HOME / "config"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
+# Pinned Head certificates, one PEM per host (trust-on-first-use; see tls.py). Keyed by host because a
+# client may one day talk to more than one cluster, and a pin is only meaningful against the Head that
+# presented it.
+PINS_DIR = CCC_HOME / "pins"
 # CLI session bearer (Phase 3a): the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 CREDENTIALS_FILE = CCC_HOME / "credentials"

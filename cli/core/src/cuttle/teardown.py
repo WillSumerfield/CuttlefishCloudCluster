@@ -118,6 +118,13 @@ def remove_images() -> None:
     run(["rm", "-rf", str(config.CCC_IMAGES_DIR)], sudo=True, check=False)
 
 
+def remove_tls() -> None:
+    """The Head's self-signed cert. Head-only, and --all only: every client has PINNED this cert, so
+    dropping it means the next setup mints a different one and every client refuses to connect until
+    it re-pins. Same preserve-unless--all rule as base.sif, for a different reason."""
+    run(["rm", "-rf", str(config.CCC_TLS_DIR)], sudo=True, check=False)
+
+
 # --- Arm-only teardown -------------------------------------------------------
 
 def stop_arm_daemons() -> None:
@@ -199,6 +206,8 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     if all_:
         remove_user_dirs()
         remove_images()
+        remove_tls()
     print("\ncuttle: local cluster torn down"
           + (" (packages/repos kept)" if keep_packages else "")
-          + (" (~/.ccc + base.sif removed)" if all_ else " (~/.ccc + base.sif kept)"))
+          + (" (~/.ccc + base.sif + TLS cert removed — clients must re-pin)" if all_
+             else " (~/.ccc + base.sif + TLS cert kept)"))

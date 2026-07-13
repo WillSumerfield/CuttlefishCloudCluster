@@ -93,7 +93,8 @@ Environment=CCC_MESH_IP={mesh_ip}
 Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
 Environment=CCC_SIF={config.CCC_SIF}
 ExecStart={config.API_VENV}/bin/uvicorn ccc_head_api.main:app \
---host 0.0.0.0 --port {config.HEAD_API_PORT}
+--host 0.0.0.0 --port {config.HEAD_API_PORT} \
+--ssl-keyfile {config.HEAD_KEY} --ssl-certfile {config.HEAD_CERT}
 Restart=on-failure
 RestartSec=2
 
@@ -103,8 +104,9 @@ WantedBy=multi-user.target
 
 
 def install_head(write_unit, mesh_ip: str) -> None:
-    """Install + start the Head API unit. Assumes `install_enroll()` already built the shared venv and
-    that the SPA has been staged into config.HEAD_API_WEB_DIR (setup.build_spa)."""
+    """Install + start the Head API unit. Assumes `install_enroll()` built the shared venv, the SPA is
+    staged in config.HEAD_API_WEB_DIR (setup.build_spa), and the TLS cert exists (setup.install_tls) —
+    uvicorn will not start without the key/cert it's pointed at."""
     write_unit(config.HEAD_API_UNIT, _head_unit(mesh_ip), "644")
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", config.HEAD_API_SERVICE], sudo=True)
@@ -112,4 +114,6 @@ def install_head(write_unit, mesh_ip: str) -> None:
 
 
 def head_url(host: str) -> str:
-    return f"http://{host}:{config.HEAD_API_PORT}"
+    """https: the Head API carries passwords + session tokens (the Enroll API stays plain HTTP — it's
+    mesh-only, and WireGuard already encrypts that path)."""
+    return f"https://{host}:{config.HEAD_API_PORT}"
