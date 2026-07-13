@@ -48,17 +48,18 @@ export class Unauthorized extends Error {}
 
 async function req(path: string, init?: RequestInit): Promise<Response> {
   const r = await fetch(path, init)
-  if (r.status === 401) throw new Unauthorized('not logged in')
-  if (!r.ok) {
-    let detail = `${r.status}`
-    try {
-      detail = (await r.json()).detail ?? detail
-    } catch {
-      /* not JSON */
-    }
-    throw new Error(detail)
+  if (r.ok) return r
+  let detail = `${r.status}`
+  try {
+    detail = (await r.json()).detail ?? detail
+  } catch {
+    /* not JSON */
   }
-  return r
+  // 401 means the SESSION is bad — and only that, so the app can safely read it as "bounce to the
+  // login screen". Never invent the message: a route that refuses an authed caller for its own
+  // reasons (a wrong current password, say) answers 403, and its detail must reach the user intact.
+  if (r.status === 401) throw new Unauthorized(detail)
+  throw new Error(detail)
 }
 
 const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)

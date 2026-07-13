@@ -64,7 +64,9 @@ const btn =
 
 // --- login ------------------------------------------------------------------
 
-function Login({ onLogin }: { onLogin: (me: Me) => void }) {
+// Hands the password back up alongside the user: a must-change account goes straight from here to
+// ChangePassword, which needs it as `old_password` and must never ask for it a second time.
+function Login({ onLogin }: { onLogin: (me: Me, password: string) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -75,7 +77,7 @@ function Login({ onLogin }: { onLogin: (me: Me) => void }) {
     setBusy(true)
     setError(null)
     try {
-      onLogin(await login(username, password))
+      onLogin(await login(username, password), password)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -89,9 +91,10 @@ function Login({ onLogin }: { onLogin: (me: Me) => void }) {
         <h1 className="text-center text-2xl font-bold tracking-tight text-slate-100">
           <span className="text-sky-400">CCC</span> Dashboard
         </h1>
-        <input className={input} placeholder="Username" autoFocus value={username}
-               onChange={(e) => setUsername(e.target.value)} />
-        <input className={input} type="password" placeholder="Password" value={password}
+        <input className={input} placeholder="Username" autoFocus autoComplete="username"
+               value={username} onChange={(e) => setUsername(e.target.value)} />
+        <input className={input} type="password" placeholder="Password"
+               autoComplete="current-password" value={password}
                onChange={(e) => setPassword(e.target.value)} />
         {error && <p className="text-sm text-rose-400">{error}</p>}
         <button className={`${btn} w-full`} disabled={busy || !username || !password}>
@@ -103,17 +106,26 @@ function Login({ onLogin }: { onLogin: (me: Me) => void }) {
 }
 
 /** Forced rotation: a freshly-provisioned account holds a temp password it must replace before it can
- * submit anything (the API 403s /submit until it does). */
-function ChangePassword({ onDone }: { onDone: () => void }) {
-  const [oldPw, setOldPw] = useState('')
+ * submit anything (the API 403s /submit until it does).
+ *
+ * `current` is the password the user just signed in with, carried over in memory. Asking for it again
+ * here would be both redundant (they typed it one screen ago) and a trap: two password boxes read as
+ * "new + confirm" to everyone, so the temp password lands in the wrong one and /passwd 403s. The two
+ * boxes below therefore ARE new + confirm — the shape people expect, and the one `cuttle passwd` uses.
+ */
+function ChangePassword({ current, onDone }: { current: string; onDone: () => void }) {
   const [newPw, setNewPw] = useState('')
+  const [confirm, setConfirm] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  const mismatch = confirm.length > 0 && newPw !== confirm
 
   const go = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
+    if (newPw !== confirm) return setError('the two passwords do not match')
     try {
-      await changePassword(oldPw, newPw)
+      await changePassword(current, newPw)
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -127,12 +139,22 @@ function ChangePassword({ onDone }: { onDone: () => void }) {
         <p className="text-sm text-slate-400">
           Your account was created with a temporary password. Replace it before submitting work.
         </p>
-        <input className={input} type="password" placeholder="Temporary password" value={oldPw}
-               onChange={(e) => setOldPw(e.target.value)} />
-        <input className={input} type="password" placeholder="New password" value={newPw}
-               onChange={(e) => setNewPw(e.target.value)} />
-        {error && <p className="text-sm text-rose-400">{error}</p>}
-        <button className={`${btn} w-full`} disabled={!oldPw || !newPw}>Change password</button>
+        <label className="block space-y-1">
+          <span className="text-xs text-slate-400">New password</span>
+          <input className={input} type="password" autoFocus autoComplete="new-password"
+                 value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-xs text-slate-400">Confirm new password</span>
+          <input className={input} type="password" autoComplete="new-password" value={confirm}
+                 onChange={(e) => setConfirm(e.target.value)} />
+        </label>
+        {(error || mismatch) && (
+          <p className="text-sm text-rose-400">{error ?? 'the two passwords do not match'}</p>
+        )}
+        <button className={`${btn} w-full`} disabled={!newPw || newPw !== confirm}>
+          Change password
+        </button>
       </form>
     </div>
   )
@@ -399,6 +421,9 @@ function SpawnDetail({ id, onClose }: { id: number; onClose: () => void }) {
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
+  // The password from this session's sign-in, kept in memory ONLY to feed the forced-rotation screen
+  // (see ChangePassword). Never stored, never leaves the tab, dropped the moment rotation succeeds.
+  const [signInPw, setSignInPw] = useState<string | null>(null)
   const [booting, setBooting] = useState(true)
   const [arms, setArms] = useState<Arm[]>([])
   const [spawns, setSpawns] = useState<Spawn[]>([])
@@ -443,9 +468,20 @@ export default function App() {
   }, [me])
 
   if (booting) return <div className="min-h-screen bg-slate-950" />
-  if (!me) return <Login onLogin={setMe} />
-  if (me.must_change_password) {
-    return <ChangePassword onDone={() => setMe({ ...me, must_change_password: false })} />
+  // A live cookie with no password in memory (a reload mid-rotation, or a revisit) can't answer
+  // /passwd's old_password — so send them back through sign-in to re-supply it, rather than growing a
+  // second form shape that asks for the temp password on one path only.
+  const pw = signInPw
+  if (!me || (me.must_change_password && pw === null)) {
+    return <Login onLogin={(u, typed) => { setMe(u); setSignInPw(typed) }} />
+  }
+  if (me.must_change_password && pw !== null) {
+    return (
+      <ChangePassword
+        current={pw}
+        onDone={() => { setSignInPw(null); setMe({ ...me, must_change_password: false }) }}
+      />
+    )
   }
 
   return (
