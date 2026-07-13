@@ -1,30 +1,13 @@
 # Durable TODOs
 
-## UNTESTED ON HARDWARE: remote-Arm Spawn execution (Phase-3a slice 3)
+## Stale dev-server proxy in `head/web/vite.config.ts`
 
-Slice 3 (pinned Mantle uid, cluster-wide `/opt/ccc/images/base.sif`, `/tmp` scratch on the Arm,
-pre-created Spawn dir, ledger-aware status, `cuttle run --node`) was committed **without ever running
-on a second box** — the remote Arm was unavailable. It is verified only offline: both job-script
-branches render and pass `bash -n`, and the API's submit/status/outputs/attribution paths were driven
-end-to-end against stub `sbatch`/`squeue`/`sinfo`.
-
-What that leaves genuinely unproven is **only the `else` branch of `JOB_SCRIPT`** — the remote-Arm path
-that rsync-stages the project in from the Head's `[project]` module and stages results back to
-`[spawns]`. Everything else in the slice runs on the Head's co-located Arm and *is* testable on one box.
-
-To verify (needs the Head + one remote Arm):
-1. `cuttle teardown --local --all`, then `cuttle setup --head --address <tailnet-ip>` — the uid pin
-   means `ccc` must be dropped and recreated. Re-seed `admin`, rotate the temp password.
-2. `cuttle arm authorize <arm-name> --user admin` on the Head, then `cuttle setup --arm --token <blob>`
-   on the donor box (creates the Mantle at the pinned uid there, builds its own base.sif).
-3. `cuttle run test.py --node <arm-name> -f` → expect stage-in, a Pod run as the Mantle, stage-out,
-   then `cuttle outputs <id>` yielding `result.txt` at exit 0.
-4. Re-run without `--node` (co-located path must still work), and `scancel` one mid-flight (must report
-   `FAILED`, not 404).
-
-Known risk if it fails: the stage-out `rsync` writing into `rsync://<head>/spawns/<jid>/`. The dir is
-now pre-created Head-side, but the daemon drops to the Mantle per-module (`uid=`/`gid=` in
-`ccc-rsyncd.conf`) and that write path has never been exercised.
+`npm run dev` proxies only `/arms` and `/spawns`, over `http://`. Both are now wrong: the Head is
+HTTPS-only (slice 4), and slice 4 added `/login`, `/me`, `/passwd`, `/logout`, `/submit`, and
+`/spawns/{id}/{logs,outputs}` — none of which are proxied, so a dev-mode SPA can't even log in. Does
+not affect anything deployed (`setup --head` serves the built SPA and the API from one origin, so
+production is same-origin and needs no proxy). Fix when someone next wants hot-reload: proxy the route
+set with `secure: false` (self-signed cert), or proxy a single prefix.
 
 ## Before full release: revisit pinned system-package versions
 
