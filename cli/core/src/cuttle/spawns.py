@@ -75,11 +75,13 @@ def _get_bytes(path: str) -> bytes:
 
 def submit(script: str, gpu: int, follow: bool, args: list[str],
            project: str | None = None, entity: str | None = None,
-           no_gitignore: bool = False) -> None:
+           no_gitignore: bool = False, node: str | None = None) -> None:
     root = Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
-    meta = {"script": script, "gpu": gpu, "args": args,
+    # `node` pins the Spawn to one Arm; omitted, Slurm schedules it. The Head validates the name
+    # against the live node list (it knows the Arms; we don't) and 422s with the known names.
+    meta = {"script": script, "gpu": gpu, "args": args, "node": node,
             "wandb_env": settings.wandb_env(project, entity)}
     req = urllib.request.Request(
         f"{auth._head_url()}/submit", data=tar_bytes, method="POST",
@@ -100,6 +102,15 @@ def submit(script: str, gpu: int, follow: bool, args: list[str],
         _follow(spawn_id)
 
 
+def _outcome(st: dict) -> str:
+    """A finished Spawn's verdict. `failed` carries no exit code by definition — it's the state of a
+    Spawn that never recorded one (scancel'd, OOM-killed, or its Arm vanished before stage-out), so
+    don't reach for st['exit'] there."""
+    if st["state"] == "failed":
+        return "FAILED (killed or its Arm dropped — no exit code recorded)"
+    return f"done (exit {st['exit']})"
+
+
 def _follow(spawn_id: int) -> None:
     """Stream stdout until the Spawn ends. Local/co-located Spawns stream live (out is written on the
     Head as the job runs); a remote Spawn's out only arrives at stage-out (post-hoc)."""
@@ -114,17 +125,14 @@ def _follow(spawn_id: int) -> None:
             text = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
             if len(text) > pos:
                 print(text[pos:], end="", flush=True)
-            print(f"\nspawn {spawn_id} done (exit {st['exit']})")
+            print(f"\nspawn {spawn_id} {_outcome(st)}")
             return
         time.sleep(0.5)
 
 
 def status(spawn_id: int) -> None:
     st = auth._api("GET", f"/spawns/{spawn_id}")
-    if st.get("done"):
-        print(f"DONE exit {st['exit']}")
-    else:
-        print(st["state"])
+    print(_outcome(st).upper() if st.get("done") else st["state"])
 
 
 def logs(spawn_id: int, follow: bool) -> None:

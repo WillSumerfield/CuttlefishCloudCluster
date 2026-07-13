@@ -175,12 +175,14 @@ def run(
         None, "--entity", help="W&B entity/slug for this Spawn (default: config, then account default)."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
+    node: str = typer.Option(
+        None, "--node", help="Pin the Spawn to one Arm by name (default: Slurm schedules it)."),
 ):
     """Submit a Spawn: uploads the working dir to the Head, which runs
     apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
     script are passed through (e.g. `cuttle run train.py --gpu 1 -- --epochs 5`)."""
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
-                      no_gitignore=no_gitignore)
+                      no_gitignore=no_gitignore, node=node)
 
 
 @app.command()
