@@ -71,6 +71,13 @@
   the job Pod on a chosen node, for debugging against that node's specific hardware. Bills Karma
   while attached.
 - **Pod** — the isolated environment a job runs inside on an Arm.
+- **Mantle** — the single service identity every Spawn *executes as*, identically on every node of
+  the cluster. It is not the submitter: the cluster has no per-**User** identity on its nodes, so
+  every Spawn — whoever submitted it — runs as the Mantle. Distinct from **Pod**: the Pod is *what a
+  Spawn runs inside* (its isolated environment), the Mantle is *who it runs as*.
+- **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. Because Spawns
+  all execute as the **Mantle**, this is the *only* link between a Spawn and a person — the thing that
+  answers "whose Spawn is this?" for the queue, the Dashboard, and (later) Karma billing.
 - **Shared storage** — the unified cluster-wide filesystem (home dirs, code, base envs) mounted
   identically on every node. Distinct from the `shared/` code context.
 

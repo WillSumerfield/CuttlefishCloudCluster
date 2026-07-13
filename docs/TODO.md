@@ -1,5 +1,31 @@
 # Durable TODOs
 
+## UNTESTED ON HARDWARE: remote-Arm Spawn execution (Phase-3a slice 3)
+
+Slice 3 (pinned Mantle uid, cluster-wide `/opt/ccc/images/base.sif`, `/tmp` scratch on the Arm,
+pre-created Spawn dir, ledger-aware status, `cuttle run --node`) was committed **without ever running
+on a second box** — the remote Arm was unavailable. It is verified only offline: both job-script
+branches render and pass `bash -n`, and the API's submit/status/outputs/attribution paths were driven
+end-to-end against stub `sbatch`/`squeue`/`sinfo`.
+
+What that leaves genuinely unproven is **only the `else` branch of `JOB_SCRIPT`** — the remote-Arm path
+that rsync-stages the project in from the Head's `[project]` module and stages results back to
+`[spawns]`. Everything else in the slice runs on the Head's co-located Arm and *is* testable on one box.
+
+To verify (needs the Head + one remote Arm):
+1. `cuttle teardown --local --all`, then `cuttle setup --head --address <tailnet-ip>` — the uid pin
+   means `ccc` must be dropped and recreated. Re-seed `admin`, rotate the temp password.
+2. `cuttle setup --arm --invite <blob>` on the donor box (creates the Mantle at the pinned uid there,
+   builds its own base.sif).
+3. `cuttle run test.py --node <arm-name> -f` → expect stage-in, a Pod run as the Mantle, stage-out,
+   then `cuttle outputs <id>` yielding `result.txt` at exit 0.
+4. Re-run without `--node` (co-located path must still work), and `scancel` one mid-flight (must report
+   `FAILED`, not 404).
+
+Known risk if it fails: the stage-out `rsync` writing into `rsync://<head>/spawns/<jid>/`. The dir is
+now pre-created Head-side, but the daemon drops to the Mantle per-module (`uid=`/`gid=` in
+`ccc-rsyncd.conf`) and that write path has never been exercised.
+
 ## Before full release: revisit pinned system-package versions
 
 MVP `cuttle setup --local` pins the system stack to exact versions (reproducibility over
@@ -196,12 +222,14 @@ Was: `spawns.py` rendered one sbatch script whose paths were the *submitter's*, 
 on whichever node Slurm picks — `--output`/`--error`/`.exit`/`python <script>` all resolved to Head
 paths absent on an Arm (`slurmstepd: couldn't chdir`).
 
-Now: the job branches on `[ -d "$submit_dir" ]`. Local (Head) runs in place. Remote stages the
-project IN from the Head's mesh-bound rsync daemon into node-local scratch, runs, and stages
-out/err/exit/outputs BACK to the daemon's [spawns] module. Both produce the same Head-side layout
-`~/.ccc/spawns/<id>/{out,err,exit,outputs}`. Results are collected from `$CCC_OUT` (injected into the
-Pod) — narrows the roadmap's "`$CCC_OUT` / `./outputs`" to just `$CCC_OUT`, so per-Spawn isolation
-(layout A) holds and nothing writes into the source tree.
+Now: the job branches on `[ -d "$staging_dir" ]` — "are the project files already on this node?" The
+Head copies the upload into node-local scratch (never running in the served [project] tree) and writes
+results straight to the Spawn dir. A remote Arm stages the project IN from the Head's mesh-bound rsync
+daemon into `/tmp` scratch, runs, and stages out/err/exit/outputs BACK to the daemon's [spawns] module.
+Both produce the same Head-side layout `/var/lib/ccc/head/spawns/<id>/{out,err,exit,outputs}` (owned by
+the Mantle; read back over the API). Results are collected from `$CCC_OUT` (injected into the Pod) —
+narrows the roadmap's "`$CCC_OUT` / `./outputs`" to just `$CCC_OUT`, so per-Spawn isolation (layout A)
+holds and nothing writes into the source tree.
 
 Leftover litter, not blocking: the sbatch wrapper's own stdout/stderr go to `/tmp/ccc-<jobid>.slurm`
 on the node (rsync diagnostics) and are never reaped.
@@ -241,12 +269,13 @@ planned full CLI cleanup, not a standalone fix.
 
 ## Remote scratch orphans on SIGKILL
 
-④ wipes a remote Spawn's node-local scratch (`~/.ccc/scratch/<jobid>`) with a bash `trap ... EXIT`.
-That fires on normal exit and ordinary signals, but **not** SIGKILL — OOM-killer, `scancel -9`, and
-(Phase 2) a Retract all bypass it, orphaning the scratch dir on the donor. Fix with a Slurm epilog
-that `rm -rf`s the job's scratch, or a boot-time sweep of `~/.ccc/scratch/*`. Pairs naturally with
-Phase-2 Retract (which needs an epilog anyway). Until then a hard-killed Spawn leaves its staged
-files behind — the one case that violates "don't hog donor disk".
+④ wipes a remote Spawn's node-local scratch (`/tmp/ccc-<jobid>`) with a bash `trap ... EXIT`. That
+fires on normal exit and ordinary signals, but **not** SIGKILL — OOM-killer, `scancel -9`, and (Phase
+2) a Retract all bypass it, orphaning the scratch dir on the donor. Fix with a Slurm epilog that
+`rm -rf`s the job's scratch, or a boot-time sweep of `/tmp/ccc-*`. Pairs naturally with Phase-2 Retract
+(which needs an epilog anyway). **Severity dropped (slice 3):** scratch moved from the (home-less)
+Mantle's home to `/tmp`, so an orphan is now swept by the OS at reboot rather than accumulating
+forever. Until the epilog lands, a hard-killed Spawn still hogs donor disk until the next reboot.
 
 ## WSL2 Arms: supported, with one permanent limit
 

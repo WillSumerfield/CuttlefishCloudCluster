@@ -19,6 +19,10 @@ The cluster control plane. One logical role, Linux-only. Owns:
   interactive per phase. Reachable on the CCC mesh **and** the LAN.
 - **Accounts** — the Head is the cluster's identity store: the **User** table (argon2 hashes) +
   **Sessions** live here, authenticating logins and authorizing job submission. *(Auth phase.)*
+- **Attribution ledger** — the Head's record of which **User** submitted each **Spawn** (root term:
+  **Attribution**). The Head owns it because the Head is the sole submitter: every Spawn is launched
+  by the Head API as the **Mantle**, so the scheduler's own owner field says "Mantle" for all of them
+  and this ledger is the only place a Spawn's person is known. *(Auth phase.)*
 - **Accounting** — `slurmdbd` + MariaDB: job accounting and FairShare (drives the Karma sync). *(Economy phase.)*
 - **Prolog / Epilog** — Slurm job hooks used for setup, teardown, and webhook fires.
 
