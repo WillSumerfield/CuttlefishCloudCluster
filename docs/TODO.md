@@ -15,8 +15,8 @@ that rsync-stages the project in from the Head's `[project]` module and stages r
 To verify (needs the Head + one remote Arm):
 1. `cuttle teardown --local --all`, then `cuttle setup --head --address <tailnet-ip>` — the uid pin
    means `ccc` must be dropped and recreated. Re-seed `admin`, rotate the temp password.
-2. `cuttle setup --arm --invite <blob>` on the donor box (creates the Mantle at the pinned uid there,
-   builds its own base.sif).
+2. `cuttle arm authorize <arm-name> --user admin` on the Head, then `cuttle setup --arm --token <blob>`
+   on the donor box (creates the Mantle at the pinned uid there, builds its own base.sif).
 3. `cuttle run test.py --node <arm-name> -f` → expect stage-in, a Pod run as the Mantle, stage-out,
    then `cuttle outputs <id>` yielding `result.txt` at exit 0.
 4. Re-run without `--node` (co-located path must still work), and `scancel` one mid-flight (must report
@@ -121,11 +121,19 @@ key. This doesn't widen exposure (an enrolled Arm holds the key on disk regardle
 narrow it either — and munge is cluster-wide and root-equivalent: whoever holds it authenticates to
 `slurmctld` as any node or any user.
 
-Mesh admission is an operator decision (`cuttle arm approve`), not a secret — so nothing *leaks* a
-way in. But once in, a machine may fetch the munge key, and that says nothing about what it may then
-take from the **cluster**. Closing the gap is the per-Arm revocable-credential item above. Until
-then, treat mesh membership as full cluster trust: approve a machine only if you'd hand its owner
-the cluster's root credential, because you are.
+Two things changed with the Phase-3a slice-5 enrollment reversal, and neither closes this:
+- Mesh admission **is now a secret** (the enrollment token carries a preauth key), where it used to be
+  a pure operator decision with nothing to leak. The token is single-use and lives an hour, and it
+  crosses the LAN to reach the donor. Acceptable only because CCC is LAN-scoped (#8 deferred) and
+  donors are never strangers.
+- Mesh membership alone **no longer fetches the munge key**: `/enroll` refuses a node name the Admin
+  never pre-declared. So an unauthorized machine that somehow reaches the mesh gets nothing.
+
+What still stands is the core of it: an **authorized** Arm fetches the key and holds it on disk
+forever, and munge is cluster-wide and root-equivalent — whoever holds it authenticates to `slurmctld`
+as any node or any user. Closing *that* is the per-Arm revocable-credential item above. Until then,
+treat authorizing an Arm as full cluster trust: run `cuttle arm authorize` for a machine only if you'd
+hand its owner the cluster's root credential, because you are.
 
 ## Blocker: the coordinator must be reachable before an Arm is on the mesh
 
@@ -209,12 +217,16 @@ Fix: fall back to `/usr/lib/wsl/lib/nvidia-smi` when `is_wsl()` and the binary i
 ## Arm re-enrollment reads the coordinator URL out of a `debug` command
 
 `mesh.joined_to()` decides whether to wipe an Arm's mesh identity by comparing the daemon's
-`ControlURL` against the invite's coordinator. That field is exposed only by `tailscale debug prefs`
+`ControlURL` against the token's coordinator. That field is exposed only by `tailscale debug prefs`
 — `status --json` has no `ControlURL` (checked on 1.98.8). `debug` is explicitly an unstable
-interface, so a Tailscale upgrade may change or drop it. If it ever returns nothing parseable,
-`joined_to()` reports `False` and every `setup --arm` wipes and asks for a fresh approval: annoying,
-not dangerous. The safe fallback if that day comes is to parse the state file, or to accept the
-extra approval.
+interface, so a Tailscale upgrade may change or drop it.
+
+**This got sharper with slice 5.** It used to be that a mis-reported `False` merely wiped the identity
+and asked for a fresh approval — annoying, not dangerous. Now the enrollment token's preauth key is
+**single-use**, so a spurious wipe on a *re-run* of `setup --arm` throws away a working identity and
+then redeems an already-spent key: `tailscale up` fails outright, and the donor needs the Admin to mint
+a whole new token. Re-running setup is meant to be idempotent, so this turns an unstable-interface
+regression into a hard stop. The safe fallback if that day comes is to parse the state file directly.
 
 ## `cuttle run` on a remote Arm — RESOLVED by ④ (stage-in/out)
 

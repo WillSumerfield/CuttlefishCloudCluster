@@ -7,8 +7,10 @@ The cluster control plane. One logical role, Linux-only. Owns:
 
 - **Scheduler** — Slurm control (`slurmctld`): allocations, queue, fairness.
 - **Coordinator** — self-hosted Headscale admitting nodes to the CCC mesh (root term in `../CONTEXT.md`).
-- **Enroll API** — mesh-only service that admits an approved Arm: hands it the munge key + `slurmctld`
-  address. Being on the mesh *is* the authorization; no token.
+- **Enroll API** — mesh-only service that admits an enrolling Arm: hands it the munge key + `slurmctld`
+  address. Two facts authorize it, and both trace to one **Admin** decision: the machine is on the
+  **Mesh** (which only an **enrollment token** grants), and it answers to an Arm name the Admin named
+  in advance. A machine on the Mesh that no Admin named gets nothing.
 - **Head API** — the LAN+mesh service that backs both the web **Dashboard** and the **CLI** (one API,
   two clients). Serves the Dashboard SPA and exposes cluster state; from the auth phase it also carries
   authenticated job submission (login, project upload, submit). A separate service from the **Enroll

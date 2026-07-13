@@ -19,9 +19,10 @@ uv run cuttle --help
   LAN+mesh Head API + dashboard, rsync stage-in/out, the auth store, and a co-located Arm. Seeds the
   first admin account. `--address` = the coordinator's advertised host (default: primary IP; use a host
   remote Arms can actually reach). `--local` is an alias for the single-box case. Idempotent.
-- `cuttle setup --arm --invite <blob> [--re-enroll]` — enroll **this** box as a remote Arm: join the
-  mesh (blocks for operator approval), fetch the munge key, register a dynamic `slurmd -Z`. On WSL it
-  also forwards the Head dashboard to `localhost` for the Windows browser.
+- `cuttle setup --arm --token <blob> [--re-enroll]` — enroll **this** box as a remote Arm, redeeming
+  the enrollment token its owner was given: join the mesh (unattended — nobody approves anything),
+  fetch the munge key, register a dynamic `slurmd -Z`. The token names the Arm, so there is nothing to
+  choose. On WSL it also forwards the Head dashboard to `localhost` for the Windows browser.
 - Both roles create the **Mantle** (the `ccc` account every Spawn runs as, at a uid pinned
   cluster-wide) and build `/opt/ccc/images/base.sif`.
 - `cuttle teardown --local | --arm [--keep-packages] [--all]` — reverse setup. Default keeps `~/.ccc`
@@ -29,10 +30,25 @@ uv run cuttle --help
   packages setup recorded (`~/.ccc/config/apt-installed.txt`). Never touches personal Tailscale.
 
 ### Enrollment (Head-side)
-- `cuttle invite` — print the cluster invite (Coordinator URL + Head mesh IP). Public, not a secret.
-- `cuttle arm list` — enrolled Arms and whether they're admitted.
-- `cuttle arm approve <name> --auth-id <id>` — grant a pending Arm's mesh + Slurm admission.
-- `cuttle arm remove <name>` — delete an Arm from Slurm, the registry, and the mesh.
+The **Admin decides first, the donor redeems.** One admin command, one donor command, nothing relayed
+by hand.
+
+- `cuttle arm authorize <name> --user <owner>` — authorize one machine to become an Arm. Names it,
+  names the **User** who owns it, and prints the **enrollment token** they redeem. Then blocks until
+  they do, and admits them to Slurm. **The token is a secret** — it admits one machine, once, within
+  the hour. Send it privately.
+- `cuttle arm admit <name>` — the second half alone, if `authorize` gave up waiting because the donor
+  wasn't at their desk yet.
+- `cuttle arm chown <name> --user <owner>` — re-point an Arm at a different owner. Touches neither the
+  mesh nor Slurm, so the donor's box keeps running.
+- `cuttle arm list` — Arms, their owners, and whether each is authorized / enrolled / admitted.
+- `cuttle arm remove <name>` — delete an Arm from Slurm, the registry, and the mesh. **Required after a
+  donor runs `teardown --arm`**: an Arm can't delete its own mesh node, and `authorize` refuses a name
+  whose node still exists (it will never evict a running machine as a side-effect).
+
+Two gates guard the cluster, and both fall out of that single `authorize`: the token admits the
+machine to the mesh, and the pre-declared name is what the mesh-only Enroll API checks before handing
+over the munge key. A machine on the mesh that no Admin named gets nothing.
 
 ### Spawns
 All of these go through the Head API and need `cuttle login` — the CLI is a network client, so you can
