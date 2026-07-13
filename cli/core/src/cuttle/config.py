@@ -57,11 +57,17 @@ ENROLL_API_PORT = 8081
 ENROLL_API_SERVICE = "ccc-enroll-api"
 ENROLL_API_UNIT = Path("/etc/systemd/system/ccc-enroll-api.service")
 # Runs as munge: the only user that can read munge.key without chmod'ing it or running as root.
-# It is otherwise UNPRIVILEGED — it records enrolling Arms into the registry below, and an operator
-# admits them with `cuttle arm approve`. No sudoers rule, so no root path out of a POST body.
+# It is otherwise UNPRIVILEGED — it fills in the hardware fields of a registry row an operator already
+# created, and the operator admits the Arm with `cuttle arm admit`. No sudoers rule, so no root path
+# out of a POST body.
 ENROLL_API_USER = "munge"
 CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only writable location
-ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {gpu_device, mesh_ip, admitted}}
+# The Arm registry. `cuttle arm authorize` CREATES each row (owner + name) before the donor's token is
+# issued — /enroll refuses a name that isn't here, so mesh membership alone can't fetch the munge key.
+# The donor's POST only fills in gpu_device + mesh_ip; it never gets to say who owns the machine.
+# `head: true` marks the Head's own co-located Arm (admin-owned, never enrolls, GRES line comes from
+# templates.head_gres_node() — so gres rendering skips it).
+ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_device, mesh_ip, admitted, head?}}
 
 # An Arm's GPU device node. Native Linux exposes /dev/nvidiaN; WSL2 exposes /dev/dxg with CUDA
 # shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.

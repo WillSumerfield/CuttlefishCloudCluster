@@ -1,17 +1,24 @@
-"""Arm enrollment (Phase 1 ③).
+"""Arm enrollment (Phase 1 ③; reversed in Phase 3a slice 5).
 
-Two gates, both operator decisions, no bearer secrets anywhere:
+**The Admin decides first, and the donor redeems.** One admin command mints an **enrollment token**
+(glossary) naming the Arm and its owning **User**; the donor redeems it and declares nothing. This
+replaces the old model, in which the donor asked to join and the operator approved out-of-band by
+relaying an auth-id back and forth.
 
-1. **Mesh admission.** The Arm's `tailscale up` presents no key and blocks, printing an auth-id. The
-   operator runs `cuttle arm approve <name> --auth-id <id>`. The auth-id is NOT a secret — it names
-   a pending request from one specific machine, and only the Head can grant it.
-2. **Slurm admission.** Once meshed, the Arm `POST`s /enroll, recording its GPU device in a registry
-   the (unprivileged) API owns. The same `approve` command then renders gres.conf and reconfigures
-   Slurm. Nothing from the network reaches root unvalidated.
+Two gates guard the cluster, and both now fall out of that *single* admin decision:
 
-The **invite** carries only public facts — the coordinator URL and the Head's mesh IP — so it can be
-posted anywhere. The munge key never leaves the mesh: it is served by /enroll, which is unroutable
-until gate 1 has been passed.
+1. **Mesh admission.** The token carries a one-time, 1-hour Headscale preauth key. `tailscale up`
+   redeems it and joins unattended — there is nothing left to approve, because minting the key *was*
+   the approval.
+2. **Slurm admission.** `cuttle arm authorize` pre-declares the Arm's name in the registry before the
+   token is ever handed out, so the mesh-only Enroll API can refuse a name no Admin ever named. Being
+   on the mesh is no longer sufficient to fetch the munge key. The Arm then `POST`s /enroll to report
+   its GPU device, and `authorize` — still blocked, waiting — renders gres.conf and reconfigures Slurm.
+   Nothing from the network reaches root unvalidated.
+
+Unlike the invite it replaces, **the token is a secret**: it admits one machine to the mesh. It
+crosses the LAN to reach the donor, which is acceptable only because CCC is LAN-scoped (item #8 is
+deferred) and its donors are never strangers.
 
 Intended path only — no fallbacks (test box; failures decided live).
 """
@@ -24,28 +31,30 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import config, headapi, mesh, settings, templates
+from . import auth, config, headapi, mesh, settings, templates
 from .system import run
 
 
-# --- invite (public, not a credential) --------------------------------------
+# --- enrollment token (a secret: it admits one machine) ---------------------
 
-def mint_invite() -> str:
-    """Head-side. Contains no secret — publish it anywhere. Holding it lets a machine *ask* to join;
-    it does not let it join. Admission is `cuttle arm approve`.
+def _mint_token(node_name: str, authkey: str) -> str:
+    """Everything the donor's `setup --arm` needs, and nothing it can choose for itself.
 
-    The mesh IP is read live rather than from config.yaml: the Head always knows its own current
-    address, and a persisted one would hand out invites pointing at a stale Head if it ever moved.
+    The coordinator is reachable BEFORE the mesh exists; the Head's mesh IP only AFTER. Both are read
+    live rather than from a persisted copy — the Head always knows its own current address, and a
+    stale one would hand out tokens pointing at a Head that has moved.
     """
     payload = {
-        "coordinator": settings.load()["mesh"]["coordinator"],  # reachable BEFORE the mesh exists
-        "mesh_ip": mesh.tailscale_ip(),                          # reachable only AFTER
+        "coordinator": settings.load()["mesh"]["coordinator"],
+        "mesh_ip": mesh.tailscale_ip(),
+        "node_name": node_name,   # the Admin names the Arm; the donor is not asked
+        "authkey": authkey,       # the secret: one machine, one hour, one use
     }
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
 
-def decode_invite(invite: str) -> dict:
-    return json.loads(base64.urlsafe_b64decode(invite.encode()))
+def decode_token(token: str) -> dict:
+    return json.loads(base64.urlsafe_b64decode(token.encode()))
 
 
 # --- /enroll ----------------------------------------------------------------
@@ -146,10 +155,15 @@ def save_registry(reg: dict) -> None:
 
 def render_gres(reg: dict, write_root_file) -> None:
     """gres.conf = the Head + every ADMITTED Arm. Re-validated here, root-side: the API is
-    unprivileged and its registry is only as trustworthy as the mesh."""
+    unprivileged and its registry is only as trustworthy as the mesh.
+
+    The Head's own co-located Arm has a registry row too (so it can carry an owner, like any other
+    Arm), but it is `head: true` and templates.head_gres_node() already supplies its line — skip it
+    or gres.conf names it twice.
+    """
     nodes = [templates.head_gres_node()]
     for name, e in sorted(reg.items()):
-        if not e["admitted"]:
+        if not e["admitted"] or e.get("head"):
             continue
         assert re.match(config.NODE_NAME_RE, name), f"bad node name in registry: {name!r}"
         assert re.match(config.GPU_DEVICE_RE, e["gpu_device"]), f"bad device: {e['gpu_device']!r}"
@@ -159,55 +173,122 @@ def render_gres(reg: dict, write_root_file) -> None:
 
 
 def _await_enrollment(name: str, timeout_s: int = 300) -> dict:
-    """After mesh admission the Arm POSTs /enroll within seconds. Wait for it, because only that
-    POST tells us the GPU device we must write into gres.conf."""
-    print(f"cuttle: waiting for {name} to report its hardware...")
+    """Block until the Arm POSTs /enroll — the only thing that tells us the GPU device we must write
+    into gres.conf.
+
+    Waits for `mesh_ip`, not for the row: `authorize` pre-declared the row itself moments ago (that
+    pre-declaration is what lets the Enroll API refuse un-named machines), so its mere existence
+    proves nothing. `mesh_ip` and `gpu_device` are null until the donor's POST fills them in.
+    """
+    print(f"cuttle: waiting for {name} to enroll (the donor runs `cuttle setup --arm --token ...`)")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         reg = load_registry()
-        if name in reg:
+        if reg.get(name, {}).get("mesh_ip"):
             return reg
         time.sleep(2)
-    raise TimeoutError(f"{name} never reached POST /enroll — is its slurmd host on the mesh?")
+    raise TimeoutError(
+        f"{name} has not enrolled yet. Nothing is broken and the pre-declaration stands — when the "
+        f"donor has run `cuttle setup --arm`, finish with:  cuttle arm admit {name}")
 
 
-def approve_arm(name: str, auth_id: str, write_root_file) -> None:
-    """The cluster's front door. One operator decision, two subsystems:
+# --- authorize / admit / chown (Head only, operator + sudo) -----------------
+# Being the operator on the Head IS the authorization — no session, no login (mirrors `user add`).
 
-    1. grant the pending mesh-admission request (Headscale), unblocking the Arm's `tailscale up`;
-    2. once the Arm reports in, give it a GRES line and reconfigure Slurm.
+def authorize_arm(name: str, owner: str, write_root_file) -> None:
+    """Authorize one machine to become an Arm. The cluster's front door, and the only privileged step.
 
-    Deliberately the *only* privileged step. The API cannot do either half.
+    Mints the **enrollment token** the donor redeems, then blocks until they do, then admits them to
+    Slurm. One admin command; one donor command; no auth-id relayed by hand.
 
-    A re-enrolling Arm wipes its own state but cannot delete its Headscale node (no `headscale`
-    binary), so approving would otherwise leave a superseded node holding a live mesh address — and
-    mesh membership is what authorizes fetching the munge key. Approving a name means "this machine,
-    now": anything older under that name is dead by definition.
-
-    Order matters. We reap *after* registering, never before: a mistyped or already-consumed auth-id
-    then fails harmlessly instead of evicting a healthy Arm. The cost is that Headscale, seeing the
-    old node still holding `name`, calls the new one `name-1` — so we rename it back.
+    Order is deliberate:
+    1. *Verify the owner exists* before anything else — a typo here would otherwise strand the Arm's
+       Karma income (3b) on a User that never existed.
+    2. *Refuse if a mesh node already answers to this name.* Re-authorizing would have to evict it,
+       and evicting a working donor's box must never be the side-effect of a command you re-ran.
+       Removal is its own explicit act. (Checked against the MESH, not the registry: a donor whose
+       1-hour key expired before they ever joined leaves a pre-declared row and no node, and re-issuing
+       them a token must just work.)
+    3. *Pre-declare the row*, before the token exists. This is what the mesh-only Enroll API checks, so
+       it must be in place before any machine can possibly reach /enroll.
+    4. *Mint the key* (1h, single-use — mesh.mint_preauthkey's defaults) and print the token.
     """
-    stale = set(mesh.node_ids_named(name))
-    mesh.register_node(auth_id)  # fails here if the auth-id is bad — nothing deleted yet
+    if not auth.user_exists(owner):
+        raise SystemExit(f"cuttle: no such user {owner!r} — create them first: cuttle user add {owner}")
+    if mesh.node_ids_named(name):
+        raise SystemExit(
+            f"cuttle: an Arm named {name!r} is already on the mesh. Authorizing it again would evict\n"
+            f"        that machine. If you mean to replace it, remove it first:\n"
+            f"          cuttle arm remove {name}\n"
+            f"        To only change its owner, leave it running and use:\n"
+            f"          cuttle arm chown {name} --user <owner>")
 
-    if stale:
-        # Whatever Headscale called the new node (`name-1`, or another suffix), it is the one that
-        # wasn't there a moment ago. Don't guess the suffix; diff against the snapshot.
-        fresh = [n for n in mesh.list_nodes() if str(n["id"]) not in stale
-                 and n.get("given_name", "").startswith(name)]
-        for node_id in stale:
-            print(f"cuttle: reaping superseded mesh node {node_id} ({name})")
-            mesh.delete_node_id(node_id)
-        for n in fresh:
-            if n["given_name"] != name:
-                mesh.rename_node(str(n["id"]), name)
+    reg = load_registry()
+    reg[name] = {"owner": owner, "gpu_device": None, "mesh_ip": None, "admitted": False}
+    save_registry(reg)
+
+    token = _mint_token(name, mesh.mint_preauthkey())
+    print(f"\ncuttle: authorized '{name}' (owner: {owner}).\n")
+    print("  SECRET — send this privately. It admits one machine, once, within the hour:\n")
+    print(f"  {token}\n")
+    print(f"  The donor runs:  cuttle setup --arm --token <token>\n")
 
     reg = _await_enrollment(name)
+    _admit(name, reg, write_root_file)
+
+
+def admit_arm(name: str, write_root_file) -> None:
+    """Give an enrolled Arm its GRES line and reconfigure Slurm.
+
+    The second half of `authorize`, on its own — for when authorize's wait timed out because the donor
+    wasn't at their desk. The token they hold is still good (for its hour), and the pre-declared row is
+    still there; this just finishes the job once they've run setup.
+    """
+    reg = load_registry()
+    if name not in reg:
+        raise SystemExit(f"cuttle: {name!r} was never authorized — run: cuttle arm authorize {name}")
+    if not reg[name].get("mesh_ip"):
+        raise SystemExit(f"cuttle: {name!r} is authorized but has not enrolled yet — it appears once "
+                         f"the donor has run `cuttle setup --arm --token ...`")
+    _admit(name, reg, write_root_file)
+
+
+def _admit(name: str, reg: dict, write_root_file) -> None:
     reg[name]["admitted"] = True
     save_registry(reg)
     render_gres(reg, write_root_file)
-    print(f"cuttle: {name} approved ({reg[name]['gpu_device']}) — its slurmd can now register")
+    print(f"cuttle: {name} admitted ({reg[name]['gpu_device']}, owner {reg[name].get('owner')}) — "
+          f"its slurmd can now register")
+
+
+def chown_arm(name: str, owner: str) -> None:
+    """Re-point an Arm at a different owning User. Touches neither the mesh nor Slurm — so fixing a
+    typo'd owner never costs the donor a re-enrollment."""
+    if not auth.user_exists(owner):
+        raise SystemExit(f"cuttle: no such user {owner!r} — create them first: cuttle user add {owner}")
+    reg = load_registry()
+    if name not in reg:
+        raise SystemExit(f"cuttle: no Arm named {name!r}")
+    was = reg[name].get("owner")
+    reg[name]["owner"] = owner
+    save_registry(reg)
+    print(f"cuttle: {name} owner {was} -> {owner}")
+
+
+def register_head_arm(mesh_ip: str) -> None:
+    """Give the Head's own co-located Arm a registry row, owned by the first admin.
+
+    It never enrolls (it is a *static* Slurm node, and there is no donor), so without this it would be
+    the one Arm in the cluster with no owner — and Karma (3b) exempts admin-owned Arms, which it can
+    only do if it knows this one is admin-owned. `head: true` keeps render_gres from emitting its GRES
+    line twice (templates.head_gres_node() already has it).
+    """
+    from .system import hostname
+    reg = load_registry()
+    name = hostname()
+    reg[name] = {"owner": config.FIRST_ADMIN_USER, "gpu_device": config.GPU_DEVICE,
+                 "mesh_ip": mesh_ip, "admitted": True, "head": True}
+    save_registry(reg)
 
 
 def list_arms() -> None:
@@ -215,9 +296,16 @@ def list_arms() -> None:
     if not reg:
         print("no Arms have enrolled")
         return
+    print(f"{'NAME':20} {'OWNER':16} {'MESH IP':14} {'GPU':14} STATE")
     for name, e in sorted(reg.items()):
-        state = "admitted" if e["admitted"] else "PENDING (cuttle arm admit)"
-        print(f"{name:20} {e['mesh_ip']:12} {e['gpu_device']:14} {state}")
+        if e["admitted"]:
+            state = "head" if e.get("head") else "admitted"
+        elif e.get("mesh_ip"):
+            state = f"enrolled, NOT ADMITTED (cuttle arm admit {name})"
+        else:
+            state = "authorized, awaiting the donor"
+        print(f"{name:20} {e.get('owner') or '-':16} {e.get('mesh_ip') or '-':14} "
+              f"{e.get('gpu_device') or '-':14} {state}")
 
 
 # --- node removal (Head only) -----------------------------------------------

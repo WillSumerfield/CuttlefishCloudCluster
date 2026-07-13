@@ -171,9 +171,15 @@ def remove_mantle() -> None:
 
 
 def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
-    """Reverse `setup --arm`. Leaves the mesh and wipes local state, so the Arm's Headscale node goes
-    stale on the Head — reaped on next `cuttle arm approve` (see enroll.approve_arm), or now with
-    `cuttle arm remove <name>`. No Headscale/head-api/rsyncd here; an Arm runs none."""
+    """Reverse `setup --arm`. Leaves the mesh and wipes local state — but an Arm has no `headscale`
+    binary, so it cannot delete its own node on the Head, which is left holding a live mesh address.
+
+    **The Head operator must run `cuttle arm remove <name>`.** Not hygiene: `cuttle arm authorize`
+    refuses a name whose mesh node still exists (it will not evict a machine as a side-effect), so a
+    stale node blocks re-enrolling this box entirely. It also still holds the address that authorizes
+    fetching the munge key.
+
+    No Headscale/head-api/rsyncd here; an Arm runs none."""
     stop_arm_daemons()
     _leave_ccc_mesh()
     remove_slurm_config()

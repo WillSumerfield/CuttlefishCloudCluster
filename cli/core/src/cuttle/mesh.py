@@ -134,7 +134,7 @@ def start_ccc_tailscaled(write_unit) -> None:
 
 _POLICY = """\
 {
-  // Approved CCC nodes reach each other on every port. `cuttle arm approve` is the trust gate;
+  // Enrolled CCC nodes reach each other on every port. `cuttle arm authorize` is the trust gate;
   // this file must not pretend to be a second one. See docs/TODO.md — mesh membership already
   // means full cluster trust (an Arm can fetch the munge key), so a port list here would buy no
   // security while breaking srun's ephemeral task-I/O ports and Arm<->Arm traffic in multi-node
@@ -208,16 +208,14 @@ def mint_preauthkey(reusable: bool = False, hours: int = 1) -> str:
 
 # --- Tailscale client (every node) -----------------------------------------
 
-def join_mesh(login_server: str, hostname: str, authkey: str | None = None) -> None:
+def join_mesh(login_server: str, hostname: str, authkey: str) -> None:
     """`tailscale up` on CCC's isolated instance (targeted via --socket). `--reset` only affects
     CCC's own instance; the personal daemon is untouched.
 
-    With `authkey`: unattended join. Only the Head does this — it registers against its own
-    Headscale, and there is no operator to ask.
-
-    Without: **this call blocks**, printing an auth URL containing an auth-id, until an operator runs
-    `cuttle arm approve`. That wait is the cluster's front door. No secret is involved: the auth-id
-    names a pending request from this specific machine, and only the Head operator can grant it.
+    Always unattended: the caller presents a preauth key and the node joins without anyone approving
+    anything. The Head mints its own key (it registers against its own Headscale, with no operator to
+    ask); an Arm's key arrives inside its **enrollment token**, minted by `cuttle arm authorize`. The
+    admission decision has already been made by then — it *is* the act of minting the key.
 
     `hostname` names the node in Headscale. We pass the Slurm node name so one string identifies the
     machine in both systems — `cuttle arm remove <name>` can then reap it from each.
@@ -234,12 +232,8 @@ def join_mesh(login_server: str, hostname: str, authkey: str | None = None) -> N
     cmd = ["sudo", "tailscale", f"--socket={config.CCC_TS_SOCKET}", "up", "--reset",
            "--login-server", login_server, "--hostname", hostname,
            "--accept-dns=false", "--accept-routes=false", "--netfilter-mode=off"]
-    shown = " ".join(cmd)
-    if authkey:  # never echo the key
-        cmd += ["--authkey", authkey]
-        shown += " --authkey <redacted>"
-    print(f"$ {shown}", file=sys.stderr)
-    subprocess.run(cmd, check=True)  # blocks here awaiting approval when authkey is None
+    print(f"$ {' '.join(cmd)} --authkey <redacted>", file=sys.stderr)  # never echo the key
+    subprocess.run(cmd + ["--authkey", authkey], check=True)
 
 
 def tailscale_ip() -> str:
@@ -298,13 +292,6 @@ def delete_node_id(node_id: str) -> None:
     run(["headscale", "nodes", "delete", "--identifier", node_id, "--force"], sudo=True)
 
 
-def rename_node(node_id: str, name: str) -> None:
-    """Headscale forces unique given_names: registering while an old node still holds `name` yields
-    `name-1`. One string must identify a machine in both Slurm and the mesh (see join_mesh), so we
-    rename it back once the old node is gone."""
-    run(["headscale", "nodes", "rename", "--identifier", node_id, name], sudo=True)
-
-
 def delete_node(name: str) -> None:
     """Evict a node from the mesh by its Headscale name (== its Slurm node name; see join_mesh).
 
@@ -334,16 +321,15 @@ def up_head(server_url: str, write_unit) -> tuple[str, str]:
     return hs_ver, tailscale_ip()
 
 
-def up_arm(coordinator: str, node_name: str, write_unit, re_enroll: bool = False) -> str:
-    """Join an Arm to an existing mesh. Returns its mesh IP.
-
-    BLOCKS inside join_mesh until the Head operator approves this machine. No key is presented —
-    admission is a decision someone makes, not a secret someone holds.
+def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
+           re_enroll: bool = False) -> str:
+    """Join an Arm to an existing mesh with the preauth key from its enrollment token. Returns its
+    mesh IP. Nobody approves anything here — the Admin already did, by minting the key.
 
     A state file naming a node key the Head no longer knows (it ran `cuttle arm remove`, or rebuilt
     its database) makes `tailscale up` hang forever: no auth URL, no error, nothing to diagnose. So
     we wipe unless the daemon is demonstrably already joined to *this* coordinator — in which case
-    there is nothing to do, and re-running setup costs the operator no second approval.
+    there is nothing to do, and re-running setup leaves the (single-use) key unspent.
 
     `re_enroll` forces the wipe, for the cases the check can't see: a corrupt state file, or a Head
     that was rebuilt but still answers at the same URL.
@@ -363,21 +349,8 @@ def up_arm(coordinator: str, node_name: str, write_unit, re_enroll: bool = False
     _wipe_local_state()
     start_ccc_tailscaled(write_unit)
 
-    print("\ncuttle: requesting mesh admission — send the auth-id below to the Head operator,\n"
-          f"        who runs:  cuttle arm approve {node_name} --auth-id <id>\n")
-    join_mesh(coordinator, node_name)
+    join_mesh(coordinator, node_name, authkey)
     return tailscale_ip()
-
-
-def register_node(auth_id: str) -> None:
-    """Grant a pending mesh-admission request. The cluster's front door, opened by hand.
-
-    `--user` takes the user *name* here, unlike `preauthkeys create`, which takes the numeric id
-    (see mint_preauthkey). Headscale 0.29 is inconsistent across subcommands; an id here fails with
-    `looking up user: user not found`. Don't "fix" the asymmetry — it's load-bearing.
-    """
-    run(["headscale", "auth", "register", "--auth-id", auth_id,
-         "--user", config.HEADSCALE_USER], sudo=True)
 
 
 def forget_state() -> None:
@@ -390,7 +363,7 @@ def forget_state() -> None:
 
     Deletes the Headscale node too, so the address it held is released and we reclaim it on re-join
     (verified: Headscale frees the IP on node delete). Head-only: an Arm has no `headscale` binary,
-    and uses _wipe_local_state() alone — the Head reaps its stale node in `cuttle arm approve`.
+    and uses _wipe_local_state() alone — the Head reaps its node in `cuttle arm remove`.
     """
     run(["systemctl", "stop", config.CCC_TS_SERVICE], sudo=True, check=False)
     delete_node(hostname())  # before the state wipe: the node is named after this host

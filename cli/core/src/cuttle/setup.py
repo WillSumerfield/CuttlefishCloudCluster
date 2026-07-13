@@ -94,10 +94,12 @@ def write_slurm_config(mesh_ip: str) -> None:
                      (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     _write_root_file(config.SLURM_CONF, templates.render_slurm_conf(mesh_ip))
-    # The Head plus any Arms already admitted (a re-run must not un-admit them).
+    # The Head plus any Arms already admitted (a re-run must not un-admit them). The Head's own row is
+    # skipped: head_gres_node() already supplies its line (see enroll.render_gres).
     reg = enroll.load_registry()
     nodes = [templates.head_gres_node()]
-    nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items()) if e["admitted"]]
+    nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items())
+              if e["admitted"] and not e.get("head")]
     _write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
 
 
@@ -327,6 +329,7 @@ def setup_head(address: str | None = None) -> None:
     make_registry_dir()
     headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: the Enroll API serves munge.key
     provision_head_auth()                        # ccc account + head.db + submission dirs (needs venv)
+    enroll.register_head_arm(mesh_ip)            # our co-located Arm is admin-owned (needs the admin)
     install_rsyncd(mesh_ip)                      # stage-in/out, mesh-bound; needs ccc + its dirs first
     build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
     install_tls(mesh_ip)                         # self-signed cert; must exist before uvicorn starts
@@ -335,7 +338,8 @@ def setup_head(address: str | None = None) -> None:
     verify()
     lan = system.primary_ip()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
-    print(f"cuttle: invite an Arm with `cuttle invite` (coordinator {mesh_ip})")
+    print(f"cuttle: add an Arm with `cuttle arm authorize <name> --user <owner>` "
+          f"(coordinator {mesh_ip})")
     print(f"cuttle: dashboard at {headapi.head_url(lan)} (LAN) / "
           f"{headapi.head_url(mesh_ip)} (mesh)")
     print("\ncuttle: the Head signs its own TLS certificate (no public domain = no CA can sign it).\n"
@@ -349,44 +353,43 @@ def setup_head(address: str | None = None) -> None:
 setup_local = setup_head
 
 
-def prompt_node_name() -> str:
-    """Required, no default. The Arm's identity in both Slurm and the mesh, fixed thereafter.
-    A collision with an existing Arm is rejected by slurmctld at registration."""
-    name = input("Node name for this Arm (unique in the cluster): ").strip()
-    assert name, "a node name is required"
-    return name
+def setup_arm(token: str, re_enroll: bool = False) -> None:
+    """Enroll this box as an Arm, redeeming the **enrollment token** an Admin minted for it.
 
-
-def setup_arm(invite: str, re_enroll: bool = False) -> None:
-    """Enroll this box as an Arm of the cluster named by `invite`.
-
-    Order is the security model. We ask to join the mesh and BLOCK until an operator approves; only
-    then can we route to the Head API to collect the munge key. No secret ever crosses the internet:
-    the invite is public, and the auth-id we print authorizes nothing by itself.
+    The donor declares nothing. The token names the Arm and carries the one-time preauth key that
+    admits it to the mesh — so there is no node-name prompt and no waiting for a human to approve a
+    relayed auth-id. The Admin already decided, when they ran `cuttle arm authorize`.
 
     `re_enroll` forces a fresh mesh identity even if this box looks already-joined.
     """
     make_user_dirs()
-    node_name = prompt_node_name()
+    t = enroll.decode_token(token)
+    node_name = t["node_name"]
     settings.prompt_wandb()
     preflight("arm")
 
-    t = enroll.decode_invite(invite)
-    # blocks on approval unless already joined to this coordinator
-    mesh_ip = mesh.up_arm(t["coordinator"], node_name, _write_root_file, re_enroll=re_enroll)
+    mesh_ip = mesh.up_arm(t["coordinator"], node_name, t["authkey"], _write_root_file,
+                          re_enroll=re_enroll)
     print(f"cuttle: Arm on mesh as {node_name} — mesh IP {mesh_ip}")
     system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
+
+    # Enroll IMMEDIATELY, before the long apt run. Two reasons, both about timing:
+    #   1. `cuttle arm authorize` is blocked on the Head waiting for exactly this POST. Doing it after
+    #      apt would hold the Admin's terminal hostage for our entire package install.
+    #   2. If the Head is unroutable over the mesh, we learn now — not five minutes into an apt we
+    #      would then have to throw away.
+    # The POST needs nothing but the mesh (gpu_device() is a path check). It reports our GPU device —
+    # /dev/nvidia0 natively, /dev/dxg under WSL2 — which the Head needs to author our gres.conf line,
+    # and returns the munge key. We hold that key in memory: writing it needs the `munge` user, which
+    # apt has not created yet.
+    info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
 
     add_repos()
     install_packages(config.SLURMD_PKG)
     if system.is_wsl():
         configure_apptainer_wsl()  # after apptainer is installed, before base.sif is built
 
-    # Now on the mesh: the Head API is routable, so the munge key can be fetched. This POST also
-    # records our GPU device — /dev/nvidia0 natively, /dev/dxg under WSL2 — which the Head needs to
-    # author our gres.conf line.
-    info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
-    enroll.write_munge_key(info["munge_key"])
+    enroll.write_munge_key(info["munge_key"])  # now that `munge` exists to own it
 
     data = settings.load()
     data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
@@ -400,9 +403,10 @@ def setup_arm(invite: str, re_enroll: bool = False) -> None:
     provision_mantle()
     build_base_sif()
 
-    # Mesh admission (above) and Slurm admission are separate: `cuttle arm approve` grants the first
-    # immediately, then waits for this POST before writing our gres.conf line. Starting slurmd early
-    # would register a node the Head has no GRES for.
+    # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
+    # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
+    # their desk and it timed out, they finish with `cuttle arm admit`. Either way, starting slurmd
+    # before that lands would register a node the Head has no GRES for.
     if not info["admitted"]:
         enroll.wait_for_admit(t["mesh_ip"], node_name)
 

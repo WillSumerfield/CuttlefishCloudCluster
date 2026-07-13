@@ -6,7 +6,7 @@ Two halves with different trust models:
   the Head URL in `~/.ccc/config`.
 - **User-admin** — `user add|list|remove` run *on the Head as the `ccc` service account* and write
   head.db directly via the API venv (`python -m ccc_head_api.admin`). Being the operator on the Head
-  is the authorization — no session (mirrors `cuttle arm approve`).
+  is the authorization — no session (mirrors `cuttle arm authorize`).
 """
 
 import json
@@ -143,6 +143,12 @@ def user_list() -> None:
 
 def user_remove(username: str) -> None:
     run(_admin_argv(["remove", username]))
+
+
+def user_exists(username: str) -> bool:
+    """Does this User have an account? `cuttle arm authorize --user` checks before minting a token —
+    an owner typo would otherwise strand the Arm's Karma income on a User that never existed."""
+    return run(_admin_argv(["exists", username]), check=False).returncode == 0
 
 
 def seed_admin(username: str) -> None:

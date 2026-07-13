@@ -36,10 +36,11 @@ def setup(
         help="Head: coordinator's advertised host (default: primary IP; use a public/DDNS addr "
              "so remote Arms can reach it).",
     ),
-    invite: str = typer.Option(None, "--invite", help="Arm: invite printed by `cuttle invite`."),
+    token: str = typer.Option(
+        None, "--token", help="Arm: the enrollment token from `cuttle arm authorize` (a SECRET)."),
     re_enroll: bool = typer.Option(
         False, "--re-enroll",
-        help="Arm: discard this box's mesh identity and re-join from scratch (needs re-approval). "
+        help="Arm: discard this box's mesh identity and re-join from scratch (needs a fresh token). "
              "For a corrupt state file, or a Head rebuilt behind the same coordinator URL.",
     ),
 ):
@@ -49,37 +50,49 @@ def setup(
             raise typer.BadParameter("--re-enroll is an Arm flag; the Head re-registers itself")
         setup_mod.setup_head(address)
     elif arm:
-        if not invite:
-            raise typer.BadParameter("`--arm` needs --invite (get one from the Head: `cuttle invite`)")
-        setup_mod.setup_arm(invite, re_enroll=re_enroll)
+        if not token:
+            raise typer.BadParameter(
+                "`--arm` needs --token. Ask the cluster's admin to run: "
+                "cuttle arm authorize <name> --user <you>")
+        setup_mod.setup_arm(token, re_enroll=re_enroll)
     else:
         raise typer.BadParameter("specify a role: cuttle setup --head | --arm")
 
 
-@app.command()
-def invite() -> None:
-    """Head: print the cluster invite (coordinator URL + Head mesh IP).
-
-    Not a credential — it contains no secret and can be published. It lets a machine *ask* to join;
-    only `cuttle arm approve` lets it in.
-    """
-    print(enroll_mod.mint_invite())
-
-
 @arm_app.command("list")
 def arm_list():
-    """Show enrolled Arms and whether they've been admitted."""
+    """Show Arms: who owns them, and whether they're authorized/enrolled/admitted."""
     enroll_mod.list_arms()
 
 
-@arm_app.command("approve")
-def arm_approve(
-    name: str = typer.Argument(..., help="The Arm's node name (what its owner chose)."),
-    auth_id: str = typer.Option(..., "--auth-id", help="Auth-id the Arm printed while waiting."),
+@arm_app.command("authorize")
+def arm_authorize(
+    name: str = typer.Argument(..., help="Name for the new Arm (its identity in Slurm + the mesh)."),
+    user: str = typer.Option(..., "--user", help="The User who owns (donates) the machine."),
 ):
-    """Approve an Arm: grant its pending mesh admission, then give it a GRES line and reconfigure
-    Slurm. The cluster's front door, and the only privileged step in enrollment."""
-    enroll_mod.approve_arm(name, auth_id, setup_mod._write_root_file)
+    """Authorize one machine to join as an Arm. Prints the enrollment token its owner redeems with
+    `cuttle setup --arm --token <blob>`, then waits for them and admits them to Slurm.
+
+    The token is a SECRET — it admits one machine, once, within the hour. Send it privately.
+    """
+    enroll_mod.authorize_arm(name, user, setup_mod._write_root_file)
+
+
+@arm_app.command("admit")
+def arm_admit(name: str = typer.Argument(..., help="The Arm's node name.")):
+    """Give an enrolled Arm its GRES line and reconfigure Slurm. Only needed if `arm authorize` gave
+    up waiting because the donor hadn't run setup yet — this finishes the job."""
+    enroll_mod.admit_arm(name, setup_mod._write_root_file)
+
+
+@arm_app.command("chown")
+def arm_chown(
+    name: str = typer.Argument(..., help="The Arm's node name."),
+    user: str = typer.Option(..., "--user", help="The User who owns (donates) the machine."),
+):
+    """Re-point an Arm at a different owner. Touches neither the mesh nor Slurm, so the donor's box
+    keeps running."""
+    enroll_mod.chown_arm(name, user)
 
 
 @arm_app.command("remove")
