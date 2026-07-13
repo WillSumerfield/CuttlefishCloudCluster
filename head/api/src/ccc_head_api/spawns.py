@@ -2,10 +2,16 @@
 
 This is the render + stage machinery that used to live in the CLI's `cuttle/spawns.py`. It moved here
 when `cuttle run` stopped being Head-local: the CLI now tars its working dir and POSTs it, and the
-Head API (running as the `ccc` service account) unpacks it, renders the sbatch script, submits via the
-munge socket (munged authenticates ccc's local uid — no munge.key read), and records a ledger row.
-Jobs therefore run as `ccc`, and everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/,
-read back over the API — the submitter never touches the Head's disk.
+Head API (running as the **Mantle**, the `ccc` account) unpacks it, renders the sbatch script, submits
+via the munge socket (munged authenticates the Mantle's local uid — no munge.key read), and records an
+Attribution row. Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back
+over the API — the submitter never touches the Head's disk.
+
+Every Spawn runs as the Mantle on EVERY node, under one uid pinned cluster-wide (cuttle.config
+CCC_UID). That is what makes a remote Arm work at all: slurmd setuid()s to the submitting uid, so the
+account must exist, identically, wherever Slurm places the Spawn. The Mantle is home-less by design —
+it owns no per-node state — so nothing here is resolved against a home directory: the Pod image is at
+one absolute path on every node (CCC_SIF) and a remote Arm scratches in /tmp.
 
 Isolation (grill 2026-07-12c). A job NEVER runs in the served `[project]` tree — that would mutate the
 copy the rsync daemon serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
@@ -14,7 +20,7 @@ branch is "are the files already on this node?":
     there, and write out/err/exit/outputs STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
     streams live).
   * remote Arm — the upload isn't here. rsync-stage the project in from the Head's [project] module
-    into ephemeral scratch, run, then stage out/err/exit/outputs BACK to the [spawns] module.
+    into ephemeral /tmp scratch, run, then stage out/err/exit/outputs BACK to the [spawns] module.
 Either way: fresh copy in, `$CCC_OUT` out, source untouched.
 
 Paths are fixed (defaults below match cuttle.config; this package never imports the CLI). Only the
@@ -35,17 +41,19 @@ HEAD_STATE_DIR = Path(os.environ.get("CCC_HEAD_STATE", "/var/lib/ccc/head"))
 PROJECTS_DIR = HEAD_STATE_DIR / "projects"
 SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
 SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
-HEAD_SIF = Path(os.environ.get("CCC_HEAD_SIF", "/opt/ccc/images/base.sif"))
+# The Pod image, at the SAME path on every node (each builds its own at setup). One constant, so the
+# rendered script names the sif identically wherever Slurm places the Spawn.
+CCC_SIF = Path(os.environ.get("CCC_SIF", "/opt/ccc/images/base.sif"))
 MESH_IP = os.environ.get("CCC_MESH_IP", "")
-# Mirror cuttle.config for the remote-Arm branch (resolved against the ARM's home, not the Head's).
-SIF_REL = ".ccc/images/base.sif"
-SCRATCH_REL = ".ccc/scratch"
 PROJECT_MOD = "project"
 SPAWNS_MOD = "spawns"
 
 # %%NAME%% placeholders (not str.format) so bash's own ${...} needs no escaping. Wrapper stdout/stderr
 # (rsync diagnostics) go to a node-local slurm log; the PAYLOAD's stdout/stderr are redirected to files
 # we then stage/keep. --chdir=/tmp: the run dir doesn't exist until we make it.
+#
+# The sif is the SAME path on every node, so it's named once, outside the branch. What actually differs
+# between the Head and a remote Arm is only "are the project files already on this filesystem?".
 JOB_SCRIPT = """\
 #!/bin/bash
 #SBATCH --job-name=ccc-spawn
@@ -53,29 +61,31 @@ JOB_SCRIPT = """\
 #SBATCH --chdir=/tmp
 #SBATCH --output=/tmp/ccc-%j.slurm
 #SBATCH --error=/tmp/ccc-%j.slurm
+%%NODELIST%%
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
+sif="%%CCC_SIF%%"
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
     # into node-local scratch, run there, and write results STRAIGHT to the Head Spawn dir (same FS,
-    # so `cuttle logs -f` streams live).
+    # so `cuttle logs -f` streams live). The Spawn dir was pre-created by the API at submit.
     scratch="%%HEAD_SCRATCH%%/$jid"
     proj="$scratch/proj"
     trap 'rm -rf "$scratch"' EXIT
     mkdir -p "$proj"
     cp -a "$staging_dir/." "$proj/"
-    sif="%%HEAD_SIF%%"
     spawn_dir="%%SPAWNS%%/$jid"
-    mkdir -p "$spawn_dir/outputs"
     out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"; ccc_out="$spawn_dir/outputs"
     stage_out() { :; }  # already on the Head
 else
     # remote Arm: none of these files are here. Stage the project in from the Head's rsync daemon into
     # ephemeral scratch, run, and stage out/err/exit/outputs back at the end.
-    node_home=$(getent passwd "$(id -un)" | cut -d: -f6)
-    sif="$node_home/%%SIF_REL%%"
-    scratch="$node_home/%%SCRATCH_REL%%/$jid"
+    #
+    # Scratch is /tmp, NOT the Mantle's home: the Mantle is home-less by design (one pinned uid,
+    # cluster-wide, owning no per-node state), so a donor box is left with nothing after the trap
+    # fires. Apptainer auto-mounts /tmp, so the Pod sees it with no extra bind.
+    scratch="/tmp/ccc-$jid"
     proj="$scratch/%%UUID%%"
     trap 'rm -rf "$scratch"' EXIT
     mkdir -p "$scratch/outputs"
@@ -89,7 +99,8 @@ CCC_FILELIST
         "rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/" "$scratch/"
     out="$scratch/out"; err="$scratch/err"; exitf="$scratch/exit"; ccc_out="$scratch/outputs"
     stage_out() {
-        # out/err/outputs first, then exit LAST — its arrival is the Head's "done" marker.
+        # out/err/outputs first, then exit LAST — its arrival is the Head's "done" marker. The
+        # destination spawns/<jid>/ already exists: the API pre-created it at submit, for every Spawn.
         rsync -a "$out" "$err" "$ccc_out" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
         rsync -a "$exitf" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
     }
@@ -112,15 +123,16 @@ exit $rc
 
 
 def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
-            files: list[str]) -> str:
+            files: list[str], node: str | None) -> str:
     subs = {
         "%%GPU%%": str(gpu),
+        # Pin the Spawn to one Arm, or leave scheduling to Slurm. A blank line when unset, so the
+        # #SBATCH block just ends early.
+        "%%NODELIST%%": f"#SBATCH --nodelist={node}" if node else "",
         "%%STAGING_DIR%%": str(staging),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
-        "%%HEAD_SIF%%": str(HEAD_SIF),
+        "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),
-        "%%SIF_REL%%": SIF_REL,
-        "%%SCRATCH_REL%%": SCRATCH_REL,
         "%%UUID%%": uuid,
         "%%HEAD_IP%%": MESH_IP,
         "%%PROJECT_MOD%%": PROJECT_MOD,
@@ -136,9 +148,9 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
 
 
 def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
-           tar_bytes: bytes) -> int:
-    """Unpack an uploaded project, render + sbatch it as ccc, and record the attribution row. Returns
-    the Slurm job id (== the Spawn id)."""
+           tar_bytes: bytes, node: str | None = None) -> int:
+    """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row.
+    Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm (else Slurm picks)."""
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
     staging.mkdir(parents=True)
@@ -148,7 +160,7 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     # gitignore-filtered client-side, so every file here is meant to transfer.
     files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
 
-    body = _render(uuid, staging, gpu, script, args, files)
+    body = _render(uuid, staging, gpu, script, args, files, node)
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
         f.write(body)
         job_file = f.name
@@ -157,6 +169,10 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     r = subprocess.run(["sbatch", "--parsable", job_file],
                        capture_output=True, text=True, check=True, env=env)
     job_id = int(r.stdout.strip())
+    # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
+    # into rsync://<head>/spawns/<jid>/, and rsync will not invent that directory. Safe to do after
+    # sbatch — the job cannot start before sbatch has returned its id.
+    (SPAWNS_DIR / str(job_id) / "outputs").mkdir(parents=True, exist_ok=True)
     with db.connect() as conn:
         db.record_spawn(conn, job_id, user_id, script, uuid)
     return job_id
@@ -187,9 +203,13 @@ def out_text(job_id: int) -> str | None:
 
 
 def outputs_tar(job_id: int) -> bytes | None:
-    """gzip-tar of the Spawn's $CCC_OUT dir, for `cuttle outputs <id>`. None if it produced none."""
+    """gzip-tar of the Spawn's $CCC_OUT dir, for `cuttle outputs <id>`. None if it produced none.
+
+    Emptiness — not existence — is the test: submit() pre-creates the dir for every Spawn, so its mere
+    presence says nothing. An empty dir means "nothing written yet / nothing produced", not "ready".
+    """
     outputs = _spawn_dir(job_id) / "outputs"
-    if not outputs.is_dir():
+    if not any(p.is_file() for p in outputs.rglob("*")):
         return None
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:

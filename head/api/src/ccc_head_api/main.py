@@ -102,14 +102,25 @@ def spawns() -> list[dict]:
 @app.get("/spawns/{job_id}")
 def spawn_status(job_id: int) -> dict:
     """A single Spawn's state: still queued/running, or done with an exit code. Anonymous in slice 2
-    (reads stay open until the browser-login slice gates them)."""
+    (reads stay open until the browser-login slice gates them).
+
+    The Attribution ledger is what distinguishes "this Spawn died" from "no such Spawn". A Spawn that
+    is gone from squeue with no `exit` file never recorded one — it was scancel'd, OOM-killed, or its
+    Arm dropped off the mesh before staging out. That is `failed`, not 404, and only the ledger can say
+    so. Remote Arms are the flakiest nodes in the cluster (donor box sleeps, WSL shuts down), so this
+    is the common case there, not a corner.
+    """
     state = spawns_mod.active_state(job_id)
     if state is not None:
         return {"id": job_id, "done": False, "state": state}
     rc = spawns_mod.exit_code(job_id)
     if rc is not None:
         return {"id": job_id, "done": True, "state": "done", "exit": rc}
-    raise HTTPException(404, f"unknown spawn {job_id} (not queued; no exit record)")
+    with db.connect() as conn:
+        known = db.get_spawn(conn, job_id) is not None
+    if known:
+        return {"id": job_id, "done": True, "state": "failed"}
+    raise HTTPException(404, f"unknown spawn {job_id}")
 
 
 @app.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
@@ -179,16 +190,25 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
     authed mutation in slice 2. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
-    {script, gpu, args, wandb_env} — metadata in a header (not query params) keeps the W&B key out of
-    access logs. Runs the render/sbatch/ledger as ccc; returns the Spawn id."""
+    {script, gpu, args, node, wandb_env} — metadata in a header (not query params) keeps the W&B key
+    out of access logs. Runs the render/sbatch/Attribution as the Mantle; returns the Spawn id.
+
+    `node` pins the Spawn to one Arm. We reject an unknown name here rather than letting Slurm do it:
+    sbatch's own error for a bad --nodelist is opaque, and we already know the real node list.
+    """
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
     meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
     if not meta.get("script"):
         raise HTTPException(422, "missing 'script' in X-CCC-Meta")
+    node = meta.get("node")
+    if node:
+        known = [a["name"] for a in slurm.arms()]
+        if node not in known:
+            raise HTTPException(422, f"unknown Arm '{node}' — known Arms: {', '.join(known)}")
     tar_bytes = await request.body()
     job_id = spawns_mod.submit(user["id"], meta["script"], int(meta.get("gpu", 1)),
-                               meta.get("args", []), meta.get("wandb_env", {}), tar_bytes)
+                               meta.get("args", []), meta.get("wandb_env", {}), tar_bytes, node)
     return {"id": job_id}
 
 
