@@ -12,8 +12,9 @@ stage machinery lives server-side in `ccc_head_api.spawns`.
                 (`status`/`logs`/`outputs`), never off local disk. A remote submitter who never ran
                 setup gets results the same way — `cuttle outputs <id>` downloads the $CCC_OUT tar.
 
-Auth: every call carries the bearer token from `~/.ccc/login`; the Head URL comes from ~/.ccc/config.
-Reads (`status`/`logs`/`outputs`) are anonymous in slice 2, but submission requires a login.
+Auth: every call carries the bearer token from `~/.ccc/credentials`; the Head URL comes from
+~/.ccc/config. Every route needs it — reads were anonymous only while the SPA had no way to log in.
+Transport is HTTPS, verified against the Head's certificate pinned on this machine (see tls.py).
 """
 
 import io
@@ -27,7 +28,7 @@ from pathlib import Path
 
 import typer
 
-from . import auth, settings
+from . import auth, settings, tls
 
 
 def _project_files(root: Path) -> list[str]:
@@ -59,10 +60,13 @@ def _make_tar(root: Path, files: list[str] | None) -> bytes:
 
 
 def _get_bytes(path: str) -> bytes:
-    """Anonymous GET of a raw body (logs text / outputs tar)."""
-    req = urllib.request.Request(f"{auth._head_url()}{path}")
+    """Authed GET of a raw body (logs text / outputs tar). Reads used to be anonymous; the
+    browser-login slice put them behind the session, so these carry the bearer like everything else."""
+    url = auth._head_url()
+    req = urllib.request.Request(f"{url}{path}")
+    req.add_header("Authorization", f"Bearer {auth._load_token()}")
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=30, context=tls.context(url)) as r:
             return r.read()
     except urllib.error.HTTPError as e:
         detail = e.reason
@@ -83,12 +87,13 @@ def submit(script: str, gpu: int, follow: bool, args: list[str],
     # against the live node list (it knows the Arms; we don't) and 422s with the known names.
     meta = {"script": script, "gpu": gpu, "args": args, "node": node,
             "wandb_env": settings.wandb_env(project, entity)}
+    url = auth._head_url()
     req = urllib.request.Request(
-        f"{auth._head_url()}/submit", data=tar_bytes, method="POST",
+        f"{url}/submit", data=tar_bytes, method="POST",
         headers={"Authorization": f"Bearer {auth._load_token()}",
                  "X-CCC-Meta": json.dumps(meta), "Content-Type": "application/gzip"})
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
+        with urllib.request.urlopen(req, timeout=120, context=tls.context(url)) as r:
             resp = json.loads(r.read() or "{}")
     except urllib.error.HTTPError as e:
         try:

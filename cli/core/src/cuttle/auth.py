@@ -10,25 +10,35 @@ Two halves with different trust models:
 """
 
 import json
+import ssl
 import urllib.error
 import urllib.request
 
 import typer
 
-from . import config, settings
+from . import config, settings, tls
 from .system import run
 
 
 # --- HTTP to the Head API ---------------------------------------------------
 
-def _api(method: str, path: str, token: str | None = None, body: dict | None = None) -> dict:
+def _api(method: str, path: str, token: str | None = None, body: dict | None = None,
+         auth: bool = True) -> dict:
+    """A JSON call to the Head API, verified against the Head's pinned certificate (see tls.py).
+
+    `auth=True` (the default) attaches the stored session bearer. Every route but /healthz needs one:
+    reads used to be anonymous, and the browser-login slice put them behind the session.
+    """
+    url = _head_url()
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"{_head_url()}{path}", data=data, method=method,
+    req = urllib.request.Request(f"{url}{path}", data=data, method=method,
                                  headers={"Content-Type": "application/json"})
+    if token is None and auth:
+        token = _load_token()
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=15, context=tls.context(url)) as r:
             return json.loads(r.read() or "{}")
     except urllib.error.HTTPError as e:
         try:
@@ -36,6 +46,14 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
         except Exception:
             detail = e.reason
         raise typer.BadParameter(f"{path}: {detail}") from None
+    except urllib.error.URLError as e:
+        # A cert mismatch lands here. Say so plainly — this is the alarm the pin exists to raise.
+        if isinstance(e.reason, ssl.SSLCertVerificationError):
+            raise typer.BadParameter(
+                f"{url} presented a certificate that does not match the one pinned on this machine.\n"
+                f"Either the Head was rebuilt with a new certificate, or something is impersonating "
+                f"it.\nIf you rebuilt it: delete the pin and log in again.") from None
+        raise
 
 
 def _head_url() -> str:
@@ -70,9 +88,12 @@ def _load_token() -> str:
 
 def login(head: str | None = None) -> None:
     _set_head(head)
+    # Pin BEFORE prompting: the password is the thing we are protecting, so the operator must have
+    # accepted the Head's identity before it is ever typed, let alone sent.
+    tls.ensure_pinned(_head_url())
     username = typer.prompt("Username")
     password = typer.prompt("Password", hide_input=True)
-    resp = _api("POST", "/login", body={"username": username, "password": password})
+    resp = _api("POST", "/login", token="", body={"username": username, "password": password})
     _save_token(resp["token"])
     if resp["must_change_password"]:
         print("cuttle: password change required before first use")
