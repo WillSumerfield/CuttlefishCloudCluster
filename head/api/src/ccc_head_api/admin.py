@@ -2,7 +2,7 @@
 
 Runs *on the Head as the `ccc` service account* (`python -m ccc_head_api.admin ...`), writing head.db
 directly — being the operator on the Head is the authorization, no HTTP/session (mirrors the way
-`cuttle arm approve` mutates the registry). `cuttle user add|list|remove` are thin wrappers that shell
+`cuttle arm authorize` mutates the registry). `cuttle user add|list|remove` are thin wrappers that shell
 into this via the API venv; `setup --head` uses `add --admin` to seed the first admin.
 
 Prints the one-time temp password to stdout — the operator hands it to the user, who must rotate it on
@@ -43,6 +43,14 @@ def _list() -> int:
     return 0
 
 
+def _exists(username: str) -> int:
+    """Exit status only, no output — `cuttle arm authorize --user` uses it to reject an owner typo
+    before minting an enrollment token."""
+    with db.connect() as conn:
+        db.init_schema(conn)
+        return 0 if db.get_user(conn, username) else 1
+
+
 def _remove(username: str) -> int:
     with db.connect() as conn:
         db.init_schema(conn)
@@ -62,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="list users.")
     r = sub.add_parser("remove", help="delete a user (and their sessions, via cascade).")
     r.add_argument("username")
+    e = sub.add_parser("exists", help="exit 0 if the user exists, 1 if not (no output).")
+    e.add_argument("username")
 
     args = p.parse_args(argv)
     if args.cmd == "add":
@@ -70,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         return _list()
     if args.cmd == "remove":
         return _remove(args.username)
+    if args.cmd == "exists":
+        return _exists(args.username)
     return 2
 
 

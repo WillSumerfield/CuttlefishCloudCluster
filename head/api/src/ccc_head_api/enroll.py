@@ -5,16 +5,22 @@ live in a *separate* Head API app (`ccc_head_api.main`), because they have oppos
 enrollment hands out the munge key and must stay mesh-only, while the Head API must reach the LAN.
 Splitting them keeps the secret physically off every non-mesh interface.
 
-**The security model is the bind address.** uvicorn listens on the Head's *mesh* address only, an
-address that exists solely on the `ccc0` interface. Nothing on the LAN, on the operator's personal
-tailnet, or on the internet has a route to it. Being on the CCC mesh is therefore the entire
-authorization: there is no token, no password, no TLS.
+**The first half of the security model is the bind address.** uvicorn listens on the Head's *mesh*
+address only, an address that exists solely on the `ccc0` interface. Nothing on the LAN, on the
+operator's personal tailnet, or on the internet has a route to it. There is no password and no TLS —
+routability is the first gate, and only an enrollment token gets a machine onto the mesh at all.
+
+**The second half is the pre-declared name** (Phase 3a slice 5). `cuttle arm authorize` writes the
+Arm's row — name and owning User — into the registry *before* its token is handed out, and `/enroll`
+refuses a name that isn't there. So mesh membership alone no longer buys the munge key: an
+unauthorized machine that somehow reached the mesh still gets nothing. Both gates fall out of the
+same single admin decision.
 
 **The service is unprivileged.** It runs as `User=munge` — the one identity that can read 0400
 munge:munge /etc/munge/munge.key without loosening the file or running a network listener as root.
-It cannot write /etc/slurm or run scontrol. `POST /enroll` only appends to a munge-owned registry;
-an operator turns that into a live Slurm node with `cuttle arm admit`. So no request body has a path
-to root, and ⑤ inherits an unprivileged service rather than a root one.
+It cannot write /etc/slurm or run scontrol. `POST /enroll` only updates a munge-owned registry row an
+operator already created; the operator turns that into a live Slurm node with `cuttle arm admit`. So
+no request body has a path to root, and the Head API inherits an unprivileged service, not a root one.
 
 Accepted Phase-1 consequence: mesh compromise == Slurm compromise, since any mesh member may fetch
 the munge key. Munge is cluster-wide, never expires, and authenticates as any node or any user. Only
@@ -92,8 +98,19 @@ def arm_status(name: str) -> dict:
 
 @app.post("/enroll")
 def enroll(req: EnrollRequest) -> dict:
-    """Record an Arm and hand back everything it needs — none of which it could get before joining
-    the mesh. Recording is all this does: the Arm is inert until `cuttle arm admit` runs on the Head.
+    """Record an Arm's hardware and hand back everything it needs — none of which it could get before
+    joining the mesh. Recording is all this does: the Arm is inert until `cuttle arm admit` runs on the
+    Head (or the `cuttle arm authorize` that is still blocked, waiting for exactly this POST).
+
+    **An Arm must have been authorized by name.** `cuttle arm authorize` pre-declares the row before
+    the enrollment token is ever handed out, so a machine on the mesh that no Admin ever named is
+    refused here — and the munge key is what it is being refused. This is the second of enrollment's
+    two gates, and like the first it traces back to one admin decision. Mesh membership alone is no
+    longer enough to obtain the cluster's shared secret.
+
+    An UPDATE, never a create. The pre-declared fields (owner, above all) must survive the donor's
+    POST: this endpoint is the one thing a donor's machine gets to write, and it does not get to say
+    who owns it.
     """
     if not NODE_NAME_RE.match(req.node_name):
         raise HTTPException(422, f"bad node name {req.node_name!r}")
@@ -101,13 +118,15 @@ def enroll(req: EnrollRequest) -> dict:
         raise HTTPException(422, f"unsupported GPU device {req.gpu_device!r}")
 
     reg = _load()
-    prior = reg.get(req.node_name, {})
-    reg[req.node_name] = {
-        "gpu_device": req.gpu_device,
-        "mesh_ip": req.mesh_ip,
-        # Re-enrolling an already-admitted Arm (e.g. after the Head's mesh IP moved) stays admitted.
-        "admitted": prior.get("admitted", False),
-    }
+    if req.node_name not in reg:
+        raise HTTPException(403, f"{req.node_name!r} was not authorized to join this cluster — "
+                                 f"ask the Head's operator to run `cuttle arm authorize`")
+
+    entry = reg[req.node_name]
+    entry["gpu_device"] = req.gpu_device
+    entry["mesh_ip"] = req.mesh_ip
+    # Re-enrolling an already-admitted Arm (e.g. after the Head's mesh IP moved) stays admitted.
+    entry.setdefault("admitted", False)
     _save(reg)
 
     return {
@@ -115,5 +134,5 @@ def enroll(req: EnrollRequest) -> dict:
         "ctld_addr": os.environ["CCC_CTLD_ADDR"],
         "cluster": os.environ["CCC_CLUSTER"],
         "partition": os.environ["CCC_PARTITION"],
-        "admitted": reg[req.node_name]["admitted"],
+        "admitted": entry["admitted"],
     }

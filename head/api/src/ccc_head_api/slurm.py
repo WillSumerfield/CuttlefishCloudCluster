@@ -52,8 +52,10 @@ def _gpu_count(gres: str) -> int:
 
 def arms() -> list[dict]:
     """Every compute node's live Slurm status, enriched with enrollment facts the scheduler never
-    sees (mesh address, admitted). `sinfo` is the authoritative node list — it includes the Head's own
-    co-located Arm, which never enrolls, so it simply has no registry row (implicitly admitted)."""
+    sees: mesh address, admitted, and the **owner** — the User who donated the machine, named by the
+    Admin when they authorized it (and what Karma will pay passive income to). `sinfo` is the
+    authoritative node list; the Head's own co-located Arm is in it and carries an admin-owned
+    registry row despite never enrolling."""
     reg = load_registry()
     out = []
     for rec in _slurm_json("sinfo", "--json").get("sinfo", []):
@@ -65,6 +67,7 @@ def arms() -> list[dict]:
                 "name": name,
                 "state": state,
                 "gpus": gpus,
+                "owner": e.get("owner"),
                 "mesh_ip": e.get("mesh_ip"),
                 "gpu_device": e.get("gpu_device"),
                 "admitted": e.get("admitted", True),
