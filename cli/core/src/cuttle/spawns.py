@@ -59,9 +59,13 @@ def _make_tar(root: Path, files: list[str] | None) -> bytes:
     return buf.getvalue()
 
 
-def _get_bytes(path: str) -> bytes:
+def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
     """Authed GET of a raw body (logs text / outputs tar). Reads used to be anonymous; the
-    browser-login slice put them behind the session, so these carry the bearer like everything else."""
+    browser-login slice put them behind the session, so these carry the bearer like everything else.
+
+    `missing_ok` returns None on a 404 instead of raising: a Spawn that wrote nothing to $CCC_OUT is a
+    normal outcome, not a malformed command.
+    """
     url = auth._head_url()
     req = urllib.request.Request(f"{url}{path}")
     req.add_header("Authorization", f"Bearer {auth._load_token()}")
@@ -69,6 +73,8 @@ def _get_bytes(path: str) -> bytes:
         with urllib.request.urlopen(req, timeout=30, context=tls.context(url)) as r:
             return r.read()
     except urllib.error.HTTPError as e:
+        if missing_ok and e.code == 404:
+            return None
         detail = e.reason
         try:
             detail = json.loads(e.read()).get("detail", e.reason)
@@ -149,7 +155,11 @@ def logs(spawn_id: int, follow: bool) -> None:
 
 def outputs(spawn_id: int) -> None:
     """Download a Spawn's $CCC_OUT dir as a tar into the cwd."""
-    data = _get_bytes(f"/spawns/{spawn_id}/outputs")
+    data = _get_bytes(f"/spawns/{spawn_id}/outputs", missing_ok=True)
+    if data is None:
+        print(f"spawn {spawn_id} produced no outputs "
+              f"(a Spawn returns files by writing them to $CCC_OUT inside the Pod)")
+        return
     dest = Path.cwd() / f"spawn-{spawn_id}-outputs.tar.gz"
     dest.write_bytes(data)
     print(f"wrote {dest}")
