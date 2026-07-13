@@ -265,6 +265,7 @@ function ArmsTable({ arms }: { arms: Arm[] }) {
       <thead>
         <tr>
           <th className={th}>Name</th>
+          <th className={th}>Owner</th>
           <th className={th}>State</th>
           <th className={th}>GPUs</th>
           <th className={th}>Mesh IP</th>
@@ -275,13 +276,14 @@ function ArmsTable({ arms }: { arms: Arm[] }) {
         {arms.map((a) => (
           <tr key={a.name} className="hover:bg-slate-800/30">
             <td className={`${td} font-medium text-slate-100`}>{a.name}</td>
+            <td className={td}>{a.owner ?? '—'}</td>
             <td className={td}><Pill state={a.state} /></td>
             <td className={td}>{a.gpus}</td>
             <td className={`${td} font-mono text-slate-400`}>{a.mesh_ip ?? '—'}</td>
             <td className={td}>{a.admitted ? '✓' : '—'}</td>
           </tr>
         ))}
-        {arms.length === 0 && <EmptyRow cols={5} label="no arms" />}
+        {arms.length === 0 && <EmptyRow cols={6} label="no arms" />}
       </tbody>
     </table>
   )

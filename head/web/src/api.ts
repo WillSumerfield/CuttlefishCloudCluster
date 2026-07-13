@@ -11,10 +11,13 @@
 import { gzip, makeTar, type TarEntry } from './tar'
 import { relPath, type Picked } from './project'
 
+// `owner` is the User who donated the machine — named by the Admin when they authorized it, never
+// declared by the donor. Karma will pay its passive income here.
 export type Arm = {
   name: string
   state: string
   gpus: number
+  owner: string | null
   mesh_ip: string | null
   gpu_device: string | null
   admitted: boolean
