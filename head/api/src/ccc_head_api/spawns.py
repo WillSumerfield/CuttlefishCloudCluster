@@ -148,13 +148,17 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
 
 
 def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
-           tar_bytes: bytes, node: str | None = None) -> int:
+           tar_path: Path, node: str | None = None) -> int:
     """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row.
-    Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm (else Slurm picks)."""
+    Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm (else Slurm picks).
+
+    `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
+    never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally.
+    """
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
     staging.mkdir(parents=True)
-    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tf:
+    with tarfile.open(tar_path, mode="r:gz") as tf:
         tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
     # Module-root-relative list (<uuid>/...) for a remote Arm's --files-from. The upload was already
     # gitignore-filtered client-side, so every file here is meant to transfer.

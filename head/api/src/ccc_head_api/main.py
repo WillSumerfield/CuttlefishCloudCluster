@@ -5,17 +5,18 @@ a **separate** service from the enroll app (`ccc_head_api.enroll`): they have op
 — enrollment hands out the munge key and stays bound to the mesh only, while this must reach the LAN
 so anyone on the CCC mesh *or* the local network can open the board. Binds `0.0.0.0`.
 
-Phase 3a (identity spine): runs as the `ccc` service account and owns the auth store (`head.db`).
-Reads (`/arms`, `/spawns`) stay **anonymous** on the trusted net; login/session routes are added here.
-Mutations (upload/submit) arrive in later slices behind the session. Same origin for API + SPA, so
-the front-end needs no CORS.
+Runs as the **Mantle** (the `ccc` account) and owns the auth store (`head.db`). Every route except
+`/healthz` is behind a session: reads were anonymous while the SPA had no way to log in, and the
+browser-login slice closes that. Same origin for API + SPA, so the front-end needs no CORS.
 
-Transit: served plain HTTP for now (LAN TLS is a later slice — self-signed + CLI pinning). The
-session cookie is therefore not yet marked Secure; flip `_COOKIE_SECURE` when TLS lands.
+Transit: HTTPS, with a cert the Head signs itself (no CA will sign for a box with no public domain —
+that's the deferred item #8). The CLI pins that cert on first use; browsers show their self-signed
+warning once. The session cookie is therefore Secure.
 """
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -30,9 +31,14 @@ from . import spawns as spawns_mod
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
 WEB_DIR = Path(os.environ.get("CCC_WEB_DIR", "/opt/ccc/head-api/web"))
 
-# Session cookie: HttpOnly + SameSite=Lax. Not Secure until LAN TLS lands (see module docstring).
+# Cap the upload instead of trusting whatever arrives. The body is streamed to disk (never buffered in
+# this process): the Head is the one box that must stay up, and a browser folder-picker makes a huge
+# accidental selection a single click. Mirrors cuttle.config.MAX_UPLOAD_BYTES.
+MAX_UPLOAD_BYTES = int(os.environ.get("CCC_MAX_UPLOAD", 4 * 1024**3))
+
+# Session cookie: HttpOnly + SameSite=Lax + Secure (the Head is HTTPS now — see module docstring).
 _COOKIE_NAME = "ccc_session"
-_COOKIE_SECURE = False
+_COOKIE_SECURE = True
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 86400
 
 app = FastAPI(title="CCC Head API", version="0.1.0")
@@ -72,7 +78,10 @@ def current_user(request: Request) -> dict:
             "must_change_password": bool(user["must_change_password"]), "id": user["id"]}
 
 
-# --- health + reads (anonymous) ---------------------------------------------
+# --- health (open) + reads (authed) -----------------------------------------
+# Reads were anonymous only because the SPA had no way to log in. It has one now, so they go behind the
+# session — the board reveals who is running what, and on which donated machine. /healthz stays open:
+# it is a liveness probe and says nothing.
 
 @app.get("/healthz")
 def healthz() -> dict:
@@ -80,16 +89,16 @@ def healthz() -> dict:
 
 
 @app.get("/arms")
-def arms() -> list[dict]:
+def arms(user: dict = Depends(current_user)) -> list[dict]:
     """Every compute node's live status + enrollment facts. See slurm.arms()."""
     return slurm.arms()
 
 
 @app.get("/spawns")
-def spawns() -> list[dict]:
-    """The live Spawn queue (pending/running, CCC partition), enriched with app-level attribution.
-    Every job runs as `ccc` now, so Slurm's own user field is useless — the ledger says who submitted
-    it. See slurm.spawns()."""
+def spawns(user: dict = Depends(current_user)) -> list[dict]:
+    """The live Spawn queue (pending/running, CCC partition), enriched with Attribution. Every Spawn
+    runs as the Mantle now, so Slurm's own user field says `ccc` for all of them and is useless — the
+    ledger is what says who submitted it. See slurm.spawns()."""
     rows = slurm.spawns()
     ids = [r["id"] for r in rows if r["id"] is not None]
     with db.connect() as conn:
@@ -100,9 +109,8 @@ def spawns() -> list[dict]:
 
 
 @app.get("/spawns/{job_id}")
-def spawn_status(job_id: int) -> dict:
-    """A single Spawn's state: still queued/running, or done with an exit code. Anonymous in slice 2
-    (reads stay open until the browser-login slice gates them).
+def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
+    """A single Spawn's state: still queued/running, or done with an exit code.
 
     The Attribution ledger is what distinguishes "this Spawn died" from "no such Spawn". A Spawn that
     is gone from squeue with no `exit` file never recorded one — it was scancel'd, OOM-killed, or its
@@ -124,13 +132,13 @@ def spawn_status(job_id: int) -> dict:
 
 
 @app.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
-def spawn_logs(job_id: int) -> str:
+def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stdout so far (a remote Spawn's arrives only at stage-out — post-hoc)."""
     return spawns_mod.out_text(job_id) or ""
 
 
 @app.get("/spawns/{job_id}/outputs")
-def spawn_outputs(job_id: int) -> Response:
+def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back."""
     data = spawns_mod.outputs_tar(job_id)
     if data is None:
@@ -206,10 +214,42 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         known = [a["name"] for a in slurm.arms()]
         if node not in known:
             raise HTTPException(422, f"unknown Arm '{node}' — known Arms: {', '.join(known)}")
-    tar_bytes = await request.body()
-    job_id = spawns_mod.submit(user["id"], meta["script"], int(meta.get("gpu", 1)),
-                               meta.get("args", []), meta.get("wandb_env", {}), tar_bytes, node)
+    tar_path = await _spool_upload(request)
+    try:
+        job_id = spawns_mod.submit(user["id"], meta["script"], int(meta.get("gpu", 1)),
+                                   meta.get("args", []), meta.get("wandb_env", {}), tar_path, node)
+    finally:
+        tar_path.unlink(missing_ok=True)
     return {"id": job_id}
+
+
+def _human(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}".replace(".0 ", " ")
+        n /= 1024
+    return f"{n} B"  # unreachable
+
+
+async def _spool_upload(request: Request) -> Path:
+    """Stream the request body to a temp file, aborting past MAX_UPLOAD_BYTES.
+
+    Never `await request.body()`: that holds the entire project in this process's memory (and
+    `tarfile` then holds a decompressed copy on top). The Head is the one machine that must stay up,
+    and a browser folder-picker makes selecting a folder with a huge `data/` or a venv a single click.
+    Streaming to disk means a too-large upload costs disk we then release, not RAM we might not have.
+    """
+    total = 0
+    with tempfile.NamedTemporaryFile("wb", suffix=".tar.gz", delete=False) as f:
+        path = Path(f.name)
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                path.unlink(missing_ok=True)
+                raise HTTPException(413, f"upload exceeds {_human(MAX_UPLOAD_BYTES)} — "
+                                         "exclude data/checkpoints (honor .gitignore) and retry")
+            f.write(chunk)
+    return path
 
 
 # Mounted LAST so the API routes above win. html=True serves index.html at `/`. Guarded so the app
