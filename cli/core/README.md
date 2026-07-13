@@ -56,9 +56,29 @@ submit from any box, whether or not it ever ran `setup`.
   `add` prints a one-time temp password; the operator never learns a reusable one.
 
 ## Dashboard
-`cuttle setup --head` runs a read-only web dashboard (Vite/React) at `http://<head>:8082/`, reachable
-over the LAN and the CCC mesh — live Arms + Spawn queue. Enrollment stays on a separate **mesh-only**
-API (`:8081`) so the munge-key handout never touches the LAN.
+`cuttle setup --head` serves the web Dashboard (Vite/React) at `https://<head>:8082/`, reachable over
+the LAN and the CCC mesh. It is the **primary** surface: log in, drop a project folder, and submit a
+Spawn; then watch the queue, tail a Spawn's log, and download its outputs. Enrollment stays on a
+separate **mesh-only** API (`:8081`) so the munge-key handout never touches the LAN.
+
+Uploading a folder reads nothing and sends nothing until you press Submit — you first see the file
+count and total size (with `.gitignore` honored by default), so a stray `data/` or venv is something
+you *see* rather than something you discover afterwards. Uploads are capped at 4 GiB.
+
+## TLS — expect a browser warning, once
+The Head carries passwords, so it speaks HTTPS. No certificate authority will sign a cert for a box
+with no public domain name, so **the Head signs its own** — which encrypts the connection but proves
+nothing about identity on its own. Two consequences, both intentional:
+
+- **Browser** — the first visit warns *"your connection is not private."* That is expected. Click
+  Advanced → Proceed; the browser remembers, and you see it once per browser.
+- **CLI** — `cuttle login` shows the certificate's fingerprint once and asks you to confirm it, then
+  **pins** it to `~/.ccc/pins/`. This is exactly SSH's `known_hosts`: from then on a *different*
+  certificate is refused, so nothing on the LAN can impersonate the Head and harvest your password.
+
+If you ever rebuild the Head with a fresh cert (`teardown --all`), clients will refuse to connect until
+you delete the stale pin and log in again. A plain `teardown` preserves the cert precisely so this
+doesn't happen on every redeploy.
 
 ## Config / artifacts
 - `cuttle setup` prompts for the W&B API key + default project/entity → `~/.ccc/config/config.yaml` (0600).
