@@ -1,9 +1,14 @@
-"""Phase 4 slice 1 — the ledger, the Balance derived from it, the Share, and the nice it pushes.
+"""Phase 4 slices 1–2 — the ledger and the Balance it implies, and the meter that feeds it.
 
 Small tests, as we go; the Fake Cluster and the across-simulated-weeks claims wait for slice 4. What is
 worth testing *now* is the arithmetic nothing else can check: every one of these failures is a **remote
-consequence** — a standing that is quietly wrong, or a nice that is computed perfectly and lands on a
-job it should never have touched.
+consequence** — a standing that is quietly wrong, a nice computed perfectly and pushed onto a job it
+should never have touched, or a bill that is wrong by a factor nobody will ever notice.
+
+- **slice 1** — the ledger's Σ ≡ 0, Decay's linearity (which is *why* no `karma_balance` table exists),
+  Share's monotonicity and saturation, and which jobs the tick refuses to touch.
+- **slice 2** — Demand (the number every bill multiplies by), the hold and its ratchet, and Settlement:
+  a Transfer that sums to zero, a Commons burn that doesn't, and self-use that costs nothing.
 """
 
 import sqlite3
@@ -181,11 +186,14 @@ class TestTheTick:
         """A queue, and a record of every nice we push back into it."""
         pushed = {}
         monkeypatch.setattr(db, "connect", lambda: conn)
+        monkeypatch.setattr(tick.slurm, "arms", lambda: [])
         monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice: pushed.__setitem__(job, nice))
         return pushed
 
     def queue(self, monkeypatch, jobs):
-        monkeypatch.setattr(tick.slurm, "pending", lambda: jobs)
+        monkeypatch.setattr(tick.slurm, "queue",
+                            lambda: [{"state": "PENDING", "node": None, "gpus": 1,
+                                      "start_time": None, **j} for j in jobs])
 
     def test_a_spawn_is_niced_by_its_submitters_standing(self, conn, cluster, monkeypatch):
         db.record_spawn(conn, 101, uid(conn, "alice"), "train.py", "uuid-a")
@@ -214,7 +222,21 @@ class TestTheTick:
         — which is what we want (admitting an Arm should not wait behind a poor-standing User's
         backlog), and needs no special case: it simply isn't in the ledger."""
         self.queue(monkeypatch, [{"id": 103, "nice": 0}])
-        assert tick.once() == 0
+        assert tick.once() == (0, 0)
+        assert cluster == {}
+
+    def test_an_admins_spawn_is_left_alone(self, conn, cluster, monkeypatch):
+        """The Admin is outside the economy — a role for running the cluster, not using it. They hold
+        no Balance, so there is no standing to rank their Spawns by, and `spawn_owners` omits them
+        exactly as it omits the enrollment benchmark. Same skip, no new branch.
+
+        The consequence is deliberate and worth seeing in a test: an Admin's Spawn sits at nice 0 and
+        therefore outranks every User's, for free. Doing research from the admin account would exempt
+        that work from the economy entirely."""
+        db.add_user(conn, "root", is_admin=True)
+        db.record_spawn(conn, 105, uid(conn, "root"), "train.py", "uuid-r")
+        self.queue(monkeypatch, [{"id": 105, "nice": 0}])
+        assert tick.once() == (0, 0)
         assert cluster == {}
 
     def test_an_unchanged_nice_is_not_rewritten(self, conn, cluster, monkeypatch):
@@ -224,7 +246,7 @@ class TestTheTick:
         db.record_spawn(conn, 104, uid(conn, "bob"), "train.py", "uuid-b")
         settled = karma.nice_by_user(conn)[uid(conn, "bob")]
         self.queue(monkeypatch, [{"id": 104, "nice": settled}])
-        assert tick.once() == 0
+        assert tick.once() == (0, 0)
         assert cluster == {}
 
 
@@ -292,3 +314,248 @@ class TestQueueBump:
         squeue("PENDING -131072\n")
         cli_karma.bump(42, clear=True)
         assert pushed == [["scontrol", "update", "JobId=42", "Nice=0"]]
+
+
+# --- slice 2: the meter -----------------------------------------------------
+
+def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=True):
+    return {"name": name, "power": power, "vram_mb": vram_mb, "owner": owner,
+            "state": state, "admitted": admitted}
+
+
+def need(gpus=1, vram_gb=8, node=None):
+    return {"gpus": gpus, "vram_gb": vram_gb, "node": node}
+
+
+def job(jid, state="PENDING", node=None, gpus=1, nice=0, start_time=None):
+    return {"id": jid, "state": state, "node": node, "gpus": gpus, "nice": nice,
+            "start_time": start_time}
+
+
+class TestDemand:
+    """How badly each Arm is wanted. Every Spawn's price is this number times its card's Power, so an
+    error here is an error in every bill the cluster ever sends."""
+
+    def test_the_plans_worked_example(self):
+        """'A GPU used 1h with someone queued behind it the whole hour = 2.0.' The running Spawn claims
+        the card (1.0) and the queued one, eligible for nothing else, claims it too (1.0)."""
+        arms, jobs = [arm("a")], [job(1, "RUNNING", node="a"), job(2)]
+        assert karma.demand_by_arm(arms, jobs, {2: need()})["a"] == 2.0
+
+    def test_an_arm_running_anything_is_never_below_one(self):
+        """The floor, and the invariant that makes the whole meter safe: a running Spawn counts ITSELF,
+        so Demand on a busy card is ≥ 1.0 and **a second is never sold below its Power**. Were the
+        running Spawn not to count itself, a Spawn alone on an idle cluster would read Demand 0 and run
+        for free — and the cluster's quietest hours would be its most exploitable."""
+        assert karma.demand_by_arm([arm("a")], [job(1, "RUNNING", node="a")], {})["a"] == 1.0
+
+    def test_an_idle_unwanted_arm_reads_zero(self):
+        assert karma.demand_by_arm([arm("a")], [], {})["a"] == 0.0
+
+    def test_a_queued_spawn_spreads_one_claim_across_what_it_could_run_on(self):
+        """One Spawn is one claim on the fleet, wherever it lands — so it adds 1/3 to each of the three
+        Arms it is eligible for, not 1.0 to each. Otherwise a single queued Spawn would triple the
+        price of the whole cluster."""
+        arms = [arm("a"), arm("b"), arm("c")]
+        d = karma.demand_by_arm(arms, [job(1)], {1: need()})
+        assert d == pytest.approx({"a": 1 / 3, "b": 1 / 3, "c": 1 / 3})
+        assert sum(d.values()) == pytest.approx(1.0)
+
+    def test_scarce_cards_price_highest(self):
+        """Eligibility is what makes the economy price scarcity rather than size. A big-VRAM card is
+        wanted by the big jobs AND the small ones; a small card is wanted only by the small ones. So
+        Demand lands hardest on exactly the card the cluster can least spare — with no rule saying so."""
+        arms = [arm("small", vram_mb=8192), arm("big", vram_mb=81920)]
+        d = karma.demand_by_arm(arms, [job(1), job(2)], {1: need(vram_gb=8), 2: need(vram_gb=80)})
+        assert d["big"] > d["small"]
+
+    def test_a_flood_is_capped(self):
+        """The griefing bound. Demand is set by whoever is *queuing* and paid by whoever is *running*,
+        so 500 queued Spawns would bill every running Spawn 500x — and the flooder, who need only
+        cancel, would pay nothing at all. Since Balance drives nice for tau=30 days, that would let one
+        User bench another for a month: a gate, in a model that has none."""
+        jobs = [job(1, "RUNNING", node="a")] + [job(i) for i in range(2, 502)]
+        needs = {i: need() for i in range(2, 502)}
+        assert karma.demand_by_arm([arm("a")], jobs, needs)["a"] == karma.DEMAND_MAX
+
+    def test_a_drained_arm_takes_no_demand_and_makes_the_rest_scarcer(self):
+        """Slurm will not place work on a drained Arm, so no queued Spawn is eligible for it — and the
+        claim it would have taken lands on the cards that remain. A machine going away makes the others
+        more expensive, which is what scarcity means."""
+        healthy = karma.demand_by_arm([arm("a"), arm("b")], [job(1)], {1: need()})
+        drained = karma.demand_by_arm([arm("a"), arm("b", state="drain")], [job(1)], {1: need()})
+        assert healthy["a"] == pytest.approx(0.5)
+        assert drained["a"] == pytest.approx(1.0)   # b is gone; a absorbs the whole claim
+        assert drained["b"] == 0.0
+
+    def test_a_cpu_only_spawn_claims_no_device(self):
+        """--gpu 0 is free, and falls out of the arithmetic rather than being special-cased."""
+        assert karma.demand_by_arm([arm("a")], [job(1)], {1: need(gpus=0)})["a"] == 0.0
+
+    def test_an_admin_pinned_spawn_concentrates_its_demand(self):
+        """--node names a machine instead of declaring a need, so all of its Demand lands on that one
+        Arm. The honest price of sidestepping eligibility."""
+        d = karma.demand_by_arm([arm("a"), arm("b")], [job(1)], {1: need(node="b")})
+        assert d == {"a": 0.0, "b": 1.0}
+
+
+class TestTheHold:
+    def test_quoted_from_the_priciest_arm_it_could_land_on(self):
+        """Max, not mean — and not merely to be safe. Node Weight ∝ 1/Power, so Slurm actively PREFERS
+        the fastest free eligible card: a --vram 8 Spawn is eligible for the 4090 and will often land
+        there. Quoting from the cheapest card would under-hold the common case, and under-holding is
+        the direction a queue-flooder exploits."""
+        elig = [arm("slow", power=10.0), arm("fast", power=50.0)]
+        assert karma.hold_for(60, 1, elig) == pytest.approx(50.0)  # 1h x 50 TFLOP/s = 50 Karma
+
+    def test_an_hour_on_a_4090_is_about_fifty_karma(self):
+        """1 Karma = 1 TFLOP-hour. Nothing arbitrary: Power is already TFLOP/s, so the unit falls out of
+        the measurement and no reference constant has to be chosen."""
+        assert karma.hold_for(120, 1, [arm("a", power=50.0)]) == pytest.approx(100.0)
+
+    def test_an_unpriced_fleet_holds_nothing(self):
+        assert karma.hold_for(60, 1, [arm("a", power=None)]) == 0.0
+
+
+class TestTheMeter:
+    """Accrual and Settlement, with Slurm faked. The tick is the only thing that ever moves Karma."""
+
+    @pytest.fixture
+    def cluster(self, conn, monkeypatch):
+        state = {"jobs": [], "arms": [arm("donor", owner="carol")]}
+        monkeypatch.setattr(db, "connect", lambda: conn)
+        monkeypatch.setattr(tick.slurm, "queue", lambda: state["jobs"])
+        monkeypatch.setattr(tick.slurm, "arms", lambda: state["arms"])
+        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice: None)
+        return state
+
+    def spawn(self, conn, jid, user, hold=100.0, **kw):
+        db.record_spawn(conn, jid, uid(conn, user), "train.py", f"u{jid}",
+                        minutes=60, gpus=1, vram_gb=8, hold=hold, **kw)
+
+    def test_the_hold_suppresses_share_the_moment_a_spawn_queues(self, conn):
+        """Why Escrow exists at all. A settle-at-end economy is trivially gamed: 500 queued Spawns move
+        no Balance until they finish, so a burst holds the top of the queue for hours. The hold lands
+        the instant the Spawn is queued, so flooding the queue instantly costs you your own position."""
+        before = karma.nice_by_user(conn)[uid(conn, "alice")]
+        self.spawn(conn, 201, "alice", hold=20_000.0)
+        assert karma.nice_by_user(conn)[uid(conn, "alice")] > before  # worse standing, immediately
+
+    def test_the_meter_ratchets_past_the_hold_but_never_below_it(self, conn):
+        """MAX(hold, accrued) is the ratchet. The forecast is a FLOOR — so an under-quoted hold cannot
+        be exploited — and the meter raises it if the real cost overtakes it, so a Demand spike is felt
+        in the submitter's Share within 30s rather than as a surprise at Settlement. The claim can only
+        ever go up, and a Spawn can never quietly cheapen its own submitter's standing while it runs."""
+        u = uid(conn, "alice")
+        self.spawn(conn, 202, "alice", hold=100.0)
+        assert db.escrow_totals(conn)[u] == 100.0        # accrued 0 -> the hold is the floor
+
+        db.accrue(conn, 202, "donor", 40.0, at(conn, 0))
+        assert db.escrow_totals(conn)[u] == 100.0        # still under the hold: claim does not drop
+
+        db.accrue(conn, 202, "donor", 250.0, at(conn, 0))
+        assert db.escrow_totals(conn)[u] == 250.0        # overtook it: the claim follows the truth
+
+    def test_accrual_bills_elapsed_time_not_ticks(self, conn, cluster):
+        """If the karma service was down for an hour, the User still HELD the card for that hour and
+        still owes for it. Billing per-tick instead of per-second would mean an outage silently makes
+        the cluster free — and would make the tick interval a price."""
+        self.spawn(conn, 203, "alice")
+        started = datetime.now(timezone.utc) - timedelta(hours=2)
+        cluster["jobs"] = [job(203, "RUNNING", node="donor", start_time=started.timestamp())]
+        tick.once()
+        # 2h held, 1 GPU, 50 TFLOP/s, Demand 1.0 (it is alone) => ~100 Karma
+        accrued = db.live_escrows(conn)[0]["accrued"]
+        assert accrued == pytest.approx(100.0, rel=0.01)
+
+    def test_settling_transfers_to_the_arms_owner_and_sums_to_zero(self, conn, cluster):
+        """The core flow, and the invariant it preserves. The submitter is debited and the Arm's owner
+        credited the SAME Karma, so Σ balances ≡ 0 — there is no supply, no pot, and nothing to inflate."""
+        self.spawn(conn, 204, "alice")
+        db.accrue(conn, 204, "donor", 75.0, at(conn, 0))
+        cluster["jobs"] = []                     # gone from squeue == it ended
+        assert tick.once() == (0, 1)
+
+        bal = karma.balances(conn)
+        assert bal[uid(conn, "alice")] == pytest.approx(-75.0, rel=1e-3)
+        assert bal[uid(conn, "carol")] == pytest.approx(+75.0, rel=1e-3)
+        assert sum(bal.values()) == pytest.approx(0.0, abs=1e-9)
+        assert db.live_escrows(conn) == []       # the claim is released
+
+    def test_a_commons_arm_burns_the_karma(self, conn, cluster):
+        """An Admin-owned Arm is the cluster's own hardware, which nobody donated. The Karma is
+        DESTROYED rather than credited — the Admin earns nothing, ever — and Decay reabsorbs the drift,
+        which is why Σ ≡ 0 is an attractor rather than an invariant anyone has to police."""
+        db.add_user(conn, "root", is_admin=True)
+        cluster["arms"] = [arm("donor", owner="root")]
+        self.spawn(conn, 205, "alice")
+        db.accrue(conn, 205, "donor", 60.0, at(conn, 0))
+        cluster["jobs"] = []
+        tick.once()
+
+        bal = karma.balances(conn)
+        assert bal[uid(conn, "alice")] == pytest.approx(-60.0, rel=1e-3)
+        assert uid(conn, "root") not in bal          # the Admin never enters the ledger
+        assert sum(bal.values()) < 0                 # destroyed, not transferred
+
+    def test_running_on_your_own_arm_is_free(self, conn, cluster):
+        """You pay yourself: the transfer nets to zero with no special case anywhere in the code."""
+        cluster["arms"] = [arm("donor", owner="alice")]
+        self.spawn(conn, 206, "alice")
+        db.accrue(conn, 206, "donor", 90.0, at(conn, 0))
+        cluster["jobs"] = []
+        tick.once()
+        assert karma.balances(conn).get(uid(conn, "alice"), 0.0) == pytest.approx(0.0, abs=1e-9)
+
+    def test_a_spawn_cancelled_while_queued_settles_at_zero(self, conn, cluster):
+        """It never held a card, so it owes nothing — and its hold is released in full. This is also
+        what makes over-declaring --time cost a User nothing but queue position."""
+        self.spawn(conn, 207, "alice", hold=500.0)
+        cluster["jobs"] = []
+        tick.once()
+        assert karma.balances(conn).get(uid(conn, "alice"), 0.0) == pytest.approx(0.0, abs=1e-9)
+        assert db.live_escrows(conn) == []
+
+    def test_an_unpriced_arm_settles_at_zero_without_crashing(self, conn, cluster):
+        """A benchmark that flaked leaves an Arm with no Power. It is a free GPU until someone reads the
+        log — but it must not take the tick down with it, because a dead tick freezes the whole queue's
+        nice at whatever it last held, silently, forever."""
+        cluster["arms"] = [arm("donor", power=None)]
+        self.spawn(conn, 208, "alice")
+        started = datetime.now(timezone.utc) - timedelta(hours=2)
+        cluster["jobs"] = [job(208, "RUNNING", node="donor", start_time=started.timestamp())]
+        tick.once()
+        assert db.live_escrows(conn)[0]["accrued"] == 0.0
+
+    def test_an_admins_spawn_is_never_escrowed_or_settled(self, conn, cluster):
+        """The Admin is outside the economy: no hold, no meter, no ledger row. `hold=None` at submit is
+        the whole of it."""
+        db.add_user(conn, "root", is_admin=True)
+        self.spawn(conn, 209, "root", hold=None)
+        assert db.live_escrows(conn) == []
+        cluster["jobs"] = []
+        assert tick.once() == (0, 0)
+        assert karma.balances(conn) == {}
+
+    def test_demand_history_is_recorded_for_the_tide(self, conn, cluster):
+        """Slice 3's Tide forecasts from these samples, so slice 2 must already be collecting them —
+        otherwise the Tide lands with an empty history and forecasts nothing for its first 30 days."""
+        cluster["jobs"] = [job(210, "RUNNING", node="donor", start_time=0)]
+        tick.once()
+        rows = conn.execute("SELECT node, demand FROM karma_demand").fetchall()
+        assert [(r["node"], r["demand"]) for r in rows] == [("donor", 1.0)]
+
+
+class TestOverrideAndTheAdmin:
+    def test_an_override_aimed_at_an_admin_is_refused(self, conn):
+        """Not tidiness — the invariant. An Admin is excluded from standings(), so Karma conjured into
+        one would still count in balances() while contributing to no standing, and Σ balances ≡ 0 would
+        quietly stop holding. Admins never appear in the ledger, and that is what keeps it true."""
+        db.add_user(conn, "root", is_admin=True)
+        with pytest.raises(ValueError, match="outside the economy"):
+            karma.override(conn, "root", 1000.0)
+        assert db.karma_rows(conn) == []  # and nothing reached the ledger
+
+    def test_an_admin_has_no_standing(self, conn):
+        db.add_user(conn, "root", is_admin=True)
+        assert "root" not in [s["username"] for s in karma.standings(conn)]
