@@ -25,7 +25,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -110,7 +110,55 @@ CREATE TABLE karma_escrow (
 CREATE INDEX idx_karma_escrow_user ON karma_escrow(user_id);
 """
 
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]  # index i takes user_version i -> i+1
+# The meter (Phase 4 slice 2). Two moves:
+#
+# 1. `spawns` learns what the User DECLARED. The meter needs a queued Spawn's needs to know which Arms
+#    it is eligible for (and so which Arms' Demand it adds to), and its `minutes` to quote a hold. All
+#    of it is known at submit and none of it is worth re-parsing out of Slurm's ~120-field job schema
+#    every 30s. Eligibility itself is NOT frozen here — only the need is. The tick re-derives the Arm
+#    set from the live registry each pass, so an Arm admitted after this Spawn queued joins its
+#    eligible set, and a drained one leaves it (making the rest scarcer, which is correct).
+#
+# 2. `karma_escrow` becomes the Spawn's **outstanding claim** — and therefore the meter itself. It was
+#    created empty in v3 and never written, so it is simply rebuilt here. It holds both:
+#      * `hold`    — the forecast, quoted once at submit. A FLOOR under the claim.
+#      * `accrued` — what the Spawn has really cost so far, ticked while it RUNS. A RATCHET on top.
+#    Share subtracts MAX(hold, accrued), so the claim only ever goes UP: an under-quoted hold cannot be
+#    exploited, and a Demand spike that overshoots the forecast is felt in the submitter's standing
+#    immediately rather than being a surprise at Settlement. At Settlement the row is DELETED and one
+#    ledger row (= accrued) is written; the escrow is a live claim, never history.
+#
+# `karma_demand` is history ONLY — never a pricing path. The tick consumes each sample the instant it
+# takes it; these rows exist so slice 3's Tide can forecast Demand by hour-of-day and the Dashboard can
+# chart it. Raw (one row per Arm per tick), pruned at 30 days: ~10MB/month at 3 Arms, and the raw series
+# is what the per-machine chart wants.
+_SCHEMA_V4 = """
+ALTER TABLE spawns ADD COLUMN minutes INTEGER;
+ALTER TABLE spawns ADD COLUMN gpus    INTEGER;
+ALTER TABLE spawns ADD COLUMN vram_gb INTEGER;
+ALTER TABLE spawns ADD COLUMN node    TEXT;
+
+DROP TABLE karma_escrow;
+CREATE TABLE karma_escrow (
+  job_id  INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  hold    REAL    NOT NULL,
+  accrued REAL    NOT NULL DEFAULT 0,
+  node    TEXT,
+  last_at TEXT,
+  at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX idx_karma_escrow_user ON karma_escrow(user_id);
+
+CREATE TABLE karma_demand (
+  at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  node   TEXT NOT NULL,
+  demand REAL NOT NULL
+);
+CREATE INDEX idx_karma_demand_at ON karma_demand(at);
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]  # index i takes user_version i -> i+1
 
 
 # --- connection + schema ----------------------------------------------------
@@ -240,12 +288,23 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 # --- spawn ledger (slice 2) -------------------------------------------------
 
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
-                 staging_uuid: str) -> None:
-    """Attribute a submitted Spawn to its user, keyed by the Slurm job id."""
+                 staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
+                 node: str | None = None, hold: float | None = None) -> None:
+    """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
+    ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
+    submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
+
+    `hold` is None for a Spawn nobody is charged for: the **Admin** is outside the economy, so their
+    Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
+    """
     conn.execute(
-        "INSERT INTO spawns (job_id, user_id, script, staging_uuid) VALUES (?,?,?,?)",
-        (job_id, user_id, script, staging_uuid),
+        """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node),
     )
+    if hold is not None:
+        conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
+                     (job_id, user_id, hold))
     conn.commit()
 
 
@@ -268,18 +327,45 @@ def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, 
 
 
 def spawn_owners(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, int]:
-    """Map job_id -> submitter user_id. The Karma tick's whole link from a queued Slurm job back to a
-    person: Slurm says every Spawn belongs to `ccc`, so only this ledger knows whose standing to apply.
-    Jobs with no row (the enrollment benchmark, which the CLI sbatches outside the API) are simply
-    absent — the tick leaves those at nice 0."""
+    """Map job_id -> the user_id whose STANDING ranks this Spawn. The Karma tick's whole link from a
+    queued Slurm job back to a person: Slurm says every Spawn belongs to `ccc`, so only this ledger
+    knows whose standing to apply.
+
+    Two kinds of Spawn are deliberately ABSENT, and the tick skips whatever is absent — so both take
+    the same path, and it needs no branch for either:
+      * **no Attribution row** — the enrollment benchmark, which the CLI sbatches outside the API.
+      * **submitted by an Admin** — the Admin is outside the economy: they earn no Karma, pay none, and
+        hold no Balance, so there is no standing to rank their Spawns by.
+    Both therefore keep nice 0 and outrank queued work. For the benchmark that is wanted (admitting an
+    Arm should not wait behind a poor-standing User's backlog); for the Admin it is the privilege of the
+    role. See temp/KARMA.md.
+    """
     if not job_ids:
         return {}
     marks = ",".join("?" * len(job_ids))
     rows = conn.execute(
-        f"SELECT job_id, user_id FROM spawns WHERE user_id IS NOT NULL AND job_id IN ({marks})",
+        f"""SELECT s.job_id, s.user_id FROM spawns s JOIN users u ON u.id = s.user_id
+            WHERE u.is_admin = 0 AND s.job_id IN ({marks})""",
         job_ids,
     ).fetchall()
     return {r["job_id"]: r["user_id"] for r in rows}
+
+
+def spawn_needs(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlite3.Row]:
+    """Map job_id -> what the User declared (gpus, vram_gb, node). What a queued Spawn is *eligible*
+    for, and therefore whose Demand it adds to.
+
+    Unlike spawn_owners this does NOT exclude Admins: an Admin's queued Spawn is a real claim on the
+    cards it could run on, and every other User's price should reflect that it is waiting. The Admin is
+    outside the economy as a *payer*, not as a *body in the queue*.
+    """
+    if not job_ids:
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    rows = conn.execute(
+        f"SELECT job_id, user_id, gpus, vram_gb, node FROM spawns WHERE job_id IN ({marks})", job_ids
+    ).fetchall()
+    return {r["job_id"]: r for r in rows}
 
 
 # --- Karma ledger (slice 1) -------------------------------------------------
@@ -304,7 +390,55 @@ def karma_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def escrow_totals(conn: sqlite3.Connection) -> dict[int, float]:
-    """user_id -> outstanding Escrow. Not decayed: an Escrow is a live claim, not history."""
+    """user_id -> outstanding claim. Not decayed: an Escrow is a live claim, not history.
+
+    `MAX(hold, accrued)` — SQLite's *scalar* max — is the ratchet, and it is the whole reason this is
+    one table rather than two. The hold is a FLOOR (so an under-quoted forecast cannot be exploited);
+    the meter raises it if the Spawn's real cost overtakes it (so a Demand spike is felt in the
+    submitter's Share within 30s, not at Settlement). The claim therefore only ever goes UP, and a
+    Spawn can never quietly cheapen its own submitter's standing while it runs.
+    """
     rows = conn.execute(
-        "SELECT user_id, SUM(amount) AS total FROM karma_escrow GROUP BY user_id").fetchall()
+        "SELECT user_id, SUM(MAX(hold, accrued)) AS total FROM karma_escrow GROUP BY user_id"
+    ).fetchall()
     return {r["user_id"]: r["total"] for r in rows}
+
+
+def live_escrows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every outstanding claim — the meter's working set. A row here means "this Spawn has not settled
+    yet", whatever Slurm currently thinks."""
+    return conn.execute(
+        "SELECT job_id, user_id, hold, accrued, node, last_at FROM karma_escrow").fetchall()
+
+
+def accrue(conn: sqlite3.Connection, job_id: int, node: str, accrued: float, last_at: str) -> None:
+    """Advance one running Spawn's meter. `last_at` is stored so the NEXT pass bills from real elapsed
+    time rather than assuming a tick fired — a restarted karma service must not lose money, and the
+    User held the card across the gap regardless."""
+    conn.execute("UPDATE karma_escrow SET accrued=?, node=?, last_at=? WHERE job_id=?",
+                 (accrued, node, last_at, job_id))
+    conn.commit()
+
+
+def clear_escrow(conn: sqlite3.Connection, job_id: int) -> None:
+    """Release the claim. Called only at Settlement, once the ledger row is written."""
+    conn.execute("DELETE FROM karma_escrow WHERE job_id=?", (job_id,))
+    conn.commit()
+
+
+# --- Demand history (slice 2; read by slice 3's Tide) -----------------------
+
+def record_demand(conn: sqlite3.Connection, at: str, demand: dict[str, float]) -> None:
+    conn.executemany("INSERT INTO karma_demand (at, node, demand) VALUES (?,?,?)",
+                     [(at, node, d) for node, d in demand.items()])
+    conn.commit()
+
+
+def prune_demand(conn: sqlite3.Connection, days: int) -> int:
+    """History, not evidence: a sample older than the Tide's window forecasts nothing and prices
+    nothing."""
+    cur = conn.execute(
+        "DELETE FROM karma_demand WHERE at < strftime('%Y-%m-%dT%H:%M:%SZ','now',?)", (f"-{days} days",)
+    )
+    conn.commit()
+    return cur.rowcount
