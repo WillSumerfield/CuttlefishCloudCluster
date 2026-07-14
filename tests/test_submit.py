@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+from ccc_head_api import db
 from ccc_head_api import main as head_main
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
@@ -48,10 +49,18 @@ class FakeUser(dict):
     pass
 
 
-def client(monkeypatch, is_admin: bool) -> TestClient:
-    """A Head API with a logged-in caller and no Slurm, no disk, no database."""
+def client(monkeypatch, is_admin: bool, tmp_path=None) -> TestClient:
+    """A Head API with a logged-in caller and no Slurm, no disk — but a real (empty) database.
+
+    A non-admin submit reads the **Tide** to quote its Escrow, so head.db is no longer optional here.
+    Empty is the interesting state anyway: with no Demand history every bucket forecasts 1.0, and the
+    quote must come out exactly as it did before the Tide existed.
+    """
     user = {"id": 1, "username": "alice", "is_admin": is_admin, "must_change_password": False}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
+    if tmp_path is not None:
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
     monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
     monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
@@ -70,8 +79,8 @@ def _clear_overrides():
 
 
 class TestSubmitRequiresDeclarations:
-    def test_happy_path(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24)
+    def test_happy_path(self, monkeypatch, tmp_path):
+        r = post(client(monkeypatch, is_admin=False, tmp_path=tmp_path), minutes=60, vram=24)
         assert r.status_code == 200
         assert r.json() == {"id": 4242}
 

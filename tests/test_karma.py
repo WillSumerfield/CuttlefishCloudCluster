@@ -559,3 +559,140 @@ class TestOverrideAndTheAdmin:
     def test_an_admin_has_no_standing(self, conn):
         db.add_user(conn, "root", is_admin=True)
         assert "root" not in [s["username"] for s in karma.standings(conn)]
+
+
+# --- slice 3: the Tide, and the ledger a User actually reads --------------------------------------
+
+def put_row(conn, kind, amount, from_user, to_user, at):
+    """A ledger row at an explicit past time — record_karma always stamps now, but the curve
+    tests need history to sag through."""
+    conn.execute("INSERT INTO karma_ledger (at, kind, amount, from_user, to_user) VALUES (?,?,?,?,?)",
+                 (at, kind, amount, from_user, to_user))
+    conn.commit()
+
+
+def sample(conn, node, days_ago, hour, demand):
+    """One Demand sample, placed at a specific hour of a specific day."""
+    t = (datetime.now(timezone.utc) - timedelta(days=days_ago)).replace(hour=hour, minute=0, second=0)
+    db.record_demand(conn, t.strftime("%Y-%m-%dT%H:%M:%SZ"), {node: demand})
+
+
+class TestTheTide:
+    """The Tide = each Arm's mean Demand by hour of the day, over the last 30 days. It is a *pricing*
+    input and nothing else — it never reaches a screen as a forecast."""
+
+    def test_an_empty_history_forecasts_one(self, conn):
+        """The cold start, and the load-bearing default. 1.0 is what a card running exactly one Spawn
+        reads, and it is what makes slice 2 a special case of slice 3 rather than something to rewrite:
+        with a flat Tide the hold reduces EXACTLY to minutes/60 x gpus x max(Power)."""
+        assert karma.tide(karma.tides(conn), "never-seen", 3) == 1.0
+
+    def test_it_is_the_mean_of_that_hour_across_days(self, conn):
+        """Same hour, different days -> one bucket. This is what makes the forecast a forecast rather
+        than an echo of yesterday."""
+        sample(conn, "gpu", days_ago=1, hour=14, demand=2.0)
+        sample(conn, "gpu", days_ago=2, hour=14, demand=4.0)
+        assert karma.tide(karma.tides(conn), "gpu", 14) == pytest.approx(3.0)
+
+    def test_hours_do_not_bleed_into_each_other(self, conn):
+        sample(conn, "gpu", days_ago=1, hour=2, demand=8.0)
+        tides = karma.tides(conn)
+        assert karma.tide(tides, "gpu", 2) == pytest.approx(8.0)
+        assert karma.tide(tides, "gpu", 3) == 1.0  # an empty bucket forecasts 1.0, not 0.0
+
+    def test_arms_do_not_bleed_into_each_other(self, conn):
+        """Demand is per-Arm because scarcity is: the fleet's one big card is wanted by the jobs that
+        need it AND by the jobs that don't."""
+        sample(conn, "big", days_ago=1, hour=9, demand=6.0)
+        sample(conn, "small", days_ago=1, hour=9, demand=1.0)
+        tides = karma.tides(conn)
+        assert karma.tide(tides, "big", 9) == pytest.approx(6.0)
+        assert karma.tide(tides, "small", 9) == pytest.approx(1.0)
+
+    def test_samples_beyond_the_window_are_not_in_the_forecast(self, conn):
+        """DEMAND_RETENTION_DAYS is one window serving three jobs (Decay's tau, the Tide, the charts).
+        A sample older than it prices nothing — and prune_demand deletes it anyway."""
+        sample(conn, "gpu", days_ago=90, hour=5, demand=8.0)
+        assert karma.tide(karma.tides(conn), "gpu", 5) == 1.0
+
+
+class TestTheHoldRidesTheTide:
+    def test_a_busy_hour_costs_more(self, conn):
+        """The Tide's whole purpose. Same Spawn, same card, twice the usual Demand at that hour ->
+        twice the hold. Scarcity is priced at submit, not just at settle."""
+        sample(conn, "gpu", days_ago=1, hour=13, demand=2.0)
+        elig = [arm("gpu", power=50.0)]
+        quiet = karma.hold_for(60, 1, elig, hours=[3], tides=karma.tides(conn))
+        busy = karma.hold_for(60, 1, elig, hours=[13], tides=karma.tides(conn))
+        assert quiet == pytest.approx(50.0)   # untouched hour -> Tide 1.0 -> the slice-2 quote
+        assert busy == pytest.approx(100.0)   # Tide 2.0
+
+    def test_a_long_spawn_is_quoted_at_the_MEAN_of_its_hours_not_the_peak(self, conn):
+        """Mean, not max, over the span. Otherwise a 24h Spawn touches every hour and would be quoted
+        at the daily peak purely for being long — which would price honesty about duration."""
+        sample(conn, "gpu", days_ago=1, hour=13, demand=3.0)  # one spike...
+        elig = [arm("gpu", power=50.0)]
+        hold = karma.hold_for(60, 1, elig, hours=[12, 13], tides=karma.tides(conn))
+        assert hold == pytest.approx(50.0 * (1.0 + 3.0) / 2)  # ...diluted across the span
+
+    def test_slice_two_is_the_special_case_of_a_flat_tide(self, conn):
+        """The compatibility claim, stated as a test: an empty history must reproduce slice 2 EXACTLY,
+        or every hold quoted before the Tide existed was wrong."""
+        elig = [arm("slow", power=10.0), arm("fast", power=50.0)]
+        assert karma.hold_for(60, 1, elig, hours=[0, 1, 2], tides=karma.tides(conn)) \
+            == karma.hold_for(60, 1, elig)
+
+
+class TestTheLedgerAUserReads:
+    def test_rows_are_signed_from_your_side(self, conn):
+        """The same Settlement is income to one party and a bill to the other. One row, two readings."""
+        a, b = uid(conn, "alice"), uid(conn, "bob")
+        db.record_karma(conn, "settle", 10.0, b, a, job_id=1)  # bob -> alice
+        assert karma.ledger(conn, a)["rows"][0]["amount"] == pytest.approx(10.0)
+        assert karma.ledger(conn, b)["rows"][0]["amount"] == pytest.approx(-10.0)
+
+    def test_the_counterparty_of_a_burn_is_nobody(self, conn):
+        """A commons burn has no other side, and the page must be able to say so. NULL is not a missing
+        name — it IS the fact: this Karma was destroyed, not paid to anyone."""
+        b = uid(conn, "bob")
+        db.record_karma(conn, "settle", 5.0, b, None, job_id=1)
+        row = karma.ledger(conn, b)["rows"][0]
+        assert row["amount"] == pytest.approx(-5.0) and row["counterparty"] is None
+
+    def test_self_use_nets_to_zero_in_one_row(self, conn):
+        """An owner on their own Arm is both parties. It costs nothing, and it does so without a special
+        case anywhere — the signs simply cancel."""
+        a = uid(conn, "alice")
+        db.record_karma(conn, "settle", 40.0, a, a, job_id=1)
+        assert karma.ledger(conn, a)["rows"][0]["amount"] == 0.0
+
+    def test_there_are_no_decay_rows_and_the_curve_carries_it(self, conn):
+        """The claim the whole no-karma_balance design rests on. Decay is not an event: nothing is
+        written, ever. It is the SAG of the curve between two real rows — so a ledger with one row and
+        no further activity must still show a Balance that falls."""
+        a = uid(conn, "alice")
+        put_row(conn, "override", 1000.0, None, a, at(conn, 20))
+
+        led = karma.ledger(conn, a, days=30)
+        assert [r["kind"] for r in led["rows"]] == ["override"]  # ONE row. No 'decay' row exists.
+
+        curve = led["curve"]
+        before = [p["balance"] for p in curve if p["at"] < at(conn, 20)]
+        assert max(before) == 0.0                      # nothing before the event
+        assert curve[-1]["balance"] < 1000.0           # ...and it has sagged since
+        assert curve[-1]["balance"] == pytest.approx(1000.0 * karma.decay(20), rel=0.02)
+
+    def test_the_curve_is_the_balance(self, conn):
+        """The curve is not a second source of truth — it is balances() sampled. If these two ever
+        disagree, one of them is lying to a User about where they stand."""
+        a = uid(conn, "alice")
+        put_row(conn, "override", 500.0, None, a, at(conn, 5))
+        put_row(conn, "settle", 120.0, a, uid(conn, "bob"), at(conn, 2))
+        led = karma.ledger(conn, a)
+        assert led["curve"][-1]["balance"] == pytest.approx(karma.balances(conn)[a], rel=1e-6)
+
+    def test_you_see_only_your_own_rows(self, conn):
+        """Standings are everyone's (a Balance is meaningless alone); a transaction history is not."""
+        a, b, c = uid(conn, "alice"), uid(conn, "bob"), uid(conn, "carol")
+        db.record_karma(conn, "settle", 7.0, b, c, job_id=1)  # bob -> carol; alice is not a party
+        assert karma.ledger(conn, a)["rows"] == []
