@@ -152,6 +152,22 @@ credited *the same Karma*. Two consequences fall out for free, rather than being
 Karma spent on a **commons (admin-owned) Arm** has no owner to pay and is simply **destroyed** —
 consuming the lab's shared kit lowers your standing relative to those who don't, which is exactly right.
 
+### The admin is outside the economy
+The admin is a role for **running** the cluster, not for using it. They earn no Karma (any Arm they own
+is a commons Arm, so its Karma is destroyed rather than credited), pay none, and hold no Balance at all:
+their Spawns are never escrowed, never settled, and never re-ranked. A person who wants to *use* the
+cluster does so as an ordinary user, with an ordinary account.
+
+*   It costs almost no code. The tick already skips any Spawn it cannot attribute to a chargeable person
+    (the enrollment benchmark, which is sbatched outside the API); an admin's Spawn simply joins that set.
+*   An **Override aimed at an admin is refused**, and that is load-bearing rather than tidy: Karma
+    conjured into an account excluded from the standings would still count toward `Σ balances`, and the
+    invariant the whole ledger is shaped around would quietly stop holding. Admins never reach the
+    ledger, which is what keeps it true.
+*   ⚠ The consequence is that an admin's Spawns sit at nice 0 and therefore **outrank every user's, for
+    free**. Deliberate — the role is trusted by construction and can Queue-bump regardless — but it means
+    doing research from the admin account would silently exempt that work from the economy.
+
 ### Price = Power × Demand
 The cost of a device-second is **what the device can do** × **how badly it's wanted**. Capability and
 scarcity, measured separately. Several devices allocated = several separate purchases.
@@ -163,9 +179,18 @@ scarcity, measured separately. Several devices allocated = several separate purc
     optional:** a meter that counts only seconds pays a slow card *more* for the same work, so
     *donating your worst hardware would pay best* — an inversion aimed straight at Karma's purpose.
 *   **Demand** — device-seconds *asked for* (running **and queued**) ÷ device-seconds that exist. A GPU
-    used for an hour with someone queued behind it the whole time was demanded for **two**. Unlike
-    utilization this **does not saturate** — utilization reads ~100% on every card the moment the
-    cluster is busy, and so stops discriminating exactly when price matters most.
+    used for an hour with someone queued behind it the whole time was demanded for **two**. Utilization
+    reads ~100% on every card the moment the cluster is busy and stops discriminating exactly when price
+    matters most; Demand keeps climbing with the queue behind it.
+    *   It has a **floor of 1** on any card actually running work — a running Spawn counts *itself* — so
+        a second is never sold below its Power, and the cluster's quietest hours are not its cheapest to
+        exploit.
+    *   And a **ceiling** (`DEMAND_MAX = 8`), far above the point where utilization has gone blind.
+        Demand is set by whoever is *queuing* but paid by whoever is *running*, so uncapped it is a
+        griefing vector: queue 500 Spawns, let everyone running be billed at the spike, cancel, and pay
+        **nothing**. Because Balance drives `nice` for a month, that would let one user bench another for
+        a month — a **gate**, which this model does not have. Past ~8× the signal is saturated anyway (the
+        card is plainly scarce), while the *billing* consequence kept growing without bound.
 *   **Eligibility** — users declare *needs* (`--vram`; hardware licences later), never a machine; only
     the **admin** may name one. A queued Spawn adds demand to **every device it could run on**, spread
     evenly — so scarce big-VRAM cards, wanted by big jobs *and* small ones, price highest.
@@ -180,11 +205,21 @@ scarcity, measured separately. Several devices allocated = several separate purc
 ### Escrow → Settlement
 Karma is **reserved** when a Spawn queues and only **moves** when it ends.
 
-*   **Escrow** (at submit) = declared `--time` × devices × Power × the Tide's forecast demand. It
-    suppresses the submitter's Share **immediately**. Without it the economy is trivially gamed:
-    balances only move at settlement, so a user could queue 500 Spawns and hold top-of-queue for hours
-    while nothing had settled. Escrow makes **flooding the queue instantly cost you your own priority**.
-*   **Settlement** (at end) = *actual* seconds held × Power × the demand it actually ran under.
+*   **Escrow** (at submit) = declared `--time` × devices × Power × the Tide's forecast demand, quoted
+    from the **priciest Arm the Spawn could land on** — which is also the one Slurm prefers, since node
+    `Weight ∝ 1/Power`. It suppresses the submitter's Share **immediately**. Without it the economy is
+    trivially gamed: balances only move at settlement, so a user could queue 500 Spawns and hold
+    top-of-queue for hours while nothing had settled. Escrow makes **flooding the queue instantly cost
+    you your own priority**.
+*   **The hold only ratchets up.** It opens as that forecast, and the **meter** — the running total of
+    what the Spawn has really cost so far — raises it if reality overtakes it. Share subtracts
+    `max(hold, accrued)`, so a Demand spike is felt in the submitter's standing within 30s rather than
+    as a surprise at settlement, and an under-quoted hold cannot be exploited. It never falls before
+    settlement: no Spawn can quietly cheapen its own submitter's standing while it runs.
+*   **Settlement** (at end) = *actual* seconds held × Power × the demand it actually ran under. It is
+    triggered by the Spawn's **absence from the queue**, which is the only end-of-life signal there is:
+    a killed Spawn writes no end-time, Slurm forgets jobs after `MinJobAge`, and `sacct` would need the
+    slurmdbd we deliberately do not run.
 *   Over-declaring `--time` therefore costs **only queue position** (refunded at settle); under-declaring
     gets the Spawn **killed** by Slurm. Honest estimates are self-enforcing from both sides — so
     `--time` is **required, no default**, as is `--vram`.
