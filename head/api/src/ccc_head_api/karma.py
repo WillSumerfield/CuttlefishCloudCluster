@@ -49,6 +49,108 @@ NICE_MAX = 2**16
 
 TICK_SECONDS = 30
 
+# The ceiling on Demand, and the reason it needs one. Demand is set by whoever is *queuing* but paid by
+# whoever is *running* — so a User can inflate everyone else's bill for free: queue 500 Spawns, let the
+# cluster be billed at the spike, then cancel. Escrow released, nothing settled, the flooder pays ZERO.
+# And because Balance drives `nice` for τ=30 days, an unbounded spike would let one User bench another
+# for a month — which is a **gate**, and this model has none. Past ~8x the signal is saturated anyway
+# (the card is plainly scarce; a larger number changes no scheduling decision) while the *billing*
+# consequence kept growing without bound. Accrual already dilutes a short spike across a long Spawn's
+# life; this bounds the rest.
+DEMAND_MAX = 8.0
+
+# The Tide's window (slice 3), and so how long a sample is worth keeping.
+DEMAND_RETENTION_DAYS = 30
+
+
+def tide(node: str, hour: int) -> float:
+    """The forecast Demand on an Arm at an hour of the day. **Slice 3.**
+
+    Until then it is a flat 1.0 — which is not a placeholder so much as the honest cold-start value: a
+    cluster with no Demand history has no basis to forecast anything but "ordinary". Slice 3 replaces
+    the body with a mean over `karma_demand`, and every caller keeps working, because a flat Tide makes
+    `hold_for` reduce EXACTLY to `minutes/60 × gpus × max(Power over eligible)` — the slice-2 formula.
+    """
+    return 1.0
+
+
+def _up(arm: dict) -> bool:
+    """Can Slurm actually place work here? A drained or downed Arm takes nothing, so no queued Spawn is
+    eligible for it and none of their Demand lands on it — which correctly makes every *remaining* card
+    scarcer the moment one goes away."""
+    state = arm.get("state") or ""
+    return bool(arm.get("admitted")) and "down" not in state and "drain" not in state
+
+
+def eligible(arms: list[dict], need) -> list[dict]:
+    """The Arms a Spawn could run on — recomputed from the LIVE registry every pass, never frozen at
+    submit. An Arm admitted after this Spawn queued joins its eligible set and takes a share of its
+    Demand; a drained one drops out.
+
+    An Admin-pinned Spawn (`--node`) is eligible for exactly one Arm, so it concentrates all of its
+    Demand there. That is the honest price of naming a machine instead of declaring a need.
+    """
+    if need["node"]:
+        return [a for a in arms if a["name"] == need["node"]]
+    return [a for a in arms if _up(a) and a["vram_mb"]
+            and round(a["vram_mb"] / 1024) >= (need["vram_gb"] or 0)]
+
+
+def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, float]:
+    """How badly each Arm is wanted, right now: the device-claims on it over the devices it has.
+
+    A **running** Spawn claims the card it holds — so any Arm actually running something reads ≥ 1.0,
+    and **a second is therefore never sold below its Power**. A **queued** Spawn spreads one claim
+    evenly across every Arm it is eligible for, so its total contribution to the fleet is 1.0 wherever
+    it eventually lands, and the scarce big-VRAM cards — wanted by big jobs *and* small ones —
+    accumulate the most. An idle Arm nobody wants reads 0, and is charged to nobody.
+
+    A queued Spawn with no `spawns` row (the enrollment benchmark) adds no queued Demand: we cannot know
+    what it is eligible for. It is pinned to one node and short-lived, so the undercount is negligible —
+    and once it *runs* it claims its card like anything else.
+    """
+    d = {a["name"]: 0.0 for a in arms}
+    for j in jobs:
+        if j["state"] == "RUNNING" and j["node"] in d:
+            d[j["node"]] += j["gpus"]
+    for j in jobs:
+        if j["state"] != "PENDING":
+            continue
+        need = needs.get(j["id"])
+        if need is None or not need["gpus"]:  # unattributed, or CPU-only (claims no device)
+            continue
+        elig = eligible(arms, need)
+        for a in elig:
+            d[a["name"]] += need["gpus"] / len(elig)
+    return {name: min(DEMAND_MAX, v) for name, v in d.items()}
+
+
+def cost(seconds: float, gpus: int, power: float, demand: float) -> float:
+    """What a slice of held device-time is worth. **1 Karma = 1 TFLOP-hour**, and Power is already
+    TFLOP/s, so there is no reference constant to choose — the unit falls out of the measurement.
+
+    Seconds **held**, not seconds busy: a Spawn buys exclusive access to a card, so squatting on one
+    idle is expensive and finishing early is cheap.
+    """
+    return seconds * gpus * power * demand / 3600.0
+
+
+def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None = None) -> float:
+    """The Escrow quoted at submit: what this Spawn would cost on the priciest Arm it could land on.
+
+    **Max**, not mean, over the eligible set — and that is not merely the conservative choice, it is the
+    *modal* one: node `Weight ∝ 1/Power`, so Slurm actively prefers the fastest free eligible card.
+    A `--vram 8` Spawn is eligible for the 4090 and will often land there; quoting it from the cheapest
+    card would under-hold the common case, and under-holding is the gameable direction.
+
+    Over-holding costs a User nothing but queue position — it is refunded in full at Settlement, since
+    what actually moves is `accrued`, never this number.
+    """
+    hours = hours or [0]
+    forecasts = [a["power"] * sum(tide(a["name"], h) for h in hours) / len(hours)
+                 for a in elig if a["power"]]
+    return (minutes / 60.0) * gpus * max(forecasts, default=0.0)
+
 
 def _parse(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -103,7 +205,11 @@ def standings(conn: sqlite3.Connection) -> list[dict]:
     """
     bal = balances(conn)
     esc = db.escrow_totals(conn)
-    rows = conn.execute("SELECT id, username FROM users").fetchall()
+    # Admins are not economic actors: a role for RUNNING the cluster, not using it. They earn no Karma
+    # (an Arm they own is a Commons Arm and its Karma is destroyed), pay none, and hold no Balance — so
+    # they have no standing to appear in. This is also what keeps `Σ balances ≡ 0` true: an Admin never
+    # reaches the ledger at all, which is why an Override aimed at one is refused below.
+    rows = conn.execute("SELECT id, username FROM users WHERE is_admin = 0").fetchall()
     out = []
     for r in rows:
         b, e = bal.get(r["id"], 0.0), esc.get(r["id"], 0.0)
@@ -125,9 +231,15 @@ def override(conn: sqlite3.Connection, username: str, amount: float, note: str |
     Distinct from a **Queue bump**, which moves one Spawn once and touches no Balance. An Override
     bought to win one race would go on winning every *other* race for a month.
     """
-    user = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    user = conn.execute("SELECT id, is_admin FROM users WHERE username=?", (username,)).fetchone()
     if user is None:
         raise KeyError(username)
+    if user["is_admin"]:
+        # Not tidiness — the invariant. An Admin is excluded from `standings()`, so Karma conjured into
+        # one would still count in `balances()` while contributing to no standing, and Σ balances ≡ 0
+        # would quietly stop holding. Admins never appear in the ledger, and that is what keeps it true.
+        raise ValueError(f"{username} is an Admin — the Admin is outside the economy and holds no "
+                         f"Balance to override")
     to_user = user["id"] if amount > 0 else None      # NULL from = conjured
     from_user = user["id"] if amount < 0 else None    # NULL to   = destroyed
     db.record_karma(conn, "override", abs(amount), from_user, to_user, note=note)

@@ -97,8 +97,19 @@ def vram_constraint(vram_gb: int) -> str:
     return "|".join(f"vram{g}" for g in eligible)
 
 
-def pending() -> list[dict]:
-    """Queued Spawns only (id + current nice) — the Karma tick's whole view of Slurm.
+def queue() -> list[dict]:
+    """Every live Spawn — PENDING and RUNNING — and the Karma tick's whole view of Slurm. One poll per
+    pass, because the tick needs both halves and they must agree with each other:
+
+    * **PENDING** Spawns are what it re-ranks (by `nice`) and what generates queued **Demand**.
+    * **RUNNING** Spawns are what it meters — `node` says which Arm's Power and Demand to bill, and
+      `start_time` is where the very first accrual bills *from* (a Spawn that started between two ticks
+      still owes for the seconds before the tick noticed).
+
+    Absence from a *successful* poll is the only signal a Spawn has **ended** — it is what triggers
+    Settlement. There is no other: a killed Spawn writes no end-time, Slurm forgets jobs after
+    `MinJobAge`, and `sacct` would need the slurmdbd we deliberately don't run. If slurmctld is down
+    `_slurm_json` raises, the tick logs and skips, and nothing settles — which is the point.
 
     `nice` is read back rather than remembered: it is the one piece of state the tick shares with an
     operator, and Slurm is where they meet. A **negative** nice is a Queue bump — only an operator can
@@ -107,9 +118,24 @@ def pending() -> list[dict]:
     """
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
-        if j.get("partition") != PARTITION or "PENDING" not in j.get("job_state", []):
+        state = j.get("job_state") or []
+        if j.get("partition") != PARTITION:
             continue
-        out.append({"id": _num(j.get("job_id")), "nice": _num(j.get("nice")) or 0})
+        if "PENDING" in state:
+            live = "PENDING"
+        elif "RUNNING" in state:
+            live = "RUNNING"
+        else:
+            continue  # COMPLETING/COMPLETED/FAILED — on its way out; the next poll settles it
+        gres = ",".join(j.get("gres_detail") or []) or j.get("tres_per_node", "")
+        out.append({
+            "id": _num(j.get("job_id")),
+            "state": live,
+            "nice": _num(j.get("nice")) or 0,
+            "node": (j.get("nodes") or None) if live == "RUNNING" else None,
+            "gpus": _gpu_count(gres),
+            "start_time": _num(j.get("start_time")),
+        })
     return out
 
 
