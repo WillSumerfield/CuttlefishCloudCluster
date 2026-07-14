@@ -1,1 +1,145 @@
 @import "tailwindcss";
+@import "./fonts.css";
+
+/*
+ * CCC — Cuttlefish Cloud Cluster
+ * Dark-only. No borders. Colour is signal.
+ *
+ * Ground palette:  abyss → body → shoal   (deep blue-green ink; never neutral grey)
+ * Pigment palette: umber → bronze → gold  (people & karma; the only saturation on the page)
+ */
+
+@theme inline {
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+
+  --color-abyss: var(--abyss);
+  --color-body: var(--body);
+  --color-shoal: var(--shoal);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-mute: var(--ink-mute);
+
+  --color-umber: var(--umber);
+  --color-bronze: var(--bronze);
+  --color-gold: var(--gold);
+  --color-gold-hi: var(--gold-hi);
+
+  --radius-surface: 14px;
+  --radius-control: 10px;
+}
+
+:root {
+  /* Deep water — every dark carries blue-green ink */
+  --abyss: oklch(0.14 0.03 205);
+  --body: oklch(0.26 0.038 200);
+  --shoal: oklch(0.34 0.045 195);
+
+  --ink: oklch(0.94 0.01 90);
+  --ink-soft: oklch(0.78 0.015 90);
+  --ink-mute: oklch(0.55 0.02 95);
+
+  /* Pigment — karma. Warm yellow-brown. Never red. */
+  --umber: oklch(0.32 0.06 60);
+  --bronze: oklch(0.55 0.095 72);
+  --gold: oklch(0.8 0.145 82);
+  --gold-hi: oklch(0.9 0.16 88);
+}
+
+/* No `* { border: 0 }` reset yet — the legacy App.tsx still draws its cards with borders. */
+@layer base {
+  /*
+   * The ground colour goes on `html` ONLY, never on `body`.
+   *
+   * The abyss shader is a `fixed; z-index: -10` canvas. Negative-z-index descendants paint BEFORE
+   * the backgrounds of in-flow block descendants, so an opaque background on `body` covers the
+   * shader completely and the page just looks flat black. On `html` it propagates to the viewport
+   * and is painted behind everything, which is what we want it for.
+   */
+  html {
+    background-color: var(--abyss);
+  }
+  body {
+    background-color: transparent;
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.005em;
+  }
+}
+
+/*
+ * Surfaces have no edge at all — not a border, not even a crisp rounded silhouette.
+ *
+ * The plate is a separate layer *behind* the content (`::before`), so it can dissolve into the abyss
+ * over the outer ~15% while the text on top stays fully opaque. Masking the section itself would eat
+ * the text with it. `isolation: isolate` keeps the z-index:-1 plate inside the card instead of
+ * sinking behind the page and under the shader.
+ *
+ * No drop shadow: a plate with no edge can't cast one. Depth is carried by luminance alone.
+ */
+@utility surface {
+  position: relative;
+  isolation: isolate;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: var(--radius-surface);
+    background:
+      radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--shoal) 55%, transparent) 0%, transparent 60%),
+      linear-gradient(180deg, color-mix(in oklab, var(--body) 90%, var(--shoal) 10%) 0%, var(--body) 100%);
+    /*
+     * Two crossed linear fades, intersected — an even inset falloff on all four edges.
+     * NOT a radial gradient: a radial mask is an ellipse scaled to the element, so on a wide card its
+     * vertical radius overshoots the card and the top/bottom edges never fade at all.
+     */
+    --fade: 72px;
+    -webkit-mask-image:
+      linear-gradient(to right, transparent, black var(--fade), black calc(100% - var(--fade)), transparent),
+      linear-gradient(to bottom, transparent, black var(--fade), black calc(100% - var(--fade)), transparent);
+    mask-image:
+      linear-gradient(to right, transparent, black var(--fade), black calc(100% - var(--fade)), transparent),
+      linear-gradient(to bottom, transparent, black var(--fade), black calc(100% - var(--fade)), transparent);
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+  }
+}
+
+/* Any edge that meets other content should bleed, never cut. */
+@utility bleed-y {
+  mask-image: linear-gradient(180deg, transparent 0%, black 8%, black 92%, transparent 100%);
+}
+@utility bleed-b {
+  mask-image: linear-gradient(180deg, black 0%, black 82%, transparent 100%);
+}
+@utility label {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+@utility data {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
