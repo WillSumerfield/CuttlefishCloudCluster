@@ -442,3 +442,44 @@ def prune_demand(conn: sqlite3.Connection, days: int) -> int:
     )
     conn.commit()
     return cur.rowcount
+
+
+def demand_by_hour(conn: sqlite3.Connection, days: int) -> list[sqlite3.Row]:
+    """The **Tide**: mean Demand per Arm per hour-of-day, over a rolling window. 24 buckets per Arm."""
+    return conn.execute(
+        "SELECT node, CAST(strftime('%H', at) AS INTEGER) AS hour, AVG(demand) AS demand "
+        "FROM karma_demand WHERE at >= strftime('%Y-%m-%dT%H:%M:%SZ','now',?) "
+        "GROUP BY node, hour",
+        (f"-{days} days",),
+    ).fetchall()
+
+
+def demand_series(conn: sqlite3.Connection, days: int) -> list[sqlite3.Row]:
+    """Demand over *clock* time per Arm — the Dashboard's chart, and the only surface the Tide is ever
+    seen through (a User reads its shape and infers the quiet hours; nothing quotes them a forecast).
+
+    Bucketed to the hour, because the tick samples every 30s: a month of raw rows is ~86k *per Arm*.
+    """
+    return conn.execute(
+        "SELECT node, strftime('%Y-%m-%dT%H:00:00Z', at) AS at, AVG(demand) AS demand "
+        "FROM karma_demand WHERE at >= strftime('%Y-%m-%dT%H:%M:%SZ','now',?) "
+        "GROUP BY node, at ORDER BY at",
+        (f"-{days} days",),
+    ).fetchall()
+
+
+# --- the Ledger, as one User sees it (slice 3) ------------------------------
+
+def ledger_rows(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    """Every real event this User was a party to. **Only real rows** — there is no Decay row to fetch,
+    because Decay is not an event: it is the sag of the Balance curve *between* these rows."""
+    return conn.execute(
+        "SELECT l.id, l.at, l.kind, l.amount, l.from_user, l.to_user, l.job_id, l.note, "
+        "       f.username AS from_name, t.username AS to_name "
+        "FROM karma_ledger l "
+        "LEFT JOIN users f ON f.id = l.from_user "
+        "LEFT JOIN users t ON t.id = l.to_user "
+        "WHERE l.from_user = ? OR l.to_user = ? "
+        "ORDER BY l.at, l.id",
+        (user_id, user_id),
+    ).fetchall()

@@ -26,7 +26,7 @@ small and everyone pins to the rails and age alone decides; too large and nobody
 import math
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import db
 
@@ -63,15 +63,32 @@ DEMAND_MAX = 8.0
 DEMAND_RETENTION_DAYS = 30
 
 
-def tide(node: str, hour: int) -> float:
-    """The forecast Demand on an Arm at an hour of the day. **Slice 3.**
+def tides(conn: sqlite3.Connection) -> dict[str, dict[int, float]]:
+    """The **Tide**: each Arm's mean Demand by hour of the day, over the last DEMAND_RETENTION_DAYS.
 
-    Until then it is a flat 1.0 — which is not a placeholder so much as the honest cold-start value: a
-    cluster with no Demand history has no basis to forecast anything but "ordinary". Slice 3 replaces
-    the body with a mean over `karma_demand`, and every caller keeps working, because a flat Tide makes
-    `hold_for` reduce EXACTLY to `minutes/60 × gpus × max(Power over eligible)` — the slice-2 formula.
+    24 buckets per Arm, and no more. Hour-of-week (168) would be the "obvious" refinement and is the
+    wrong one: the window is ~4 weeks, so each bucket would forecast off ~4 observations. 24 buckets get
+    ~30 days × 120 samples/hour each.
+
+    ⚠ Known and accepted: hour-of-day blends a dead Sunday into a busy Tuesday, so the forecast is a
+    little wrong on both. The fix, if it ever bites, is `hour × is_weekend` (48 buckets, still ~960
+    observations in the thinnest) — one `GROUP BY` away.
     """
-    return 1.0
+    t: dict[str, dict[int, float]] = defaultdict(dict)
+    for r in db.demand_by_hour(conn, DEMAND_RETENTION_DAYS):
+        t[r["node"]][r["hour"]] = r["demand"]
+    return t
+
+
+def tide(tides: dict[str, dict[int, float]], node: str, hour: int) -> float:
+    """One Arm's forecast Demand at one hour. An unseen Arm or an empty bucket forecasts **1.0**.
+
+    1.0 is not a placeholder, it is the honest cold-start value: a cluster with no history has no basis
+    to forecast anything but "ordinary", and 1.0 is what a card running exactly one Spawn reads. It is
+    also what makes slice 2 a special case of this one rather than something to rewrite — with a flat
+    Tide, `hold_for` reduces EXACTLY to `minutes/60 × gpus × max(Power over eligible)`.
+    """
+    return tides.get(node, {}).get(hour, 1.0)
 
 
 def _up(arm: dict) -> bool:
@@ -135,19 +152,25 @@ def cost(seconds: float, gpus: int, power: float, demand: float) -> float:
     return seconds * gpus * power * demand / 3600.0
 
 
-def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None = None) -> float:
-    """The Escrow quoted at submit: what this Spawn would cost on the priciest Arm it could land on.
+def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None = None,
+             tides: dict[str, dict[int, float]] | None = None) -> float:
+    """The Escrow quoted at submit: what this Spawn would cost on the priciest Arm it could land on,
+    at the Demand its hours usually see.
 
     **Max**, not mean, over the eligible set — and that is not merely the conservative choice, it is the
-    *modal* one: node `Weight ∝ 1/Power`, so Slurm actively prefers the fastest free eligible card.
-    A `--vram 8` Spawn is eligible for the 4090 and will often land there; quoting it from the cheapest
-    card would under-hold the common case, and under-holding is the gameable direction.
+    *modal* one: node `Weight ∝ 1/Power`, so Slurm actively prefers the fastest free eligible card
+    (confirmed on hardware 2026-07-14: with both cards idle, a `--vram 8` Spawn took the 4090). Quoting
+    from the cheapest card would under-hold the common case, and under-holding is the gameable direction.
+
+    **Mean**, not max, over the *hours* the Spawn would span — otherwise a 24h Spawn touches every hour
+    and would be quoted at the daily peak purely for being long.
 
     Over-holding costs a User nothing but queue position — it is refunded in full at Settlement, since
     what actually moves is `accrued`, never this number.
     """
     hours = hours or [0]
-    forecasts = [a["power"] * sum(tide(a["name"], h) for h in hours) / len(hours)
+    tides = tides or {}
+    forecasts = [a["power"] * sum(tide(tides, a["name"], h) for h in hours) / len(hours)
                  for a in elig if a["power"]]
     return (minutes / 60.0) * gpus * max(forecasts, default=0.0)
 
@@ -172,6 +195,50 @@ def balances(conn: sqlite3.Connection, now: datetime | None = None) -> dict[int,
         if r["from_user"] is not None:
             out[r["from_user"]] -= amount
     return dict(out)
+
+
+def ledger(conn: sqlite3.Connection, user_id: int, days: int = 30, points: int = 120,
+           now: datetime | None = None) -> dict:
+    """One User's economic history: the **real rows**, and the Balance curve they imply.
+
+    The rows are events that actually happened — a Settlement, an Override. **There is no Decay row, and
+    there never can be**: Decay is not a transaction, it is `exp(-Δt/τ)` applied continuously between the
+    rows. It is visible as the *sag of the curve*, and that is the only honest way to draw it. (A
+    `kind: "decay"` row would also imply a stored Balance to decay, which is exactly the table that does
+    not exist — see the module docstring.)
+
+    The curve costs no storage: `B(t) = Σ over rows with tᵢ ≤ t of ±amountᵢ · exp(-(t - tᵢ)/τ)` is a pure
+    function of the ledger, sampled at `points` instants.
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = db.ledger_rows(conn, user_id)
+
+    # Signed from THIS User's point of view: money in is +, money out is -. A self-transfer (an owner on
+    # their own Arm) is both, and nets to zero — free, as designed.
+    events = []
+    out = []
+    for r in rows:
+        signed = (r["amount"] if r["to_user"] == user_id else 0.0) \
+               - (r["amount"] if r["from_user"] == user_id else 0.0)
+        events.append((_parse(r["at"]), signed))
+        out.append({
+            "id": r["id"], "at": r["at"], "kind": r["kind"], "amount": signed,
+            "job_id": r["job_id"], "note": r["note"],
+            # The counterparty, if there is one. A NULL is not a missing name — it is the *point*:
+            # Karma with no source was conjured (an Override), with no destination was destroyed (a
+            # commons burn, on an Arm the Admin owns).
+            "counterparty": (r["from_name"] if r["to_user"] == user_id else r["to_name"]),
+        })
+
+    start = now - timedelta(days=days)
+    curve = []
+    for k in range(points):
+        t = start + (now - start) * (k / (points - 1))
+        curve.append({
+            "at": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "balance": sum(a * decay((t - ts).total_seconds() / 86400) for ts, a in events if ts <= t),
+        })
+    return {"rows": out, "curve": curve}
 
 
 def share(balance: float, escrow: float = 0.0) -> float:
