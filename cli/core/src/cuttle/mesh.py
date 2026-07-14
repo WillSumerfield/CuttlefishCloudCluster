@@ -309,12 +309,37 @@ def delete_node(name: str) -> None:
 
 def up_head(server_url: str, write_unit) -> tuple[str, str]:
     """Bring up the Head's coordinator and join it via CCC's isolated tailscaled instance.
-    `write_unit` writes a root-owned file (setup._write_root_file). Returns (headscale_version, mesh_ip)."""
+    `write_unit` writes a root-owned file (setup._write_root_file). Returns (headscale_version, mesh_ip).
+
+    Re-runnable, and it has to be: `setup --head` is the only way to re-provision a live Head, so it
+    meets a daemon that already holds mesh state far more often than a fresh one. Three cases, and the
+    middle one is a trap:
+
+    - **Already joined to this coordinator** — nothing to do. Skip the join entirely rather than
+      `up --reset`-ing a working daemon, and leave the (single-use) preauth key unminted.
+    - **Holding stale state** (a rebuilt Head, a re-pointed coordinator, or a join that half-failed) —
+      `forget_state()` first. Without it `tailscale up` inherits a dialer that has latched onto TLS and
+      will not dial plain HTTP:8080 again, so the join fails against a Headscale that is demonstrably
+      up (`register request: ... TLS forced: no port 80 dialed`). Observed on a same-address re-run,
+      2026-07-14 — the old guard only forgot state when the *address* changed, which is the one case
+      this failure does not need.
+    - **Fresh box** — no state; `forget_state()` is a no-op beyond an "already gone" print. It must run
+      here and not in the caller, because it shells out to `headscale`, which only exists after
+      `install_headscale()` above.
+    """
     hs_ver = install_headscale()
     configure_headscale(server_url, write_unit)
     start_headscale()
     ensure_user()
     install_tailscale()
+    start_ccc_tailscaled(write_unit)
+
+    if joined_to(server_url):
+        ip = tailscale_ip()
+        print(f"cuttle: already on the mesh at {ip} via {server_url} — skipping join")
+        return hs_ver, ip
+
+    forget_state()
     start_ccc_tailscaled(write_unit)
     # The Head registers against its own Headscale: nobody to approve it, so it uses a preauth key.
     join_mesh(server_url, hostname(), authkey=mint_preauthkey())
@@ -333,6 +358,13 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
 
     `re_enroll` forces the wipe, for the cases the check can't see: a corrupt state file, or a Head
     that was rebuilt but still answers at the same URL.
+
+    **A token is good for exactly one attempt.** The wipe has to precede the join (see above), and the
+    preauth key inside the token is single-use — so a `setup --arm` that dies *after* the join has both
+    spent the key and reset this box's identity, and re-running it with the same token cannot work. The
+    bare `backend error: authkey already used` gives no hint of that, so we say it (observed
+    2026-07-14: a first run joined the mesh, failed later against an unreachable Head, and the retry
+    looked like a mesh bug when the mesh was fine).
     """
     install_tailscale()
     start_ccc_tailscaled(write_unit)
@@ -349,7 +381,18 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
     _wipe_local_state()
     start_ccc_tailscaled(write_unit)
 
-    join_mesh(coordinator, node_name, authkey)
+    try:
+        join_mesh(coordinator, node_name, authkey)
+    except subprocess.CalledProcessError:
+        raise SystemExit(
+            f"cuttle: could not join the mesh at {coordinator}.\n"
+            f"        If this says 'authkey already used', the token is SPENT — its preauth key is\n"
+            f"        single-use, so a box that redeemed it once can never redeem it again. Retrying\n"
+            f"        will not help; get a fresh one. On the Head:\n"
+            f"          cuttle arm remove {node_name}\n"
+            f"          cuttle arm authorize {node_name} --user <owner>\n"
+            f"        then here:\n"
+            f"          cuttle setup --arm --re-enroll --token <the new blob>")
     return tailscale_ip()
 
 

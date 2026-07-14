@@ -299,13 +299,12 @@ def mesh_up_head(address: str | None) -> str:
     addr = address or system.primary_ip()
     server_url = f"http://{addr}:{config.HEADSCALE_PORT}"
 
-    # Re-pointing at a different coordinator requires forgetting the old one first, or `tailscale up`
-    # hangs forcing HTTPS:443 at a plain-HTTP Headscale. See mesh.forget_state().
     old = settings.load().get("mesh", {}).get("coordinator")
     if old and old != server_url:
         print(f"cuttle: coordinator changed ({old} -> {server_url}); re-registering on the mesh")
-        mesh.forget_state()
 
+    # NB: forgetting stale mesh state is mesh.up_head's job, not ours — a changed address is only one
+    # of the ways the daemon's state goes stale, and it was never the dangerous one. See its docstring.
     hs_ver, mesh_ip = mesh.up_head(server_url, _write_root_file)
     # Persist for later Arm enrollment (join token) + reproducibility.
     data = settings.load()
