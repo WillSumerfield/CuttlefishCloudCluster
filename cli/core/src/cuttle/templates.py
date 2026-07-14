@@ -72,10 +72,15 @@ GresTypes=gpu
 # The Head's co-located Arm is a *static* node — always in sinfo, even with slurmd down.
 # Donor Arms are dynamic and appear here at runtime; Nodes=ALL is what they auto-join.
 # Feature=vramN is what `--vram` matches against (Slurm constraints are set-membership, so the Head
-# OR-expands a request into `--constraint=vram24|vram48`). Weight (∝ 1/Power) is NOT here: Power is
-# benchmarked after the node is live, so it arrives later via `scontrol update`.
+# OR-expands a request into `--constraint=vram24|vram48`).
+# Weight (∝ 1/Power) IS here, and has to be: `scontrol reconfigure` re-reads this file and resets any
+# node attribute the file does not state, so a Weight set only by `scontrol update` is silently wiped
+# by the next `arm authorize`/`admit`/`remove` (verified 2026-07-14: update -> 276, reconfigure -> 1).
+# On a first setup Power is unknown here — it is benchmarked after the node is live — so this renders
+# 1 and `scontrol update` carries it until the next render. Donor Arms are dynamic, so they are not in
+# this file and cannot be fixed this way; enroll.reapply_weights() re-pushes them after a reconfigure.
 NodeName={host} Sockets={sockets} CoresPerSocket={cores} ThreadsPerCore={threads} \
-RealMemory={mem} Gres=gpu:1 Feature={vram_feature} State=UNKNOWN
+RealMemory={mem} Gres=gpu:1 Feature={vram_feature} Weight={weight} State=UNKNOWN
 PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 """
 
@@ -214,11 +219,17 @@ def render_base_def() -> str:
     return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER, wandb=config.WANDB_PKG)
 
 
-def render_slurm_conf(mesh_ip: str) -> str:
+def render_slurm_conf(mesh_ip: str, weight: int = 1) -> str:
     """`mesh_ip` = the Head's address on the CCC mesh. Baked in because MagicDNS is off: nothing in
-    this system can resolve a hostname, so Slurm gets the address literally."""
+    this system can resolve a hostname, so Slurm gets the address literally.
+
+    `weight` = the Head Arm's Weight (∝ 1/Power). Defaults to 1 for the first setup, when the box has
+    not been benchmarked yet; thereafter the caller passes it from the registry so a reconfigure
+    cannot wipe it. See the NodeName comment in the template.
+    """
     sockets, cores, threads = system.cpu_topology()
     return SLURM_CONF_TMPL.format(
+        weight=weight,
         cluster=config.CLUSTER_NAME,
         partition=config.PARTITION,
         host=system.hostname(),

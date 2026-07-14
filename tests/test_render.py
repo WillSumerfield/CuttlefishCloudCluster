@@ -107,10 +107,19 @@ class TestSlurmConf:
         """The Head's co-located Arm is an Arm like any other, and must be eligible like one."""
         assert "Feature=vram24" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
 
-    def test_no_weight_baked_in(self, fake_host):
-        """Weight is NOT rendered here, and can't be: it is 1/Power, and Power isn't known until the
-        node is live enough to run a benchmark. It arrives later via `scontrol update`."""
-        assert "Weight=" not in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
+    def test_weight_is_baked_in(self, fake_host):
+        """Weight IS rendered here — the opposite of what slice 0 decided, and the reversal is the
+        point. `scontrol reconfigure` resets every node to what the config files say, so a Weight
+        pushed only by `scontrol update` is wiped by the next `arm authorize`/`admit`/`remove`
+        (verified on hardware 2026-07-14: update -> 276, reconfigure -> 1). The file is the only
+        durable home a *static* node has."""
+        assert "Weight=276" in directives(templates.render_slurm_conf("100.99.0.1", 276))["NodeName"]
+
+    def test_an_unbenchmarked_head_still_renders(self, fake_host):
+        """The first setup writes slurm.conf BEFORE the benchmark can run (the node must be live to be
+        benchmarked), so Power is genuinely unknown here exactly once. It must render anyway — and
+        `scontrol update` carries the real Weight until the next render."""
+        assert "Weight=1" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
 
 
 class TestSlurmdDropin:

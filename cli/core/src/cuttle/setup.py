@@ -93,10 +93,14 @@ def write_slurm_config(mesh_ip: str) -> None:
                      (config.SLURM_LOG_DIR, "slurm"),
                      (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
-    _write_root_file(config.SLURM_CONF, templates.render_slurm_conf(mesh_ip))
     # The Head plus any Arms already admitted (a re-run must not un-admit them). The Head's own row is
     # skipped: head_gres_node() already supplies its line (see enroll.render_gres).
     reg = enroll.load_registry()
+    # The Head's Weight goes in the file, not just `scontrol update`, or the next reconfigure wipes it.
+    # Unknown on a first setup (the benchmark runs later, and re-renders this) -> node_weight's floor.
+    power = (reg.get(system.hostname()) or {}).get("power")
+    _write_root_file(config.SLURM_CONF,
+                     templates.render_slurm_conf(mesh_ip, config.node_weight(power) if power else 1))
     nodes = [templates.head_gres_node()]
     nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]

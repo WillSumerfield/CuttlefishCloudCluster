@@ -186,6 +186,26 @@ def render_gres(reg: dict, write_root_file) -> None:
         nodes.append((name, e["gpu_device"]))
     write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
     run(["scontrol", "reconfigure"], sudo=True)
+    reapply_weights(reg)
+
+
+def reapply_weights(reg: dict) -> None:
+    """Re-push every benchmarked Arm's Weight after a reconfigure — which resets each node to what the
+    config files say, and donor Arms are dynamic, so no file says anything about them.
+
+    Verified 2026-07-14: `scontrol update NodeName=X Weight=276` lands, and the very next `scontrol
+    reconfigure` puts it back to 1. Since a reconfigure happens on every authorize/admit/remove, a
+    Weight pushed once does not survive the next Arm joining. The Head's own Weight is in slurm.conf
+    and needs none of this; it is re-pushed anyway, because one loop is simpler than an exception.
+
+    ⚠ Still lost when a donor's slurmd restarts (their box reboots): a dynamic node re-registers from
+    its `--conf`, which cannot carry a Power that had not been measured when it was written. Costs
+    card-selection order only — never money, since the Escrow quotes max Power over eligible Arms and
+    the meter settles on what actually ran. Closing it needs a privileged loop on the Head (Phase 2).
+    """
+    for name, e in sorted(reg.items()):
+        if e["admitted"] and e.get("power"):
+            apply_weight(name, e["power"])
 
 
 def _await_enrollment(name: str, timeout_s: int = 300) -> dict:
