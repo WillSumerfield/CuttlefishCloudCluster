@@ -117,29 +117,122 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
 ---
 
 ## 5. The Karma Economy
+*Rewritten 2026-07-14 (grill). Karma exists to make **donating hardware rational** — FairShare cannot
+pay people for supply, so it cannot grow a cluster — and to give the operator price/payout/admin levers
+FairShare doesn't have. The previous design (a closed token market with minting, bankruptcy, and three
+separate demand multipliers) is superseded; see "What was deleted" at the end.*
 
-### The Equilibrium & Fair-Share Rule
-The economy operates as a closed, proportional token market attempting to keep equal Karma across active users. Total circulating Karma (\(K_{total}\)) scales dynamically when new users join by minting a standard baseline quota (\(K_{base}\)) and normalizing old balances to avoid market deflation. 
+### Karma ranks; it never gates
+There is **no floor, no bankruptcy, and no balance at which work is refused.** Karma is *purely
+relative*: a user with little of it loses **contention** to users with more, and loses nothing at all
+when nobody is competing — an idle GPU is worth nothing, so refusing a poor user's 3am job would burn
+capacity to punish him and move no work to anyone else. Karma has *no absolute mode*; it is not a
+currency you can run out of.
 
-*   **Persistence (locked):** wallets, balances, the transaction ledger, and pricing history live in a
-    **SQLite** DB on the Head — simplest ops, sufficient at research scale. Caveat: SQLite is
-    writer-serialized, so run in **WAL mode** and funnel all economy writes through a **single
-    process** to avoid lock contention and double-spend.
+*   **Balance** — an unbounded signed score centred on **0**, where every user starts.
+*   **Share** — the effect a balance has: a **saturating** (sigmoid) function of it. Hoarding has
+    diminishing returns; debt has diminishing punishment. Neither end runs away, so a whale can't own
+    the cluster and last place isn't a life sentence.
+*   **Decay** — balances drift back to 0 with a **one-month** time constant. Debt is forgiven, hoards
+    evaporate, and standing tracks *recent* conduct.
+*   **Persistence:** balances, ledger, and demand history are SQLite tables in the Head API's own
+    `head.db`. The API is already the single writer and already the only thing that knows which user
+    submitted which Spawn, so escrow is atomic with the Spawn insert — no second daemon, no IPC.
 
-### Token Flows
-*   **Passive Host Income:** Volatile Arm owners passively earn Karma hourly based on hardware benchmarks. They get bonus passive income if someone else is actively running a job on their machine.
-*   **Active Rental Surcharge:** If an external researcher borrows an idle Arm, the owner receives a direct surcharge tax drained from the borrower's wallet based on hardware speed, size, and execution duration.
-*   **The Tide (Dynamic Hourly Pricing):** High Traffic hours (*High Tide*) multiply the hourly baseline resource costs based on moving averages of historic demand. Night runs (*Low Tide*) drop costs to the baseline minimum.
-*   **The Congestion Penalty:** If users are waiting in the queue, or if active Spawns are currently being throttled below their preferred resource limits, the Karma burn-rate scales up exponentially.
+### Token flows — a closed transfer
+Every flow is a **transfer**: the submitter is debited and the **owner of the Arm it ran on** is
+credited *the same Karma*. Two consequences fall out for free, rather than being mechanisms:
 
-### Queue Intervention & Phased Pausing
-*   **Singular Run Guarantee:** Active, single-phase executions are **never** violently terminated via the economy layer to avoid code corruption. Instead, low Karma balances push the user's overall Slurm FairShare metric to zero via periodic hourly syncs (`sacctmgr modify user set RawUsage=X`), ensuring automatic balance of resources across all active experiments.
-*   **Multi-Phase/Sweep Hops:** For multi-run Spawns (like W&B Sweeps), sequential stages are tied together using Slurm dependencies. Before a subsequent phase triggers, a validation script verifies balances. If a user is bankrupt, the next stage is automatically placed on an administrative `HOLD` until passive regeneration restores their account.
-*   **Early-Failure Rule:** If a Spawn fails within one hour of starting, the user's Karma is **still** spent (balance decreases for the resources consumed), but the Spawn is treated as `done` and is **not** automatically requeued/retried.
+*   **Σ balances ≡ 0, always.** Everyone starts at 0 and transfers preserve the sum, so there is no
+    supply to inflate or deflate. A new user joins at exactly average, diluting nobody. Decay makes 0
+    an *attractor*, so anything burned or conjured is reabsorbed without policing.
+*   **Running on your own Arm is free** — you pay yourself. Donating a machine buys you unmetered use
+    of it *plus* income when others use it. That is the donation incentive, and it needs no special rule.
 
-### Admin Override (`override`)
-*   **Purpose:** A privileged command, executable **only by admin users**, that directly adds or removes Karma from an individual's wallet — for corrections, grants, or penalties outside the normal economy flows.
+Karma spent on a **commons (admin-owned) Arm** has no owner to pay and is simply **destroyed** —
+consuming the lab's shared kit lowers your standing relative to those who don't, which is exactly right.
+
+### Price = Power × Demand
+The cost of a device-second is **what the device can do** × **how badly it's wanted**. Capability and
+scarcity, measured separately. Several devices allocated = several separate purchases.
+
+*   **Power** — throughput, **measured at enrollment** by a benchmark Spawn the Head submits down the
+    normal Slurm path, *inside a Pod*. It therefore sees the GPU as real Spawns will — WSL's
+    virtualized `/dev/dxg`, a throttled laptop card, a stale driver, a x4 PCIe lane — none of which a
+    spec sheet knows, and all of which are the norm on donated personal machines. **Power is not
+    optional:** a meter that counts only seconds pays a slow card *more* for the same work, so
+    *donating your worst hardware would pay best* — an inversion aimed straight at Karma's purpose.
+*   **Demand** — device-seconds *asked for* (running **and queued**) ÷ device-seconds that exist. A GPU
+    used for an hour with someone queued behind it the whole time was demanded for **two**. Unlike
+    utilization this **does not saturate** — utilization reads ~100% on every card the moment the
+    cluster is busy, and so stops discriminating exactly when price matters most.
+*   **Eligibility** — users declare *needs* (`--vram`; hardware licences later), never a machine; only
+    the **admin** may name one. A queued Spawn adds demand to **every device it could run on**, spread
+    evenly — so scarce big-VRAM cards, wanted by big jobs *and* small ones, price highest.
+*   **The Tide** — the *forecast* of demand by hour of day, over a rolling month. It does **not** set
+    the price (demand does, live); it is what lets a user plan a cheap overnight run, and it is what an
+    escrow is quoted from.
+*   **The meter counts seconds *held*, not seconds *busy*.** The scarce good is exclusive access: a
+    Spawn squatting a 4090 at 2% utilization has denied it to everyone else regardless. Metering
+    utilization would make squatting free. Allocation-pricing already rewards efficiency, because
+    finishing sooner costs less.
+
+### Escrow → Settlement
+Karma is **reserved** when a Spawn queues and only **moves** when it ends.
+
+*   **Escrow** (at submit) = declared `--time` × devices × Power × the Tide's forecast demand. It
+    suppresses the submitter's Share **immediately**. Without it the economy is trivially gamed:
+    balances only move at settlement, so a user could queue 500 Spawns and hold top-of-queue for hours
+    while nothing had settled. Escrow makes **flooding the queue instantly cost you your own priority**.
+*   **Settlement** (at end) = *actual* seconds held × Power × the demand it actually ran under.
+*   Over-declaring `--time` therefore costs **only queue position** (refunded at settle); under-declaring
+    gets the Spawn **killed** by Slurm. Honest estimates are self-enforcing from both sides — so
+    `--time` is **required, no default**, as is `--vram`.
+*   **Early-failure rule:** a failed Spawn simply settles for what it consumed, and is not requeued.
+    No special case is needed; it falls out.
+
+### Queue intervention
+*   **Singular Run Guarantee:** the economy **never** kills or blocks a running Spawn. It only re-ranks.
+*   **Starvation is impossible by construction:** priority is `priority/multifactor`, so the **Age**
+    factor keeps accruing. The worst-Karma user loses every race — and eventually runs anyway.
+*   **Admin Override:** admin-only add/remove/**set** of a user's balance. The only flow that isn't a
+    transfer (it creates or destroys Karma); Decay absorbs the imbalance.
+*   **Queue bump:** admin-only shove of one queued Spawn up the queue, via Slurm priority directly.
+    It **bypasses the economy** and touches no balance — implementing a bump as a Karma grant would
+    make that user win every *other* race for a month too, corrupting the ledger to solve a scheduling
+    problem.
+
+### Scheduler integration — no slurmdbd, no MariaDB
+Karma **computes Share itself and sets Slurm priority directly**. It does not use Slurm FairShare, and
+therefore needs **no accounting database, no `slurmdbd`, no `sacctmgr`**.
+
+The **Mantle** makes this free. Raising a job's priority needs Slurm operator/root — but *lowering* it
+(`Nice`) is the **job owner's** right, and every Spawn runs as `ccc`, so the Head **owns every job in
+the queue**. It re-ranks the whole queue by nice with **zero privilege**: no sudo, no root helper, no
+SlurmUser. Only relative order matters, so nice ∈ [0, 10000] derived from Share is sufficient.
+
+Slurm also picks the *fastest free eligible* card on its own, via node `Weight ∝ 1/Power` — and will
+not hold a job back waiting for a better card if a slower eligible one is idle.
 
 ### Retract (Panic Switch)
 *   **Purpose:** A physical macro or desktop terminal script allowing a volatile Arm's true owner to claim back their machine instantly.
 *   **Tech Stack Execution:** Triggers `scontrol update NodeName=Arm-X State=DRAIN Reason="Retract Engagement"`. Slurm halts incoming jobs and fires a `SIGUSR1` termination signal to any active remote runner, giving the container a configurable 60 seconds to save weights to Shared Storage and exit gracefully.
+*   **Billing: a Retracted Spawn settles at ZERO.** The submitter pays nothing for work someone else
+    destroyed, and the owner earns nothing for destroying it. This closes a **Karma farm**: otherwise an
+    owner could let Spawns run 55 minutes, Retract, and bank the Karma for work that returned nothing —
+    with the victims paying for the privilege, and a merely *careless* owner farming it by accident
+    every evening. Volatility is now paid for by whoever chose it.
+
+### What was deleted (and why)
+*   **Minting / `K_total` / `K_base` / "normalize to avoid market deflation"** — solves a problem that
+    cannot occur. Transfers + a zero start pin the mean at 0 by construction; there is no supply.
+*   **Bankruptcy and the bankrupt-sweep `HOLD`** — the one mechanism that implied an absolute zero, in a
+    system where Karma is purely relative. Karma never gates.
+*   **The Congestion Penalty**, and **the Tide as a price multiplier** — both were measuring the same
+    thing as demand. Keeping all three would have multiplied one congestion event into a bill three
+    times, through three separately-tuned knobs.
+*   **FairShare sync (`sacctmgr ... RawUsage`), slurmdbd, MariaDB** — laundering a priority we already
+    know through an accounting DB, with RawUsage's own decay fighting ours.
+*   **Passive/idle host income** — owners earn only when their machine is *used*, so Karma is minted
+    against real work and an idle cluster mints nothing. (Trade accepted: donate a GPU nobody schedules
+    and you earn nothing from it.)
