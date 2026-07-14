@@ -17,8 +17,14 @@ There is no floor and no bankruptcy — see **Karma**, **Balance**, **Share** in
   badly it's wanted). Capability and scarcity, priced separately.
 - **The Tide** — the *forecast* of **Demand**, by hour of day. It does not set the price; it lets a
   User plan around it, and it is what an **Escrow** is quoted from.
-- **Escrow** → **Settlement** — Karma is *reserved* when a Spawn queues, and only *moves* when it
-  ends.
+- **Escrow** → **Meter** → **Settlement** — the life of one Spawn's cost. Karma is *reserved* when the
+  Spawn queues (a forecast), *metered* as it runs (the truth, accumulating), and only ever *moves* when
+  it ends. The reservation is a floor under the meter, never a ceiling on it.
+- **Commons Arm** — an Arm owned by the **Admin**: the cluster's own hardware, which nobody donated.
+  Karma spent on one is **destroyed** rather than paid to anyone, and **Decay** reabsorbs the drift.
+- **The Admin is not an economic actor.** They neither earn nor spend, hold no **Balance**, and appear
+  in no standing. The economy has no opinion about them at all — which is why an **Override** aimed at
+  an Admin is refused, and why their **Spawns** are ranked by nothing.
 - **Override** — admin add/remove/set of a User's **Balance**. Changes standing, and is felt in every
   future contention.
 - **Queue bump** — admin shove of one queued Spawn up the queue. Bypasses the economy entirely and

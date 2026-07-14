@@ -56,6 +56,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   and anchors their Karma wallet.
 - **Admin / Maintainer** — the privileged User (the operator) who provisions accounts, mints
   **enrollment tokens** (naming each Arm's owner), and can **override** Karma. One person today.
+  The Admin is **outside the economy** — a role for *running* the cluster, not for *using* it. They
+  earn no **Karma** (an Arm they own is a **Commons Arm**, and its Karma is destroyed), pay none, and
+  hold no **Balance**: their **Spawns** are never **Escrow**ed, never **Settled**, and never lose
+  **contention**. A person who wants to use the cluster does so as an ordinary **User**, with an
+  ordinary account.
 - **Session** — a User's authenticated login (a token) carrying the authority to submit jobs and read
   their own data. Distinct from **Mesh** membership, which authorizes *machines*, not people.
 
@@ -120,8 +125,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   what a second on that card actually buys.
 - **Demand** — how badly a device is *wanted*: the device-time being **asked for** (running *and*
   queued) against the device-time that exists. A GPU busy an hour with someone waiting behind it the
-  whole hour was demanded for *two* hours. Extrinsic and live. Unlike utilization it does not
-  saturate — it keeps discriminating exactly when the cluster is most **contended**.
+  whole hour was demanded for *two* hours. Extrinsic and live. Utilization pins to 100% the moment a
+  card is busy *at all* and stops discriminating exactly when it matters; Demand keeps climbing with
+  the queue behind it. It has a **ceiling**, but one far above the point where utilization has gone
+  blind — because Demand is set by the people *queuing* and paid by the people *running*, and without a
+  ceiling a queue could bill a **Spawn** arbitrarily.
+  Any device actually running work has a Demand of at least 1 — so a second is never sold below its
+  **Power**.
 - **Eligibility** — the set of devices a Spawn may run on, derived from what it *declares it needs*
   (VRAM; hardware licences later) rather than which machine it wants. A queued Spawn adds **Demand**
   to every device it is eligible for — so scarce big-VRAM cards, wanted by big jobs *and* small ones,
@@ -134,6 +144,12 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   and its declared duration. It suppresses the submitter's **Share** while the Spawn is outstanding —
   so flooding the queue immediately costs you your own queue position — and is released at
   **Settlement**. Escrow is a hold, not a charge.
+  A hold only ever **ratchets up**: it opens as a forecast, and if the **Meter** finds the real cost
+  overtaking that forecast, the hold rises to meet it. It never falls before Settlement, so no Spawn
+  can quietly cheapen its own submitter's standing while it runs.
+- **Meter** — what an outstanding **Spawn** has cost *so far*: its seconds held, priced as they were
+  held, accumulated while it runs. The Meter is the number **Settlement** actually moves — the
+  **Escrow** was only ever the estimate of it.
 - **Settlement** — the single moment a Spawn's Karma actually moves, when it ends: the **Escrow** is
   released and the real cost is **transferred** to the Arm's owner. The cost of a device is the
   seconds it was *held* (not the seconds it was *busy* — you paid for exclusive access) × its
