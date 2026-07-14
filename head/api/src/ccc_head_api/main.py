@@ -24,6 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, karma, slurm
 from . import spawns as spawns_mod
@@ -217,6 +218,33 @@ def karma_standings(user: dict = Depends(current_user)) -> list[dict]:
         return karma.standings(conn)
 
 
+@app.get("/karma/ledger")
+def karma_ledger(days: int = 30, user: dict = Depends(current_user)) -> dict:
+    """**Your own** ledger: the real rows you were a party to, plus the Balance curve they imply.
+
+    Yours alone, unlike `/karma` — the standings exist so a User can see where they stand *relative* to
+    others, which needs everyone's number; a transaction history needs nobody else's.
+
+    There are no Decay rows in `rows`, and the absence is the point: Decay is the sag of `curve` between
+    the events, not an event. See karma.ledger().
+    """
+    with db.connect() as conn:
+        return karma.ledger(conn, user["id"], days=days)
+
+
+@app.get("/karma/demand")
+def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict]:
+    """Demand per Arm over time — how badly each card has been wanted, hour by hour.
+
+    This is the **only** surface the Tide is ever seen through, and it is deliberately not a forecast: a
+    User reads the shape and infers the quiet hours for themselves. Nothing quotes them a predicted
+    price, warns them, or asks them to confirm — *Karma ranks, it never gates*, and a blocking "this
+    will cost you N" would have been the first thing in the model able to stop a Spawn.
+    """
+    with db.connect() as conn:
+        return [dict(r) for r in db.demand_series(conn, days)]
+
+
 @app.post("/karma/override")
 def karma_override(req: OverrideRequest, user: dict = Depends(current_user)) -> dict:
     """Admin add/remove of a User's Balance. The only flow that isn't a Transfer — it conjures Karma or
@@ -283,7 +311,11 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     hold = None
     if not user["is_admin"]:
         elig = karma.eligible(slurm.arms(), {"node": node, "vram_gb": vram_gb, "gpus": gpus})
-        hold = karma.hold_for(minutes, gpus, elig, hours=_span(minutes))
+        with db.connect() as conn:
+            # The Tide (slice 3): each Arm's mean Demand at the hours this Spawn would span, so a Spawn
+            # queued into the usual evening rush is quoted at the evening's price. A cold cluster has no
+            # history and every bucket forecasts 1.0, which makes this exactly slice 2's flat quote.
+            hold = karma.hold_for(minutes, gpus, elig, hours=_span(minutes), tides=karma.tides(conn))
 
     tar_path = await _spool_upload(request)
     try:
@@ -331,7 +363,25 @@ async def _spool_upload(request: Request) -> Path:
     return path
 
 
+class SPAFiles(StaticFiles):
+    """Static files, but unknown paths fall back to index.html.
+
+    The Dashboard routes client-side (/arms, /karma, /spawn/<id>). Those paths are not files, so a hard
+    reload or a pasted link would otherwise 404 — the SPA never gets a chance to run and read the URL.
+    Real misses (a missing .js, a bad asset hash) still 404 from `get_response`; only *extensionless*
+    paths are rewritten, so a broken bundle reference fails loudly instead of silently serving HTML.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or Path(path).suffix:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 # Mounted LAST so the API routes above win. html=True serves index.html at `/`. Guarded so the app
 # still imports/serves the API before the SPA has been built (fresh checkout, tests).
 if (WEB_DIR / "index.html").exists():
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="spa")
+    app.mount("/", SPAFiles(directory=str(WEB_DIR), html=True), name="spa")
