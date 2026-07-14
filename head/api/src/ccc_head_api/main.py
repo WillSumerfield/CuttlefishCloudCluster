@@ -24,7 +24,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, slurm
+from . import db, karma, slurm
 from . import spawns as spawns_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
@@ -54,6 +54,12 @@ class LoginRequest(BaseModel):
 class PasswdRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class OverrideRequest(BaseModel):
+    username: str
+    amount: float
+    note: str | None = None
 
 
 def _token_from(request: Request) -> str | None:
@@ -195,6 +201,39 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
             raise HTTPException(403, "current password is wrong")
         db.set_password(conn, user["username"], req.new_password)
     return {"ok": True}
+
+
+# --- Karma (authed; Override is admin-only) ---------------------------------
+
+@app.get("/karma")
+def karma_standings(user: dict = Depends(current_user)) -> list[dict]:
+    """Every User's standing — Balance, Escrow, Share, and the nice it implies — best first.
+
+    Everyone's, not just your own: a Balance is meaningless in isolation. Karma ranks Users *against
+    each other*, so a User who cannot see the others cannot see their own standing either.
+    """
+    with db.connect() as conn:
+        return karma.standings(conn)
+
+
+@app.post("/karma/override")
+def karma_override(req: OverrideRequest, user: dict = Depends(current_user)) -> dict:
+    """Admin add/remove of a User's Balance. The only flow that isn't a Transfer — it conjures Karma or
+    destroys it, and Decay absorbs the imbalance.
+
+    Needs no privilege beyond `is_admin`, because it touches nothing but head.db, which this API owns.
+    That is exactly why it lives here while a **Queue bump** cannot: a bump writes a negative nice,
+    which Slurm grants only to an operator, and Slurm has never heard of CCC's Admin (every Spawn — and
+    every scontrol call this process makes — is the one `ccc` uid). See `cuttle karma bump`.
+    """
+    if not user["is_admin"]:
+        raise HTTPException(403, "Karma override is admin-only")
+    with db.connect() as conn:
+        try:
+            balance = karma.override(conn, req.username, req.amount, req.note)
+        except KeyError:
+            raise HTTPException(404, f"no such user '{req.username}'")
+    return {"username": req.username, "balance": round(balance, 2)}
 
 
 # --- submission (authed) ----------------------------------------------------

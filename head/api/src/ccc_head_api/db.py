@@ -25,8 +25,13 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SESSION_TTL_DAYS = 30
+# head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
+# settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
+# *immediately* unless it is told to wait — a submit landing during a settle would simply fail. The
+# writes are milliseconds long, so any timeout that isn't zero is enough.
+BUSY_TIMEOUT_MS = 5000
 _TOKEN_BYTES = 32  # secrets.token_urlsafe → ~43 url-safe chars, 256 bits
 
 _ph = PasswordHasher()
@@ -67,7 +72,45 @@ CREATE TABLE spawns (
 CREATE INDEX idx_spawns_user ON spawns(user_id);
 """
 
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]  # index i takes user_version i -> i+1
+# The Karma economy (Phase 4 slice 1). Two tables, and deliberately NOT a third holding balances:
+#
+# `karma_ledger` is ONE ROW PER EVENT, with both parties nullable — a NULL `from_user` is Karma
+# conjured (an Override credit), a NULL `to_user` is Karma destroyed (a Spawn on a commons Arm, with no
+# owner to pay). Σ of every User's balance is then a single query, and a settlement reads as a sentence.
+#
+# There is no `karma_balance` table because a Balance is a *consequence* of this ledger, not a separate
+# truth: Decay is linear, so a decayed sum over the rows and a decay-on-touch running total are exactly
+# — not approximately — equal. A cached balance could only ever disagree with the ledger, and a User's
+# standing being quietly wrong forever, with the evidence sitting in a table nobody reads, is the worst
+# failure this economy has. See karma.py for the arithmetic.
+#
+# `karma_escrow` is a live hold, not a movement: it suppresses a submitter's Share while their Spawn is
+# outstanding (so flooding the queue instantly costs you your own queue position) and is released at
+# Settlement. Created here, WRITTEN in slice 2 — Share's `- Escrow` term is exercised from day one
+# rather than bolted on later. It does not decay: it is not history, it is an outstanding claim.
+_SCHEMA_V3 = """
+CREATE TABLE karma_ledger (
+  id        INTEGER PRIMARY KEY,
+  at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  kind      TEXT    NOT NULL,
+  amount    REAL    NOT NULL,
+  from_user INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  to_user   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  job_id    INTEGER,
+  note      TEXT
+);
+CREATE INDEX idx_karma_ledger_from ON karma_ledger(from_user);
+CREATE INDEX idx_karma_ledger_to   ON karma_ledger(to_user);
+CREATE TABLE karma_escrow (
+  job_id  INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  amount  REAL    NOT NULL,
+  at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX idx_karma_escrow_user ON karma_escrow(user_id);
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]  # index i takes user_version i -> i+1
 
 
 # --- connection + schema ----------------------------------------------------
@@ -78,6 +121,7 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")  # two writers now — see BUSY_TIMEOUT_MS
     return conn
 
 
@@ -221,3 +265,46 @@ def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, 
         job_ids,
     ).fetchall()
     return {r["job_id"]: r["username"] for r in rows}
+
+
+def spawn_owners(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, int]:
+    """Map job_id -> submitter user_id. The Karma tick's whole link from a queued Slurm job back to a
+    person: Slurm says every Spawn belongs to `ccc`, so only this ledger knows whose standing to apply.
+    Jobs with no row (the enrollment benchmark, which the CLI sbatches outside the API) are simply
+    absent — the tick leaves those at nice 0."""
+    if not job_ids:
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    rows = conn.execute(
+        f"SELECT job_id, user_id FROM spawns WHERE user_id IS NOT NULL AND job_id IN ({marks})",
+        job_ids,
+    ).fetchall()
+    return {r["job_id"]: r["user_id"] for r in rows}
+
+
+# --- Karma ledger (slice 1) -------------------------------------------------
+
+def record_karma(conn: sqlite3.Connection, kind: str, amount: float, from_user: int | None,
+                 to_user: int | None, job_id: int | None = None, note: str | None = None) -> None:
+    """Append one Karma event. `amount` is always positive — direction is carried by which side is
+    NULL: `from` NULL = conjured, `to` NULL = destroyed, both set = a Transfer (and a Transfer is the
+    only kind that leaves Σ balances at 0)."""
+    conn.execute(
+        "INSERT INTO karma_ledger (kind, amount, from_user, to_user, job_id, note) VALUES (?,?,?,?,?,?)",
+        (kind, amount, from_user, to_user, job_id, note),
+    )
+    conn.commit()
+
+
+def karma_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """The whole ledger. Balances are summed from it in Python, not SQL: the decay factor needs exp(),
+    which SQLite only has when compiled with SQLITE_ENABLE_MATH_FUNCTIONS. A settle is one row, so this
+    grows by thousands of rows a year, and a row older than a year contributes exp(-12) ≈ 6e-6."""
+    return conn.execute("SELECT at, amount, from_user, to_user FROM karma_ledger").fetchall()
+
+
+def escrow_totals(conn: sqlite3.Connection) -> dict[int, float]:
+    """user_id -> outstanding Escrow. Not decayed: an Escrow is a live claim, not history."""
+    rows = conn.execute(
+        "SELECT user_id, SUM(amount) AS total FROM karma_escrow GROUP BY user_id").fetchall()
+    return {r["user_id"]: r["total"] for r in rows}
