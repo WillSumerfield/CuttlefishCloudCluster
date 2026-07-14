@@ -1,6 +1,6 @@
 """Minimal CCC validation Spawn: prove GPU reaches the Pod, results come back, and (optionally) W&B.
 
-Run via:  cuttle run examples/train.py --gpu 1 -f
+Run via:  cuttle run examples/train.py --time 10 --vram 8 -f
           cuttle outputs <id>          # result.txt, written below
 Exits non-zero if CUDA isn't visible inside the Pod (that's the thing we're validating).
 

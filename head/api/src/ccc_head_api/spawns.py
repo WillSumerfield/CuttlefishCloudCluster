@@ -58,9 +58,11 @@ JOB_SCRIPT = """\
 #!/bin/bash
 #SBATCH --job-name=ccc-spawn
 #SBATCH --gres=gpu:%%GPU%%
+#SBATCH --time=%%MINUTES%%
 #SBATCH --chdir=/tmp
 #SBATCH --output=/tmp/ccc-%j.slurm
 #SBATCH --error=/tmp/ccc-%j.slurm
+%%CONSTRAINT%%
 %%NODELIST%%
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
@@ -123,11 +125,17 @@ exit $rc
 
 
 def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
-            files: list[str], node: str | None) -> str:
+            files: list[str], node: str | None, minutes: int, constraint: str) -> str:
     subs = {
         "%%GPU%%": str(gpu),
-        # Pin the Spawn to one Arm, or leave scheduling to Slurm. A blank line when unset, so the
-        # #SBATCH block just ends early.
+        # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
+        # length nobody declared, and MaxTime=INFINITE means a runaway would otherwise squat forever.
+        "%%MINUTES%%": str(minutes),
+        # The OR-expansion of --vram over the fleet's real cards (slurm.vram_constraint).
+        "%%CONSTRAINT%%": f"#SBATCH --constraint={constraint}" if constraint else "",
+        # Pin the Spawn to one Arm, or leave scheduling to Slurm. ADMIN-ONLY (checked in main.submit):
+        # Users declare what they NEED, and Slurm picks the fastest free card that qualifies. A blank
+        # line when unset, so the #SBATCH block just ends early.
         "%%NODELIST%%": f"#SBATCH --nodelist={node}" if node else "",
         "%%STAGING_DIR%%": str(staging),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
@@ -148,7 +156,7 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
 
 
 def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
-           tar_path: Path, node: str | None = None) -> int:
+           tar_path: Path, minutes: int, constraint: str, node: str | None = None) -> int:
     """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row.
     Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm (else Slurm picks).
 
@@ -164,7 +172,7 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     # gitignore-filtered client-side, so every file here is meant to transfer.
     files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
 
-    body = _render(uuid, staging, gpu, script, args, files, node)
+    body = _render(uuid, staging, gpu, script, args, files, node, minutes, constraint)
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
         f.write(body)
         job_file = f.name

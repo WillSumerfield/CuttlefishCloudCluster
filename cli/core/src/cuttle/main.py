@@ -85,6 +85,17 @@ def arm_admit(name: str = typer.Argument(..., help="The Arm's node name.")):
     enroll_mod.admit_arm(name, setup_mod._write_root_file)
 
 
+@arm_app.command("benchmark")
+def arm_benchmark(name: str = typer.Argument(..., help="The Arm's node name.")):
+    """Re-measure an Arm's **Power** (throughput) and re-price it. Runs the matmul benchmark inside
+    the Pod, on that node, and sets its Slurm Weight — so the fastest free card wins.
+
+    Normally part of `arm authorize`; run it by hand after a driver/GPU change, or if the benchmark
+    timed out because the donor's box wasn't ready.
+    """
+    enroll_mod.benchmark_arm(name)
+
+
 @arm_app.command("chown")
 def arm_chown(
     name: str = typer.Argument(..., help="The Arm's node name."),
@@ -181,6 +192,13 @@ def teardown(
 def run(
     ctx: typer.Context,
     script: str = typer.Argument(..., help="Python script to run inside the Pod."),
+    time: int = typer.Option(
+        ..., "--time", help="Wall-clock limit, in MINUTES. Required. The Spawn is killed at this "
+                            "limit, and Karma is escrowed against it — over-estimating costs you "
+                            "only queue position, and is refunded when the Spawn ends."),
+    vram: int = typer.Option(
+        ..., "--vram", help="GPU memory this Spawn needs, in GB. Required. Every card with at least "
+                            "this much is eligible; Slurm takes the fastest one that is free."),
     gpu: int = typer.Option(1, "--gpu", help="GPUs to request (GRES gpu:N)."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
     project: str = typer.Option(None, "--project", help="W&B project for this Spawn (default: config)."),
@@ -189,13 +207,20 @@ def run(
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
     node: str = typer.Option(
-        None, "--node", help="Pin the Spawn to one Arm by name (default: Slurm schedules it)."),
+        None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
+                             "need (--vram), never which machine they want."),
 ):
     """Submit a Spawn: uploads the working dir to the Head, which runs
     apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
-    script are passed through (e.g. `cuttle run train.py --gpu 1 -- --epochs 5`)."""
+    script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -- --epochs 5`).
+
+    --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody
+    declared, and a --vram that defaulted to the fleet's biggest card would make every untouched
+    field eligible for that one GPU alone — queued behind everything, at the highest Demand, for work
+    that may need 2 GB.
+    """
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
-                      no_gitignore=no_gitignore, node=node)
+                      no_gitignore=no_gitignore, node=node, minutes=time, vram=vram)
 
 
 @app.command()

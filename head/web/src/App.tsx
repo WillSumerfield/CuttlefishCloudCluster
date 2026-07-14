@@ -169,11 +169,18 @@ function ChangePassword({ current, onDone }: { current: string; onDone: () => vo
  * for the fact that our .gitignore matching can't be exactly git's (see project.ts): if the filter is
  * wrong, you see "1,204 files, 3.9 GB" and stop, instead of discovering it afterwards.
  */
-function SubmitPanel({ arms, onSubmitted }: { arms: Arm[]; onSubmitted: (id: number) => void }) {
+function SubmitPanel({
+  arms, isAdmin, onSubmitted,
+}: { arms: Arm[]; isAdmin: boolean; onSubmitted: (id: number) => void }) {
   const [picked, setPicked] = useState<Picked | null>(null)
   const [honor, setHonor] = useState(true)
   const [script, setScript] = useState('')
   const [gpu, setGpu] = useState(1)
+  // No defaults, and no autofill from the fleet's biggest card: an untouched --vram that meant "the
+  // largest GPU we have" would make every casual Spawn eligible for that one card alone — queued
+  // behind everything, at the highest Demand, for work that may need 2 GB.
+  const [minutes, setMinutes] = useState('')
+  const [vram, setVram] = useState('')
   const [node, setNode] = useState('')
   const [args, setArgs] = useState('')
   const [busy, setBusy] = useState(false)
@@ -197,8 +204,10 @@ function SubmitPanel({ arms, onSubmitted }: { arms: Arm[]; onSubmitted: (id: num
     await rescan(lastList.current, v) // re-filter the same selection; still no upload
   }
 
+  const ready = picked && script && Number(minutes) > 0 && Number(vram) > 0
+
   const go = async () => {
-    if (!picked || !script) return
+    if (!ready) return
     setBusy(true)
     setError(null)
     try {
@@ -206,6 +215,8 @@ function SubmitPanel({ arms, onSubmitted }: { arms: Arm[]; onSubmitted: (id: num
         picked,
         script,
         gpu,
+        minutes: Number(minutes),
+        vram: Number(vram),
         node: node || null,
         args: args.split(/\s+/).filter(Boolean),
       })
@@ -257,21 +268,35 @@ function SubmitPanel({ arms, onSubmitted }: { arms: Arm[]; onSubmitted: (id: num
         <div className="grid gap-3 sm:grid-cols-4">
           <input className={`${input} sm:col-span-2`} placeholder="script (e.g. train.py)"
                  value={script} onChange={(e) => setScript(e.target.value)} />
+          <input className={input} type="number" min={1} placeholder="minutes"
+                 value={minutes} onChange={(e) => setMinutes(e.target.value)} />
+          <input className={input} type="number" min={1} placeholder="VRAM (GB)"
+                 value={vram} onChange={(e) => setVram(e.target.value)} />
           <input className={input} type="number" min={0} value={gpu}
                  onChange={(e) => setGpu(Number(e.target.value))} />
-          <select className={input} value={node} onChange={(e) => setNode(e.target.value)}>
-            <option value="">any Arm</option>
-            {arms.map((a) => (
-              <option key={a.name} value={a.name}>{a.name}</option>
-            ))}
-          </select>
-          <input className={`${input} sm:col-span-4`} placeholder="extra args (optional)"
+          {/* Naming a machine is admin-only: a User says what they NEED, and Slurm gives them the
+              fastest free Arm that has it. Non-admins never see this control (and the Head 403s it). */}
+          {isAdmin && (
+            <select className={input} value={node} onChange={(e) => setNode(e.target.value)}>
+              <option value="">any Arm</option>
+              {arms.map((a) => (
+                <option key={a.name} value={a.name}>{a.name}</option>
+              ))}
+            </select>
+          )}
+          <input className={`${input} ${isAdmin ? 'sm:col-span-2' : 'sm:col-span-3'}`}
+                 placeholder="extra args (optional)"
                  value={args} onChange={(e) => setArgs(e.target.value)} />
         </div>
 
+        <p className="text-xs text-slate-500">
+          The Spawn is killed at its time limit. Every Arm with at least this much VRAM is eligible —
+          over-estimating either one costs you queue position, not Karma.
+        </p>
+
         {error && <p className="text-sm text-rose-400">{error}</p>}
 
-        <button className={btn} disabled={!picked || !script || busy} onClick={go}>
+        <button className={btn} disabled={!ready || busy} onClick={go}>
           {busy ? `Uploading ${human(picked?.bytes ?? 0)}…` : 'Submit Spawn'}
         </button>
       </div>
@@ -289,7 +314,11 @@ function ArmsTable({ arms }: { arms: Arm[] }) {
           <th className={th}>Name</th>
           <th className={th}>Owner</th>
           <th className={th}>State</th>
-          <th className={th}>GPUs</th>
+          <th className={th}>GPU</th>
+          <th className={th}>VRAM</th>
+          {/* Power: measured TFLOP/s. Half of what a second on this card costs (the other half, Demand,
+              is live). '—' until the Arm has been benchmarked. */}
+          <th className={th}>Power</th>
           <th className={th}>Mesh IP</th>
           <th className={th}>Admitted</th>
         </tr>
@@ -300,12 +329,14 @@ function ArmsTable({ arms }: { arms: Arm[] }) {
             <td className={`${td} font-medium text-slate-100`}>{a.name}</td>
             <td className={td}>{a.owner ?? '—'}</td>
             <td className={td}><Pill state={a.state} /></td>
-            <td className={td}>{a.gpus}</td>
+            <td className={td}>{a.gpu ?? '—'}</td>
+            <td className={td}>{a.vram_mb ? `${Math.round(a.vram_mb / 1024)} GB` : '—'}</td>
+            <td className={td}>{a.power ? `${a.power} TF` : '—'}</td>
             <td className={`${td} font-mono text-slate-400`}>{a.mesh_ip ?? '—'}</td>
             <td className={td}>{a.admitted ? '✓' : '—'}</td>
           </tr>
         ))}
-        {arms.length === 0 && <EmptyRow cols={6} label="no arms" />}
+        {arms.length === 0 && <EmptyRow cols={8} label="no arms" />}
       </tbody>
     </table>
   )
@@ -514,7 +545,7 @@ export default function App() {
         </header>
 
         <div className="grid gap-6">
-          <SubmitPanel arms={arms} onSubmitted={setOpen} />
+          <SubmitPanel arms={arms} isAdmin={me.is_admin} onSubmitted={setOpen} />
           {open !== null && <SpawnDetail id={open} onClose={() => setOpen(null)} />}
           <Card title="Arms" count={arms.length}>
             <ArmsTable arms={arms} />

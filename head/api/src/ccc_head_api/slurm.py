@@ -71,8 +71,30 @@ def arms() -> list[dict]:
                 "mesh_ip": e.get("mesh_ip"),
                 "gpu_device": e.get("gpu_device"),
                 "admitted": e.get("admitted", True),
+                # The hardware profile Karma prices from: what the card can DO (Power, measured at
+                # enroll by a benchmark Spawn) and how much it can HOLD (the thing --vram matches).
+                "gpu": e.get("gpu"),
+                "vram_mb": e.get("vram_mb"),
+                "power": e.get("power"),
             })
     return sorted(out, key=lambda a: a["name"])
+
+
+def vram_constraint(vram_gb: int) -> str:
+    """Turn `--vram 20` into a Slurm constraint over the fleet's actual cards: `vram24|vram48|vram80`.
+
+    Slurm constraints are string **set-membership** — there is no `>=`. So an arbitrary integer can
+    only be honoured by whoever knows every distinct card in the cluster, and expands the request into
+    the OR of the ones that qualify. That is the Head, here. The alternative (fixed buckets baked into
+    the Arms) would cap what a User may ask for at whatever list we guessed at design time.
+    """
+    sizes = sorted({round(e["vram_mb"] / 1024) for e in load_registry().values()
+                    if e.get("admitted") and e.get("vram_mb")})
+    eligible = [g for g in sizes if g >= vram_gb]
+    if not eligible:
+        have = ", ".join(f"{g}GB" for g in sizes) or "none"
+        raise HTTPException(422, f"no Arm has {vram_gb}GB of VRAM — the cluster has: {have}")
+    return "|".join(f"vram{g}" for g in eligible)
 
 
 def spawns() -> list[dict]:

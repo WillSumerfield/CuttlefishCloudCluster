@@ -83,15 +83,20 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
         raise typer.BadParameter(f"{path}: {detail}") from None
 
 
-def submit(script: str, gpu: int, follow: bool, args: list[str],
+def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
            project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, node: str | None = None) -> None:
     root = Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
-    # `node` pins the Spawn to one Arm; omitted, Slurm schedules it. The Head validates the name
-    # against the live node list (it knows the Arms; we don't) and 422s with the known names.
+    # The Head turns `vram` into a Slurm constraint: it knows every distinct card in the fleet and we
+    # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
+    # works if someone OR-expands it (`--constraint=vram24|vram48`). That someone is the Head.
+    #
+    # `node` pins the Spawn to one Arm and is ADMIN-ONLY — enforced at the Head, not here, because a
+    # client cannot be trusted to police it. It validates the name against the live node list too.
     meta = {"script": script, "gpu": gpu, "args": args, "node": node,
+            "minutes": minutes, "vram": vram,
             "wandb_env": settings.wandb_env(project, entity)}
     url = auth._head_url()
     req = urllib.request.Request(

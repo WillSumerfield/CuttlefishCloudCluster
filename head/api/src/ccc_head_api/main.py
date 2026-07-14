@@ -206,23 +206,38 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     {script, gpu, args, node, wandb_env} — metadata in a header (not query params) keeps the W&B key
     out of access logs. Runs the render/sbatch/Attribution as the Mantle; returns the Spawn id.
 
-    `node` pins the Spawn to one Arm. We reject an unknown name here rather than letting Slurm do it:
-    sbatch's own error for a bad --nodelist is opaque, and we already know the real node list.
+    `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
+    with no declared need cannot be placed. `vram` is OR-expanded here into a Slurm constraint over the
+    fleet's real cards (slurm.vram_constraint); the client can't do it, because only the Head knows
+    what hardware exists.
+
+    `node` pins the Spawn to one Arm and is **admin-only**. Users declare what they need and let Slurm
+    choose; naming a machine sidesteps eligibility (and so the Demand it would have added to every card
+    that could have run it). We reject an unknown name here rather than letting Slurm do it: sbatch's
+    error for a bad --nodelist is opaque, and we already know the real node list.
     """
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
     meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
     if not meta.get("script"):
         raise HTTPException(422, "missing 'script' in X-CCC-Meta")
+    for field in ("minutes", "vram"):
+        if not meta.get(field):
+            raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
     node = meta.get("node")
     if node:
+        if not user["is_admin"]:
+            raise HTTPException(403, "--node is admin-only. Say what you need (--vram) and Slurm will "
+                                     "give you the fastest free Arm that has it.")
         known = [a["name"] for a in slurm.arms()]
         if node not in known:
             raise HTTPException(422, f"unknown Arm '{node}' — known Arms: {', '.join(known)}")
+    constraint = slurm.vram_constraint(int(meta["vram"]))
     tar_path = await _spool_upload(request)
     try:
         job_id = spawns_mod.submit(user["id"], meta["script"], int(meta.get("gpu", 1)),
-                                   meta.get("args", []), meta.get("wandb_env", {}), tar_path, node)
+                                   meta.get("args", []), meta.get("wandb_env", {}), tar_path,
+                                   int(meta["minutes"]), constraint, node)
     finally:
         tar_path.unlink(missing_ok=True)
     return {"id": job_id}

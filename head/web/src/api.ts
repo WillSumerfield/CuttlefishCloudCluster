@@ -21,6 +21,11 @@ export type Arm = {
   mesh_ip: string | null
   gpu_device: string | null
   admitted: boolean
+  // The hardware profile Karma prices from: what the card can do (Power, in TFLOP/s, measured by a
+  // benchmark Spawn at enroll) and how much it can hold. Null until an Arm has been benchmarked.
+  gpu: string | null
+  vram_mb: number | null
+  power: number | null
 }
 
 // `submitted_by` is Attribution: who actually submitted the Spawn. Slurm's own owner field says the
@@ -108,7 +113,11 @@ export type SubmitOpts = {
   picked: Picked
   script: string
   gpu: number
-  node: string | null
+  // Wall-clock minutes, and GPU memory in GB. Both required by the Head — a Spawn with no declared
+  // length can't be priced, and one with no declared need can't be placed.
+  minutes: number
+  vram: number
+  node: string | null // admin-only; the Head 403s it for everyone else
   args: string[]
 }
 
@@ -117,7 +126,9 @@ export type SubmitOpts = {
  * the preview the user confirmed was built from File.size alone, which costs no I/O. Same wire format
  * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
  */
-export async function submit({ picked, script, gpu, node, args }: SubmitOpts): Promise<number> {
+export async function submit({
+  picked, script, gpu, minutes, vram, node, args,
+}: SubmitOpts): Promise<number> {
   const entries: TarEntry[] = []
   for (const f of picked.files) {
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
@@ -126,7 +137,7 @@ export async function submit({ picked, script, gpu, node, args }: SubmitOpts): P
   // W&B is disabled for browser Spawns: the API key lives in the CLI's ~/.ccc/config, and the browser
   // has no equivalent yet. Send the same env the CLI sends when it has no key — an EMPTY wandb_env
   // would leave WANDB_MODE unset, which makes wandb.init() fail rather than skip.
-  const meta = { script, gpu, node, args, wandb_env: { WANDB_MODE: 'disabled' } }
+  const meta = { script, gpu, minutes, vram, node, args, wandb_env: { WANDB_MODE: 'disabled' } }
   const r = await req('/submit', {
     method: 'POST',
     headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },

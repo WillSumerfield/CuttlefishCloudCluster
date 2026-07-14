@@ -35,13 +35,19 @@ by hand.
 
 - `cuttle arm authorize <name> --user <owner>` — authorize one machine to become an Arm. Names it,
   names the **User** who owns it, and prints the **enrollment token** they redeem. Then blocks until
-  they do, and admits them to Slurm. **The token is a secret** — it admits one machine, once, within
-  the hour. Send it privately.
+  they do, admits them to Slurm, and **benchmarks** them. **The token is a secret** — it admits one
+  machine, once, within the hour. Send it privately.
 - `cuttle arm admit <name>` — the second half alone, if `authorize` gave up waiting because the donor
   wasn't at their desk yet.
+- `cuttle arm benchmark <name>` — measure an Arm's **Power** (fp32 TFLOP/s) by running a matmul inside
+  the Pod, on that node, submitted down the ordinary Slurm path — so the number reflects the machine as
+  Spawns really meet it (a WSL GPU behind `/dev/dxg`, a throttling laptop card, a stale driver), not
+  what a spec sheet claims. Sets the node's Slurm `Weight` ∝ 1/Power, so the fastest *free* eligible
+  card wins. Runs automatically as part of `authorize`; re-run it by hand after a GPU or driver change.
 - `cuttle arm chown <name> --user <owner>` — re-point an Arm at a different owner. Touches neither the
   mesh nor Slurm, so the donor's box keeps running.
-- `cuttle arm list` — Arms, their owners, and whether each is authorized / enrolled / admitted.
+- `cuttle arm list` — Arms, their owners, their GPU/VRAM/Power, and whether each is authorized /
+  enrolled / admitted.
 - `cuttle arm remove <name>` — delete an Arm from Slurm, the registry, and the mesh. **Required after a
   donor runs `teardown --arm`**: an Arm can't delete its own mesh node, and `authorize` refuses a name
   whose node still exists (it will never evict a running machine as a side-effect).
@@ -54,11 +60,17 @@ over the munge key. A machine on the mesh that no Admin named gets nothing.
 All of these go through the Head API and need `cuttle login` — the CLI is a network client, so you can
 submit from any box, whether or not it ever ran `setup`.
 
-- `cuttle run <script> [--gpu N] [-f] [--node NAME] [--project P] [--entity E] [--no-gitignore]
-  [-- ARGS]` — submit a **Spawn**: uploads the working dir (honoring `.gitignore` unless
-  `--no-gitignore`) to the Head, which runs `apptainer exec --nv base.sif python <script>` as the
-  **Mantle**. `--node` pins it to one Arm (default: Slurm schedules it). `--project`/`--entity` set W&B
-  per-Spawn. `-f` streams stdout. Job id = spawn id.
+- `cuttle run <script> --time MIN --vram GB [--gpu N] [-f] [--project P] [--entity E]
+  [--no-gitignore] [-- ARGS]` — submit a **Spawn**: uploads the working dir (honoring `.gitignore`
+  unless `--no-gitignore`) to the Head, which runs `apptainer exec --nv base.sif python <script>` as
+  the **Mantle**. `--project`/`--entity` set W&B per-Spawn. `-f` streams stdout. Job id = spawn id.
+  - `--time` (wall-clock minutes) and `--vram` (GB) are **required, with no defaults**. Nothing can
+    price a Spawn whose length nobody declared, and a `--vram` that defaulted to the fleet's biggest
+    card would make every untouched field eligible for that one GPU alone — queued behind everything,
+    for work that might need 2 GB. You say what you *need*; the Head finds every card that qualifies
+    and Slurm gives you the fastest one that's free. Over-estimating either costs you queue position,
+    not Karma.
+  - `--node NAME` pins a Spawn to one Arm, and is **admin-only**.
 - `cuttle status <id>` — `queued`/`running`, `DONE (EXIT N)`, or `FAILED` (the Spawn was killed or its
   Arm dropped before staging results home — no exit code was ever recorded).
 - `cuttle logs <id> [-f]` — print/tail the Spawn's stdout. A co-located Spawn streams live; a remote
