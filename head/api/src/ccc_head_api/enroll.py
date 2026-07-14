@@ -52,6 +52,7 @@ class EnrollRequest(BaseModel):
     node_name: str
     gpu_device: str  # /dev/nvidia0 on native Linux, /dev/dxg under WSL2
     mesh_ip: str
+    vram_mb: int  # the card's memory — becomes its `vramN` Slurm feature, which `--vram` matches
 
 
 def _load() -> dict:
@@ -125,6 +126,11 @@ def enroll(req: EnrollRequest) -> dict:
     entry = reg[req.node_name]
     entry["gpu_device"] = req.gpu_device
     entry["mesh_ip"] = req.mesh_ip
+    # Hardware profile (Phase 4 slice 0). VRAM is *declared* here; Power is *measured* later, by a
+    # benchmark the Head submits once the node is live — a donor could inflate either, and the trust
+    # story is unchanged (an Arm can already fabricate results outright, and donors are never
+    # strangers), but only one of the two can be taken on the donor's word without it also being wrong.
+    entry["vram_mb"] = req.vram_mb
     # Re-enrolling an already-admitted Arm (e.g. after the Head's mesh IP moved) stays admitted.
     entry.setdefault("admitted", False)
     _save(reg)

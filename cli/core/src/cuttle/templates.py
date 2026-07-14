@@ -36,11 +36,33 @@ SchedulerType=sched/backfill
 SelectType=select/cons_tres
 SelectTypeParameters=CR_Core
 
+# --- priority (Phase 4 slice 0) ---
+# Karma ranks Spawns by lowering the *nice* of the queued jobs of Users in poor standing, and only the
+# job's OWNER may do that — which the Head is, for every Spawn in the queue (they all run as the
+# Mantle). But nice is only *read* by priority/multifactor: the default priority/basic is pure FIFO and
+# ignores it entirely, so without this line Karma would have no effect on the queue at all.
+#
+# Age is the only factor we let Slurm compute; every other weight is zeroed so the queue is exactly
+# "Karma, plus time waited". Age is what makes 'Karma never gates' true at the scheduler: the
+# worst-standing User is niced to the back of the queue, but ages to the front of it within
+# PriorityMaxAge regardless. Starvation is impossible by construction, not by policy.
+# (Fairshare stays 0 — it needs slurmdbd, and we compute standing ourselves. See docs/DesignDoc.md §5.)
+PriorityType=priority/multifactor
+PriorityWeightAge={age_weight}
+PriorityMaxAge={max_age}
+PriorityWeightFairshare=0
+PriorityWeightJobSize=0
+PriorityWeightPartition=0
+PriorityWeightQOS=0
+
 GresTypes=gpu
 # The Head's co-located Arm is a *static* node — always in sinfo, even with slurmd down.
 # Donor Arms are dynamic and appear here at runtime; Nodes=ALL is what they auto-join.
+# Feature=vramN is what `--vram` matches against (Slurm constraints are set-membership, so the Head
+# OR-expands a request into `--constraint=vram24|vram48`). Weight (∝ 1/Power) is NOT here: Power is
+# benchmarked after the node is live, so it arrives later via `scontrol update`.
 NodeName={host} Sockets={sockets} CoresPerSocket={cores} ThreadsPerCore={threads} \
-RealMemory={mem} Gres=gpu:1 State=UNKNOWN
+RealMemory={mem} Gres=gpu:1 Feature={vram_feature} State=UNKNOWN
 PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 """
 
@@ -48,6 +70,66 @@ PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 # explicitly. Per-node lines are unavoidable once Arms disagree about the device path: native Linux
 # has /dev/nvidia0, WSL2 has /dev/dxg. Served to Arms over configless, so the Head authors all of it.
 GRES_CONF_LINE = "NodeName={node} Name=gpu File={device}\n"
+
+# --- the Power benchmark (Phase 4 slice 0) ----------------------------------
+# What a device can *do*, measured — never a spec sheet. It runs **inside the Pod**, submitted by the
+# Head down the ordinary Slurm path and pinned to the node, so the number reflects the machine as
+# Spawns will really meet it: a WSL GPU reached through /dev/dxg, a laptop card that thermally
+# throttles, a stale driver, a starved PCIe link. None of that is on a spec sheet, and all of it is
+# what an hour on the card is actually worth.
+#
+# Power is the term that stops the meter paying an owner MORE for being SLOWER. Bill seconds alone and
+# the same matmul costs 4x on a card a quarter the speed — so donating your worst GPU would pay best,
+# which is precisely backwards from what Karma exists to encourage.
+BENCH_PY = """\
+import json, os, time, torch
+assert torch.cuda.is_available(), "CUDA not visible in Pod"
+dev = torch.device("cuda")
+props = torch.cuda.get_device_properties(dev)
+a = torch.randn({n}, {n}, device=dev)
+b = torch.randn({n}, {n}, device=dev)
+for _ in range({warmup}):        # the first matmul pays cuBLAS init — never time it
+    c = a @ b
+torch.cuda.synchronize()
+t0 = time.perf_counter()
+for _ in range({iters}):
+    c = a @ b
+torch.cuda.synchronize()
+elapsed = time.perf_counter() - t0
+json.dump({{
+    "power": round({iters} * 2 * {n}**3 / elapsed / 1e12, 2),  # fp32 TFLOP/s
+    "vram_mb": props.total_memory // 1024**2,
+    "gpu": props.name,
+}}, open(os.environ["CCC_OUT"] + "/power", "w"))
+"""
+
+# Submitted as the Mantle (`sudo -u ccc sbatch`), like every Spawn — it must be, or slurmd on a remote
+# Arm would setuid() to an operator uid that does not exist there. --nodelist pins it to the node being
+# priced. Results come home the way every remote Spawn's do: rsync to the Head's [spawns] module, which
+# the Head then reads. That path is identical on the Head's own co-located Arm (it rsyncs to itself over
+# the mesh), so there is no is-this-the-Head branch here.
+BENCH_SBATCH_TMPL = """\
+#!/bin/bash
+#SBATCH --job-name=ccc-bench
+#SBATCH --nodelist={node}
+#SBATCH --gres=gpu:1
+#SBATCH --time={minutes}
+#SBATCH --chdir=/tmp
+#SBATCH --output=/tmp/ccc-bench-%j.log
+#SBATCH --error=/tmp/ccc-bench-%j.log
+set -e
+out=/tmp/ccc-bench-$SLURM_JOB_ID
+trap 'rm -rf "$out"' EXIT
+mkdir -p "$out"
+cat > "$out/bench.py" <<'CCC_BENCH_PY'
+{bench_py}
+CCC_BENCH_PY
+# /tmp is auto-mounted by Apptainer, so $CCC_OUT needs no explicit --bind (unlike a Spawn's, which
+# lives under /var/lib/ccc).
+apptainer exec --nv --env CCC_OUT="$out" {sif} python "$out/bench.py"
+rsync -a "$out/power" "rsync://{head_ip}/{spawns_mod}/{bench_dir}/{node}/"
+"""
+
 
 # Base Pod image: official PyTorch + pinned wandb (so Spawns can log W&B out of the box).
 BASE_DEF_TMPL = """\
@@ -130,13 +212,30 @@ def render_slurm_conf(mesh_ip: str) -> str:
         mesh_ip=mesh_ip,
         max_nodes=config.MAX_NODE_COUNT,
         tree_width=config.TREE_WIDTH,
+        age_weight=config.PRIORITY_WEIGHT_AGE,
+        max_age=config.PRIORITY_MAX_AGE,
         sockets=sockets,
         cores=cores,
         threads=threads,
         mem=system.real_memory_mb(),
+        vram_feature=config.vram_feature(system.gpu_vram_mb()),
         state=config.SLURM_STATE_DIR,
         spool=config.SLURMD_SPOOL_DIR,
         logdir=config.SLURM_LOG_DIR,
+    )
+
+
+def render_bench_sbatch(node: str, head_mesh_ip: str) -> str:
+    bench_py = BENCH_PY.format(n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP,
+                               iters=config.BENCH_ITERS)
+    return BENCH_SBATCH_TMPL.format(
+        node=node,
+        minutes=config.BENCH_TIME_MINUTES,
+        bench_py=bench_py,
+        sif=config.CCC_SIF,
+        head_ip=head_mesh_ip,
+        spawns_mod=config.RSYNC_MODULE_SPAWNS,
+        bench_dir=config.BENCH_DIR_NAME,
     )
 
 

@@ -25,6 +25,49 @@ PARTITION = "ccc"
 # Multi-GPU Arms need per-node lines (deferred; see docs/TODO.md NVML entry).
 GPU_DEVICE = "/dev/nvidia0"
 
+# --- Karma substrate: priority, Power, VRAM features (Phase 4 slice 0) ---
+# Nice is how Karma reaches the queue: the Head lowers the priority of a poor-standing User's pending
+# Spawns. It can do that with ZERO privilege, because every Spawn runs as the Mantle — so the Head is
+# the *owner* of every job in the queue, and lowering your own job's priority is an owner's right.
+# (Only NEGATIVE nice — a boost — needs an operator; that's the admin Queue bump, which goes through
+# sudo. See docs/DesignDoc.md §5.)
+NICE_MAX = 10000  # nice = (1 - Share) * NICE_MAX, so standing spans [0, NICE_MAX]
+# Age must be able to out-run the worst nice, or a poor-standing User could starve. Equal weights mean
+# a maximally-niced Spawn overtakes a fresh un-niced one after PriorityMaxAge — Karma decides who goes
+# first, never who goes at all.
+PRIORITY_WEIGHT_AGE = NICE_MAX
+PRIORITY_MAX_AGE = "1-0"  # 1 day
+
+# **Power**: measured throughput, in fp32 TFLOP/s, of one device — benchmarked once, at enroll, by a
+# Head-submitted Spawn running inside the Pod (templates.BENCH_PY). Intrinsic to the card; the other
+# half of a device-second's price is Demand, which is live and extrinsic.
+BENCH_MATRIX_N = 4096
+BENCH_WARMUP = 5
+BENCH_ITERS = 50
+BENCH_TIME_MINUTES = 10
+BENCH_DIR_NAME = "bench"  # HEAD_SPAWNS_DIR/bench/<node>/power — where a benchmark stages its result
+BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may still be booting slurmd)
+
+# Slurm schedules the LOWEST-weight eligible node first, so Weight must run inverse to Power: the
+# fastest free card that fits wins. It is a preference among *free* nodes, not a reservation — Slurm
+# will not hold a Spawn back waiting for a better card, which is exactly the "first one that fits, else
+# queue" behaviour we want.
+WEIGHT_SCALE = 10000
+
+
+def node_weight(power: float) -> int:
+    return max(1, round(WEIGHT_SCALE / power))
+
+
+def vram_feature(vram_mb: int) -> str:
+    """The Slurm feature a device advertises: `vram24` for a 24 GB card.
+
+    Rounded, not floored: a 4090 reports 24564 MiB, and flooring would advertise it as `vram23` — so
+    `--vram 24` would find no card that plainly has 24 GB.
+    """
+    return f"vram{round(vram_mb / 1024)}"
+
+
 # --- Slurm dynamic nodes (donor Arms self-register via `slurmd -Z`) ---
 # MaxNodeCount is a ceiling on static+dynamic nodes; raising it later needs a slurmctld restart.
 MAX_NODE_COUNT = 64
@@ -40,9 +83,14 @@ SLURM_LOG_DIR = Path("/var/log/slurm")
 SLURMCTLD_PORT = 6817
 # slurmctld dials every slurmd here. Inbound on each Arm — see system.allow_mesh_iface.
 SLURMD_PORT = 6818
-# Ubuntu's slurmd.service does `ExecStart=/usr/sbin/slurmd --systemd $SLURMD_OPTIONS` with
-# `EnvironmentFile=-/etc/default/slurmd` — the supported hook for an Arm's `-Z --conf-server` flags.
-SLURMD_DEFAULTS = Path("/etc/default/slurmd")
+# An Arm's slurmd flags (`-Z --conf ... --conf-server ...`). A systemd DROP-IN, not the distro's
+# `/etc/default/slurmd`, because that hook cannot carry them. Ubuntu's unit is
+# `ExecStart=/usr/sbin/slurmd --systemd $SLURMD_OPTIONS`, and systemd splits a variable's value at
+# whitespace **without honouring quotes inside it** — so `--conf "Gres=gpu:1 Feature=vram24"` would
+# reach slurmd as three mangled arguments the moment `--conf` grew a second key (which Phase 4 needs:
+# Feature=vramN is what a Spawn's --vram matches). Quotes written literally in a unit file ARE honoured,
+# so the drop-in states the whole command and keeps the space-separated --conf intact.
+SLURMD_DROPIN = Path("/etc/systemd/system/slurmd.service.d/ccc.conf")
 MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, never expires
 
 # --- Shared API package venv (Phase 1) ---

@@ -52,6 +52,21 @@ def real_memory_mb() -> int:
     return kb // 1024 - 1024
 
 
+def gpu_vram_mb() -> int:
+    """This box's GPU memory, in MiB. Becomes the node's `vramN` Slurm feature — the thing a Spawn's
+    `--vram` is matched against.
+
+    From nvidia-smi on the host, NOT from the Pod-side Power benchmark, even though that measures VRAM
+    too: a dynamic Arm's features must be baked into its `slurmd -Z --conf` at registration, and the
+    benchmark cannot run until the node is already registered. Host and Pod agree on this number
+    anyway (unlike throughput, which is exactly why Power is measured and VRAM is merely read).
+    """
+    out = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        check=True, capture_output=True, text=True).stdout
+    return int(out.split("\n")[0].strip())
+
+
 def installed_packages() -> set[str]:
     """Set of currently-installed dpkg package names."""
     out = subprocess.run(

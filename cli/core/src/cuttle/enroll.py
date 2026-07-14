@@ -31,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import auth, config, headapi, mesh, settings, templates
+from . import auth, config, headapi, mesh, settings, system, templates
 from .system import run
 
 
@@ -71,7 +71,7 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str) -> dict
     """Record this Arm with the Head and pull the munge key + ctld address. Only routable from
     inside the mesh — which is exactly why the munge key is safe to send here and nowhere else."""
     body = json.dumps({"node_name": node_name, "gpu_device": gpu_device(),
-                       "mesh_ip": my_mesh_ip}).encode()
+                       "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb()}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -129,13 +129,29 @@ def write_munge_key(b64_key: str) -> None:
 
 # --- slurmd (dynamic + configless) ------------------------------------------
 
-def slurmd_defaults(node_name: str, ctld_addr: str) -> str:
-    """`-Z` = register as a dynamic node; `--conf-server` = fetch slurm.conf from slurmctld instead
-    of having one installed. Gres must be declared here: slurm-wlm ships no NVML, so the node cannot
-    introspect its own GPUs (Phase 1 = one GPU per Arm)."""
+def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int) -> str:
+    """This Arm's slurmd flags. `-Z` = register as a dynamic node; `--conf-server` = fetch slurm.conf
+    from slurmctld instead of having one installed. Gres must be declared here: slurm-wlm ships no
+    NVML, so the node cannot introspect its own GPUs (Phase 1 = one GPU per Arm).
+
+    `Feature=vramN` rides along, and `--conf` is the only durable place for it: a dynamic node's config
+    is re-sent from `--conf` at *every* registration, so a feature set any other way (`scontrol
+    update`) would silently vanish the next time this slurmd restarted — and a Spawn's `--vram`
+    constraint would then match nothing. Weight (∝ 1/Power) is deliberately NOT here, and can't be:
+    Power is only measurable once the node is live. Losing Weight costs nothing worse than the
+    fastest-free-card preference; losing Feature would make the node unschedulable.
+
+    A drop-in rather than `/etc/default/slurmd` (see config.SLURMD_DROPIN): systemd does not honour
+    quotes *inside* an expanded variable, so the distro's `$SLURMD_OPTIONS` hook cannot express a
+    `--conf` with a space in it. Quotes written literally in a unit file are honoured.
+    """
+    conf = f"Gres=gpu:1 Feature={config.vram_feature(vram_mb)}"
     return (
         "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
-        f'SLURMD_OPTIONS="-Z -N {node_name} --conf Gres=gpu:1 --conf-server {ctld_addr}"\n'
+        "[Service]\n"
+        "ExecStart=\n"  # clear the distro's ExecStart; a bare assignment is systemd's reset syntax
+        f'ExecStart=/usr/sbin/slurmd --systemd -Z -N {node_name} --conf "{conf}" '
+        f"--conf-server {ctld_addr}\n"
     )
 
 
@@ -192,6 +208,82 @@ def _await_enrollment(name: str, timeout_s: int = 300) -> dict:
         f"donor has run `cuttle setup --arm`, finish with:  cuttle arm admit {name}")
 
 
+# --- the Power benchmark (Head only, operator + sudo) -----------------------
+# Price = Power x Demand. This measures Power: what a device can *do*, once, at enroll.
+#
+# It lives on the Head CLI rather than in the Head API because its two ends both need privilege the
+# API deliberately doesn't have — it must submit as the **Mantle** (`sudo -u ccc`), or slurmd on a
+# remote Arm would setuid() to an operator uid that doesn't exist there, and it must write the node's
+# Weight (`scontrol update`, operator-only). The Head API is unprivileged by design and stays that way.
+
+
+def _wait_for_node(name: str, timeout_s: int = 300) -> None:
+    """Block until the node is registered and idle. `arm authorize` reaches here the moment it has
+    written gres.conf — but the donor's `setup --arm` is still polling for that admission and hasn't
+    started its slurmd yet, so for a few seconds the node Slurm is about to benchmark does not exist."""
+    print(f"cuttle: waiting for {name} to come up in Slurm")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        r = run(["sinfo", "-h", "-n", name, "-o", "%T"], capture_output=True, text=True, check=False)
+        if r.stdout.strip().rstrip("*") in ("idle", "mixed", "allocated"):
+            return
+        time.sleep(3)
+    raise TimeoutError(f"{name} never came up — benchmark it later with: cuttle arm benchmark {name}")
+
+
+def benchmark_arm(name: str) -> dict:
+    """Submit the Power benchmark to one Arm and record what it measures.
+
+    The result comes home the way every remote Spawn's does — rsync'd into the Head's [spawns] module —
+    so there is one code path for a donor's box and for the Head's own co-located Arm (which simply
+    rsyncs to itself over the mesh). The Head pre-creates the landing directory because rsync will not
+    invent one.
+    """
+    _wait_for_node(name)
+    head_ip = mesh.tailscale_ip()
+    dest = config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME / name
+    run(["install", "-d", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER, str(dest)],
+        sudo=True)
+    run(["rm", "-f", str(dest / "power")], sudo=True)  # a re-benchmark must not read the old number
+
+    with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
+        f.write(templates.render_bench_sbatch(name, head_ip))
+        job_file = f.name
+    Path(job_file).chmod(0o644)  # sbatch reads it as ccc, not as the operator
+
+    print(f"cuttle: benchmarking {name} (matmul in the Pod — this is what prices a second on it)")
+    run(["-u", config.HEAD_API_USER, "sbatch", "--parsable", job_file], sudo=True, check=True)
+
+    deadline = time.time() + config.BENCH_TIMEOUT_S
+    while time.time() < deadline:
+        r = run(["cat", str(dest / "power")], sudo=True, capture_output=True, text=True, check=False)
+        if r.returncode == 0 and r.stdout.strip():
+            result = json.loads(r.stdout)
+            break
+        time.sleep(3)
+    else:
+        raise TimeoutError(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s — "
+                           f"retry with: cuttle arm benchmark {name}")
+
+    reg = load_registry()
+    reg[name]["power"] = result["power"]
+    reg[name]["gpu"] = result["gpu"]
+    save_registry(reg)
+    apply_weight(name, result["power"])
+    print(f"cuttle: {name} = {result['gpu']}, {result['power']} TFLOP/s, "
+          f"{result['vram_mb']} MiB VRAM")
+    return result
+
+
+def apply_weight(name: str, power: float) -> None:
+    """Weight ∝ 1/Power, so Slurm hands out the fastest *free* eligible card first.
+
+    Not a reservation: Slurm won't hold a Spawn back waiting for a better GPU to free up — it takes the
+    best one available now, which is what "the first one that fits, else queue" means.
+    """
+    run(["scontrol", "update", f"NodeName={name}", f"Weight={config.node_weight(power)}"], sudo=True)
+
+
 # --- authorize / admit / chown (Head only, operator + sudo) -----------------
 # Being the operator on the Head IS the authorization — no session, no login (mirrors `user add`).
 
@@ -224,7 +316,10 @@ def authorize_arm(name: str, owner: str, write_root_file) -> None:
             f"          cuttle arm chown {name} --user <owner>")
 
     reg = load_registry()
-    reg[name] = {"owner": owner, "gpu_device": None, "mesh_ip": None, "admitted": False}
+    # vram_mb arrives with the donor's /enroll; power only after the benchmark, which can't run until
+    # the node is live. Both are named here so a row's shape never depends on how far it got.
+    reg[name] = {"owner": owner, "gpu_device": None, "mesh_ip": None, "admitted": False,
+                 "vram_mb": None, "power": None, "gpu": None}
     save_registry(reg)
 
     token = _mint_token(name, mesh.mint_preauthkey())
@@ -259,6 +354,9 @@ def _admit(name: str, reg: dict, write_root_file) -> None:
     render_gres(reg, write_root_file)
     print(f"cuttle: {name} admitted ({reg[name]['gpu_device']}, owner {reg[name].get('owner')}) — "
           f"its slurmd can now register")
+    # An Arm with no Power cannot be priced, so it is benchmarked as part of joining — not as an
+    # optional follow-up an operator might forget.
+    benchmark_arm(name)
 
 
 def chown_arm(name: str, owner: str) -> None:
@@ -283,11 +381,11 @@ def register_head_arm(mesh_ip: str) -> None:
     only do if it knows this one is admin-owned. `head: true` keeps render_gres from emitting its GRES
     line twice (templates.head_gres_node() already has it).
     """
-    from .system import hostname
     reg = load_registry()
-    name = hostname()
+    name = system.hostname()
     reg[name] = {"owner": config.FIRST_ADMIN_USER, "gpu_device": config.GPU_DEVICE,
-                 "mesh_ip": mesh_ip, "admitted": True, "head": True}
+                 "mesh_ip": mesh_ip, "admitted": True, "head": True,
+                 "vram_mb": system.gpu_vram_mb(), "power": None, "gpu": None}
     save_registry(reg)
 
 
@@ -296,7 +394,7 @@ def list_arms() -> None:
     if not reg:
         print("no Arms have enrolled")
         return
-    print(f"{'NAME':20} {'OWNER':16} {'MESH IP':14} {'GPU':14} STATE")
+    print(f"{'NAME':16} {'OWNER':12} {'MESH IP':14} {'GPU':22} {'VRAM':>7} {'POWER':>9}  STATE")
     for name, e in sorted(reg.items()):
         if e["admitted"]:
             state = "head" if e.get("head") else "admitted"
@@ -304,8 +402,10 @@ def list_arms() -> None:
             state = f"enrolled, NOT ADMITTED (cuttle arm admit {name})"
         else:
             state = "authorized, awaiting the donor"
-        print(f"{name:20} {e.get('owner') or '-':16} {e.get('mesh_ip') or '-':14} "
-              f"{e.get('gpu_device') or '-':14} {state}")
+        vram = f"{round(e['vram_mb'] / 1024)}G" if e.get("vram_mb") else "-"
+        power = f"{e['power']} TF" if e.get("power") else "-"
+        print(f"{name:16} {e.get('owner') or '-':12} {e.get('mesh_ip') or '-':14} "
+              f"{e.get('gpu') or '-':22} {vram:>7} {power:>9}  {state}")
 
 
 # --- node removal (Head only) -----------------------------------------------

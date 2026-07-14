@@ -338,6 +338,9 @@ def setup_head(address: str | None = None) -> None:
     install_tls(mesh_ip)                         # self-signed cert; must exist before uvicorn starts
     headapi.install_head(_write_root_file, mesh_ip)  # Head API (board + SPA + auth + submit) LAN+mesh
     build_base_sif()                             # Mantle-readable Pod image at the cluster-wide path
+    # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because the
+    # benchmark is a real Spawn: it needs slurmd up, the Pod image built, and rsyncd listening.
+    enroll.benchmark_arm(system.hostname())
     verify()
     lan = system.primary_ip()
     print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
@@ -416,7 +419,9 @@ def setup_arm(token: str, re_enroll: bool = False) -> None:
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
-    _write_root_file(config.SLURMD_DEFAULTS, enroll.slurmd_defaults(node_name, info["ctld_addr"]))
+    _write_root_file(config.SLURMD_DROPIN,
+                     enroll.slurmd_dropin(node_name, info["ctld_addr"], system.gpu_vram_mb()))
+    run(["systemctl", "daemon-reload"], sudo=True)  # the drop-in rewrites slurmd's ExecStart
     run(["systemctl", "enable", "slurmd"], sudo=True)
     run(["systemctl", "restart", "slurmd"], sudo=True)
 

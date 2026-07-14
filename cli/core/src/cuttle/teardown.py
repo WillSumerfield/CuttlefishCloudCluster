@@ -83,8 +83,10 @@ def remove_slurm_config() -> None:
          str(config.SLURMD_SPOOL_DIR),
          str(config.SLURM_LOG_DIR)],
         sudo=True, check=False)
-    # Arm-only: the configless `-Z --conf-server` flags.
-    run(["rm", "-f", str(config.SLURMD_DEFAULTS)], sudo=True, check=False)
+    # Arm-only: the drop-in carrying the configless `-Z --conf --conf-server` flags. Take its whole
+    # directory — an empty slurmd.service.d/ left behind would be litter in the distro's unit tree.
+    run(["rm", "-rf", str(config.SLURMD_DROPIN.parent)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
 def purge_packages() -> None:
