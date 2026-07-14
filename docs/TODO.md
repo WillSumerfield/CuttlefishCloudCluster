@@ -1,5 +1,73 @@
 # Durable TODOs
 
+> The six items below were all found in the Phase-5 frontend grill (2026-07-14, `temp/FRONTEND.md`).
+> Five are gaps in what's *already built* and live here; the sixth (**Return**) was a missing design and
+> went to Phase 2 of the roadmap. All six exist in **both** clients, so none is "a frontend job".
+
+## Nothing in CCC can cancel a Spawn
+
+No `cuttle cancel`, no Head API endpoint, no Dashboard button. The only way to stop a running Spawn is
+`scancel` as the operator on the Head box — which a remote submitter cannot do, and which a non-admin
+User must never be able to do.
+
+Already bad (a typo'd 6-hour run holds a GPU until `--time` expires). **Phase 4 makes it a real cost**:
+Karma meters on seconds **held**, not seconds busy, so a User who spots a bad run at minute two is
+*billed* for the remaining 358 unless they can stop it. It also leaves the Admin with no lever over a
+runaway short of sshing to the Head.
+
+Decided in the Ph5 grill: a User may cancel any Spawn attributed to them; an Admin may cancel anyone's;
+it **settles for the seconds actually held** (the submitter chose to stop, so the submitter pays — this
+falls out of the existing early-failure rule and needs no new Karma concept). An Arm's owner gets **no**
+per-Spawn kill — they have Retract, whose settle-at-zero rule exists precisely to close the
+"let it run 55 min, then kill it, bank the Karma" farm.
+
+## `stderr` is unreachable from every client
+
+The job script writes both `out` and `err` into the Spawn dir, but `GET /spawns/{id}/logs` serves
+**only `out`**. `cuttle logs` and the Dashboard's log pane both read that one endpoint.
+
+So a Spawn that dies on a Python traceback shows an **empty log pane and the word FAILED**, with the
+cause sitting on disk, unreachable. This is the single most-used debugging surface in a cluster. Fix:
+serve both streams and let the client pick.
+
+## No password recovery exists
+
+`cuttle user` has only `add` / `list` / `remove` (the roadmap's Q5 promised a `reset`; it was never
+built), there is no email, and `/passwd` requires the *current* password. A User who forgets their
+password therefore cannot be recovered — the Admin's only move is `user remove` + `user add`, which
+**deletes their Karma balance and orphans every Arm they own** (owner is a bare username string in
+`arms.json` with no FK, so those Arms end up pointing at a User that no longer exists).
+
+Fix: an admin-mediated reset that issues a fresh temp password + `must_change_password=1`, exactly like
+provisioning. Same shape as `user add`, no new concept.
+
+Related, same cause: `is_admin` is only settable **at creation**, so promoting an existing User has the
+identical delete-and-recreate problem. (The Ph5 grill decided **not** to add grant/revoke-admin to the
+Dashboard, so this one can stay a CLI-only gap — but it must not be *fixed* by recreating the account.)
+
+## Dashboard Spawns silently disable W&B
+
+`head/web/src/api.ts` hardcodes `wandb_env: {WANDB_MODE: 'disabled'}` on every browser submission,
+because the browser has no W&B API key to send. Meanwhile `cuttle run --project/--entity` works fine.
+
+The Dashboard is supposed to be the **primary** submission surface, and it is strictly worse than the
+secondary one at the thing the cluster exists for. Worse, it's *silent* — the Spawn runs, and the
+metrics simply never appear.
+
+Fix (decided in the Ph5 grill): a **per-User W&B key** held by the Head (Account page → paste once), and
+injected into every Spawn that User submits, from *either* client. Consequence to handle deliberately:
+the Head now stores a third-party secret. It must be **encrypted at rest** — unlike a password it has to
+be recoverable in plaintext to be used, so it cannot just be argon2'd like `pw_hash`.
+
+## The admin `--node` selector renders for nobody
+
+`App.tsx` renders `<SubmitPanel arms={arms} onSubmitted={setOpen} />`, but `SubmitPanel` requires an
+`isAdmin` prop that is never passed. So it is `undefined`, and the admin-only Arm selector is hidden from
+**everyone, including admins** — `me.is_admin` is read for the header badge and then dropped.
+
+`vite build` doesn't catch it because package.json runs `vite build` alone, with no `tsc` pass — `tsc`
+*would* reject this. Fix the prop, and put a typecheck in the build so the next one doesn't ship.
+
 ## Stale dev-server proxy in `head/web/vite.config.ts`
 
 `npm run dev` proxies only `/arms` and `/spawns`, over `http://`. Both are now wrong: the Head is

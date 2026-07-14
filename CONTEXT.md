@@ -144,6 +144,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   drains the node and gives running work a short grace period to checkpoint and exit. A Spawn a
   Retract destroys **settles at zero** — its submitter pays nothing for work someone else killed, and
   the owner earns nothing for having killed it. Volatility is paid for by whoever chose it.
+- **Return** — the counterpart of **Retract**: the owner giving a retracted Arm back to the cluster.
+  A retracted Arm never leaves — it stays **enrolled** and on the **Mesh**, it simply stops accepting
+  work — so returning it is the owner's to do, needs no **Admin**, and costs no new **enrollment token**.
+  Retract/Return is a machine being lent and reclaimed, not a machine joining and leaving.
 - **Early-failure rule** — a Spawn that fails is **settled, not requeued**: it pays for what it
   actually consumed and does not silently run again.
 - **Cancel** — a **User** ending their own outstanding **Spawn** early (an **Admin** may cancel anyone's).
