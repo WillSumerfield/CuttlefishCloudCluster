@@ -37,13 +37,25 @@ def override(username: str, amount: float, note: str | None = None) -> None:
     print(f"cuttle: {r['username']} balance {r['balance']:+.1f}")
 
 
-def _current_nice(spawn_id: int) -> int:
-    r = subprocess.run(["squeue", "-h", "-j", str(spawn_id), "-o", "%y"],
+def _pending_nice(spawn_id: int) -> int:
+    """The Spawn's current nice — and a refusal if a bump could not possibly do anything to it.
+
+    A bump only means something to a **PENDING** Spawn: nice feeds the priority that decides who runs
+    *next*, and a Spawn already holding a card is past that decision. So "is it in the queue" is the
+    wrong question — `squeue` lists RUNNING jobs too, and asking only that would let a bump on a
+    running Spawn succeed, change nothing, and report success. "Is it still waiting" is the question.
+    """
+    r = subprocess.run(["squeue", "-h", "-j", str(spawn_id), "-o", "%T %y"],
                        capture_output=True, text=True)
-    nice = r.stdout.strip()
-    if not nice:
-        raise typer.BadParameter(f"spawn {spawn_id} is not in the queue (already running, or gone)")
-    return int(nice)
+    fields = r.stdout.split()
+    if not fields:
+        raise typer.BadParameter(
+            f"spawn {spawn_id} is not in the queue (finished, cancelled, or never existed)")
+    state, nice = fields[0], int(fields[1])
+    if state != "PENDING":
+        raise typer.BadParameter(f"spawn {spawn_id} is {state.lower()}, not waiting — a bump only "
+                                 f"reorders the queue, and this Spawn is already past that")
+    return nice
 
 
 def bump(spawn_id: int, clear: bool = False) -> None:
@@ -57,10 +69,11 @@ def bump(spawn_id: int, clear: bool = False) -> None:
     only an operator could have set one — so a bumped Spawn is left alone until it runs or is cleared,
     with no bump table and no coordination state anywhere. Bump again to shove it further.
     """
+    current = _pending_nice(spawn_id)  # both paths are meaningless on a Spawn that is not waiting
     if clear:
         run(["scontrol", "update", f"JobId={spawn_id}", "Nice=0"], sudo=True)
         print(f"cuttle: spawn {spawn_id} returned to the economy (next tick re-ranks it)")
         return
-    nice = min(0, _current_nice(spawn_id)) - config.BUMP_STEP
+    nice = min(0, current) - config.BUMP_STEP
     run(["scontrol", "update", f"JobId={spawn_id}", f"Nice={nice}"], sudo=True)
     print(f"cuttle: spawn {spawn_id} bumped (nice {nice})")

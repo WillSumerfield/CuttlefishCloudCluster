@@ -8,11 +8,14 @@ job it should never have touched.
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
+import typer
 
 from ccc_head_api import db, karma, tick
 from cuttle import config as cli_config
+from cuttle import karma as cli_karma
 
 
 @pytest.fixture
@@ -223,3 +226,69 @@ class TestTheTick:
         self.queue(monkeypatch, [{"id": 104, "nice": settled}])
         assert tick.once() == 0
         assert cluster == {}
+
+
+class TestQueueBump:
+    """`cuttle karma bump` — the operator's one escape hatch, and the one command that lies if its
+    guard is wrong."""
+
+    @pytest.fixture
+    def slurm(self, monkeypatch):
+        """Fake `squeue -o "%T %y"` and record every `scontrol update` the bump tries to make."""
+        pushed = []
+        monkeypatch.setattr(cli_karma, "run", lambda cmd, **kw: pushed.append(cmd))
+
+        def squeue(out):
+            monkeypatch.setattr(cli_karma.subprocess, "run",
+                                lambda *a, **kw: SimpleNamespace(stdout=out, returncode=0))
+        return squeue, pushed
+
+    def test_bumping_a_running_spawn_is_refused(self, slurm):
+        """The regression. `squeue` lists RUNNING jobs too, so the old guard — "did squeue return
+        anything?" — only ever caught a Spawn that was *gone*, despite its error saying otherwise.
+
+        A bump on a running Spawn therefore succeeded, did nothing, and said it had worked. nice feeds
+        the priority that decides who runs *next*; a Spawn already holding a card is past that
+        decision, and no value we write can reach back and change it. Reporting success for that is
+        worse than failing — the operator moves on believing the queue was reordered.
+        """
+        squeue, pushed = slurm
+        squeue("RUNNING 0\n")
+        with pytest.raises(typer.BadParameter, match="running"):
+            cli_karma.bump(42)
+        assert pushed == []  # and, crucially, nothing was written to Slurm
+
+    def test_bumping_a_finished_spawn_is_refused(self, slurm):
+        squeue, pushed = slurm
+        squeue("")
+        with pytest.raises(typer.BadParameter, match="not in the queue"):
+            cli_karma.bump(42)
+        assert pushed == []
+
+    def test_a_pending_spawn_takes_one_negative_step(self, slurm):
+        """A bump is one step BELOW the Spawn's current nice — not a reset to 0. Slurm's nice 0 is
+        merely *best standing*; only a negative nice outranks a perfectly-standing rival, and only an
+        operator can set one, which is exactly what makes it the bump flag the tick reads."""
+        squeue, pushed = slurm
+        squeue(f"PENDING {karma.NICE_MAX}\n")  # worst possible standing
+        cli_karma.bump(42)
+        assert pushed == [["scontrol", "update", "JobId=42", f"Nice={-cli_config.BUMP_STEP}"]]
+
+    def test_bumping_twice_shoves_it_further(self, slurm):
+        """`min(0, current)` is what makes a second bump compound instead of undoing the first."""
+        squeue, pushed = slurm
+        squeue(f"PENDING {-cli_config.BUMP_STEP}\n")
+        cli_karma.bump(42)
+        assert pushed == [["scontrol", "update", "JobId=42", f"Nice={-2 * cli_config.BUMP_STEP}"]]
+
+    def test_clear_is_guarded_too(self, slurm):
+        """--clear on a running Spawn is just as much of a no-op, and used to be just as silent."""
+        squeue, pushed = slurm
+        squeue("RUNNING -131072\n")
+        with pytest.raises(typer.BadParameter, match="running"):
+            cli_karma.bump(42, clear=True)
+        assert pushed == []
+
+        squeue("PENDING -131072\n")
+        cli_karma.bump(42, clear=True)
+        assert pushed == [["scontrol", "update", "JobId=42", "Nice=0"]]
