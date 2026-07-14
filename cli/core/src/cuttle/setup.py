@@ -337,6 +337,7 @@ def setup_head(address: str | None = None) -> None:
     build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
     install_tls(mesh_ip)                         # self-signed cert; must exist before uvicorn starts
     headapi.install_head(_write_root_file, mesh_ip)  # Head API (board + SPA + auth + submit) LAN+mesh
+    headapi.install_karma(_write_root_file)      # Karma tick — ranks the queue by standing (same venv)
     build_base_sif()                             # Mantle-readable Pod image at the cluster-wide path
     # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because the
     # benchmark is a real Spawn: it needs slurmd up, the Pod image built, and rsyncd listening.

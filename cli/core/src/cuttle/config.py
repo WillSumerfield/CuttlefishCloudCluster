@@ -196,6 +196,14 @@ HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 CCC_IMAGES_DIR = Path("/opt/ccc/images")
 CCC_SIF = CCC_IMAGES_DIR / "base.sif"
 
+# --- Karma tick (Phase 4 slice 1): the service that ranks the queue by standing ---
+# A THIRD unit off the same venv and the same head.db (`ccc_head_api.tick`). Deliberately not a task
+# inside the Head API: the economy must not be able to wedge the API, nor the API the economy — and
+# slice 2's meter (sample Demand, settle ended Spawns) is this same tick. Runs as the Mantle, which
+# owns every job in the queue and so may re-nice any of them with no privilege at all.
+KARMA_SERVICE = "ccc-karma"
+KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
+
 # --- WSL Arm dashboard forward (⑥ convenience) ---
 # A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
 # Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head

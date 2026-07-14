@@ -97,6 +97,30 @@ def vram_constraint(vram_gb: int) -> str:
     return "|".join(f"vram{g}" for g in eligible)
 
 
+def pending() -> list[dict]:
+    """Queued Spawns only (id + current nice) — the Karma tick's whole view of Slurm.
+
+    `nice` is read back rather than remembered: it is the one piece of state the tick shares with an
+    operator, and Slurm is where they meet. A **negative** nice is a Queue bump — only an operator can
+    set one (Slurm refuses a negative nice from a job's owner, and every Spawn is owned by the Mantle),
+    so its mere presence is the bump flag. No bump table, no coordination state.
+    """
+    out = []
+    for j in _slurm_json("squeue", "--json").get("jobs", []):
+        if j.get("partition") != PARTITION or "PENDING" not in j.get("job_state", []):
+            continue
+        out.append({"id": _num(j.get("job_id")), "nice": _num(j.get("nice")) or 0})
+    return out
+
+
+def set_nice(job_id: int, nice: int) -> None:
+    """Lower a queued Spawn's priority. Needs no privilege at all: every Spawn runs as the Mantle, so
+    the Head *owns* every job in the queue, and setting your own job's nice is an owner's right (only a
+    negative nice — a boost — needs a Slurm operator)."""
+    subprocess.run(["scontrol", "update", f"JobId={job_id}", f"Nice={nice}"],
+                   capture_output=True, text=True, timeout=15, check=True)
+
+
 def spawns() -> list[dict]:
     """The live Spawn queue — pending/running jobs in the CCC partition. Completed Spawns drop out of
     squeue after MinJobAge; durable history waits for Phase 3 slurmdbd (see module docstring)."""

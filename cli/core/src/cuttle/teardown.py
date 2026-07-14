@@ -10,8 +10,8 @@ import shutil
 from . import config, system
 from .system import run
 
-_SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.RSYNCD_SERVICE,
-             "munge", "slurmctld", "slurmd"]
+_SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SERVICE,
+             config.RSYNCD_SERVICE, "munge", "slurmctld", "slurmd"]
 _ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / API / rsyncd / headscale
 _PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
 _NVIDIA_REPO_FILES = [
@@ -66,6 +66,13 @@ def remove_head_api() -> None:
     run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
     remove_mantle()  # created by provision_head_auth -> provision_mantle
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
+def remove_karma() -> None:
+    """Karma tick (Head-only, CCC-only). Already stopped/disabled by stop_daemons; the ledger lives in
+    head.db (under CCC_LIB) and is swept by remove_enroll_api."""
+    run(["rm", "-f", str(config.KARMA_UNIT)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -205,6 +212,7 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
     remove_enroll_api()
     remove_head_api()
+    remove_karma()
     remove_rsyncd()
     remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()

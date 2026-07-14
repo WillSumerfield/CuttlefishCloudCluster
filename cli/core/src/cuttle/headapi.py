@@ -117,3 +117,39 @@ def head_url(host: str) -> str:
     """https: the Head API carries passwords + session tokens (the Enroll API stays plain HTTP — it's
     mesh-only, and WireGuard already encrypts that path)."""
     return f"https://{host}:{config.HEAD_API_PORT}"
+
+
+# --- Karma tick (Phase 4 slice 1): the queue's ranking loop -----------------
+# A third unit off the SAME venv and the same head.db. Its own service, not a task inside the Head API:
+# the economy must not be able to wedge the API, nor the API the economy. Runs as the Mantle — which
+# owns every job in the queue, and so re-ranks them all with no privilege at all.
+
+def _karma_unit() -> str:
+    return f"""\
+[Unit]
+Description=CCC Karma (ranks the Spawn queue by each submitter's standing)
+# scontrol/squeue need munge to authenticate and slurmctld to answer. Neither being up is fatal — the
+# tick logs the failure and re-reads the world on the next pass — but don't race them at boot.
+After=munge.service slurmctld.service {config.HEAD_API_SERVICE}.service
+Wants=slurmctld.service
+
+[Service]
+User={config.HEAD_API_USER}
+Environment=CCC_PARTITION={config.PARTITION}
+Environment=CCC_HEAD_DB={config.HEAD_DB}
+ExecStart={config.API_VENV}/bin/python -m ccc_head_api.tick
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def install_karma(write_unit) -> None:
+    """Install + start the Karma tick. Assumes the shared venv (install_enroll) and head.db
+    (provision_head_auth) exist."""
+    write_unit(config.KARMA_UNIT, _karma_unit(), "644")
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", config.KARMA_SERVICE], sudo=True)
+    run(["systemctl", "restart", config.KARMA_SERVICE], sudo=True)
