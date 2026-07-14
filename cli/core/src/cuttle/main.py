@@ -177,7 +177,10 @@ def karma(ctx: typer.Context):
         karma_mod.standings()
 
 
-@karma_app.command("override")
+# ignore_unknown_options: a NEGATIVE amount is this command's main use, and `override bob -50000`
+# otherwise dies with `No such option: -5` — click reads any leading `-` as a flag. Without this the
+# only spelling that works is `override --note x bob -- -50000`, which nobody will ever guess.
+@karma_app.command("override", context_settings={"ignore_unknown_options": True})
 def karma_override(
     username: str = typer.Argument(..., help="The User whose Balance to change."),
     amount: float = typer.Argument(..., help="Karma to add (or remove, if negative). 1 Karma = one "
