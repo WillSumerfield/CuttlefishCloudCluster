@@ -156,9 +156,15 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
 
 
 def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
-           tar_path: Path, minutes: int, constraint: str, node: str | None = None) -> int:
-    """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row.
-    Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm (else Slurm picks).
+           tar_path: Path, minutes: int, constraint: str, node: str | None = None,
+           vram_gb: int = 0, hold: float | None = None) -> int:
+    """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row +
+    the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
+
+    `hold` is the Escrow quoted by the caller, or **None** for a Spawn nobody is charged for (an
+    Admin's — the Admin is outside the economy). It is written in the SAME transaction as the
+    Attribution row: a Spawn that existed without its hold, even briefly, would be one its submitter's
+    Share had not yet been charged for, which is precisely the window a queue-flooder wants.
 
     `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
     never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally.
@@ -186,7 +192,8 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     # sbatch — the job cannot start before sbatch has returned its id.
     (SPAWNS_DIR / str(job_id) / "outputs").mkdir(parents=True, exist_ok=True)
     with db.connect() as conn:
-        db.record_spawn(conn, job_id, user_id, script, uuid)
+        db.record_spawn(conn, job_id, user_id, script, uuid, minutes=minutes, gpus=gpu,
+                        vram_gb=vram_gb, node=node, hold=hold)
     return job_id
 
 

@@ -17,6 +17,7 @@ warning once. The session cookie is therefore Secure.
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -233,6 +234,8 @@ def karma_override(req: OverrideRequest, user: dict = Depends(current_user)) -> 
             balance = karma.override(conn, req.username, req.amount, req.note)
         except KeyError:
             raise HTTPException(404, f"no such user '{req.username}'")
+        except ValueError as e:
+            raise HTTPException(422, str(e))  # the target is an Admin — outside the economy
     return {"username": req.username, "balance": round(balance, 2)}
 
 
@@ -272,14 +275,31 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         if node not in known:
             raise HTTPException(422, f"unknown Arm '{node}' — known Arms: {', '.join(known)}")
     constraint = slurm.vram_constraint(int(meta["vram"]))
+
+    # Quote the Escrow here, where the fleet is known. The hold is what this Spawn would cost on the
+    # priciest Arm it could land on — and since node Weight ∝ 1/Power, that is also the Arm Slurm most
+    # wants to give it. An Admin is outside the economy, so their Spawn is never held (hold=None).
+    minutes, vram_gb, gpus = int(meta["minutes"]), int(meta["vram"]), int(meta.get("gpu", 1))
+    hold = None
+    if not user["is_admin"]:
+        elig = karma.eligible(slurm.arms(), {"node": node, "vram_gb": vram_gb, "gpus": gpus})
+        hold = karma.hold_for(minutes, gpus, elig, hours=_span(minutes))
+
     tar_path = await _spool_upload(request)
     try:
-        job_id = spawns_mod.submit(user["id"], meta["script"], int(meta.get("gpu", 1)),
+        job_id = spawns_mod.submit(user["id"], meta["script"], gpus,
                                    meta.get("args", []), meta.get("wandb_env", {}), tar_path,
-                                   int(meta["minutes"]), constraint, node)
+                                   minutes, constraint, node, vram_gb=vram_gb, hold=hold)
     finally:
         tar_path.unlink(missing_ok=True)
     return {"id": job_id}
+
+
+def _span(minutes: int) -> list[int]:
+    """The hours-of-day a Spawn starting now would run through — what the Tide is averaged over (slice
+    3). Capped at 24: past a full day it has met every hour there is."""
+    start = datetime.now(timezone.utc).hour
+    return [(start + i) % 24 for i in range(min(24, minutes // 60 + 1))]
 
 
 def _human(n: int) -> str:
