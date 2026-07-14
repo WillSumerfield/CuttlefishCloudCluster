@@ -193,8 +193,12 @@ Karma is **reserved** when a Spawn queues and only **moves** when it ends.
 
 ### Queue intervention
 *   **Singular Run Guarantee:** the economy **never** kills or blocks a running Spawn. It only re-ranks.
-*   **Starvation is impossible by construction:** priority is `priority/multifactor`, so the **Age**
-    factor keeps accruing. The worst-Karma user loses every race — and eventually runs anyway.
+*   **Poor standing is a handicap, not a gate:** priority is `priority/multifactor`, and the nice range
+    Karma spends equals the **Age** weight — so the worst standing in the cluster costs a Spawn at most
+    one `PriorityMaxAge` of *apparent queue age*. Slurm treats it as though it arrived later than it did.
+    This is **not** a starvation bound (Age saturates at `PriorityMaxAge`, and a rival can max its own Age
+    out too). Starvation is bounded **economically**: spending Karma is what makes you poor, so no User can
+    both hog the cluster and stay ahead of the queue. See `temp/KARMA.md` — "the priority floor".
 *   **Admin Override:** admin-only add/remove/**set** of a user's balance. The only flow that isn't a
     transfer (it creates or destroys Karma); Decay absorbs the imbalance.
 *   **Queue bump:** admin-only shove of one queued Spawn up the queue, via Slurm priority directly.

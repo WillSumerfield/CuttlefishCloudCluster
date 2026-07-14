@@ -3,8 +3,9 @@
 > Local glossary for the Karma economy. Root terms in [`../CONTEXT.md`](../CONTEXT.md).
 > Glossary only — no implementation details.
 
-The economy. Deploys on the **Head**, inside the Head API — which is already the single writer, and
-already the only thing that knows which **User** submitted which **Spawn**.
+The economy. Deploys on the **Head**, alongside the Head API — the only thing that knows which **User**
+submitted which **Spawn**, and the only identity that *owns* every Spawn in the queue and can therefore
+re-rank them.
 
 Karma **ranks Users; it never gates them.** Nothing is refused, held, or killed for want of Karma: a
 User with poor standing loses **contention**, and loses nothing at all when nobody is competing.
