@@ -4,6 +4,7 @@ import typer
 
 from . import auth as auth_mod
 from . import enroll as enroll_mod
+from . import karma as karma_mod
 from . import setup as setup_mod
 from . import spawns as spawns_mod
 from . import teardown as teardown_mod
@@ -13,6 +14,9 @@ arm_app = typer.Typer(no_args_is_help=True, help="Manage Arms (run on the Head).
 app.add_typer(arm_app, name="arm")
 user_app = typer.Typer(no_args_is_help=True, help="Manage users (run on the Head).")
 app.add_typer(user_app, name="user")
+# `cuttle karma` with no subcommand = the standings (invoke_without_command + the callback below).
+karma_app = typer.Typer(invoke_without_command=True, help="Karma: standings, override, queue bump.")
+app.add_typer(karma_app, name="karma")
 
 
 @app.callback()
@@ -160,6 +164,43 @@ def user_list():
 def user_remove(username: str = typer.Argument(..., help="User to delete (and their sessions).")):
     """Delete a user."""
     auth_mod.user_remove(username)
+
+
+@karma_app.callback()
+def karma(ctx: typer.Context):
+    """Show every User's standing: Balance, Escrow, Share, and the queue nice it implies.
+
+    Everyone's, not just yours — Karma ranks Users against each other, so a Balance in isolation says
+    nothing. Karma never gates: poor standing loses contention, and loses nothing on an idle cluster.
+    """
+    if ctx.invoked_subcommand is None:
+        karma_mod.standings()
+
+
+@karma_app.command("override")
+def karma_override(
+    username: str = typer.Argument(..., help="The User whose Balance to change."),
+    amount: float = typer.Argument(..., help="Karma to add (or remove, if negative). 1 Karma = one "
+                                             "TFLOP-hour of device time."),
+    note: str = typer.Option(None, "--note", help="Why — recorded in the ledger."),
+):
+    """ADMIN: add/remove Karma from a User's Balance. Changes *standing*, so it is felt in every future
+    contention (and Decay absorbs it over ~a month). To speed up one Spawn once, use `karma bump`."""
+    karma_mod.override(username, amount, note)
+
+
+@karma_app.command("bump")
+def karma_bump(
+    spawn_id: int = typer.Argument(..., help="Spawn (Slurm job) id — must still be queued."),
+    clear: bool = typer.Option(False, "--clear", help="Undo the bump; the economy takes it back."),
+):
+    """ADMIN, ON THE HEAD: shove one queued Spawn up the queue. Touches no one's Karma and leaves no
+    ledger row — it bypasses the economy rather than participating in it. Bump again to go further.
+
+    Runs here rather than over the API because a bump is a negative nice, and Slurm grants those only
+    to an operator — an authority the LAN-facing API deliberately does not have.
+    """
+    karma_mod.bump(spawn_id, clear=clear)
 
 
 @app.command()
