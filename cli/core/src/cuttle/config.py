@@ -31,12 +31,26 @@ GPU_DEVICE = "/dev/nvidia0"
 # the *owner* of every job in the queue, and lowering your own job's priority is an owner's right.
 # (Only NEGATIVE nice — a boost — needs an operator; that's the admin Queue bump, which goes through
 # sudo. See docs/DesignDoc.md §5.)
-NICE_MAX = 10000  # nice = (1 - Share) * NICE_MAX, so standing spans [0, NICE_MAX]
-# Age must be able to out-run the worst nice, or a poor-standing User could starve. Equal weights mean
-# a maximally-niced Spawn overtakes a fresh un-niced one after PriorityMaxAge — Karma decides who goes
-# first, never who goes at all.
+#
+# Treat a Spawn's priority as a SIGNED int32 whose zero sits at 2^31. Slurm's priority is a `uint32_t`
+# and it clamps: with no base, a *fresh* Spawn (age factor 0) computes `-nice`, which underflows to the
+# floor — so every new Spawn from every User in less than perfect standing would tie there, and Karma
+# would rank correctly, push nice successfully, and change nothing. The flat base is what keeps the
+# subtraction off the rail. PriorityWeightPartition is the only base available without slurmdbd, and
+# with a single partition Slurm normalizes the partition factor to exactly 1.0 for every job — so it
+# adds a constant, reorders nobody, and exists purely to lift the range clear of zero.
+PRIORITY_BASE = 2**31          # PriorityWeightPartition — the flat base under every Spawn
+NICE_MAX = 2**16               # nice = (1 - Share) * NICE_MAX, so standing spans [0, NICE_MAX]
+# Equal ranges for nice and age, so poor standing costs a Spawn AT MOST a day of apparent queue age —
+# Slurm treats it as though it arrived later than it did. Bounded and intelligible. It is NOT a
+# starvation bound (age saturates at PRIORITY_MAX_AGE; a rival can max its age out too) — that bound is
+# economic: spending Karma is what makes you poor. See temp/KARMA.md "the priority floor".
 PRIORITY_WEIGHT_AGE = NICE_MAX
-PRIORITY_MAX_AGE = "1-0"  # 1 day
+PRIORITY_MAX_AGE = "1-0"       # 1 day — the ramp over which waiting earns back a full nice range
+# One admin Queue bump. Bigger than age + nice combined, so a bumped Spawn beats anything the economy
+# can produce; negative nice is operator-only, which is what makes it a flag needing no state of its own
+# (the tick skips any job with nice < 0 — only an operator could have set it).
+BUMP_STEP = 2**17
 
 # **Power**: measured throughput, in fp32 TFLOP/s, of one device — benchmarked once, at enroll, by a
 # Head-submitted Spawn running inside the Pod (templates.BENCH_PY). Intrinsic to the card; the other

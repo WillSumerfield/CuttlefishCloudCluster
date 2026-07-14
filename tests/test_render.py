@@ -46,20 +46,62 @@ class TestSlurmConf:
         assert directives(templates.render_slurm_conf("100.99.0.1"))["PriorityType"] \
             == "priority/multifactor"
 
-    def test_age_can_outrun_the_worst_nice(self, fake_host):
-        """'Karma never gates' has to be true at the scheduler, not just in the docs. The worst-standing
-        User is niced to the back of the queue — but must still age to the front of it. Weighting age at
-        least as heavily as the nice range is what makes starvation impossible by construction."""
+    def test_poor_standing_costs_at_most_one_ramp_of_queue_age(self, fake_host):
+        """Nice and age must span the SAME range, so the worst standing in the cluster costs a Spawn at
+        most one PriorityMaxAge of apparent queue age — Slurm treats it as though it arrived a day later
+        than it did. If the nice range outgrew the age weight, waiting could no longer buy back what
+        standing took, and poor standing would become a gate rather than a handicap.
+
+        (This is a bound on the handicap, NOT a starvation bound: age saturates at PriorityMaxAge, and a
+        rival can max its own age out too. Starvation is bounded economically — spending Karma is what
+        makes you poor. See temp/KARMA.md.)
+        """
         d = directives(templates.render_slurm_conf("100.99.0.1"))
         assert int(d["PriorityWeightAge"]) >= config.NICE_MAX
         assert d["PriorityMaxAge"]
 
+    def test_a_fresh_spawn_never_hits_the_priority_floor(self, fake_host):
+        """The bug that would have silently killed the whole economy.
+
+        Slurm's priority is a `uint32_t` and it clamps at 0. The weighted sum of a *fresh* Spawn has
+        age_factor 0, so without a flat base it computes `-nice` — and every fresh Spawn from every
+        User below perfect standing would underflow onto the floor, all tied. Karma would have ranked
+        correctly, pushed the nice successfully, and changed nothing: the same silent death as
+        priority/basic ignoring nice.
+
+        So the worst case the economy can produce — brand new Spawn, worst possible standing — must
+        still land clear of zero.
+        """
+        d = directives(templates.render_slurm_conf("100.99.0.1"))
+        base, age = int(d["PriorityWeightPartition"]), int(d["PriorityWeightAge"])
+        assert base - config.NICE_MAX > 0          # fresh + worst standing: age contributes nothing
+        assert base + age + config.NICE_MAX < 2**32  # ...and the other rail is just as fatal
+
+    def test_a_bump_outranks_anything_the_economy_can_do(self, fake_host):
+        """An admin Queue bump is one negative step of nice, and it has to actually win.
+
+        Worst case for the bumped Spawn: it was submitted a second ago, so age gives it nothing. Best
+        case for its rival: perfect standing (nice 0) and fully aged. Nice can only ever *lower* a
+        rival, so beating that one is beating all of them — which makes the whole requirement
+        `BUMP_STEP > PriorityWeightAge`.
+        """
+        d = directives(templates.render_slurm_conf("100.99.0.1"))
+        assert config.BUMP_STEP > int(d["PriorityWeightAge"])
+
     def test_only_age_and_karma_rank_the_queue(self, fake_host):
         """Every other factor is zeroed. Fairshare especially: it would need slurmdbd, and we compute
-        standing ourselves — two schedulers disagreeing about priority is worse than either alone."""
-        d = directives(templates.render_slurm_conf("100.99.0.1"))
-        for factor in ("Fairshare", "JobSize", "Partition", "QOS"):
+        standing ourselves — two schedulers disagreeing about priority is worse than either alone.
+
+        Partition is NOT in this list: it is the flat base (see above), not a ranking factor. With a
+        single partition Slurm normalizes its factor to exactly 1.0 for every job, so it adds a
+        constant and reorders nobody — which is also why a SECOND partition would silently scale the
+        base down, and why there is exactly one.
+        """
+        conf = templates.render_slurm_conf("100.99.0.1")
+        d = directives(conf)
+        for factor in ("Fairshare", "JobSize", "QOS"):
             assert d[f"PriorityWeight{factor}"] == "0"
+        assert len([ln for ln in conf.splitlines() if ln.startswith("PartitionName=")]) == 1
 
     def test_head_node_advertises_its_vram(self, fake_host):
         """The Head's co-located Arm is an Arm like any other, and must be eligible like one."""

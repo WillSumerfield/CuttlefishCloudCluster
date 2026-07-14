@@ -42,17 +42,30 @@ SelectTypeParameters=CR_Core
 # Mantle). But nice is only *read* by priority/multifactor: the default priority/basic is pure FIFO and
 # ignores it entirely, so without this line Karma would have no effect on the queue at all.
 #
-# Age is the only factor we let Slurm compute; every other weight is zeroed so the queue is exactly
-# "Karma, plus time waited". Age is what makes 'Karma never gates' true at the scheduler: the
-# worst-standing User is niced to the back of the queue, but ages to the front of it within
-# PriorityMaxAge regardless. Starvation is impossible by construction, not by policy.
+# priority = PriorityWeightPartition*1.0 + PriorityWeightAge*age_factor - nice, and NOTHING else:
+#
+#   PriorityWeightPartition is a FLAT BASE, not a factor. Slurm's priority is a uint32_t and it clamps
+#   at zero, so without a base a *fresh* Spawn (age_factor 0) computes -nice and lands on the floor —
+#   as would every other fresh Spawn from every User below perfect standing, all tied. With one
+#   partition Slurm normalizes the partition factor to exactly 1.0 for every job, so this adds a
+#   constant, reorders nobody, and exists only to keep the subtraction off the rail. (It is therefore
+#   load-bearing on there being exactly ONE partition — a second one with a higher PriorityJobFactor
+#   would silently scale the base down. Guarded by a test.)
+#
+#   PriorityWeightAge == NICE_MAX means nice and age span the same range, so poor standing makes Slurm
+#   treat a Spawn as though it ARRIVED UP TO A DAY LATER than it did. That is the whole handicap, and
+#   it is bounded. It is NOT a starvation bound: age saturates at PriorityMaxAge, so past the cap a
+#   maximally-niced Spawn ties a brand-new best-standing rival but loses to one that has waited a
+#   minute. The bound on starvation is ECONOMIC — spending Karma is what makes you poor, so nobody can
+#   hog the cluster and stay ahead of the queue. Deliberate; see temp/KARMA.md "the priority floor".
+#
 # (Fairshare stays 0 — it needs slurmdbd, and we compute standing ourselves. See docs/DesignDoc.md §5.)
 PriorityType=priority/multifactor
+PriorityWeightPartition={base}
 PriorityWeightAge={age_weight}
 PriorityMaxAge={max_age}
 PriorityWeightFairshare=0
 PriorityWeightJobSize=0
-PriorityWeightPartition=0
 PriorityWeightQOS=0
 
 GresTypes=gpu
@@ -212,6 +225,7 @@ def render_slurm_conf(mesh_ip: str) -> str:
         mesh_ip=mesh_ip,
         max_nodes=config.MAX_NODE_COUNT,
         tree_width=config.TREE_WIDTH,
+        base=config.PRIORITY_BASE,
         age_weight=config.PRIORITY_WEIGHT_AGE,
         max_age=config.PRIORITY_MAX_AGE,
         sockets=sockets,
