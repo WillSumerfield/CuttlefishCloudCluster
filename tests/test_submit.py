@@ -6,6 +6,8 @@ admin-only.
 """
 
 import json
+import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -49,18 +51,23 @@ class FakeUser(dict):
     pass
 
 
-def client(monkeypatch, is_admin: bool, tmp_path=None) -> TestClient:
+def client(monkeypatch, is_admin: bool) -> TestClient:
     """A Head API with a logged-in caller and no Slurm, no disk — but a real (empty) database.
 
-    A non-admin submit reads the **Tide** to quote its Escrow, so head.db is no longer optional here.
-    Empty is the interesting state anyway: with no Demand history every bucket forecasts 1.0, and the
-    quote must come out exactly as it did before the Tide existed.
+    Every submit quotes its Escrow through karma.quote_hold, which reads the **Tide** from head.db, so
+    the store is no longer optional even for an Admin (whose hold is None — but the route still opens the
+    connection, exactly as it does in production, where the Head always has head.db). Empty is the
+    interesting state: with no Demand history every bucket forecasts 1.0, so the quote must come out
+    exactly as it did before the Tide existed.
     """
     user = {"id": 1, "username": "alice", "is_admin": is_admin, "must_change_password": False}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
-    if tmp_path is not None:
-        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-        db.ensure_schema()
+    # A fresh empty db every time. Not optional: the route reads the Tide from head.db even for an Admin
+    # (whose hold is None). Tests that need rows (the cancel tests) seed AFTER this, into this same path.
+    # Always a temp file, never db.DB_PATH's default — on a live Head that default is a real ccc-owned
+    # store this process cannot read.
+    monkeypatch.setattr(db, "DB_PATH", Path(tempfile.mkdtemp()) / "head.db")
+    db.ensure_schema()
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
     monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
     monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
@@ -79,8 +86,8 @@ def _clear_overrides():
 
 
 class TestSubmitRequiresDeclarations:
-    def test_happy_path(self, monkeypatch, tmp_path):
-        r = post(client(monkeypatch, is_admin=False, tmp_path=tmp_path), minutes=60, vram=24)
+    def test_happy_path(self, monkeypatch):
+        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24)
         assert r.status_code == 200
         assert r.json() == {"id": 4242}
 
@@ -138,3 +145,51 @@ class TestCliRequiresTimeAndVram:
         r = self.run(*args)
         assert r.exit_code != 0
         assert "Missing option" in r.output
+
+
+class TestCancel:
+    """DELETE /spawns/{id} — the escape that CCC never had. You may end your own; an Admin may end
+    anyone's. Attribution is the ledger's (every Spawn runs as the Mantle), so authorization is a row
+    lookup, not Slurm's owner field."""
+
+    def _seed(self, owner_id: int):
+        """Insert an owner and their Spawn into whatever db `client()` just stood up. Called AFTER the
+        client, so it writes to the same DB_PATH the handler will read."""
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                "VALUES (?,?,?,?,0)", (owner_id, f"u{owner_id}", 0, "x"))
+            db.record_spawn(conn, job_id=77, user_id=owner_id, script="train.py", staging_uuid="u")
+            conn.commit()
+
+    def test_owner_may_cancel(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)  # caller is id 1
+        self._seed(owner_id=1)
+        killed = []
+        monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
+        r = c.delete("/spawns/77")
+        assert r.status_code == 204
+        assert killed == [77]
+
+    def test_stranger_may_not_cancel(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)
+        self._seed(owner_id=2)  # someone else's Spawn
+        monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
+        r = c.delete("/spawns/77")
+        assert r.status_code == 403
+
+    def test_admin_may_cancel_anyones(self, monkeypatch):
+        c = client(monkeypatch, is_admin=True)
+        self._seed(owner_id=2)
+        killed = []
+        monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
+        r = c.delete("/spawns/77")
+        assert r.status_code == 204
+        assert killed == [77]
+
+    def test_unknown_spawn_is_404(self, monkeypatch):
+        c = client(monkeypatch, is_admin=True)
+        self._seed(owner_id=1)
+        monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
+        r = c.delete("/spawns/999")
+        assert r.status_code == 404
