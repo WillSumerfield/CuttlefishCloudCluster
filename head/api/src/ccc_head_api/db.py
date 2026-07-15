@@ -371,14 +371,27 @@ def spawn_needs(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlit
 # --- Karma ledger (slice 1) -------------------------------------------------
 
 def record_karma(conn: sqlite3.Connection, kind: str, amount: float, from_user: int | None,
-                 to_user: int | None, job_id: int | None = None, note: str | None = None) -> None:
+                 to_user: int | None, job_id: int | None = None, note: str | None = None,
+                 at: str | None = None) -> None:
     """Append one Karma event. `amount` is always positive — direction is carried by which side is
     NULL: `from` NULL = conjured, `to` NULL = destroyed, both set = a Transfer (and a Transfer is the
-    only kind that leaves Σ balances at 0)."""
-    conn.execute(
-        "INSERT INTO karma_ledger (kind, amount, from_user, to_user, job_id, note) VALUES (?,?,?,?,?,?)",
-        (kind, amount, from_user, to_user, job_id, note),
-    )
+    only kind that leaves Σ balances at 0).
+
+    `at` overrides the row's timestamp, and it is **not** cosmetic: Decay reads it, so the Fake Cluster
+    (slice 4) must be able to say a settlement happened in a simulated week rather than right now. In
+    production it is None and SQLite stamps the wall clock."""
+    if at is None:
+        conn.execute(
+            "INSERT INTO karma_ledger (kind, amount, from_user, to_user, job_id, note) "
+            "VALUES (?,?,?,?,?,?)",
+            (kind, amount, from_user, to_user, job_id, note),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO karma_ledger (at, kind, amount, from_user, to_user, job_id, note) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (at, kind, amount, from_user, to_user, job_id, note),
+        )
     conn.commit()
 
 
@@ -434,27 +447,31 @@ def record_demand(conn: sqlite3.Connection, at: str, demand: dict[str, float]) -
     conn.commit()
 
 
-def prune_demand(conn: sqlite3.Connection, days: int) -> int:
+def _window_start(days: int, now: datetime | None = None) -> str:
+    """The cutoff of a rolling window, as an ISO string. Computed in Python rather than SQL `'now'` so
+    the Fake Cluster (slice 4) can slide the window through simulated time; `now=None` is the wall clock,
+    which is every production caller."""
+    return ((now or _now()) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def prune_demand(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> int:
     """History, not evidence: a sample older than the Tide's window forecasts nothing and prices
     nothing."""
-    cur = conn.execute(
-        "DELETE FROM karma_demand WHERE at < strftime('%Y-%m-%dT%H:%M:%SZ','now',?)", (f"-{days} days",)
-    )
+    cur = conn.execute("DELETE FROM karma_demand WHERE at < ?", (_window_start(days, now),))
     conn.commit()
     return cur.rowcount
 
 
-def demand_by_hour(conn: sqlite3.Connection, days: int) -> list[sqlite3.Row]:
+def demand_by_hour(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> list[sqlite3.Row]:
     """The **Tide**: mean Demand per Arm per hour-of-day, over a rolling window. 24 buckets per Arm."""
     return conn.execute(
         "SELECT node, CAST(strftime('%H', at) AS INTEGER) AS hour, AVG(demand) AS demand "
-        "FROM karma_demand WHERE at >= strftime('%Y-%m-%dT%H:%M:%SZ','now',?) "
-        "GROUP BY node, hour",
-        (f"-{days} days",),
+        "FROM karma_demand WHERE at >= ? GROUP BY node, hour",
+        (_window_start(days, now),),
     ).fetchall()
 
 
-def demand_series(conn: sqlite3.Connection, days: int) -> list[sqlite3.Row]:
+def demand_series(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> list[sqlite3.Row]:
     """Demand over *clock* time per Arm — the Dashboard's chart, and the only surface the Tide is ever
     seen through (a User reads its shape and infers the quiet hours; nothing quotes them a forecast).
 
@@ -462,9 +479,8 @@ def demand_series(conn: sqlite3.Connection, days: int) -> list[sqlite3.Row]:
     """
     return conn.execute(
         "SELECT node, strftime('%Y-%m-%dT%H:00:00Z', at) AS at, AVG(demand) AS demand "
-        "FROM karma_demand WHERE at >= strftime('%Y-%m-%dT%H:%M:%SZ','now',?) "
-        "GROUP BY node, at ORDER BY at",
-        (f"-{days} days",),
+        "FROM karma_demand WHERE at >= ? GROUP BY node, at ORDER BY at",
+        (_window_start(days, now),),
     ).fetchall()
 
 

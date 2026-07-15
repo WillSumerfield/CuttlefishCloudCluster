@@ -17,7 +17,6 @@ warning once. The session cookie is therefore Secure.
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -153,6 +152,27 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
         raise HTTPException(404, f"no outputs for spawn {job_id}")
     return Response(data, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
+
+
+@app.delete("/spawns/{job_id}", status_code=204)
+def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
+    """End a live Spawn early. A User may cancel their OWN outstanding Spawn; an Admin may cancel
+    anyone's — Attribution is the ledger's, not Slurm's (every Spawn runs as the Mantle).
+
+    Closes the gap FRONTEND.md names most loudly: until now nothing in CCC could stop a job from any
+    client, and under Karma a User was *paying* until `--time` expired. Settles for the seconds
+    actually held, by the Karma tick, when the cancelled Spawn drops out of squeue — see slurm.cancel.
+    """
+    with db.connect() as conn:
+        row = db.get_spawn(conn, job_id)
+    # Only Spawns the Head actually recorded can be cancelled through here. An id squeue knows but the
+    # ledger doesn't is not a CCC Spawn (or predates attribution); refuse rather than scancel blindly.
+    if row is None:
+        raise HTTPException(404, f"unknown spawn {job_id}")
+    if not user["is_admin"] and row["user_id"] != user["id"]:
+        raise HTTPException(403, "not your spawn")
+    slurm.cancel(job_id)
+    return Response(status_code=204)
 
 
 # --- auth routes ------------------------------------------------------------
@@ -304,18 +324,14 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
             raise HTTPException(422, f"unknown Arm '{node}' — known Arms: {', '.join(known)}")
     constraint = slurm.vram_constraint(int(meta["vram"]))
 
-    # Quote the Escrow here, where the fleet is known. The hold is what this Spawn would cost on the
-    # priciest Arm it could land on — and since node Weight ∝ 1/Power, that is also the Arm Slurm most
-    # wants to give it. An Admin is outside the economy, so their Spawn is never held (hold=None).
+    # Quote the Escrow here, where the fleet is known. quote_hold is the one place a Spawn is priced —
+    # shared verbatim with the Fake Cluster (slice 4) so the test cannot drift from what really runs. It
+    # returns None for an Admin (outside the economy), else the hold over the priciest eligible Arm at
+    # the Tide of the hours the Spawn would span.
     minutes, vram_gb, gpus = int(meta["minutes"]), int(meta["vram"]), int(meta.get("gpu", 1))
-    hold = None
-    if not user["is_admin"]:
-        elig = karma.eligible(slurm.arms(), {"node": node, "vram_gb": vram_gb, "gpus": gpus})
-        with db.connect() as conn:
-            # The Tide (slice 3): each Arm's mean Demand at the hours this Spawn would span, so a Spawn
-            # queued into the usual evening rush is quoted at the evening's price. A cold cluster has no
-            # history and every bucket forecasts 1.0, which makes this exactly slice 2's flat quote.
-            hold = karma.hold_for(minutes, gpus, elig, hours=_span(minutes), tides=karma.tides(conn))
+    need = {"node": node, "vram_gb": vram_gb, "gpus": gpus}
+    with db.connect() as conn:
+        hold = karma.quote_hold(conn, slurm.arms(), need, minutes, gpus, user["is_admin"])
 
     tar_path = await _spool_upload(request)
     try:
@@ -325,13 +341,6 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     finally:
         tar_path.unlink(missing_ok=True)
     return {"id": job_id}
-
-
-def _span(minutes: int) -> list[int]:
-    """The hours-of-day a Spawn starting now would run through — what the Tide is averaged over (slice
-    3). Capped at 24: past a full day it has met every hour there is."""
-    start = datetime.now(timezone.utc).hour
-    return [(start + i) % 24 for i in range(min(24, minutes // 60 + 1))]
 
 
 def _human(n: int) -> str:

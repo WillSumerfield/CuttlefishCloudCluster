@@ -63,7 +63,7 @@ DEMAND_MAX = 8.0
 DEMAND_RETENTION_DAYS = 30
 
 
-def tides(conn: sqlite3.Connection) -> dict[str, dict[int, float]]:
+def tides(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, dict[int, float]]:
     """The **Tide**: each Arm's mean Demand by hour of the day, over the last DEMAND_RETENTION_DAYS.
 
     24 buckets per Arm, and no more. Hour-of-week (168) would be the "obvious" refinement and is the
@@ -75,7 +75,7 @@ def tides(conn: sqlite3.Connection) -> dict[str, dict[int, float]]:
     observations in the thinnest) — one `GROUP BY` away.
     """
     t: dict[str, dict[int, float]] = defaultdict(dict)
-    for r in db.demand_by_hour(conn, DEMAND_RETENTION_DAYS):
+    for r in db.demand_by_hour(conn, DEMAND_RETENTION_DAYS, now):
         t[r["node"]][r["hour"]] = r["demand"]
     return t
 
@@ -175,6 +175,30 @@ def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None 
     return (minutes / 60.0) * gpus * max(forecasts, default=0.0)
 
 
+def span_hours(minutes: int, start_hour: int) -> list[int]:
+    """The hours-of-day a Spawn starting at `start_hour` and running `minutes` would touch, capped at 24
+    (a Spawn longer than a day already spans every bucket, so the Tide's mean is the whole day)."""
+    return [(start_hour + h) % 24 for h in range(min(24, minutes // 60 + 1))]
+
+
+def quote_hold(conn: sqlite3.Connection, arms: list[dict], need: dict, minutes: int, gpus: int,
+               is_admin: bool, now: datetime | None = None) -> float | None:
+    """The Escrow to place on a Spawn at submit — **the** pricing decision, in one place.
+
+    Extracted so the real `/submit` route and the Fake Cluster (slice 4) quote a Spawn through the SAME
+    code. If the simulation re-derived the hold in its own harness, a bug in the quote that actually runs
+    in production would be invisible to the test — the circularity we took care to avoid on the scheduler.
+
+    Returns **None** for an Admin: outside the economy, so never held. Otherwise the hold over the
+    eligible set, at the Tide of the hours the Spawn would span.
+    """
+    if is_admin:
+        return None
+    now = now or datetime.now(timezone.utc)
+    elig = eligible(arms, need)
+    return hold_for(minutes, gpus, elig, hours=span_hours(minutes, now.hour), tides=tides(conn, now))
+
+
 def _parse(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
@@ -264,13 +288,16 @@ def nice_for(share_value: float) -> int:
     return round((1.0 - share_value) * NICE_MAX)
 
 
-def standings(conn: sqlite3.Connection) -> list[dict]:
+def standings(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict]:
     """Every User's standing, best first — the payload of `GET /karma` and the tick's input alike.
 
     Public to any authed caller by design: a Balance is meaningless in isolation. Standing only exists
     against everyone else's, so a User who cannot see the others cannot see their own.
+
+    `now` decays every Balance to that instant; None is the wall clock. The Fake Cluster (slice 4) passes
+    simulated time so the queue it ranks is the queue the economy would rank at that simulated moment.
     """
-    bal = balances(conn)
+    bal = balances(conn, now)
     esc = db.escrow_totals(conn)
     # Admins are not economic actors: a role for RUNNING the cluster, not using it. They earn no Karma
     # (an Arm they own is a Commons Arm and its Karma is destroyed), pay none, and hold no Balance — so
@@ -286,8 +313,8 @@ def standings(conn: sqlite3.Connection) -> list[dict]:
     return sorted(out, key=lambda u: -u["share"])
 
 
-def nice_by_user(conn: sqlite3.Connection) -> dict[int, int]:
-    return {u["user_id"]: u["nice"] for u in standings(conn)}
+def nice_by_user(conn: sqlite3.Connection, now: datetime | None = None) -> dict[int, int]:
+    return {u["user_id"]: u["nice"] for u in standings(conn, now)}
 
 
 def override(conn: sqlite3.Connection, username: str, amount: float, note: str | None = None) -> float:

@@ -81,7 +81,7 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
         db.accrue(conn, job["id"], node, esc["accrued"] + add, now.strftime(_TS))
 
 
-def _settle(conn, live_ids: set[int], arms: dict[str, dict]) -> int:
+def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> int:
     """Move the Karma of every Spawn that has ended, and release its claim.
 
     One ledger row, `amount = accrued` — what it really cost, never the hold. The counterparty is the
@@ -106,33 +106,38 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict]) -> int:
             if row and not row["is_admin"]:      # Admin-owned == Commons: destroy, don't credit
                 owner_id = row["id"]
         db.record_karma(conn, "settle", esc["accrued"], esc["user_id"], owner_id,
-                        job_id=esc["job_id"])
+                        job_id=esc["job_id"], at=now.strftime(_TS))
         db.clear_escrow(conn, esc["job_id"])
         settled += 1
     return settled
 
 
-def once() -> tuple[int, int]:
-    """One pass. Returns (Spawns re-niced, Spawns settled)."""
+def once(now: datetime | None = None) -> tuple[int, int]:
+    """One pass. Returns (Spawns re-niced, Spawns settled).
+
+    `now` is the pass's clock — injected by the Fake Cluster (slice 4) to run this exact function across
+    simulated weeks, None on the real service. It flows into every timestamp this pass writes (the Demand
+    sample, an accrual, a settlement) and every Balance it decays, so a whole simulated run is internally
+    consistent about when it happened."""
     jobs = slurm.queue()
     arms = {a["name"]: a for a in slurm.arms()}
-    now = _now()
+    now = now or _now()
     ids = [j["id"] for j in jobs]
 
     with db.connect() as conn:
         needs = db.spawn_needs(conn, ids)
         demand = karma.demand_by_arm(list(arms.values()), jobs, needs)
         db.record_demand(conn, now.strftime(_TS), demand)
-        db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS)
+        db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS, now)
 
         _meter(conn, jobs, arms, demand, needs, now)
-        settled = _settle(conn, set(ids), arms)
+        settled = _settle(conn, set(ids), arms, now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,
         # and a settlement moves their Balance. Both change the nice we are about to push, and pushing
         # a stale one would leave the queue a tick behind the economy that ranks it.
         owners = db.spawn_owners(conn, ids)
-        nice = karma.nice_by_user(conn)
+        nice = karma.nice_by_user(conn, now)
 
     changed = 0
     for job in jobs:
