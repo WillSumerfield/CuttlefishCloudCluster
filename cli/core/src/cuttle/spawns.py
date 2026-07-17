@@ -67,7 +67,7 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
     normal outcome, not a malformed command.
     """
     url = auth._head_url()
-    req = urllib.request.Request(f"{url}{path}")
+    req = urllib.request.Request(f"{url}/api{path}")  # /api: see auth._api
     req.add_header("Authorization", f"Bearer {auth._load_token()}")
     try:
         with urllib.request.urlopen(req, timeout=30, context=tls.context(url)) as r:
@@ -100,7 +100,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
             "wandb_env": settings.wandb_env(project, entity)}
     url = auth._head_url()
     req = urllib.request.Request(
-        f"{url}/submit", data=tar_bytes, method="POST",
+        f"{url}/api/submit", data=tar_bytes, method="POST",
         headers={"Authorization": f"Bearer {auth._load_token()}",
                  "X-CCC-Meta": json.dumps(meta), "Content-Type": "application/gzip"})
     try:

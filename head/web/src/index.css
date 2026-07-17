@@ -14,6 +14,7 @@
   --font-mono: "DM Mono", ui-monospace, monospace;
 
   --color-abyss: var(--abyss);
+  --color-well: var(--well);
   --color-body: var(--body);
   --color-shoal: var(--shoal);
   --color-ink: var(--ink);
@@ -25,13 +26,25 @@
   --color-gold: var(--gold);
   --color-gold-hi: var(--gold-hi);
 
+  --color-irid-dim: var(--irid-dim);
+  --color-irid-low: var(--irid-low);
+  --color-irid-mid: var(--irid-mid);
+  --color-irid-high: var(--irid-high);
+
+  --color-alarm: var(--alarm);
+
   --radius-surface: 14px;
   --radius-control: 10px;
+
+  /* Muscular, never linear. */
+  --ease-swim: cubic-bezier(0.4, 0.14, 0.3, 1);
 }
 
 :root {
-  /* Deep water — every dark carries blue-green ink */
+  /* Deep water — every dark carries blue-green ink. Never a neutral grey. */
   --abyss: oklch(0.14 0.03 205);
+  --deep: oklch(0.14 0.034 202); /* the bottom of a surface, sinking back toward the abyss */
+  --well: oklch(0.18 0.032 203); /* a recess: log panes, code, empty states */
   --body: oklch(0.26 0.038 200);
   --shoal: oklch(0.34 0.045 195);
 
@@ -44,6 +57,21 @@
   --bronze: oklch(0.55 0.095 72);
   --gold: oklch(0.8 0.145 82);
   --gold-hi: oklch(0.9 0.16 88);
+
+  /*
+   * Iridescence — machines. Never people.
+   *
+   * CHROMA IS THE AXIS: the hue says "a machine", the saturation says "how much". That is what lets
+   * one family carry both a barely-there live-state chip and the Tide's loudest hour without either
+   * blunting the other. `--irid-dim` is a member of this ramp, not a separate idea.
+   */
+  --irid-dim: oklch(0.66 0.035 195); /* a machine is doing something. State, not Demand. */
+  --irid-low: oklch(0.68 0.1 180); /* teal   — Demand: quiet, Low Tide */
+  --irid-mid: oklch(0.78 0.12 210); /* cyan   — Demand: contended */
+  --irid-high: oklch(0.62 0.17 285); /* violet — Demand: fought over, High Tide */
+
+  /* Failed Spawns, Retract, rogue-actor flag. NOTHING else may ever be red. */
+  --alarm: oklch(0.62 0.2 28);
 }
 
 /* No `* { border: 0 }` reset yet — the legacy App.tsx still draws its cards with borders. */
@@ -58,6 +86,13 @@
    */
   html {
     background-color: var(--abyss);
+    /*
+     * The Shoal's canvas deliberately overhangs its layout box so its edge can dissolve outside it.
+     * That overhang runs past the viewport, which would otherwise open a horizontal scrollbar over
+     * empty transparent pixels. `clip` (not `hidden`) discards it without creating a scroll
+     * container, so the fixed shader behind is unaffected.
+     */
+    overflow-x: clip;
   }
   body {
     background-color: transparent;
@@ -88,23 +123,76 @@
     inset: 0;
     z-index: -1;
     border-radius: var(--radius-surface);
+    /*
+     * Lit along the top edge, sinking toward --deep at the bottom: the surface descends into dark.
+     *
+     * `--sink` is how far down the ramp a given card actually travels: 100% reaches full --deep,
+     * 40% only gets partway there. Set it per card — a tall card (the ledger) can afford to sink
+     * the whole way; a short one goes murky too fast at the same setting.
+     *
+     * Read via `var(--sink, 100%)`, NOT declared here: a bare `--sink: 100%` on this rule would be a
+     * direct declaration on the ::before itself, which always wins over whatever a card's own
+     * `[--sink:30%]` sets on the PARENT — inheritance only kicks in when nothing here claims the
+     * property at all. Same reasoning applies to --fade-x/--fade-y/--fade-mode below.
+     */
     background:
       radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--shoal) 55%, transparent) 0%, transparent 60%),
-      linear-gradient(180deg, color-mix(in oklab, var(--body) 90%, var(--shoal) 10%) 0%, var(--body) 100%);
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--shoal) 35%, var(--body)) 0%,
+        var(--body) 25%,
+        color-mix(in oklab, var(--deep) var(--sink, 100%), var(--body)) 100%
+      );
     /*
-     * Two crossed linear fades, intersected — an even inset falloff on all four edges.
+     * Two crossed linear fades — an even inset falloff on all four edges.
      * NOT a radial gradient: a radial mask is an ellipse scaled to the element, so on a wide card its
      * vertical radius overshoots the card and the top/bottom edges never fade at all.
+     *
+     * TUNING (override any of these per-card with e.g. `[--fade-x:120px]`):
+     *
+     *   --fade      both axes at once. The simple knob.
+     *   --fade-x    left/right depth on its own. Default 50px.
+     *   --fade-y    top/bottom depth on its own. Default 100px. A wide short card usually wants these
+     *               to differ: the same px depth is a much bigger FRACTION of a short edge.
+     *   --fade-mode how the two layers combine, which is entirely a statement about the CORNERS:
+     *
+     *       intersect  alphas MULTIPLY. A corner is faded by both layers at once, so it goes
+     *                  transparent much faster than the edges — the card reads as rounded-off,
+     *                  almost lens-shaped. (default)
+     *       add        alphas UNION. A corner is only as faded as its *nearest* edge, so corners
+     *                  hold on and the card keeps a squarer, fuller footprint.
+     *
+     *     `intersect` is the dramatic one; `add` is the one that keeps a card feeling like a card.
      */
-    --fade: 72px;
-    -webkit-mask-image:
-      linear-gradient(to right, transparent, black var(--fade), black calc(100% - var(--fade)), transparent),
-      linear-gradient(to bottom, transparent, black var(--fade), black calc(100% - var(--fade)), transparent);
-    mask-image:
-      linear-gradient(to right, transparent, black var(--fade), black calc(100% - var(--fade)), transparent),
-      linear-gradient(to bottom, transparent, black var(--fade), black calc(100% - var(--fade)), transparent);
+    /* Resolve the fade depth (and its default) once per axis, then reuse at both ends of each gradient. */
+    --fx: var(--fade-x, 50px);
+    --fy: var(--fade-y, 50px);
+    /*
+     * The edge-fade recipe. Swap which --fade-mask line is live to try a different falloff — they all
+     * respect --fx/--fy as the fade depth. Only ONE may be uncommented at a time.
+     *
+     *   A. crossed-linear  even inset ramp on all four edges. Hard, geometric. (current default)
+     *   B. eased-linear    same but with a mid-alpha stop, so the ramp is soft (S-curve), not straight.
+     *   C. radial vignette  single ellipse: edges AND corners dissolve toward the rim, lens-like. On a
+     *                       wide card the top/bottom fade shrinks (radius is proportional) — the look,
+     *                       not a bug. --fy is ignored here; --fx sets the overall inset.
+     *   D. wide-linear     A with a 1.6× deeper ramp — softest crossed-linear, more of the card dissolves.
+     */
+    /* A --fade-mask:
+      linear-gradient(to right, transparent, black var(--fx), black calc(100% - var(--fx)), transparent),
+      linear-gradient(to bottom, transparent, black var(--fy), black calc(100% - var(--fy)), transparent);
+    /* B --fade-mask:
+      linear-gradient(to right, transparent, rgba(0,0,0,0.5) calc(var(--fx) * 0.5), black var(--fx), black calc(100% - var(--fx)), rgba(0,0,0,0.5) calc(100% - var(--fx) * 0.5), transparent),
+      linear-gradient(to bottom, transparent, rgba(0,0,0,0.5) calc(var(--fy) * 0.5), black var(--fy), black calc(100% - var(--fy)), rgba(0,0,0,0.5) calc(100% - var(--fy) * 0.5), transparent);
+    /* C --fade-mask:
+      radial-gradient(140% 140% at 50% 50%, black calc(100% - var(--fx)), transparent 100%);
+    /* D --fade-mask:
+      linear-gradient(to right, transparent, black calc(var(--fx) * 1.6), black calc(100% - var(--fx) * 1.6), transparent),
+      linear-gradient(to bottom, transparent, black calc(var(--fy) * 1.6), black calc(100% - var(--fy) * 1.6), transparent); */
+    -webkit-mask-image: var(--fade-mask);
+    mask-image: var(--fade-mask);
     -webkit-mask-composite: source-in;
-    mask-composite: intersect;
+    mask-composite: var(--fade-mode, intersect);
   }
 }
 
@@ -124,13 +212,188 @@
   color: var(--ink-mute);
 }
 
-@utility data {
+/*
+ * `log` — DM Mono, and the ONLY place mono survives. Mono used to own every "data" string (spawn ids,
+ * mesh addresses, exit codes) and it was cut: a mono face on anything a PERSON reads makes it a
+ * terminal readout, which is the exact thing we are not building. Log output is the one exception —
+ * whitespace and column alignment carry real meaning there, and a proportional face breaks them.
+ *
+ * `num` — Figtree with tabular figures. Everything else numeric: karma, escrow, ids, VRAM, exit codes.
+ * Columns still align (tabular-nums), but the shapes stay soft and humanist.
+ */
+@utility log {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
   font-feature-settings: "tnum" 1;
   letter-spacing: 0;
+  white-space: pre-wrap;
+  tab-size: 4;
 }
+
+@utility num {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/*
+ * Controls. New to the design system with the Queue's composer; Account and the rest will reuse them.
+ * No borders (there are none anywhere) — a field is a RECESS, a shape of lower luminance you type into,
+ * the inverse of a surface. Focus lifts it and lights a soft pigment ring; it never draws an outline.
+ */
+@utility field {
+  width: 100%;
+  border-radius: var(--radius-control);
+  background: color-mix(in oklab, var(--well) 80%, black);
+  padding: 9px 12px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--ink);
+  outline: none;
+  transition: background 160ms var(--ease-swim), box-shadow 160ms var(--ease-swim);
+
+  &::placeholder { color: var(--ink-mute); }
+  &:hover { background: color-mix(in oklab, var(--well) 92%, black); }
+  &:focus-visible {
+    background: var(--body);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--gold) 55%, transparent);
+  }
+}
+
+/*
+ * The one loud control per view: the primary verb (Submit spawn). Warm, because it acts on the
+ * cluster — but it is NOT pigment's meaning (that's karma); it's the same gold used as "the live,
+ * pressable thing", the way the rail lights the current page.
+ */
+@utility btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--radius-control);
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: oklch(0.2 0.04 70);
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold));
+  cursor: pointer;
+  transition: filter 160ms var(--ease-swim), box-shadow 160ms var(--ease-swim), opacity 160ms;
+
+  &:hover { filter: brightness(1.06); box-shadow: 0 0 24px color-mix(in oklab, var(--gold) 35%, transparent); }
+  &:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--abyss), 0 0 0 4px var(--gold-hi); }
+  &:disabled { opacity: 0.4; cursor: not-allowed; filter: none; box-shadow: none; }
+}
+
+/* The quiet control: cancel, keep, secondary verbs. A recess you can press, no colour spent. */
+@utility btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius-control);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: color-mix(in oklab, var(--shoal) 22%, transparent);
+  cursor: pointer;
+  transition: background 160ms var(--ease-swim), color 160ms var(--ease-swim);
+
+  &:hover { background: color-mix(in oklab, var(--shoal) 40%, transparent); color: var(--ink); }
+  &:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in oklab, var(--ink) 30%, transparent); }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+}
+
+/*
+ * THE PASSING CLOUD — the signature motion of the Queue. A real cuttlefish behaviour: a train of
+ * *dark* bands that travels across the skin. Here it means one thing only — THIS MACHINE IS WORKING.
+ *
+ * The whole design of it is a reaction against the skeleton-loader shimmer, which is the single most
+ * templated motion on the web. The difference is deliberate and load-bearing:
+ *   - DARK bands, not a bright highlight. The skin darkens in waves; nothing lights up.
+ *   - MANY bands in a slow train, not one diagonal sweep.
+ *   - SLOW (~9s) and low-contrast, so it reads as breathing skin, not a progress indicator.
+ * If it ever reads as "loading", it has failed and should be cut.
+ *
+ * Drawn on `::after`, NOT `::before` — `surface` owns `::before` (the plate), and an element has only
+ * one of each. A card is `surface cloud`, so the motion must live on the free pseudo-element or it
+ * never paints at all. `--cloud` scales the darkness for tuning; 0 is off.
+ */
+@utility cloud {
+  /* ── TUNE THE CLOUD ─────────────────────────────────────────────────────────
+   * Override per-card too, e.g. `[--cloud-dark:1.4]`.
+   *   --cloud-dark   overall darkness of the bands. 0 = off · 1 = default · >1 heavier
+   *   --cloud-speed  time for one band-train to cross. HIGHER = slower drift
+   *   --cloud-angle  tilt of the bands, in degrees (0 = vertical bands, 90 = horizontal)
+   * The two band-widths and their softness live in the gradients below (the % stops): the first
+   * number in each is where a band reaches full dark, the rest are its falloff and the gap after it.
+   * ──────────────────────────────────────────────────────────────────────────── */
+  --cloud-dark: 1;
+  --cloud-speed: 9s;
+  --cloud-angle: 105deg;
+
+  position: relative;
+  isolation: isolate;
+  /*
+   * NO `overflow: hidden` here, deliberately. It is the obvious way to keep the shader inside the
+   * rounded card, but its clip edge, against surface's isolated z-index:-1 ::before plate, leaves a
+   * stale-paint SEAM — two horizontal black lines at the top/bottom that a repaint (selecting the text)
+   * momentarily heals. Instead the shader `::after` sits exactly at inset:0 and rounds itself with
+   * `border-radius: inherit`, so it never exceeds the card and needs no clip. Same reasoning on `bloom`.
+   */
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    /* Two overlapping dark band-trains at slightly different angles/scales, so the wave never repeats. */
+    background-image:
+      repeating-linear-gradient(
+        var(--cloud-angle),
+        transparent 0,
+        color-mix(in oklab, var(--abyss) calc(55% * var(--cloud-dark)), transparent) 8%,
+        transparent 17%,
+        transparent 28%
+      ),
+      repeating-linear-gradient(
+        calc(var(--cloud-angle) - 10deg),
+        transparent 0,
+        color-mix(in oklab, var(--abyss) calc(34% * var(--cloud-dark)), transparent) 12%,
+        transparent 24%,
+        transparent 42%
+      );
+    background-size: 220% 100%, 340% 100%;
+    background-repeat: no-repeat;
+    animation:
+      cloud-drift var(--cloud-speed) linear infinite,
+      cloud-drift-slow calc(var(--cloud-speed) * 1.67) linear infinite;
+  }
+  /* Card content must sit above the cloud. */
+  & > * {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+@keyframes cloud-drift {
+  from { background-position: 120% 0, 0 0; }
+  to   { background-position: -120% 0, 0 0; }
+}
+@keyframes cloud-drift-slow {
+  from { background-position: 0 0, 140% 0; }
+  to   { background-position: 0 0, -140% 0; }
+}
+
+/*
+ * THE CHROMATIC BLOOM — waiting, with no known end — is NOT here. It is a WebGL flow shader, the same
+ * method as the ground water, in `queue/IridBloom.tsx`: CSS gradients could only ever fake the organic
+ * current as sliding shapes (three tries proved it), so the bloom moved to the canvas the ground already
+ * showed was right. The card hosts it as an absolutely-positioned <canvas>, screen-blended. See that file.
+ */
 
 @keyframes breathe {
   0%,
@@ -141,5 +404,24 @@
   50% {
     opacity: 1;
     transform: scale(1.04);
+  }
+}
+
+/*
+ * Reduced motion. Meaning is NEVER carried by motion alone, so nothing is lost by stopping: every
+ * state that moves also says what it is in words.
+ *
+ * Canvas-drawn motion (the ground shader, the chromatophore field) can't be reached from CSS — those
+ * read the same media query in JS and freeze themselves on a single frame. This block handles the
+ * declarative half.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

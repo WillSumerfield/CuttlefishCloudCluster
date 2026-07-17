@@ -1,9 +1,18 @@
 import { useEffect, useRef } from "react";
+import { useReducedMotion } from "./useReducedMotion";
 
 /**
  * Fullscreen WebGL fragment shader. Slow-swirling deep water — blue-green ink,
  * layered fbm domain-warped noise. No text, no ui — just ground.
  * Fixed behind the page; pointer-events: none.
+ *
+ * THE GROUND IS NOT INTERFACE. It signals nothing, which is the only reason it is allowed to be
+ * coloured and to move at all (colour is otherwise signal, never decoration). It earns that exemption
+ * by staying slow, dark and low-contrast — out of focus, behind the surfaces — so it can never be
+ * mistaken for a signal and never competes with the motion that IS one (the cloud, the bloom). If it
+ * ever starts reading as meaningful, turn the ground DOWN; do not turn the signal up.
+ *
+ * Mounted once, above the router: the water is continuous as you move between pages.
  */
 
 /**
@@ -47,6 +56,7 @@ const v3 = (c: number[]) => `vec3(${g(c[0])}, ${g(c[1])}, ${g(c[2])})`;
 
 export function AbyssBackground() {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const reduced = useReducedMotion();
 
   useEffect(() => {
     const canvas = ref.current;
@@ -151,17 +161,24 @@ export function AbyssBackground() {
       }
       gl.uniform2f(uRes, canvas.width, canvas.height);
     };
-    const render = () => {
+    // Reduced motion: draw one frame and stop. Still water, not no water — the ground carries no
+    // meaning, so freezing it costs nothing but the drift.
+    const draw = (t: number) => {
       resize();
-      gl.uniform1f(uTime, (performance.now() - start) / 1000);
+      gl.uniform1f(uTime, t);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+    };
+    const render = () => {
+      draw((performance.now() - start) / 1000);
       raf = requestAnimationFrame(render);
     };
-    render();
-    const onResize = () => resize();
+    if (reduced) draw(0); else render();
+
+    // A frozen shader still has to repaint on resize, or the canvas rescales to garbage.
+    const onResize = () => (reduced ? draw(0) : resize());
     window.addEventListener("resize", onResize);
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", onResize); };
-  }, []);
+  }, [reduced]);
 
   return (
     <canvas

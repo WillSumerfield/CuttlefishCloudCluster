@@ -19,7 +19,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -43,6 +43,12 @@ _COOKIE_SECURE = True
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 86400
 
 app = FastAPI(title="CCC Head API", version="0.1.0")
+
+# Every API endpoint lives under `/api`, so no API path can ever collide with a client-side route the
+# SPA owns (the Dashboard routes `/arms`, `/karma`, `/spawn/<id>` in the browser). Without this, a hard
+# reload on `/karma` matched the API's `/karma` and returned raw JSON instead of the page. `/healthz`
+# stays at the root — it's a liveness probe, not part of the app surface.
+api = APIRouter(prefix="/api")
 
 
 # --- auth models ------------------------------------------------------------
@@ -95,13 +101,13 @@ def healthz() -> dict:
     return {"ok": True}
 
 
-@app.get("/arms")
+@api.get("/arms")
 def arms(user: dict = Depends(current_user)) -> list[dict]:
     """Every compute node's live status + enrollment facts. See slurm.arms()."""
     return slurm.arms()
 
 
-@app.get("/spawns")
+@api.get("/spawns")
 def spawns(user: dict = Depends(current_user)) -> list[dict]:
     """The live Spawn queue (pending/running, CCC partition), enriched with Attribution. Every Spawn
     runs as the Mantle now, so Slurm's own user field says `ccc` for all of them and is useless — the
@@ -115,7 +121,7 @@ def spawns(user: dict = Depends(current_user)) -> list[dict]:
     return rows
 
 
-@app.get("/spawns/{job_id}")
+@api.get("/spawns/{job_id}")
 def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     """A single Spawn's state: still queued/running, or done with an exit code.
 
@@ -138,13 +144,13 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     raise HTTPException(404, f"unknown spawn {job_id}")
 
 
-@app.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
+@api.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
 def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stdout so far (a remote Spawn's arrives only at stage-out — post-hoc)."""
     return spawns_mod.out_text(job_id) or ""
 
 
-@app.get("/spawns/{job_id}/outputs")
+@api.get("/spawns/{job_id}/outputs")
 def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back."""
     data = spawns_mod.outputs_tar(job_id)
@@ -154,7 +160,7 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
 
 
-@app.delete("/spawns/{job_id}", status_code=204)
+@api.delete("/spawns/{job_id}", status_code=204)
 def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     """End a live Spawn early. A User may cancel their OWN outstanding Spawn; an Admin may cancel
     anyone's — Attribution is the ledger's, not Slurm's (every Spawn runs as the Mantle).
@@ -177,7 +183,7 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
 
 # --- auth routes ------------------------------------------------------------
 
-@app.post("/login")
+@api.post("/login")
 def login(req: LoginRequest, response: Response) -> dict:
     """Verify credentials → mint a session. Returns the bearer token (CLI) and sets the HttpOnly
     cookie (browser). A `must_change_password` user still gets a session so it can call /passwd."""
@@ -192,7 +198,7 @@ def login(req: LoginRequest, response: Response) -> dict:
             "must_change_password": bool(user["must_change_password"])}
 
 
-@app.post("/logout")
+@api.post("/logout")
 def logout(request: Request, response: Response) -> dict:
     """Revoke the presented session (delete the row) and clear the cookie. Idempotent."""
     token = _token_from(request)
@@ -203,13 +209,13 @@ def logout(request: Request, response: Response) -> dict:
     return {"ok": True}
 
 
-@app.get("/me")
+@api.get("/me")
 def me(user: dict = Depends(current_user)) -> dict:
     return {"username": user["username"], "is_admin": user["is_admin"],
             "must_change_password": user["must_change_password"]}
 
 
-@app.post("/passwd")
+@api.post("/passwd")
 def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
     """Rotate own password (also the forced-first-login path). Verifies the old password, clears the
     must-change flag. Existing sessions stay valid — the client keeps using its token.
@@ -227,7 +233,7 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
 
 # --- Karma (authed; Override is admin-only) ---------------------------------
 
-@app.get("/karma")
+@api.get("/karma")
 def karma_standings(user: dict = Depends(current_user)) -> list[dict]:
     """Every User's standing — Balance, Escrow, Share, and the nice it implies — best first.
 
@@ -238,7 +244,7 @@ def karma_standings(user: dict = Depends(current_user)) -> list[dict]:
         return karma.standings(conn)
 
 
-@app.get("/karma/ledger")
+@api.get("/karma/ledger")
 def karma_ledger(days: int = 30, user: dict = Depends(current_user)) -> dict:
     """**Your own** ledger: the real rows you were a party to, plus the Balance curve they imply.
 
@@ -252,7 +258,7 @@ def karma_ledger(days: int = 30, user: dict = Depends(current_user)) -> dict:
         return karma.ledger(conn, user["id"], days=days)
 
 
-@app.get("/karma/demand")
+@api.get("/karma/demand")
 def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict]:
     """Demand per Arm over time — how badly each card has been wanted, hour by hour.
 
@@ -265,7 +271,7 @@ def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict
         return [dict(r) for r in db.demand_series(conn, days)]
 
 
-@app.post("/karma/override")
+@api.post("/karma/override")
 def karma_override(req: OverrideRequest, user: dict = Depends(current_user)) -> dict:
     """Admin add/remove of a User's Balance. The only flow that isn't a Transfer — it conjures Karma or
     destroys it, and Decay absorbs the imbalance.
@@ -289,7 +295,7 @@ def karma_override(req: OverrideRequest, user: dict = Depends(current_user)) -> 
 
 # --- submission (authed) ----------------------------------------------------
 
-@app.post("/submit")
+@api.post("/submit")
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
     authed mutation in slice 2. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
@@ -372,11 +378,16 @@ async def _spool_upload(request: Request) -> Path:
     return path
 
 
+app.include_router(api)
+
+
 class SPAFiles(StaticFiles):
     """Static files, but unknown paths fall back to index.html.
 
     The Dashboard routes client-side (/arms, /karma, /spawn/<id>). Those paths are not files, so a hard
     reload or a pasted link would otherwise 404 — the SPA never gets a chance to run and read the URL.
+    This is why the API lives under `/api`: a client route like `/karma` reaches this fallback and gets
+    the SPA, instead of being shadowed by an identically-named endpoint and returning JSON.
     Real misses (a missing .js, a bad asset hash) still 404 from `get_response`; only *extensionless*
     paths are rewritten, so a broken bundle reference fails loudly instead of silently serving HTML.
     """
@@ -390,7 +401,7 @@ class SPAFiles(StaticFiles):
             return await super().get_response("index.html", scope)
 
 
-# Mounted LAST so the API routes above win. html=True serves index.html at `/`. Guarded so the app
-# still imports/serves the API before the SPA has been built (fresh checkout, tests).
+# Mounted LAST so the `/api` routes and `/healthz` win. html=True serves index.html at `/`. Guarded so
+# the app still imports/serves the API before the SPA has been built (fresh checkout, tests).
 if (WEB_DIR / "index.html").exists():
     app.mount("/", SPAFiles(directory=str(WEB_DIR), html=True), name="spa")

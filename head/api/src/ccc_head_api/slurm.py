@@ -164,7 +164,21 @@ def spawns() -> list[dict]:
             "node": j.get("nodes") or None,
             "gpus": _gpu_count(gres),
             "user": j.get("user_name"),
+            # The declared duration (`--time`), in minutes — what a waiting Spawn is priced against and
+            # the one declared need squeue carries cleanly. `--vram` becomes a Slurm *constraint*
+            # string, which is not worth parsing back out here.
+            "time_limit": _num(j.get("time_limit")),
             "submit_time": _num(j.get("submit_time")),
             "start_time": _num(j.get("start_time")),
         })
     return sorted(out, key=lambda s: s["id"] or 0)
+
+
+def cancel(job_id: int) -> None:
+    """End a live Spawn now. `scancel` needs no privilege here — every Spawn runs as the Mantle, so the
+    Head owns every job in the queue.
+
+    Settlement is NOT done here: the Karma tick settles a Spawn on its *disappearance from squeue*
+    (slurm.queue()), which is exactly what this causes, so a cancel bills for the seconds actually held
+    with no second code path. Idempotent — scancel on an already-gone job is a no-op, not an error."""
+    subprocess.run(["scancel", str(job_id)], capture_output=True, text=True, timeout=15, check=True)

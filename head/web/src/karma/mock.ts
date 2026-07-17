@@ -4,7 +4,7 @@
 export type Member = {
   id: string;
   name: string;
-  // Karma balance, roughly in [-1000, +1000]. 0 = neutral. Never shown numerically to others.
+  // Karma balance, roughly in [-1000, +1000]. 0 = neutral. Public — shown on hover in Standings.
   balance: number;
 };
 

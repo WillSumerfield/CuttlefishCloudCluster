@@ -76,7 +76,7 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 
 def post(c: TestClient, **meta):
     meta.setdefault("script", "train.py")
-    return c.post("/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
+    return c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
 
 
 @pytest.fixture(autouse=True)
@@ -167,7 +167,7 @@ class TestCancel:
         self._seed(owner_id=1)
         killed = []
         monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
-        r = c.delete("/spawns/77")
+        r = c.delete("/api/spawns/77")
         assert r.status_code == 204
         assert killed == [77]
 
@@ -175,7 +175,7 @@ class TestCancel:
         c = client(monkeypatch, is_admin=False)
         self._seed(owner_id=2)  # someone else's Spawn
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
-        r = c.delete("/spawns/77")
+        r = c.delete("/api/spawns/77")
         assert r.status_code == 403
 
     def test_admin_may_cancel_anyones(self, monkeypatch):
@@ -183,7 +183,7 @@ class TestCancel:
         self._seed(owner_id=2)
         killed = []
         monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
-        r = c.delete("/spawns/77")
+        r = c.delete("/api/spawns/77")
         assert r.status_code == 204
         assert killed == [77]
 
@@ -191,5 +191,5 @@ class TestCancel:
         c = client(monkeypatch, is_admin=True)
         self._seed(owner_id=1)
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
-        r = c.delete("/spawns/999")
+        r = c.delete("/api/spawns/999")
         assert r.status_code == 404

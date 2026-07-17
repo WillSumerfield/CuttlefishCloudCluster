@@ -38,6 +38,8 @@ export type Spawn = {
   node: string | null
   gpus: number
   submitted_by: string | null
+  // Declared duration (`--time`), in minutes. Null on Spawns submitted before it was surfaced.
+  time_limit: number | null
 }
 
 export type Me = { username: string; is_admin: boolean; must_change_password: boolean }
@@ -51,8 +53,12 @@ export type SpawnStatus = {
 
 export class Unauthorized extends Error {}
 
+// Every endpoint lives under /api so no API path collides with a client-side route the SPA owns (a hard
+// reload on /karma used to hit the API and render raw JSON). Paths below stay bare; this prepends it.
+const API = '/api'
+
 async function req(path: string, init?: RequestInit): Promise<Response> {
-  const r = await fetch(path, init)
+  const r = await fetch(API + path, init)
   if (r.ok) return r
   let detail = `${r.status}`
   try {
@@ -75,8 +81,11 @@ export const getMe = () => json<Me>('/me')
 export const getStatus = (id: number) => json<SpawnStatus>(`/spawns/${id}`)
 export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.text())
 
+/** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
+export const cancelSpawn = (id: number) => req(`/spawns/${id}`, { method: 'DELETE' }).then(() => {})
+
 export async function login(username: string, password: string): Promise<Me> {
-  const r = await fetch('/login', {
+  const r = await fetch(API + '/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -87,7 +96,7 @@ export async function login(username: string, password: string): Promise<Me> {
 }
 
 export async function logout(): Promise<void> {
-  await fetch('/logout', { method: 'POST' })
+  await fetch(API + '/logout', { method: 'POST' })
 }
 
 export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {

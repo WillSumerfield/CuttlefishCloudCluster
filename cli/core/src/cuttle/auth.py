@@ -31,7 +31,9 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
     """
     url = _head_url()
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"{url}{path}", data=data, method=method,
+    # Every endpoint lives under /api (so no API path collides with a Dashboard client route). Callers
+    # pass the bare path; the prefix is added here, in the one place all JSON calls funnel through.
+    req = urllib.request.Request(f"{url}/api{path}", data=data, method=method,
                                  headers={"Content-Type": "application/json"})
     if token is None and auth:
         token = _load_token()
