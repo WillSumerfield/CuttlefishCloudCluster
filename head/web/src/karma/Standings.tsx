@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "../app/useReducedMotion";
 import { members, you, type Member } from "./mock";
+import { seededRand, buildEdgeMask, paintFlesh, pigment } from "./skin";
 
 /**
  * The signature surface.
@@ -14,6 +15,9 @@ import { members, you, type Member } from "./mock";
  * fades softly at the edges.
  *
  * There are no numbers on this surface. Colour does all the work.
+ *
+ * The flesh (fleshy skin + organic dissolving edge) and the pigment ramp both live in ./skin now, shared
+ * with the Account hero; this file owns the dot FIELD — placement, breathing, the cursor wake.
  */
 
 type Dot = { x: number; y: number; r: number; owner: number };
@@ -32,7 +36,7 @@ const SKIN = {
   reach: 40,
 
   /** How much bigger a dot directly under the cursor gets. */
-  swell: 1.0,
+  swell: 2.0,
 
   /**
    * How the swell falls off with distance. 2 is a plain gaussian — a tight bump with a short tail.
@@ -41,39 +45,11 @@ const SKIN = {
   falloff: 1.0,
 
   /** Dot size when it belongs to nobody, and at a member's fully-expanded centre. */
-  off: 0.6,
+  off: 0.4,
   on: 2.7,
+  /** Max size (as the same unit as `off`/`on`) that an off dot may reach when the cursor is over it */
+  offMax: 0.8,
 };
-
-function seededRand(seed: number) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0xffffffff;
-  };
-}
-
-/* ---- organic edge ------------------------------------------------------------------------------
- * The skin has no silhouette. It occupies a rectangular slot, but its edge is warped by noise, so it
- * reaches further into the abyss in some places than others and dissolves entirely at the rim.
- *
- * The flesh and the dots are both drawn into the canvas so that ONE mask can erase them together —
- * a CSS mask can't alpha-blend a div's background and its canvas child against the shader behind.
- */
-
-function valueNoise(seed: number) {
-  const p = new Float32Array(256);
-  const rand = seededRand(seed);
-  for (let i = 0; i < 256; i++) p[i] = rand();
-  const at = (x: number, y: number) => p[((x & 15) + ((y & 15) << 4)) & 255];
-  const smooth = (t: number) => t * t * (3 - 2 * t);
-  return (x: number, y: number) => {
-    const xi = Math.floor(x), yi = Math.floor(y);
-    const xf = smooth(x - xi), yf = smooth(y - yi);
-    const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
-    return (a + (b - a) * xf) + ((c + (d - c) * xf) - (a + (b - a) * xf)) * yf;
-  };
-}
 
 /**
  * Where the members sit in the field.
@@ -111,146 +87,6 @@ const PLACEMENT = {
   seed: 90213,
 };
 
-/** The knobs on the Shoal's dissolving edge. Edit, save, watch. */
-const EDGE = {
-  /**
-   * How ragged the edge is — how far the noise displaces it, as a fraction of the half-size.
-   * 0 = a clean superellipse, no wobble at all. 0.34 = current. Above ~0.5 it starts tearing holes
-   * in the field, because the displacement outruns the width of the fade band.
-   */
-  warp: 0.3,
-
-  /**
-   * Size of the wobble. LOW = a few big slow lobes; HIGH = many small ripples along the edge.
-   * These are the two noise octaves; the first dominates (70/30).
-   */
-  lobes: 40,
-  ripples: 100,
-
-  /**
-   * How far in the organic edge sits, as a fraction of the half-size. LOWER = the skin occupies
-   * less of the canvas and the fade starts earlier. Must leave room for `warp` to swing outward,
-   * or the fade won't finish before the canvas runs out and you get a hard straight cut.
-   */
-  inset: 0.85,
-
-  /**
-   * Where the dissolve begins, along the same 0..1 distance. LOWER = a wider, softer, mistier fade
-   * band; closer to 1 = a tighter, more defined edge. (1.0 is where the edge nominally is.)
-   */
-  fadeFrom: 0.6,
-
-  /**
-   * Squareness of the footprint. 2 = an ellipse. 5 = roughly rectangular with soft corners.
-   * Large values approach a hard rectangle.
-   */
-  squareness: 3.5,
-
-  /** Random seed for the noise. Change it for a different edge with the same character. */
-  seed: 92,
-};
-
-// Alpha mask, built once per size at 1/3 resolution and scaled up (cheap, and the interpolation
-// softens it further). Black pixels with alpha = how much to ERASE; used with `destination-out`.
-function buildEdgeMask(w: number, h: number): HTMLCanvasElement {
-  const scale = 3;
-  const mw = Math.max(1, Math.ceil(w / scale)), mh = Math.max(1, Math.ceil(h / scale));
-  const c = document.createElement("canvas");
-  c.width = mw; c.height = mh;
-  const ctx = c.getContext("2d")!;
-  const img = ctx.createImageData(mw, mh);
-  const noise = valueNoise(EDGE.seed);
-
-  for (let y = 0; y < mh; y++) {
-    for (let x = 0; x < mw; x++) {
-      const nx = (x / mw) * 2 - 1, ny = (y / mh) * 2 - 1;
-
-      // Superellipse distance, scaled by `inset` so that even where the noise pushes the edge
-      // outward, the fade still COMPLETES before the canvas runs out — otherwise the rect clips a
-      // half-opaque edge and you get a hard straight cut.
-      const n = EDGE.squareness;
-      const ax = Math.abs(nx) / EDGE.inset, ay = Math.abs(ny) / EDGE.inset;
-      let d = Math.pow(Math.pow(ax, n) + Math.pow(ay, n), 1 / n);
-
-      // Warp the edge with two octaves of noise so it is never a clean curve.
-      const f = noise(x / EDGE.lobes, y / EDGE.lobes) * 0.7 + noise(x / EDGE.ripples, y / EDGE.ripples) * 0.3;
-      d += (f - 0.5) * EDGE.warp;
-
-      // Keep the core solid, dissolve the rim.
-      const t = Math.max(0, Math.min(1, (d - EDGE.fadeFrom) / (1 - EDGE.fadeFrom)));
-      let keep = 1 - t * t * (3 - 2 * t);
-
-      // Guard: nothing survives to the canvas boundary, whatever the noise did.
-      const rim = Math.max(Math.abs(nx), Math.abs(ny));
-      const g = Math.max(0, Math.min(1, (rim - 0.9) / 0.1));
-      keep *= 1 - g * g * (3 - 2 * g);
-
-      const i = (y * mw + x) * 4;
-      img.data[i + 3] = ((1 - keep) * 255) | 0;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return c;
-}
-
-// The fleshy fish-white skin the chromatophores sit in — drawn into the canvas, never a flat colour.
-function paintFlesh(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const base = ctx.createLinearGradient(0, 0, w * 0.35, h);
-  base.addColorStop(0, "rgb(245, 220, 206)");
-  base.addColorStop(0.55, "rgb(232, 200, 188)");
-  base.addColorStop(1, "rgb(220, 190, 178)");
-  ctx.fillStyle = base;
-  ctx.fillRect(0, 0, w, h);
-
-  const glows: [number, number, number, number, string, number][] = [
-    [0.28, 0.32, 0.60, 0.45, "255, 232, 214", 0.95],
-    [0.78, 0.30, 0.55, 0.50, "255, 220, 210", 0.85],
-    [0.60, 0.78, 0.65, 0.55, "248, 214, 198", 0.90],
-    [0.18, 0.82, 0.45, 0.40, "240, 208, 196", 0.75],
-    [0.88, 0.72, 0.50, 0.45, "252, 226, 208", 0.85],
-  ];
-  for (const [cx, cy, rx, ry, rgb, a] of glows) {
-    ctx.save();
-    ctx.translate(cx * w, cy * h);
-    ctx.scale((rx * w) / 100, (ry * h) / 100);
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 100);
-    g.addColorStop(0, `rgba(${rgb}, ${a})`);
-    g.addColorStop(0.7, `rgba(${rgb}, 0)`);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(0, 0, 100, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-/** Balances run roughly ±1000. The ramp works in −1..1, so normalise before mapping to colour. */
-const KARMA_RANGE = 1000;
-
-// pigment colour for a member: umber (debt) → bronze (neutral) → gold (creditor)
-function pigment(balance: number, jitter: number): [number, number, number] {
-  // Normalise, THEN clamp. Clamping the raw ±1000 value to ±1 saturated every member to a ramp end,
-  // so everyone in credit looked identically gold and everyone in debt identically umber.
-  const b = Math.max(-1, Math.min(1, balance / KARMA_RANGE));
-  // randomise the visible value slightly per-dot so no exact number can be read
-  const t = (b + 1) / 2 + (jitter - 0.5) * 0.18;
-  const clamped = Math.max(0, Math.min(1, t));
-  // umber  #4a2d15   → bronze #a06f2b → gold #f0c25a
-  const stops = [
-    [0.29, 0.18, 0.09],
-    [0.63, 0.44, 0.17],
-    [0.94, 0.76, 0.35],
-  ];
-  const seg = clamped < 0.5 ? 0 : 1;
-  const k = clamped < 0.5 ? clamped * 2 : (clamped - 0.5) * 2;
-  const a = stops[seg]; const c = stops[seg + 1];
-  return [
-    a[0] + (c[0] - a[0]) * k,
-    a[1] + (c[1] - a[1]) * k,
-    a[2] + (c[2] - a[2]) * k,
-  ];
-}
-
 export function Standings() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -268,7 +104,7 @@ export function Standings() {
     const rand = seededRand(2027);
     const dots: Dot[] = [];
     const boxW = Math.max(size.w, 800);
-    const boxH = Math.max(size.h, 360);
+    const boxH = Math.max(size.h, 100);
     const w = boxW + BLEED * 2;
     const h = boxH + BLEED * 2;
 
@@ -350,7 +186,7 @@ export function Standings() {
       }
     }
 
-    const bloom = Math.min(boxW, boxH) * 0.06;
+    const bloom = Math.min(boxW, boxH) * 0.16;
     const memberPositions = members.map((m, i) => ({
       m,
       x: pts[i].x,
@@ -441,7 +277,7 @@ export function Standings() {
     const { reach: REACH, swell: SWELL, falloff: FALLOFF, off: OFF, on: ON } = SKIN;
 
     const dots = field.dots;
-    const { jitter, colors, gaussBoost } = baked;
+    const { jitter, colors, gaussBoost, ownerIdx } = baked;
 
     // A dot is "live" if it sits in a member's gaussian (same 0.08 cut the colour bake uses to decide
     // black speck vs pigment). Only the live dots — a couple thousand, not ~ten — animate every frame;
@@ -509,6 +345,8 @@ export function Standings() {
           const mx = d.x - mouse.x, my = d.y - mouse.y;
           const md = Math.sqrt(mx * mx + my * my);
           bulge = Math.exp(-Math.pow(md / REACH, FALLOFF));
+          // scale the cursor bloom by the dot's gaussian weight so it follows the same falloff
+          bulge *= gaussBoost[i];
         }
         const gauss = gaussBoost[i];
         const r = d.r * breathe * (OFF + gauss * (ON - OFF) + bulge * SWELL);
@@ -524,9 +362,13 @@ export function Standings() {
           const mx = d.x - mouse.x, my = d.y - mouse.y;
           const md2 = mx * mx + my * my;
           if (md2 > (REACH * 2.2) * (REACH * 2.2)) continue; // outside any felt swell — leave the bake
-          const bulge = Math.exp(-Math.pow(Math.sqrt(md2) / REACH, FALLOFF));
-          if (bulge < 0.02) continue;
-          paintDot(i, d.r * (OFF + bulge * SWELL), 1 + bulge * 0.22);
+          const bulgeLocal = Math.exp(-Math.pow(Math.sqrt(md2) / REACH, FALLOFF));
+          if (bulgeLocal < 0.02) continue;
+          // Off (dead) specks should be allowed to grow up to SKIN.offMax when the cursor is directly
+          // over them. Do not scale this by gaussBoost (they are far from member centres by definition).
+          const offMax = SKIN.offMax ?? OFF;
+          const radiusMul = OFF + bulgeLocal * (offMax - OFF);
+          paintDot(i, d.r * radiusMul, 1 + bulgeLocal * 0.22);
         }
       }
 
@@ -578,7 +420,7 @@ export function Standings() {
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = i; }
     }
-    if (best >= 0 && bestD < 70 * 70) {
+    if (best >= 0 && bestD < 500) {
       const p = field.memberPositions[best];
       setHover({ i: best, x: p.x - BLEED, y: p.y - BLEED });
     } else setHover(null);
@@ -591,14 +433,19 @@ export function Standings() {
   return (
     <div
       ref={wrapRef}
-      onPointerMove={onMove}
-      onPointerLeave={onLeave}
-      className="relative w-full"
-      style={{ height: 560 }}
+      className="relative mx-auto"
+      style={{ width: "70vw", height: "28vh" }}
     >
+      <div
+        className="absolute block"
+        style={{ inset: -BLEED, pointerEvents: "auto" }}
+        onPointerMove={onMove}
+        onPointerLeave={onLeave}
+      />
+
       {/*
        * Absolutely positioned and inset by -BLEED, so the canvas overhangs its slot on every side.
-       * The layout box keeps its 560px height and nothing around it moves; the fade simply happens
+       * The layout box keeps its height and nothing around it moves; the fade simply happens
        * off the edges of the box, over the abyss. pointer-events stay on the wrapper.
        */}
       <canvas
@@ -638,6 +485,9 @@ export function Standings() {
               fontSize: isHovered ? 19 : 12,
               letterSpacing: "-0.01em",
               transition: "all 180ms cubic-bezier(.4,.14,.3,1)",
+              // Invisible for the first second, then fade up onto the settled field. `both` holds the
+              // opacity:0 start through the 1s delay. Skipped under reduced motion — no intro, just shown.
+              animation: reduced ? undefined : "name-rise 400ms cubic-bezier(.4,.14,.3,1) 0.2s both",
             }}
           >
             <div>
@@ -669,4 +519,3 @@ export function Standings() {
     </div>
   );
 }
-

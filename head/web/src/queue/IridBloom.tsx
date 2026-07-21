@@ -1,188 +1,151 @@
 import { useEffect, useRef } from "react";
 import { useReducedMotion } from "../app/useReducedMotion";
+import { fullscreenQuad, program } from "../shaders/gl";
+import vsrc from "../shaders/fullscreen.vert?raw";
+import noiseGlsl from "../shaders/noise.glsl?raw";
+import iridFrag from "../shaders/irid.frag?raw";
 
 /**
- * THE CHROMATIC BLOOM — waiting, with no known end. Same METHOD as the ground water (`AbyssBackground`):
- * a fbm domain-warped WebGL flow, because that organic current is the point and CSS gradients can only
- * fake it as sliding shapes (three tries proved it). Recoloured to the COOL ramp (teal → cyan → violet,
- * "machine, waiting") and rendered on BLACK so each card `screen`-blends it — dark troughs add nothing,
- * only the bright currents glow through. Distinct from the cloud: that is dark, directional, "working".
+ * THE CHROMATIC BLOOM — waiting, with no known end. Cool masses (teal/cyan/violet) that bloom in and
+ * fade out while swirling one way around each card's center; distinct from the cloud, which is dark,
+ * directional, "working". The GLSL and the full look are documented in `../shaders/irid.frag`.
  *
- * ONE shared GL context, not one per card. Browsers cap live contexts (~16) and lose them under churn —
- * per-card canvases went straight to CONTEXT_LOST. So a single hidden field canvas renders the flow at
- * viewport size, and every waiting row is a cheap 2D <canvas> that blits its own screen-rect out of the
- * field (`drawImage`). Cost is O(1) contexts for any queue depth, and because each row samples its true
- * viewport position the current is continuous from card to card — the rows are windows onto one field.
+ * DRAWN PER CARD, but not one WebGL context per card — browsers cap live contexts (~16) and drop the
+ * oldest, so a deep queue would cascade into CONTEXT_LOST. Instead ONE shared context owns a scratch
+ * canvas; every frame each waiting row re-renders the shader into that scratch at its own size with its
+ * own seed uniform, then blits the result into its own cheap 2D <canvas> (`drawImage`). Cost is O(1)
+ * contexts for any queue depth, and each card's `seed` gives it independent water — neighbouring rows
+ * never line up. The whole thing is screen-blended on the card's black plate, so troughs stay invisible.
  */
 
+/**
+ * THE ONLY THINGS WORTH TUNING. Pushed to the shader as uniforms, so edits hot-reload without a
+ * recompile. Colours are linear RGB 0..1, on black — brighter than the ground: this is a signal.
+ * (Mass COUNT is a compile-time #define in irid.frag, not here.)
+ */
 const IRID = {
-  /** Current speed. Faster than the ground — this one is meant to be noticed, a little. */
-  speed: 0.16,
-  /** Feature size. LOWER = broader masses. */
-  scale: 2.6,
-  /** How hard noise is stretched into currents. */
-  warp: 2.4,
-  /** Fine detail on the big shapes. */
-  roughness: 0.34,
+  /** Swirl speed — scales every mass's orbit and drift. Faster than the ground; meant to be noticed. */
+  speed: 1.5,
+  /** Warp feature size. LOWER = broader inky edges on the masses. */
+  scale: 2.0,
+  /** How hard masses are pushed off their clean circles into wandering, inky shapes. */
+  warp: 4.0,
+  /** Fine detail on the warp. */
+  roughness: 0.2,
+  /** Overall brightness of the lit masses — the one dial for "too dim / too hot". Black stays black. */
+  gain: 0.8,
 
-  /** Where the water sits vs black. A wide dark gap keeps the glow to bright filaments, not a full wash. */
-  waterFrom: 0.34,
-  waterTo: 1.02,
+  /** Per-axis orbit speed. Raise one above the other so masses sweep faster horizontally than vertically. */
+  speedX: 1.0,
+  speedY: 1.2,
+  /** Orbit half-extent per axis (in uv, edge = 0.5). Wider X fills the row; the ratio also sets how much
+   *  horizontal vs vertical travel there is. */
+  orbitX: 0.5,
+  orbitY: 0.5,
+  /** Orbit shape. 0 = round orbit · 1 = hard rectangle hugging the card edges. */
+  square: 0.2,
 
-  /** Cool ramp, linear RGB, on black. Brighter than the ground: this is a signal, not the floor. */
+  /** Cool ramp, linear RGB, on black. Masses cycle through these in order. */
   teal: [0.02, 0.22, 0.2], //   --irid-low
   cyan: [0.04, 0.22, 0.34], //  --irid-mid
   violet: [0.16, 0.07, 0.34], // --irid-high
-  lift: [0.24, 0.46, 0.56], //  crests, where the current catches the light
 };
 
-const g = (n: number) => n.toFixed(4);
-const v3 = (c: number[]) => `vec3(${g(c[0])}, ${g(c[1])}, ${g(c[2])})`;
-const dpr = () => Math.min(window.devicePixelRatio || 1, 1.5);
+// Cap at 2× device pixels: these per-card canvases are small, so full-DPR rendering is cheap, and a lower
+// cap upscales the render (visible interpolation lines through the bloom's smooth gradients).
+const dpr = () => Math.min(window.devicePixelRatio || 1, 2);
 
-/* ─────────────────────────── the one shared field ─────────────────────────── */
+/* ─────────────────── the one shared context + scratch canvas ─────────────────── */
 
-type Blit = () => void;
-const blits = new Set<Blit>();
+type Card = { blit: () => void };
+const cards = new Set<Card>();
 
-let fieldCanvas: HTMLCanvasElement | null = null;
-let fieldGL: WebGLRenderingContext | null = null;
-let fieldURes: WebGLUniformLocation | null = null;
-let fieldUTime: WebGLUniformLocation | null = null;
-let fieldStart = 0;
-let fieldRaf = 0;
-let fieldReduced = false;
-let fieldFailed = false;
-let fieldListening = false;
+let scratch: HTMLCanvasElement | null = null;
+let sgl: WebGLRenderingContext | null = null;
+let uRes: WebGLUniformLocation | null = null;
+let uTime: WebGLUniformLocation | null = null;
+let uSeed: WebGLUniformLocation | null = null;
+let sStart = 0;
+let sFailed = false;
+let raf = 0;
+let listening = false;
+let clockT = 0; // shared time (seconds); 0 and frozen under reduced motion
 
-function renderField() {
-  const gl = fieldGL, c = fieldCanvas;
-  if (!gl || !c) return;
-  const d = dpr();
-  const w = Math.max(1, Math.floor(window.innerWidth * d));
-  const h = Math.max(1, Math.floor(window.innerHeight * d));
-  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
-  gl.uniform2f(fieldURes, c.width, c.height);
-  gl.uniform1f(fieldUTime, (performance.now() - fieldStart) / 1000);
+function initScratch() {
+  if (scratch || sFailed) return;
+  const c = document.createElement("canvas");
+  const gl = c.getContext("webgl", { antialias: false, premultipliedAlpha: false, alpha: false, preserveDrawingBuffer: true });
+  if (!gl) {
+    sFailed = true;
+    return;
+  }
+  try {
+    const prog = program(gl, vsrc, `${noiseGlsl}\n${iridFrag}`);
+    fullscreenQuad(gl, prog);
+    const u = (n: string) => gl.getUniformLocation(prog, n);
+    // Static dials — set once.
+    gl.uniform1f(u("uSpeed"), IRID.speed);
+    gl.uniform1f(u("uScale"), IRID.scale);
+    gl.uniform1f(u("uWarp"), IRID.warp);
+    gl.uniform1f(u("uRough"), IRID.roughness);
+    gl.uniform1f(u("uGain"), IRID.gain);
+    gl.uniform1f(u("uSpeedX"), IRID.speedX);
+    gl.uniform1f(u("uSpeedY"), IRID.speedY);
+    gl.uniform1f(u("uOrbitX"), IRID.orbitX);
+    gl.uniform1f(u("uOrbitY"), IRID.orbitY);
+    gl.uniform1f(u("uSquare"), IRID.square);
+    gl.uniform3fv(u("uTeal"), IRID.teal);
+    gl.uniform3fv(u("uCyan"), IRID.cyan);
+    gl.uniform3fv(u("uViolet"), IRID.violet);
+    uRes = u("uRes");
+    uTime = u("uTime");
+    uSeed = u("uSeed");
+    scratch = c;
+    sgl = gl;
+    sStart = performance.now();
+  } catch (e) {
+    sFailed = true;
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    console.warn("IridBloom: shader failed, waiting cards fall back to plate.", e);
+  }
+}
+
+// Render one card's frame into the shared scratch. Scratch tracks card size; since every waiting card is
+// the same size, this reallocs at most once and then just redraws.
+function renderScratch(w: number, h: number, seed: number) {
+  const gl = sgl!;
+  if (scratch!.width !== w || scratch!.height !== h) {
+    scratch!.width = w;
+    scratch!.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+  gl.uniform2f(uRes, w, h);
+  gl.uniform1f(uSeed, seed);
+  gl.uniform1f(uTime, clockT);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-const runBlits = () => blits.forEach((b) => b());
-
 function frame() {
-  renderField();
-  runBlits();
-  fieldRaf = requestAnimationFrame(frame);
+  clockT = (performance.now() - sStart) / 1000;
+  cards.forEach((c) => c.blit());
+  raf = requestAnimationFrame(frame);
 }
 
-// Reduced motion: the field is static, but rows still move under it as the page scrolls — so re-blit on
-// scroll (no re-render needed; preserveDrawingBuffer keeps the last frame) and re-render on resize.
-const onScroll = () => runBlits();
-const onResize = () => { renderField(); runBlits(); };
+// Reduced motion holds clockT at 0, so content is static and position-independent — no scroll re-blit is
+// needed (unlike the old shared field). Only a resize can change a card's size, so re-blit all on resize.
+const onResize = () => cards.forEach((c) => c.blit());
 
-function initField(reduced: boolean) {
-  if (fieldCanvas || fieldFailed) return;
-  const c = document.createElement("canvas");
-  const gl = c.getContext("webgl", { antialias: false, premultipliedAlpha: false, alpha: false, preserveDrawingBuffer: true });
-  if (!gl) { fieldFailed = true; return; }
-
-  try {
-    const vsrc = `attribute vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }`;
-    const fsrc = `
-      precision highp float;
-      uniform vec2 uRes;
-      uniform float uTime;
-
-      float hash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
-      float noise(vec2 p){
-        vec2 i = floor(p); vec2 f = fract(p);
-        float a = hash(i), b = hash(i+vec2(1.0,0.0)), c = hash(i+vec2(0.0,1.0)), d = hash(i+vec2(1.0,1.0));
-        vec2 u = f*f*(3.0-2.0*f);
-        return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
-      }
-      float fbm(vec2 p){
-        float v = 0.0; float amp = 0.5;
-        for(int i=0;i<4;i++){ v += amp*noise(p); p *= 1.92; amp *= ${g(IRID.roughness)}; }
-        return v;
-      }
-
-      void main(){
-        vec2 uv = gl_FragCoord.xy / uRes.xy;
-        vec2 p = uv * vec2(uRes.x/uRes.y, 1.0) * ${g(IRID.scale)};
-        float t = uTime * ${g(IRID.speed)};
-
-        vec2 q = vec2(fbm(p + vec2(t*0.6, t*0.8)), fbm(p + vec2(5.2 - t*0.5, -t*0.7)));
-        vec2 r = vec2(fbm(p + ${g(IRID.warp)}*q + vec2(1.7 + t*1.1, 9.2 - t*0.4)),
-                      fbm(p + ${g(IRID.warp)}*q + vec2(8.3 - t*0.9, 2.8 + t*1.2)));
-        float f = fbm(p + ${g(IRID.warp * 0.9)}*r + vec2(t*0.3, -t*0.2));
-
-        float hue = fbm(p * 0.5 + vec2(-t*0.22, t*0.16));
-        hue = smoothstep(0.12, 0.9, hue);
-        float h1 = clamp(hue * 2.0, 0.0, 1.0);
-        float h2 = clamp((hue - 0.5) * 2.0, 0.0, 1.0);
-        vec3 cur = mix(mix(${v3(IRID.teal)}, ${v3(IRID.cyan)}, h1),
-                       mix(${v3(IRID.cyan)}, ${v3(IRID.violet)}, h2), step(0.5, hue));
-
-        vec3 col = mix(vec3(0.0), cur, smoothstep(${g(IRID.waterFrom)}, ${g(IRID.waterTo)}, f));
-        col = mix(col, ${v3(IRID.lift)}, smoothstep(0.55, 1.08, f*f));
-
-        col += (hash(gl_FragCoord.xy) - 0.5) / 255.0;
-        gl_FragColor = vec4(col, 1.0);
-      }
-    `;
-    const compile = (type: number, src: string) => {
-      const s = gl.createShader(type)!;
-      gl.shaderSource(s, src); gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) || "compile failed");
-      return s;
-    };
-    const prog = gl.createProgram()!;
-    gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsrc));
-    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsrc));
-    gl.linkProgram(prog);
-    gl.useProgram(prog);
-
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-    const aLoc = gl.getAttribLocation(prog, "a");
-    gl.enableVertexAttribArray(aLoc);
-    gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
-
-    fieldURes = gl.getUniformLocation(prog, "uRes");
-    fieldUTime = gl.getUniformLocation(prog, "uTime");
-    fieldCanvas = c;
-    fieldGL = gl;
-    fieldReduced = reduced;
-    fieldStart = performance.now();
-
-    if (reduced) {
-      renderField();
-      window.addEventListener("scroll", onScroll, { passive: true, capture: true });
-      window.addEventListener("resize", onResize);
-      fieldListening = true;
-    } else {
-      frame();
-    }
-  } catch (e) {
-    fieldFailed = true;
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    console.warn("IridBloom: field shader failed, waiting cards fall back to plate.", e);
-  }
-}
-
-function teardownFieldIfIdle() {
-  if (blits.size > 0 || !fieldCanvas) return;
-  cancelAnimationFrame(fieldRaf);
-  fieldRaf = 0;
-  if (fieldListening) {
-    window.removeEventListener("scroll", onScroll, { capture: true } as EventListenerOptions);
+function teardownIfIdle() {
+  if (cards.size > 0 || !scratch) return;
+  cancelAnimationFrame(raf);
+  raf = 0;
+  if (listening) {
     window.removeEventListener("resize", onResize);
-    fieldListening = false;
+    listening = false;
   }
-  fieldGL?.getExtension("WEBGL_lose_context")?.loseContext();
-  fieldCanvas = null;
-  fieldGL = null;
+  sgl?.getExtension("WEBGL_lose_context")?.loseContext();
+  scratch = null;
+  sgl = null;
 }
 
 /* ───────────────────────────── the per-card window ───────────────────────────── */
@@ -190,6 +153,9 @@ function teardownFieldIfIdle() {
 export function IridBloom() {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const reduced = useReducedMotion();
+  // A fixed, per-card random seed. Decorrelates this row's water from every other, and never re-rolls
+  // (a re-roll each frame would make the whole card jump).
+  const seed = useRef(Math.random() * 1000).current;
 
   useEffect(() => {
     const cv = ref.current;
@@ -197,34 +163,46 @@ export function IridBloom() {
     const ctx = cv.getContext("2d");
     if (!ctx) return;
 
-    initField(reduced);
-
-    // Blit this card's viewport rect out of the shared field, so the current lines up across rows.
     const blit = () => {
-      const src = fieldCanvas;
-      if (!src || src.width === 0) return;
+      initScratch();
+      if (!scratch || sFailed) return;
       const d = dpr();
       const w = Math.max(1, Math.round(cv.clientWidth * d));
       const h = Math.max(1, Math.round(cv.clientHeight * d));
-      if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-      const r = cv.getBoundingClientRect();
+      if (cv.width !== w || cv.height !== h) {
+        cv.width = w;
+        cv.height = h;
+      }
+      renderScratch(w, h, seed);
       ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(src, r.left * d, r.top * d, r.width * d, r.height * d, 0, 0, w, h);
+      ctx.drawImage(scratch, 0, 0, w, h, 0, 0, w, h);
     };
-    blits.add(blit);
-    blit(); // paint immediately, don't wait a frame (matters most under reduced motion)
+
+    const card: Card = { blit };
+    cards.add(card);
+
+    if (reduced) {
+      // Static: paint once, and again only if a resize changes the card's size.
+      if (!listening) {
+        window.addEventListener("resize", onResize);
+        listening = true;
+      }
+      blit();
+    } else if (!raf) {
+      raf = requestAnimationFrame(frame);
+    }
 
     return () => {
-      blits.delete(blit);
-      teardownFieldIfIdle();
+      cards.delete(card);
+      teardownIfIdle();
     };
-  }, [reduced]);
+  }, [reduced, seed]);
 
   return (
     <canvas
       ref={ref}
       aria-hidden
-      className="pointer-events-none absolute inset-0 h-full w-full rounded-[inherit]"
+      className="edge-fade pointer-events-none absolute inset-0 h-full w-full rounded-[inherit]"
       style={{ zIndex: 0, mixBlendMode: "screen" }}
     />
   );

@@ -40,12 +40,14 @@ export function Page({
       }`}
       style={{ "--pad": PAD[density] } as React.CSSProperties}
     >
-      <header className={`flex flex-wrap items-end justify-between gap-6 ${hero ? "mb-12" : "mb-8"}`}>
+      <header className={`flex flex-wrap items-end justify-between gap-6 ${hero ? "mb-4" : "mb-8"}`}>
         <h1
-          className="text-ink"
+          // Quiet, not loud: the page title recedes to muted ink so the page's own signature (the live
+          // rows, the karma bloom) is what the eye lands on. Everything else stays quiet.
+          className="text-ink-mute"
           style={{
             fontWeight: 300,
-            fontSize: hero ? 48 : 32,
+            fontSize: hero ? 48 : 28,
             lineHeight: 1.02,
             letterSpacing: "-0.02em",
           }}

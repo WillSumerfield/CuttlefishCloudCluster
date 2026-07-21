@@ -31,7 +31,7 @@ function Group({
   // header or the grid goes lopsided and the surviving column reads as "the whole queue".
   return (
     <section>
-      <div className="mb-3 flex items-baseline gap-2 px-1">
+      <div className="mb-3 flex items-baseline gap-2 pl-12 pr-1">
         <h2 className="label">{title}</h2>
         <span className="num text-[12px] text-ink-mute">{spawns.length}</span>
       </div>
@@ -72,14 +72,14 @@ export function LiveQueue({
         title="Running"
         spawns={running}
         variant="running"
-        empty="Nothing running."
+        empty=""
         onCancelled={onCancelled}
       />
       <Group
         title="Waiting"
         spawns={waiting}
         variant="waiting"
-        empty="Nothing waiting."
+        empty=""
         onCancelled={onCancelled}
       />
     </div>

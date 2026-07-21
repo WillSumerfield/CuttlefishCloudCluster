@@ -71,7 +71,7 @@ export function QueuePage() {
 
       {/* Composer left, live queue right. Below lg they stack, composer first. The composer sticks as
           the queue scrolls, so "run something" is always in reach. */}
-      <div className="grid gap-8 lg:grid-cols-[minmax(380px,440px)_1fr] lg:items-start">
+      <div className="grid gap-8 lg:grid-cols-[minmax(380px,500px)_1fr] lg:items-start">
         <div className="lg:sticky lg:top-6">
           <SubmitComposer
             arms={arms}

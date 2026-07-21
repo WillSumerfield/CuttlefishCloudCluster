@@ -213,6 +213,7 @@ function SubmitPanel({
     try {
       const id = await submit({
         picked,
+        name: null,
         script,
         gpu,
         minutes: Number(minutes),

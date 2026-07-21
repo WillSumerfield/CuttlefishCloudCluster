@@ -20,15 +20,16 @@ export function Ledger() {
   return (
     <section className="surface p-12 md:p-20">
       <header className="mb-6">
-        <h2 style={{ fontSize: 20, fontWeight: 500, letterSpacing: "-0.01em" }} className="text-ink">
-          Your ledger
+        {/* Quiet, like the page title: muted ink at 300 weight, so the rows are what the eye lands on. */}
+        <h2 style={{ fontSize: 20, fontWeight: 300, letterSpacing: "-0.02em" }} className="text-ink-mute">
+          Ledger
         </h2>
       </header>
 
 
       <div className="grid grid-cols-[110px_1fr_170px] items-center gap-x-6 px-2 pb-3">
         <span className="label">Karma</span>
-        <span className="label">Movement</span>
+        <span className="label">Transaction</span>
         <span className="label text-right">When</span>
       </div>
 

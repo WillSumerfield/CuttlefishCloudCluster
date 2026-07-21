@@ -42,6 +42,28 @@ export type Spawn = {
   time_limit: number | null
 }
 
+// How a Spawn ended. `retracted` = its Arm was reclaimed (Owner hit Retract); it settles at zero and
+// carries no exit code. `failed` carries the process exit code. done/cancelled are the quiet outcomes;
+// failed/retracted are the loud ones (drawn in --alarm) — see temp/DESIGN.md §State colour.
+export type Outcome = 'done' | 'failed' | 'cancelled' | 'retracted'
+
+// A finished Spawn, as History serves it. Extends the live Spawn with its verdict and what it settled
+// at. There is NO live endpoint for this yet — getSpawns() serves pending+running only — so History runs
+// on ?demo mock until the Head grows a /history route.
+export type ArchivedSpawn = Spawn & {
+  outcome: Outcome
+  // Process exit code. Present on done (0) and failed (non-zero); null on cancelled/retracted, which
+  // never ran to an exit.
+  exit: number | null
+  // Karma this Spawn settled at (Ph4). null before it was priced; 0 for a retracted Spawn (killing it
+  // costs the submitter nothing). Plain ink, never pigment — pigment means standing, not cost.
+  cost: number | null
+  // Minutes actually HELD (what Karma meters), distinct from the declared time_limit. null if unknown.
+  held: number | null
+  // Epoch ms it finished — the sort key. History is one flat stream, newest first.
+  finished_at: number
+}
+
 export type Me = { username: string; is_admin: boolean; must_change_password: boolean }
 
 export type SpawnStatus = {
@@ -77,12 +99,123 @@ const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
 
 export const getArms = () => json<Arm[]>('/arms')
 export const getSpawns = () => json<Spawn[]>('/spawns')
+// Finished Spawns, newest first. The Head does not serve this yet; live, History shows its empty state
+// until it does. Design review runs on ?demo (see history/mock.ts).
+export const getHistory = () => json<ArchivedSpawn[]>('/history')
 export const getMe = () => json<Me>('/me')
 export const getStatus = (id: number) => json<SpawnStatus>(`/spawns/${id}`)
 export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.text())
 
 /** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
 export const cancelSpawn = (id: number) => req(`/spawns/${id}`, { method: 'DELETE' }).then(() => {})
+
+// Arm lifecycle. The Head serves none of these yet — the Arms page runs its actions on ?demo mock (see
+// arms/mock.ts), where they mutate local state instead of calling out. Live, they hit these paths.
+const armPost = (name: string, verb: string) =>
+  req(`/arms/${encodeURIComponent(name)}/${verb}`, { method: 'POST' }).then(() => {})
+
+/** Owner-only: drain an Arm and stop its work immediately (10-min grace, then force-kill). */
+export const retractArm = (name: string) => armPost(name, 'retract')
+/** Owner-only: give a retracted Arm back — it never left the cluster, so no Admin, no new token. */
+export const returnArm = (name: string) => armPost(name, 'return')
+/** Admin: admit an enrolled Arm into the scheduler — the deliberate human gate the CLI skips. */
+export const admitArm = (name: string) => armPost(name, 'admit')
+/** Admin: re-measure an Arm's Power. */
+export const benchmarkArm = (name: string) => armPost(name, 'benchmark')
+/** Admin: reap an Arm from Slurm, the registry and the Mesh. */
+export const removeArm = (name: string) => req(`/arms/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
+
+// A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its
+// owner (the Head only ever serves you your own). It runs exactly what it captured until the owner hits
+// Update code, so `frozen_at` is how stale that snapshot is. `size_bytes` is what it costs against the
+// 20 GB per-User allowance. `updating` is true only while a fresh snapshot is uploading — the one moment
+// a Recipe moves (the bloom); at rest it is still, because a frozen thing does not move.
+export type Recipe = {
+  name: string
+  script: string          // entry point the snapshot runs
+  args: string[]          // declared arguments, frozen with the code
+  gpus: number
+  vram_mb: number
+  minutes: number         // declared wall-clock — the same ask a Spawn carries
+  size_bytes: number      // disk it holds against the allowance
+  frozen_at: number       // epoch ms the code was last captured; Update code refreshes it
+  updating: boolean       // a new snapshot is uploading right now → the bloom
+  running: boolean        // a Spawn of this Recipe is live on the cluster right now → the passing cloud
+}
+
+// Per-User storage allowance: 20 GB, a hard wall. Saving past it means deleting a Recipe first, never a
+// warning. Mirrored in recipes/format.ts, where the meter reads from it.
+export const RECIPE_ALLOWANCE_BYTES = 20 * 1024 ** 3
+
+export const getRecipes = () => json<Recipe[]>('/recipes')
+
+// Freeze a project into a new Recipe. Same wire shape as submit() — tar+gzip body, meta in the header —
+// because a Recipe IS the same upload a Spawn carries, just persisted on the Head instead of run once. The
+// Head weighs it against the 20 GB wall and answers 413 if it won't fit (the composer blocks first, from
+// File.size, so the browser never spends the upload on a doomed save). Returns the frozen Recipe.
+export type NewRecipe = {
+  picked: Picked
+  name: string
+  script: string
+  args: string[]
+  gpus: number
+  vram_mb: number
+  minutes: number
+}
+
+export async function createRecipe(r: NewRecipe): Promise<Recipe> {
+  const entries: TarEntry[] = []
+  for (const f of r.picked.files) {
+    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
+  }
+  const body = await gzip(makeTar(entries))
+  const meta = { name: r.name, script: r.script, args: r.args, gpus: r.gpus, vram_mb: r.vram_mb, minutes: r.minutes }
+  const res = await req('/recipes', {
+    method: 'POST',
+    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
+    body,
+  })
+  return res.json() as Promise<Recipe>
+}
+
+// Recipe actions. Like the Arm lifecycle, the Head serves none of these yet — the page runs them on
+// ?demo mock (recipes/mock.ts), mutating local state; live, they hit these paths.
+const recipePost = (name: string, verb: string) =>
+  req(`/recipes/${encodeURIComponent(name)}/${verb}`, { method: 'POST' }).then(() => {})
+
+/** Run the frozen snapshot — one click, from any machine, nothing to hand. Spawns a job (seen on Queue). */
+export const runRecipe = (name: string) => recipePost(name, 'run')
+/** Re-capture the project into the Recipe. Explicit: until it lands, the Recipe keeps running the old code. */
+export const updateRecipe = (name: string) => recipePost(name, 'update')
+/** Delete a Recipe, freeing its bytes back to the allowance. */
+export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
+
+// The W&B key the Head injects into every Spawn you submit (from either client). Held ENCRYPTED at rest —
+// a third-party secret the Head keeps on your behalf, and unlike a password it must be recoverable in
+// plaintext to be used, so it can't be hashed. The Head serves none of these routes yet, so live they 404
+// and the Account module shows "not available yet"; ?demo runs them on local state (account/mock.ts).
+export type WandbKeyStatus = { set: boolean; last4: string | null }
+
+/** Masked status only — whether a key is stored, and its last 4 chars. Never the plaintext. */
+export const getWandbKey = () => json<WandbKeyStatus>('/account/wandb')
+/** The plaintext, for the deliberate Reveal. A separate route so the masked read never carries the secret. */
+export const revealWandbKey = () => json<{ key: string }>('/account/wandb/reveal').then((r) => r.key)
+/** Store (or replace) the key. */
+export const setWandbKey = (key: string) =>
+  req('/account/wandb', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  }).then(() => {})
+/** Clear the key — the Head stops injecting it. */
+export const deleteWandbKey = () => req('/account/wandb', { method: 'DELETE' }).then(() => {})
+
+// The Tide, as the Head serves it: Demand per Arm over CLOCK time — how badly each card has been wanted,
+// hour by hour, over the last `days`. This is the ONLY surface the Tide is seen through: not a forecast,
+// not a quote. The frontend folds this into the hour-of-day shape itself (tide/fold.ts). A cold or
+// history-less cluster returns [], which reads as a flat, honest 1.0 Tide; ?demo runs the mock series.
+export type DemandSample = { node: string; at: string; demand: number }
+export const getDemand = (days = 30) => json<DemandSample[]>(`/karma/demand?days=${days}`)
 
 export async function login(username: string, password: string): Promise<Me> {
   const r = await fetch(API + '/login', {
@@ -120,6 +253,7 @@ export async function downloadOutputs(id: number): Promise<void> {
 
 export type SubmitOpts = {
   picked: Picked
+  name: string | null // optional label for the run; the Head falls back to the script name when unset
   script: string
   gpu: number
   // Wall-clock minutes, and GPU memory in GB. Both required by the Head — a Spawn with no declared
@@ -136,7 +270,7 @@ export type SubmitOpts = {
  * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
  */
 export async function submit({
-  picked, script, gpu, minutes, vram, node, args,
+  picked, name, script, gpu, minutes, vram, node, args,
 }: SubmitOpts): Promise<number> {
   const entries: TarEntry[] = []
   for (const f of picked.files) {
@@ -146,7 +280,7 @@ export async function submit({
   // W&B is disabled for browser Spawns: the API key lives in the CLI's ~/.ccc/config, and the browser
   // has no equivalent yet. Send the same env the CLI sends when it has no key — an EMPTY wandb_env
   // would leave WANDB_MODE unset, which makes wandb.init() fail rather than skip.
-  const meta = { script, gpu, minutes, vram, node, args, wandb_env: { WANDB_MODE: 'disabled' } }
+  const meta = { name, script, gpu, minutes, vram, node, args, wandb_env: { WANDB_MODE: 'disabled' } }
   const r = await req('/submit', {
     method: 'POST',
     headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },

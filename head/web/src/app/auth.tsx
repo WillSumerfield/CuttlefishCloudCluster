@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { changePassword, getMe, login, logout as apiLogout, type Me } from "../api";
-import { setSession } from "./session";
+import { clearSession, setSession } from "./session";
 
 /**
  * The auth gate. Sign-in is required for everything — there is no anonymous surface — so this wraps the
@@ -35,10 +35,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
       .finally(() => setBooting(false));
   }, []);
 
+  useEffect(() => {
+    if (me) setSession(me);
+  }, [me]);
+
   const logout = async () => {
     await apiLogout();
     setSignInPw(null);
     setMe(null);
+    clearSession();
   };
 
   if (booting) return null; // a blank frame over the shader; /me is one quick call
@@ -66,13 +71,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  // Authenticated and rotated. Publish the session for the synchronous reads (Rail, Queue) and render.
-  setSession(me);
   return <AuthContext.Provider value={{ me, logout }}>{children}</AuthContext.Provider>;
 }
 
 /** A form floating on the abyss — no panel, no border, the way the rail floats. */
-function Gate({ title, children }: { title: string; children: ReactNode }) {
+function Gate({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
     <div className="relative flex min-h-screen items-center justify-center px-6">
       <div className="w-full max-w-sm">
@@ -108,7 +111,15 @@ function SignIn({ onSignedIn }: { onSignedIn: (me: Me, password: string) => void
   };
 
   return (
-    <Gate title="Cuttlefish">
+    <Gate
+      title={
+        <div className="flex flex-col -space-y-10">
+          <div><span className="text-7xl">C</span>uttlefish</div>
+          <div><span className="text-7xl">C</span>loud</div>
+          <div><span className="text-7xl">C</span>luster</div>
+        </div>
+      }
+    >
       <form onSubmit={go} className="space-y-4">
         <label className="block">
           <span className="label mb-1.5 block">Username</span>
@@ -131,7 +142,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (me: Me, password: string) => void
           />
         </label>
         {error && <p className="text-[13px] text-[var(--alarm)]">{error}</p>}
-        <button className="btn-primary w-full" disabled={busy || !username || !password}>
+        <button className="btn-primary w-1/3 mx-auto block" disabled={busy || !username || !password}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
       </form>

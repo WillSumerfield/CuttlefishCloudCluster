@@ -5,11 +5,11 @@ import { Ledger } from "./Ledger";
 
 export function KarmaPage() {
   return (
-    <Page title="Karma" density="hero">
+    <Page title="Karma">
       <StandingCard />
 
       {/* Standings carries no heading — it is the page, and it says what it is by being it. */}
-      <section className="mt-48 mb-48">
+      <section className="mt-30 mb-36">
         <Standings />
       </section>
 

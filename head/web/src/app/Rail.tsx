@@ -42,19 +42,17 @@ export function Rail() {
     <nav
       aria-label="Primary"
       className="
+        rail-ground
         fixed inset-x-0 bottom-0 z-20 flex flex-row justify-around gap-1 overflow-x-auto px-4 py-3
         backdrop-blur-md
         md:inset-y-0 md:right-auto md:left-0 md:h-full md:w-52 md:flex-col md:justify-start
         md:gap-1 md:overflow-visible md:px-8 md:py-10 md:backdrop-blur-none
       "
-      style={{
-        /* On mobile the rail sits over content, so it needs *some* ground under it. On desktop it
-           floats on the abyss with nothing behind it at all. */
-        backgroundColor: "color-mix(in oklab, var(--abyss) 72%, transparent)",
-      }}
     >
-      <span className="label mb-6 hidden md:block" style={{ color: "var(--ink-mute)" }}>
-        Cuttlefish
+      <span className="label mb-6 hidden text-left leading-tight md:block" style={{ color: "var(--ink-mute)" }}>
+        Cuttlefish<br />
+        Cloud<br />
+        Cluster
       </span>
 
       {dests.map((d) => {
@@ -63,11 +61,12 @@ export function Rail() {
           <Link
             key={d.to}
             to={d.to}
-            className="
-              relative shrink-0 rounded-[10px] px-3 py-2 text-[15px] outline-none
+            className={`
+              rail-link shrink-0 rounded-[10px] px-3 py-2 text-[15px] outline-none
               transition-[color,opacity] duration-200
               focus-visible:ring-2 focus-visible:ring-[var(--gold)]
-            "
+              ${here ? "is-active" : ""}
+            `}
             style={{
               color: here ? "var(--gold-hi)" : "var(--ink-mute)",
               transitionTimingFunction: "var(--ease-swim)",

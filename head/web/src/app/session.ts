@@ -17,3 +17,8 @@ export function setSession(me: Me) {
   session.username = me.username;
   session.isAdmin = me.is_admin;
 }
+
+export function clearSession() {
+  session.username = "";
+  session.isAdmin = false;
+}

@@ -3,6 +3,7 @@ import type { Spawn } from "../api";
 import { cancelSpawn } from "../api";
 import { duration, armLabel } from "./format";
 import { IridBloom } from "./IridBloom";
+import { CloudDrift } from "./CloudDrift";
 
 /**
  * One Spawn in the live queue. Two variants, and the difference between them is the whole point of the
@@ -49,16 +50,13 @@ export function SpawnRow({
   const running = variant === "running";
 
   return (
-    // running → the CSS `cloud` (::after dark bands). waiting → the WebGL `IridBloom` canvas below.
-    // Content lives in an inner lifted div so it sits above whichever motion layer the card carries.
-    <li
-      className={`surface ${running ? "cloud " : ""}[--sink:30%] relative rounded-[14px]`}
-      // Short card: fade-y is a PERCENTAGE so the top/bottom edge dissolves proportionally instead of
-      // as a hard px sliver; 22% each side still leaves a solid opaque core. fade-x stays px (wide card).
-      style={{ "--fade-y": "22%", "--fade-x": "12px" } as React.CSSProperties}
-    >
-      {!running && <IridBloom />}
-      <div className="relative z-10 flex items-center gap-4 px-4 py-3.5">
+    // Each variant carries its own motion layer behind the content: running → `CloudDrift`, discrete dark
+    // bands drifting across (this machine is working); waiting → `IridBloom`, a screen-blended WebGL current
+    // (waiting, no known end). Content lives in an inner lifted div so it sits above whichever layer the card
+    // carries. `shard` carries the plate + sink/fade/radius/padding.
+    <li className="shard relative">
+      {running ? <CloudDrift /> : <IridBloom />}
+      <div className="relative z-10 flex items-center gap-4">
       {/* Position — waiting only. The one place a number is structural: it IS the queue. */}
       {variant === "waiting" && (
         <span
