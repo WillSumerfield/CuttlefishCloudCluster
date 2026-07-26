@@ -14,7 +14,8 @@
   **volatility** flag (`--volatile`):
   - *permanent* (default) — always-on, never reclaims.
   - *volatile* — reclaimable at any time by its owner; adds preemption + the reclaim panic-switch.
-  Arms may run on **any OS** (Linux/Windows/Mac/other).
+  Arms run on **Ubuntu 24.04** — natively or under **WSL2** on Windows. (Cross-platform beyond that —
+  macOS, other distros — was discarded 2026-07-19.)
 - **Gateway** — the authenticated network entryway that fronts all access to the cluster.
   Distinct from the **Mesh**: the Gateway fronts human/CLI access, the Mesh is node-to-node.
 
@@ -42,9 +43,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Dashboard** — the web front door, and the **primary** surface for everyday use: signing in, browsing
   cluster state, submitting **Spawns**, following them, and (for the **Admin**) running the cluster.
   Reached from a browser on the LAN or the **Mesh**.
-- **CLI** — one cross-platform tool, the `cuttle` command. Two distinct duties:
-  - *Client duties* (from any machine): the scriptable/power alternative to the **Dashboard** — login,
-    job submission, and following work.
+- **CLI** — one tool, the `cuttle` command (Python; usable on a client that hosts no Arm). Two distinct duties:
+  - *Client duties* (from any machine): the alternative to the **Dashboard**, at operation **parity**
+    with it — login, job submission, and following work. Scriptable throughout; `setup` is additionally
+    offered as a guided **wizard**.
   - *Host duties* (only on the machine being changed): node bring-up and removal (`setup`/`teardown`).
     These are the one thing the **Dashboard** can never do, because they provision the box you run them
     on.

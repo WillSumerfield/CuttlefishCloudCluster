@@ -1,7 +1,8 @@
 # tests — Glossary
 
 > Local glossary for CCC's test suite. Root terms in [`../CONTEXT.md`](../CONTEXT.md).
-> Glossary only — no implementation details. Conventions live in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+> Glossary only — no implementation details. Conventions live in [`../CONTRIBUTING.md`](../CONTRIBUTING.md);
+> what earns a test lives in [`TESTING.md`](TESTING.md).
 
 CCC is a distributed system whose every interesting action needs something a test cannot have: Slurm,
 a GPU, root, a mesh, a donor's machine. The suite exists to test the parts that decide what those
@@ -26,5 +27,11 @@ that behaves like Slurm without being it.
 - **Hardware verification** — the manual gate a Fake Cluster can never replace: real Slurm, real sudo,
   real mesh, a real donor's GPU. Recorded per slice as a short list of things to run and see. Everything
   the fake mocks away is exactly what this catches.
+- **Consequence** — the thing a test exists to prevent, stated in one sentence: a job that hangs
+  forever, a balance that stops summing to zero, a secret that existed once and is now gone, a
+  terminal handed back unusable. A test with no consequence to name is not a test of anything.
+- **Screen-deep** — a property that is only true of what is drawn: a border, a colour, how many rows
+  the cursor moved. Visible the moment the command runs, and therefore verified by running it. The
+  opposite of a **remote consequence**, which is invisible exactly where it is caused.
 - **Mutation check** — the way a test earns its place: break the code it guards, and confirm *that*
   test is the one that fails. A test that still passes against the broken code is not a test.

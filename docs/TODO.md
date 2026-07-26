@@ -125,7 +125,7 @@ Target: Ubuntu 24.04 (noble), amd64.
 | Package | Pinned | Source |
 |---|---|---|
 | `slurm-wlm` | `23.11.4-1.2ubuntu5` | noble base repos |
-| `apptainer` | `1.5.2-1~noble` | `ppa:apptainer/ppa` |
+| `apptainer` | _unpinned (PPA latest)_ | `ppa:apptainer/ppa` — keeps only its newest build, so an exact pin breaks on every release |
 | `nvidia-container-toolkit` | `1.19.1-1` | NVIDIA `libnvidia-container` stable deb repo |
 | base `.sif` image | `pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime` | Docker Hub (def bootstrap) |
 | `wandb` (in base `.sif`) | `wandb==0.28.0` | pip in def `%post` |
