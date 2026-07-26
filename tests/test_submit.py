@@ -3,6 +3,9 @@
 Two things changed at submit: `--time` and `--vram` became required (nothing can price a Spawn whose
 length nobody declared, and nothing can place one whose needs nobody declared), and `--node` became
 admin-only.
+
+*(Phase 6 went further: `--node` is now refused over the API for everyone — pinning is a Head-local
+command. The tests below were updated to pin that invariant instead.)*
 """
 
 import json
@@ -100,30 +103,34 @@ class TestSubmitRequiresDeclarations:
         assert missing in r.json()["detail"]
 
 
-class TestNodeIsAdminOnly:
-    """A User declares what they NEED and lets Slurm choose. Naming a machine sidesteps Eligibility —
-    and with it, the Demand the Spawn should have added to every card that could have run it."""
+class TestNodeIsNotAvailableOverTheApi:
+    """Pinning a Spawn to a named Arm was admin-only over this route until Phase 6 settled that the
+    Head API exposes **no admin writes at all**. It is now `cuttle run --node`, on the Head.
+
+    A User declares what they NEED and lets Slurm choose. Naming a machine sidesteps Eligibility — and
+    with it, the Demand the Spawn should have added to every card that could have run it.
+    """
 
     def test_non_admin_may_not_pin(self, monkeypatch):
         r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, node="gpu-box")
         assert r.status_code == 403
-        assert "--vram" in r.json()["detail"]  # the refusal points at what they should do instead
 
-    def test_admin_may_pin(self, monkeypatch):
+    def test_an_admin_may_not_pin_either(self, monkeypatch):
+        """The point of the phase. An Admin has no branch here, so a stolen admin Session buys
+        nothing a stolen User Session does not."""
         r = post(client(monkeypatch, is_admin=True), minutes=60, vram=24, node="gpu-box")
-        assert r.status_code == 200
+        assert r.status_code == 403
+        assert "on the Head" in r.json()["detail"]  # and it says where the capability went
 
-    def test_admin_pinning_an_unknown_arm_is_caught_here(self, monkeypatch):
-        """We know the real node list; sbatch's own error for a bad --nodelist is opaque."""
+    def test_a_pin_is_refused_not_ignored(self, monkeypatch):
+        """Silently dropping `node` would submit a Spawn that ran somewhere the caller did not ask
+        for, and report success — worse than refusing."""
         r = post(client(monkeypatch, is_admin=True), minutes=60, vram=24, node="typo")
-        assert r.status_code == 422
-        assert "gpu-box" in r.json()["detail"]  # ...and we say what the Arms actually are
+        assert r.status_code == 403
 
-    def test_gate_is_the_head_not_the_client(self, monkeypatch):
-        """The CLI still HAS a --node flag (an admin needs it). Enforcement therefore has to live at
-        the Head, since a client cannot be trusted to police itself."""
-        c = client(monkeypatch, is_admin=False)
-        assert post(c, minutes=60, vram=24, node="gpu-box").status_code == 403
+    def test_submitting_without_a_pin_still_works(self, monkeypatch):
+        """The [U] needs-based path is untouched — only the admin branch was removed."""
+        assert post(client(monkeypatch, is_admin=False), minutes=60, vram=24).status_code == 200
 
 
 class TestCliRequiresTimeAndVram:
@@ -142,15 +149,19 @@ class TestCliRequiresTimeAndVram:
         ["train.py", "--vram", "24"],   # no --time
     ])
     def test_half_a_declaration_is_refused(self, args):
+        """The refusal names the flag that is missing. Since Phase 6 these are promptable, so the
+        message is ours rather than click's — but with no terminal to prompt on, half a declaration
+        is still refused rather than defaulted."""
         r = self.run(*args)
         assert r.exit_code != 0
-        assert "Missing option" in r.output
+        missing = "--vram" if "--time" in args else "--time"
+        assert missing in r.output
 
 
 class TestCancel:
-    """DELETE /spawns/{id} — the escape that CCC never had. You may end your own; an Admin may end
-    anyone's. Attribution is the ledger's (every Spawn runs as the Mantle), so authorization is a row
-    lookup, not Slurm's owner field."""
+    """DELETE /spawns/{id} — the escape that CCC never had. You may end **your own**, and only your
+    own; cancel-anyone moved to the Head in Phase 6. Attribution is the ledger's (every Spawn runs as
+    the Mantle), so authorization is a row lookup, not Slurm's owner field."""
 
     def _seed(self, owner_id: int):
         """Insert an owner and their Spawn into whatever db `client()` just stood up. Called AFTER the
@@ -178,14 +189,15 @@ class TestCancel:
         r = c.delete("/api/spawns/77")
         assert r.status_code == 403
 
-    def test_admin_may_cancel_anyones(self, monkeypatch):
+    def test_an_admin_may_not_cancel_anyones_over_the_api(self, monkeypatch):
+        """Cancel-anyone was an admin branch on this route until Phase 6 removed it: it is now
+        `cuttle cancel <id> --any`, on the Head. The ownership test is unconditional, so admin or
+        not, a Session can only stop the Spawns it owns."""
         c = client(monkeypatch, is_admin=True)
         self._seed(owner_id=2)
-        killed = []
-        monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
+        monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         r = c.delete("/api/spawns/77")
-        assert r.status_code == 204
-        assert killed == [77]
+        assert r.status_code == 403
 
     def test_unknown_spawn_is_404(self, monkeypatch):
         c = client(monkeypatch, is_admin=True)
