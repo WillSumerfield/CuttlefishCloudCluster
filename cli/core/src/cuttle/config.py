@@ -3,12 +3,17 @@
 Pins mirrored in docs/TODO.md — bump both together at full release.
 """
 
+import os
 from pathlib import Path
 
 # --- pinned system stack (Ubuntu 24.04 noble / amd64) ---
 SLURM_PKG = "slurm-wlm=23.11.4-1.2ubuntu5"
 SLURMD_PKG = "slurmd=23.11.4-1.2ubuntu5"  # Arms need the node daemon only, not slurmctld
-APPTAINER_PKG = "apptainer=1.5.2-1~noble"
+# Unpinned: the apptainer PPA keeps only its newest build, so an exact version pin breaks on every
+# apptainer release (1.5.2 → 1.5.3 → …). Take the PPA's latest instead — reproducibility traded for
+# a setup that doesn't break when upstream rotates. The other two pins are safe (Ubuntu universe /
+# the NVIDIA repo both retain old versions).
+APPTAINER_PKG = "apptainer"
 NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"
 MUNGE_PKG = "munge"  # auth; distro version fine
 
@@ -292,13 +297,20 @@ RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at HEAD_SPAWNS_DIR — stage-out 
 # The OPERATOR's own dir — settings + credentials only. It holds no Spawn machinery: images live in
 # CCC_IMAGES_DIR (world-readable, so the home-less Mantle can read them) and Spawn results live on the
 # Head under HEAD_SPAWNS_DIR, fetched over the API. A submitter never needs a local .ccc/spawns.
-CCC_HOME = Path.home() / ".ccc"
+# `$CCC_HOME` overrides the location, so a test (or a second cluster) can point cuttle at an isolated
+# home instead of the operator's real `~/.ccc`. Without it a pty test inherits the live box's
+# credentials and its menu state depends on whether the real Head is reachable — flaky by construction.
+CCC_HOME = Path(os.environ.get("CCC_HOME") or Path.home() / ".ccc")
 CONFIG_DIR = CCC_HOME / "config"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 # Pinned Head certificates, one PEM per host (trust-on-first-use; see tls.py). Keyed by host because a
 # client may one day talk to more than one cluster, and a pin is only meaningful against the Head that
 # presented it.
 PINS_DIR = CCC_HOME / "pins"
+# Every run's full transcript. The screen is a live frame now — progress scrolls past inside the box
+# and is gone when it closes — so the log is the only place the detail survives. One file per run,
+# named for when it started, so a failure days later still has its own.
+LOG_DIR = CCC_HOME / "logs"
 # CLI session bearer (Phase 3a): the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 CREDENTIALS_FILE = CCC_HOME / "credentials"

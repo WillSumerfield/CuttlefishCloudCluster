@@ -18,17 +18,16 @@ Transport is HTTPS, verified against the Head's certificate pinned on this machi
 """
 
 import io
-import json
 import subprocess
 import tarfile
+import tempfile
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import typer
 
-from . import auth, settings, tls
+from . import api, auth, settings, ui
+from .system import run
 
 
 def _project_files(root: Path) -> list[str]:
@@ -66,21 +65,65 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
     `missing_ok` returns None on a 404 instead of raising: a Spawn that wrote nothing to $CCC_OUT is a
     normal outcome, not a malformed command.
     """
-    url = auth._head_url()
-    req = urllib.request.Request(f"{url}/api{path}")  # /api: see auth._api
-    req.add_header("Authorization", f"Bearer {auth._load_token()}")
+    client = auth._client()
+    client.token = auth._load_token()
     try:
-        with urllib.request.urlopen(req, timeout=30, context=tls.context(url)) as r:
-            return r.read()
-    except urllib.error.HTTPError as e:
-        if missing_ok and e.code == 404:
-            return None
-        detail = e.reason
-        try:
-            detail = json.loads(e.read()).get("detail", e.reason)
-        except Exception:
-            pass
-        raise typer.BadParameter(f"{path}: {detail}") from None
+        return client.raw(path, missing_ok=missing_ok)
+    except api.ApiError as e:
+        if ui.DEBUG:
+            raise
+        raise ui.abort(str(e)) from None
+
+
+def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
+                   gpu: int, node: str) -> int:
+    """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
+
+    Pinning is an admin write, and since Phase 6 the Head API has none — so this does not travel over
+    HTTP at all. Authorization is *being the operator on this box*; attribution is whoever is logged
+    in here. It shells into the API venv rather than reimplementing submission, so the Escrow and the
+    Attribution row are written by the same code that serves `/submit` (see spawns.submit_checked).
+    """
+    me = auth._api("GET", "/me")["username"]
+    # The tar has to be readable by the `ccc` account the admin module runs as, so it goes to a
+    # world-readable temp file rather than anywhere under the operator's 0700 home.
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as f:
+        f.write(tar_bytes)
+        tar_path = f.name
+    Path(tar_path).chmod(0o644)
+    try:
+        r = run(auth._admin_argv([
+            "submit", "--user", me, "--script", script, "--tar", tar_path,
+            "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
+            "--node", node, *args]), capture_output=True, text=True, check=False)
+    finally:
+        Path(tar_path).unlink(missing_ok=True)
+    if r.returncode != 0:
+        raise typer.BadParameter((r.stderr or "").strip() or "pinned submit failed")
+    return int(r.stdout.strip().splitlines()[-1])
+
+
+def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool) -> None:
+    """Show what is about to be uploaded, before it is.
+
+    The Dashboard gates submission behind a preview; the CLI has never had one, so `cuttle run` in
+    the wrong directory silently ships whatever is there. The file count and size are the point — a
+    2 GB upload from a directory full of checkpoints is obvious here and invisible otherwise.
+
+    No Karma estimate: pricing a Spawn needs a Tide quote from the Head, and a number shown here that
+    disagreed with what is actually escrowed would be worse than showing nothing.
+    """
+    root = Path.cwd()
+    files = _project_files(root) if not no_gitignore else None
+    paths = files if files is not None else [p for p in root.rglob("*") if p.is_file()]
+    total = sum(p.stat().st_size for p in paths if p.exists())
+    ui.kv([
+        ("script", script),
+        ("upload", f"{len(paths)} files, {total / 1_048_576:.1f} MB"
+                   f"{'' if no_gitignore else '  (.gitignore honored)'}"),
+        ("limit", f"{minutes} min"),
+        ("needs", f"{vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"),
+    ], title="About to submit")
 
 
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
@@ -93,29 +136,51 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
     # works if someone OR-expands it (`--constraint=vram24|vram48`). That someone is the Head.
     #
-    # `node` pins the Spawn to one Arm and is ADMIN-ONLY — enforced at the Head, not here, because a
-    # client cannot be trusted to police it. It validates the name against the live node list too.
-    meta = {"script": script, "gpu": gpu, "args": args, "node": node,
-            "minutes": minutes, "vram": vram,
-            "wandb_env": settings.wandb_env(project, entity)}
-    url = auth._head_url()
-    req = urllib.request.Request(
-        f"{url}/api/submit", data=tar_bytes, method="POST",
-        headers={"Authorization": f"Bearer {auth._load_token()}",
-                 "X-CCC-Meta": json.dumps(meta), "Content-Type": "application/gzip"})
-    try:
-        with urllib.request.urlopen(req, timeout=120, context=tls.context(url)) as r:
-            resp = json.loads(r.read() or "{}")
-    except urllib.error.HTTPError as e:
+    # `node` pins the Spawn to one Arm. Since Phase 6 it does not travel over HTTP at all — the Head
+    # API refuses it for everyone — so a pinned Spawn takes the Head-local path below instead.
+    if node:
+        spawn_id = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node)
+    else:
+        meta = {"script": script, "gpu": gpu, "args": args,
+                "minutes": minutes, "vram": vram,
+                "wandb_env": settings.wandb_env(project, entity)}
+        client = auth._client()
+        client.token = auth._load_token()
         try:
-            detail = json.loads(e.read()).get("detail", e.reason)
-        except Exception:
-            detail = e.reason
-        raise typer.BadParameter(f"/submit: {detail}") from None
-    spawn_id = resp["id"]
-    print(f"submitted spawn {spawn_id}")
+            spawn_id = client.upload("/submit", tar_bytes, meta)["id"]
+        except api.ApiError as e:
+            if ui.DEBUG:
+                raise
+            raise ui.abort(str(e)) from None
+    # The id goes to stdout and the confirmation to stderr, so `id=$(cuttle run ...)` captures
+    # exactly the id while a human still sees what happened.
+    ui.ok(f"submitted spawn {spawn_id}")
+    ui.data(str(spawn_id))
     if follow:
         _follow(spawn_id)
+
+
+def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:
+    """End a Spawn early. Yours over the API from anywhere; **anyone's only on the Head**.
+
+    Two roads on purpose. Cancelling your own Spawn is a [U] write and stays remote — it is the escape
+    hatch from paying for a job you no longer want, and it has to work from the box you submitted
+    from. Cancelling *someone else's* is an admin write, and since Phase 6 the Head API has none: an
+    operator standing at the Head can stop a runaway, a stolen Session cannot.
+
+    Either way the Karma tick settles the Spawn for the seconds it actually held when it drops out of
+    squeue, so a cancel costs its submitter what it used and no more.
+    """
+    if not yes and not ui.ask_confirm(f"Cancel spawn {spawn_id}?"):
+        raise ui.abort("not cancelled")
+    if any_owner:
+        # scancel, not the API: every Spawn runs as the Mantle, so the operator's sudo is what makes
+        # this possible at all. No ledger lookup — an operator reaping a runaway may well be doing it
+        # for a Spawn the Head never recorded.
+        run(["scancel", str(spawn_id)], sudo=True)
+    else:
+        auth._api("DELETE", f"/spawns/{spawn_id}")
+    ui.ok(f"spawn {spawn_id} cancelled")
 
 
 def _outcome(st: dict) -> str:
@@ -141,30 +206,52 @@ def _follow(spawn_id: int) -> None:
             text = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
             if len(text) > pos:
                 print(text[pos:], end="", flush=True)
-            print(f"\nspawn {spawn_id} {_outcome(st)}")
+            ui.ok(f"spawn {spawn_id} {_outcome(st)}")
             return
         time.sleep(0.5)
 
 
-def status(spawn_id: int) -> None:
+def queue(as_json: bool = False) -> None:
+    """The live Spawn queue — every pending/running Spawn on the cluster, and who submitted it.
+
+    Everyone's, like the Dashboard's landing table: the queue is shared, so what is running ahead of
+    yours is exactly what you want to see. `WHO` is the *ledger's* attribution, not Slurm's — every
+    Spawn runs as the Mantle, so Slurm's own user field says `ccc` for all of them (see the Head's
+    /spawns). A `-` there is a Spawn the Head has no attribution row for."""
+    rows = auth._api("GET", "/spawns")
+
+    def render():
+        if not rows:
+            ui.say("the queue is empty")
+            return
+        ui.table(
+            ["ID", "SPAWN", "STATE", "WHO", "NODE", "GPU", "MIN"],
+            [[r["id"], r["name"], r["state"], r.get("submitted_by") or "-",
+              r.get("node") or "-", r.get("gpus"), r.get("time_limit")] for r in rows])
+
+    ui.emit(rows, as_json, render)
+
+
+def status(spawn_id: int, as_json: bool = False) -> None:
     st = auth._api("GET", f"/spawns/{spawn_id}")
-    print(_outcome(st).upper() if st.get("done") else st["state"])
+    ui.emit(st, as_json,
+            lambda: ui.data(_outcome(st).upper() if st.get("done") else st["state"]))
 
 
 def logs(spawn_id: int, follow: bool) -> None:
     if follow:
         _follow(spawn_id)
     else:
-        print(_get_bytes(f"/spawns/{spawn_id}/logs").decode(), end="")
+        ui.data(_get_bytes(f"/spawns/{spawn_id}/logs").decode().rstrip())
 
 
 def outputs(spawn_id: int) -> None:
     """Download a Spawn's $CCC_OUT dir as a tar into the cwd."""
     data = _get_bytes(f"/spawns/{spawn_id}/outputs", missing_ok=True)
     if data is None:
-        print(f"spawn {spawn_id} produced no outputs "
-              f"(a Spawn returns files by writing them to $CCC_OUT inside the Pod)")
+        ui.warn(f"spawn {spawn_id} produced no outputs")
+        ui.hint("a Spawn returns files by writing them to $CCC_OUT inside the Pod")
         return
     dest = Path.cwd() / f"spawn-{spawn_id}-outputs.tar.gz"
     dest.write_bytes(data)
-    print(f"wrote {dest}")
+    ui.ok(f"wrote {dest}")

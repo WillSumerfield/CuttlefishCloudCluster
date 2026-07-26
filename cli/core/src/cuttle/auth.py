@@ -9,18 +9,30 @@ Two halves with different trust models:
   is the authorization — no session (mirrors `cuttle arm authorize`).
 """
 
-import json
-import ssl
-import urllib.error
-import urllib.request
-
 import typer
 
-from . import config, settings, tls
+from . import api, config, settings, tls, ui
 from .system import run
 
 
 # --- HTTP to the Head API ---------------------------------------------------
+# The transport lives in api.py; this is the CLI's thin shim over it.
+#
+# `ApiError` is deliberately NOT translated into `typer.BadParameter` here. It was until Phase 6
+# slice 3, and the result was that "cannot reach the Head" printed as a click *usage* error — a
+# `Usage: cuttle status ...` box telling you to try `--help`, for a failure that has nothing to do
+# with how you typed the command. It now propagates to `ui.run_app`, which prints one clear line.
+
+_CLIENT: api.Api | None = None
+
+
+def _client() -> api.Api:
+    """One client per process — keeps the TLS handshake and connection across a command's calls."""
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = api.for_head()
+    return _CLIENT
+
 
 def _api(method: str, path: str, token: str | None = None, body: dict | None = None,
          auth: bool = True) -> dict:
@@ -29,40 +41,23 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
     `auth=True` (the default) attaches the stored session bearer. Every route but /healthz needs one:
     reads used to be anonymous, and the browser-login slice put them behind the session.
     """
-    url = _head_url()
-    data = json.dumps(body).encode() if body is not None else None
-    # Every endpoint lives under /api (so no API path collides with a Dashboard client route). Callers
-    # pass the bare path; the prefix is added here, in the one place all JSON calls funnel through.
-    req = urllib.request.Request(f"{url}/api{path}", data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+    # Loaded here, not in api.py: reading the credentials file is what makes "not logged in" a
+    # *command* error, and `auth=False` callers (login) must never trigger it.
     if token is None and auth:
         token = _load_token()
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=15, context=tls.context(url)) as r:
-            return json.loads(r.read() or "{}")
-    except urllib.error.HTTPError as e:
-        try:
-            detail = json.loads(e.read()).get("detail", e.reason)
-        except Exception:
-            detail = e.reason
-        raise typer.BadParameter(f"{path}: {detail}") from None
-    except urllib.error.URLError as e:
-        # A cert mismatch lands here. Say so plainly — this is the alarm the pin exists to raise.
-        if isinstance(e.reason, ssl.SSLCertVerificationError):
-            raise typer.BadParameter(
-                f"{url} presented a certificate that does not match the one pinned on this machine.\n"
-                f"Either the Head was rebuilt with a new certificate, or something is impersonating "
-                f"it.\nIf you rebuilt it: delete the pin and log in again.") from None
-        raise
+        return _client().json(method, path, body=body, token=token, auth=auth)
+    except api.ApiError as e:
+        if ui.DEBUG:
+            raise                      # --debug wants the stack, not a tidy summary of it
+        raise ui.abort(str(e)) from None
 
 
 def _head_url() -> str:
-    url = settings.load().get("head")
-    if not url:
-        raise typer.BadParameter("no Head URL set — run `cuttle login --head http://<host>:8082`")
-    return url
+    try:
+        return api._head_url()
+    except api.ApiError as e:
+        raise typer.BadParameter(e.detail) from None
 
 
 def _set_head(head: str | None) -> None:
@@ -88,43 +83,74 @@ def _load_token() -> str:
 
 # --- login / session --------------------------------------------------------
 
-def login(head: str | None = None) -> None:
+def login(head: str | None = None) -> str:
+    """Prompt for credentials, mint a session. Returns the logged-in display name (with an admin
+    marker) — the caller frames the flow and uses it as the box's summary line."""
     _set_head(head)
     # Pin BEFORE prompting: the password is the thing we are protecting, so the operator must have
     # accepted the Head's identity before it is ever typed, let alone sent.
     tls.ensure_pinned(_head_url())
-    username = typer.prompt("Username")
-    password = typer.prompt("Password", hide_input=True)
+    username = ui.ask_text("Username")
+    password = ui.ask_password("Password")
     resp = _api("POST", "/login", token="", body={"username": username, "password": password})
     _save_token(resp["token"])
     if resp["must_change_password"]:
-        print("cuttle: password change required before first use")
+        ui.warn("password change required before first use")
         _rotate(resp["token"], old=password)
-    print(f"cuttle: logged in as {username}" + (" (admin)" if resp["is_admin"] else ""))
+    who = username + (" (admin)" if resp["is_admin"] else "")
+    ui.ok(f"logged in as {who}")
+    return who
 
 
 def _rotate(token: str, old: str | None = None) -> None:
     if old is None:
-        old = typer.prompt("Current password", hide_input=True)
-    new = typer.prompt("New password", hide_input=True, confirmation_prompt=True)
+        old = ui.ask_password("Current password")
+    # Typed twice, because it is never echoed and a typo would lock the account out of itself.
+    while True:
+        new = ui.ask_password("New password")
+        if new == ui.ask_password("New password (again)"):
+            break
+        ui.warn("they did not match — try again")
     _api("POST", "/passwd", token=token, body={"old_password": old, "new_password": new})
-    print("cuttle: password changed")
+    ui.ok("password changed")
 
 
 def passwd() -> None:
     _rotate(_load_token())
 
 
-def whoami() -> None:
+def whoami(as_json: bool = False) -> None:
     me = _api("GET", "/me", token=_load_token())
-    print(me["username"] + (" (admin)" if me["is_admin"] else ""))
+    # stdout, so `u=$(cuttle whoami)` works; the admin marker is decoration and stays out of it.
+    ui.emit(me, as_json, lambda: ui.data(me["username"] + (" (admin)" if me["is_admin"] else "")))
+
+
+def account(as_json: bool = False) -> None:
+    """This session's User in full: identity from /me, plus where they stand in the economy.
+
+    Richer than `whoami` (which prints a bare username for `u=$(cuttle whoami)`). Balance/Escrow/Share
+    and the queue nice they imply come out of the *standings*, the one place they are computed — so an
+    Admin, who has no Balance and never appears in the standings, shows identity alone. That absence is
+    correct: an Admin is outside the economy (it keeps `Σ balances ≡ 0`)."""
+    me = _api("GET", "/me", token=_load_token())
+    mine = next((r for r in _api("GET", "/karma") if r["username"] == me["username"]), None)
+    payload = {**me, **({k: mine[k] for k in ("balance", "escrow", "share", "nice")} if mine else {})}
+
+    def render():
+        pairs = [("user", me["username"] + (" (admin)" if me["is_admin"] else ""))]
+        if mine:
+            pairs += [("balance", f"{mine['balance']:.1f}"), ("escrow", f"{mine['escrow']:.1f}"),
+                      ("share", f"{mine['share']:.2f}"), ("nice", mine["nice"])]
+        ui.kv(pairs)
+
+    ui.emit(payload, as_json, render)
 
 
 def logout() -> None:
     if config.CREDENTIALS_FILE.exists():
         _api("POST", "/logout", token=_load_token())
         config.CREDENTIALS_FILE.unlink()
-    print("cuttle: logged out")
+    ui.ok("logged out")
 
 
 # --- user-admin (on the Head, as ccc) ---------------------------------------
@@ -135,16 +161,47 @@ def _admin_argv(args: list[str]) -> list[str]:
             str(config.API_VENV / "bin" / "python"), "-m", "ccc_head_api.admin", *args]
 
 
+def _admin(args: list[str], check: bool = True):
+    """Run a Head-local admin subcommand **and show what it said**.
+
+    These are the commands whose stdout is the whole point: `add` prints a one-time temp password
+    that exists nowhere else once the process exits, `list` prints the users. `system.run` captures
+    by default (so `setup`'s command stream stays out of the way), which means inheriting stdout
+    would make the temp password visible only under `--verbose` — it was silently swallowed exactly
+    that way until this was written. Capture explicitly and re-emit, so what the operator sees does
+    not depend on a global verbosity flag.
+
+    stdout is re-emitted as data: `pw=$(cuttle user add bob)` has to keep working.
+    """
+    r = run(_admin_argv(args), capture_output=True, text=True, check=check)
+    if (r.stdout or "").strip():
+        ui.data(r.stdout.rstrip())
+    if (r.stderr or "").strip():
+        ui.say(r.stderr.rstrip())
+    return r
+
+
 def user_add(username: str, admin: bool = False) -> None:
-    run(_admin_argv(["add", *(["--admin"] if admin else []), username]))
+    _admin(["add", *(["--admin"] if admin else []), username])
 
 
 def user_list() -> None:
-    run(_admin_argv(["list"]))
+    _admin(["list"])
 
 
 def user_remove(username: str) -> None:
-    run(_admin_argv(["remove", username]))
+    _admin(["remove", username])
+
+
+def user_names() -> list[str]:
+    """Usernames, for a picker. Captured rather than printed — `_admin` exists to *show* output, and
+    this is the one caller that wants the values instead. Empty on any failure: a picker that cannot
+    read the list falls back to a free-text prompt, which still works."""
+    r = run(_admin_argv(["list"]), capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return []
+    return [line.split()[0] for line in (r.stdout or "").splitlines()
+            if line.strip() and not line.startswith("(")]
 
 
 def user_exists(username: str) -> bool:
@@ -154,5 +211,15 @@ def user_exists(username: str) -> bool:
 
 
 def seed_admin(username: str) -> None:
-    """First-admin seed at `setup --head`. Tolerant of re-runs (already-exists is non-fatal)."""
-    run(_admin_argv(["add", "--admin", username]), check=False)
+    """First-admin seed at `setup --head`. Tolerant of re-runs (already-exists is non-fatal).
+
+    The temp password is lifted out of the output and registered as a *result*, so it survives the
+    box collapsing. It is stored hashed and printed exactly once: if it scrolls past under six more
+    phases of provisioning, it is gone, and the cluster's first admin cannot log in.
+    """
+    r = _admin(["add", "--admin", username], check=False)
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("temp password:"):
+            ui.result("admin", username)
+            ui.result("temp password", line.split(":", 1)[1].strip())
+            ui.result("change it with", "cuttle login --head <url>, then cuttle passwd")
