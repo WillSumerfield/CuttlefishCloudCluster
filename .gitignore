@@ -37,6 +37,9 @@ venv/
 # --- Temp / scratch plans ---
 temp/
 
+# --- Built installer bundle (produced by `cuttle build-installer`) ---
+cuttle-installer.tar.gz
+
 # --- W&B run output ---
 wandb/
 
