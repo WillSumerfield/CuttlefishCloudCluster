@@ -36,6 +36,15 @@ karma_app = typer.Typer(invoke_without_command=True, help="Karma: standings, ove
 app.add_typer(karma_app, name="karma")
 
 
+def _version(value: bool) -> None:
+    # Eager: fires during option parsing, before the callback body or any subcommand — so `--version`
+    # answers on a box that is not set up or logged in, which is exactly when you ask what you installed.
+    if value:
+        from importlib.metadata import version
+        ui.data(f"cuttle {version('cuttle')}")
+        raise typer.Exit()
+
+
 @app.callback()
 def _root(
     ctx: typer.Context,
@@ -47,6 +56,9 @@ def _root(
     no_input: bool = typer.Option(
         False, "--no-input", help="Never prompt; a missing argument is an error. Implied when stdin "
                                   "is not a terminal — this forces it on when one is."),
+    version: bool = typer.Option(
+        False, "--version", "-V", is_eager=True, callback=_version,
+        help="Show the cuttle version and exit."),
 ) -> None:
     """CCC front door."""
     ui.configure(debug=debug, verbose=verbose, no_input=no_input)

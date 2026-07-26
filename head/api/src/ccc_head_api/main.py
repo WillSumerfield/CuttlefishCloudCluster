@@ -64,6 +64,26 @@ class PasswdRequest(BaseModel):
     new_password: str
 
 
+def password_policy_error(new: str, current: str) -> str | None:
+    """The one place a new password is judged, for every caller of `/passwd` (both clients, admin
+    rotations, and the forced first-login change). Returns a human reason to refuse, or None to accept.
+
+    Deliberately minor: length + a light mix, plus "not the one you already have" so a forced rotation
+    off an operator-issued temp password actually moves off it. The CLI mirrors this rule for an inline
+    re-prompt (`cuttle`'s `auth._password_policy_error`) — keep the two in step; this side is the one
+    that binds. `secrets.token_urlsafe` temp passwords clear it, so they are never wedged out at login.
+    """
+    if len(new) < 8:
+        return "password must be at least 8 characters"
+    classes = sum((any(c.islower() for c in new), any(c.isupper() for c in new),
+                   any(c.isdigit() for c in new), any(not c.isalnum() for c in new)))
+    if classes < 2:
+        return "password must mix at least two of: lowercase, uppercase, digits, symbols"
+    if new == current:
+        return "new password must differ from your current one"
+    return None
+
+
 def _token_from(request: Request) -> str | None:
     """A client presents its session either as a bearer (CLI) or the HttpOnly cookie (browser)."""
     auth = request.headers.get("authorization", "")
@@ -241,6 +261,12 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
     with db.connect() as conn:
         if db.verify_password(conn, user["username"], req.old_password) is None:
             raise HTTPException(403, "current password is wrong")
+        # Policy is checked only after the old password is proven: a 422 otherwise would tell an
+        # unauthenticated caller which candidate strings are well-formed. 422 (not 403): the request is
+        # authenticated and the act is allowed — the payload just isn't acceptable.
+        reason = password_policy_error(req.new_password, req.old_password)
+        if reason is not None:
+            raise HTTPException(422, reason)
         db.set_password(conn, user["username"], req.new_password)
     return {"ok": True}
 

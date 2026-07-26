@@ -101,11 +101,31 @@ def login(head: str | None = None) -> str:
     resp = _api("POST", "/login", token="", body={"username": username, "password": password})
     _save_token(resp["token"])
     if resp["must_change_password"]:
-        ui.warn("password change required before first use")
-        _rotate(resp["token"], old=password)
+        # A forced first-login change earns a frame: it is a step of its own, and the operator-issued
+        # temp password needs one line saying why you are being asked. Voluntary `cuttle passwd` reuses
+        # `_rotate` without the frame.
+        with ui.section("Set your password", lambda: "password set"):
+            ui.say("This account was created with a temporary password. "
+                   "Choose your own to continue.")
+            _rotate(resp["token"], old=password)
     who = username + (" (admin)" if resp["is_admin"] else "")
     ui.ok(f"logged in as {who}")
     return who
+
+
+def _password_policy_error(new: str, current: str) -> str | None:
+    """Mirror of the Head's `password_policy_error` (ccc_head_api.main), so a weak password is caught at
+    the prompt with an inline re-ask instead of a round-trip and a 422. The Head is authoritative — if
+    the two ever drift it still refuses; this only saves the trip."""
+    if len(new) < 8:
+        return "at least 8 characters"
+    classes = sum((any(c.islower() for c in new), any(c.isupper() for c in new),
+                   any(c.isdigit() for c in new), any(not c.isalnum() for c in new)))
+    if classes < 2:
+        return "a mix of at least two of: lowercase, uppercase, digits, symbols"
+    if new == current:
+        return "different from your current password"
+    return None
 
 
 def _rotate(token: str, old: str | None = None) -> None:
@@ -114,9 +134,14 @@ def _rotate(token: str, old: str | None = None) -> None:
     # Typed twice, because it is never echoed and a typo would lock the account out of itself.
     while True:
         new = ui.ask_password("New password")
-        if new == ui.ask_password("New password (again)"):
-            break
-        ui.warn("they did not match — try again")
+        if new != ui.ask_password("New password (again)"):
+            ui.warn("they did not match — try again")
+            continue
+        reason = _password_policy_error(new, old)
+        if reason is not None:
+            ui.warn(f"password must be {reason} — try again")
+            continue
+        break
     _api("POST", "/passwd", token=token, body={"old_password": old, "new_password": new})
     ui.ok("password changed")
 

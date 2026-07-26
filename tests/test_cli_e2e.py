@@ -73,6 +73,73 @@ class TestSession:
         assert signed_in("login", input="alice\nnew-passphrase\n").exit_code == 0
 
 
+class TestVersion:
+    """Phase 8 loose-end A. Eager, so it answers before login/setup — the moment you ask a hand-carried
+    client what it is."""
+
+    def test_version_prints_and_exits(self, cli):
+        for flag in ("--version", "-V"):
+            r = cli(flag)
+            assert r.exit_code == 0, r.output
+            assert r.output.strip() == "cuttle 0.0.1"
+
+
+class TestPasswordPolicy:
+    """Phase 8 loose-end C. The Head is authoritative (the Dashboard rides the same route), so the
+    policy is proven server-direct; the CLI adds an inline pre-check so a weak choice never round-trips.
+    """
+
+    def _token(self, head, user="alice"):
+        return head.post("/login", json={"username": user, "password": USERS[user]}).json()["token"]
+
+    def _passwd(self, head, token, old, new):
+        return head.post("/passwd", json={"old_password": old, "new_password": new},
+                         headers={"Authorization": f"Bearer {token}"})
+
+    # --- server-authoritative ---
+    def test_the_head_refuses_a_short_password(self, head):
+        r = self._passwd(head, self._token(head), USERS["alice"], "Ab1$")
+        assert r.status_code == 422 and "8 characters" in r.json()["detail"]
+
+    def test_the_head_refuses_a_single_character_class(self, head):
+        r = self._passwd(head, self._token(head), USERS["alice"], "alllowercase")
+        assert r.status_code == 422 and "mix" in r.json()["detail"]
+
+    def test_the_head_refuses_reusing_the_current_password(self, head):
+        tok = self._token(head)
+        assert self._passwd(head, tok, USERS["alice"], "Str0ngPass").status_code == 200
+        r = self._passwd(head, tok, "Str0ngPass", "Str0ngPass")   # now the current one
+        assert r.status_code == 422 and "differ" in r.json()["detail"]
+
+    def test_the_head_accepts_a_compliant_password(self, head):
+        assert self._passwd(head, self._token(head), USERS["alice"], "Str0ngPass").status_code == 200
+
+    def test_a_wrong_old_password_is_403_before_policy_is_judged(self, head):
+        """Old-password check first: a 422 on a wrong old password would tell an attacker which
+        candidate new strings are well-formed without ever proving they hold the account."""
+        r = self._passwd(head, self._token(head), "wrong-old", "weak")
+        assert r.status_code == 403
+
+    # --- CLI pre-check + forced-rotation framing ---
+    def test_passwd_reprompts_a_weak_password_inline(self, signed_in):
+        result = signed_in("passwd",
+                           input=f"{USERS['alice']}\nshort\nshort\nStr0ngPass\nStr0ngPass\n")
+        assert result.exit_code == 0, result.output
+        assert "at least 8 characters" in result.output
+
+    def test_forced_first_login_is_framed_refuses_the_temp_then_accepts(self, cli):
+        with db.connect() as conn:
+            temp = db.add_user(conn, "carol")            # must_change=1, random temp password
+        # login (carol, temp) -> forced rotation: reuse temp (refused: new==current) -> a strong one.
+        result = cli("login", input=f"carol\n{temp}\n{temp}\n{temp}\nStr0ngPass\nStr0ngPass\n")
+        assert result.exit_code == 0, result.output
+        assert "temporary password" in result.output      # the why-line frames the change
+        assert "logged in as carol" in result.output
+        # rotation took effect: the temp is dead, the new password logs in.
+        assert cli("login", input="carol\nStr0ngPass\n").exit_code == 0
+        assert cli("login", input=f"carol\n{temp}\n").exit_code != 0
+
+
 class TestSubmit:
     """`cuttle run` — the operation the whole cluster exists for."""
 
