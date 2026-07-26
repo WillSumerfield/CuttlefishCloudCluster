@@ -232,6 +232,43 @@ def queue(as_json: bool = False) -> None:
     ui.emit(rows, as_json, render)
 
 
+def _short(ts: str | None) -> str:
+    """An ISO timestamp trimmed to the minute, for a table cell — or a dash if there is none yet."""
+    return ts[:16].replace("T", " ") if ts else "-"
+
+
+def _history_outcome(r: dict) -> str:
+    """A finished Spawn's verdict, as a word. Mirrors GET /spawns/{id}: a NULL exit code with a
+    recorded end is a Spawn that died without one (scancel'd, OOM, or its Arm dropped); a row still
+    unstamped left the queue seconds ago and the tick has not settled it yet."""
+    if r.get("finished_at") is None:
+        return "—"
+    code = r.get("exit_code")
+    if code is None:
+        return "failed"
+    return "done" if code == 0 else f"failed ({code})"
+
+
+def history(days: int = 30, as_json: bool = False) -> None:
+    """Past Spawns on the cluster — everything the live queue has forgotten — newest first. Everyone's,
+    like `queue`: the cluster is shared. Each row shows who submitted it, what it declared, what it
+    settled at, and how it ended."""
+    rows = auth._api("GET", f"/spawns/history?days={days}")
+
+    def render():
+        if not rows:
+            ui.say(f"no Spawns in the last {days} days")
+            return
+        ui.table(
+            ["SUBMITTED", "FINISHED", "ID", "SCRIPT", "WHO", "GPU", "MIN", "COST", "OUTCOME"],
+            [[_short(r["submitted_at"]), _short(r.get("finished_at")), r["job_id"], r["script"],
+              r.get("submitted_by") or "-", r.get("gpus"), r.get("minutes"),
+              f"{r['cost']:.1f}" if r.get("cost") is not None else "—", _history_outcome(r)]
+             for r in rows])
+
+    ui.emit(rows, as_json, render)
+
+
 def status(spawn_id: int, as_json: bool = False) -> None:
     st = auth._api("GET", f"/spawns/{spawn_id}")
     ui.emit(st, as_json,

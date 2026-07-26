@@ -17,6 +17,7 @@ warning once. The session cookie is therefore Secure.
 import json
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
@@ -113,6 +114,21 @@ def spawns(user: dict = Depends(current_user)) -> list[dict]:
     for r in rows:
         r["submitted_by"] = submitters.get(r["id"])
     return rows
+
+
+# Declared BEFORE `/spawns/{job_id}`: FastAPI matches in order, and `history` would otherwise be parsed
+# as an int job_id and 422.
+@api.get("/spawns/history")
+def spawns_history(days: int = 30, user: dict = Depends(current_user)) -> list[dict]:
+    """The durable archive: Spawns submitted within `days`, newest first — everything the live queue has
+    forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
+    history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
+    carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
+    finished_at)."""
+    live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with db.connect() as conn:
+        return [dict(r) for r in db.spawn_history(conn, since, live)]
 
 
 @api.get("/spawns/{job_id}")

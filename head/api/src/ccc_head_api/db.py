@@ -25,7 +25,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -158,7 +158,18 @@ CREATE TABLE karma_demand (
 CREATE INDEX idx_karma_demand_at ON karma_demand(at);
 """
 
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]  # index i takes user_version i -> i+1
+# `spawns` learns its ENDING: the exit code, and when it ended. Recorded once, by the tick, the pass it
+# notices the Spawn has left the queue — the durable outcome `GET /spawns/history` reads, because squeue
+# forgets a finished job after MinJobAge and we run no slurmdbd. `exit_code` NULL with `finished_at` set
+# is a Spawn that ended without recording one (scancel'd, OOM, or its Arm dropped before stage-out) — a
+# failure, exactly as `GET /spawns/{id}` already reports it live.
+_SCHEMA_V5 = """
+ALTER TABLE spawns ADD COLUMN exit_code   INTEGER;
+ALTER TABLE spawns ADD COLUMN finished_at TEXT;
+"""
+
+# index i takes user_version i -> i+1
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -366,6 +377,44 @@ def spawn_needs(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlit
         f"SELECT job_id, user_id, gpus, vram_gb, node FROM spawns WHERE job_id IN ({marks})", job_ids
     ).fetchall()
     return {r["job_id"]: r for r in rows}
+
+
+def unfinished_spawns(conn: sqlite3.Connection) -> list[int]:
+    """Every Spawn with no ending recorded yet — the tick's candidates for outcome-stamping. Once
+    stamped (finished_at set) a Spawn drops out, so after the first pass this is just the live queue plus
+    whatever ended in the last 30s."""
+    return [r["job_id"] for r in
+            conn.execute("SELECT job_id FROM spawns WHERE finished_at IS NULL").fetchall()]
+
+
+def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, at: str) -> None:
+    """Stamp a Spawn's ending, once. Idempotent on `finished_at`: a later pass cannot overwrite the code
+    with a NULL once the exit file has aged out, and a Spawn's recorded end is its first observed one."""
+    conn.execute(
+        "UPDATE spawns SET exit_code=?, finished_at=? WHERE job_id=? AND finished_at IS NULL",
+        (exit_code, at, job_id))
+    conn.commit()
+
+
+def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int]) -> list[sqlite3.Row]:
+    """Every Spawn submitted since `since`, minus the ids in `exclude` (the live queue) — the durable
+    archive, newest first. The settled cost joins in from the ledger's `settle` row (a Spawn that never
+    settled — Admin-owned, or ended before its escrow was metered — has NULL cost, which reads as `—`).
+    Everyone's, like the live queue: what ran on the shared cluster is not private."""
+    # `NOT IN ()` has no valid SQL spelling — `NOT IN (NULL)` is UNKNOWN for every row and drops the
+    # whole table — so the exclusion is a clause only when there is something live to exclude.
+    clause = f" AND s.job_id NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
+    return conn.execute(
+        f"""SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
+                   s.gpus, s.vram_gb, s.minutes, s.node, u.username AS submitted_by,
+                   l.amount AS cost
+            FROM spawns s
+            LEFT JOIN users u ON u.id = s.user_id
+            LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
+            WHERE s.submitted_at >= ?{clause}
+            ORDER BY s.submitted_at DESC""",
+        (since, *exclude),
+    ).fetchall()
 
 
 # --- Karma ledger (slice 1) -------------------------------------------------

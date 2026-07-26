@@ -179,6 +179,63 @@ class TestQueue:
         assert r.exit_code != 0 and "not logged in" in r.output
 
 
+class TestHistory:
+    """`cuttle history` — the durable archive, disjoint from the live queue, with cost + outcome. The
+    finished rows are seeded straight into head.db (the tick's stamping is covered in test_history.py);
+    the live squeue is faked so the exclusion is what's exercised."""
+
+    def _finished(self, job_id, user_id, exit_code, cost=None, owner_id=None):
+        with db.connect() as conn:
+            db.record_spawn(conn, job_id, user_id, "train.py", f"uuid-{job_id}", 60, 1, 24, "gpu-box",
+                            hold=5.0)
+            db.mark_finished(conn, job_id, exit_code, "2026-07-26T12:00:00Z")
+            if cost is not None:
+                db.record_karma(conn, "settle", cost, user_id, owner_id, job_id=job_id)
+
+    def _alice(self):
+        with db.connect() as conn:
+            return db.get_user(conn, "alice")["id"]
+
+    def test_empty_history_says_so(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "spawns", lambda: [])
+        r = signed_in("history")
+        assert r.exit_code == 0, r.output
+        assert "no Spawns in the last 30 days" in r.output
+
+    def test_history_shows_cost_and_a_done_outcome(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "spawns", lambda: [])
+        self._finished(4207, self._alice(), exit_code=0, cost=3.4, owner_id=self._alice())
+        r = signed_in("history")
+        assert r.exit_code == 0, r.output
+        assert "4207" in r.output and "alice" in r.output
+        assert "done" in r.output and "3.4" in r.output
+
+    def test_a_nonzero_exit_reads_as_failed(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "spawns", lambda: [])
+        self._finished(4208, self._alice(), exit_code=1, cost=1.0, owner_id=self._alice())
+        assert "failed (1)" in signed_in("history").output
+
+    def test_history_excludes_the_currently_queued(self, signed_in, monkeypatch):
+        """A Spawn still in squeue belongs to `queue`, not `history` — the two views are disjoint."""
+        with db.connect() as conn:
+            db.record_spawn(conn, 4207, self._alice(), "train.py", "uuid", 60, 1, 24, "gpu-box",
+                            hold=5.0)
+        monkeypatch.setattr(slurm, "spawns", lambda: [
+            {"id": 4207, "name": "train.py", "state": "running", "node": "gpu-box",
+             "gpus": 1, "user": "ccc", "time_limit": 60, "submit_time": 0, "start_time": 0}])
+        assert "4207" not in signed_in("history").output
+
+    def test_history_json_carries_cost_and_outcome(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "spawns", lambda: [])
+        self._finished(4207, self._alice(), exit_code=0, cost=3.4, owner_id=self._alice())
+        row = json.loads(signed_in("history", "--json").output)[0]
+        assert row["job_id"] == 4207 and row["cost"] == 3.4 and row["exit_code"] == 0
+
+    def test_history_without_a_session_is_refused(self, cli):
+        r = cli("history")
+        assert r.exit_code != 0 and "not logged in" in r.output
+
+
 class TestAccount:
     """`cuttle account` — identity from /me, standing from the standings. An Admin is outside the
     economy (absent from standings), so its account is identity alone."""

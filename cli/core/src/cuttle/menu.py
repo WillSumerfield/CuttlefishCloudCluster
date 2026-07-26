@@ -37,7 +37,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer"}
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
-LOGIN_REQUIRED = {"run", "queue", "status", "logs", "outputs", "cancel", "karma", "tide",
+LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide",
                   "account", "logout", "whoami", "passwd"}
 
 # How long the session probe (GET /me) may take before we give up and show the offline safe-set.
@@ -58,6 +58,7 @@ class MenuState:
 LABELS = {
     "run": "Submit a Spawn",
     "queue": "See the queue",
+    "history": "Spawn history",
     "status": "Check a Spawn",
     "logs": "Read a Spawn's output",
     "outputs": "Download a Spawn's outputs",
@@ -100,7 +101,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # Top-level order — by how often you reach for it, not by declaration order in main.py. The first
 # entry is pre-selected, so it should be the daily verb rather than the one that re-provisions the
 # box. Anything unlisted keeps its declared position, after these.
-ORDER = ["run", "queue", "status", "logs", "outputs", "cancel", "karma", "tide", "account"]
+ORDER = ["run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide", "account"]
 
 
 def is_head() -> bool:

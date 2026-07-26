@@ -31,7 +31,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, slurm
+from . import db, karma, slurm, spawns
 
 log = logging.getLogger("ccc.karma")
 
@@ -112,6 +112,25 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> i
     return settled
 
 
+def _record_endings(conn, live_ids: set[int], now: datetime) -> None:
+    """Stamp the durable outcome of every Spawn that has left the queue but has no ending recorded yet.
+
+    Its own step, not folded into `_settle`, because settlement only walks ESCROWED Spawns — an Admin's
+    Spawn carries no hold, so it would never be stamped and `GET /spawns/history` would show it open
+    forever. The exit file is read here, the one moment we know the job has just ended and its stage-out
+    has landed; a Spawn absent from a *successful* poll is the end-of-life signal (see the module
+    docstring). A missing file is a Spawn that ended recording no code — killed, OOM, or its Arm dropped
+    before stage-out — and is stamped with a NULL exit_code, which history reads as failed."""
+    for job_id in db.unfinished_spawns(conn):
+        if job_id in live_ids:
+            continue
+        try:
+            code = spawns.exit_code(job_id)
+        except OSError:
+            code = None            # unreadable exit dir == no code recorded (failed); never wedge the pass
+        db.mark_finished(conn, job_id, code, now.strftime(_TS))
+
+
 def once(now: datetime | None = None) -> tuple[int, int]:
     """One pass. Returns (Spawns re-niced, Spawns settled).
 
@@ -132,6 +151,7 @@ def once(now: datetime | None = None) -> tuple[int, int]:
 
         _meter(conn, jobs, arms, demand, needs, now)
         settled = _settle(conn, set(ids), arms, now)
+        _record_endings(conn, set(ids), now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,
         # and a settlement moves their Balance. Both change the nice we are about to push, and pushing

@@ -522,6 +522,15 @@ def queue(as_json: bool = typer.Option(False, "--json", help="Machine-readable o
 
 
 @app.command()
+def history(
+    days: int = typer.Option(30, "--days", help="How far back to read."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+):
+    """Show past Spawns — everything the live queue has forgotten — with their cost and outcome."""
+    spawns_mod.history(days=days, as_json=as_json)
+
+
+@app.command()
 def account(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Show who you are and where you stand: identity, Balance, Escrow, Share, and your queue nice."""
     auth_mod.account(as_json=as_json)
