@@ -29,3 +29,4 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: drives a real pty; seconds rather than milliseconds"]
