@@ -49,6 +49,16 @@ class TestSession:
         assert result.exit_code != 0
         assert "not logged in" in result.output
 
+    def test_an_expired_session_says_to_log_in_again(self, signed_in):
+        """A credential file that exists but holds a bearer the Head rejects (expired / revoked) is a
+        different failure from having no file at all: the Head answers 401, not the local not-logged-in
+        guard. It must remap to an actionable line, never echo the Head's raw 'Unauthorized'."""
+        config.CREDENTIALS_FILE.write_text("stale-token-the-head-never-issued")
+        result = signed_in("whoami")
+        assert result.exit_code != 0
+        assert "session expired" in result.output
+        assert "not logged in" not in result.output   # the wrong guard would fire on an absent file
+
     def test_logout_revokes_the_session_at_the_head(self, signed_in):
         assert signed_in("logout").exit_code == 0
         assert not config.CREDENTIALS_FILE.exists()

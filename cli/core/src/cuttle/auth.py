@@ -50,6 +50,12 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
     except api.ApiError as e:
         if ui.DEBUG:
             raise                      # --debug wants the stack, not a tidy summary of it
+        if e.status == 401 and auth and token:
+            # We sent a stored bearer and the Head rejected it: the session expired or was revoked, not
+            # a route that happens to answer 401. `auth=False` login (bad password) never reaches here,
+            # and a `token=""` call has nothing to have expired. Say the one thing that fixes it rather
+            # than echoing the Head's raw "Unauthorized".
+            raise ui.abort("session expired — run `cuttle login`") from None
         raise ui.abort(str(e)) from None
 
 
