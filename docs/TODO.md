@@ -114,6 +114,17 @@ be recoverable in plaintext to be used, so it cannot just be argon2'd like `pw_h
 above before it shipped. Add a typecheck step to the build so the next prop-shaped bug doesn't ship
 silently.
 
+## `cuttle history`/`queue` print unbounded output → Phase 8
+
+Found in the 2026-07-26 Phase-8 grill. `history` (everyone's, 30-day default) and `queue` render every
+row with no cap or paging — a wall of text on a busy cluster. Wants a default row cap + `--limit` /
+paging. Cross-cutting UX, not a feature; a Loose End.
+
+## Test suite: `StarletteDeprecationWarning` (httpx2) → Phase 9 (pin bumps)
+
+`starlette.testclient` warns `Using httpx with starlette.testclient is deprecated; install httpx2` on
+every test run. Dependency hygiene; fold into the pin-bump / dep-refresh pass, not urgent.
+
 ## Before full release: revisit pinned system-package versions
 
 MVP `cuttle setup --local` pins the system stack to exact versions (reproducibility over
