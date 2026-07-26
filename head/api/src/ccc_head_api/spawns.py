@@ -197,6 +197,35 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     return job_id
 
 
+def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: list[str],
+                   wandb_env: dict[str, str], tar_path: Path, minutes: int, vram_gb: int,
+                   node: str | None = None) -> int:
+    """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
+
+    Extracted in Phase 6, when pinning a Spawn to an Arm (`node`) stopped being reachable over HTTP and
+    became a Head-local command. Both callers come through here so a pinned Spawn is priced and
+    recorded **exactly** like any other. The alternative — letting the Head-local path shell out to
+    `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that consumes a
+    donated card while nobody pays for it, and that no ledger can explain.
+
+    Raises ValueError for an unknown Arm; the callers translate (HTTP 422 / a CLI error).
+    """
+    # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
+    # siblings, and a top-level import turns that into a cycle.
+    from . import karma, slurm
+
+    arms = slurm.arms()
+    if node and node not in [a["name"] for a in arms]:
+        raise ValueError(f"unknown Arm '{node}' — known Arms: "
+                         f"{', '.join(a['name'] for a in arms) or '(none)'}")
+    constraint = slurm.vram_constraint(vram_gb)
+    need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
+    with db.connect() as conn:
+        hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
+    return submit(user_id, script, gpu, args, wandb_env, tar_path, minutes, constraint, node,
+                  vram_gb=vram_gb, hold=hold)
+
+
 # --- reads (anonymous in slice 2) -------------------------------------------
 
 def _spawn_dir(job_id: int) -> Path:

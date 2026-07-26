@@ -1,4 +1,5 @@
-"""Local user-admin for the Head auth store (Phase 3a slice 1).
+"""Local admin for the Head: users, Karma Overrides, and pinned Spawns (Phase 3a slice 1; widened
+in Phase 6).
 
 Runs *on the Head as the `ccc` service account* (`python -m ccc_head_api.admin ...`), writing head.db
 directly — being the operator on the Head is the authorization, no HTTP/session (mirrors the way
@@ -11,6 +12,7 @@ first login. Nothing here ever prints or stores a reusable password.
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import db
 
@@ -61,6 +63,54 @@ def _remove(username: str) -> int:
     return 0
 
 
+def _override(username: str, amount: float, note: str | None) -> int:
+    """Add or remove Karma from a User's Balance.
+
+    Head-local since Phase 6. It needs no privilege beyond writing head.db — which is exactly why it
+    was an API route until the phase settled that the Head API exposes **no admin writes at all**.
+    Minting Karma is the most valuable thing a stolen Session could do, and the only way to make that
+    impossible is for the capability not to be requestable over the network.
+    """
+    from . import karma
+    with db.connect() as conn:
+        db.init_schema(conn)
+        try:
+            balance = karma.override(conn, username, amount, note)
+        except KeyError:
+            print(f"no such user {username!r}", file=sys.stderr)
+            return 1
+        except ValueError as e:
+            print(str(e), file=sys.stderr)  # the target is an Admin — outside the economy
+            return 1
+    print(f"{username} balance {balance:+.1f}")
+    return 0
+
+
+def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
+            node: str | None, args: list[str]) -> int:
+    """Submit a Spawn pinned to a named Arm, attributed to `username`.
+
+    Head-local since Phase 6 (`cuttle run --node`). Authorization is being the operator on the Head;
+    attribution is the account named here. Goes through `spawns.submit_checked`, so the Escrow and the
+    Attribution row are written exactly as they are for a Spawn that arrived over HTTP.
+    """
+    from . import spawns
+    with db.connect() as conn:
+        db.init_schema(conn)
+        user = db.get_user(conn, username)
+        if user is None:
+            print(f"no such user {username!r}", file=sys.stderr)
+            return 1
+    try:
+        job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script, gpu, args, {},
+                                       Path(tar), minutes, vram, node)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(job_id)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="ccc_head_api.admin", description="Head auth user admin.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -72,6 +122,19 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("username")
     e = sub.add_parser("exists", help="exit 0 if the user exists, 1 if not (no output).")
     e.add_argument("username")
+    o = sub.add_parser("override", help="add/remove Karma from a User's Balance.")
+    o.add_argument("username")
+    o.add_argument("amount", type=float)
+    o.add_argument("--note")
+    s = sub.add_parser("submit", help="submit a Spawn pinned to an Arm (prints the Spawn id).")
+    s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
+    s.add_argument("--script", required=True)
+    s.add_argument("--tar", required=True, help="gzip-tar of the project tree.")
+    s.add_argument("--minutes", type=int, required=True)
+    s.add_argument("--vram", type=int, required=True)
+    s.add_argument("--gpu", type=int, default=1)
+    s.add_argument("--node")
+    s.add_argument("args", nargs="*", help="extra arguments for the script.")
 
     args = p.parse_args(argv)
     if args.cmd == "add":
@@ -82,6 +145,11 @@ def main(argv: list[str] | None = None) -> int:
         return _remove(args.username)
     if args.cmd == "exists":
         return _exists(args.username)
+    if args.cmd == "override":
+        return _override(args.username, args.amount, args.note)
+    if args.cmd == "submit":
+        return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
+                       args.node, args.args)
     return 2
 
 

@@ -63,12 +63,6 @@ class PasswdRequest(BaseModel):
     new_password: str
 
 
-class OverrideRequest(BaseModel):
-    username: str
-    amount: float
-    note: str | None = None
-
-
 def _token_from(request: Request) -> str | None:
     """A client presents its session either as a bearer (CLI) or the HttpOnly cookie (browser)."""
     auth = request.headers.get("authorization", "")
@@ -162,12 +156,16 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
 
 @api.delete("/spawns/{job_id}", status_code=204)
 def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
-    """End a live Spawn early. A User may cancel their OWN outstanding Spawn; an Admin may cancel
-    anyone's — Attribution is the ledger's, not Slurm's (every Spawn runs as the Mantle).
+    """End YOUR OWN live Spawn early. Attribution is the ledger's, not Slurm's (every Spawn runs as
+    the Mantle).
 
     Closes the gap FRONTEND.md names most loudly: until now nothing in CCC could stop a job from any
     client, and under Karma a User was *paying* until `--time` expired. Settles for the seconds
     actually held, by the Karma tick, when the cancelled Spawn drops out of squeue — see slurm.cancel.
+
+    **Cancelling someone else's Spawn is an admin WRITE and is not reachable from here** (Phase 6):
+    it is `cuttle cancel <id> --any`, run on the Head. The ownership test below is unconditional —
+    an Admin gets no branch — so a stolen admin Session is worth exactly one User's Session.
     """
     with db.connect() as conn:
         row = db.get_spawn(conn, job_id)
@@ -175,7 +173,7 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     # ledger doesn't is not a CCC Spawn (or predates attribution); refuse rather than scancel blindly.
     if row is None:
         raise HTTPException(404, f"unknown spawn {job_id}")
-    if not user["is_admin"] and row["user_id"] != user["id"]:
+    if row["user_id"] != user["id"]:
         raise HTTPException(403, "not your spawn")
     slurm.cancel(job_id)
     return Response(status_code=204)
@@ -271,26 +269,16 @@ def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict
         return [dict(r) for r in db.demand_series(conn, days)]
 
 
-@api.post("/karma/override")
-def karma_override(req: OverrideRequest, user: dict = Depends(current_user)) -> dict:
-    """Admin add/remove of a User's Balance. The only flow that isn't a Transfer — it conjures Karma or
-    destroys it, and Decay absorbs the imbalance.
-
-    Needs no privilege beyond `is_admin`, because it touches nothing but head.db, which this API owns.
-    That is exactly why it lives here while a **Queue bump** cannot: a bump writes a negative nice,
-    which Slurm grants only to an operator, and Slurm has never heard of CCC's Admin (every Spawn — and
-    every scontrol call this process makes — is the one `ccc` uid). See `cuttle karma bump`.
-    """
-    if not user["is_admin"]:
-        raise HTTPException(403, "Karma override is admin-only")
-    with db.connect() as conn:
-        try:
-            balance = karma.override(conn, req.username, req.amount, req.note)
-        except KeyError:
-            raise HTTPException(404, f"no such user '{req.username}'")
-        except ValueError as e:
-            raise HTTPException(422, str(e))  # the target is an Admin — outside the economy
-    return {"username": req.username, "balance": round(balance, 2)}
+# `POST /karma/override` USED TO LIVE HERE and was removed in Phase 6.
+#
+# It was defensible on its own terms: an Override touches nothing but head.db, which this API owns, so
+# `is_admin` was the only privilege it needed. What it could not survive is the invariant the phase
+# settled on — **the Head API exposes no admin-write endpoints at all**. Minting Karma from a stolen
+# Session is the single most valuable thing an attacker could do with one, and no amount of
+# authorization checking makes a remote write as safe as one that cannot be requested remotely.
+#
+# It is now `cuttle karma override`, on the Head, writing head.db through the API venv — the same
+# shape as `cuttle user add` and `cuttle karma bump`. See ccc_head_api.admin.
 
 
 # --- submission (authed) ----------------------------------------------------
@@ -307,10 +295,13 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     fleet's real cards (slurm.vram_constraint); the client can't do it, because only the Head knows
     what hardware exists.
 
-    `node` pins the Spawn to one Arm and is **admin-only**. Users declare what they need and let Slurm
-    choose; naming a machine sidesteps eligibility (and so the Demand it would have added to every card
-    that could have run it). We reject an unknown name here rather than letting Slurm do it: sbatch's
-    error for a bad --nodelist is opaque, and we already know the real node list.
+    Pinning a Spawn to a named Arm is **not possible over this route** (Phase 6). It was an
+    admin-only `node` field until the phase settled that the Head API exposes no admin writes at all;
+    a `node` in the metadata is now refused outright rather than honoured for an Admin, because a
+    field that is silently ignored is worse than one that says no. It lives on as
+    `cuttle run --node`, run on the Head. Users declare what they need (`--vram`) and let Slurm
+    choose — naming a machine sidesteps eligibility, and with it the Demand the Spawn would have
+    added to every card that could have run it.
     """
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
@@ -320,30 +311,17 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     for field in ("minutes", "vram"):
         if not meta.get(field):
             raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
-    node = meta.get("node")
-    if node:
-        if not user["is_admin"]:
-            raise HTTPException(403, "--node is admin-only. Say what you need (--vram) and Slurm will "
-                                     "give you the fastest free Arm that has it.")
-        known = [a["name"] for a in slurm.arms()]
-        if node not in known:
-            raise HTTPException(422, f"unknown Arm '{node}' — known Arms: {', '.join(known)}")
-    constraint = slurm.vram_constraint(int(meta["vram"]))
-
-    # Quote the Escrow here, where the fleet is known. quote_hold is the one place a Spawn is priced —
-    # shared verbatim with the Fake Cluster (slice 4) so the test cannot drift from what really runs. It
-    # returns None for an Admin (outside the economy), else the hold over the priciest eligible Arm at
-    # the Tide of the hours the Spawn would span.
+    if meta.get("node"):
+        raise HTTPException(403, "pinning a Spawn to an Arm is not available over the API — it is "
+                                 "`cuttle run --node`, on the Head.")
     minutes, vram_gb, gpus = int(meta["minutes"]), int(meta["vram"]), int(meta.get("gpu", 1))
-    need = {"node": node, "vram_gb": vram_gb, "gpus": gpus}
-    with db.connect() as conn:
-        hold = karma.quote_hold(conn, slurm.arms(), need, minutes, gpus, user["is_admin"])
-
     tar_path = await _spool_upload(request)
     try:
-        job_id = spawns_mod.submit(user["id"], meta["script"], gpus,
-                                   meta.get("args", []), meta.get("wandb_env", {}), tar_path,
-                                   minutes, constraint, node, vram_gb=vram_gb, hold=hold)
+        # Placement, pricing and the Attribution row all live in submit_checked, shared with the
+        # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
+        job_id = spawns_mod.submit_checked(
+            user["id"], user["is_admin"], meta["script"], gpus, meta.get("args", []),
+            meta.get("wandb_env", {}), tar_path, minutes, vram_gb)
     finally:
         tar_path.unlink(missing_ok=True)
     return {"id": job_id}
