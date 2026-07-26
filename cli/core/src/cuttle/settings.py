@@ -2,10 +2,9 @@
 
 import os
 
-import typer
 import yaml
 
-from . import config
+from . import config, ui
 
 
 def load() -> dict:
@@ -24,21 +23,26 @@ def prompt_wandb() -> None:
     """Prompt (up front) for the W&B key + default project/entity, persist to config.yaml.
 
     The key is a machine/user secret, so it lives here. Project + entity belong to the *run*, not the
-    box — these are only the per-run defaults; `cuttle run --project/--entity` overrides either."""
+    box — these are only the per-run defaults; `cuttle run --project/--entity` overrides either.
+
+    Asked through `ui`, like every other prompt. These were `typer.prompt`, which is click's own —
+    it writes straight to the terminal and reads a line in cooked mode, so inside a box it drew
+    outside the borders, echoed wherever the cursor happened to be, and was overpainted on the
+    frame's next refresh. Nothing may write to the screen behind the frame's back.
+    """
     data = load()
     wandb = data.get("wandb", {})
     have = "set" if wandb.get("api_key") else "unset"
-    key = typer.prompt(
-        f"WANDB_API_KEY (currently {have}; blank = keep/disable)",
-        default="", show_default=False,  # visible so a pasted key is verifiable
-    )
+    # Visible, not a password prompt: a pasted key has to be verifiable by eye.
+    key = ui.ask_text(f"WANDB_API_KEY (currently {have}; blank = keep/disable)")
     if key:
         wandb["api_key"] = key
-    wandb.setdefault("project", typer.prompt("Default W&B project", default=wandb.get("project", "ccc")))
+    wandb.setdefault("project", ui.ask_text("Default W&B project",
+                                            default=wandb.get("project", "ccc")))
     # Entity is the URL slug (wandb.ai/<slug>/<project>), NOT the display name. Blank = the account's
     # own default entity — leave WANDB_ENTITY unset rather than storing an empty one.
-    entity = typer.prompt("Default W&B entity/slug (blank = account default)",
-                          default=wandb.get("entity", ""), show_default=False)
+    entity = ui.ask_text("Default W&B entity/slug (blank = account default)",
+                         default=wandb.get("entity", ""))
     if entity:
         wandb["entity"] = entity
     data["wandb"] = wandb

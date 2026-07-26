@@ -1,14 +1,27 @@
-"""`cuttle teardown` — reverse `setup`. `--local` (Head+Arm) or `--arm` (remote Arm).
+"""`cuttle teardown` — reverse `setup`. `--local` (Head+Arm), `--arm` (remote Arm), or `--client`
+(just this box's ~/.ccc). With no role flag the role is auto-detected; `--full` sweeps every role.
 
 Default: full uninstall (daemons + packages + repos + Slurm config/state), but keep ~/.ccc
 (preserves the multi-GB base.sif). Flags: --keep-packages (leave apt pkgs + repos),
---all (also remove ~/.ccc). Tolerant of partial state — safe to re-run.
+--all (also remove ~/.ccc), --full (sweep everything, any role). Tolerant of partial state —
+safe to re-run, and every removal step no-ops on a box that never had it.
 """
 
 import shutil
 
-from . import config, system
+from . import config, menu, settings, system, ui
 from .system import run
+
+
+def detect_role() -> str:
+    """What this box is, for a flagless `teardown` (and the uninstaller). "local" for a Head, "arm"
+    for a donor node, else "client". Head is the API venv (same predicate the menu uses); an Arm is
+    marked by its saved settings or its slurmd drop-in."""
+    if menu.is_head():
+        return "local"
+    if settings.load().get("arm") or config.SLURMD_DROPIN.exists():
+        return "arm"
+    return "client"
 
 _SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SERVICE,
              config.RSYNCD_SERVICE, "munge", "slurmctld", "slurmd"]
@@ -189,6 +202,12 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     fetching the munge key.
 
     No Headscale/head-api/rsyncd here; an Arm runs none."""
+    with ui.section("Tearing down this Arm", lambda: "removed"):
+        system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
+        _teardown_arm(keep_packages=keep_packages, all_=all_)
+
+
+def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     stop_arm_daemons()
     _leave_ccc_mesh()
     remove_slurm_config()
@@ -199,16 +218,22 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     if not keep_packages:
         purge_packages()
         remove_repos()
+    remove_user_dirs()          # ~/.ccc always (see teardown_local)
     if all_:
-        remove_user_dirs()
-        remove_images()
-    print("\ncuttle: Arm torn down (left the mesh; its Head-side node is now stale — reap with "
-          "`cuttle arm remove <name>` or let re-enrollment do it)"
+        remove_images()          # base.sif kept unless --all — multi-GB, and in /opt, not ~/.ccc
+    print("\ncuttle: Arm torn down (~/.ccc removed; left the mesh; its Head-side node is now stale — "
+          "reap with `cuttle arm remove <name>` or let re-enrollment do it)"
           + (" (packages/repos kept)" if keep_packages else "")
-          + (" (~/.ccc + base.sif removed)" if all_ else " (~/.ccc + base.sif kept)"))
+          + (" (base.sif removed)" if all_ else " (base.sif kept)"))
 
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
+    with ui.section("Tearing down the cluster", lambda: "removed"):
+        system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
+        _teardown_local(keep_packages=keep_packages, all_=all_)
+
+
+def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     stop_daemons()
     remove_enroll_api()
     remove_head_api()
@@ -219,11 +244,55 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     if not keep_packages:
         purge_packages()
         remove_repos()
+    remove_user_dirs()          # ~/.ccc (session, config, cert pins) always — leaving your login and
+                                # pins behind after a teardown is what surprised people
     if all_:
+        remove_images()          # base.sif is multi-GB and lives in /opt, not ~/.ccc; the Head cert
+        remove_tls()             # is pinned by every client — both kept unless --all
+    print("\ncuttle: local cluster torn down (~/.ccc removed)"
+          + (" (packages/repos kept)" if keep_packages else "")
+          + (" (base.sif + TLS cert removed — clients must re-pin)" if all_
+             else " (base.sif + TLS cert kept)"))
+
+
+# --- client-only teardown ----------------------------------------------------
+
+def teardown_client() -> None:
+    """Reverse `setup --client`. A client only ever got ~/.ccc (config, credentials, cert pins) — no
+    apt, no mesh, no Slurm, no sudo — so removing that dir is the whole job."""
+    with ui.section("Removing client state", lambda: "removed"):
         remove_user_dirs()
+    print("cuttle: removed ~/.ccc (config, credentials, cert pins).")
+
+
+# --- full sweep (any role, unknown/partial state) ----------------------------
+
+def teardown_full(keep_packages: bool = False) -> None:
+    """Sweep EVERYTHING cuttle could have installed, in ANY role, plus all local state. For a box in
+    an unknown or partial state (a half-finished setup, or an old install whose role we can't tell).
+
+    Runs every removal step — Head services AND Arm bits — regardless of what this box actually is.
+    Each step is already tolerant of never having been applied (units that don't exist, packages not
+    installed, files absent), so the belt-and-suspenders pass is safe on a plain client too."""
+    with ui.section("Removing everything CCC", lambda: "removed"):
+        system.prime_sudo()     # sudo as the box's first row, before any step rows grow the frame
+        stop_daemons()          # Head services (no-ops where the units never existed)
+        remove_enroll_api()
+        remove_head_api()
+        remove_karma()
+        remove_rsyncd()
+        remove_mesh(keep_packages=keep_packages)
+        stop_arm_daemons()      # Arm bits
+        undo_apptainer_wsl()
+        remove_wsl_dashboard_forward()
+        remove_munge_key()
+        remove_slurm_config()   # shared by both roles
+        remove_mantle()
+        if not keep_packages:
+            purge_packages()
+            remove_repos()
+        remove_user_dirs()      # local state — a full sweep always takes it
         remove_images()
         remove_tls()
-    print("\ncuttle: local cluster torn down"
-          + (" (packages/repos kept)" if keep_packages else "")
-          + (" (~/.ccc + base.sif + TLS cert removed — clients must re-pin)" if all_
-             else " (~/.ccc + base.sif + TLS cert kept)"))
+    print("\ncuttle: swept all CCC state — services, mesh, Slurm, packages, ~/.ccc, base.sif, TLS"
+          + (" (packages/repos kept)" if keep_packages else ""))

@@ -190,7 +190,7 @@ def _user_id() -> str:
     """Numeric id of the CCC Headscale user (recent headscale wants id, not name, for keys)."""
     r = run(["headscale", "users", "list", "--output", "json"],
             sudo=True, capture_output=True, text=True)
-    for u in json.loads(r.stdout):
+    for u in json.loads(r.stdout) or []:  # `null`, not `[]`, when empty — see list_nodes
         if u["name"] == config.HEADSCALE_USER:
             return str(u["id"])
     raise RuntimeError(f"headscale user {config.HEADSCALE_USER!r} not found")
@@ -277,9 +277,12 @@ def _wipe_local_state() -> None:
 # --- node removal (Head only) ----------------------------------------------
 
 def list_nodes() -> list[dict]:
+    """Every node Headscale knows. Empty on a fresh coordinator — headscale prints the JSON literal
+    `null` rather than `[]` when it has none, so `or []` is load-bearing: without it a fresh Head
+    crashes in `forget_state()` with 'NoneType is not iterable' before it can join its own mesh."""
     r = run(["headscale", "nodes", "list", "--output", "json"],
             sudo=True, capture_output=True, text=True)
-    return json.loads(r.stdout)
+    return json.loads(r.stdout) or []
 
 
 def node_ids_named(name: str) -> list[str]:

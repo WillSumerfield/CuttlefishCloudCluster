@@ -13,7 +13,7 @@ import getpass
 import tempfile
 from pathlib import Path
 
-from . import auth, config, enroll, headapi, mesh, settings, system, templates
+from . import auth, config, enroll, headapi, mesh, settings, system, templates, ui
 from .system import run, sh
 
 
@@ -153,9 +153,7 @@ def provision_head_auth() -> None:
         run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
              str(d)], sudo=True)
     admin_user = config.FIRST_ADMIN_USER
-    auth.seed_admin(admin_user)  # prints a one-time temp password (or 'already exists' on re-run)
-    print(f"cuttle: auth store {config.HEAD_DB}; first admin '{admin_user}' — log in with "
-          f"`cuttle login --head <url>` and change the temp password shown above")
+    auth.seed_admin(admin_user)  # registers the one-time temp password as a result
 
 
 def start_daemons() -> None:
@@ -320,43 +318,76 @@ def mesh_up_head(address: str | None) -> str:
 
 
 def setup_head(address: str | None = None) -> None:
+    with ui.section("Setting up the Head", lambda: "control plane + co-located Arm"):
+        system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
+        _setup_head(address)
+
+
+def _setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
     preflight("head")
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
     # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
     # rather than dying at `add-apt-repository`.
-    mesh_ip = mesh_up_head(address)
-    system.allow_mesh_iface(config.CCC_TS_TUN)
-    add_repos()
-    install_packages()
-    write_slurm_config(mesh_ip)
-    start_daemons()
-    make_registry_dir()
-    headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: the Enroll API serves munge.key
-    provision_head_auth()                        # ccc account + head.db + submission dirs (needs venv)
-    enroll.register_head_arm(mesh_ip)            # our co-located Arm is admin-owned (needs the admin)
-    install_rsyncd(mesh_ip)                      # stage-in/out, mesh-bound; needs ccc + its dirs first
-    build_spa()                                  # build + stage the Dashboard SPA (Node, Head-only)
-    install_tls(mesh_ip)                         # self-signed cert; must exist before uvicorn starts
-    headapi.install_head(_write_root_file, mesh_ip)  # Head API (board + SPA + auth + submit) LAN+mesh
-    headapi.install_karma(_write_root_file)      # Karma tick — ranks the queue by standing (same venv)
-    build_base_sif()                             # Mantle-readable Pod image at the cluster-wide path
+    with ui.step("Joining the mesh"):
+        mesh_ip = mesh_up_head(address)
+        system.allow_mesh_iface(config.CCC_TS_TUN)
+    with ui.step("Adding package repositories"):
+        add_repos()
+    with ui.step("Installing Slurm, munge and Apptainer"):
+        install_packages()
+    with ui.step("Configuring Slurm"):
+        write_slurm_config(mesh_ip)
+        start_daemons()
+        make_registry_dir()
+    with ui.step("Installing the Enroll API"):
+        headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: it serves munge.key
+    with ui.step("Provisioning the Mantle and the auth store"):
+        provision_head_auth()                    # ccc account + head.db + submission dirs (needs venv)
+        enroll.register_head_arm(mesh_ip)        # our co-located Arm is admin-owned (needs the admin)
+    with ui.step("Installing stage-in/out"):
+        install_rsyncd(mesh_ip)                  # mesh-bound; needs ccc + its dirs first
+    with ui.step("Building the Dashboard"):
+        build_spa()                              # build + stage the Dashboard SPA (Node, Head-only)
+    with ui.step("Issuing the Head certificate"):
+        install_tls(mesh_ip)                     # must exist before uvicorn starts
+    with ui.step("Starting the Head API and the Karma tick"):
+        headapi.install_head(_write_root_file, mesh_ip)  # board + SPA + auth + submit, LAN+mesh
+        headapi.install_karma(_write_root_file)  # ranks the queue by standing (same venv)
+    with ui.step("Building the Pod image"):
+        build_base_sif()                         # Mantle-readable, at the cluster-wide path
     # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because the
     # benchmark is a real Spawn: it needs slurmd up, the Pod image built, and rsyncd listening.
     enroll.benchmark_arm(system.hostname())
     verify()
     lan = system.primary_ip()
-    print("\ncuttle: Head up (control plane + co-located Arm). Node should read 'idle' above.")
-    print(f"cuttle: add an Arm with `cuttle arm authorize <name> --user <owner>` "
-          f"(coordinator {mesh_ip})")
-    print(f"cuttle: dashboard at {headapi.head_url(lan)} (LAN) / "
-          f"{headapi.head_url(mesh_ip)} (mesh)")
+    # Results, not `ui.kv` — kv writes straight to stdout, which inside a box is both uncounted (so
+    # the erase lands in the wrong place) and unreadable by the time eleven phases have scrolled by.
+    ui.result("dashboard (LAN)", headapi.head_url(lan))
+    ui.result("dashboard (mesh)", headapi.head_url(mesh_ip))
+    ui.result("coordinator", mesh_ip)
+    ui.result("add an Arm", "cuttle arm authorize <name> --user <owner>")
     print("\ncuttle: the Head signs its own TLS certificate (no public domain = no CA can sign it).\n"
           "        BROWSER — the first visit warns 'your connection is not private'. That is EXPECTED.\n"
           "        Click Advanced -> Proceed; the browser remembers, and you see it once per browser.\n"
           "        CLI     — `cuttle login` shows the certificate's fingerprint once and asks you to\n"
           "        confirm it. After that it is pinned, and a changed certificate is refused.")
+
+
+def setup_client() -> None:
+    """A submitter's box: dirs and a login, nothing else.
+
+    No apt, no mesh, no Slurm, no sudo — a client only ever talks to the Head API over HTTP. Kept
+    separate from `setup --head/--arm` precisely so that submitting from a laptop never requires
+    provisioning it.
+    """
+    with ui.section("Set up this client", lambda: "ready"):
+        make_user_dirs()
+    who: dict[str, str] = {}
+    with ui.section("Log in", lambda: who.get("as", "")):
+        who["as"] = auth.login(None)
+    ui.ok("Client ready. `cuttle run <script> --time <min> --vram <GB>` to submit.")
 
 
 # `--local` is just the single-box Head (Head + its co-located Arm).
@@ -372,6 +403,12 @@ def setup_arm(token: str, re_enroll: bool = False) -> None:
 
     `re_enroll` forces a fresh mesh identity even if this box looks already-joined.
     """
+    with ui.section("Setting up this Arm", lambda: "enrolled"):
+        system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
+        _setup_arm(token, re_enroll=re_enroll)
+
+
+def _setup_arm(token: str, re_enroll: bool = False) -> None:
     make_user_dirs()
     t = enroll.decode_token(token)
     node_name = t["node_name"]

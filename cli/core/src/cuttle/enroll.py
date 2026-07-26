@@ -31,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import auth, config, headapi, mesh, settings, system, templates
+from . import auth, config, headapi, mesh, settings, system, templates, ui
 from .system import run
 
 
@@ -409,23 +409,28 @@ def register_head_arm(mesh_ip: str) -> None:
     save_registry(reg)
 
 
-def list_arms() -> None:
+def _arm_state(name: str, e: dict) -> str:
+    if e["admitted"]:
+        return "head" if e.get("head") else "admitted"
+    if e.get("mesh_ip"):
+        return f"enrolled, NOT ADMITTED (cuttle arm admit {name})"
+    return "authorized, awaiting the donor"
+
+
+def list_arms(as_json: bool = False) -> None:
     reg = load_registry()
-    if not reg:
-        print("no Arms have enrolled")
+    payload = [{"name": n, **e, "state": _arm_state(n, e)} for n, e in sorted(reg.items())]
+    if as_json:
+        ui.emit(payload, True, lambda: None)
         return
-    print(f"{'NAME':16} {'OWNER':12} {'MESH IP':14} {'GPU':22} {'VRAM':>7} {'POWER':>9}  STATE")
-    for name, e in sorted(reg.items()):
-        if e["admitted"]:
-            state = "head" if e.get("head") else "admitted"
-        elif e.get("mesh_ip"):
-            state = f"enrolled, NOT ADMITTED (cuttle arm admit {name})"
-        else:
-            state = "authorized, awaiting the donor"
-        vram = f"{round(e['vram_mb'] / 1024)}G" if e.get("vram_mb") else "-"
-        power = f"{e['power']} TF" if e.get("power") else "-"
-        print(f"{name:16} {e.get('owner') or '-':12} {e.get('mesh_ip') or '-':14} "
-              f"{e.get('gpu') or '-':22} {vram:>7} {power:>9}  {state}")
+    if not reg:
+        ui.say("no Arms have enrolled")
+        return
+    ui.table(
+        ["NAME", "OWNER", "MESH IP", "GPU", "VRAM", "POWER", "STATE"],
+        [[a["name"], a.get("owner") or "-", a.get("mesh_ip") or "-", a.get("gpu") or "-",
+          f"{round(a['vram_mb'] / 1024)}G" if a.get("vram_mb") else "-",
+          f"{a['power']} TF" if a.get("power") else "-", a["state"]] for a in payload])
 
 
 # --- node removal (Head only) -----------------------------------------------

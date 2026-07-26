@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 
 import typer
 
-from . import config
+from . import config, ui
 
 
 def _host_port(url: str) -> tuple[str, int]:
@@ -59,11 +59,13 @@ def ensure_pinned(url: str) -> None:
     host, port = _host_port(url)
     # No verification possible here by definition — this IS the first look at the cert.
     pem = ssl.get_server_certificate((host, port))
-    print(f"\ncuttle: {host} presented a certificate this machine has never seen.\n"
-          f"        The Head signs its own certificate, so nothing can vouch for it but you.\n\n"
-          f"        SHA-256  {fingerprint(pem)}\n")
-    if not typer.confirm("Trust this Head from now on?"):
-        raise typer.Abort()
+    # ui, not print: this runs inside `login`'s box, and the fingerprint is the one thing the
+    # operator has to read before answering — it cannot be held back with captured stdout.
+    ui.warn(f"{host} presented a certificate this machine has never seen.")
+    ui.hint("The Head signs its own certificate, so nothing can vouch for it but you.")
+    ui.say(f"  SHA-256  {fingerprint(pem)}")
+    if not ui.ask_confirm("Trust this Head from now on?"):
+        raise ui.abort("not trusted — nothing was sent")
     config.PINS_DIR.mkdir(parents=True, exist_ok=True)
     pin.write_text(pem)
     pin.chmod(0o600)

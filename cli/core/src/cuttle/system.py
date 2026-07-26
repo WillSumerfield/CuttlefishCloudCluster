@@ -6,25 +6,100 @@ import socket
 import subprocess
 import sys
 
+from . import ui
+
+# --- sudo credential priming ------------------------------------------------
+# `sudo` reads its password straight from the controlling tty, so its own prompt bypasses Rich
+# entirely — it lands outside whatever box is open (or on the alternate screen, which is then torn
+# down), leaving an unlabelled hang. We prime the credential ONCE, up front, via `ask_password`;
+# every later `sudo` then finds a live timestamp and stays silent. One process, one prompt.
+#
+# **Prime as the box's first row, before any step rows grow it.** Every sudo flow calls `prime_sudo`
+# as the first statement inside its `ui.section`, so the single password prompt is drawn while the
+# frame still holds only its title — never injected mid-run after a dozen `ui.step` rows have grown
+# it (which is what made a mis-tracking terminal stack duplicate borders). The prompt is a proper
+# Rich prompt and `sudo -S` is fed the password over stdin, so no raw /dev/tty prompt bypasses Rich;
+# it renders as an ordinary box row. `run`/`sh` still prime lazily as a backstop, but because the
+# flow primed on entry `_SUDO_PRIMED` is already set and they never prompt mid-box.
+_SUDO_PRIMED = False
+
+
+def sudo_available() -> bool:
+    """True if `sudo` will run right now without asking — a live timestamp, or a NOPASSWD rule.
+    `-n` makes sudo fail rather than prompt, so this never blocks."""
+    return subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0
+
+
+def prime_sudo() -> None:
+    """Cache the sudo credential once, ideally before a flow opens its box (see the note above). A
+    no-op when there is no one to ask (scripted/CI — let sudo prompt or fail as it always did) or
+    sudo needs no password."""
+    global _SUDO_PRIMED
+    if _SUDO_PRIMED:
+        return
+    if not ui.interactive() or sudo_available():
+        _SUDO_PRIMED = True
+        return
+    password = ui.ask_password("Your sudo password")
+    # -S reads the password from stdin; -p '' suppresses sudo's own prompt (we drew ours); -v just
+    # refreshes the timestamp, running no command.
+    r = subprocess.run(["sudo", "-S", "-p", "", "-v"],
+                       input=password + "\n", capture_output=True, text=True)
+    if r.returncode != 0:
+        raise ui.abort("sudo authentication failed")
+    _SUDO_PRIMED = True
+
 
 def run(cmd: list[str], sudo: bool = False, check: bool = True, **kw) -> subprocess.CompletedProcess:
-    """Run a command, echoing it. Raises on non-zero unless check=False (e.g. teardown).
+    """Run a command. Raises on non-zero unless check=False (e.g. teardown).
 
-    The echo goes to stderr: it is progress noise, so commands whose *stdout is data* (`cuttle
-    token`) stay pipeable.
+    **Quiet by default.** `setup` runs dozens of these, and echoing each one buries the single line
+    that matters; the enclosing `ui.step` says what is happening instead. `--verbose` shows the
+    command and lets its output through, and a *failure* always prints whatever was captured — the
+    output of the command that broke is the whole reason you would have wanted verbose.
+
+    Callers that already ask for `capture_output` (they parse stdout) keep it: their kwargs win.
     """
     if sudo:
+        prime_sudo()
         cmd = ["sudo", *cmd]
-    print(f"$ {' '.join(cmd)}", file=sys.stderr)
-    return subprocess.run(cmd, check=check, **kw)
+    if ui.VERBOSE:
+        ui.say(f"[muted]$ {' '.join(cmd)}[/muted]")
+    caller_captures = "capture_output" in kw or "stdout" in kw
+    if not caller_captures and not ui.VERBOSE:
+        kw["capture_output"] = True
+        kw.setdefault("text", True)
+    try:
+        return subprocess.run(cmd, check=check, **kw)
+    except subprocess.CalledProcessError as e:
+        _dump(e)
+        raise
+
+
+def _dump(e: subprocess.CalledProcessError) -> None:
+    """Show what a failed command actually said. Without this, hiding output would turn a legible
+    apt error into a bare exit code."""
+    for stream in (e.stdout, e.stderr):
+        if stream:
+            text = stream if isinstance(stream, str) else stream.decode("utf8", "replace")
+            if text.strip():
+                ui.data(text.rstrip())
 
 
 def sh(script: str, sudo: bool = False) -> subprocess.CompletedProcess:
-    """Run a bash snippet (for pipes/redirects). Echoes it (to stderr; see `run`)."""
+    """Run a bash snippet (for pipes/redirects). Quiet by default; see `run`."""
+    if sudo:
+        prime_sudo()
     prefix = "sudo " if sudo else ""
-    print(f"$ {prefix}bash -c {script!r}", file=sys.stderr)
+    if ui.VERBOSE:
+        ui.say(f"[muted]$ {prefix}bash -c {script!r}[/muted]")
     argv = (["sudo"] if sudo else []) + ["bash", "-euc", script]
-    return subprocess.run(argv, check=True)
+    kw = {} if ui.VERBOSE else {"capture_output": True, "text": True}
+    try:
+        return subprocess.run(argv, check=True, **kw)
+    except subprocess.CalledProcessError as e:
+        _dump(e)
+        raise
 
 
 def hostname() -> str:
