@@ -396,14 +396,17 @@ def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, 
     conn.commit()
 
 
-def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int]) -> list[sqlite3.Row]:
+def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int],
+                  limit: int | None = None) -> list[sqlite3.Row]:
     """Every Spawn submitted since `since`, minus the ids in `exclude` (the live queue) — the durable
     archive, newest first. The settled cost joins in from the ledger's `settle` row (a Spawn that never
     settled — Admin-owned, or ended before its escrow was metered — has NULL cost, which reads as `—`).
-    Everyone's, like the live queue: what ran on the shared cluster is not private."""
+    Everyone's, like the live queue: what ran on the shared cluster is not private. `limit` caps the
+    result to the newest N (None = every row, the Dashboard's read); the CLI passes it for readability."""
     # `NOT IN ()` has no valid SQL spelling — `NOT IN (NULL)` is UNKNOWN for every row and drops the
     # whole table — so the exclusion is a clause only when there is something live to exclude.
     clause = f" AND s.job_id NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
+    limit_clause = " LIMIT ?" if limit else ""
     return conn.execute(
         f"""SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
                    s.gpus, s.vram_gb, s.minutes, s.node, u.username AS submitted_by,
@@ -412,8 +415,8 @@ def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int]) -> l
             LEFT JOIN users u ON u.id = s.user_id
             LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
             WHERE s.submitted_at >= ?{clause}
-            ORDER BY s.submitted_at DESC""",
-        (since, *exclude),
+            ORDER BY s.submitted_at DESC{limit_clause}""",
+        (since, *exclude, *((limit,) if limit else ())),
     ).fetchall()
 
 

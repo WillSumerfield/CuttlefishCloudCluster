@@ -123,11 +123,14 @@ def arms(user: dict = Depends(current_user)) -> list[dict]:
 
 
 @api.get("/spawns")
-def spawns(user: dict = Depends(current_user)) -> list[dict]:
+def spawns(limit: int | None = None, user: dict = Depends(current_user)) -> list[dict]:
     """The live Spawn queue (pending/running, CCC partition), enriched with Attribution. Every Spawn
     runs as the Mantle now, so Slurm's own user field says `ccc` for all of them and is useless — the
-    ledger is what says who submitted it. See slurm.spawns()."""
+    ledger is what says who submitted it. See slurm.spawns(). `limit` caps to the front of the queue
+    (rows are ascending by id — running + next-to-run first); None = every row, the Dashboard's read."""
     rows = slurm.spawns()
+    if limit:
+        rows = rows[:limit]
     ids = [r["id"] for r in rows if r["id"] is not None]
     with db.connect() as conn:
         submitters = db.spawn_submitters(conn, ids)
@@ -139,7 +142,8 @@ def spawns(user: dict = Depends(current_user)) -> list[dict]:
 # Declared BEFORE `/spawns/{job_id}`: FastAPI matches in order, and `history` would otherwise be parsed
 # as an int job_id and 422.
 @api.get("/spawns/history")
-def spawns_history(days: int = 30, user: dict = Depends(current_user)) -> list[dict]:
+def spawns_history(days: int = 30, limit: int | None = None,
+                   user: dict = Depends(current_user)) -> list[dict]:
     """The durable archive: Spawns submitted within `days`, newest first — everything the live queue has
     forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
     history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
@@ -148,7 +152,7 @@ def spawns_history(days: int = 30, user: dict = Depends(current_user)) -> list[d
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.connect() as conn:
-        return [dict(r) for r in db.spawn_history(conn, since, live)]
+        return [dict(r) for r in db.spawn_history(conn, since, live, limit)]
 
 
 @api.get("/spawns/{job_id}")

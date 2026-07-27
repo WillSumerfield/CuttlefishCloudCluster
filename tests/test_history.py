@@ -79,3 +79,37 @@ class TestTheTickStampsOutcome:
         monkeypatch.setattr(head_spawns, "exit_code", lambda jid: None)   # file gone by the next pass
         tick._record_endings(conn, set(), _NOW)
         assert db.get_spawn(conn, 4207)["exit_code"] == 0
+
+
+class TestHistoryLimit:
+    """`limit` caps the archive to the newest N — the CLI passes it so a busy cluster is not a wall of
+    text; None (the Dashboard's read) returns every row."""
+
+    def _dated(self, conn, job_id, uid, at):
+        # record_spawn stamps submitted_at 'now'; rewrite it so newest-first ordering is deterministic.
+        _spawn(conn, job_id, uid)
+        conn.execute("UPDATE spawns SET submitted_at=? WHERE job_id=?", (at, job_id))
+        conn.commit()
+
+    def test_limit_keeps_the_newest_n(self, conn):
+        uid = _user(conn, "alice")
+        self._dated(conn, 1, uid, "2026-07-20T00:00:00Z")   # oldest
+        self._dated(conn, 2, uid, "2026-07-21T00:00:00Z")
+        self._dated(conn, 3, uid, "2026-07-22T00:00:00Z")   # newest
+        rows = db.spawn_history(conn, "2000-01-01T00:00:00Z", [], limit=2)
+        assert [r["job_id"] for r in rows] == [3, 2]
+
+    def test_none_returns_every_row(self, conn):
+        uid = _user(conn, "alice")
+        self._dated(conn, 1, uid, "2026-07-20T00:00:00Z")
+        self._dated(conn, 2, uid, "2026-07-21T00:00:00Z")
+        assert len(db.spawn_history(conn, "2000-01-01T00:00:00Z", [], limit=None)) == 2
+
+    def test_limit_composes_with_the_live_exclusion(self, conn):
+        """The exclude clause (live queue) and LIMIT must both hold: cap the newest of what's left."""
+        uid = _user(conn, "alice")
+        self._dated(conn, 1, uid, "2026-07-20T00:00:00Z")
+        self._dated(conn, 2, uid, "2026-07-21T00:00:00Z")
+        self._dated(conn, 3, uid, "2026-07-22T00:00:00Z")
+        rows = db.spawn_history(conn, "2000-01-01T00:00:00Z", [3], limit=1)   # 3 is live
+        assert [r["job_id"] for r in rows] == [2]

@@ -527,19 +527,31 @@ def cancel(
     spawns_mod.cancel(spawn_id, any_owner=any_owner, yes=yes)
 
 
+# `--limit` defaults to a sentinel (-1 = unset) so we can resolve it per format: a human table caps at
+# 50, but `--json` stays a complete data feed (0 = uncapped) unless the user asks for a cap explicitly.
+def _resolve_limit(limit: int, as_json: bool) -> int:
+    return limit if limit >= 0 else (0 if as_json else 50)
+
+
 @app.command()
-def queue(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+def queue(
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+    limit: int = typer.Option(-1, "--limit", show_default=False,
+                              help="Cap rows (0 = all). Default 50, uncapped for --json."),
+):
     """Show the live Spawn queue — every pending/running Spawn on the cluster, and who submitted it."""
-    spawns_mod.queue(as_json=as_json)
+    spawns_mod.queue(as_json=as_json, limit=_resolve_limit(limit, as_json))
 
 
 @app.command()
 def history(
     days: int = typer.Option(30, "--days", help="How far back to read."),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+    limit: int = typer.Option(-1, "--limit", show_default=False,
+                              help="Cap rows (0 = all). Default 50, uncapped for --json."),
 ):
     """Show past Spawns — everything the live queue has forgotten — with their cost and outcome."""
-    spawns_mod.history(days=days, as_json=as_json)
+    spawns_mod.history(days=days, as_json=as_json, limit=_resolve_limit(limit, as_json))
 
 
 @app.command()
