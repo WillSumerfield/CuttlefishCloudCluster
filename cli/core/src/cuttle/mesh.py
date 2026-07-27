@@ -7,6 +7,7 @@ enroll with a preauth key minted by the Head under the CCC user.
 Intended path only — no fallbacks (test box; failures decided live).
 """
 
+import base64
 import json
 import shutil
 import subprocess
@@ -255,14 +256,33 @@ def _ts_json(*args: str) -> dict | None:
     return json.loads(r.stdout)
 
 
-def joined_to(coordinator: str) -> bool:
-    """Is this node already on the mesh, registered against *this* coordinator?
+def _state_prefs() -> dict | None:
+    """ControlURL + LoggedOut, read straight off tailscaled-ccc's own on-disk state — not through
+    `tailscale debug prefs` (an explicitly unstable CLI surface Tailscale may change or drop; see
+    joined_to's docstring). The state file is tailscaled's own persistence, keyed by profile:
+    `_current-profile` names the active one (base64), and that key's value (base64 again) is the
+    profile's Prefs JSON — the same struct `debug prefs` prints. tailscaled has to keep reading its
+    own past state across upgrades, so this shape is a much safer bet than a debug-only subcommand.
 
-    The coordinator URL lives only in `debug prefs` — `status --json` has no ControlURL field
-    (checked on 1.98.8). `debug` is an unstable interface; there is no stable one that exposes it.
-    Neither command needs sudo: the socket is 0666.
+    Root-owned (0600) — needs sudo, primed by the caller's setup flow before this runs. Never returns
+    the full decoded Prefs blob: it also carries PrivateNodeKey/NetworkLockKey, real secret material
+    that has no business leaving this function.
     """
-    prefs = _ts_json("debug", "prefs")
+    r = run(["cat", str(config.CCC_TS_STATE)], sudo=True, capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return None
+    try:
+        store = json.loads(r.stdout)
+        current = base64.b64decode(store["_current-profile"]).decode()
+        prefs = json.loads(base64.b64decode(store[current]))
+    except (KeyError, ValueError, UnicodeDecodeError):
+        return None
+    return {"ControlURL": prefs.get("ControlURL"), "LoggedOut": prefs.get("LoggedOut", False)}
+
+
+def joined_to(coordinator: str) -> bool:
+    """Is this node already on the mesh, registered against *this* coordinator?"""
+    prefs = _state_prefs()
     status = _ts_json("status", "--json")
     if prefs is None or status is None:
         return False
