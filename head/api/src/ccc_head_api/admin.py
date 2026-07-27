@@ -1,5 +1,5 @@
-"""Local admin for the Head: users, Karma Overrides, and pinned Spawns (Phase 3a slice 1; widened
-in Phase 6).
+"""Local admin for the Head: users, Karma Overrides, pinned Spawns, and Arm Retract/Return on someone
+else's behalf (Phase 3a slice 1; widened in Phase 6 and Phase 2's retract/return `--any`).
 
 Runs *on the Head as the `ccc` service account* (`python -m ccc_head_api.admin ...`), writing head.db
 directly — being the operator on the Head is the authorization, no HTTP/session (mirrors the way
@@ -86,6 +86,34 @@ def _override(username: str, amount: float, note: str | None) -> int:
     return 0
 
 
+def _known_arm(name: str) -> bool:
+    from . import slurm
+    return any(a["name"] == name for a in slurm.arms())
+
+
+def _retract(node: str) -> int:
+    """`cuttle arm retract <name> --any` — an operator retracting on someone else's behalf, from the
+    Head. Writes head.db as the Mantle (retraction.retract needs no further privilege — see its module
+    docstring), skipping the owner check the network route enforces."""
+    from . import retraction
+    if not _known_arm(node):
+        print(f"no such Arm {node!r}", file=sys.stderr)
+        return 1
+    retraction.retract(node)
+    print(f"retracted {node!r}")
+    return 0
+
+
+def _return(node: str) -> int:
+    from . import retraction
+    if not _known_arm(node):
+        print(f"no such Arm {node!r}", file=sys.stderr)
+        return 1
+    retraction.unretract(node)
+    print(f"returned {node!r}")
+    return 0
+
+
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
             node: str | None, args: list[str]) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username`.
@@ -126,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
     o.add_argument("username")
     o.add_argument("amount", type=float)
     o.add_argument("--note")
+    rt = sub.add_parser("retract", help="retract an Arm on its owner's behalf (--any escape hatch).")
+    rt.add_argument("node")
+    rn = sub.add_parser("return", help="return an Arm on its owner's behalf (--any escape hatch).")
+    rn.add_argument("node")
     s = sub.add_parser("submit", help="submit a Spawn pinned to an Arm (prints the Spawn id).")
     s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
     s.add_argument("--script", required=True)
@@ -147,6 +179,10 @@ def main(argv: list[str] | None = None) -> int:
         return _exists(args.username)
     if args.cmd == "override":
         return _override(args.username, args.amount, args.note)
+    if args.cmd == "retract":
+        return _retract(args.node)
+    if args.cmd == "return":
+        return _return(args.node)
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
                        args.node, args.args)

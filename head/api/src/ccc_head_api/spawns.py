@@ -69,6 +69,7 @@ JOB_SCRIPT = """\
 #SBATCH --error=/tmp/ccc-%j.slurm
 %%CONSTRAINT%%
 %%NODELIST%%
+%%EXCLUDE%%
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
@@ -130,7 +131,8 @@ exit $rc
 
 
 def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
-            files: list[str], node: str | None, minutes: int, constraint: str) -> str:
+            files: list[str], node: str | None, minutes: int, constraint: str,
+            exclude: str = "") -> str:
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -142,6 +144,10 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
         # Users declare what they NEED, and Slurm picks the fastest free card that qualifies. A blank
         # line when unset, so the #SBATCH block just ends early.
         "%%NODELIST%%": f"#SBATCH --nodelist={node}" if node else "",
+        # Steer an unpinned Spawn away from every currently-retracted Arm (see retraction.py). Never set
+        # alongside %%NODELIST%% — submit_checked refuses a pinned Spawn aimed at a retracted Arm
+        # outright rather than silently excluding the one node the operator explicitly named.
+        "%%EXCLUDE%%": f"#SBATCH --exclude={exclude}" if exclude else "",
         "%%STAGING_DIR%%": str(staging),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
         "%%CCC_SIF%%": str(CCC_SIF),
@@ -162,7 +168,7 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
 
 def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
            tar_path: Path, minutes: int, constraint: str, node: str | None = None,
-           vram_gb: int = 0, hold: float | None = None) -> int:
+           vram_gb: int = 0, hold: float | None = None, exclude: str = "") -> int:
     """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row +
     the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
 
@@ -183,7 +189,7 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     # gitignore-filtered client-side, so every file here is meant to transfer.
     files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
 
-    body = _render(uuid, staging, gpu, script, args, files, node, minutes, constraint)
+    body = _render(uuid, staging, gpu, script, args, files, node, minutes, constraint, exclude)
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
         f.write(body)
         job_file = f.name
@@ -213,8 +219,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that consumes a
     donated card while nobody pays for it, and that no ledger can explain.
 
-    Raises ValueError for an unknown Arm, or for a User already at the concurrent-Spawn cap; the
-    callers translate (HTTP 422 / a CLI error).
+    Raises ValueError for an unknown Arm, a retracted one, or for a User already at the
+    concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
@@ -236,12 +242,20 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     if node and node not in [a["name"] for a in arms]:
         raise ValueError(f"unknown Arm '{node}' — known Arms: "
                          f"{', '.join(a['name'] for a in arms) or '(none)'}")
+    with db.connect() as conn:
+        retracted = db.retracted_nodes(conn)
+    if node and node in retracted:
+        raise ValueError(f"Arm '{node}' is retracted — its owner has paused it, so it takes no new "
+                         f"Spawns until they return it")
+    # Unpinned only: a pinned Spawn already named the one node it may run on above, and excluding a
+    # retracted node it wasn't headed for anyway would be a no-op.
+    exclude = ",".join(sorted(retracted)) if not node else ""
     constraint = slurm.vram_constraint(vram_gb)
     need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, wandb_env, tar_path, minutes, constraint, node,
-                  vram_gb=vram_gb, hold=hold)
+                  vram_gb=vram_gb, hold=hold, exclude=exclude)
 
 
 # --- reads (anonymous in slice 2) -------------------------------------------

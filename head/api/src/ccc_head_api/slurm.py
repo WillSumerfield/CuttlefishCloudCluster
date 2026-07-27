@@ -204,3 +204,12 @@ def cancel(job_id: int) -> None:
     (slurm.queue()), which is exactly what this causes, so a cancel bills for the seconds actually held
     with no second code path. Idempotent — scancel on an already-gone job is a no-op, not an error."""
     subprocess.run(["scancel", str(job_id)], capture_output=True, text=True, timeout=15, check=True)
+
+
+def signal(job_id: int, sig: str) -> None:
+    """Send a signal to a live Spawn, without ending it the way `cancel` does. Needs no privilege here
+    either, for the same reason — every Spawn runs as the Mantle. Used by a Retract's initial nudge
+    (TERM, so the job's own EXIT trap can stage out what it can) and by the Karma tick's force-kill once
+    its grace period has passed (KILL)."""
+    subprocess.run(["scancel", f"--signal={sig}", str(job_id)],
+                   capture_output=True, text=True, timeout=15, check=True)

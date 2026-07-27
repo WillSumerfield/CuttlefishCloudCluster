@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, karma, ratelimit, slurm
+from . import db, karma, ratelimit, retraction, slurm
 from . import spawns as spawns_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
@@ -198,8 +198,56 @@ def readyz(response: Response) -> dict:
 
 @api.get("/arms")
 def arms(user: dict = Depends(current_user)) -> list[dict]:
-    """Every compute node's live status + enrollment facts. See slurm.arms()."""
-    return slurm.arms()
+    """Every compute node's live status + enrollment facts. See slurm.arms(). `retracted` is app-layer
+    state slurm.arms() never sees (there is no real Slurm DRAIN behind it — see retraction.py) —
+    enriched here the same way `/spawns` adds `submitted_by`."""
+    rows = slurm.arms()
+    with db.connect() as conn:
+        retracted = db.retracted_nodes(conn)
+    for r in rows:
+        r["retracted"] = r["name"] in retracted
+    return rows
+
+
+def _arm_owner(name: str) -> str | None:
+    return next((a.get("owner") for a in slurm.arms() if a["name"] == name), None)
+
+
+@api.post("/arms/{name}/retract", status_code=204)
+def retract_arm(name: str, user: dict = Depends(current_user)) -> Response:
+    """Pause YOUR OWN Arm: stop taking new Spawns on it and end whatever is running there right now.
+
+    App-layer (Phase 2 loose end), not real Slurm DRAIN — see retraction.py's module docstring for why
+    that needs no privilege the Head API doesn't already have. Every Spawn currently RUNNING on this
+    Arm is sent TERM immediately and has retraction.GRACE_SECONDS to exit before the Karma tick
+    force-kills it; either way it settles at ZERO.
+
+    **Retracting someone else's Arm is an admin action and is not reachable from here** (mirrors
+    cancel_spawn): it is `cuttle arm retract <name> --any`, run on the Head. The ownership test below
+    is unconditional — an Admin gets no branch.
+    """
+    owner = _arm_owner(name)
+    if owner is None:
+        raise HTTPException(404, f"unknown Arm {name!r}")
+    if owner != user["username"]:
+        raise HTTPException(403, "you can only retract your own Arm")
+    retraction.retract(name)
+    log.info("retract arm=%s by %s", name, user["username"])
+    return Response(status_code=204)
+
+
+@api.post("/arms/{name}/return", status_code=204)
+def return_arm(name: str, user: dict = Depends(current_user)) -> Response:
+    """Reopen YOUR OWN retracted Arm for new placement. Does not reprieve a Spawn already caught by the
+    Retract — see retraction.py's module docstring. Same ownership rule as retract: no Admin branch."""
+    owner = _arm_owner(name)
+    if owner is None:
+        raise HTTPException(404, f"unknown Arm {name!r}")
+    if owner != user["username"]:
+        raise HTTPException(403, "you can only return your own Arm")
+    retraction.unretract(name)
+    log.info("return arm=%s by %s", name, user["username"])
+    return Response(status_code=204)
 
 
 @api.get("/spawns")

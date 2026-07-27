@@ -220,6 +220,30 @@ def arm_chown(
     enroll_mod.chown_arm(name, user)
 
 
+@arm_app.command("retract")
+def arm_retract(
+    name: str = typer.Argument(None, help="The Arm's node name."),
+    any_owner: bool = typer.Option(
+        False, "--any", help="Retract on someone else's behalf (Head-only, admin)."),
+):
+    """Pause your own Arm: stop it taking new Spawns and end whatever is running on it now (TERM right
+    away, a 3-minute grace, then force-killed). Settles at zero either way — Retract must never be a
+    way to farm Karma by yanking a card back mid-run."""
+    name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to retract?"))
+    enroll_mod.retract_arm(name, any_owner)
+
+
+@arm_app.command("return")
+def arm_return(
+    name: str = typer.Argument(None, help="The Arm's node name."),
+    any_owner: bool = typer.Option(
+        False, "--any", help="Return on someone else's behalf (Head-only, admin)."),
+):
+    """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught."""
+    name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to return?"))
+    enroll_mod.return_arm(name, any_owner)
+
+
 @arm_app.command("remove")
 def arm_remove(
     name: str = typer.Argument(None, help="The Arm's node name."),

@@ -25,7 +25,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -168,8 +168,31 @@ ALTER TABLE spawns ADD COLUMN exit_code   INTEGER;
 ALTER TABLE spawns ADD COLUMN finished_at TEXT;
 """
 
+# Arm Retract/Return (Phase 2 loose end — an owner's self-service pause of their own machine). Two
+# tables because the two things they track have different lifetimes:
+#
+# `arm_retractions` — presence of a row means "this node takes no NEW placement". submit_checked reads
+# it to build --exclude= and to refuse a pinned Spawn aimed at it. Return deletes the row; that is all
+# Return ever does.
+#
+# `retracted_jobs` — one row per Spawn that was RUNNING on the node at the moment Retract fired,
+# deadline = when the Karma tick should force-kill it if it hasn't exited on its own. Survives Return —
+# a Spawn already caught by a Retract is doomed regardless of an early Return (it never held the
+# arm_retractions row to begin with, and Return doesn't touch this table). Cleared only when the tick
+# settles the job, which is also where it is forced to zero regardless of what it accrued.
+_SCHEMA_V6 = """
+CREATE TABLE arm_retractions (
+  node TEXT PRIMARY KEY
+);
+CREATE TABLE retracted_jobs (
+  job_id   INTEGER PRIMARY KEY,
+  node     TEXT NOT NULL,
+  deadline TEXT NOT NULL
+);
+"""
+
 # index i takes user_version i -> i+1
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -551,3 +574,40 @@ def ledger_rows(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
         "ORDER BY l.at, l.id",
         (user_id, user_id),
     ).fetchall()
+
+
+# --- Arm Retract/Return (Phase 2 loose end) ---------------------------------
+
+def mark_arm_retracted(conn: sqlite3.Connection, node: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO arm_retractions (node) VALUES (?)", (node,))
+    conn.commit()
+
+
+def clear_arm_retraction(conn: sqlite3.Connection, node: str) -> None:
+    """Return: reopen `node` for new placement. Never touches `retracted_jobs` — a Spawn already
+    caught by the Retract is doomed regardless (see the table's docstring above)."""
+    conn.execute("DELETE FROM arm_retractions WHERE node=?", (node,))
+    conn.commit()
+
+
+def retracted_nodes(conn: sqlite3.Connection) -> set[str]:
+    return {r["node"] for r in conn.execute("SELECT node FROM arm_retractions").fetchall()}
+
+
+def catch_retracting_job(conn: sqlite3.Connection, job_id: int, node: str, deadline: str) -> None:
+    """Snapshot one Spawn caught by a Retract, at the moment it fired."""
+    conn.execute("INSERT OR REPLACE INTO retracted_jobs (job_id, node, deadline) VALUES (?,?,?)",
+                 (job_id, node, deadline))
+    conn.commit()
+
+
+def retracting_jobs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every Spawn a Retract has ever caught that has not settled yet — the tick's working set for the
+    force-kill deadline and the zero-billing it enforces at Settlement."""
+    return conn.execute("SELECT job_id, node, deadline FROM retracted_jobs").fetchall()
+
+
+def clear_retracting_job(conn: sqlite3.Connection, job_id: int) -> None:
+    """Called only at Settlement, once the zero-billed ledger row is written."""
+    conn.execute("DELETE FROM retracted_jobs WHERE job_id=?", (job_id,))
+    conn.commit()

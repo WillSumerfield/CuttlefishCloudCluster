@@ -221,6 +221,45 @@ class TestCancel:
         assert "your own Spawns" in result.output
 
 
+class TestArmRetraction:
+    """`cuttle arm retract`/`return` — the owner's own self-service pause, over the API (not Head-local
+    like the rest of `cuttle arm ...`). Mirrors TestCancel's shape: an unconditional ownership check,
+    no Admin branch."""
+
+    def _own_gpu_box(self, monkeypatch, owner="alice"):
+        monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "vram_mb": 24564,
+                                                      "admitted": True, "state": "idle",
+                                                      "power": 60.0, "gpu": 1, "owner": owner}])
+
+    def test_you_may_retract_and_return_your_own(self, signed_in, fake_slurm, monkeypatch):
+        self._own_gpu_box(monkeypatch)
+        result = signed_in("arm", "retract", "gpu-box")
+        assert result.exit_code == 0, result.output
+        with db.connect() as conn:
+            assert db.retracted_nodes(conn) == {"gpu-box"}
+
+        result = signed_in("arm", "return", "gpu-box")
+        assert result.exit_code == 0, result.output
+        with db.connect() as conn:
+            assert db.retracted_nodes(conn) == set()
+
+    def test_you_may_not_retract_someone_elses(self, cli, fake_slurm, monkeypatch):
+        """gpu-box is alice's; root tries to retract it over the API and is refused — mirrors
+        cancel's unconditional ownership test."""
+        self._own_gpu_box(monkeypatch, owner="alice")
+        cli("login", input=f"root\n{USERS['root']}\n")
+        result = cli("arm", "retract", "gpu-box")
+        assert result.exit_code != 0
+        assert "your own Arm" in result.output
+        with db.connect() as conn:
+            assert db.retracted_nodes(conn) == set()
+
+    def test_retracting_an_unknown_arm_is_refused(self, signed_in, fake_slurm):
+        result = signed_in("arm", "retract", "not-a-real-arm")
+        assert result.exit_code != 0
+        assert "unknown Arm" in result.output
+
+
 class TestQueue:
     """`cuttle queue` — the shared live queue, with the ledger's attribution (Slurm's own user is
     `ccc` for every Spawn). The queue rows are faked at `slurm.spawns` so the route's real

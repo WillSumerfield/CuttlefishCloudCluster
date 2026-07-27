@@ -24,7 +24,7 @@ export function demoSpawns(): Spawn[] {
 export function demoArms(): Arm[] {
   const arm = (name: string, gpus: number): Arm => ({
     name, state: "idle", gpus, owner: null, mesh_ip: null,
-    gpu_device: null, admitted: true, gpu: null, vram_mb: null, power: null,
+    gpu_device: null, admitted: true, retracted: false, gpu: null, vram_mb: null, power: null,
   });
   return [arm("arm-cephalo-04", 4), arm("arm-mantle-01", 8), arm("arm-siphon-02", 4)];
 }

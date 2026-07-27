@@ -21,6 +21,10 @@ export type Arm = {
   mesh_ip: string | null
   gpu_device: string | null
   admitted: boolean
+  // App-layer only — there is no real Slurm DRAIN behind this (see the Head's retraction.py). The
+  // owner paused it; `state` (raw sinfo) never reflects that, so it rides its own field rather than a
+  // synthetic word squeezed into `state`.
+  retracted: boolean
   // The hardware profile Karma prices from: what the card can do (Power, in TFLOP/s, measured by a
   // benchmark Spawn at enroll) and how much it can hold. Null until an Arm has been benchmarked.
   gpu: string | null
@@ -130,20 +134,22 @@ export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.t
 /** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
 export const cancelSpawn = (id: number) => req(`/spawns/${id}`, { method: 'DELETE' }).then(() => {})
 
-// Arm lifecycle. The Head serves none of these yet — the Arms page runs its actions on ?demo mock (see
-// arms/mock.ts), where they mutate local state instead of calling out. Live, they hit these paths.
+// Arm lifecycle. `retract`/`return` are real, owner-scoped routes on the Head (app-layer — see
+// retraction.py, no real Slurm DRAIN). `admit`/`benchmark`/`remove` are NOT and never will be: those
+// stay Head-CLI-only forever (the Privileged Sidecar that would have exposed them here was killed as a
+// roadmap goal), so their buttons on the roster only ever run under ?demo's mock.
 const armPost = (name: string, verb: string) =>
   req(`/arms/${encodeURIComponent(name)}/${verb}`, { method: 'POST' }).then(() => {})
 
-/** Owner-only: drain an Arm and stop its work immediately (10-min grace, then force-kill). */
+/** Owner-only: drain an Arm and stop its work immediately (3-min grace, then force-kill). */
 export const retractArm = (name: string) => armPost(name, 'retract')
 /** Owner-only: give a retracted Arm back — it never left the cluster, so no Admin, no new token. */
 export const returnArm = (name: string) => armPost(name, 'return')
-/** Admin: admit an enrolled Arm into the scheduler — the deliberate human gate the CLI skips. */
+/** Admin, Head-CLI-only — this button only works under ?demo. */
 export const admitArm = (name: string) => armPost(name, 'admit')
-/** Admin: re-measure an Arm's Power. */
+/** Admin, Head-CLI-only — this button only works under ?demo. */
 export const benchmarkArm = (name: string) => armPost(name, 'benchmark')
-/** Admin: reap an Arm from Slurm, the registry and the Mesh. */
+/** Admin, Head-CLI-only — this button only works under ?demo. */
 export const removeArm = (name: string) => req(`/arms/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
 // A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its

@@ -5,8 +5,11 @@ Every 30s, one pass, in this order:
 1. **Sample Demand** on every Arm (running claims + queued claims spread over eligible cards).
 2. **Accrue** onto every RUNNING Spawn: the seconds it held its card, at that card's Power and the
    Demand it held it under.
-3. **Settle** every Spawn that has vanished from the queue: one ledger row, and the claim is released.
-4. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
+3. **Force-kill** any Spawn a Retract caught whose grace period has expired and is still running (see
+   ccc_head_api.retraction) — Retract itself only sends TERM; this is the deadline behind it.
+4. **Settle** every Spawn that has vanished from the queue: one ledger row, and the claim is released.
+   One caught by a Retract settles at ZERO regardless of what it accrued.
+5. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
 
 It runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
 privilege whatsoever — no sudo, no root helper, no SlurmUser. Its own service, not a task inside the
@@ -81,6 +84,19 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
         db.accrue(conn, job["id"], node, esc["accrued"] + add, now.strftime(_TS))
 
 
+def _force_expired_retractions(conn, live_ids: set[int], now: datetime) -> None:
+    """Force-kill any Spawn a Retract caught whose grace period has passed and is still running.
+
+    Retract itself only sends TERM (retraction.retract), so the job's own EXIT trap gets a chance to
+    stage out first. A job absent from `live_ids` has already ended on its own — nothing to force here,
+    and `_settle` below is what zero-bills it."""
+    for row in db.retracting_jobs(conn):
+        if row["job_id"] not in live_ids:
+            continue
+        if _parse(row["deadline"]) <= now:
+            slurm.signal(row["job_id"], "KILL")
+
+
 def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> int:
     """Move the Karma of every Spawn that has ended, and release its claim.
 
@@ -94,7 +110,12 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> i
 
     A Spawn cancelled while still PENDING accrued nothing and settles at 0 — its hold is simply
     released. The row is written anyway, so the ledger is a complete record of every Spawn's ending.
+
+    A Spawn a Retract caught (db.retracting_jobs) settles at **ZERO regardless of what it accrued** —
+    Retract must never be a way to farm Karma by donating a card and yanking it back mid-run — and its
+    `retracted_jobs` row is cleared here, the moment it settles.
     """
+    retracting = {r["job_id"] for r in db.retracting_jobs(conn)}
     settled = 0
     for esc in db.live_escrows(conn):
         if esc["job_id"] in live_ids:
@@ -105,9 +126,12 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> i
             row = db.get_user(conn, owner)
             if row and not row["is_admin"]:      # Admin-owned == Commons: destroy, don't credit
                 owner_id = row["id"]
-        db.record_karma(conn, "settle", esc["accrued"], esc["user_id"], owner_id,
+        amount = 0.0 if esc["job_id"] in retracting else esc["accrued"]
+        db.record_karma(conn, "settle", amount, esc["user_id"], owner_id,
                         job_id=esc["job_id"], at=now.strftime(_TS))
         db.clear_escrow(conn, esc["job_id"])
+        if esc["job_id"] in retracting:
+            db.clear_retracting_job(conn, esc["job_id"])
         settled += 1
     return settled
 
@@ -150,6 +174,7 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS, now)
 
         _meter(conn, jobs, arms, demand, needs, now)
+        _force_expired_retractions(conn, set(ids), now)
         settled = _settle(conn, set(ids), arms, now)
         _record_endings(conn, set(ids), now)
 

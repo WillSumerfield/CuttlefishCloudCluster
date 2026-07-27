@@ -17,8 +17,10 @@ import type { ArmAction } from "../arms/format";
  * inline on the roster's rows, never a separate section. Live — an Arm's state changes as work lands on
  * it — so it polls, like the Queue.
  *
- * The action endpoints don't exist on the Head yet, so under ?demo the actions mutate the mock in place
- * (nothing is sent); live, they call out and the next poll confirms.
+ * Retract/return are real, owner-scoped routes on the Head. Admit/benchmark/remove are not and never
+ * will be (Head-CLI-only, permanently — see api.ts). Under ?demo every action mutates the mock in
+ * place instead (nothing is sent), so the page can be reviewed with no live cluster; live, the real
+ * ones call out and the next poll confirms, and the CLI-only ones simply fail (actionError below).
  */
 
 // How each action reshapes an Arm locally — the optimistic view, and the whole story under ?demo.

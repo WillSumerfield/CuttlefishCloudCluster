@@ -53,6 +53,28 @@ class TestOverride:
         assert capsys.readouterr().err.strip()
 
 
+class TestRetractAny:
+    """`cuttle arm retract/return --any` — the operator's Head-local escape hatch, which writes head.db
+    directly (retraction.retract needs no further privilege) rather than the owner-scoped network
+    route. Mirrors TestReset's shape: the sudo wrapper is untestable here, this module underneath it
+    is."""
+
+    def test_it_flags_the_arm_retracted(self, head_db, fake_slurm):
+        assert admin.main(["retract", "gpu-box"]) == 0
+        with db.connect() as conn:
+            assert db.retracted_nodes(conn) == {"gpu-box"}
+
+    def test_return_clears_it(self, head_db, fake_slurm):
+        admin.main(["retract", "gpu-box"])
+        assert admin.main(["return", "gpu-box"]) == 0
+        with db.connect() as conn:
+            assert db.retracted_nodes(conn) == set()
+
+    def test_an_unknown_arm_is_refused(self, head_db, fake_slurm, capsys):
+        assert admin.main(["retract", "not-a-real-arm"]) == 1
+        assert "no such Arm" in capsys.readouterr().err
+
+
 class TestPinnedSubmit:
     """`cuttle run --node`, minus the sudo. The point of routing it through `submit_checked` rather
     than shelling out to sbatch directly is that the ledger still gets written — so that is what
@@ -100,3 +122,10 @@ class TestPinnedSubmit:
         assert admin.main(["submit", "--user", "nobody", "--script", "train.py", "--tar", str(rig),
                            "--minutes", "60", "--vram", "24", "--node", "gpu-box"]) == 1
         assert "no such user" in capsys.readouterr().err
+
+    def test_a_pinned_submit_to_a_retracted_arm_is_refused(self, rig, capsys):
+        with db.connect() as conn:
+            db.mark_arm_retracted(conn, "gpu-box")
+        assert admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
+                           "--minutes", "60", "--vram", "24", "--node", "gpu-box"]) == 1
+        assert "retracted" in capsys.readouterr().err

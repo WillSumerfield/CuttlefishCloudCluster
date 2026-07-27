@@ -29,10 +29,13 @@ export type Tone = "live" | "idle" | "wait" | "alarm";
  */
 export function armState(a: Arm): { word: string; tone: Tone; working: boolean } {
   const s = (a.state || "").toLowerCase();
+  // Checked FIRST, ahead of raw sinfo: retraction is app-layer (no real Slurm DRAIN — see
+  // retraction.py), so `state` never says so on its own, and a Spawn still finishing out its grace
+  // period may still read "allocated" underneath. The owner paused it; that's what the card shows.
+  if (a.retracted) return { word: "retracted", tone: "wait", working: false };
   if (/alloc|mixed|running|completing/.test(s)) return { word: "allocated", tone: "live", working: true };
   if (/bench/.test(s)) return { word: "benchmarking", tone: "live", working: true };
   if (/down|drain|fail|error|invalid/.test(s)) return { word: "down", tone: "alarm", working: false };
-  if (/retract/.test(s)) return { word: "retracted", tone: "wait", working: false };
   if (/awaiting-donor/.test(s) || (!a.admitted && !a.mesh_ip)) return { word: "awaiting donor", tone: "wait", working: false };
   if (/awaiting-admit/.test(s) || !a.admitted) return { word: "awaiting admit", tone: "wait", working: false };
   return { word: "idle", tone: "idle", working: false };

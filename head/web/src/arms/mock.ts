@@ -12,7 +12,7 @@ export function demoRoster(): Arm[] {
   const me = session.username || "you";
   const A = (o: Partial<Arm> & { name: string }): Arm => ({
     state: "idle", gpus: 0, owner: null, mesh_ip: null, gpu_device: null,
-    admitted: true, gpu: null, vram_mb: null, power: null, ...o,
+    admitted: true, retracted: false, gpu: null, vram_mb: null, power: null, ...o,
   });
   return [
     A({ name: "arm-cephalo-04", state: "allocated", gpus: 4, owner: me, gpu: "H100", vram_mb: 81920, power: 989, mesh_ip: "100.72.0.4" }),
@@ -23,6 +23,6 @@ export function demoRoster(): Arm[] {
     A({ name: "arm-ink-03", state: "down", gpus: 4, owner: "Mira Kwan", gpu: "A100", vram_mb: 40960, power: 312, mesh_ip: "100.72.0.3" }),
     A({ name: "arm-reef-09", state: "awaiting-admit", gpus: 8, owner: "Ari Solberg", gpu: "H100", vram_mb: 81920, power: 989, mesh_ip: "100.72.0.9", admitted: false }),
     A({ name: "arm-tide-12", state: "awaiting-donor", gpus: 0, owner: "Junho Park", admitted: false }),
-    A({ name: "arm-shoal-05", state: "retracted", gpus: 4, owner: me, gpu: "A100", vram_mb: 81920, power: 312, mesh_ip: "100.72.0.5" }),
+    A({ name: "arm-shoal-05", state: "allocated", retracted: true, gpus: 4, owner: me, gpu: "A100", vram_mb: 81920, power: 312, mesh_ip: "100.72.0.5" }),
   ];
 }

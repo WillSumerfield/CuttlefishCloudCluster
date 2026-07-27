@@ -42,6 +42,10 @@ def at(conn: sqlite3.Connection, days_ago: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def ts(seconds_from_now: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class TestLedger:
     def test_a_transfer_leaves_the_sum_at_zero(self, conn):
         """The invariant the whole economy rests on. Every ordinary flow is a Transfer — the submitter
@@ -549,6 +553,64 @@ class TestTheMeter:
         tick.once()
         rows = conn.execute("SELECT node, demand FROM karma_demand").fetchall()
         assert [(r["node"], r["demand"]) for r in rows] == [("donor", 1.0)]
+
+
+class TestRetraction:
+    """Phase 2 loose end. `ccc_head_api.retraction` starts the TERM + the 3-minute grace; this is the
+    tick's half — force-killing whatever is still alive past the deadline, and making sure a caught
+    Spawn settles at ZERO no matter what it accrued. Retract must never be a way to farm Karma by
+    donating a card and yanking it back mid-run."""
+
+    @pytest.fixture
+    def cluster(self, conn, monkeypatch):
+        state = {"jobs": [], "arms": [arm("donor", owner="carol")]}
+        monkeypatch.setattr(db, "connect", lambda: conn)
+        monkeypatch.setattr(tick.slurm, "queue", lambda: state["jobs"])
+        monkeypatch.setattr(tick.slurm, "arms", lambda: state["arms"])
+        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice: None)
+        signalled = []
+        monkeypatch.setattr(tick.slurm, "signal", lambda jid, sig: signalled.append((jid, sig)))
+        return state, signalled
+
+    def _spawn(self, conn, jid, user="alice", hold=100.0):
+        db.record_spawn(conn, jid, uid(conn, user), "train.py", f"u{jid}",
+                        minutes=60, gpus=1, vram_gb=8, hold=hold)
+
+    def test_a_caught_job_past_its_deadline_is_force_killed(self, conn, cluster):
+        state, signalled = cluster
+        self._spawn(conn, 601)
+        db.catch_retracting_job(conn, 601, "donor", ts(-1))
+        state["jobs"] = [job(601, "RUNNING", node="donor", start_time=0)]
+        tick.once()
+        assert signalled == [(601, "KILL")]
+
+    def test_a_caught_job_still_inside_its_grace_is_left_alone(self, conn, cluster):
+        state, signalled = cluster
+        self._spawn(conn, 602)
+        db.catch_retracting_job(conn, 602, "donor", ts(180))
+        state["jobs"] = [job(602, "RUNNING", node="donor", start_time=0)]
+        tick.once()
+        assert signalled == []
+
+    def test_a_job_already_gone_is_not_force_killed_again(self, conn, cluster):
+        """It ended on its own inside the grace window — `_settle` is what finishes the job off, not
+        another scancel for a process that no longer exists."""
+        state, signalled = cluster
+        self._spawn(conn, 603)
+        db.catch_retracting_job(conn, 603, "donor", ts(-1))
+        state["jobs"] = []
+        tick.once()
+        assert signalled == []
+
+    def test_a_caught_job_settles_at_zero_no_matter_what_it_accrued(self, conn, cluster):
+        self._spawn(conn, 604)
+        db.accrue(conn, 604, "donor", 999.0, ts(-1))
+        db.catch_retracting_job(conn, 604, "donor", ts(-1))
+        cluster[0]["jobs"] = []  # it has left the queue
+        tick.once()
+        assert karma.balances(conn).get(uid(conn, "alice"), 0.0) == pytest.approx(0.0, abs=1e-9)
+        assert karma.balances(conn).get(uid(conn, "carol"), 0.0) == pytest.approx(0.0, abs=1e-9)
+        assert db.retracting_jobs(conn) == []   # cleared once it settles
 
 
 class TestOverrideAndTheAdmin:

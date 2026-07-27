@@ -10,7 +10,7 @@ import { armState, toneColor, vram, power, type ArmAction } from "./format";
  * motion vocabulary is legible: the passing cloud when a card is working, the chromatic bloom while it
  * benchmarks or waits for its donor, still when it's idle or retracted.
  *
- * Retract drains the Arm and stops its work immediately (a fixed 10-minute grace, then force-kill). It is
+ * Retract drains the Arm and stops its work immediately (a fixed 3-minute grace, then force-kill). It is
  * destructive, so it confirms inline. Return gives a retracted Arm back — no Admin, no new token, because
  * a retracted Arm never left the cluster.
  */
@@ -65,7 +65,7 @@ function MyArmCard({ arm, onAct }: { arm: Arm; onAct: (name: string, action: Arm
             </button>
           ) : confirm ? (
             <div className="flex items-center gap-2">
-              <span className="text-[12px] text-ink-mute">Stops work now, 10-min grace.</span>
+              <span className="text-[12px] text-ink-mute">Stops work now, 3-min grace.</span>
               <button className="btn-ghost" onClick={() => setConfirm(false)}>
                 Keep
               </button>

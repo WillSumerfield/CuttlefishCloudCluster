@@ -451,3 +451,28 @@ def remove_arm(name: str, write_root_file) -> None:
         save_registry(reg)
         render_gres(reg, write_root_file)
     print(f"cuttle: {name} removed from Slurm, the registry, and evicted from the mesh")
+
+
+# --- Retract / Return (Phase 2 loose end) -----------------------------------
+# Unlike everything else in this file, these are NOT Head-local: retracting/returning your own Arm is
+# an owner action reachable over the network (any box, session-authed), exactly like `cuttle cancel`.
+# `--any` is the operator's escape hatch — Head-only, and writes head.db directly through the API venv
+# rather than the network route, mirroring `cuttle user reset` (see auth._admin).
+
+def retract_arm(name: str, any_owner: bool = False) -> None:
+    """Pause an Arm: it stops taking new Spawns and whatever is running on it now is ended (TERM now, a
+    3-minute grace, then force-killed by the Karma tick). Settles at zero either way."""
+    if any_owner:
+        auth._admin(["retract", name])
+    else:
+        auth._api("POST", f"/arms/{name}/retract")
+    print(f"cuttle: {name} retracted — running work has 3 minutes to end gracefully")
+
+
+def return_arm(name: str, any_owner: bool = False) -> None:
+    """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught."""
+    if any_owner:
+        auth._admin(["return", name])
+    else:
+        auth._api("POST", f"/arms/{name}/return")
+    print(f"cuttle: {name} returned — accepting new Spawns again")
