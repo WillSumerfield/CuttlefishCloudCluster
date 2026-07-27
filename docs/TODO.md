@@ -70,14 +70,16 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
 > `phase1-substrate` WIP branch (2026-07-15 grill: `LiveQueue.tsx`/`SpawnRow.tsx`/`api.ts:cancelSpawn`;
 > `QueuePage.tsx:78` passes `isAdmin` into `SubmitComposer`) and dropped from this list.
 
-## `stderr` is unreachable from every client → Phase 5 — [effort: low]
+## ~~`stderr` is unreachable from every client~~ — DONE (Phase 8)
 
-The job script writes both `out` and `err` into the Spawn dir, but `GET /spawns/{id}/logs` serves
-**only `out`**. `cuttle logs` and the Dashboard's log pane both read that one endpoint.
+Added `GET /spawns/{id}/stderr` beside `/logs` (stdout); both plain-text, empty (not 404) when the file
+isn't there yet. `cuttle logs` now prints **both** under `=== stdout ===` / `=== stderr ===` headers
+(so a crash's traceback — in `err`, with `out` empty — is never hidden), and `cuttle logs -f`
+interleaves the two live, each line tagged `[out]`/`[err]`.
 
-So a Spawn that dies on a Python traceback shows an **empty log pane and the word FAILED**, with the
-cause sitting on disk, unreachable. This is the single most-used debugging surface in a cluster. Fix:
-serve both streams and let the client pick.
+Scope correction found on the way: the **Dashboard log pane doesn't exist yet** (`SpawnPage.tsx` is a
+Placeholder), so this was API + CLI only. The placeholder already promises "stdout and stderr,
+separately", and the two endpoints serve exactly that for when the pane is built.
 
 ## No password recovery exists → Phase 5 — [effort: med]
 
