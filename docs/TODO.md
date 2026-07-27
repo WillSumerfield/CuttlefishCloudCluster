@@ -12,9 +12,12 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
   keys, preauth keys) are equally un-backed-up. Losing Headscale's state means every Arm must physically
   re-enroll, so backing up head.db alone (Users, sessions, Karma ledger, spawn/attribution history)
   still leaves a Head-disk failure evicting the whole fleet. → Phase 7.
-- **[med] The Head API doesn't log.** Confirmed: `main.py`, `spawns.py`, `slurm.py`, `enroll.py`, `admin.py`,
-  `karma.py` have zero logging calls and no custom exception handlers; only `tick.py` (the Karma meter)
-  logs anything. `/healthz` is a static `{"ok": true}` with no DB/Slurm reachability check. → Phase 7.
+- ~~**[med] The Head API doesn't log.**~~ **DONE (Phase 8).** `ccc.api` logger (stdlib → stdout →
+  journald): a request-middleware access line carrying the authed username + latency (path only — no
+  secrets), an unhandled-error sink (ERROR + traceback → clean 500), and security/domain events (login
+  OK/FAILED, logout, submit, cancel; `ccc.enroll` logs the munge-key grant + refused names). uvicorn's
+  own access log is now off (`--no-access-log`). `/healthz` stays pure liveness; new **`/readyz`** pings
+  head.db + `scontrol ping` and 503s with the culprit named. `admin.py` (CLI, not a server) untouched.
 - **[high] No lighter redeploy path than full `teardown`+`setup`.** Several hardware slices (Mantle uid pin,
   the ccc-user rename) needed a full reprovision to ship a code change. Direction from the grill:
   containerize the three Head-side app services (**Head API, Enroll API, karma tick**) so an update is
