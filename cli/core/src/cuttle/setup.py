@@ -444,6 +444,13 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # apt has not created yet.
     info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
 
+    # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
+    # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
+    # their desk and it timed out, they finish with `cuttle arm admit`. Resolved here, before the apt/
+    # build block below, so that block is never interleaved with a wait on the Head.
+    if not info["admitted"]:
+        enroll.wait_for_admit(t["mesh_ip"], node_name)
+
     add_repos()
     install_packages(config.SLURMD_PKG)
     if system.is_wsl():
@@ -462,13 +469,6 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # Head renders into the job script.
     provision_mantle()
     build_base_sif()
-
-    # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
-    # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
-    # their desk and it timed out, they finish with `cuttle arm admit`. Either way, starting slurmd
-    # before that lands would register a node the Head has no GRES for.
-    if not info["admitted"]:
-        enroll.wait_for_admit(t["mesh_ip"], node_name)
 
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
