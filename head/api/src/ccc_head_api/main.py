@@ -184,6 +184,12 @@ def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
     return spawns_mod.out_text(job_id) or ""
 
 
+@api.get("/spawns/{job_id}/stderr", response_class=PlainTextResponse)
+def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
+    """The Spawn's stderr — where a crash's traceback lands (`/logs` serves stdout, empty on a crash)."""
+    return spawns_mod.err_text(job_id) or ""
+
+
 @api.get("/spawns/{job_id}/outputs")
 def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back."""

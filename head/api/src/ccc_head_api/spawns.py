@@ -250,6 +250,12 @@ def out_text(job_id: int) -> str | None:
     return f.read_text() if f.exists() else None
 
 
+def err_text(job_id: int) -> str | None:
+    """The Spawn's stderr — the traceback of a Spawn that died is here, not in `out`."""
+    f = _spawn_dir(job_id) / "err"
+    return f.read_text() if f.exists() else None
+
+
 def outputs_tar(job_id: int) -> bytes | None:
     """gzip-tar of the Spawn's $CCC_OUT dir, for `cuttle outputs <id>`. None if it produced none.
 

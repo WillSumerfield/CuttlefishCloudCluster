@@ -192,20 +192,37 @@ def _outcome(st: dict) -> str:
     return f"done (exit {st['exit']})"
 
 
+def _drain(label: str, text: str, pos: int) -> int:
+    """Print whole lines of `text[pos:]`, each tagged `[label]`, and return the new consumed offset.
+    Only complete lines are emitted; a trailing partial line is held until its newline arrives, so a
+    prefix never splits a line. Returns pos advanced to the last newline consumed."""
+    end = text.rfind("\n", pos) + 1          # 0 if no newline yet → nothing complete to emit
+    if end <= pos:
+        return pos
+    for line in text[pos:end].splitlines():
+        print(f"[{label}] {line}", flush=True)
+    return end
+
+
 def _follow(spawn_id: int) -> None:
-    """Stream stdout until the Spawn ends. Local/co-located Spawns stream live (out is written on the
-    Head as the job runs); a remote Spawn's out only arrives at stage-out (post-hoc)."""
-    pos = 0
+    """Interleave stdout and stderr live until the Spawn ends, each line tagged `[out]`/`[err]` (the two
+    are separate files, indistinguishable once merged). Ordering is per-poll, so approximate. Local/
+    co-located Spawns stream live; a remote Spawn's streams arrive only at stage-out (post-hoc)."""
+    out_pos = err_pos = 0
     while True:
-        text = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
-        if len(text) > pos:
-            print(text[pos:], end="", flush=True)
-            pos = len(text)
+        out = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
+        err = _get_bytes(f"/spawns/{spawn_id}/stderr").decode()
+        out_pos = _drain("out", out, out_pos)
+        err_pos = _drain("err", err, err_pos)
         st = auth._api("GET", f"/spawns/{spawn_id}")
         if st.get("done"):
-            text = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
-            if len(text) > pos:
-                print(text[pos:], end="", flush=True)
+            # Re-read once more (the streams may have grown since the poll above), then flush every
+            # remaining line — including a final partial one with no trailing newline that _drain holds.
+            for label, path, pos in (("out", "logs", out_pos), ("err", "stderr", err_pos)):
+                text = _get_bytes(f"/spawns/{spawn_id}/{path}").decode()
+                pos = _drain(label, text, pos)
+                if len(text) > pos:
+                    print(f"[{label}] {text[pos:]}", flush=True)
             ui.ok(f"spawn {spawn_id} {_outcome(st)}")
             return
         time.sleep(0.5)
@@ -287,8 +304,14 @@ def status(spawn_id: int, as_json: bool = False) -> None:
 def logs(spawn_id: int, follow: bool) -> None:
     if follow:
         _follow(spawn_id)
-    else:
-        ui.data(_get_bytes(f"/spawns/{spawn_id}/logs").decode().rstrip())
+        return
+    out = _get_bytes(f"/spawns/{spawn_id}/logs").decode().rstrip()
+    err = _get_bytes(f"/spawns/{spawn_id}/stderr").decode().rstrip()
+    if not out and not err:
+        ui.say("(no output yet)")
+        return
+    # Both sections always, so a FAILED Spawn's traceback (in stderr, out empty) is never hidden.
+    ui.data(f"=== stdout ===\n{out}\n\n=== stderr ===\n{err}")
 
 
 def outputs(spawn_id: int) -> None:

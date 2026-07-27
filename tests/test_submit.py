@@ -205,3 +205,39 @@ class TestCancel:
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         r = c.delete("/api/spawns/999")
         assert r.status_code == 404
+
+
+class TestLogStreams:
+    """`/logs` serves stdout, `/stderr` serves stderr — separate files on disk (spawns.py writes both).
+    A Spawn that dies on a traceback leaves `out` empty and the cause in `err`; before /stderr existed
+    that cause was unreachable from every client. A stream with no file yet reads as empty, not 404."""
+
+    def _spawn_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path)
+        d = tmp_path / "77"
+        d.mkdir()
+        return d
+
+    def test_logs_serves_stdout_stderr_serves_stderr(self, monkeypatch, tmp_path):
+        c = client(monkeypatch, is_admin=False)
+        d = self._spawn_dir(monkeypatch, tmp_path)
+        (d / "out").write_text("epoch 1 loss=2.3\n")
+        (d / "err").write_text("Traceback (most recent call last)\n")
+        assert c.get("/api/spawns/77/logs").text == "epoch 1 loss=2.3\n"
+        assert c.get("/api/spawns/77/stderr").text == "Traceback (most recent call last)\n"
+
+    def test_a_crash_leaves_the_cause_only_in_stderr(self, monkeypatch, tmp_path):
+        """The reported bug: out empty + FAILED, cause on disk. /stderr is the reach that was missing."""
+        c = client(monkeypatch, is_admin=False)
+        d = self._spawn_dir(monkeypatch, tmp_path)
+        (d / "out").write_text("")
+        (d / "err").write_text("RuntimeError: CUDA out of memory\n")
+        assert c.get("/api/spawns/77/logs").text == ""
+        assert "CUDA out of memory" in c.get("/api/spawns/77/stderr").text
+
+    def test_a_missing_stream_is_empty_not_404(self, monkeypatch, tmp_path):
+        c = client(monkeypatch, is_admin=False)
+        self._spawn_dir(monkeypatch, tmp_path)   # dir exists, neither file written yet
+        assert c.get("/api/spawns/77/logs").status_code == 200
+        assert c.get("/api/spawns/77/stderr").status_code == 200
+        assert c.get("/api/spawns/77/stderr").text == ""

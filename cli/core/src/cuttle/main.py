@@ -580,9 +580,9 @@ def status(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id."),
 @app.command()
 def logs(
     spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id."),
-    follow: bool = typer.Option(False, "--follow", "-f", help="tail -f the Spawn's stdout."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Interleave both streams live, tagged [out]/[err]."),
 ):
-    """Print (or follow) a Spawn's stdout."""
+    """Print (or follow) a Spawn's stdout and stderr."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Read which Spawn?"))
     spawns_mod.logs(spawn_id, follow=follow)
 
