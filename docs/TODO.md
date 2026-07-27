@@ -389,15 +389,15 @@ base.sif) as one block either fully before or fully after the enroll/approval ex
 2026-07-15 into the "CLI install/setup UX needs a real pass" item at the top of this file — same
 cleanup pass, not a standalone fix.
 
-## Remote scratch orphans on SIGKILL → Phase 2 — [effort: low]
+## ~~Remote scratch orphans on SIGKILL~~ — DONE (Phase 8)
 
-④ wipes a remote Spawn's node-local scratch (`/tmp/ccc-<jobid>`) with a bash `trap ... EXIT`. That
-fires on normal exit and ordinary signals, but **not** SIGKILL — OOM-killer, `scancel -9`, and (Phase
-2) a Retract all bypass it, orphaning the scratch dir on the donor. Fix with a Slurm epilog that
-`rm -rf`s the job's scratch, or a boot-time sweep of `/tmp/ccc-*`. Pairs naturally with Phase-2 Retract
-(which needs an epilog anyway). **Severity dropped (slice 3):** scratch moved from the (home-less)
-Mantle's home to `/tmp`, so an orphan is now swept by the OS at reboot rather than accumulating
-forever. Until the epilog lands, a hard-killed Spawn still hogs donor disk until the next reboot.
+Added a Slurm `Epilog` (`/etc/slurm/ccc-epilog.sh`) that slurmd runs at job end however it ended —
+including the SIGKILL cases the job script's `trap ... EXIT` misses (OOM, `scancel -9`, a Phase-2
+Retract). It `rm -rf`s both scratch roots (`/tmp/ccc-$SLURM_JOB_ID` for a remote Arm, the Head state
+dir's `scratch/$SLURM_JOB_ID` for the co-located Arm — the same trap-bypass bug bit the Head too), and
+always `exit 0` so a stale/missing dir never drains the node. `Epilog=` rides configless in slurm.conf;
+the script itself is written on every node (`write_slurm_config` for the Head, `setup_arm` for Arms,
+before slurmd starts — configless serves the conf but not the script it names).
 
 ## WSL2 Arms: supported, with one permanent limit — [status — no task; permanent limit]
 
