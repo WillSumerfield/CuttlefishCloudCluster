@@ -5,6 +5,7 @@ import {
   setWandbKey,
   deleteWandbKey,
   Unauthorized,
+  errMessage,
   type WandbKeyStatus,
 } from "../api";
 
@@ -39,6 +40,9 @@ export function WandbKey({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // Reveal/Save/Remove used to swallow every non-401 failure: the spinner stopped and nothing changed,
+  // so you couldn't tell whether your key was stored. Say what failed instead.
+  const [error, setError] = useState<string | null>(null);
 
   const maskFrom = (key?: string): State =>
     key ? { kind: "status", status: { set: true, last4: key.slice(-4) } } : { kind: "status", status: { set: false, last4: null } };
@@ -53,11 +57,13 @@ export function WandbKey({
   useEffect(() => { load(); }, [load]);
 
   const reveal = async () => {
+    setError(null);
     if (demo) { setRevealed(localKey ?? ""); return; }
     try {
       setRevealed(await revealWandbKey());
     } catch (e) {
-      if (e instanceof Unauthorized) onUnauthorized();
+      if (e instanceof Unauthorized) return onUnauthorized();
+      setError(`Couldn't reveal the stored key — ${errMessage(e)}`);
     }
   };
 
@@ -65,6 +71,7 @@ export function WandbKey({
     const key = draft.trim();
     if (!key) return;
     setBusy(true);
+    setError(null);
     if (demo) {
       setLocalKey(key);
       setState(maskFrom(key));
@@ -81,7 +88,8 @@ export function WandbKey({
       setRevealed(null);
       load();
     } catch (e) {
-      if (e instanceof Unauthorized) onUnauthorized();
+      if (e instanceof Unauthorized) return onUnauthorized();
+      setError(`Couldn't save your W&B key — ${errMessage(e)} It wasn't stored.`);
     } finally {
       setBusy(false);
     }
@@ -89,12 +97,14 @@ export function WandbKey({
 
   const remove = async () => {
     setRevealed(null);
+    setError(null);
     if (demo) { setLocalKey(undefined); setState(maskFrom(undefined)); return; }
     try {
       await deleteWandbKey();
       load();
     } catch (e) {
-      if (e instanceof Unauthorized) onUnauthorized();
+      if (e instanceof Unauthorized) return onUnauthorized();
+      setError(`Couldn't remove the key — ${errMessage(e)}`);
     }
   };
 
@@ -102,10 +112,12 @@ export function WandbKey({
     <div>
       <div className="label mb-2">W&amp;B key</div>
 
+      {error && <p role="alert" className="mb-2 text-[12px]" style={{ color: "var(--alarm)" }}>{error}</p>}
+
       {state.kind === "loading" && <p className="text-[13px] text-ink-mute">Loading…</p>}
 
       {state.kind === "unavailable" && (
-        <p className="text-[13px] text-ink-mute">Not available yet — the Head doesn't serve this route.</p>
+        <p className="text-[13px] text-ink-mute">W&amp;B key storage isn't available yet.</p>
       )}
 
       {state.kind === "status" && (

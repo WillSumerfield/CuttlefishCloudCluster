@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
-import { getRecipes, createRecipe, runRecipe, updateRecipe, deleteRecipe, Unauthorized, type Recipe } from "../api";
+import { getRecipes, createRecipe, runRecipe, updateRecipe, deleteRecipe, Unauthorized, errMessage, type Recipe } from "../api";
 import { Storage } from "../recipes/Storage";
 import { RecipeCard } from "../recipes/RecipeCard";
 import { RecipeComposer, type RecipePayload } from "../recipes/RecipeComposer";
@@ -33,6 +33,9 @@ export function RecipesPage() {
   const [hovered, setHovered] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
   const [pending, setPending] = useState(0); // bytes of the folder being frozen right now → wall ghost
+  // A failed action/save used to vanish silently — worst of all for Save, where a folder was picked and a
+  // form filled. Name what failed until the next action.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -69,10 +72,12 @@ export function RecipesPage() {
       }
       // Run reshapes nothing here — it spawns a job that surfaces on the Queue, not on this page.
 
+      setActionError(null);
       if (demo) return;
       API[action as "run" | "update" | "delete"](name).catch((e) => {
-        if (e instanceof Unauthorized) logout();
-        else refresh(); // an action that failed live: re-sync to the truth.
+        if (e instanceof Unauthorized) return logout();
+        setActionError(`Couldn't ${action} recipe '${name}' — ${errMessage(e)} The shelf has been refreshed.`);
+        refresh(); // an action that failed live: re-sync to the truth.
       });
     },
     [demo, logout, refresh],
@@ -98,6 +103,7 @@ export function RecipesPage() {
       setRecipes((prev) => [...prev, optimistic]);
       setComposing(false);
       setPending(0);
+      setActionError(null);
 
       if (demo) {
         window.setTimeout(() => {
@@ -110,8 +116,11 @@ export function RecipesPage() {
       createRecipe(r)
         .then((saved) => setRecipes((prev) => prev.map((x) => (x.name === r.name ? saved : x))))
         .catch((e) => {
-          if (e instanceof Unauthorized) logout();
-          else refresh(); // the save failed live: drop the optimistic card, re-sync to the truth.
+          if (e instanceof Unauthorized) return logout();
+          // The save failed live: drop the optimistic card, re-sync, and say so — the folder wasn't
+          // uploaded, and without this the card just vanished.
+          setActionError(`Couldn't save recipe '${r.name}' — ${errMessage(e)} Nothing was saved.`);
+          refresh();
         });
     },
     [demo, logout, refresh],
@@ -137,6 +146,13 @@ export function RecipesPage() {
           style={{ background: "color-mix(in oklab, var(--irid-low) 12%, transparent)", color: "var(--ink-soft)" }}
         >
           Demo data — not your real shelf. Drop the <span className="num">?demo</span> from the URL for your Recipes.
+        </p>
+      )}
+
+      {actionError && (
+        <p role="alert" className="mb-6 rounded-[10px] border px-3 py-2 text-[13px]"
+           style={{ borderColor: "color-mix(in oklab, var(--alarm) 40%, transparent)", color: "var(--alarm)" }}>
+          {actionError}
         </p>
       )}
 

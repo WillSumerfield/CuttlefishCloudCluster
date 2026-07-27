@@ -3,7 +3,7 @@ import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
 import { session } from "../app/session";
 import {
-  getArms, Unauthorized, type Arm,
+  getArms, Unauthorized, errMessage, type Arm,
   retractArm, returnArm, admitArm, benchmarkArm, removeArm,
 } from "../api";
 import { MyArms } from "../arms/MyArms";
@@ -41,6 +41,9 @@ export function ArmsPage() {
   const demo = isDemo();
   const [arms, setArms] = useState<Arm[]>(() => (demo ? demoRoster() : []));
   const [loaded, setLoaded] = useState(demo);
+  // A failed action used to revert silently on the next poll — the operator saw the row snap back with
+  // no reason. Name what failed, and why, until they act again.
+  const [actionError, setActionError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -71,10 +74,13 @@ export function ArmsPage() {
           ? prev.filter((a) => a.name !== name)
           : prev.map((a) => (a.name === name ? applyLocal(a, action) : a)),
       );
+      setActionError(null);
       if (demo) return;
       API[action](name).catch((e) => {
-        if (e instanceof Unauthorized) logout();
-        else refresh(); // an action that failed live: re-sync to the truth.
+        if (e instanceof Unauthorized) return logout();
+        // The action failed live: say what happened, then re-sync the row to the truth.
+        setActionError(`Couldn't ${action} ${name} — ${errMessage(e)} The list has been refreshed.`);
+        refresh();
       });
     },
     [demo, logout, refresh],
@@ -103,6 +109,13 @@ export function ArmsPage() {
       {demo && (
         <p className="mb-6 rounded-[10px] px-3 py-2 text-[13px]" style={{ background: "color-mix(in oklab, var(--irid-low) 12%, transparent)", color: "var(--ink-soft)" }}>
           Demo data — not the live cluster. Drop the <span className="num">?demo</span> from the URL for the real fleet.
+        </p>
+      )}
+
+      {actionError && (
+        <p role="alert" className="mb-6 rounded-[10px] border px-3 py-2 text-[13px]"
+           style={{ borderColor: "color-mix(in oklab, var(--alarm) 40%, transparent)", color: "var(--alarm)" }}>
+          {actionError}
         </p>
       )}
 

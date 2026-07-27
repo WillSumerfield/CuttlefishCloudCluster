@@ -79,21 +79,42 @@ export class Unauthorized extends Error {}
 // reload on /karma used to hit the API and render raw JSON). Paths below stay bare; this prepends it.
 const API = '/api'
 
+// The message the whole SPA falls back to when the Head has no human reason to give: a 5xx (the crash
+// detail is deliberately generic server-side), a non-JSON body (a proxy/gateway error page), or fetch
+// rejecting outright (offline, DNS, TLS). Surfacing a bare "500" or the browser's "Failed to fetch"
+// is what every catch below used to do; this reads as a sentence and says what to try.
+const HEAD_UNREACHABLE = "Couldn't reach the Head — check your connection and try again."
+const HEAD_ERROR = "The Head hit an error handling that request — try again in a moment."
+
 async function req(path: string, init?: RequestInit): Promise<Response> {
-  const r = await fetch(API + path, init)
-  if (r.ok) return r
-  let detail = `${r.status}`
+  let r: Response
   try {
-    detail = (await r.json()).detail ?? detail
+    r = await fetch(API + path, init)
+  } catch {
+    throw new Error(HEAD_UNREACHABLE) // fetch rejected — never reached the Head; no status to read.
+  }
+  if (r.ok) return r
+  let detail: string | null = null
+  try {
+    detail = (await r.json()).detail ?? null
   } catch {
     /* not JSON */
   }
   // 401 means the SESSION is bad — and only that, so the app can safely read it as "bounce to the
   // login screen". Never invent the message: a route that refuses an authed caller for its own
   // reasons (a wrong current password, say) answers 403, and its detail must reach the user intact.
-  if (r.status === 401) throw new Unauthorized(detail)
-  throw new Error(detail)
+  if (r.status === 401) throw new Unauthorized(detail ?? 'your session ended')
+  // A 4xx with a real `detail` is the Head's own human reason (a policy violation, a bad name) and
+  // reaches the user verbatim. A 5xx, or any response with no JSON detail, has nothing worth showing
+  // raw — frame it rather than leaking a bare status number.
+  if (detail !== null && r.status < 500) throw new Error(detail)
+  throw new Error(HEAD_ERROR)
 }
+
+/** The user-facing message from a caught API error. Everything `req` throws is an `Error` whose
+ *  message is already a sentence (or `Unauthorized`, which callers handle before reaching here), so a
+ *  catch can surface this directly instead of re-deriving `e instanceof Error ? e.message : ...`. */
+export const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
 
@@ -218,13 +239,18 @@ export type DemandSample = { node: string; at: string; demand: number }
 export const getDemand = (days = 30) => json<DemandSample[]>(`/karma/demand?days=${days}`)
 
 export async function login(username: string, password: string): Promise<Me> {
-  const r = await fetch(API + '/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
-  if (r.status === 401) throw new Error('bad username or password')
-  if (!r.ok) throw new Error(`login failed (${r.status})`)
+  let r: Response
+  try {
+    r = await fetch(API + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+  } catch {
+    throw new Error("Couldn't reach the sign-in service — check your connection and try again.")
+  }
+  if (r.status === 401) throw new Error('Incorrect username or password.')
+  if (!r.ok) throw new Error("The sign-in service isn't responding right now — try again in a moment.")
   return r.json()
 }
 
