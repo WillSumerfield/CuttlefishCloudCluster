@@ -48,6 +48,11 @@ MESH_IP = os.environ.get("CCC_MESH_IP", "")
 PROJECT_MOD = "project"
 SPAWNS_MOD = "spawns"
 
+# Per-User concurrent-Spawn cap (Phase 8 loose end — see docs/TODO.md's "No rate-limiting anywhere").
+# Escrow already prices queue-flooding but never hard-stops it; this does. Admins are exempt — they are
+# already outside the Karma economy (see submit_checked, db.spawn_owners).
+MAX_CONCURRENT_SPAWNS = 10
+
 # %%NAME%% placeholders (not str.format) so bash's own ${...} needs no escaping. Wrapper stdout/stderr
 # (rsync diagnostics) go to a node-local slurm log; the PAYLOAD's stdout/stderr are redirected to files
 # we then stage/keep. --chdir=/tmp: the run dir doesn't exist until we make it.
@@ -208,11 +213,24 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that consumes a
     donated card while nobody pays for it, and that no ledger can explain.
 
-    Raises ValueError for an unknown Arm; the callers translate (HTTP 422 / a CLI error).
+    Raises ValueError for an unknown Arm, or for a User already at the concurrent-Spawn cap; the
+    callers translate (HTTP 422 / a CLI error).
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
     from . import karma, slurm
+
+    if not is_admin:
+        # "Concurrent" = queued OR running (slurm.queue()'s live set) — a User can't dodge the cap by
+        # parking Spawns PENDING instead of RUNNING. spawn_owners already excludes Admins, matching the
+        # exemption here (see its docstring in db.py).
+        live_ids = [j["id"] for j in slurm.queue() if j["id"] is not None]
+        with db.connect() as conn:
+            owners = db.spawn_owners(conn, live_ids)
+        active = sum(1 for uid in owners.values() if uid == user_id)
+        if active >= MAX_CONCURRENT_SPAWNS:
+            raise ValueError(f"you already have {active} queued/running Spawns (max "
+                             f"{MAX_CONCURRENT_SPAWNS}) — wait for one to finish or cancel one")
 
     arms = slurm.arms()
     if node and node not in [a["name"] for a in arms]:
