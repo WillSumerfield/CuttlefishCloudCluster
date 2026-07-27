@@ -7,31 +7,31 @@ and `CONTEXT.md` — each item below was confirmed absent from all three (not de
 just never written down). Direction below is a first pass, not a locked design; each item gets its own
 grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
 
-- **No backup/restore story for cluster state.** Widened 2026-07-15 from head.db alone: `arms.json`
+- **[med] No backup/restore story for cluster state.** Widened 2026-07-15 from head.db alone: `arms.json`
   (the munge-owned Arm registry — owner names, admitted status) and **Headscale's own sqlite DB** (node
   keys, preauth keys) are equally un-backed-up. Losing Headscale's state means every Arm must physically
   re-enroll, so backing up head.db alone (Users, sessions, Karma ledger, spawn/attribution history)
   still leaves a Head-disk failure evicting the whole fleet. → Phase 7.
-- **The Head API doesn't log.** Confirmed: `main.py`, `spawns.py`, `slurm.py`, `enroll.py`, `admin.py`,
+- **[med] The Head API doesn't log.** Confirmed: `main.py`, `spawns.py`, `slurm.py`, `enroll.py`, `admin.py`,
   `karma.py` have zero logging calls and no custom exception handlers; only `tick.py` (the Karma meter)
   logs anything. `/healthz` is a static `{"ok": true}` with no DB/Slurm reachability check. → Phase 7.
-- **No lighter redeploy path than full `teardown`+`setup`.** Several hardware slices (Mantle uid pin,
+- **[high] No lighter redeploy path than full `teardown`+`setup`.** Several hardware slices (Mantle uid pin,
   the ccc-user rename) needed a full reprovision to ship a code change. Direction from the grill:
   containerize the three Head-side app services (**Head API, Enroll API, karma tick**) so an update is
   an image pull + restart; explicitly **leave Slurm/Headscale/munge bare-metal** (GPU/cgroup/mesh-bind
   needs would fight containerizing them, and the roadmap already defaults Slurm to bare-metal). →
   Phase 7. Supersedes/absorbs the "Polish: `cuttle` on PATH" item below where they overlap (the
   installer question is about the *client* CLI, not the Head services — keep both).
-- **No rate-limiting anywhere** (confirmed by grep). Decided direction: throttle `/login` (closes a
+- **[med] No rate-limiting anywhere** (confirmed by grep). Decided direction: throttle `/login` (closes a
   real brute-force hole even among trusted Users — a guessed weak temp password, a compromised laptop)
   and add a **per-User max-concurrent-Spawn cap** (Escrow prices flooding the queue but doesn't hard-cap
   it). → Phase 7.
-- **Nothing monitors the Head box itself.** Phase 2's telemetry item watches Arms (rogue GPU use);
+- **[high] Nothing monitors the Head box itself.** Phase 2's telemetry item watches Arms (rogue GPU use);
   Phase 7(→8)'s completeness pass only *audits* unbounded `head/projects`/`head/spawns` growth once.
   Wanted: disk-space + process-liveness checks, a GPU/CPU usage-over-time monitor with anomaly
   reporting, an explicit pass hunting memory leaks / unbounded disk growth (not just an audit — ongoing
   monitoring), and email alerting for all of the above. → Phase 7.
-- **No end-user-facing docs.** `CONTRIBUTING.md`/`CONTEXT.md` are dev-facing; nothing explains
+- **[med] No end-user-facing docs.** `CONTRIBUTING.md`/`CONTEXT.md` are dev-facing; nothing explains
   logging in, submitting a Spawn, or reading Karma standings to a non-admin User, and nothing tells a
   prospective donor what enrolling their box actually means (runs arbitrary code as the Mantle, holds
   the cluster-wide munge key — see the security items above). Wanted: both a User quickstart and a
@@ -39,7 +39,7 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
   Chromium-based browser (File System Access API / `webkitdirectory` support; decided 2026-07-15 not to
   engineer around Firefox/Safari for now — document the requirement instead), and that the Tide/Demand
   charts are in **UTC**, not the viewer's local time (`temp/KARMA.md`'s "Resolved" list). → Phase 7.
-- **CLI install/setup UX needs a real pass** (merges 2026-07-15's "CLI install/setup UX" finding with
+- **[low — mostly shipped in Phase 6] CLI install/setup UX needs a real pass** (merges 2026-07-15's "CLI install/setup UX" finding with
   the older "Polish: nicer `cuttle setup` UX" item, now deleted below). MVP setup just echoes shell
   commands + apt spew. Wanted: a progress TUI (step list with spinners/checks; rich/textual), quiet by
   default; a full install log at `~/.ccc/log/setup-<ts>.log` (verbose output captured there, not
@@ -49,17 +49,17 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
   up (Head / Arm / client — see next item), and fixing `setup_arm`'s install-order bug (apt install
   runs mid-conversation with the Head's enrollment gates for no reason — see that item further down).
   → Phase 7.
-- **No "client-only" install path.** Today `cuttle setup` only knows `--head`/`--arm`; a person who
+- **[done: Phase 6 — `setup --client`] No "client-only" install path.** Today `cuttle setup` only knows `--head`/`--arm`; a person who
   only wants to log in, browse the Dashboard, and submit Spawns from the CLI — never donating hardware —
   has no clean onboarding (the roadmap's `--head <url>`-in-`~/.ccc/config` pure-submitter path exists
   in the design but isn't a named, installable mode). Wanted: a real client-only mode. → Phase 7.
-- **No `cuttle` installer** (merges 2026-07-15's finding with the older "Polish: `cuttle` on PATH" item,
+- **[done: Phase 6 — `build-installer`] No `cuttle` installer** (merges 2026-07-15's finding with the older "Polish: `cuttle` on PATH" item,
   now deleted below). Today `cuttle` lives only in the project venv (`cli/core/.venv/bin/cuttle`) —
   users must call the full path or activate the venv. A client-only User (previous item) has no repo to
   clone in the first place, which makes this more than polish for that audience. Wanted: a real install
   that puts `cuttle` on PATH — symlink into `~/.local/bin`, a `pipx`/`uv tool install`, or a one-line
   curl bootstrap. → Phase 7.
-- **Warning/error message quality, both clients.** No specific bug filed (unlike the `/passwd` 401
+- **[med] Warning/error message quality, both clients.** No specific bug filed (unlike the `/passwd` 401
   confusion already fixed, docs/TODO.md's Slice-4 note) — a general pass wanted over CLI and Dashboard
   error/warning copy before non-expert Users rely on it. → Phase 7.
 
@@ -70,7 +70,7 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
 > `phase1-substrate` WIP branch (2026-07-15 grill: `LiveQueue.tsx`/`SpawnRow.tsx`/`api.ts:cancelSpawn`;
 > `QueuePage.tsx:78` passes `isAdmin` into `SubmitComposer`) and dropped from this list.
 
-## `stderr` is unreachable from every client → Phase 5
+## `stderr` is unreachable from every client → Phase 5 — [effort: low]
 
 The job script writes both `out` and `err` into the Spawn dir, but `GET /spawns/{id}/logs` serves
 **only `out`**. `cuttle logs` and the Dashboard's log pane both read that one endpoint.
@@ -79,7 +79,7 @@ So a Spawn that dies on a Python traceback shows an **empty log pane and the wor
 cause sitting on disk, unreachable. This is the single most-used debugging surface in a cluster. Fix:
 serve both streams and let the client pick.
 
-## No password recovery exists → Phase 5
+## No password recovery exists → Phase 5 — [effort: med]
 
 `cuttle user` has only `add` / `list` / `remove` (the roadmap's Q5 promised a `reset`; it was never
 built), there is no email, and `/passwd` requires the *current* password. A User who forgets their
@@ -94,7 +94,7 @@ Related, same cause: `is_admin` is only settable **at creation**, so promoting a
 identical delete-and-recreate problem. (The Ph5 grill decided **not** to add grant/revoke-admin to the
 Dashboard, so this one can stay a CLI-only gap — but it must not be *fixed* by recreating the account.)
 
-## Dashboard Spawns silently disable W&B → Phase 5
+## Dashboard Spawns silently disable W&B → Phase 5 — [effort: med/high]
 
 `head/web/src/api.ts` hardcodes `wandb_env: {WANDB_MODE: 'disabled'}` on every browser submission,
 because the browser has no W&B API key to send. Meanwhile `cuttle run --project/--entity` works fine.
@@ -108,24 +108,25 @@ injected into every Spawn that User submits, from *either* client. Consequence t
 the Head now stores a third-party secret. It must be **encrypted at rest** — unlike a password it has to
 be recoverable in plaintext to be used, so it cannot just be argon2'd like `pw_hash`.
 
-## `head/web`'s build has no typecheck pass → Phase 7
+## `head/web`'s build has no typecheck pass → Phase 7 — [effort: low]
 
 `package.json` runs `vite build` alone (no `tsc`), and `tsc` would have caught the admin-selector bug
 above before it shipped. Add a typecheck step to the build so the next prop-shaped bug doesn't ship
 silently.
 
-## `cuttle history`/`queue` print unbounded output → Phase 8
+## ~~`cuttle history`/`queue` print unbounded output~~ — DONE (Phase 8)
 
-Found in the 2026-07-26 Phase-8 grill. `history` (everyone's, 30-day default) and `queue` render every
-row with no cap or paging — a wall of text on a busy cluster. Wants a default row cap + `--limit` /
-paging. Cross-cutting UX, not a feature; a Loose End.
+`history`/`queue` take `--limit N` (`--limit 0` = all); default caps the human table to the newest/
+front 50 while `--json` stays uncapped (explicit `--limit` honoured either way). Cap is CLI-driven over
+an optional server `limit` param on `GET /spawns` + `/spawns/history` (absent = unbounded, so the
+Dashboard read is unchanged). Truncation prints a hint line; never in JSON.
 
-## Test suite: `StarletteDeprecationWarning` (httpx2) → Phase 9 (pin bumps)
+## Test suite: `StarletteDeprecationWarning` (httpx2) → Phase 9 (pin bumps) — [effort: low]
 
 `starlette.testclient` warns `Using httpx with starlette.testclient is deprecated; install httpx2` on
 every test run. Dependency hygiene; fold into the pin-bump / dep-refresh pass, not urgent.
 
-## Before full release: revisit pinned system-package versions
+## Before full release: revisit pinned system-package versions — [effort: med]
 
 MVP `cuttle setup --local` pins the system stack to exact versions (reproducibility over
 freshness — see MVP plan). Bump these to current, re-test the single-node loop, and decide the
@@ -144,7 +145,7 @@ Target: Ubuntu 24.04 (noble), amd64.
 Pin-rot note: PPA + NVIDIA repos prune old versions. If a pin becomes uninstallable
 (`package not found`), bump to the current published version and re-test.
 
-## Feature: NVML-enabled Slurm (GPU autodetect / affinity / type / multi-GPU count)
+## Feature: NVML-enabled Slurm (GPU autodetect / affinity / type / multi-GPU count) — [effort: high]
 
 **Wanted feature — deferred, not dropped.** MVP uses explicit `gres.conf` (`Name=gpu
 File=/dev/nvidia0`) because Ubuntu's `slurm-wlm` is built **without** the NVML plugin
@@ -166,6 +167,23 @@ them with `apt-mark hold` (don't compile all of Slurm on every box). Then switch
 to `AutoDetect=nvml`. Note: this takes the stack off the pure apt pin (unavoidable — NVML isn't in
 the stock repo), so pin our build recipe instead.
 
+## Feature: Automatic GPU partitioning (fractional sharing — MIG / MPS / time-slicing) — [effort: high]
+
+**Wanted feature — deferred, not dropped** (added 2026-07-26). Today a Spawn holds a *whole* card
+(`--gres=gpu:N`); a job that needs 2 GB still parks on a 24 GB GPU alone. Automatic partitioning would
+carve one physical GPU into slices so several Spawns share a card, and the scheduler would place them
+without the operator hand-partitioning anything:
+- **MIG** (NVIDIA A100/H100+): hardware-isolated instances, real memory/SM partitioning. Cleanest, but
+  hardware-gated (the current fleet's cards may not support it) and slices are coarse, pre-declared sizes.
+- **MPS / time-slicing**: works on any card, but no hard memory isolation — one Spawn can OOM another
+  sharing the GPU. Needs Karma/pricing to understand a fractional hold, and an isolation story.
+
+**Depends on whole-GPU isolation landing first** (the `ConstrainDevices` item below, → Phase 9): you
+cannot safely subdivide a card the scheduler cannot even constrain a job to. **Permanent WSL exception:**
+`/dev/dxg` is one device node for all GPUs, so per-GPU partitioning can never work there (see that item).
+Also touches Karma (a partition is a fractional Power/Demand unit, not a whole card) and `cuttle run`
+(how a user asks for a slice). Decide scope when GPU sharing becomes real.
+
 ## ~~W&B project + entity should be per-Spawn, not per-machine~~ — DONE (⑦)
 
 `cuttle run --project/--entity` inject `WANDB_PROJECT`/`WANDB_ENTITY` per-Spawn (CLI flag → config
@@ -173,7 +191,7 @@ default → project 'ccc' / entity account-default; empty entity is omitted, not
 in config. The `examples/train.py` `entity="Will@ARIA"` hack is gone. Reminder kept for users: wandb
 wants the entity **slug** (`wandb.ai/<slug>/<project>`), not the display name.
 
-## Security: Arm re-enrollment must not become a permanent impersonation credential → Phase 9
+## Security: Arm re-enrollment must not become a permanent impersonation credential → Phase 9 — [effort: high]
 
 Phase 1 wants **easy recovery**: if the Head's mesh IP ever moves (tailscaled state lost while the
 Headscale DB survives, prefix change, DB migration), every Arm is stranded — its `--conf-server`
@@ -193,7 +211,7 @@ Needed before donors are anything less than fully trusted:
 - Rotate munge, or stop relying on it as the only thing between a donor and `slurmctld`.
 - Re-enrollment re-derives the Head address rather than trusting the stale one.
 
-## Security: `/enroll` gives the munge key to any mesh member (accepted for Phase 1) → Phase 9
+## Security: `/enroll` gives the munge key to any mesh member (accepted for Phase 1) → Phase 9 — [effort: high]
 
 Enrollment serves `/etc/munge/munge.key` over a Head API bound to the mesh address only, so the sole
 authorization is *being on the mesh*. Deliberate, and accepted while every Arm is a machine we own.
@@ -218,7 +236,7 @@ as any node or any user. Closing *that* is the per-Arm revocable-credential item
 treat authorizing an Arm as full cluster trust: run `cuttle arm authorize` for a machine only if you'd
 hand its owner the cluster's root credential, because you are.
 
-## Blocker: the coordinator must be reachable before an Arm is on the mesh → Phase 6
+## Blocker: the coordinator must be reachable before an Arm is on the mesh → Phase 6 — [effort: med/high]
 
 An Arm reaches Headscale to *get* a mesh address, so the coordinator address can never be a mesh
 address. Today the Head owns exactly two others: its LAN IP (useless to Arms off that LAN) and its
@@ -236,7 +254,7 @@ since node keys would cross the internet in cleartext), or a tunnel (Cloudflare 
 funnel`) for public HTTPS with no port-forward. A funnel keeps the personal tailnet load-bearing for
 coordinator *availability*, though not for Arm membership. Decide before any donor enrols.
 
-## Security: coordinator + control-plane transport → Phase 9
+## Security: coordinator + control-plane transport → Phase 9 — [effort: high]
 
 - **Headscale is served over plain `http://<addr>:8080`.** Node keys and preauth keys cross the
   public internet in cleartext, *before* the mesh exists to protect them. Needs TLS (Let's Encrypt,
@@ -255,7 +273,7 @@ coordinator *availability*, though not for Arm membership. Decide before any don
   mean a fourth daemon plus JWT key storage/rotation to log, health-check, and back up, for no
   capability this cluster's scale needs. Struck as a stale plan, not a live TODO.
 
-## Two tailscaled daemons both claim MagicDNS's `100.100.100.100`
+## Two tailscaled daemons both claim MagicDNS's `100.100.100.100` — [effort: low — accept/watch, no known fix]
 
 `tailscaled-ccc` installs `100.100.100.100 dev ccc0` (route table 52) even with
 `--accept-dns=false` and Headscale `magic_dns: false`. The personal daemon wants that route too, for
@@ -273,7 +291,7 @@ No known fix from our side — tailscaled has no flag to suppress the quad100 ro
 ever matters: a routing rule pinning quad100 to the personal tun, or accepting that a CCC box can't
 use personal MagicDNS.
 
-## Firewalls other than ufw are invisible to us
+## Firewalls other than ufw are invisible to us — [effort: low — deferred until a donor trips it]
 
 `system.allow_mesh_iface()` opens `ccc0` on both roles, but only when **ufw** is already enforcing.
 A donor running firewalld, bare nftables, or an endpoint agent gets no rule and no warning. The
@@ -284,7 +302,7 @@ real donor ever trips it.
 Not in scope: the coordinator's own rule (`allow in on tailscale0 to any port 8080`) — that depends
 on how the coordinator gets exposed, which is the reachability item above.
 
-## `cuttle teardown --arm` does not exist → Phase 2
+## `cuttle teardown --arm` does not exist → Phase 2 — [effort: med]
 
 *Grouped 2026-07-15 with the two items below, as the Arm-lifecycle-reliability bucket of Phase 2.*
 
@@ -294,7 +312,7 @@ remove the `ccc0` ufw rule, and undo the WSL Apptainer config if it was applied.
 (`cuttle arm remove`) already exists and is what evicts the node from the mesh and Slurm — an Arm
 tearing itself down cannot do that for itself, so the two commands are complements, not substitutes.
 
-## `preflight()`'s GPU check passes on WSL for the wrong reason → Phase 2
+## `preflight()`'s GPU check passes on WSL for the wrong reason → Phase 2 — [effort: low]
 
 `preflight()` runs `nvidia-smi`. On WSL that binary lives in `/usr/lib/wsl/lib`, which is **not** on
 `PATH` except in an interactive login shell (measured: `command not found` inside an `srun` job).
@@ -302,7 +320,7 @@ So the check passes during `cuttle setup --arm` only because a human is running 
 shell. It would fail from any non-interactive context, and it isn't really verifying the GPU.
 Fix: fall back to `/usr/lib/wsl/lib/nvidia-smi` when `is_wsl()` and the binary isn't on `PATH`.
 
-## Arm re-enrollment reads the coordinator URL out of a `debug` command → Phase 2
+## Arm re-enrollment reads the coordinator URL out of a `debug` command → Phase 2 — [effort: med]
 
 `mesh.joined_to()` decides whether to wipe an Arm's mesh identity by comparing the daemon's
 `ControlURL` against the token's coordinator. That field is exposed only by `tailscale debug prefs`
@@ -334,7 +352,7 @@ holds and nothing writes into the source tree.
 Leftover litter, not blocking: the sbatch wrapper's own stdout/stderr go to `/tmp/ccc-<jobid>.slurm`
 on the node (rsync diagnostics) and are never reaped.
 
-## Phase 4: Sweep staging reuses one dir across trials
+## Phase 4: Sweep staging reuses one dir across trials — [effort: med]
 
 ④ (Phase 1) stages per **Spawn = per Slurm job**: one ephemeral node-local dir, wiped when the job
 exits. Deliberately no persistent per-project cache — leaving multi-GB working dirs on donor boxes is
@@ -347,7 +365,7 @@ sweep granularity. Phase 4 should stage the project **once per Sweep** and reuse
 (stage inside a single allocation that fans out trials, or a sweep-keyed dir with a "sweep done →
 wipe" signal), so a sweep neither re-transfers nor leaves persistent state behind.
 
-## Live log streaming for remote Spawns → Phase 5
+## Live log streaming for remote Spawns → Phase 5 — [effort: med]
 
 ④ stages `.out`/`.err`/`.exit` home **at job end** (Option 1). So `cuttle logs -f` on a *remote*
 Spawn shows nothing until the job finishes — a 6-hour run is blind until it exits. `cuttle status`
@@ -358,7 +376,7 @@ Fix later: have the job push `.out`/`.err` to the Head periodically (background 
 seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
 racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
 
-## setup_arm interleaves apt install with Head enrollment → Phase 7, merged into "CLI install/setup UX"
+## setup_arm interleaves apt install with Head enrollment → Phase 7, merged into "CLI install/setup UX" — [effort: low]
 
 `setup_arm` order is: mesh-admission gate (`up_arm` blocks on approval) → **apt install slurmd +
 apptainer + build base.sif** → fetch munge key → slurm-admission gate (`wait_for_admit`) → start
@@ -368,7 +386,7 @@ base.sif) as one block either fully before or fully after the enroll/approval ex
 2026-07-15 into the "CLI install/setup UX needs a real pass" item at the top of this file — same
 cleanup pass, not a standalone fix.
 
-## Remote scratch orphans on SIGKILL → Phase 2
+## Remote scratch orphans on SIGKILL → Phase 2 — [effort: low]
 
 ④ wipes a remote Spawn's node-local scratch (`/tmp/ccc-<jobid>`) with a bash `trap ... EXIT`. That
 fires on normal exit and ordinary signals, but **not** SIGKILL — OOM-killer, `scancel -9`, and (Phase
@@ -378,7 +396,7 @@ fires on normal exit and ordinary signals, but **not** SIGKILL — OOM-killer, `
 Mantle's home to `/tmp`, so an orphan is now swept by the OS at reboot rather than accumulating
 forever. Until the epilog lands, a hard-killed Spawn still hogs donor disk until the next reboot.
 
-## WSL2 Arms: supported, with one permanent limit
+## WSL2 Arms: supported, with one permanent limit — [status — no task; permanent limit]
 
 `preflight()` now detects WSL (`/proc/sys/kernel/osrelease` contains `microsoft`) and allows it as an
 Arm, never as a Head — headscale and slurmctld have never run there. `setup_arm` adds two lines to
@@ -392,7 +410,7 @@ exclusive forever, or excluded from multi-user sharing.
 
 An `apt` upgrade of apptainer will raise a dpkg conffile prompt on both edited files.
 
-## Before multi-node / multi-user: GPU cgroup isolation → Phase 9
+## Before multi-node / multi-user: GPU cgroup isolation → Phase 9 — [effort: med]
 
 MVP `slurm.conf` has **no** `ConstrainDevices` (single GPU, single user → nothing to isolate).
 Before real sharing, add `cgroup.conf` with `ConstrainDevices=yes` so a Spawn only sees its
@@ -409,7 +427,7 @@ So `ConstrainDevices` cannot work there at all, and its GPU is `/dev/dxg` — a 
 never isolate GPUs. Either WSL Arms stay single-GPU-exclusive forever, or they're excluded from
 shared-GPU scheduling. Decide when GPU sharing becomes real.
 
-## Low Karma long jobs get cancelled / Spawn Code Format Solidifcation
+## Low Karma long jobs get cancelled / Spawn Code Format Solidifcation — [effort: high]
 There should be some disincentive for queuing long jobs when you have very low karma. Jobs should probably be cancelled. 
 This ties into a large project which should enforce that spawn codebases support several features which help save progress & build properly. 
 Maybe W&B helps with this? Unsure.
