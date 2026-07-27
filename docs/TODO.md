@@ -204,20 +204,6 @@ real donor ever trips it.
 Not in scope: the coordinator's own rule (`allow in on tailscale0 to any port 8080`) — that depends
 on how the coordinator gets exposed, which is the reachability item above.
 
-## Arm re-enrollment reads the coordinator URL out of a `debug` command → Phase 2 — [effort: med]
-
-`mesh.joined_to()` decides whether to wipe an Arm's mesh identity by comparing the daemon's
-`ControlURL` against the token's coordinator. That field is exposed only by `tailscale debug prefs`
-— `status --json` has no `ControlURL` (checked on 1.98.8). `debug` is explicitly an unstable
-interface, so a Tailscale upgrade may change or drop it.
-
-**This got sharper with slice 5.** It used to be that a mis-reported `False` merely wiped the identity
-and asked for a fresh approval — annoying, not dangerous. Now the enrollment token's preauth key is
-**single-use**, so a spurious wipe on a *re-run* of `setup --arm` throws away a working identity and
-then redeems an already-spent key: `tailscale up` fails outright, and the donor needs the Admin to mint
-a whole new token. Re-running setup is meant to be idempotent, so this turns an unstable-interface
-regression into a hard stop. The safe fallback if that day comes is to parse the state file directly.
-
 ## `cuttle run` on a remote Arm — RESOLVED by ④ (stage-in/out)
 
 Was: `spawns.py` rendered one sbatch script whose paths were the *submitter's*, but the script runs
