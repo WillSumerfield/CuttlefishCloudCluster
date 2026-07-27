@@ -30,12 +30,25 @@ the *join token* is short-lived. See `docs/TODO.md` — Phase 2 adds per-Arm rev
 import base64
 import json
 import os
+import logging
 import re
 import socket
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+
+# stdlib logging -> stdout -> journald, same shape as the Head API and the Karma tick. This service is
+# small and mesh-only, so it gets targeted event logs (who was handed the munge key, who was refused)
+# rather than the Head API's per-request middleware — the munge-key grant is the one event that matters.
+log = logging.getLogger("ccc.enroll")
+if not log.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(os.environ.get("CCC_LOG_LEVEL", "INFO").upper())
+    log.propagate = False
 
 MUNGE_KEY = Path("/etc/munge/munge.key")
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
@@ -120,6 +133,10 @@ def enroll(req: EnrollRequest) -> dict:
 
     reg = _load()
     if req.node_name not in reg:
+        # A machine on the mesh reaching for the munge key under a name no Admin ever declared. Refused,
+        # and worth a WARNING: it is the enrollment gate doing its job, and the signal if it ever fires
+        # for a name the operator didn't expect.
+        log.warning("enroll REFUSED undeclared node=%r from %s", req.node_name, req.mesh_ip)
         raise HTTPException(403, f"{req.node_name!r} was not authorized to join this cluster — "
                                  f"ask the Head's operator to run `cuttle arm authorize`")
 
@@ -135,6 +152,10 @@ def enroll(req: EnrollRequest) -> dict:
     entry.setdefault("admitted", False)
     _save(reg)
 
+    # The security event: the cluster's shared secret just left the Head for this node. Logged with the
+    # owner the Admin bound to it, so the journal answers "who holds the munge key, and on whose say-so".
+    log.info("munge key -> node %r owner=%s mesh_ip=%s", req.node_name, entry.get("owner", "?"),
+             req.mesh_ip)
     return {
         "munge_key": base64.b64encode(MUNGE_KEY.read_bytes()).decode(),
         "ctld_addr": os.environ["CCC_CTLD_ADDR"],

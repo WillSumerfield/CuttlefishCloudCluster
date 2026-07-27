@@ -19,6 +19,18 @@ REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 PARTITION = os.environ.get("CCC_PARTITION", "ccc")
 
 
+def reachable() -> bool:
+    """slurmctld liveness for `/readyz`. `scontrol ping` is the cheapest canonical check — it asks the
+    controller directly and returns non-zero when it can't be reached, with no --json parse or queue
+    walk. True iff the primary controller answers. Never raises: a readiness probe reports down, it
+    doesn't crash."""
+    try:
+        r = subprocess.run(["scontrol", "ping"], capture_output=True, text=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return r.returncode == 0
+
+
 def load_registry() -> dict:
     """The enrollment registry (written by the enroll app). World-readable (0644), so the dashboard's
     `nobody` user reads it for the mesh_ip/admitted facts Slurm never sees."""

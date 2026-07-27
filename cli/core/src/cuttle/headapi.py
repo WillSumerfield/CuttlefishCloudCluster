@@ -92,8 +92,11 @@ Environment=CCC_HEAD_DB={config.HEAD_DB}
 Environment=CCC_MESH_IP={mesh_ip}
 Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
 Environment=CCC_SIF={config.CCC_SIF}
+# --no-access-log: the app's own middleware logs one enriched line per request (with the authed user
+# and latency), so uvicorn's bare access log would only duplicate it. Its error log (startup, 500s
+# it re-raises) stays on.
 ExecStart={config.API_VENV}/bin/uvicorn ccc_head_api.main:app \
---host 0.0.0.0 --port {config.HEAD_API_PORT} \
+--host 0.0.0.0 --port {config.HEAD_API_PORT} --no-access-log \
 --ssl-keyfile {config.HEAD_KEY} --ssl-certfile {config.HEAD_CERT}
 Restart=on-failure
 RestartSec=2

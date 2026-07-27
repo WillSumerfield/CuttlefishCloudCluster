@@ -15,13 +15,17 @@ warning once. The session cookie is therefore Secure.
 """
 
 import json
+import logging
 import os
+import sys
 import tempfile
+import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -43,7 +47,54 @@ _COOKIE_NAME = "ccc_session"
 _COOKIE_SECURE = True
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 86400
 
+# --- logging ----------------------------------------------------------------
+# stdlib logging -> stdout -> journald (systemd captures the service's stdout), mirroring the Karma
+# tick's setup. Its own handler with propagate=False, so our lines are independent of however uvicorn
+# has (or hasn't) configured the root logger. Level from the env, INFO by default.
+log = logging.getLogger("ccc.api")
+
+
+def _configure_logging() -> None:
+    if log.handlers:
+        return                       # import is idempotent; a re-import must not double every line
+    h = logging.StreamHandler(sys.stdout)
+    h.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))  # journald stamps the time
+    log.addHandler(h)
+    log.setLevel(os.environ.get("CCC_LOG_LEVEL", "INFO").upper())
+    log.propagate = False
+
+
+_configure_logging()
+
 app = FastAPI(title="CCC Head API", version="0.1.0")
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """One line per request: who, what, the outcome, and how long. The authenticated username is read
+    from `request.state` (stashed by `current_user` during routing) — no extra DB lookup, and `-` for
+    the routes that never resolve a user (healthz/readyz, a failed login). Path only, never the query
+    string, headers, or body: `/passwd` and `/login` carry passwords and `/submit`'s `X-CCC-Meta` header
+    carries the W&B key, none of which may reach a log. This supersedes uvicorn's own access log (the
+    Head API unit runs it with `--no-access-log`)."""
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        # An exception that escaped the routes (not an HTTPException — those come back as a response
+        # below). Log it here with the caller and a traceback, then answer a clean 500 rather than
+        # leaking a stack to the client. This is the API's only unhandled-error sink.
+        dur = (time.perf_counter() - start) * 1000
+        user = getattr(request.state, "username", "-")
+        log.error("%s %s %s -> 500 %.0fms\n%s", user, request.method, request.url.path, dur,
+                  traceback.format_exc())
+        return JSONResponse({"detail": "internal server error"}, status_code=500)
+    dur = (time.perf_counter() - start) * 1000
+    user = getattr(request.state, "username", "-")
+    status = response.status_code
+    level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
+    log.log(level, "%s %s %s -> %d %.0fms", user, request.method, request.url.path, status, dur)
+    return response
 
 # Every API endpoint lives under `/api`, so no API path can ever collide with a client-side route the
 # SPA owns (the Dashboard routes `/arms`, `/karma`, `/spawn/<id>` in the browser). Without this, a hard
@@ -102,6 +153,10 @@ def current_user(request: Request) -> dict:
         user = db.lookup_session(conn, token)
     if user is None:
         raise HTTPException(401, "invalid or expired session")
+    # Hand the access-log middleware the resolved name (it runs outside the dependency system and would
+    # otherwise have to re-look-up the session to know who called). scope["state"] is shared, so this
+    # write is visible to the middleware once the route returns.
+    request.state.username = user["username"]
     return {"username": user["username"], "is_admin": bool(user["is_admin"]),
             "must_change_password": bool(user["must_change_password"]), "id": user["id"]}
 
@@ -113,7 +168,32 @@ def current_user(request: Request) -> dict:
 
 @app.get("/healthz")
 def healthz() -> dict:
+    """Liveness: does the process answer at all? Deliberately cheap and dependency-free — it must stay
+    200 while slurmctld restarts or head.db is briefly locked, so a monitor never bounces a healthy API
+    for a downstream blip. Readiness is `/readyz`."""
     return {"ok": True}
+
+
+def _db_ok() -> bool:
+    try:
+        with db.connect() as conn:
+            conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/readyz")
+def readyz(response: Response) -> dict:
+    """Readiness: can the API actually serve? Pings its two hard dependencies — head.db and slurmctld —
+    and reports each. 200 when both are green, 503 when either is down (with the culprit named), so a
+    monitor can alert on the status code and a human can read which one from the body. Distinct from
+    `/healthz` on purpose: a slurmctld restart makes this 503 without ever calling the process dead."""
+    dep = {"db": "ok" if _db_ok() else "unreachable",
+           "slurm": "ok" if slurm.reachable() else "unreachable"}
+    if "unreachable" in dep.values():
+        response.status_code = 503
+    return dep
 
 
 @api.get("/arms")
@@ -222,20 +302,27 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     if row["user_id"] != user["id"]:
         raise HTTPException(403, "not your spawn")
     slurm.cancel(job_id)
+    log.info("cancel id=%s by %s", job_id, user["username"])
     return Response(status_code=204)
 
 
 # --- auth routes ------------------------------------------------------------
 
 @api.post("/login")
-def login(req: LoginRequest, response: Response) -> dict:
+def login(req: LoginRequest, request: Request, response: Response) -> dict:
     """Verify credentials → mint a session. Returns the bearer token (CLI) and sets the HttpOnly
     cookie (browser). A `must_change_password` user still gets a session so it can call /passwd."""
     with db.connect() as conn:
         user = db.verify_password(conn, req.username, req.password)
         if user is None:
+            # The one security event most worth a log: it feeds the rate-limiting item (Phase 8) and is
+            # the signal a credential is being guessed. The attempted username and source, never the
+            # password. WARNING, not ERROR — a fat-fingered password is not an incident.
+            log.warning("login FAILED user=%s from %s", req.username,
+                        request.client.host if request.client else "?")
             raise HTTPException(401, "bad username or password")
         token = db.create_session(conn, user["id"])
+    log.info("login OK user=%s", user["username"])
     response.set_cookie(_COOKIE_NAME, token, max_age=_COOKIE_MAX_AGE, httponly=True,
                         samesite="lax", secure=_COOKIE_SECURE)
     return {"token": token, "username": user["username"], "is_admin": bool(user["is_admin"]),
@@ -250,6 +337,7 @@ def logout(request: Request, response: Response) -> dict:
         with db.connect() as conn:
             db.delete_session(conn, token)
     response.delete_cookie(_COOKIE_NAME)
+    log.info("logout user=%s", getattr(request.state, "username", "-"))
     return {"ok": True}
 
 
@@ -376,6 +464,8 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb)
     finally:
         tar_path.unlink(missing_ok=True)
+    log.info("submit id=%s by %s (gpu=%d vram=%d min=%d)", job_id, user["username"], gpus, vram_gb,
+             minutes)
     return {"id": job_id}
 
 
