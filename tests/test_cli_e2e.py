@@ -218,7 +218,7 @@ class TestCancel:
         cli("login", input=f"root\n{USERS['root']}\n")
         result = cli("cancel", spawn, "--yes")
         assert result.exit_code != 0
-        assert "not your spawn" in result.output
+        assert "your own Spawns" in result.output
 
 
 class TestQueue:

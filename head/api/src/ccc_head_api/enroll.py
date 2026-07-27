@@ -127,9 +127,11 @@ def enroll(req: EnrollRequest) -> dict:
     who owns it.
     """
     if not NODE_NAME_RE.match(req.node_name):
-        raise HTTPException(422, f"bad node name {req.node_name!r}")
+        raise HTTPException(422, f"invalid Arm name {req.node_name!r} — must be 1-32 characters, "
+                                 f"letters/digits/hyphens, starting with a letter or digit")
     if not GPU_DEVICE_RE.match(req.gpu_device):
-        raise HTTPException(422, f"unsupported GPU device {req.gpu_device!r}")
+        raise HTTPException(422, f"unsupported GPU device {req.gpu_device!r} — expected /dev/nvidiaN "
+                                 f"(native Linux) or /dev/dxg (WSL2)")
 
     reg = _load()
     if req.node_name not in reg:

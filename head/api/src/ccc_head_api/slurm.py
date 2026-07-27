@@ -8,12 +8,17 @@ nothing here touches secrets or the Head user's home.
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
 from pathlib import Path
 
 from fastapi import HTTPException
+
+# Shares the Head API's `ccc.api` logger (configured in main.py) so the diagnostic we keep OUT of the
+# client's 503 still lands in the journal.
+log = logging.getLogger("ccc.api")
 
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 PARTITION = os.environ.get("CCC_PARTITION", "ccc")
@@ -43,7 +48,12 @@ def _slurm_json(*cmd: str) -> dict:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-        raise HTTPException(503, f"slurm unreachable ({' '.join(cmd)}): {e}")
+        # The command line and raw exception are a diagnostic for the operator, not the client — a
+        # user seeing `squeue --json` and a Python exception repr learns nothing they can act on. Log
+        # them, and answer with the one thing that's true and useful: the scheduler isn't answering.
+        log.warning("slurm command failed: %s -> %s", " ".join(cmd), e)
+        raise HTTPException(503, "the cluster scheduler is not responding — the Head can't read the "
+                                 "queue right now; try again shortly")
     return json.loads(r.stdout)
 
 

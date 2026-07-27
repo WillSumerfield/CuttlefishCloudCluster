@@ -255,7 +255,7 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
         known = db.get_spawn(conn, job_id) is not None
     if known:
         return {"id": job_id, "done": True, "state": "failed"}
-    raise HTTPException(404, f"unknown spawn {job_id}")
+    raise HTTPException(404, f"unknown Spawn {job_id}")
 
 
 @api.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
@@ -275,7 +275,7 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back."""
     data = spawns_mod.outputs_tar(job_id)
     if data is None:
-        raise HTTPException(404, f"no outputs for spawn {job_id}")
+        raise HTTPException(404, f"no outputs for Spawn {job_id}")
     return Response(data, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
 
@@ -298,9 +298,9 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     # Only Spawns the Head actually recorded can be cancelled through here. An id squeue knows but the
     # ledger doesn't is not a CCC Spawn (or predates attribution); refuse rather than scancel blindly.
     if row is None:
-        raise HTTPException(404, f"unknown spawn {job_id}")
+        raise HTTPException(404, f"unknown Spawn {job_id}")
     if row["user_id"] != user["id"]:
-        raise HTTPException(403, "not your spawn")
+        raise HTTPException(403, "you can only cancel your own Spawns")
     slurm.cancel(job_id)
     log.info("cancel id=%s by %s", job_id, user["username"])
     return Response(status_code=204)
@@ -447,7 +447,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
     meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
     if not meta.get("script"):
-        raise HTTPException(422, "missing 'script' in X-CCC-Meta")
+        raise HTTPException(422, "missing 'script' in X-CCC-Meta — the entrypoint script is required")
     for field in ("minutes", "vram"):
         if not meta.get(field):
             raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
