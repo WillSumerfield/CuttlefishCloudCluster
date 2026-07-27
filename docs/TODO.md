@@ -14,10 +14,6 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
   needs would fight containerizing them, and the roadmap already defaults Slurm to bare-metal). →
   Phase 7. Supersedes/absorbs the "Polish: `cuttle` on PATH" item below where they overlap (the
   installer question is about the *client* CLI, not the Head services — keep both).
-- **[med] No rate-limiting anywhere** (confirmed by grep). Decided direction: throttle `/login` (closes a
-  real brute-force hole even among trusted Users — a guessed weak temp password, a compromised laptop)
-  and add a **per-User max-concurrent-Spawn cap** (Escrow prices flooding the queue but doesn't hard-cap
-  it). → Phase 7.
 - **[high] Nothing monitors the Head box itself.** Phase 2's telemetry item watches Arms (rogue GPU use);
   Phase 7(→8)'s completeness pass only *audits* unbounded `head/projects`/`head/spawns` growth once.
   Wanted: disk-space + process-liveness checks, a GPU/CPU usage-over-time monitor with anomaly
