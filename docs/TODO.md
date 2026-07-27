@@ -121,10 +121,11 @@ front 50 while `--json` stays uncapped (explicit `--limit` honoured either way).
 an optional server `limit` param on `GET /spawns` + `/spawns/history` (absent = unbounded, so the
 Dashboard read is unchanged). Truncation prints a hint line; never in JSON.
 
-## Test suite: `StarletteDeprecationWarning` (httpx2) → Phase 9 (pin bumps) — [effort: low]
+## ~~Test suite: `StarletteDeprecationWarning` (httpx2)~~ — DONE (Phase 8)
 
-`starlette.testclient` warns `Using httpx with starlette.testclient is deprecated; install httpx2` on
-every test run. Dependency hygiene; fold into the pin-bump / dep-refresh pass, not urgent.
+Swapped the root test harness's dev dep `httpx` → `httpx2` (the client `starlette.testclient` now
+prefers). Warning gone, 226 pass. Plain `httpx` still arrives transitively via `cuttle`'s runtime dep,
+so the CLI is untouched.
 
 ## Before full release: revisit pinned system-package versions — [effort: med]
 
