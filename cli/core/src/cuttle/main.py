@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 
 from . import auth as auth_mod
+from . import backup as backup_mod
 from . import enroll as enroll_mod
 from . import headapi as headapi_mod
 from . import installer as installer_mod
@@ -34,6 +35,9 @@ app.add_typer(user_app, name="user")
 # `cuttle karma` with no subcommand = the standings (invoke_without_command + the callback below).
 karma_app = typer.Typer(invoke_without_command=True, help="Karma: standings, override, queue bump.")
 app.add_typer(karma_app, name="karma")
+backup_app = typer.Typer(no_args_is_help=True,
+                         help="Backup/restore head.db + arms.json + Headscale's db (run on the Head).")
+app.add_typer(backup_app, name="backup")
 
 
 def _version(value: bool) -> None:
@@ -371,6 +375,37 @@ def karma_ledger(
     """Your own Karma ledger: the real events (Settlements, Overrides) and the Balance they leave you
     at. Yours alone — standings is everyone's so you can rank; a history needs nobody else's rows."""
     karma_mod.ledger(days=days, as_json=as_json)
+
+
+@backup_app.command("create")
+def backup_create():
+    """ON THE HEAD: snapshot head.db, arms.json, and Headscale's own db into one tarball under
+    /var/backups/ccc. No downtime — the Head API, Karma tick, and Headscale all keep running."""
+    with ui.section("Backing up cluster state", lambda: "head.db + arms.json + headscale db"):
+        path = backup_mod.create(setup_mod._write_root_file)
+        ui.result("archive", str(path))
+
+
+@backup_app.command("restore")
+def backup_restore(
+    archive: str = typer.Argument(None, help="Path to a backup tarball (see /var/backups/ccc)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+):
+    """ON THE HEAD: restore head.db, arms.json, and Headscale's db from a backup tarball. Stops the
+    Enroll API, Head API, Karma tick, and Headscale; replaces all three files; restarts everything.
+
+    All-or-nothing — overwrites every Spawn/Karma/session/Arm-enrollment change made since the
+    backup. There is no undo short of another restore.
+    """
+    archive = ui.need(archive, "the archive path", lambda: pickers.pick_backup())
+    if not yes and ui.interactive():
+        ui.warn("this overwrites LIVE head.db, arms.json, and Headscale's db — "
+                "anything created since this backup is gone")
+        if not ui.ask_typed(f"Restore {Path(archive).name}?", Path(archive).name):
+            raise ui.abort("not restored")
+    with ui.section("Restoring cluster state", lambda: Path(archive).name):
+        backup_mod.restore(Path(archive), setup_mod._write_root_file)
+    ui.ok("restored — the Enroll API, Head API, Karma tick, and Headscale are back up")
 
 
 @app.command("build-installer")

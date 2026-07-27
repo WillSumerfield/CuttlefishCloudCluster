@@ -89,6 +89,16 @@ def remove_karma() -> None:
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
+def remove_backup() -> None:
+    """Backup timer + its script (Head-only, CCC-only). The archives under BACKUP_DIR are the whole
+    point of this feature and are NEVER touched here, even under --all — a teardown that deletes your
+    only disaster-recovery copy defeats it."""
+    run(["systemctl", "disable", "--now", f"{config.BACKUP_SERVICE}.timer"], sudo=True, check=False)
+    run(["rm", "-f", str(config.BACKUP_SERVICE_UNIT), str(config.BACKUP_TIMER_UNIT),
+         str(config.BACKUP_SCRIPT)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
 def remove_rsyncd() -> None:
     """Stage-in/out daemon (Head-only, CCC-only — safe to remove wholesale). The service was already
     stopped/disabled by stop_daemons; drop its unit + config."""
@@ -238,6 +248,7 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     remove_enroll_api()
     remove_head_api()
     remove_karma()
+    remove_backup()
     remove_rsyncd()
     remove_mesh(keep_packages=keep_packages)
     remove_slurm_config()

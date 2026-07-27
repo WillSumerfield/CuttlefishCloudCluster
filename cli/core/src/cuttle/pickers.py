@@ -6,7 +6,7 @@ make `cuttle arm remove` unusable in exactly the situations where you most need 
 list costs you the convenience and nothing else.
 """
 
-from . import auth, enroll, ui
+from . import auth, backup, enroll, ui
 
 
 def _pick(message: str, rows: list[tuple[str, str]], noun: str) -> str:
@@ -34,6 +34,14 @@ def pick_arm(message: str = "Which Arm?") -> str:
     rows = [(name, f"{e.get('owner') or '-'}, {enroll._arm_state(name, e).split(',')[0]}")
             for name, e in sorted(reg.items())]
     return _pick(message, rows, "Arm")
+
+
+def pick_backup(message: str = "Which backup?") -> str:
+    try:
+        paths = backup.list_backups()
+    except Exception:
+        paths = []
+    return _pick(message, [(str(p), p.name) for p in paths], "backup")
 
 
 def pick_spawn(message: str = "Which Spawn?", mine_only: bool = True) -> int:

@@ -285,6 +285,23 @@ CCC_TS_PORT = 41642  # default tailscaled uses 41641 — keep them distinct
 # daemons fight over it either way (see docs/TODO.md).
 MESH_V4_PREFIX = "100.99.0.0/16"
 MESH_V6_PREFIX = "fd7a:115c:a1e0:cc::/64"
+HEADSCALE_DB = HEADSCALE_LIB / "db.sqlite"  # node keys, preauth keys — never touched directly except
+                                            # by cuttle backup (see backup.py); everywhere else goes
+                                            # through the `headscale` binary.
+
+# --- backup/restore (Phase 8 loose end) ---
+# head.db + arms.json + Headscale's db.sqlite are the Head's ENTIRE durable state. Losing all three to
+# a Head-disk failure evicts the whole fleet (every Arm must physically re-enroll). Bundled into one
+# timestamped tarball; getting it off this box (scp/rsync over the personal Tailscale) is a manual
+# admin step, not cuttle's job — see backup.py.
+BACKUP_DIR = Path("/var/backups/ccc")  # root:root 0700 — the bundle holds live secrets (session
+                                       # tokens, Headscale preauth/node keys)
+BACKUP_RETAIN = 3                     # the nightly timer prunes to this many newest tarballs
+BACKUP_SCRIPT = Path("/opt/ccc/bin/ccc-backup.py")  # standalone (no cuttle import) so the timer's
+                                                     # oneshot service runs it with a bare python3
+BACKUP_SERVICE = "ccc-backup"
+BACKUP_SERVICE_UNIT = Path("/etc/systemd/system/ccc-backup.service")
+BACKUP_TIMER_UNIT = Path("/etc/systemd/system/ccc-backup.timer")
 
 # --- stage-in/out (Phase 1 ④): rsync daemon on the Head, bound to the mesh ---
 # A Spawn on a remote Arm has none of the submitter's files. The Head runs an rsync daemon on its

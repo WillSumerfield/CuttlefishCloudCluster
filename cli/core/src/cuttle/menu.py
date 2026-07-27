@@ -32,7 +32,7 @@ from . import api, config, settings, ui
 # through: the Head API exposes zero admin-write endpoints, so admin work happens on the Head as the
 # operator, never over a session. `teardown` is NOT here — it is gated by "is this box set up",
 # because a client tears down its own `~/.ccc` too (`teardown --client`).
-HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer"}
+HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "backup"}
 
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
