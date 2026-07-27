@@ -73,6 +73,7 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
     db.ensure_schema()
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
     monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
+    monkeypatch.setattr(slurm, "queue", lambda: [])  # no live Spawns — submit_checked's cap check
     monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
     return TestClient(head_main.app)
 
@@ -156,6 +157,54 @@ class TestCliRequiresTimeAndVram:
         assert r.exit_code != 0
         missing = "--vram" if "--time" in args else "--time"
         assert missing in r.output
+
+
+class TestConcurrentSpawnCap:
+    """Escrow prices queue-flooding (Phase 8 loose end — docs/TODO.md's "No rate-limiting anywhere")
+    but never hard-stops it; this does. 'Concurrent' is Slurm PENDING or RUNNING — queuing instead of
+    running doesn't dodge the cap. Admins are exempt, matching db.spawn_owners' own exemption."""
+
+    def _seed_owned_spawns(self, user_id: int, job_ids: list[int]):
+        """Insert a user + one Spawn row per job_id, all attributed to `user_id`. Called AFTER
+        `client()`, so it writes to the same DB_PATH the handler will read (see TestCancel._seed)."""
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                "VALUES (?,?,?,?,0)", (user_id, f"u{user_id}", 0, "x"))
+            for jid in job_ids:
+                db.record_spawn(conn, job_id=jid, user_id=user_id, script="train.py",
+                                staging_uuid=f"u{jid}")
+            conn.commit()
+
+    def test_at_the_cap_is_refused(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)  # caller is id 1
+        job_ids = list(range(1, head_spawns.MAX_CONCURRENT_SPAWNS + 1))
+        self._seed_owned_spawns(1, job_ids)
+        monkeypatch.setattr(slurm, "queue", lambda: [{"id": j} for j in job_ids])
+        r = post(c, minutes=60, vram=24)
+        assert r.status_code == 422
+        assert "queued/running" in r.json()["detail"]
+
+    def test_one_under_the_cap_still_works(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)
+        job_ids = list(range(1, head_spawns.MAX_CONCURRENT_SPAWNS))  # one short of the cap
+        self._seed_owned_spawns(1, job_ids)
+        monkeypatch.setattr(slurm, "queue", lambda: [{"id": j} for j in job_ids])
+        assert post(c, minutes=60, vram=24).status_code == 200
+
+    def test_someone_elses_active_spawns_dont_count(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)  # caller is id 1
+        job_ids = list(range(1, head_spawns.MAX_CONCURRENT_SPAWNS + 5))
+        self._seed_owned_spawns(2, job_ids)  # all owned by a different user
+        monkeypatch.setattr(slurm, "queue", lambda: [{"id": j} for j in job_ids])
+        assert post(c, minutes=60, vram=24).status_code == 200
+
+    def test_an_admin_is_exempt(self, monkeypatch):
+        c = client(monkeypatch, is_admin=True)  # caller is id 1
+        job_ids = list(range(1, head_spawns.MAX_CONCURRENT_SPAWNS + 5))
+        self._seed_owned_spawns(1, job_ids)
+        monkeypatch.setattr(slurm, "queue", lambda: [{"id": j} for j in job_ids])
+        assert post(c, minutes=60, vram=24).status_code == 200
 
 
 class TestCancel:

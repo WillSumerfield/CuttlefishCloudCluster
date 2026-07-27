@@ -15,7 +15,7 @@ import tempfile
 import pytest
 from fastapi.testclient import TestClient
 
-from ccc_head_api import db, karma
+from ccc_head_api import db, karma, ratelimit
 from ccc_head_api import main as head_main
 from ccc_head_api import slurm
 
@@ -92,6 +92,47 @@ def test_login_failure_is_logged(monkeypatch, api_caplog):
     assert rec, "a failed login must be logged at WARNING"
     assert "alice" in rec[0].getMessage()
     assert "wrong" not in rec[0].getMessage()  # never the password
+
+
+class TestLoginThrottleWiring:
+    """`ratelimit.py` owns the algorithm (see test_ratelimit.py); this only checks `/login` is wired to
+    it — the block fires, it answers 429 + Retry-After, and a successful login clears it again."""
+
+    def _seed_alice(self, monkeypatch):
+        _real_db(monkeypatch)
+        with db.connect() as conn:
+            db.add_user(conn, "alice", is_admin=False)
+            db.set_password(conn, "alice", "hunter2")
+
+    def test_too_many_failures_becomes_429_with_retry_after(self, monkeypatch):
+        self._seed_alice(monkeypatch)
+        c = TestClient(head_main.app)
+        for _ in range(ratelimit.THRESHOLD):
+            c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        r = c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+
+    def test_the_right_password_is_blocked_once_tripped(self, monkeypatch):
+        """The point: once tripped, even the correct password is refused until the cooldown ends."""
+        self._seed_alice(monkeypatch)
+        c = TestClient(head_main.app)
+        for _ in range(ratelimit.THRESHOLD):
+            c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        r = c.post("/api/login", json={"username": "alice", "password": "hunter2"})
+        assert r.status_code == 429
+
+    def test_success_clears_the_counter(self, monkeypatch):
+        self._seed_alice(monkeypatch)
+        c = TestClient(head_main.app)
+        for _ in range(ratelimit.THRESHOLD - 1):
+            c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        assert c.post("/api/login",
+                      json={"username": "alice", "password": "hunter2"}).status_code == 200
+        # a fresh run of failures after a clean success needs the FULL threshold again
+        for _ in range(ratelimit.THRESHOLD - 1):
+            r = c.post("/api/login", json={"username": "alice", "password": "wrong"})
+            assert r.status_code == 401
 
 
 def test_unhandled_route_error_is_logged_and_500(monkeypatch, api_caplog):

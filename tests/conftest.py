@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 
 from ccc_head_api import db
 from ccc_head_api import main as head_main
+from ccc_head_api import ratelimit
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
 from cuttle import api, auth, config, settings, ui
@@ -30,6 +31,15 @@ from cuttle.main import app as cli_app
 
 USERS = {"alice": "hunter2", "root": "toor"}  # root is the Admin
 ADMINS = {"root"}
+
+
+@pytest.fixture(autouse=True)
+def _reset_ratelimit():
+    """The login throttle is process-global state (see ratelimit.py's module docstring) — every test
+    in this suite shares one Python process, so without this a test late in the run could inherit
+    another test's failed-login count and get a surprise 429."""
+    ratelimit.reset()
+    yield
 
 
 @pytest.fixture
@@ -132,9 +142,12 @@ def fake_slurm(monkeypatch, tmp_path):
     counter.write_text("4200")
     (bin_dir / "sbatch").write_text(
         f'#!/bin/sh\nn=$(cat {counter}); n=$((n+1)); echo $n > {counter}; echo $n\n')
-    # squeue with no matching job prints nothing == "Slurm has forgotten it", which is how the Head
-    # decides a Spawn is finished.
-    (bin_dir / "squeue").write_text("#!/bin/sh\nexit 0\n")
+    # Two call shapes share this one stub: `squeue -h -j <id> -o %T` (spawns.active_state — no
+    # matching job prints NOTHING, which is how the Head decides a Spawn is finished) and
+    # `squeue --json` (slurm.queue/spawns — submit_checked's concurrent-Spawn cap + the Karma tick,
+    # neither of which exists yet with any live jobs, but still needs valid empty JSON, not silence).
+    (bin_dir / "squeue").write_text(
+        '#!/bin/sh\ncase "$*" in\n  *--json*) echo \'{"jobs": []}\' ;;\n  *) exit 0 ;;\nesac\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
