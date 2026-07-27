@@ -89,7 +89,8 @@ def wait_for_admit(head_mesh_ip: str, node_name: str, timeout_s: int = 900) -> N
                 print("cuttle: admitted.")
                 return
         time.sleep(5)
-    raise TimeoutError(f"not admitted within {timeout_s}s — run `cuttle arm admit {node_name}`")
+    raise ui.abort(f"not admitted within {timeout_s}s",
+                   next_step=f"run `cuttle arm admit {node_name}` on the Head to finish enrolling")
 
 
 def check_head_can_reach_us(head_mesh_ip: str) -> None:
@@ -106,7 +107,7 @@ def check_head_can_reach_us(head_mesh_ip: str) -> None:
     if res["reachable"]:
         print(f"cuttle: Head can reach this Arm at {res['peer']}:{res['port']} — good")
         return
-    raise RuntimeError(
+    raise ui.abort(
         f"the Head cannot reach this Arm at {res['peer']}:{res['port']} ({res.get('error')}).\n"
         f"  slurmd registered, but slurmctld will mark this node DOWN within minutes.\n"
         f"  The mesh itself is fine — this Arm just reached the Head API to run the check.\n"
@@ -223,9 +224,9 @@ def _await_enrollment(name: str, timeout_s: int = 300) -> dict:
         if reg.get(name, {}).get("mesh_ip"):
             return reg
         time.sleep(2)
-    raise TimeoutError(
-        f"{name} has not enrolled yet. Nothing is broken and the pre-declaration stands — when the "
-        f"donor has run `cuttle setup --arm`, finish with:  cuttle arm admit {name}")
+    raise ui.abort(
+        f"{name} has not enrolled yet. Nothing is broken and the pre-declaration stands",
+        next_step=f"when the donor has run `cuttle setup --arm`, finish with `cuttle arm admit {name}`")
 
 
 # --- the Power benchmark (Head only, operator + sudo) -----------------------
@@ -248,7 +249,8 @@ def _wait_for_node(name: str, timeout_s: int = 300) -> None:
         if r.stdout.strip().rstrip("*") in ("idle", "mixed", "allocated"):
             return
         time.sleep(3)
-    raise TimeoutError(f"{name} never came up — benchmark it later with: cuttle arm benchmark {name}")
+    raise ui.abort(f"{name} never came up in Slurm",
+                   next_step=f"benchmark it later with `cuttle arm benchmark {name}`")
 
 
 def benchmark_arm(name: str) -> dict:
@@ -282,8 +284,8 @@ def benchmark_arm(name: str) -> dict:
             break
         time.sleep(3)
     else:
-        raise TimeoutError(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s — "
-                           f"retry with: cuttle arm benchmark {name}")
+        raise ui.abort(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s",
+                       next_step=f"retry with `cuttle arm benchmark {name}`")
 
     reg = load_registry()
     reg[name]["power"] = result["power"]
@@ -326,14 +328,15 @@ def authorize_arm(name: str, owner: str, write_root_file) -> None:
     4. *Mint the key* (1h, single-use — mesh.mint_preauthkey's defaults) and print the token.
     """
     if not auth.user_exists(owner):
-        raise SystemExit(f"cuttle: no such user {owner!r} — create them first: cuttle user add {owner}")
+        raise ui.abort(f"no such user {owner!r}",
+                       next_step=f"create them first with `cuttle user add {owner}`")
     if mesh.node_ids_named(name):
-        raise SystemExit(
-            f"cuttle: an Arm named {name!r} is already on the mesh. Authorizing it again would evict\n"
-            f"        that machine. If you mean to replace it, remove it first:\n"
-            f"          cuttle arm remove {name}\n"
-            f"        To only change its owner, leave it running and use:\n"
-            f"          cuttle arm chown {name} --user <owner>")
+        raise ui.abort(
+            f"an Arm named {name!r} is already on the mesh — authorizing it again would evict\n"
+            f"  that machine. If you mean to replace it, remove it first:\n"
+            f"      cuttle arm remove {name}\n"
+            f"  To only change its owner, leave it running and use:\n"
+            f"      cuttle arm chown {name} --user <owner>")
 
     reg = load_registry()
     # vram_mb arrives with the donor's /enroll; power only after the benchmark, which can't run until
@@ -361,10 +364,11 @@ def admit_arm(name: str, write_root_file) -> None:
     """
     reg = load_registry()
     if name not in reg:
-        raise SystemExit(f"cuttle: {name!r} was never authorized — run: cuttle arm authorize {name}")
+        raise ui.abort(f"{name!r} was never authorized",
+                       next_step=f"run `cuttle arm authorize {name}` first")
     if not reg[name].get("mesh_ip"):
-        raise SystemExit(f"cuttle: {name!r} is authorized but has not enrolled yet — it appears once "
-                         f"the donor has run `cuttle setup --arm --token ...`")
+        raise ui.abort(f"{name!r} is authorized but has not enrolled yet — it appears once "
+                       f"the donor has run `cuttle setup --arm --token ...`")
     _admit(name, reg, write_root_file)
 
 
@@ -383,10 +387,12 @@ def chown_arm(name: str, owner: str) -> None:
     """Re-point an Arm at a different owning User. Touches neither the mesh nor Slurm — so fixing a
     typo'd owner never costs the donor a re-enrollment."""
     if not auth.user_exists(owner):
-        raise SystemExit(f"cuttle: no such user {owner!r} — create them first: cuttle user add {owner}")
+        raise ui.abort(f"no such user {owner!r}",
+                       next_step=f"create them first with `cuttle user add {owner}`")
     reg = load_registry()
     if name not in reg:
-        raise SystemExit(f"cuttle: no Arm named {name!r}")
+        raise ui.abort(f"no Arm named {name!r}",
+                       next_step="run `cuttle arm list` to see the Arms this Head knows")
     was = reg[name].get("owner")
     reg[name]["owner"] = owner
     save_registry(reg)

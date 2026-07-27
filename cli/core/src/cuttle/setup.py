@@ -32,10 +32,18 @@ def preflight(role: str) -> None:
     rel = system.os_release()
     print(f"host={system.hostname()} os={rel.get('PRETTY_NAME')} "
           f"cpus={system.cpu_count()} mem={system.real_memory_mb()}MB")
-    assert system.is_native_linux_x86(), "MVP supports Linux x86_64 only"
-    assert rel.get("VERSION_ID") == "24.04", "MVP pinned to Ubuntu 24.04"
+    # Gating a supported platform, not an internal invariant — so ui.abort (a clean ✗ + a next step),
+    # not `assert` (which prints a bare one-liner and vanishes entirely under `python -O`).
+    if not system.is_native_linux_x86():
+        raise ui.abort("this MVP supports Linux x86_64 only",
+                       next_step="run setup on a native x86_64 Ubuntu 24.04 box")
+    if rel.get("VERSION_ID") != "24.04":
+        raise ui.abort(f"this MVP is pinned to Ubuntu 24.04 (this box is {rel.get('VERSION_ID')!r})",
+                       next_step="use Ubuntu 24.04")
     if system.is_wsl():
-        assert role == "arm", "WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven)"
+        if role != "arm":
+            raise ui.abort("WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven here)",
+                           next_step="run `cuttle setup --arm` on this box, and host the Head elsewhere")
         print("cuttle: WSL2 detected. Supported as an Arm, with one permanent limit: /dev/dxg is a\n"
               "        single node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here.")
     run([system.nvidia_smi(), "--query-gpu=name,driver_version", "--format=csv,noheader"])

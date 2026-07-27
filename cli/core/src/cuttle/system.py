@@ -47,7 +47,8 @@ def prime_sudo() -> None:
     r = subprocess.run(["sudo", "-S", "-p", "", "-v"],
                        input=password + "\n", capture_output=True, text=True)
     if r.returncode != 0:
-        raise ui.abort("sudo authentication failed")
+        raise ui.abort("sudo authentication failed",
+                       next_step="check your password — or that you have sudo access — and try again")
     _SUDO_PRIMED = True
 
 
@@ -208,7 +209,8 @@ def ufw_active() -> bool:
         return False
     r = run(["ufw", "status"], sudo=True, capture_output=True, text=True, check=False)
     if r.returncode != 0:
-        raise RuntimeError(f"`ufw status` failed (rc={r.returncode}) — cannot tell if it is active")
+        raise ui.abort("couldn't read the firewall status (ufw) — can't tell whether it's enforcing",
+                       next_step="check sudo works, then try `sudo ufw status` by hand and re-run")
     return r.stdout.strip().startswith("Status: active")
 
 

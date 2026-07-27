@@ -340,9 +340,8 @@ def karma_override(
     wizard = username is None
     with ui.section("Adjust a Balance", lambda: f"{username} {amount:+g}"):
         username = ui.need(username, "the username", lambda: pickers.pick_user("Whose Balance?"))
-        amount = float(ui.need(
-            amount, "the amount",
-            lambda: ui.ask_text("How much Karma? (negative removes)")))
+        amount = ui.need(amount, "the amount",
+                         lambda: ui.ask_float("How much Karma? (negative removes)"))
         if note is None and wizard:
             note = ui.ask_text("Why? (recorded in the ledger)") or None
     karma_mod.override(username, amount, note)
@@ -497,10 +496,10 @@ def run(
         # reintroduce exactly what the flags refuse: nothing can price a Spawn whose length nobody
         # declared, and a default --vram of the biggest card makes every untouched field eligible
         # for that card alone — queued at the highest Demand for work that may need 2 GB.
-        time = int(ui.need(time, "--time", lambda: ui.ask_text("Wall-clock limit? (minutes)")))
-        vram = int(ui.need(vram, "--vram", lambda: ui.ask_text("GPU memory needed? (GB)")))
+        time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
+        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
         if wizard:
-            gpu = int(ui.ask_text("How many GPUs?", default=str(gpu)))
+            gpu = ui.ask_int("How many GPUs?", default=str(gpu))
             project = project or (ui.ask_text("W&B project? (blank = config default)") or None)
             entity = entity or (ui.ask_text("W&B entity? (blank = config default)") or None)
             no_gitignore = not ui.ask_confirm("Honor .gitignore when uploading?", True)

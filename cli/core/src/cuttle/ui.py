@@ -611,6 +611,28 @@ def ask_text(message: str, default: str = "") -> str:
     return _ask("text", message, default=default)
 
 
+def ask_int(message: str, default: str = "") -> int:
+    """Prompt for a whole number, re-asking on anything that isn't one. The wizard used to wrap a raw
+    `ask_text` in `int()`, so a typo ('sixty') or a bare Enter raised `invalid literal for int()` — a
+    Python error — straight at the user. Re-asking is what they'd do anyway."""
+    while True:
+        raw = ask_text(message, default=default).strip()
+        try:
+            return int(raw)
+        except ValueError:
+            warn(f"{raw!r} isn't a whole number — enter digits only (e.g. 60)")
+
+
+def ask_float(message: str, default: str = "") -> float:
+    """Like `ask_int`, for a value that may be fractional or negative (a Karma adjustment)."""
+    while True:
+        raw = ask_text(message, default=default).strip()
+        try:
+            return float(raw)
+        except ValueError:
+            warn(f"{raw!r} isn't a number — enter a number (e.g. -50)")
+
+
 def ask_password(message: str) -> str:
     return _ask("password", message)
 
@@ -1029,10 +1051,14 @@ def _panel(title: str | None, facts: list[tuple[str, str]]) -> None:
 
 # --- errors -----------------------------------------------------------------
 
-def abort(message: str, code: int = 1):
+def abort(message: str, code: int = 1, next_step: str | None = None):
     """Report an *expected* failure and stop: the Head refused us, the Head is unreachable, the Spawn
     isn't yours. Returns the exception so callers can `raise ui.abort(...)` and keep control flow
     obvious to a reader (and to a type checker).
+
+    `next_step`, when given, is printed as the dim guidance line under the error — the "how to fix it"
+    to the message's "what broke". Kept on `abort` so the two always render in the right order (the
+    ✗ line, then the hint), which a caller emitting `fail` + `hint` by hand can get wrong.
 
     Printed here and exited via `typer.Exit`, rather than raised as a `ClickException` for the
     framework to render. Two reasons, both learned the hard way:
@@ -1049,6 +1075,8 @@ def abort(message: str, code: int = 1):
     exactly what the user sees.
     """
     fail(message)
+    if next_step:
+        hint(next_step)
     return typer.Exit(code)
 
 
@@ -1062,7 +1090,9 @@ def report(exc: BaseException) -> int:
         import traceback
         traceback.print_exception(exc)
         return 1
-    fail(str(exc) or exc.__class__.__name__)
+    # A messageless exception (a bare KeyError/IndexError from a malformed response) still names its
+    # type — a breadcrumb worth keeping — but framed in a sentence, not dumped as bare `KeyError`.
+    fail(str(exc) or f"something went wrong (unexpected {exc.__class__.__name__}, no details)")
     hint("re-run with --debug for the full traceback")
     return 1
 

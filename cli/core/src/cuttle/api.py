@@ -47,6 +47,17 @@ class ApiError(Exception):
         self.path, self.detail, self.status = path, detail, status
         super().__init__(f"{path}: {detail}")
 
+    def user_message(self) -> str:
+        """What a command should actually print. `str(self)` leads with the internal API route path
+        (`/submit: ...`) — noise to a user — and a 5xx carries only a generic phrase like "Internal
+        Server Error". A 4xx `detail`, by contrast, is the Head's own human-readable reason (a policy
+        violation, a bad name) and must reach the user intact. So: verbatim `detail` for a refusal or
+        a transport failure (status None), a framed line for a server-side crash."""
+        if self.status and self.status >= 500:
+            return ("the Head hit an internal error handling that request — try again in a moment; "
+                    "if it keeps happening, check the Head's logs")
+        return self.detail
+
 
 class Api:
     """A session against one Head. Holds the bearer so the TUI can log in mid-run without touching
@@ -125,8 +136,11 @@ class Api:
                 # to raise, and "connection error" would bury it.
                 raise ApiError(path, CERT_MISMATCH.format(url=self.url or "the Head")) from None
             where = self.url or "the Head"
-            raise ApiError(path, f"cannot reach the Head at {where} "
-                                 f"({e.__class__.__name__}: {e or 'no response'})") from None
+            # No httpx class name (`ConnectTimeout`, `ReadError`) in the user's face — it names a
+            # library, not a fix. The cause is always the same one thing to check; say that. The raw
+            # exception is still one `--debug` away.
+            raise ApiError(path, f"cannot reach the Head at {where} — is it running, and are you on "
+                                 f"the same LAN or the CCC mesh?") from None
         if r.is_error:
             raise ApiError(path, _detail(r), r.status_code)
         return r

@@ -265,7 +265,7 @@ class TestQueueBump:
                                 lambda *a, **kw: SimpleNamespace(stdout=out, returncode=0))
         return squeue, pushed
 
-    def test_bumping_a_running_spawn_is_refused(self, slurm):
+    def test_bumping_a_running_spawn_is_refused(self, slurm, capsys):
         """The regression. `squeue` lists RUNNING jobs too, so the old guard — "did squeue return
         anything?" — only ever caught a Spawn that was *gone*, despite its error saying otherwise.
 
@@ -276,15 +276,19 @@ class TestQueueBump:
         """
         squeue, pushed = slurm
         squeue("RUNNING 0\n")
-        with pytest.raises(typer.BadParameter, match="running"):
+        # A bump refusal is runtime queue state, not a usage error — so ui.abort (typer.Exit, message
+        # printed), not typer.BadParameter's "Try --help" box. The reason must still reach the user.
+        with pytest.raises(typer.Exit):
             cli_karma.bump(42)
+        assert "running" in capsys.readouterr().err
         assert pushed == []  # and, crucially, nothing was written to Slurm
 
-    def test_bumping_a_finished_spawn_is_refused(self, slurm):
+    def test_bumping_a_finished_spawn_is_refused(self, slurm, capsys):
         squeue, pushed = slurm
         squeue("")
-        with pytest.raises(typer.BadParameter, match="not in the queue"):
+        with pytest.raises(typer.Exit):
             cli_karma.bump(42)
+        assert "not in the queue" in capsys.readouterr().err
         assert pushed == []
 
     def test_a_pending_spawn_takes_one_negative_step(self, slurm):
@@ -303,12 +307,13 @@ class TestQueueBump:
         cli_karma.bump(42)
         assert pushed == [["scontrol", "update", "JobId=42", f"Nice={-2 * cli_config.BUMP_STEP}"]]
 
-    def test_clear_is_guarded_too(self, slurm):
+    def test_clear_is_guarded_too(self, slurm, capsys):
         """--clear on a running Spawn is just as much of a no-op, and used to be just as silent."""
         squeue, pushed = slurm
         squeue("RUNNING -131072\n")
-        with pytest.raises(typer.BadParameter, match="running"):
+        with pytest.raises(typer.Exit):
             cli_karma.bump(42, clear=True)
+        assert "running" in capsys.readouterr().err
         assert pushed == []
 
         squeue("PENDING -131072\n")

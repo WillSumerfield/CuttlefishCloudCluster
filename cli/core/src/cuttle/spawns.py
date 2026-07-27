@@ -24,8 +24,6 @@ import tempfile
 import time
 from pathlib import Path
 
-import typer
-
 from . import api, auth, settings, ui
 from .system import run
 
@@ -72,7 +70,7 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
     except api.ApiError as e:
         if ui.DEBUG:
             raise
-        raise ui.abort(str(e)) from None
+        raise ui.abort(e.user_message()) from None
 
 
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
@@ -99,7 +97,13 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
     finally:
         Path(tar_path).unlink(missing_ok=True)
     if r.returncode != 0:
-        raise typer.BadParameter((r.stderr or "").strip() or "pinned submit failed")
+        # A pinned submit failing is runtime state (the Arm is gone, down, or not yours), not a usage
+        # error — so ui.abort, not typer.BadParameter's "Try --help" box. Surface the admin tool's
+        # last line as the cause and name the check that resolves it.
+        why = (r.stderr or "").strip()
+        detail = why.splitlines()[-1] if why else "the pinned submit failed"
+        raise ui.abort(f"couldn't submit to Arm {node!r}: {detail} "
+                       f"(is it admitted? see `cuttle arm list`)")
     return int(r.stdout.strip().splitlines()[-1])
 
 
@@ -151,7 +155,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
         except api.ApiError as e:
             if ui.DEBUG:
                 raise
-            raise ui.abort(str(e)) from None
+            raise ui.abort(e.user_message()) from None
     # The id goes to stdout and the confirmation to stderr, so `id=$(cuttle run ...)` captures
     # exactly the id while a human still sees what happened.
     ui.ok(f"submitted spawn {spawn_id}")

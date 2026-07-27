@@ -17,8 +17,6 @@ Three commands, and they deliberately do NOT all travel the same road:
 
 import subprocess
 
-import typer
-
 from . import auth, config, ui
 from .auth import _api
 from .system import run
@@ -103,13 +101,15 @@ def _pending_nice(spawn_id: int) -> int:
     r = subprocess.run(["squeue", "-h", "-j", str(spawn_id), "-o", "%T %y"],
                        capture_output=True, text=True)
     fields = r.stdout.split()
+    # A bump refusal is runtime queue state, not a bad argument — ui.abort, not BadParameter's
+    # "Try --help" box (which would tell the operator to check syntax that was never wrong).
     if not fields:
-        raise typer.BadParameter(
-            f"spawn {spawn_id} is not in the queue (finished, cancelled, or never existed)")
+        raise ui.abort(
+            f"Spawn {spawn_id} is not in the queue (finished, cancelled, or never existed)")
     state, nice = fields[0], int(fields[1])
     if state != "PENDING":
-        raise typer.BadParameter(f"spawn {spawn_id} is {state.lower()}, not waiting — a bump only "
-                                 f"reorders the queue, and this Spawn is already past that")
+        raise ui.abort(f"Spawn {spawn_id} is {state.lower()}, not waiting — a bump only "
+                       f"reorders the queue, and this Spawn is already past that")
     return nice
 
 

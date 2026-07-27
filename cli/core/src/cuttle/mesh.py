@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.request
 
-from . import config
+from . import config, ui
 from .system import hostname, run, sh
 
 
@@ -127,7 +127,8 @@ def start_ccc_tailscaled(write_unit) -> None:
            sudo=True, check=False, capture_output=True, text=True).stdout.strip() != "active":
         run(["systemctl", "status", config.CCC_TS_SERVICE, "--no-pager", "-l"],
             sudo=True, check=False)
-        raise RuntimeError(f"{config.CCC_TS_SERVICE} died on startup — see status above")
+        raise ui.abort(f"{config.CCC_TS_SERVICE} died on startup — see the status above",
+                       next_step=f"re-run setup, or inspect with `journalctl -u {config.CCC_TS_SERVICE}`")
 
 
 # --- Headscale coordinator (Head only) -------------------------------------
@@ -193,7 +194,9 @@ def _user_id() -> str:
     for u in json.loads(r.stdout) or []:  # `null`, not `[]`, when empty — see list_nodes
         if u["name"] == config.HEADSCALE_USER:
             return str(u["id"])
-    raise RuntimeError(f"headscale user {config.HEADSCALE_USER!r} not found")
+    raise ui.abort(f"the CCC Headscale user {config.HEADSCALE_USER!r} doesn't exist — "
+                   f"the Head's mesh coordinator isn't fully set up",
+                   next_step="re-run `cuttle setup --head`")
 
 
 def mint_preauthkey(reusable: bool = False, hours: int = 1) -> str:
@@ -387,15 +390,15 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
     try:
         join_mesh(coordinator, node_name, authkey)
     except subprocess.CalledProcessError:
-        raise SystemExit(
-            f"cuttle: could not join the mesh at {coordinator}.\n"
-            f"        If this says 'authkey already used', the token is SPENT — its preauth key is\n"
-            f"        single-use, so a box that redeemed it once can never redeem it again. Retrying\n"
-            f"        will not help; get a fresh one. On the Head:\n"
-            f"          cuttle arm remove {node_name}\n"
-            f"          cuttle arm authorize {node_name} --user <owner>\n"
-            f"        then here:\n"
-            f"          cuttle setup --arm --re-enroll --token <the new blob>")
+        raise ui.abort(
+            f"could not join the mesh at {coordinator}.\n"
+            f"  If this says 'authkey already used', the token is SPENT — its preauth key is\n"
+            f"  single-use, so a box that redeemed it once can never redeem it again. Retrying\n"
+            f"  will not help; get a fresh one. On the Head:\n"
+            f"      cuttle arm remove {node_name}\n"
+            f"      cuttle arm authorize {node_name} --user <owner>\n"
+            f"  then here:\n"
+            f"      cuttle setup --arm --re-enroll --token <the new blob>")
     return tailscale_ip()
 
 

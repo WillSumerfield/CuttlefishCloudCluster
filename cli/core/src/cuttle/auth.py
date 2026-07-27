@@ -56,7 +56,7 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
             # and a `token=""` call has nothing to have expired. Say the one thing that fixes it rather
             # than echoing the Head's raw "Unauthorized".
             raise ui.abort("session expired — run `cuttle login`") from None
-        raise ui.abort(str(e)) from None
+        raise ui.abort(e.user_message()) from None
 
 
 def _head_url() -> str:
