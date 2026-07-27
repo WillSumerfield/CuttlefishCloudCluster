@@ -112,7 +112,8 @@ class TestTheMenuIsDerived:
         """TyperGroup does NOT subclass click.Group — Typer vendors its own click. An isinstance
         check renders arm/user/karma as leaves and silently loses all their subcommands."""
         root = self._root()
-        assert [n for n, c in root.commands.items() if menu._is_group(c)] == ["arm", "user", "karma"]
+        assert [n for n, c in root.commands.items() if menu._is_group(c)] == \
+            ["arm", "user", "karma", "backup"]
 
     def test_hiding_is_menu_only(self, monkeypatch):
         """The command must stay reachable when typed. A detection bug that removed it outright is
