@@ -315,13 +315,13 @@ remove the `ccc0` ufw rule, and undo the WSL Apptainer config if it was applied.
 (`cuttle arm remove`) already exists and is what evicts the node from the mesh and Slurm — an Arm
 tearing itself down cannot do that for itself, so the two commands are complements, not substitutes.
 
-## `preflight()`'s GPU check passes on WSL for the wrong reason → Phase 2 — [effort: low]
+## ~~`preflight()`'s GPU check passes on WSL for the wrong reason~~ — DONE (Phase 8)
 
-`preflight()` runs `nvidia-smi`. On WSL that binary lives in `/usr/lib/wsl/lib`, which is **not** on
-`PATH` except in an interactive login shell (measured: `command not found` inside an `srun` job).
-So the check passes during `cuttle setup --arm` only because a human is running it from a login
-shell. It would fail from any non-interactive context, and it isn't really verifying the GPU.
-Fix: fall back to `/usr/lib/wsl/lib/nvidia-smi` when `is_wsl()` and the binary isn't on `PATH`.
+New `system.nvidia_smi()` resolver: PATH first, else the absolute `/usr/lib/wsl/lib/nvidia-smi`
+(`config.WSL_NVIDIA_SMI`) when `is_wsl()` and it exists, else the bare name so a driver-less native box
+still fails loudly. Both call sites route through it — `preflight()` **and** `gpu_vram_mb()`, which had
+the identical latent bug (it bakes the node's `vramN` feature at registration and would break from any
+non-interactive context on WSL). So the GPU checks no longer depend on being run from a login shell.
 
 ## Arm re-enrollment reads the coordinator URL out of a `debug` command → Phase 2 — [effort: med]
 
