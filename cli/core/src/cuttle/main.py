@@ -341,6 +341,19 @@ def user_remove(
     auth_mod.user_remove(username)
 
 
+@user_app.command("reset")
+def user_reset(
+    username: str = typer.Argument(None, help="User whose password to reset."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+):
+    """Reset a user's password (prints a one-time temp password; kills their existing sessions)."""
+    username = ui.need(username, "the username", lambda: pickers.pick_user("Reset whose password?"))
+    if not yes and ui.interactive():
+        if not ui.ask_confirm(f"Reset {username}'s password? This kills their existing sessions.", False):
+            raise ui.abort("not reset")
+    auth_mod.user_reset(username)
+
+
 @karma_app.callback()
 def karma(ctx: typer.Context,
           as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):

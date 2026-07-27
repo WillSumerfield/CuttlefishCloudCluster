@@ -3,8 +3,8 @@ else's behalf (Phase 3a slice 1; widened in Phase 6 and Phase 2's retract/return
 
 Runs *on the Head as the `ccc` service account* (`python -m ccc_head_api.admin ...`), writing head.db
 directly — being the operator on the Head is the authorization, no HTTP/session (mirrors the way
-`cuttle arm authorize` mutates the registry). `cuttle user add|list|remove` are thin wrappers that shell
-into this via the API venv; `setup --head` uses `add --admin` to seed the first admin.
+`cuttle arm authorize` mutates the registry). `cuttle user add|list|remove|reset` are thin wrappers that
+shell into this via the API venv; `setup --head` uses `add --admin` to seed the first admin.
 
 Prints the one-time temp password to stdout — the operator hands it to the user, who must rotate it on
 first login. Nothing here ever prints or stores a reusable password.
@@ -60,6 +60,19 @@ def _remove(username: str) -> int:
             print(f"no such user {username!r}", file=sys.stderr)
             return 1
     print(f"removed {username!r}")
+    return 0
+
+
+def _reset(username: str) -> int:
+    with db.connect() as conn:
+        db.init_schema(conn)
+        temp_pw = db.reset_password(conn, username)
+    if temp_pw is None:
+        print(f"no such user {username!r}", file=sys.stderr)
+        return 1
+    print(f"reset password for {username!r}")
+    print(f"temp password: {temp_pw}")
+    print("hand this to the user; they must change it on first login")
     return 0
 
 
@@ -148,6 +161,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="list users.")
     r = sub.add_parser("remove", help="delete a user (and their sessions, via cascade).")
     r.add_argument("username")
+    rs = sub.add_parser("reset", help="reset a user's password (random temp password, forced change, "
+                        "kills their sessions).")
+    rs.add_argument("username")
     e = sub.add_parser("exists", help="exit 0 if the user exists, 1 if not (no output).")
     e.add_argument("username")
     o = sub.add_parser("override", help="add/remove Karma from a User's Balance.")
@@ -175,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         return _list()
     if args.cmd == "remove":
         return _remove(args.username)
+    if args.cmd == "reset":
+        return _reset(args.username)
     if args.cmd == "exists":
         return _exists(args.username)
     if args.cmd == "override":

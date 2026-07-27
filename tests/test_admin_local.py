@@ -53,6 +53,41 @@ class TestOverride:
         assert capsys.readouterr().err.strip()
 
 
+class TestReset:
+    """Phase 8 loose end — "No password recovery exists": before this, a forgotten password meant
+    `remove` + `add`, which wipes the User's Karma balance and orphans their Arms. `reset` fixes the
+    same forgotten-password case without recreating the account."""
+
+    def test_it_prints_a_temp_password_that_works(self, head_db, capsys):
+        assert admin.main(["reset", "alice"]) == 0
+        out = capsys.readouterr().out
+        assert "temp password:" in out
+        temp_pw = out.splitlines()[1].split(": ", 1)[1]
+        with db.connect() as conn:
+            user = db.verify_password(conn, "alice", temp_pw)
+            assert user is not None
+            assert user["must_change_password"]
+
+    def test_it_kills_existing_sessions(self, head_db):
+        with db.connect() as conn:
+            user = db.get_user(conn, "alice")
+            token = db.create_session(conn, user["id"])
+            assert db.lookup_session(conn, token) is not None
+        admin.main(["reset", "alice"])
+        with db.connect() as conn:
+            assert db.lookup_session(conn, token) is None
+
+    def test_an_unknown_user_is_refused(self, head_db, capsys):
+        assert admin.main(["reset", "nobody"]) == 1
+        assert "no such user" in capsys.readouterr().err
+
+    def test_the_old_password_no_longer_works(self, head_db):
+        admin.main(["reset", "alice"])
+        with db.connect() as conn:
+            assert db.get_user(conn, "alice") is not None  # still exists, unlike remove+add
+            assert db.verify_password(conn, "alice", "not-the-temp-password") is None
+
+
 class TestRetractAny:
     """`cuttle arm retract/return --any` — the operator's Head-local escape hatch, which writes head.db
     directly (retraction.retract needs no further privilege) rather than the owner-scoped network

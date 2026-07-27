@@ -4,7 +4,7 @@ Two halves with different trust models:
 - **Login/session** — `login`/`logout`/`whoami`/`passwd` talk to the Head API over HTTP (works from any
   box; a submitter need never have run `setup`). The bearer token lands in `~/.ccc/credentials` (0600);
   the Head URL in `~/.ccc/config`.
-- **User-admin** — `user add|list|remove` run *on the Head as the `ccc` service account* and write
+- **User-admin** — `user add|list|remove|reset` run *on the Head as the `ccc` service account* and write
   head.db directly via the API venv (`python -m ccc_head_api.admin`). Being the operator on the Head
   is the authorization — no session (mirrors `cuttle arm authorize`).
 """
@@ -222,6 +222,10 @@ def user_list() -> None:
 
 def user_remove(username: str) -> None:
     _admin(["remove", username])
+
+
+def user_reset(username: str) -> None:
+    _admin(["reset", username])
 
 
 def user_names() -> list[str]:

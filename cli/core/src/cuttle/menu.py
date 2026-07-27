@@ -80,6 +80,7 @@ LABELS = {
     "user add": "Create a user",
     "user list": "List users",
     "user remove": "Delete a user",
+    "user reset": "Reset a user's password",
     "arm": "Manage Arms",
     "arm list": "List Arms",
     "arm authorize": "Authorize a new Arm",

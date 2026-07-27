@@ -260,6 +260,24 @@ def remove_user(conn: sqlite3.Connection, username: str) -> bool:
     return cur.rowcount > 0
 
 
+def reset_password(conn: sqlite3.Connection, username: str) -> str | None:
+    """Admin-mediated recovery (Phase 8 loose end — see docs/TODO.md's "No password recovery exists"):
+    a fresh temp password + forced change, exactly like `add_user`, so a forgotten password no longer
+    means delete-and-recreate (which would wipe the User's Karma balance and orphan their Arms).
+
+    Every existing session for this User is killed — a reset is a security action, not just a password
+    change. Returns the plaintext temp password, or None if there is no such user."""
+    user = get_user(conn, username)
+    if user is None:
+        return None
+    temp_pw = secrets.token_urlsafe(12)
+    conn.execute("UPDATE users SET pw_hash=?, must_change_password=1 WHERE username=?",
+                 (_ph.hash(temp_pw), username))
+    conn.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+    conn.commit()
+    return temp_pw
+
+
 def verify_password(conn: sqlite3.Connection, username: str, password: str) -> sqlite3.Row | None:
     """Return the user row on a correct password, else None. Constant-ish: a missing user still runs
     one hash verify against a dummy so timing doesn't leak existence."""
