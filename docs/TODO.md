@@ -41,7 +41,8 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
   donor consent note. The quickstart should also state plainly that folder upload needs a
   Chromium-based browser (File System Access API / `webkitdirectory` support; decided 2026-07-15 not to
   engineer around Firefox/Safari for now — document the requirement instead), and that the Tide/Demand
-  charts are in **UTC**, not the viewer's local time (`temp/KARMA.md`'s "Resolved" list). → Phase 7.
+  charts are in **UTC**, not the viewer's local time (`temp/KARMA.md`'s "Resolved" list). → **Moved to
+  Phase 9** (2026-07-27): deferred out of the Phase-8 loose-ends pass.
 - **[low — mostly shipped in Phase 6] CLI install/setup UX needs a real pass** (merges 2026-07-15's "CLI install/setup UX" finding with
   the older "Polish: nicer `cuttle setup` UX" item, now deleted below). MVP setup just echoes shell
   commands + apt spew. Wanted: a progress TUI (step list with spinners/checks; rich/textual), quiet by
@@ -62,9 +63,14 @@ grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
   clone in the first place, which makes this more than polish for that audience. Wanted: a real install
   that puts `cuttle` on PATH — symlink into `~/.local/bin`, a `pipx`/`uv tool install`, or a one-line
   curl bootstrap. → Phase 7.
-- **[med] Warning/error message quality, both clients.** No specific bug filed (unlike the `/passwd` 401
-  confusion already fixed, docs/TODO.md's Slice-4 note) — a general pass wanted over CLI and Dashboard
-  error/warning copy before non-expert Users rely on it. → Phase 7.
+- ~~**[med] Warning/error message quality, both clients.**~~ **DONE (Phase 8).** Copy pass across CLI,
+  Dashboard, and Head API: every failure states what broke + the next step, and no longer leaks a raw
+  Python error, httpx class name, bare HTTP status, or internal route path. CLI — `ui.ask_int/ask_float`
+  (wizard re-asks a typo'd number), `ApiError.user_message()` (frames a 5xx, strips the route path,
+  keeps 4xx detail verbatim), runtime-state refusals off `typer.BadParameter`'s usage box, operator
+  flows routed through `ui` with a next step. Dashboard — `api.ts` frames 5xx/network at the funnel,
+  Arms/Recipes/W&B-key silent action failures now surface an inline alert. Head API — slurm 503 stops
+  leaking the command+exception, enroll states the name/device rules, `Spawn` casing.
 
 
 > The items below were found in the Phase-5 frontend grill (2026-07-14, `temp/FRONTEND.md`). **Return**
