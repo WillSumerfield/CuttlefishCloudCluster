@@ -260,16 +260,6 @@ Fix later: have the job push `.out`/`.err` to the Head periodically (background 
 seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
 racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
 
-## setup_arm interleaves apt install with Head enrollment → Phase 7, merged into "CLI install/setup UX" — [effort: low]
-
-`setup_arm` order is: mesh-admission gate (`up_arm` blocks on approval) → **apt install slurmd +
-apptainer + build base.sif** → fetch munge key → slurm-admission gate (`wait_for_admit`) → start
-slurmd. The local install work has no dependency on either Head gate, yet sits between them, so a
-package install runs mid-conversation with the Head. Cleaner: do all local heavy-lifting (install,
-base.sif) as one block either fully before or fully after the enroll/approval exchange. Merged
-2026-07-15 into the "CLI install/setup UX needs a real pass" item at the top of this file — same
-cleanup pass, not a standalone fix.
-
 ## WSL2 Arms: supported, with one permanent limit — [status — no task; permanent limit]
 
 `preflight()` now detects WSL (`/proc/sys/kernel/osrelease` contains `microsoft`) and allows it as an
