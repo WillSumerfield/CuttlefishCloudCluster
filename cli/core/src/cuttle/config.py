@@ -18,8 +18,8 @@ NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"
 MUNGE_PKG = "munge"  # auth; distro version fine
 
 # --- pinned base Pod image (built from a def: pytorch image + pip wandb) ---
-BASE_IMAGE_DOCKER = "pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime"
-WANDB_PKG = "wandb==0.28.0"
+BASE_IMAGE_DOCKER = "pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime"
+WANDB_PKG = "wandb==0.28.1"
 
 # --- cluster identity ---
 CLUSTER_NAME = "ccc"
