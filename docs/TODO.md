@@ -35,24 +35,22 @@ injected into every Spawn that User submits, from *either* client. Consequence t
 the Head now stores a third-party secret. It must be **encrypted at rest** — unlike a password it has to
 be recoverable in plaintext to be used, so it cannot just be argon2'd like `pw_hash`.
 
-## Before full release: revisit pinned system-package versions — [effort: med]
+## Pinned system-package versions: still need a long-term update cadence — [effort: low]
 
 MVP `cuttle setup --local` pins the system stack to exact versions (reproducibility over
-freshness — see MVP plan). Bump these to current, re-test the single-node loop, and decide the
-long-term update cadence (and eventually mirror/snapshot apt sources so pins can't rot).
+freshness — see MVP plan). Bumped to current 2026-07-27 and re-tested the single-node loop
+(`cuttle run` → GPU matmul + wandb import inside the rebuilt `base.sif`, exit 0).
+
+`slurm-wlm`, `nvidia-container-toolkit`, and `apptainer` were already at the newest version their
+configured repos serve — nothing to bump there right now. Only the base image and `wandb` had
+newer releases: `pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime` → `2.13.0-cuda13.0-cudnn9-runtime`
+(same CUDA major, matches the installed driver/toolkit), `wandb==0.28.0` → `0.28.1`.
 
 Target: Ubuntu 24.04 (noble), amd64.
 
-| Package | Pinned | Source |
-|---|---|---|
-| `slurm-wlm` | `23.11.4-1.2ubuntu5` | noble base repos |
-| `apptainer` | _unpinned (PPA latest)_ | `ppa:apptainer/ppa` — keeps only its newest build, so an exact pin breaks on every release |
-| `nvidia-container-toolkit` | `1.19.1-1` | NVIDIA `libnvidia-container` stable deb repo |
-| base `.sif` image | `pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime` | Docker Hub (def bootstrap) |
-| `wandb` (in base `.sif`) | `wandb==0.28.0` | pip in def `%post` |
-
-Pin-rot note: PPA + NVIDIA repos prune old versions. If a pin becomes uninstallable
-(`package not found`), bump to the current published version and re-test.
+Still open: decide the long-term update cadence, and eventually mirror/snapshot apt sources so
+pins can't rot. Pin-rot note unchanged: PPA + NVIDIA repos prune old versions, so an uninstallable
+pin (`package not found`) means bump to current and re-test.
 
 ## Feature: NVML-enabled Slurm (GPU autodetect / affinity / type / multi-GPU count) — [effort: high]
 
