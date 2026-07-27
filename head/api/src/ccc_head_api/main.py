@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, karma, slurm
+from . import db, karma, ratelimit, slurm
 from . import spawns as spawns_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
@@ -308,20 +308,35 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
 
 # --- auth routes ------------------------------------------------------------
 
+def _human_wait(seconds: float) -> str:
+    seconds = int(seconds) + 1
+    return f"{(seconds + 59) // 60}m" if seconds >= 60 else f"{seconds}s"
+
+
 @api.post("/login")
 def login(req: LoginRequest, request: Request, response: Response) -> dict:
     """Verify credentials → mint a session. Returns the bearer token (CLI) and sets the HttpOnly
-    cookie (browser). A `must_change_password` user still gets a session so it can call /passwd."""
+    cookie (browser). A `must_change_password` user still gets a session so it can call /passwd.
+
+    Throttled (Phase 8 loose end — see ratelimit.py): blocked by source IP or by the attempted
+    username, whichever trips first, so neither one attacker IP spraying usernames nor a distributed
+    guess against one account slips through."""
+    ip = request.client.host if request.client else "?"
+    wait = ratelimit.check(f"ip:{ip}", f"user:{req.username}")
+    if wait is not None:
+        raise HTTPException(429, f"too many failed attempts — try again in {_human_wait(wait)}",
+                            headers={"Retry-After": str(int(wait) + 1)})
     with db.connect() as conn:
         user = db.verify_password(conn, req.username, req.password)
         if user is None:
+            ratelimit.record_failure(f"ip:{ip}", f"user:{req.username}")
             # The one security event most worth a log: it feeds the rate-limiting item (Phase 8) and is
             # the signal a credential is being guessed. The attempted username and source, never the
             # password. WARNING, not ERROR — a fat-fingered password is not an incident.
-            log.warning("login FAILED user=%s from %s", req.username,
-                        request.client.host if request.client else "?")
+            log.warning("login FAILED user=%s from %s", req.username, ip)
             raise HTTPException(401, "bad username or password")
         token = db.create_session(conn, user["id"])
+    ratelimit.clear(f"ip:{ip}", f"user:{req.username}")
     log.info("login OK user=%s", user["username"])
     response.set_cookie(_COOKIE_NAME, token, max_age=_COOKIE_MAX_AGE, httponly=True,
                         samesite="lax", secure=_COOKIE_SECURE)
@@ -459,9 +474,13 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     try:
         # Placement, pricing and the Attribution row all live in submit_checked, shared with the
         # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
+        # ValueError covers both the unknown-Arm case (Head-local only in practice — `node` can never
+        # reach here, see above) and the per-User concurrent-Spawn cap (Phase 8 loose end).
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta["script"], gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     finally:
         tar_path.unlink(missing_ok=True)
     log.info("submit id=%s by %s (gpu=%d vram=%d min=%d)", job_id, user["username"], gpus, vram_gb,
