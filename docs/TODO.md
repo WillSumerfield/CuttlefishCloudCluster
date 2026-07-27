@@ -202,23 +202,11 @@ real donor ever trips it.
 Not in scope: the coordinator's own rule (`allow in on tailscale0 to any port 8080`) — that depends
 on how the coordinator gets exposed, which is the reachability item above.
 
-## `cuttle run` on a remote Arm — RESOLVED by ④ (stage-in/out)
+## Remote-Arm sbatch wrapper litters `/tmp/ccc-<jobid>.slurm` on the node — [effort: low]
 
-Was: `spawns.py` rendered one sbatch script whose paths were the *submitter's*, but the script runs
-on whichever node Slurm picks — `--output`/`--error`/`.exit`/`python <script>` all resolved to Head
-paths absent on an Arm (`slurmstepd: couldn't chdir`).
-
-Now: the job branches on `[ -d "$staging_dir" ]` — "are the project files already on this node?" The
-Head copies the upload into node-local scratch (never running in the served [project] tree) and writes
-results straight to the Spawn dir. A remote Arm stages the project IN from the Head's mesh-bound rsync
-daemon into `/tmp` scratch, runs, and stages out/err/exit/outputs BACK to the daemon's [spawns] module.
-Both produce the same Head-side layout `/var/lib/ccc/head/spawns/<id>/{out,err,exit,outputs}` (owned by
-the Mantle; read back over the API). Results are collected from `$CCC_OUT` (injected into the Pod) —
-narrows the roadmap's "`$CCC_OUT` / `./outputs`" to just `$CCC_OUT`, so per-Spawn isolation (layout A)
-holds and nothing writes into the source tree.
-
-Leftover litter, not blocking: the sbatch wrapper's own stdout/stderr go to `/tmp/ccc-<jobid>.slurm`
-on the node (rsync diagnostics) and are never reaped.
+Leftover from ④'s stage-in/out fix: the sbatch wrapper's own stdout/stderr (rsync diagnostics, not
+the Spawn's) write to `/tmp/ccc-<jobid>.slurm` on whichever node ran it, and nothing reaps them.
+Not blocking — just unbounded litter on donor boxes over time.
 
 ## Phase 4: Sweep staging reuses one dir across trials — [effort: med]
 
