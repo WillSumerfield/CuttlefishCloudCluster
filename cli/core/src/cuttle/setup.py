@@ -105,6 +105,9 @@ def write_slurm_config(mesh_ip: str) -> None:
     nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]
     _write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
+    # The Head's own slurmd (its co-located Arm) runs Spawns too, so the scratch-reclaim epilog its
+    # slurm.conf now references must exist here as well as on every Arm (setup_arm writes it there).
+    _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
 
 
 def make_registry_dir() -> None:
@@ -460,6 +463,9 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
+    # Configless serves the conf (which names Epilog=) but NOT the script it points at — that must be on
+    # the node, written before slurmd starts, or the first Spawn's epilog fails and drains this Arm.
+    _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
     _write_root_file(config.SLURMD_DROPIN,
                      enroll.slurmd_dropin(node_name, info["ctld_addr"], system.gpu_vram_mb()))
     run(["systemctl", "daemon-reload"], sudo=True)  # the drop-in rewrites slurmd's ExecStart

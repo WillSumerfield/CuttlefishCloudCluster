@@ -122,6 +122,28 @@ class TestSlurmConf:
         assert "Weight=1" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
 
 
+class TestScratchEpilog:
+    """slurmd reclaims a Spawn's node-local scratch after it ends, HOWEVER it ended — the reclaim the
+    job script's own `trap ... EXIT` can't do, since SIGKILL (OOM, `scancel -9`, a Phase-2 Retract)
+    bypasses the trap. The conf names the epilog; the node holds the script."""
+
+    def test_conf_declares_the_epilog(self, fake_host):
+        assert directives(templates.render_slurm_conf("100.99.0.1"))["Epilog"] \
+            == str(config.SLURM_EPILOG)
+
+    def test_epilog_removes_the_jobs_scratch_in_both_branches(self):
+        """Both job-script branches: a remote Arm scratches in /tmp; the Head's co-located Arm under its
+        state dir. One epilog runs on every node, so it targets both, keyed by the job id."""
+        script = templates.render_epilog()
+        assert 'rm -rf "/tmp/ccc-$SLURM_JOB_ID"' in script
+        assert f'"{config.HEAD_SCRATCH_DIR}/$SLURM_JOB_ID"' in script
+
+    def test_epilog_always_exits_zero(self):
+        """A non-zero epilog DRAINS the node. A stale or already-gone scratch dir must never do that, so
+        the script must end in an unconditional success."""
+        assert templates.render_epilog().rstrip().endswith("exit 0")
+
+
 class TestSlurmdDropin:
     """A donor Arm's slurmd flags. The node is *dynamic*, so this string is re-sent to slurmctld on
     every single registration — it is the only durable home for the node's Feature."""

@@ -25,6 +25,10 @@ ReturnToService=2
 
 SlurmUser=slurm
 SlurmdUser=root
+# Reclaim a Spawn's node-local scratch after it ends, HOWEVER it ended (the job's own trap misses
+# SIGKILL). Served configless like the rest of this file; the script itself is written on every node by
+# `cuttle setup`. Runs as root (SlurmdUser), at job end, on the node that ran the Spawn.
+Epilog={epilog}
 StateSaveLocation={state}
 SlurmdSpoolDir={spool}
 SlurmctldPidFile=/run/slurmctld.pid
@@ -236,6 +240,7 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1) -> str:
         mesh_ip=mesh_ip,
         max_nodes=config.MAX_NODE_COUNT,
         tree_width=config.TREE_WIDTH,
+        epilog=str(config.SLURM_EPILOG),
         base=config.PRIORITY_BASE,
         age_weight=config.PRIORITY_WEIGHT_AGE,
         max_age=config.PRIORITY_MAX_AGE,
@@ -248,6 +253,24 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1) -> str:
         spool=config.SLURMD_SPOOL_DIR,
         logdir=config.SLURM_LOG_DIR,
     )
+
+
+EPILOG_TMPL = """\
+#!/bin/bash
+# CCC Spawn epilog. Rendered by `cuttle setup`; slurm.conf's Epilog= points here on every node.
+# Reclaims a Spawn's node-local scratch after it ends, HOWEVER it ended. The job script's own
+# `trap ... EXIT` fires on normal exit and ordinary signals, but NOT SIGKILL (OOM-killer, `scancel -9`,
+# a Phase-2 Retract) — which would otherwise orphan the scratch until reboot. slurmd runs this at job
+# end regardless. The two roots cover both branches of the job script (a remote Arm scratches in /tmp;
+# the Head's co-located Arm under its state dir); the absent one is a harmless no-op on the other node.
+# ALWAYS exit 0: a non-zero epilog drains the node, and a stale/missing dir must never do that.
+rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
+exit 0
+"""
+
+
+def render_epilog() -> str:
+    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR)
 
 
 def render_bench_sbatch(node: str, head_mesh_ip: str) -> str:

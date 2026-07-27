@@ -96,6 +96,9 @@ TREE_WIDTH = 65533
 # --- Slurm FHS paths (distro-standard) ---
 SLURM_CONF = Path("/etc/slurm/slurm.conf")
 GRES_CONF = Path("/etc/slurm/gres.conf")
+# slurmd runs this on the node after every Spawn, however it ended — the reclaim the job script's own
+# `trap ... EXIT` can't do because SIGKILL (OOM, `scancel -9`, a Phase-2 Retract) bypasses the trap.
+SLURM_EPILOG = Path("/etc/slurm/ccc-epilog.sh")
 SLURM_STATE_DIR = Path("/var/spool/slurmctld")
 SLURMD_SPOOL_DIR = Path("/var/spool/slurmd")
 SLURM_LOG_DIR = Path("/var/log/slurm")
