@@ -108,11 +108,11 @@ injected into every Spawn that User submits, from *either* client. Consequence t
 the Head now stores a third-party secret. It must be **encrypted at rest** — unlike a password it has to
 be recoverable in plaintext to be used, so it cannot just be argon2'd like `pw_hash`.
 
-## `head/web`'s build has no typecheck pass → Phase 7 — [effort: low]
+## ~~`head/web`'s build has no typecheck pass~~ — DONE (Phase 8)
 
-`package.json` runs `vite build` alone (no `tsc`), and `tsc` would have caught the admin-selector bug
-above before it shipped. Add a typecheck step to the build so the next prop-shaped bug doesn't ship
-silently.
+`build` is now `tsc && vite build`, so a type error (e.g. the admin-selector prop bug) fails the build
+instead of shipping silently. Added a standalone `typecheck: tsc --noEmit` for editor/manual runs.
+Code typechecks clean today, so this was config-only.
 
 ## ~~`cuttle history`/`queue` print unbounded output~~ — DONE (Phase 8)
 
