@@ -230,6 +230,10 @@ APPTAINER_CONF = Path("/etc/apptainer/apptainer.conf")
 APPTAINER_NVLIBLIST = Path("/etc/apptainer/nvliblist.conf")
 WSL_LIB_ROOT = "/usr/lib/wsl"  # holds both lib/ and drivers/ — bind the parent, not lib/
 WSL_EXTRA_NVLIB = "libdxcore.so"
+# nvidia-smi on WSL lives here, and this dir is on PATH only in an interactive login shell — so a
+# non-interactive caller (an srun step, a service) can't find it by name. system.nvidia_smi() falls
+# back to this absolute path so the GPU checks don't depend on who invoked them.
+WSL_NVIDIA_SMI = f"{WSL_LIB_ROOT}/lib/nvidia-smi"
 NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 
 # --- mesh (Phase 1 substrate: self-hosted Headscale coordinator + Tailscale client) ---

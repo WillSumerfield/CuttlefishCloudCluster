@@ -1,12 +1,13 @@
 """Shell + host-detection helpers."""
 
+import os
 import platform
 import shutil
 import socket
 import subprocess
 import sys
 
-from . import ui
+from . import config, ui
 
 # --- sudo credential priming ------------------------------------------------
 # `sudo` reads its password straight from the controlling tty, so its own prompt bypasses Rich
@@ -127,6 +128,17 @@ def real_memory_mb() -> int:
     return kb // 1024 - 1024
 
 
+def nvidia_smi() -> str:
+    """Path to the `nvidia-smi` binary. On PATH everywhere native; on WSL the binary sits in
+    /usr/lib/wsl/lib, which is on PATH only in an interactive login shell — so a non-interactive caller
+    (an srun step, a service) can't find it by name and the GPU checks would fail for a reason that has
+    nothing to do with the GPU. Fall back to the known WSL location. If it's on neither, return the bare
+    name so the caller fails loudly (a native box with no driver — a genuine failure, as before)."""
+    return (shutil.which("nvidia-smi")
+            or (config.WSL_NVIDIA_SMI if is_wsl() and os.path.exists(config.WSL_NVIDIA_SMI)
+                else "nvidia-smi"))
+
+
 def gpu_vram_mb() -> int:
     """This box's GPU memory, in MiB. Becomes the node's `vramN` Slurm feature — the thing a Spawn's
     `--vram` is matched against.
@@ -137,7 +149,7 @@ def gpu_vram_mb() -> int:
     anyway (unlike throughput, which is exactly why Power is measured and VRAM is merely read).
     """
     out = subprocess.run(
-        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        [nvidia_smi(), "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
         check=True, capture_output=True, text=True).stdout
     return int(out.split("\n")[0].strip())
 

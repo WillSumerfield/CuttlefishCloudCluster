@@ -38,7 +38,7 @@ def preflight(role: str) -> None:
         assert role == "arm", "WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven)"
         print("cuttle: WSL2 detected. Supported as an Arm, with one permanent limit: /dev/dxg is a\n"
               "        single node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here.")
-    run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"])
+    run([system.nvidia_smi(), "--query-gpu=name,driver_version", "--format=csv,noheader"])
 
 
 def configure_apptainer_wsl() -> None:
