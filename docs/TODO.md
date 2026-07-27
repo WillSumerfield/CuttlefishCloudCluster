@@ -7,11 +7,16 @@ and `CONTEXT.md` — each item below was confirmed absent from all three (not de
 just never written down). Direction below is a first pass, not a locked design; each item gets its own
 grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
 
-- **[med] No backup/restore story for cluster state.** Widened 2026-07-15 from head.db alone: `arms.json`
-  (the munge-owned Arm registry — owner names, admitted status) and **Headscale's own sqlite DB** (node
-  keys, preauth keys) are equally un-backed-up. Losing Headscale's state means every Arm must physically
-  re-enroll, so backing up head.db alone (Users, sessions, Karma ledger, spawn/attribution history)
-  still leaves a Head-disk failure evicting the whole fleet. → Phase 7.
+- ~~**[med] No backup/restore story for cluster state.**~~ **DONE (Phase 8, 2026-07-27).** New
+  `cuttle backup create`/`cuttle backup restore`, plus a nightly `ccc-backup.timer` (setup_head-
+  installed, keeps the newest 3). `create` bundles head.db + arms.json + Headscale's own db.sqlite
+  into one tarball under `/var/backups/ccc` (root:root 0700 — the bundle holds live secrets); the two
+  live WAL dbs are captured via SQLite's own online-backup API, so the Head API/Karma tick/Headscale
+  never stop for a backup. `restore` is all-or-nothing: stops the Enroll API, Head API, Karma tick,
+  and Headscale, replaces all three files at the right owner/perms, restarts. Getting an archive off
+  this box is a manual admin step (scp/rsync over the personal Tailscale), not cuttle's job. Design
+  in `temp/ROADMAP.md`'s Phase 8 section; logic + tests in `cli/core/src/cuttle/backup.py` /
+  `tests/test_backup.py`.
 - ~~**[med] The Head API doesn't log.**~~ **DONE (Phase 8).** `ccc.api` logger (stdlib → stdout →
   journald): a request-middleware access line carrying the authed username + latency (path only — no
   secrets), an unhandled-error sink (ERROR + traceback → clean 500), and security/domain events (login
