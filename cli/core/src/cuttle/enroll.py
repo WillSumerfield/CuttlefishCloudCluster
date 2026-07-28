@@ -81,16 +81,21 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str) -> dict
 def wait_for_admit(head_mesh_ip: str, node_name: str, timeout_s: int = 900) -> None:
     """Block until an operator runs `cuttle arm admit` on the Head. Until then the Head has no
     gres.conf line for us, so starting slurmd would register a node with no GPU."""
-    print(f"\ncuttle: waiting to be admitted. On the Head, run:  cuttle arm admit {node_name}")
+    # ui.say, not print: this is the one instruction the donor MUST act on, and stdout is held back
+    # until the whole flow ends (see ui.fullscreen) — printed, it would surface a quarter of an hour
+    # late, next to the timeout it caused.
+    ui.say(f"  [muted]on the Head, run:  cuttle arm admit {node_name}[/muted]")
     deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        with urllib.request.urlopen(f"{headapi.enroll_url(head_mesh_ip)}/arms/{node_name}", timeout=10) as r:
-            if json.load(r)["admitted"]:
-                print("cuttle: admitted.")
-                return
-        time.sleep(5)
-    raise ui.abort(f"not admitted within {timeout_s}s",
-                   next_step=f"run `cuttle arm admit {node_name}` on the Head to finish enrolling")
+    # The abort lives INSIDE the step, or timing out would tick the row ✓ on its way past.
+    with ui.step("Waiting to be admitted"):
+        while time.time() < deadline:
+            with urllib.request.urlopen(
+                    f"{headapi.enroll_url(head_mesh_ip)}/arms/{node_name}", timeout=10) as r:
+                if json.load(r)["admitted"]:
+                    return
+            time.sleep(5)
+        raise ui.abort(f"not admitted within {timeout_s}s",
+                       next_step=f"run `cuttle arm admit {node_name}` on the Head to finish enrolling")
 
 
 def check_head_can_reach_us(head_mesh_ip: str) -> None:
@@ -105,7 +110,7 @@ def check_head_can_reach_us(head_mesh_ip: str) -> None:
     with urllib.request.urlopen(f"{headapi.enroll_url(head_mesh_ip)}/probe", timeout=20) as r:
         res = json.load(r)
     if res["reachable"]:
-        print(f"cuttle: Head can reach this Arm at {res['peer']}:{res['port']} — good")
+        ui.say(f"  [muted]Head reaches this Arm at {res['peer']}:{res['port']}[/muted]")
         return
     raise ui.abort(
         f"the Head cannot reach this Arm at {res['peer']}:{res['port']} ({res.get('error')}).\n"

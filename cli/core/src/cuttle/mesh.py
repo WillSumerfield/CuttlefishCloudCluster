@@ -397,13 +397,13 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
 
     if not re_enroll and joined_to(coordinator):
         ip = tailscale_ip()
-        print(f"cuttle: already on the mesh at {ip} via {coordinator} — skipping join")
+        ui.say(f"  [muted]already on the mesh at {ip} via {coordinator} — skipping join[/muted]")
         return ip
 
     # Unconditional: `rm -f` of an absent state file is a no-op, and testing for it would depend on
     # the root-owned state dir staying world-readable.
     why = "--re-enroll" if re_enroll else "not joined to this coordinator"
-    print(f"cuttle: starting from a clean mesh identity — {why}")
+    ui.say(f"  [muted]starting from a clean mesh identity — {why}[/muted]")
     _wipe_local_state()
     start_ccc_tailscaled(write_unit)
 

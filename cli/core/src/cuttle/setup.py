@@ -30,8 +30,11 @@ def preflight(role: str) -> None:
     all verified on an RTX 4090) but an unproven Head: headscale and slurmctld have never run there,
     and a Head is expected to stay up."""
     rel = system.os_release()
-    print(f"host={system.hostname()} os={rel.get('PRETTY_NAME')} "
-          f"cpus={system.cpu_count()} mem={system.real_memory_mb()}MB")
+    # ui.say, not print: inside a section this is a row of the box. print goes to stdout, which
+    # `ui.fullscreen` holds back until the whole flow is over — so the box would sit empty while the
+    # facts about this machine waited to be replayed at the end.
+    ui.say(f"  [muted]host={system.hostname()} os={rel.get('PRETTY_NAME')} "
+           f"cpus={system.cpu_count()} mem={system.real_memory_mb()}MB[/muted]")
     # Gating a supported platform, not an internal invariant — so ui.abort (a clean ✗ + a next step),
     # not `assert` (which prints a bare one-liner and vanishes entirely under `python -O`).
     if not system.is_native_linux_x86():
@@ -44,8 +47,8 @@ def preflight(role: str) -> None:
         if role != "arm":
             raise ui.abort("WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven here)",
                            next_step="run `cuttle setup --arm` on this box, and host the Head elsewhere")
-        print("cuttle: WSL2 detected. Supported as an Arm, with one permanent limit: /dev/dxg is a\n"
-              "        single node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here.")
+        ui.say("  [muted]WSL2 — supported as an Arm, with one permanent limit: /dev/dxg is a single "
+               "device node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here[/muted]")
     run([system.nvidia_smi(), "--query-gpu=name,driver_version", "--format=csv,noheader"])
 
 
@@ -61,8 +64,8 @@ def configure_apptainer_wsl() -> None:
        f"echo 'bind path = {config.WSL_LIB_ROOT}' >> {config.APPTAINER_CONF}", sudo=True)
     sh(f"grep -qxF '{config.WSL_EXTRA_NVLIB}' {config.APPTAINER_NVLIBLIST} || "
        f"echo '{config.WSL_EXTRA_NVLIB}' >> {config.APPTAINER_NVLIBLIST}", sudo=True)
-    print(f"cuttle: WSL Arm — Apptainer now binds {config.WSL_LIB_ROOT} and injects "
-          f"{config.WSL_EXTRA_NVLIB}; `--nv` behaves as on native Linux")
+    ui.say(f"  [muted]WSL Arm — Apptainer binds {config.WSL_LIB_ROOT} and injects "
+           f"{config.WSL_EXTRA_NVLIB}; --nv now behaves as on native Linux[/muted]")
 
 
 def add_repos() -> None:
@@ -93,7 +96,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG) -> None:
     added = sorted(system.installed_packages() - before)
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config.APT_MANIFEST.write_text("\n".join(added) + "\n" if added else "")
-    print(f"recorded {len(added)} newly-installed packages → {config.APT_MANIFEST}")
+    ui.say(f"  [muted]recorded {len(added)} newly-installed packages → {config.APT_MANIFEST}[/muted]")
 
 
 def write_slurm_config(mesh_ip: str) -> None:
@@ -203,7 +206,7 @@ def build_base_sif() -> None:
     run(["install", "-d", "-o", getpass.getuser(), "-g", getpass.getuser(),
          str(config.CCC_IMAGES_DIR)], sudo=True)
     if config.CCC_SIF.exists():
-        print(f"base.sif exists ({config.CCC_SIF}) — skipping build")
+        ui.say(f"  [muted]base.sif exists ({config.CCC_SIF}) — skipping build[/muted]")
         return
     def_file = config.CCC_IMAGES_DIR / "base.def"
     def_file.write_text(templates.render_base_def())
@@ -289,8 +292,8 @@ ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
     _write_root_file(config.DASH_FORWARD_SERVICE_UNIT, service_unit)
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
-    print(f"cuttle: WSL dashboard forward up — open https://localhost:{config.HEAD_API_PORT}/ "
-          f"in your Windows browser (self-signed cert: click through the warning once)")
+    ui.result("dashboard (Windows)", f"https://localhost:{config.HEAD_API_PORT}/")
+    ui.say("  [muted]self-signed cert — click through the browser warning once[/muted]")
 
 
 def make_user_dirs() -> None:
@@ -434,10 +437,11 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     settings.prompt_wandb()
     preflight("arm")
 
-    mesh_ip = mesh.up_arm(t["coordinator"], node_name, t["authkey"], _write_root_file,
-                          re_enroll=re_enroll)
-    print(f"cuttle: Arm on mesh as {node_name} — mesh IP {mesh_ip}")
-    system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
+    with ui.step("Joining the mesh"):
+        mesh_ip = mesh.up_arm(t["coordinator"], node_name, t["authkey"], _write_root_file,
+                              re_enroll=re_enroll)
+        system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
+    ui.say(f"  [muted]on the mesh as {node_name} — {mesh_ip}[/muted]")
 
     # Enroll IMMEDIATELY, before the long apt run. Two reasons, both about timing:
     #   1. `cuttle arm authorize` is blocked on the Head waiting for exactly this POST. Doing it after
@@ -448,7 +452,8 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # /dev/nvidia0 natively, /dev/dxg under WSL2 — which the Head needs to author our gres.conf line,
     # and returns the munge key. We hold that key in memory: writing it needs the `munge` user, which
     # apt has not created yet.
-    info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
+    with ui.step("Enrolling with the Head"):
+        info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
 
     # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
     # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
@@ -457,12 +462,13 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     if not info["admitted"]:
         enroll.wait_for_admit(t["mesh_ip"], node_name)
 
-    add_repos()
-    install_packages(config.SLURMD_PKG)
-    if system.is_wsl():
-        configure_apptainer_wsl()  # after apptainer is installed, before base.sif is built
-
-    enroll.write_munge_key(info["munge_key"])  # now that `munge` exists to own it
+    with ui.step("Adding package repositories"):
+        add_repos()
+    with ui.step("Installing Slurm, munge and Apptainer"):
+        install_packages(config.SLURMD_PKG)
+        if system.is_wsl():
+            configure_apptainer_wsl()  # after apptainer is installed, before base.sif is built
+        enroll.write_munge_key(info["munge_key"])  # now that `munge` exists to own it
 
     data = settings.load()
     data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
@@ -473,25 +479,35 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # uid, which is the Head API's pinned CCC_UID. Without this account a Spawn scheduled onto this Arm
     # would run as an unknown numeric uid. Its Pod image must be readable by it, at the same path the
     # Head renders into the job script.
-    provision_mantle()
-    build_base_sif()
+    with ui.step("Provisioning the Mantle"):
+        provision_mantle()
+    with ui.step("Building the Pod image"):
+        build_base_sif()
 
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
+    with ui.step("Starting slurmd"):
+        _start_slurmd(node_name, info["ctld_addr"])
+    with ui.step("Checking the Head can reach us"):
+        # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
+        enroll.check_head_can_reach_us(t["mesh_ip"])
+
+    if system.is_wsl():
+        with ui.step("Forwarding the Dashboard to Windows"):
+            install_wsl_dashboard_forward(t["mesh_ip"])  # browse the Head via localhost
+
+    ui.result("arm", node_name)
+    ui.result("mesh ip", mesh_ip)
+    ui.result("check it", "run `sinfo` on the Head")
+
+
+def _start_slurmd(node_name: str, ctld_addr: str) -> None:
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     # Configless serves the conf (which names Epilog=) but NOT the script it points at — that must be on
     # the node, written before slurmd starts, or the first Spawn's epilog fails and drains this Arm.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
     _write_root_file(config.SLURMD_DROPIN,
-                     enroll.slurmd_dropin(node_name, info["ctld_addr"], system.gpu_vram_mb()))
+                     enroll.slurmd_dropin(node_name, ctld_addr, system.gpu_vram_mb()))
     run(["systemctl", "daemon-reload"], sudo=True)  # the drop-in rewrites slurmd's ExecStart
     run(["systemctl", "enable", "slurmd"], sudo=True)
     run(["systemctl", "restart", "slurmd"], sudo=True)
-
-    # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
-    enroll.check_head_can_reach_us(t["mesh_ip"])
-
-    if system.is_wsl():
-        install_wsl_dashboard_forward(t["mesh_ip"])  # let Windows browse the dashboard via localhost
-
-    print(f"\ncuttle: Arm '{node_name}' enrolled. Check `sinfo` on the Head.")
