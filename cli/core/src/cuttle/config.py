@@ -118,6 +118,9 @@ SLURMD_PORT = 6818
 # so the drop-in states the whole command and keeps the space-separated --conf intact.
 SLURMD_DROPIN = Path("/etc/systemd/system/slurmd.service.d/ccc.conf")
 MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, never expires
+# The Head mints that key with this (see setup.ensure_munge_key). munge 0.5.15 (noble) ships
+# `mungekey`; the older `create-munge-key` is gone, and we are pinned to 24.04.
+MUNGEKEY_BIN = "/usr/sbin/mungekey"
 
 # --- Shared API package venv (Phase 1) ---
 # Both head-side FastAPI apps live in one package (`ccc_head_api`) and run from this one venv, kept

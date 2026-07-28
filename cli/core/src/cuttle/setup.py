@@ -173,7 +173,30 @@ def provision_head_auth() -> None:
     auth.seed_admin(admin_user)  # registers the one-time temp password as a result
 
 
+def ensure_munge_key() -> None:
+    """Mint the cluster's munge key if this Head has none. **Head only** — an Arm is *given* this key
+    over /enroll (enroll.write_munge_key); a second one would be a second cluster.
+
+    Setup used to leave this entirely to the munge package's postinst, which creates a key on a FRESH
+    install and never again. That assumption survives exactly one lifecycle: `cuttle teardown` deletes
+    the key (correctly — a departed node must not keep the cluster secret) but leaves munge installed
+    whenever the package predates CCC, since the apt manifest only records what setup itself added. The
+    next `apt-get install munge` is then a no-op, no postinst runs, and munge dies on a missing keyfile,
+    taking slurmctld and slurmd with it — three failed units for one absent file.
+
+    `test -s` under sudo rather than Path.exists(): /etc/munge is `drwx------ munge munge`, and pathlib
+    raises PermissionError instead of answering False when it cannot traverse (see monitor.py).
+    """
+    if run(["test", "-s", str(config.MUNGE_KEY)], sudo=True, check=False).returncode == 0:
+        return
+    run([config.MUNGEKEY_BIN, "--create", "--keyfile", str(config.MUNGE_KEY)], sudo=True)
+    run(["chown", "munge:munge", str(config.MUNGE_KEY)], sudo=True)
+    run(["chmod", "0400", str(config.MUNGE_KEY)], sudo=True)
+    ui.say(f"  [muted]minted a new cluster munge key → {config.MUNGE_KEY}[/muted]")
+
+
 def start_daemons() -> None:
+    ensure_munge_key()  # munge cannot start without it, and slurmctld/slurmd cannot start without munge
     # enable = start on boot; restart = start if down, else reload new config (idempotent re-run).
     run(["systemctl", "enable", "munge", "slurmctld", "slurmd"], sudo=True)
     run(["systemctl", "restart", "munge", "slurmctld", "slurmd"], sudo=True)
