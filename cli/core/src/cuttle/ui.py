@@ -892,7 +892,7 @@ def _tick_stop() -> None:
 # --- sections ---------------------------------------------------------------
 
 BOX_MAX = 96   # a box wider than this is harder to read, not more informative
-BOX_ROWS = 20  # and one taller than this is mostly empty: steps scroll, they do not accumulate
+BOX_ROWS = 22  # and one taller than this is mostly empty: steps scroll, they do not accumulate
 
 
 _FRAME = None                          # the open _Frame, if any

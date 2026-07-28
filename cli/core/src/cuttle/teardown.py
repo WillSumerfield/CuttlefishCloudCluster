@@ -125,12 +125,12 @@ def purge_packages() -> None:
     if config.APT_MANIFEST.exists():
         pkgs = config.APT_MANIFEST.read_text().split()
         if not pkgs:
-            print("apt manifest empty — nothing setup installed; skipping purge")
+            ui.say("  [muted]apt manifest empty — setup installed nothing; skipping the purge[/muted]")
             return
     else:
         pkgs = _PACKAGES
-        print("no apt manifest (pre-manifest setup?) — purging only the 4 explicit packages, "
-              "no autoremove; run `setup --local` once to record a manifest for exact teardown")
+        ui.say("  [muted]no apt manifest (pre-manifest setup?) — purging only the 4 explicit "
+               "packages, no autoremove[/muted]")
     run(["apt-get", "purge", "-y", *pkgs], sudo=True, check=False)
 
 
@@ -157,6 +157,27 @@ def remove_tls() -> None:
     run(["rm", "-rf", str(config.CCC_TLS_DIR)], sudo=True, check=False)
 
 
+def _summarise(what: str, keep_packages: bool, kept_images: bool = True,
+               kept_tls: bool | None = None) -> None:
+    """What the run actually did — as results, not screen output.
+
+    The box is erased when it closes, so a `print` inside it is either overdrawn or (under the
+    alternate screen) held back and replayed detached from the thing it described. Results are the
+    mechanism for outliving the box: they are printed in a panel once the terminal is handed back.
+
+    `kept_tls=None` means this role never had a cert to keep — only the Head mints one.
+    """
+    ui.result("torn down", what)
+    kept = [label for label, keep in (("packages + repos", keep_packages),
+                                      ("base.sif", kept_images),
+                                      ("the Head's TLS cert", kept_tls)) if keep]
+    ui.result("kept", ", ".join(kept) if kept else "nothing — this box is clean")
+    if kept_tls is False:
+        # Every client PINNED that cert. The next setup mints a different one and every client
+        # refuses to connect until it re-pins — worth saying at the moment it becomes true.
+        ui.result("clients", "must re-pin: the TLS cert is gone, so the next setup mints a new one")
+
+
 # --- Arm-only teardown -------------------------------------------------------
 
 def stop_arm_daemons() -> None:
@@ -174,8 +195,8 @@ def undo_apptainer_wsl() -> None:
         sudo=True, check=False)
     run(["sed", "-i", f"/^{config.WSL_EXTRA_NVLIB}$/d", str(config.APPTAINER_NVLIBLIST)],
         sudo=True, check=False)
-    print(f"cuttle: reverted WSL Apptainer config ({config.WSL_LIB_ROOT} bind + "
-          f"{config.WSL_EXTRA_NVLIB})")
+    ui.say(f"  [muted]reverted the WSL Apptainer config ({config.WSL_LIB_ROOT} bind + "
+           f"{config.WSL_EXTRA_NVLIB})[/muted]")
 
 
 def remove_wsl_dashboard_forward() -> None:
@@ -218,23 +239,30 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
 
 
 def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
-    stop_arm_daemons()
-    _leave_ccc_mesh()
-    remove_slurm_config()
-    undo_apptainer_wsl()
-    remove_wsl_dashboard_forward()
-    remove_munge_key()
-    remove_mantle()  # created by setup_arm.provision_mantle
+    with ui.step("Stopping Slurm and munge"):
+        stop_arm_daemons()
+    with ui.step("Leaving the mesh"):
+        _leave_ccc_mesh()
+    with ui.step("Removing Slurm's config and this node's integration"):
+        remove_slurm_config()
+        undo_apptainer_wsl()
+        remove_wsl_dashboard_forward()
+    with ui.step("Removing the cluster key and the Mantle account"):
+        remove_munge_key()
+        remove_mantle()  # created by setup_arm.provision_mantle
     if not keep_packages:
-        purge_packages()
-        remove_repos()
-    remove_user_dirs()          # ~/.ccc always (see teardown_local)
-    if all_:
-        remove_images()          # base.sif kept unless --all — multi-GB, and in /opt, not ~/.ccc
-    print("\ncuttle: Arm torn down (~/.ccc removed; left the mesh; its Head-side node is now stale — "
-          "reap with `cuttle arm remove <name>` or let re-enrollment do it)"
-          + (" (packages/repos kept)" if keep_packages else "")
-          + (" (base.sif removed)" if all_ else " (base.sif kept)"))
+        with ui.step("Purging packages and repositories"):
+            purge_packages()
+            remove_repos()
+    with ui.step("Removing this box's CCC state"):
+        remove_user_dirs()      # ~/.ccc always (see teardown_local)
+        if all_:
+            remove_images()     # base.sif kept unless --all — multi-GB, and in /opt, not ~/.ccc
+    _summarise("Arm", keep_packages, kept_images=not all_)
+    # Not hygiene — see `teardown_arm`: the stale Head-side node BLOCKS re-enrolling this box, so it
+    # is the one thing the operator must still do, and it belongs with the results rather than in a
+    # box that erases itself.
+    ui.result("still to do", "on the Head: `cuttle arm remove <name>` (or let re-enrollment reap it)")
 
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
@@ -244,26 +272,29 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
 
 
 def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
-    stop_daemons()
-    remove_enroll_api()
-    remove_head_api()
-    remove_karma()
-    remove_backup()
-    remove_rsyncd()
-    remove_mesh(keep_packages=keep_packages)
-    remove_slurm_config()
+    with ui.step("Stopping the cluster's services"):
+        stop_daemons()
+    with ui.step("Removing the Head's services"):
+        remove_enroll_api()
+        remove_head_api()
+        remove_karma()
+        remove_backup()
+        remove_rsyncd()
+    with ui.step("Tearing down the mesh"):
+        remove_mesh(keep_packages=keep_packages)
+    with ui.step("Removing Slurm's config and state"):
+        remove_slurm_config()
     if not keep_packages:
-        purge_packages()
-        remove_repos()
-    remove_user_dirs()          # ~/.ccc (session, config, cert pins) always — leaving your login and
+        with ui.step("Purging packages and repositories"):
+            purge_packages()
+            remove_repos()
+    with ui.step("Removing this box's CCC state"):
+        remove_user_dirs()      # ~/.ccc (session, config, cert pins) always — leaving your login and
                                 # pins behind after a teardown is what surprised people
-    if all_:
-        remove_images()          # base.sif is multi-GB and lives in /opt, not ~/.ccc; the Head cert
-        remove_tls()             # is pinned by every client — both kept unless --all
-    print("\ncuttle: local cluster torn down (~/.ccc removed)"
-          + (" (packages/repos kept)" if keep_packages else "")
-          + (" (base.sif + TLS cert removed — clients must re-pin)" if all_
-             else " (base.sif + TLS cert kept)"))
+        if all_:
+            remove_images()     # base.sif is multi-GB and lives in /opt, not ~/.ccc; the Head cert
+            remove_tls()        # is pinned by every client — both kept unless --all
+    _summarise("local cluster", keep_packages, kept_images=not all_, kept_tls=not all_)
 
 
 # --- client-only teardown ----------------------------------------------------
@@ -272,8 +303,12 @@ def teardown_client() -> None:
     """Reverse `setup --client`. A client only ever got ~/.ccc (config, credentials, cert pins) — no
     apt, no mesh, no Slurm, no sudo — so removing that dir is the whole job."""
     with ui.section("Removing client state", lambda: "removed"):
-        remove_user_dirs()
-    print("cuttle: removed ~/.ccc (config, credentials, cert pins).")
+        with ui.step("Removing this box's CCC state"):
+            remove_user_dirs()
+        # Inside the box, deliberately: `_release` drains the facts when the section closes, so a
+        # result registered after it is never printed at all.
+        ui.result("removed", f"{config.CCC_HOME} — config, credentials, cert pins")
+        ui.result("this box", "is a plain machine again; `cuttle login` sets it up")
 
 
 # --- full sweep (any role, unknown/partial state) ----------------------------
@@ -287,23 +322,28 @@ def teardown_full(keep_packages: bool = False) -> None:
     installed, files absent), so the belt-and-suspenders pass is safe on a plain client too."""
     with ui.section("Removing everything CCC", lambda: "removed"):
         system.prime_sudo()     # sudo as the box's first row, before any step rows grow the frame
-        stop_daemons()          # Head services (no-ops where the units never existed)
-        remove_enroll_api()
-        remove_head_api()
-        remove_karma()
-        remove_rsyncd()
-        remove_mesh(keep_packages=keep_packages)
-        stop_arm_daemons()      # Arm bits
-        undo_apptainer_wsl()
-        remove_wsl_dashboard_forward()
-        remove_munge_key()
-        remove_slurm_config()   # shared by both roles
-        remove_mantle()
+        with ui.step("Stopping every CCC service"):
+            stop_daemons()      # Head services (no-ops where the units never existed)
+            stop_arm_daemons()  # Arm bits
+        with ui.step("Removing the Head's services"):
+            remove_enroll_api()
+            remove_head_api()
+            remove_karma()
+            remove_rsyncd()
+        with ui.step("Tearing down the mesh"):
+            remove_mesh(keep_packages=keep_packages)
+        with ui.step("Removing Slurm, the cluster key and the Mantle account"):
+            undo_apptainer_wsl()
+            remove_wsl_dashboard_forward()
+            remove_munge_key()
+            remove_slurm_config()   # shared by both roles
+            remove_mantle()
         if not keep_packages:
-            purge_packages()
-            remove_repos()
-        remove_user_dirs()      # local state — a full sweep always takes it
-        remove_images()
-        remove_tls()
-    print("\ncuttle: swept all CCC state — services, mesh, Slurm, packages, ~/.ccc, base.sif, TLS"
-          + (" (packages/repos kept)" if keep_packages else ""))
+            with ui.step("Purging packages and repositories"):
+                purge_packages()
+                remove_repos()
+        with ui.step("Removing this box's CCC state"):
+            remove_user_dirs()  # local state — a full sweep always takes it
+            remove_images()
+            remove_tls()
+    _summarise("everything CCC", keep_packages, kept_images=False, kept_tls=False)
