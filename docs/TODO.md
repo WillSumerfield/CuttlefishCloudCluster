@@ -235,14 +235,26 @@ served to every Arm over configless. Scope decisions, all deliberate:
 - **No preflight cgroup-version check** — `setup.py`'s WSL/`dxg` warning stays as-is; a symmetric
   cgroup warning waits until the hardware test shows it's needed.
 
-**Remaining, and the only thing left here:** the hardware test — full procedure in
-`temp/CGROUP_HW_TEST.md`. Re-run `cuttle setup --head` and `cuttle setup --arm` (both restart their
-daemons; a plugin change needs a restart, `scontrol reconfigure` won't do it), then two checks decide
-it: a `--gres=gpu:1` job reports a populated `SLURM_JOB_GPUS`, and a job with **no** `--gres` is
-**denied** `/dev/nvidia0` (EPERM). The deny check is the real isolation proof and it works on today's
-one-GPU-per-node fleet. Note cgroup v2 enforces devices via eBPF, so there is no `devices.list` to
-read — behaviour is the only observable. Two Spawns confined to separate slices of one *shared* card
-stays unverifiable until a multi-GPU box exists — a documented gap, not a blocker.
+**Remaining, and the only thing left here:** the hardware test. Re-run `cuttle setup --head` and
+`cuttle setup --arm` (both restart their daemons; a plugin change needs a restart, `scontrol
+reconfigure` won't do it), then two checks decide it:
+
+1. **Allocation sees its GPU.** An `sbatch --gres=gpu:1` job reports a populated `SLURM_JOB_GPUS`.
+   Must be `sbatch`, not `srun`: inside a step that variable is empty by design and `SLURM_STEP_GPUS`
+   carries the value instead, so an `srun` probe fails whether isolation works or not.
+2. **A job with no `--gres` is denied `/dev/nvidia0` (EPERM).** The real isolation proof, and it works
+   on today's one-GPU-per-node fleet. Run it on a **native Linux** Arm only — WSL has no
+   `/dev/nvidia0` at all, so there the open raises `FileNotFoundError`, which is not a denial and must
+   not be read as a pass.
+
+cgroup v2 enforces devices via eBPF, so there is no `devices.list` to read — behaviour is the only
+observable. Two Spawns confined to separate slices of one *shared* card stays unverifiable until a
+multi-GPU box exists — a documented gap, not a blocker.
+
+**Observed so far (2026-07-28), nothing yet proven:** jobs do land in a per-job cgroup on both boxes —
+the Head (v2) shows `job_<id>/step_<n>/user/task_0`, the WSL Arm (v1) shows
+`devices:/slurm_<cluster>/uid_60000/job_<id>/step_<n>/task_0`. Neither check above has been run to a
+verdict yet.
 
 ## Low Karma long jobs get cancelled / Spawn Code Format Solidifcation — [effort: high]
 There should be some disincentive for queuing long jobs when you have very low karma. Jobs should probably be cancelled. 
