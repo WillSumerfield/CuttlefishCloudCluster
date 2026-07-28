@@ -64,10 +64,12 @@ without the operator hand-partitioning anything:
 - **MPS / time-slicing**: works on any card, but no hard memory isolation — one Spawn can OOM another
   sharing the GPU. Needs Karma/pricing to understand a fractional hold, and an isolation story.
 
-**Depends on whole-GPU isolation landing first** (the `ConstrainDevices` item below, → Phase 9): you
-cannot safely subdivide a card the scheduler cannot even constrain a job to. **Permanent WSL exception:**
-`/dev/dxg` is one device node for all GPUs, so per-GPU partitioning can never work there (see that item).
-Also touches Karma (a partition is a fractional Power/Demand unit, not a whole card) and `cuttle run`
+**Depends on whole-GPU isolation landing first** (the `ConstrainDevices` item below) — you cannot
+safely subdivide a card the scheduler cannot even constrain a job to. **That prerequisite is written
+(2026-07-28) and awaiting hardware verification**; partitioning itself stays unscheduled until it is
+verified and real multi-GPU hardware exists to design against. **Permanent WSL
+exception:** `/dev/dxg` is one device node for all GPUs, so per-GPU partitioning can never work there
+(see that item). Also touches Karma (a partition is a fractional Power/Demand unit, not a whole card) and `cuttle run`
 (how a user asks for a slice). Decide scope when GPU sharing becomes real.
 
 ## Security: Arm re-enrollment must not become a permanent impersonation credential → Phase 9 — [effort: high]
@@ -211,22 +213,33 @@ Fix later: have the job push `.out`/`.err` to the Head periodically (background 
 seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
 racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
 
-## Before multi-node / multi-user: GPU cgroup isolation → Phase 9 — [effort: med]
+## GPU cgroup isolation — WRITTEN, awaiting hardware verification — [effort: med]
 
-MVP `slurm.conf` has **no** `ConstrainDevices` (single GPU, single user → nothing to isolate).
-Before real sharing, add `cgroup.conf` with `ConstrainDevices=yes` so a Spawn only sees its
-allotted GPU(s). Depends on host cgroup v2 + Slurm cgroup plugin.
+**The bug this fixes, measured on the first remote job:** `srun -w will-personal --gres=gpu:1`
+succeeded, but `SLURM_JOB_GPUS` came back **empty**. Slurm counted the GRES for scheduling and never
+bound a device or told the step which GPU it held. GPU allocation was therefore *advisory* — a job
+could touch a GPU it wasn't given. Harmless at one GPU per node; disqualifying the moment two Spawns
+share a box, and the hard prerequisite for GPU partitioning (above).
 
-**Measured on the first remote job:** `srun -w will-personal --gres=gpu:1` succeeded, but
-`SLURM_JOB_GPUS` came back **empty**. Slurm counts the GRES for scheduling and never binds a device
-or tells the step which GPU it holds. GPU allocation is therefore *advisory* — a job can touch a GPU
-it wasn't given. Harmless at one GPU per node; disqualifying the moment two Spawns share a box.
+**Built (2026-07-28):** `ProctrackType=proctrack/cgroup` + `TaskPlugin=task/cgroup` in `slurm.conf`,
+plus a new `cgroup.conf` (`CgroupPlugin=autodetect`, `ConstrainDevices=yes`) authored by the Head and
+served to every Arm over configless. Scope decisions, all deliberate:
+- **Native Linux Arms only.** A WSL Arm can never be GPU-isolated — its GPU is `/dev/dxg`, one device
+  node for *all* cards, which device cgroups cannot partition even under v2. Permanent, not deferred.
+- **Cluster-wide config.** Configless serves one `cgroup.conf` to every node; no per-node override
+  exists. The WSL Arm reports cgroup **v1** (`stat -fc %T /sys/fs/cgroup` → `tmpfs`) and what slurmd
+  does with that is **unverified** — ship it, re-run `setup` on both boxes, fix whatever really breaks.
+  No pre-built fallback or exemption ahead of that test.
+- **`ConstrainDevices` only** — no `ConstrainRAMSpace`/`ConstrainCores`; nothing sets a RAM or core
+  budget (a Spawn declares `--time`/`--vram`), so a limit would be a number nobody asked for.
+- **No preflight cgroup-version check** — `setup.py`'s WSL/`dxg` warning stays as-is; a symmetric
+  cgroup warning waits until the hardware test shows it's needed.
 
-**Measured, and awkward:** the WSL2 Arm reports cgroup **v1** (`stat -fc %T /sys/fs/cgroup` → `tmpfs`).
-So `ConstrainDevices` cannot work there at all, and its GPU is `/dev/dxg` — a single device node for
-*all* GPUs, which device cgroups cannot partition per-GPU even under v2. A WSL Arm therefore can
-never isolate GPUs. Either WSL Arms stay single-GPU-exclusive forever, or they're excluded from
-shared-GPU scheduling. Decide when GPU sharing becomes real.
+**Remaining, and the only thing left here:** re-run `cuttle setup --head` and `cuttle setup --arm`
+(both restart their daemons — a plugin change needs a restart, `scontrol reconfigure` won't do it),
+then confirm a remote Spawn reports a populated `SLURM_JOB_GPUS` and a cgroup device list matching its
+`gres` allocation. Cross-job isolation on a *shared* card stays unverifiable until a multi-GPU box
+exists (today's fleet is one GPU per node) — a documented gap, not a blocker.
 
 ## Low Karma long jobs get cancelled / Spawn Code Format Solidifcation — [effort: high]
 There should be some disincentive for queuing long jobs when you have very low karma. Jobs should probably be cancelled. 
