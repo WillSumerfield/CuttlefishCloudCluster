@@ -7,13 +7,14 @@ which is the worst outcome available. So the assertions here are about what reac
 """
 
 import json
+import subprocess
 import sys
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
-from cuttle import auth, ui
+from cuttle import auth, system, ui
 
 
 
@@ -129,7 +130,19 @@ class TestHeadLocalOutputSurvivesQuietMode:
     it, and must not depend on `--verbose` to do so."""
 
     def _fake_admin(self, monkeypatch, script: str):
+        """The admin CLI stubbed to a plain `python -c`, and sudo stubbed out around it.
+
+        `_admin` runs through `system.run(sudo=True)` — that is what primes the credential, so the
+        password prompt is drawn rather than swallowed by the capture. These tests are about the
+        output plumbing on the way back, so the escalation is neutralised: prime is a no-op and a
+        leading "sudo" is dropped at the subprocess boundary, standing in for a NOPASSWD rule.
+        Everything under test — `run`'s capture default, `_admin`'s re-emit — still runs for real.
+        """
         monkeypatch.setattr(auth, "_admin_argv", lambda args: [sys.executable, "-c", script])
+        monkeypatch.setattr(system, "prime_sudo", lambda: None)
+        real = subprocess.run
+        monkeypatch.setattr(subprocess, "run",
+                            lambda cmd, **kw: real(cmd[1:] if cmd[:1] == ["sudo"] else cmd, **kw))
 
     def test_the_temp_password_reaches_stdout(self, monkeypatch, capsys):
         self._fake_admin(monkeypatch, "print('created user'); print('temp password: s3cret')")
