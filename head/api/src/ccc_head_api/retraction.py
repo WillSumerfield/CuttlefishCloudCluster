@@ -9,8 +9,8 @@ submit time (see spawns.submit_checked). Two callers share this module: the owne
 route (any box, over HTTP) and the Admin's `--any` escape hatch (`ccc_head_api.admin`, Head-local).
 
 Retract fires immediately: every Spawn RUNNING on the node right now is sent SIGTERM. Slurm's
-proctrack/linuxproc delivers that to the whole process tree, not just the wrapper script, so the
-containerized process sees it directly and the job's existing EXIT trap still reclaims scratch and
+proctrack/cgroup delivers that to every process in the job's cgroup, not just the wrapper script, so
+the containerized process sees it directly and the job's existing EXIT trap still reclaims scratch and
 stages out whatever it can. It then has GRACE_SECONDS to exit on its own; the Karma tick force-kills
 anything still alive past the deadline (see tick._force_expired_retractions). Either way it settles at
 ZERO (tick._settle) — Retract must never be a way to farm Karma by donating a card and yanking it back

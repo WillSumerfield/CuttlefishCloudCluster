@@ -96,6 +96,10 @@ TREE_WIDTH = 65533
 # --- Slurm FHS paths (distro-standard) ---
 SLURM_CONF = Path("/etc/slurm/slurm.conf")
 GRES_CONF = Path("/etc/slurm/gres.conf")
+# What task/cgroup enforces. Head-authored like the other two: configless serves slurm.conf AND its
+# siblings (cgroup.conf, gres.conf) to every Arm, and there is no per-node override — one file, whole
+# cluster. See templates.CGROUP_CONF_TMPL.
+CGROUP_CONF = Path("/etc/slurm/cgroup.conf")
 # slurmd runs this on the node after every Spawn, however it ended — the reclaim the job script's own
 # `trap ... EXIT` can't do because SIGKILL (OOM, `scancel -9`, a Phase-2 Retract) bypasses the trap.
 SLURM_EPILOG = Path("/etc/slurm/ccc-epilog.sh")

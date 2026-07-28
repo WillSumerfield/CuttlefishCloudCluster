@@ -17,8 +17,13 @@ MaxNodeCount={max_nodes}
 TreeWidth={tree_width}
 
 AuthType=auth/munge
-ProctrackType=proctrack/linuxproc
-TaskPlugin=task/none
+# Both cgroup plugins, together, are what makes a GRES allocation REAL. Without them Slurm counts
+# `--gres=gpu:1` for scheduling and then hands the step a machine with every card visible: measured on
+# the first remote job, `SLURM_JOB_GPUS` came back EMPTY (docs/TODO.md). task/cgroup is what puts the
+# step in a device cgroup and tells it which GPU it holds; proctrack/cgroup is its prerequisite
+# (task/cgroup needs cgroup-based process tracking, not linuxproc's pid-scanning). See cgroup.conf.
+ProctrackType=proctrack/cgroup
+TaskPlugin=task/cgroup
 SwitchType=switch/none
 MpiDefault=none
 ReturnToService=2
@@ -92,6 +97,29 @@ PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 # explicitly. Per-node lines are unavoidable once Arms disagree about the device path: native Linux
 # has /dev/nvidia0, WSL2 has /dev/dxg. Served to Arms over configless, so the Head authors all of it.
 GRES_CONF_LINE = "NodeName={node} Name=gpu File={device}\n"
+
+# Served to Arms over configless alongside slurm.conf, so the Head authors it and every node gets the
+# SAME file — configless has no per-node override, which is why this is deliberately minimal.
+#
+# ConstrainDevices is the entire point: it puts each Spawn in a device cgroup holding exactly the GPUs
+# Slurm allocated it, and denying the rest is what finally makes `SLURM_JOB_GPUS` and
+# CUDA_VISIBLE_DEVICES mean something. It is also the prerequisite for ever subdividing a card
+# (docs/TODO.md, automatic GPU partitioning): you cannot safely share what you cannot constrain.
+#
+# ConstrainRAMSpace/ConstrainCores stay OFF (their default). Nothing drives them yet — a Spawn declares
+# --time and --vram, not a RAM or core budget — and turning on a limit no one sets would OOM-kill jobs
+# for hitting a number they never asked for.
+#
+# WSL Arms: unverified. WSL2 presents a fake cgroup-v1 `tmpfs`, and what slurmd does with it here is
+# not known — this file ships cluster-wide anyway and the WSL box is a live test (docs/TODO.md). A WSL
+# Arm cannot be GPU-isolated regardless: /dev/dxg is ONE device node for all its GPUs.
+CGROUP_CONF_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+# Detect cgroup v1 vs v2 rather than pinning either — the fleet is mixed (native Ubuntu is v2).
+CgroupPlugin=autodetect
+# Confine a Spawn to the GPUs it was allocated, and no others.
+ConstrainDevices=yes
+"""
 
 # --- the Power benchmark (Phase 4 slice 0) ----------------------------------
 # What a device can *do*, measured — never a spec sheet. It runs **inside the Pod**, submitted by the
@@ -285,6 +313,11 @@ def render_bench_sbatch(node: str, head_mesh_ip: str) -> str:
         spawns_mod=config.RSYNC_MODULE_SPAWNS,
         bench_dir=config.BENCH_DIR_NAME,
     )
+
+
+def render_cgroup_conf() -> str:
+    """No parameters, and that is the design: configless serves ONE cgroup.conf to the whole fleet."""
+    return CGROUP_CONF_TMPL
 
 
 def render_gres_conf(nodes: list[tuple[str, str]]) -> str:

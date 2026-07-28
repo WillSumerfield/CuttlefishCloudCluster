@@ -113,6 +113,9 @@ def write_slurm_config(mesh_ip: str) -> None:
     nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]
     _write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
+    # What task/cgroup enforces. Configless serves it to every Arm with slurm.conf, so it is written
+    # here only — an Arm never authors one.
+    _write_root_file(config.CGROUP_CONF, templates.render_cgroup_conf())
     # The Head's own slurmd (its co-located Arm) runs Spawns too, so the scratch-reclaim epilog its
     # slurm.conf now references must exist here as well as on every Arm (setup_arm writes it there).
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")

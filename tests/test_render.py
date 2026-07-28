@@ -122,6 +122,37 @@ class TestSlurmConf:
         assert "Weight=1" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
 
 
+class TestCgroupIsolation:
+    """What makes a GRES allocation real. Measured on the first remote job: `--gres=gpu:1` scheduled
+    fine and `SLURM_JOB_GPUS` came back EMPTY — Slurm counted the card and never bound it. Both plugins
+    plus ConstrainDevices are the fix, and each one is silent when missing: the job still runs, on a
+    machine where every GPU is visible to it."""
+
+    def test_conf_names_both_cgroup_plugins(self, fake_host):
+        """task/cgroup is what puts a step in a device cgroup; proctrack/cgroup is its prerequisite.
+        Either one back at its old value (task/none, proctrack/linuxproc) and isolation silently
+        stops happening."""
+        d = directives(templates.render_slurm_conf("100.99.0.1"))
+        assert d["TaskPlugin"] == "task/cgroup"
+        assert d["ProctrackType"] == "proctrack/cgroup"
+
+    def test_devices_are_constrained(self):
+        assert directives(templates.render_cgroup_conf())["ConstrainDevices"] == "yes"
+
+    def test_nothing_else_is_constrained(self):
+        """Deliberately devices-only. A Spawn declares --time and --vram — never a RAM or core budget —
+        so a memory/CPU limit would be a number nobody set, enforced by an OOM kill."""
+        d = directives(templates.render_cgroup_conf())
+        assert "ConstrainRAMSpace" not in d
+        assert "ConstrainCores" not in d
+
+    def test_cgroup_version_is_autodetected(self):
+        """The fleet is mixed: native Ubuntu 24.04 is cgroup v2, a WSL Arm presents a fake v1 `tmpfs`.
+        One file is served to every node (configless has no per-node override), so it cannot pin
+        either version."""
+        assert directives(templates.render_cgroup_conf())["CgroupPlugin"] == "autodetect"
+
+
 class TestScratchEpilog:
     """slurmd reclaims a Spawn's node-local scratch after it ends, HOWEVER it ended — the reclaim the
     job script's own `trap ... EXIT` can't do, since SIGKILL (OOM, `scancel -9`, a Phase-2 Retract)
