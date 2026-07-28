@@ -895,11 +895,22 @@ def _clipboard_cmd() -> list[str] | None:
 
 
 def _copy_to_clipboard(text: str) -> bool:
+    """DEVNULL, never a pipe — capturing this output DEADLOCKS the caller.
+
+    An X11/Wayland selection is owned by a live process, so xclip/wl-copy fork a background copy that
+    holds the clipboard and keeps whatever fds it inherited. Given pipes, that copy holds the read
+    ends open for as long as the clipboard holds the text, `communicate()` waits for an EOF that
+    never comes, and the command hangs forever. Cost us a whole enrollment: pressing `c` to copy the
+    token froze `arm authorize` inside its poll loop, so the Arm enrolled and the Head never noticed.
+
+    Their output is not worth a pipe anyway — the exit code says whether the copy landed.
+    """
     cmd = _clipboard_cmd()
     if cmd is None:
         return False
     try:
-        return subprocess.run(cmd, input=text.encode(), capture_output=True).returncode == 0
+        return subprocess.run(cmd, input=text.encode(),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except OSError:
         return False
 
