@@ -532,6 +532,14 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     data = settings.load()
     data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
                    "ctld_addr": info["ctld_addr"], "gpu_device": enroll.gpu_device()}
+    # Point the box at the Head over the MESH — an Arm's owner is a User too, and until now enrolling
+    # left them with no Head URL at all, so `cuttle login` on their own Arm said "no Head URL set".
+    #
+    # The mesh address, not whatever was here before: a remote Arm is off the Head's LAN by definition,
+    # and a bundle built on the Head bakes that LAN IP (installer.py). Overwriting is the point — the
+    # baked address is the one that cannot work from here, and the mesh IP is in the cert's SANs, so
+    # `login` can pin it. On the co-located/LAN case the mesh address works just as well.
+    data["head"] = headapi.head_url(t["mesh_ip"])
     settings.save(data)
 
     # The Mantle must exist here BEFORE slurmd can accept a Spawn: slurmd setuid()s to the submitting
