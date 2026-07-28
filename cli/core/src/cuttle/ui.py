@@ -812,6 +812,15 @@ def _canvas_render():
     return Group(*parts) if parts else Text("")
 
 
+# DEC private mode 2026, "synchronized output". A paint rewrites every cell of the screen (Rich has
+# no incremental screen diff — see `_paint`), and a terminal that renders those bytes as they arrive
+# shows the frame half-drawn. On WSL/Windows Terminal, where the write crosses ConPTY, that is
+# *visible*: the box blinks and rows appear to jump. Between BSU and ESU the terminal buffers the
+# whole frame and presents it atomically. An unknown private mode is ignored, so this is inert on the
+# terminals that were already smooth (gnome-terminal et al).
+_BSU, _ESU = "\x1b[?2026h", "\x1b[?2026l"
+
+
 def _paint() -> None:
     """One absolute, full-screen redraw of the canvas — locked, because the tick thread paints too.
 
@@ -820,18 +829,42 @@ def _paint() -> None:
     if _SCREEN is None:
         return
     with _LOCK:
-        _SCREEN.update(_canvas_render())
+        sync = err.is_terminal
+        if sync:
+            err.file.write(_BSU)
+        _SCREEN.update(_canvas_render())   # writes and flushes the frame itself
+        if sync:
+            err.file.write(_ESU)
+            err.file.flush()
+
+
+def _animating() -> bool:
+    """Is anything on screen mid-animation? Only a spinner moves on its own; everything else changes
+    when the main thread changes it, and paints itself then."""
+    rows = [r for r, _ in list(_FRAME.rows)] if _FRAME is not None else []
+    return any(isinstance(r, Spinner) for r in (*rows, *list(_LOOSE)))
 
 
 def _tick_start() -> None:
     """A background repaint ~12×/s. Two jobs: animate the step spinner (the main thread is busy inside
-    the step and cannot), and re-assert the absolute screen so a scroll or resize self-corrects."""
+    the step and cannot), and re-assert the absolute screen so a resize self-corrects.
+
+    It repaints only when there is a reason to — a spinner turning, or the terminal having changed
+    size. Painting unconditionally meant a full-screen rewrite twelve times a second *while the user
+    sat at a prompt*, with nothing on screen changing: invisible on a local terminal, and on WSL
+    (every byte crossing ConPTY) the single loudest source of flicker, right where the user is
+    looking. Anything else that changes is changed by the main thread, which paints as it does so.
+    """
     global _TICK, _TICK_STOP
     _TICK_STOP = threading.Event()
     stop = _TICK_STOP
     def _loop():
+        size = err.size
         while not stop.wait(1 / 12):
-            _paint()
+            now = err.size
+            if _animating() or now != size:
+                size = now
+                _paint()
     _TICK = threading.Thread(target=_loop, daemon=True)
     _TICK.start()
 
