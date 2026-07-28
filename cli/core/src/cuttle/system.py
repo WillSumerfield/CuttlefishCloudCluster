@@ -116,6 +116,18 @@ def primary_ip() -> str:
     return out.split("src", 1)[1].split()[0]
 
 
+def local_ipv4s() -> list[str]:
+    """Every globally-scoped IPv4 this host holds, in `ip addr` order.
+
+    `primary_ip()` answers "where does traffic leave?", which is the wrong question for a coordinator
+    address: a Head on both a LAN and a tailnet has two, and only the operator knows which one a
+    donor's box can reach. This lets setup offer the real choice instead of guessing.
+    """
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                         check=True, capture_output=True, text=True).stdout
+    return [line.split()[3].split("/")[0] for line in out.splitlines()]
+
+
 def cpu_count() -> int:
     import os
 

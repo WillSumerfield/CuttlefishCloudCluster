@@ -8,6 +8,7 @@ Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import base64
+import ipaddress
 import json
 import shutil
 import subprocess
@@ -133,6 +134,30 @@ def start_ccc_tailscaled(write_unit) -> None:
 
 
 # --- Headscale coordinator (Head only) -------------------------------------
+
+# The coordinator's address is the ONE address that must work before the mesh exists — an Arm dials
+# it with no tunnel to fall back on. These blocks can only be reached from the Head's own network, so
+# an Arm anywhere else gets packets that look routable, leave, and die. Lives here, beside the
+# coordinator, because both the code that WRITES the address (setup.mesh_up_head) and the code that
+# hands it out in a token (enroll) have to agree on what "unreachable from outside" means.
+#
+# NOT 100.64.0.0/10 — that is the CGNAT range Tailscale allocates from, and a coordinator advertised
+# there is precisely how a remote donor bootstraps. Written out rather than using
+# `ipaddress.is_private`, whose membership has moved between Python point releases (it counts
+# 100.64.0.0/10 as private in some, which would flag the one address that works).
+_LAN_ONLY_BLOCKS = [ipaddress.ip_network(b) for b in
+                    ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16")]
+
+
+def lan_only(host: str) -> bool:
+    """Is `host` an address only this LAN can reach? False for a DNS name — a name can resolve to
+    anything, and guessing wrong in either direction is worse than staying quiet."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in block for block in _LAN_ONLY_BLOCKS)
+
 
 _POLICY = """\
 {

@@ -137,8 +137,12 @@ def setup(
             if role == "head":
                 ui.say("  [muted]Arms reach the coordinator at this address before they are on the "
                        "mesh, so it must be reachable from their network.[/muted]")
+                # Pre-filled with what this Head already advertises, not primary_ip(): on a re-run the
+                # stored address is the answer, and offering the LAN IP invites the operator to accept
+                # a revert that strands every remote Arm (see setup.resolve_coordinator_address).
+                stored = settings.load().get("mesh", {}).get("head_address")
                 address = address or ui.ask_text("Address Arms will reach this Head on?",
-                                                 default=system.primary_ip())
+                                                 default=stored or system.primary_ip())
             elif role == "arm":
                 ui.say("  [muted]Ask the cluster's admin for a token: "
                        "cuttle arm authorize <name> --user <you>[/muted]")

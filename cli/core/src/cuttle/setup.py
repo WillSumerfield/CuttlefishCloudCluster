@@ -10,6 +10,7 @@ Drives apt+sudo directly. Intended path only — no fallbacks (test box; failure
 """
 
 import getpass
+import ipaddress
 import tempfile
 from pathlib import Path
 
@@ -330,15 +331,69 @@ def verify() -> None:
     run(["sinfo", "-N", "-o", "%N %t %C %G"])
 
 
-def mesh_up_head(address: str | None) -> str:
-    """Self-host Headscale + join our own tailnet. `address` = coordinator's advertised host
-    (default: primary outbound IP; pass a public/DDNS addr so remote Arms can reach it).
-    Returns the Head's mesh IP.
+def _pick_coordinator_address() -> str:
+    """First run, no --address: which of this box's addresses will Arms dial the coordinator at?
 
-    Two addresses, two jobs: `address` is where Arms reach the coordinator *before* they're on the
+    `primary_ip()` answers a different question — where traffic leaves — and on a Head that is also on
+    a tailnet it silently picks the LAN address, which excludes every remote Arm. Ask only when the
+    choice is real: one candidate is not a decision, and a non-interactive run has no one to ask.
+
+    The mesh's own addresses are never offered: an Arm dials this BEFORE it is on the mesh, so a mesh
+    address is the one answer that cannot work.
+    """
+    default = system.primary_ip()
+    mesh_net = ipaddress.ip_network(config.MESH_V4_PREFIX)
+    others = [ip for ip in system.local_ipv4s()
+              if ip != default and ipaddress.ip_address(ip) not in mesh_net]
+    if not others or not ui.interactive():
+        return default
+    ui.say("  [muted]An Arm dials this before it is on the mesh, so it must be an address the "
+           "donor's box can already reach.[/muted]")
+    return ui.ask_select("Which address will Arms reach this Head's coordinator at?",
+                         [default, *others], default=default)
+
+
+def resolve_coordinator_address(address: str | None) -> str:
+    """Settle the coordinator address, and confirm anything that would change it. No side effects.
+
+    Called BEFORE the mesh step so its prompts are not buried inside a step frame, and so the operator
+    answers before any daemon has been touched.
+
+    The stored address outranks `primary_ip()`: this is a durable property of the Head, not a per-run
+    argument. Without that fallback a bare `cuttle setup --head` — a routine re-run — silently reverts
+    the coordinator to the LAN IP, invalidating every enrollment token and stranding every remote Arm.
+    Observed 2026-07-28; that is the whole reason this function exists.
+    """
+    stored = settings.load().get("mesh", {})
+    addr = address or stored.get("head_address") or _pick_coordinator_address()
+    old = stored.get("coordinator")
+    new = f"http://{addr}:{config.HEADSCALE_PORT}"
+
+    # Re-pointing the coordinator is a cluster-wide event, not a config tweak, so it is confirmed
+    # rather than announced. Unreachable unless --address names something new: an unflagged re-run now
+    # resolves to the stored address and compares equal.
+    if old and old != new and ui.interactive():
+        ui.warn(f"this re-points the mesh: {old} -> {new}")
+        ui.hint("Every Arm re-registers against the new address, and every enrollment token already "
+                "handed out names the old one and will stop working.")
+        if not ui.ask_confirm("Re-point the coordinator?", False):
+            raise ui.abort("coordinator left unchanged")
+    # Warned where the address is CHOSEN, not where a token later carries it — this is the last moment
+    # it costs nothing to change. Never a refusal: a fleet of LAN donors is the ordinary case.
+    if mesh.lan_only(addr):
+        ui.warn(f"{addr} is an address only this LAN can reach.")
+        ui.hint("Arms on other networks will hang at `setup --arm` until it times out. If any donor "
+                "is remote, re-run with --address=<addr> — this box's Tailscale IP, say.")
+    return addr
+
+
+def mesh_up_head(addr: str) -> str:
+    """Self-host Headscale + join our own tailnet. `addr` = the coordinator's advertised host, already
+    settled by resolve_coordinator_address. Returns the Head's mesh IP.
+
+    Two addresses, two jobs: `addr` is where Arms reach the coordinator *before* they're on the
     mesh (public/DDNS); the returned mesh IP is where they reach slurmctld *after*.
     """
-    addr = address or system.primary_ip()
     server_url = f"http://{addr}:{config.HEADSCALE_PORT}"
 
     old = settings.load().get("mesh", {}).get("coordinator")
@@ -367,6 +422,7 @@ def _setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
     preflight("head")
+    address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
     # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
     # rather than dying at `add-apt-repository`.

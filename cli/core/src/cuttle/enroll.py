@@ -24,7 +24,6 @@ Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import base64
-import ipaddress
 import json
 import re
 import tempfile
@@ -39,27 +38,12 @@ from .system import run
 
 # --- enrollment token (a secret: it admits one machine) ---------------------
 
-# The address blocks that are LAN-only: a donor off this network has no route to any of them. NOT
-# 100.64.0.0/10 — that is the CGNAT range Tailscale allocates from, and a coordinator advertised there
-# is precisely how a remote donor bootstraps. Written out rather than using `ipaddress.is_private`,
-# whose membership has moved between Python point releases (it counts 100.64.0.0/10 as private in some,
-# which would flag the one address that works).
-_LAN_ONLY_BLOCKS = [ipaddress.ip_network(b) for b in
-                    ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16")]
-
-
-def _lan_only(host: str) -> bool:
-    """Is `host` an address only this LAN can reach? False for a DNS name — a name can resolve to
-    anything, and guessing wrong in either direction is worse than staying quiet."""
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return any(ip in block for block in _LAN_ONLY_BLOCKS)
-
-
 def warn_if_coordinator_is_lan_only() -> None:
     """Say so when the coordinator only answers on this LAN, before a token is minted against it.
+
+    Second line of defence: setup already warns when this address is CHOSEN (setup.mesh_up_head),
+    which is the moment the operator can still change it cheaply. This one catches a Head set up
+    before that check existed, and the case where the fleet grew a remote donor afterwards.
 
     Every token carries this address, and it is the first thing the donor's box dials — before the
     mesh exists, so there is no other route to fall back on. A remote donor handed a LAN address does
@@ -71,7 +55,7 @@ def warn_if_coordinator_is_lan_only() -> None:
     """
     coordinator = settings.load().get("mesh", {}).get("coordinator", "")
     host = urllib.parse.urlparse(coordinator).hostname or ""
-    if not _lan_only(host):
+    if not mesh.lan_only(host):
         return
     ui.warn(f"the coordinator is {coordinator} — an address only this LAN can reach.")
     ui.hint("The donor's box dials this before it is on the mesh, so a box off this network will "
