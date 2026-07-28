@@ -25,9 +25,12 @@ import io
 import json
 import os
 import select
+import shutil
+import subprocess
 import sys
 import termios
 import threading
+import time
 from contextlib import contextmanager
 
 import typer
@@ -878,6 +881,74 @@ def _tick_start() -> None:
             _paint()
     _TICK = threading.Thread(target=_loop, daemon=True)
     _TICK.start()
+
+
+# Ordered by how well each fits the box we are on: Wayland, then X11, then WSL's bridge to Windows.
+# `clip.exe` is last because it exists on a WSL box that may also be running a real X server.
+_CLIPBOARD_CMDS = (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"], ["clip.exe"])
+
+
+def _clipboard_cmd() -> list[str] | None:
+    """The first clipboard tool this box actually has, or None. Headless servers have none, which is
+    why the offer is conditional rather than a keystroke that silently does nothing."""
+    return next((cmd for cmd in _CLIPBOARD_CMDS if shutil.which(cmd[0])), None)
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    cmd = _clipboard_cmd()
+    if cmd is None:
+        return False
+    try:
+        return subprocess.run(cmd, input=text.encode(), capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+@contextmanager
+def copy_hotkey(text: str):
+    """Arm `c` to copy `text` to the clipboard for the duration of a wait, stopping nothing.
+
+    Yields a `wait(seconds)` that replaces `time.sleep` inside a polling loop: it sleeps, but wakes
+    the instant a key arrives. So the hotkey is live throughout without a thread, and the loop it
+    wraps runs exactly as it did.
+
+    **Why not freeze the screen instead.** A paint rewrites every cell and the tick fires ~12×/s, so
+    a mouse selection is destroyed within 80ms of being made — text on a live canvas is physically
+    uncopyable, and the only way to allow selection is to stop the tick and make the operator press a
+    key to resume. That pause bought nothing here: the wait it preceded was itself the pause, and it
+    interrupted a flow that has somewhere to be. A programmatic copy needs no static screen, so `c`
+    works on a live one and the interruption goes away. The cost is that selecting the token with a
+    mouse is no longer possible — `c` is the way to take it.
+
+    Not automatic: the caller is handing over a *secret*, and a secret that lands on the clipboard
+    because a command decided to put it there is a surprise, not a convenience.
+
+    Inert with no terminal, no human, or no clipboard tool — `wait` is then plain `time.sleep`, and a
+    script's polling loop is untouched. (Headless boxes have no clipboard tool at all, which is why
+    the offer is conditional rather than a keystroke that silently does nothing.)
+    """
+    if not _tty() or NO_INPUT or _ANSWERS is not None or _SCREEN is None \
+            or _clipboard_cmd() is None:
+        yield time.sleep
+        return
+    _emit("  [muted]press c to copy it to the clipboard[/muted]")
+    with _raw() as fd:
+        def wait(seconds: float) -> None:
+            deadline = time.monotonic() + seconds
+            while True:
+                left = deadline - time.monotonic()
+                # Draining on a zero timeout as well would spin; select's own timeout IS the sleep.
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    return
+                key = _key(fd)
+                # `_raw` clears ISIG, so ^C arrives as a byte. Handled here rather than at the end of
+                # the poll interval, or interrupting a five-minute wait would take up to two seconds.
+                if key in ("\x03", "\x04"):
+                    raise KeyboardInterrupt
+                if key in ("c", "C"):
+                    _emit("  [ok]✓[/ok] copied to the clipboard" if _copy_to_clipboard(text)
+                          else "  [warn]![/warn] the clipboard tool refused it — copy it by hand")
+        yield wait
 
 
 def _tick_stop() -> None:
