@@ -235,11 +235,14 @@ served to every Arm over configless. Scope decisions, all deliberate:
 - **No preflight cgroup-version check** — `setup.py`'s WSL/`dxg` warning stays as-is; a symmetric
   cgroup warning waits until the hardware test shows it's needed.
 
-**Remaining, and the only thing left here:** re-run `cuttle setup --head` and `cuttle setup --arm`
-(both restart their daemons — a plugin change needs a restart, `scontrol reconfigure` won't do it),
-then confirm a remote Spawn reports a populated `SLURM_JOB_GPUS` and a cgroup device list matching its
-`gres` allocation. Cross-job isolation on a *shared* card stays unverifiable until a multi-GPU box
-exists (today's fleet is one GPU per node) — a documented gap, not a blocker.
+**Remaining, and the only thing left here:** the hardware test — full procedure in
+`temp/CGROUP_HW_TEST.md`. Re-run `cuttle setup --head` and `cuttle setup --arm` (both restart their
+daemons; a plugin change needs a restart, `scontrol reconfigure` won't do it), then two checks decide
+it: a `--gres=gpu:1` job reports a populated `SLURM_JOB_GPUS`, and a job with **no** `--gres` is
+**denied** `/dev/nvidia0` (EPERM). The deny check is the real isolation proof and it works on today's
+one-GPU-per-node fleet. Note cgroup v2 enforces devices via eBPF, so there is no `devices.list` to
+read — behaviour is the only observable. Two Spawns confined to separate slices of one *shared* card
+stays unverifiable until a multi-GPU box exists — a documented gap, not a blocker.
 
 ## Low Karma long jobs get cancelled / Spawn Code Format Solidifcation — [effort: high]
 There should be some disincentive for queuing long jobs when you have very low karma. Jobs should probably be cancelled. 
