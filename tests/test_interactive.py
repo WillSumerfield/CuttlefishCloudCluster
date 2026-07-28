@@ -23,7 +23,8 @@ import pytest
 import typer
 from rich.console import Console
 
-from cuttle import auth, main, menu, system, ui
+from cuttle import auth, main, menu, settings, system, ui
+from cuttle import setup as setup_mod
 
 
 class _Probe:
@@ -86,6 +87,48 @@ class TestNothingBlocksWithoutATerminal:
             assert ui.interactive() is False
         finally:
             monkeypatch.setattr(ui, "NO_INPUT", False)
+
+
+class TestTheClientWizardPointsTheBoxItself:
+    """A **generic** bundle leaves the box knowing no Head, and `cuttle setup --client` is what
+    install.sh tells you to run next. It used to hand straight to `auth.login`, which reads the
+    stored Head URL and — finding none — aborted with "run `cuttle login --head …`": the wizard
+    refusing to ask the one question it exists to ask."""
+
+    def test_an_unpointed_box_is_asked_which_head(self, answers, ccc_home, monkeypatch):
+        monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
+        answers("172.30.26.166")
+        setup_mod.setup_client()
+        assert settings.load()["head"] == "https://172.30.26.166:8082"
+
+    def test_a_baked_box_offers_what_the_installer_wrote(self, answers, ccc_home, monkeypatch):
+        """install.sh already wrote config.yaml, so the prompt arrives pre-filled and accepting it is
+        one Enter — which must not corrupt the URL the bundle baked in. (`_prompt_line` pre-fills its
+        buffer with the default, so the scripted human accepts it by supplying it.)"""
+        settings.save({"head": "https://172.30.26.166:8082"})
+        monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
+        a = answers("https://172.30.26.166:8082")
+        setup_mod.setup_client()
+        assert settings.load()["head"] == "https://172.30.26.166:8082"
+        assert a.asked, "the box was never asked which Head it talks to"
+
+    def test_a_cleared_field_is_re_asked_not_stored(self, answers, ccc_home):
+        """The prompt is pre-filled, so "" means the field was cleared — and every normalising branch
+        would turn it into a valid-looking `https://:8082` that fails at the next login instead."""
+        answers("", "172.30.26.166")
+        assert setup_mod.point_at_head() == "https://172.30.26.166:8082"
+
+    @pytest.mark.parametrize("typed,url", [
+        ("172.30.26.166", "https://172.30.26.166:8082"),          # bare host -> scheme + default port
+        ("172.30.26.166:9000", "https://172.30.26.166:9000"),     # host:port -> scheme only
+        ("http://head.lan:8082", "http://head.lan:8082"),         # a deliberate http:// survives
+        ("https://head.lan:8082/", "https://head.lan:8082"),      # trailing slash dropped
+    ])
+    def test_an_address_is_accepted_however_it_is_typed(self, answers, ccc_home, typed, url):
+        """`--head` takes a URL because it is a flag. A person answering "which Head?" types an
+        address, and a wizard that only accepts a full URL is a trap."""
+        answers(typed)
+        assert setup_mod.point_at_head() == url
 
 
 class TestDangerIsProportional:

@@ -420,15 +420,51 @@ def _setup_head(address: str | None = None) -> None:
           "        confirm it. After that it is pinned, and a changed certificate is refused.")
 
 
+def point_at_head() -> str:
+    """Ask which Head this box talks to, and record it — what makes the box **pointed**.
+
+    A **baked** bundle already wrote this (build-installer bakes config.yaml + the matching cert pin),
+    so the prompt arrives pre-filled and is one Enter. A **generic** bundle leaves the box knowing
+    nothing, and this is the only place that asks: `auth.login` reads the stored URL and, finding
+    none, can only abort telling you to pass `--head` — which is a usable message for a typed `cuttle
+    login` but a dead end for the wizard that is supposed to be doing the asking.
+
+    Accepts a bare host as well as a full URL: `--head` takes a URL because it is a flag, but a person
+    answering "which Head?" types an address.
+    """
+    data = settings.load()
+    # Re-ask on blank rather than storing it: the prompt is pre-filled with the baked URL, so an empty
+    # answer means the field was cleared — and every branch below would turn "" into a syntactically
+    # valid, permanently broken URL (`https://:8082`) that only surfaces at the next login.
+    while True:
+        answer = ui.ask_text("Head address?", default=data.get("head") or "").strip().rstrip("/")
+        if answer:
+            break
+        ui.warn("a Head address is required — the host this cluster's Head API answers on")
+    # A scheme means they gave a URL and we take it as given (including a deliberate http://). A bare
+    # `host:port` only needs the scheme; a bare host gets the Head API's default form, port and all.
+    if "://" in answer:
+        url = answer
+    elif ":" in answer:
+        url = f"https://{answer}"
+    else:
+        url = headapi.head_url(answer)
+    data["head"] = url
+    settings.save(data)
+    return url
+
+
 def setup_client() -> None:
-    """A submitter's box: dirs and a login, nothing else.
+    """A submitter's box: point it at a Head, then log in. Nothing else.
 
     No apt, no mesh, no Slurm, no sudo — a client only ever talks to the Head API over HTTP. Kept
     separate from `setup --head/--arm` precisely so that submitting from a laptop never requires
     provisioning it.
     """
-    with ui.section("Set up this client", lambda: "ready"):
+    pointed: dict[str, str] = {}
+    with ui.section("Set up this client", lambda: pointed.get("head", "")):
         make_user_dirs()
+        pointed["head"] = point_at_head()
     who: dict[str, str] = {}
     with ui.section("Log in", lambda: who.get("as", "")):
         who["as"] = auth.login(None)
