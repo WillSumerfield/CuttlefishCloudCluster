@@ -27,11 +27,17 @@ from .system import run
 SCRIPTS_DIR = Path(__file__).resolve().parent / "installer_scripts"
 
 
-def _bake_head_creds(stage: Path, head_url: str | None) -> str | None:
+def _bake_head_creds(stage: Path, head_url: str | None, generic: bool = False) -> str | None:
     """When run on a Head, lay this Head's config + pinned cert into the bundle at exactly the names
     `install.sh` will copy them to (so the script parses no URLs). Returns the baked URL, or None if
-    this isn't a Head / has no cert yet — a generic bundle."""
-    if not menu.is_head():
+    this isn't a Head / has no cert yet / `generic` was asked for — a generic bundle.
+
+    The default address is this box's LAN IP, so a baked bundle only works for boxes on that LAN. A
+    remote box has no route to it (and cannot use the mesh address either — it joins the mesh during
+    `setup --arm`, after this bundle has already been installed). `generic` is the honest answer for
+    those: ship the tool, let enrollment point the box.
+    """
+    if generic or not menu.is_head():
         return None
     url = head_url or headapi.head_url(system.primary_ip())
     if not config.HEAD_CERT.exists():
@@ -46,7 +52,8 @@ def _bake_head_creds(stage: Path, head_url: str | None) -> str | None:
     return url
 
 
-def build_installer(out: Path | None = None, head_url: str | None = None) -> None:
+def build_installer(out: Path | None = None, head_url: str | None = None,
+                    generic: bool = False) -> None:
     core = headapi.REPO_ROOT / "cli" / "core"
     if not (core / "pyproject.toml").exists():
         # build-installer needs the source tree to build the wheel. On a Head cuttle is installed
@@ -72,14 +79,15 @@ def build_installer(out: Path | None = None, head_url: str | None = None) -> Non
                     shutil.copy(SCRIPTS_DIR / name, dst)
                     dst.chmod(0o755)
             with ui.step("Baking Head credentials"):
-                baked = _bake_head_creds(stage, head_url)
+                baked = _bake_head_creds(stage, head_url, generic=generic)
             with ui.step("Writing the tarball"):
                 with tarfile.open(out, "w:gz") as tar:
                     tar.add(stage, arcname="cuttle-installer")
         # Inside the box: `section` flushes its results panel on exit, so facts appended after it
         # closes are dropped (the reason build-installer wasn't reporting its output path).
         ui.result("installer", str(out))
-        ui.result("mode", f"pre-pointed at {baked}" if baked
-                  else "generic (client runs `cuttle setup --client`)")
+        ui.result("mode", f"pre-pointed at {baked} (for boxes on that LAN)" if baked
+                  else "generic — the box points itself: `cuttle setup --client`, "
+                       "or `--arm --token …` to enroll over the mesh")
     # Outside the box: an open frame turns a hint into a transient row that the collapse erases.
     ui.hint("Copy it over, then: tar xzf cuttle-installer.tar.gz && cuttle-installer/install.sh")

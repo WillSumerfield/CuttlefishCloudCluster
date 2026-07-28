@@ -40,6 +40,11 @@ if [ -d "$here/head" ]; then
     echo "cuttle: installed, pointed at the Head, certificate pre-pinned."
     echo "cuttle: next -> cuttle login"
 else
+    # No baked address, so this box does not know a Head yet. Donating a GPU is `setup --arm`, which
+    # points the box at the Head over the mesh as part of enrolling; a submit-only box uses --client
+    # and is asked for the address. Named in that order because a generic bundle is what a remote Arm
+    # gets (a baked one carries a LAN address it could not reach).
     echo "cuttle: installed."
-    echo "cuttle: next -> cuttle setup --client   (or --head / --arm)"
+    echo "cuttle: next -> cuttle setup --arm --token <token>   (donate this box's GPU)"
+    echo "cuttle:      -> cuttle setup --client                (submit only)"
 fi

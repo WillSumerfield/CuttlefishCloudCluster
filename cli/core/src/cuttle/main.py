@@ -455,13 +455,25 @@ def build_installer(
         help="Head URL to bake in (default: https://<this box's LAN IP>:8082). Only used when "
              "built on a Head — the client comes pre-pointed at this address.",
     ),
+    generic: bool = typer.Option(
+        False, "--generic",
+        help="Bake nothing, even on a Head. For a box that cannot reach this Head's LAN address — "
+             "a remote Arm, which points itself at the mesh when it enrolls.",
+    ),
 ):
     """Package a portable client installer (wheel + install.sh + uninstall.sh) as a .tar.gz.
 
     Run on a Head, it bakes that Head's address + pinned certificate in, so the installed client is
-    pre-pointed and pre-pinned. Run elsewhere, it produces a generic bundle the client points itself.
+    pre-pointed and pre-pinned. Run elsewhere — or with --generic — it produces a bundle that points
+    itself.
+
+    The baked address is the Head's LAN IP, so a baked bundle is for boxes ON that LAN. A remote box
+    reaches this Head over the CCC mesh, and it is not on the mesh until it enrolls — so build it a
+    --generic bundle and let `setup --arm` point it.
     """
-    installer_mod.build_installer(out=out, head_url=head_url)
+    if generic and head_url:
+        raise typer.BadParameter("--generic bakes no address; drop --head-url")
+    installer_mod.build_installer(out=out, head_url=head_url, generic=generic)
 
 
 @app.command()
