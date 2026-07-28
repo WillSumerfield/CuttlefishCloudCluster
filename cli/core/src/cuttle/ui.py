@@ -460,6 +460,18 @@ class _Surface:
         else:
             _FRAME.replace(self.slot, renderable, height)
 
+    def room(self) -> int:
+        """How many lines this prompt may draw, at the place it actually lands.
+
+        Inside a box that is the frame's budget — NOT the terminal height. The box is capped at
+        BOX_ROWS however tall the window is, so on any terminal taller than ~26 rows a prompt sized
+        to the terminal draws a row taller than the box can hold. Loose on the canvas or in a
+        transient Live, the terminal is the limit, less a margin for what sits around it.
+        """
+        if _FRAME is not None and not self.canvas and self.live is None:
+            return _FRAME.budget()
+        return max(4, err.height - 7)
+
     def settle(self, line: Text) -> None:
         """Replace the live prompt with the one-line record of what was answered."""
         if self.live:
@@ -481,9 +493,16 @@ def _answered(message: str, shown: str) -> Text:
     return Text.assemble(("? ", "accent"), (message, ""), ("  ", ""), (shown, "bold"))
 
 
+def _select_window(room: int, count: int) -> int:
+    """How many entries a select shows at once. One line of `room` goes to the question itself; the
+    rest is a scrolling window that pages around the cursor rather than growing with the list — a
+    row taller than the surface it draws on is a row that gets trimmed away entirely."""
+    return max(3, min(count, room - 1))
+
+
 def _prompt_select(surface, message: str, choices: list, default=None):
     idx = next((i for i, c in enumerate(choices) if c.value == default), 0)
-    window = max(3, min(len(choices), err.height - 8))
+    window = _select_window(surface.room(), len(choices))
     with _raw() as fd:
         while True:
             top = max(0, min(idx - window // 2, len(choices) - window))
@@ -925,16 +944,27 @@ class _Frame:
             self._render(), console=err, transient=True, refresh_per_second=12,
             auto_refresh=True, redirect_stdout=False, redirect_stderr=False)
 
+    def budget(self) -> int:
+        """Rows available inside the borders. A prompt asks for this before it sizes itself — the box
+        is capped at BOX_ROWS however tall the terminal is, so a prompt that measured the *terminal*
+        would draw a row this trim then throws away (see `_render`)."""
+        return max(3, (_height() or err.height) - 2)
+
     def _render(self):
         rows = self.rows
         # Finished work scrolls up and out of the box as new rows arrive — the frame shows what is
         # happening now, not a transcript. `setup` runs far more steps than a screen has rows, and
         # every one of them is in the log (see `_log`), which is where detail belongs.
-        budget = max(3, (_height() or err.height) - 2)
+        budget = self.budget()
         if sum(h for _, h in rows) > budget:
             kept, used = [], 0
             for renderable, height in reversed(rows):
-                if used + height > budget:
+                # The newest row is kept even when it alone overflows: the Panel has a fixed height
+                # and crops it, which shows the top of an oversized prompt. Dropping it instead
+                # renders an *empty box* — no rows, no reason, nothing to act on. That was the bug
+                # a logged-in menu hit (19 entries, 18 rows of budget), so the trim now degrades
+                # rather than blanks, whatever mis-sizes a row next.
+                if used + height > budget and kept:
                     break
                 kept.append((renderable, height))
                 used += height

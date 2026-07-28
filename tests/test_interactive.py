@@ -337,6 +337,59 @@ class TestStreamsSurviveTheWizard:
         assert captured.out.strip() == "4201"
 
 
+@pytest.fixture
+def framed():
+    """An open box on a canvas, at a chosen terminal height. Restores the module globals — a leaked
+    `_FRAME` makes every later `ui.say` draw into a box that no longer exists."""
+    class _NoScreen:
+        def update(self, renderable):
+            pass
+
+    saved = (ui._FRAME, ui._SCREEN, ui._ALT, ui.err._width, ui.err._height)
+
+    def open_box(height: int):
+        ui.err._width, ui.err._height = 100, height
+        ui._ALT, ui._SCREEN = True, _NoScreen()
+        ui._FRAME = ui._Frame("cuttle")
+        return ui._FRAME
+
+    yield open_box
+    ui._FRAME, ui._SCREEN, ui._ALT, ui.err._width, ui.err._height = saved
+
+
+class TestALongMenuIsStillAMenu:
+    """A box that renders empty offers nothing and explains nothing — the flow is simply over, with
+    no error and no way forward. `cuttle` did exactly that once logged in: 19 entries sized against
+    the terminal, drawn into a box capped at BOX_ROWS, trimmed away as one over-tall row."""
+
+    def _entries_drawn(self, frame) -> int:
+        with ui.err.capture() as cap:
+            ui.err.print(frame._render())
+        return cap.get().count("entry ")
+
+    @pytest.mark.parametrize("height", [24, 30, 40, 60, 100])
+    def test_every_terminal_height_still_shows_the_list(self, framed, height):
+        """The failure was height-dependent: it needed a terminal tall enough that the prompt asked
+        for more rows than the box has, which is every ordinary window."""
+        frame = framed(height)
+        surface = ui._Surface()
+        window = ui._select_window(surface.room(), 19)
+        frame.add(ui.Group(*[ui.Text("?")] + [ui.Text(f"  entry {i}") for i in range(window)]),
+                  window + 1)
+        assert self._entries_drawn(frame) >= 3
+
+    def test_a_prompt_is_never_sized_past_the_box_that_holds_it(self, framed):
+        frame = framed(60)
+        assert ui._Surface().room() <= frame.budget()
+
+    def test_an_over_tall_row_crops_instead_of_vanishing(self, framed):
+        """The safety net, independent of the sizing above: whatever mis-measures a row next, the
+        newest one is still drawn."""
+        frame = framed(40)
+        frame.add(ui.Group(*[ui.Text(f"  entry {i}") for i in range(50)]), 50)
+        assert self._entries_drawn(frame) >= 3
+
+
 @pytest.mark.slow
 def test_the_menu_actually_renders_on_a_real_terminal():
     """The one test that drives the prompt layer for real.
