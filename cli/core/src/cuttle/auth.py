@@ -187,8 +187,17 @@ def logout() -> None:
 # --- user-admin (on the Head, as ccc) ---------------------------------------
 
 def _admin_argv(args: list[str]) -> list[str]:
-    """Invoke the auth store's admin CLI as the `ccc` user through the API venv, with the db path set."""
-    return ["sudo", "-u", config.HEAD_API_USER, "env", f"CCC_HEAD_DB={config.HEAD_DB}",
+    """The auth store's admin CLI, as the `ccc` user through the API venv, with the db path set.
+
+    **Returned without the leading `sudo`** — every caller passes `sudo=True` to `system.run`, which
+    prepends it *and* primes the credential first (`prime_sudo`). A literal "sudo" here bypassed that
+    priming, and since these calls capture output, sudo's password prompt went into the pipe: the
+    command sat waiting on a question nobody could see. `cuttle user add` went blank at exactly the
+    point it shelled out, and `arm authorize` stopped after the name (its `--user` picker calls
+    `user_names`). Anything that runs sudo must go through `system.run`, so one prompt is drawn once,
+    as a Rich row, and fed over stdin.
+    """
+    return ["-u", config.HEAD_API_USER, "env", f"CCC_HEAD_DB={config.HEAD_DB}",
             str(config.API_VENV / "bin" / "python"), "-m", "ccc_head_api.admin", *args]
 
 
@@ -204,7 +213,7 @@ def _admin(args: list[str], check: bool = True):
 
     stdout is re-emitted as data: `pw=$(cuttle user add bob)` has to keep working.
     """
-    r = run(_admin_argv(args), capture_output=True, text=True, check=check)
+    r = run(_admin_argv(args), sudo=True, capture_output=True, text=True, check=check)
     if (r.stdout or "").strip():
         ui.data(r.stdout.rstrip())
     if (r.stderr or "").strip():
@@ -232,7 +241,7 @@ def user_names() -> list[str]:
     """Usernames, for a picker. Captured rather than printed — `_admin` exists to *show* output, and
     this is the one caller that wants the values instead. Empty on any failure: a picker that cannot
     read the list falls back to a free-text prompt, which still works."""
-    r = run(_admin_argv(["list"]), capture_output=True, text=True, check=False)
+    r = run(_admin_argv(["list"]), sudo=True, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         return []
     return [line.split()[0] for line in (r.stdout or "").splitlines()
@@ -242,7 +251,7 @@ def user_names() -> list[str]:
 def user_exists(username: str) -> bool:
     """Does this User have an account? `cuttle arm authorize --user` checks before minting a token —
     an owner typo would otherwise strand the Arm's Karma income on a User that never existed."""
-    return run(_admin_argv(["exists", username]), check=False).returncode == 0
+    return run(_admin_argv(["exists", username]), sudo=True, check=False).returncode == 0
 
 
 def seed_admin(username: str) -> None:

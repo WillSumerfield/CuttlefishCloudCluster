@@ -93,7 +93,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         r = run(auth._admin_argv([
             "submit", "--user", me, "--script", script, "--tar", tar_path,
             "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-            "--node", node, *args]), capture_output=True, text=True, check=False)
+            "--node", node, *args]), sudo=True, capture_output=True, text=True, check=False)
     finally:
         Path(tar_path).unlink(missing_ok=True)
     if r.returncode != 0:

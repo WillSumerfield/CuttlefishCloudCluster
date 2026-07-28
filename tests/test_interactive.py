@@ -14,6 +14,7 @@ layer underneath it is broken.
 import io
 import os
 import pty
+import subprocess
 import sys
 import termios
 import time
@@ -22,7 +23,7 @@ import pytest
 import typer
 from rich.console import Console
 
-from cuttle import main, menu, ui
+from cuttle import auth, main, menu, system, ui
 
 
 class _Probe:
@@ -335,6 +336,39 @@ class TestStreamsSurviveTheWizard:
         ui.data("4201")
         captured = capsys.readouterr()
         assert captured.out.strip() == "4201"
+
+
+class TestTheHeadAdminShellOutNeverBlocksOnAnInvisiblePrompt:
+    """`sudo` writes its password prompt to stderr and reads from the tty. These calls capture
+    output, so unless the credential is primed first the prompt goes into the pipe and the command
+    waits on a question nobody can see — no error, no spinner, nothing to answer. `cuttle user add`
+    went blank at exactly that point, and `arm authorize` stopped after the name (its `--user`
+    picker calls `user_names`). Priming happens in `system.run`, so the rule is that every sudo
+    command goes through it rather than carrying a literal "sudo" of its own.
+    """
+
+    @pytest.fixture
+    def spy(self, monkeypatch):
+        seen = {"primed": False, "argv": None}
+        monkeypatch.setattr(system, "prime_sudo", lambda: seen.__setitem__("primed", True))
+        monkeypatch.setattr(subprocess, "run",
+                            lambda cmd, **kw: (seen.__setitem__("argv", cmd),
+                                               subprocess.CompletedProcess(cmd, 0, "", ""))[1])
+        return seen
+
+    @pytest.mark.parametrize("call", [
+        lambda: auth.user_names(),
+        lambda: auth.user_exists("bob"),
+        lambda: auth.user_add("bob", admin=False),
+    ], ids=["user_names", "user_exists", "user_add"])
+    def test_the_credential_is_primed_before_it_shells_out(self, spy, call):
+        call()
+        assert spy["primed"], "nothing asked for a password; sudo's own prompt would be swallowed"
+
+    def test_the_command_still_runs_as_the_service_account(self, spy):
+        """The argv must not drift while moving the `sudo` out of it."""
+        auth.user_names()
+        assert spy["argv"][:3] == ["sudo", "-u", "ccc"]
 
 
 @pytest.fixture
