@@ -123,7 +123,7 @@ class TestTheMenuIsDerived:
         assert "user" in self._root().commands
 
     def test_destructive_entries_are_never_the_default(self):
-        st = menu.MenuState(logged_in=True, set_up=True, on_head=True)
+        st = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
         rows = menu._entries(self._root(), st)
         ordered = [p for p, _, _ in rows if p not in menu.NEVER_DEFAULT]
         assert ordered and ordered[0] != "teardown"
@@ -131,45 +131,66 @@ class TestTheMenuIsDerived:
 
 class TestTheMenuGatesByState:
     """Bare `cuttle` offers only what the box can do *now*: no `run` before you can log in, no
-    `setup` on a box already set up, no admin off the Head. Menu-only — typed commands still run and
-    fail with their own message (that invariant is tested above)."""
+    `setup` on a box that already carries a role, no admin off the Head. Menu-only — typed commands
+    still run and fail with their own message (that invariant is tested above)."""
 
     def _paths(self, **state) -> set[str]:
         root = typer.main.get_command(main.app)
         return {p for p, _, _ in menu._entries(root, menu.MenuState(**state))}
 
     def test_logged_out_hides_the_submit_suite_and_offers_login(self):
-        paths = self._paths(logged_in=False, set_up=True, on_head=False)
+        paths = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
         assert "login" in paths
         assert paths.isdisjoint({"run", "status", "logs", "outputs", "cancel", "karma"})
         assert "logout" not in paths and "whoami" not in paths
 
     def test_logged_in_shows_the_submit_suite_and_hides_login(self):
-        paths = self._paths(logged_in=True, set_up=True, on_head=False)
+        paths = self._paths(logged_in=True, provisioned=True, pointed=True, on_head=False)
         assert {"run", "status", "logs", "outputs", "cancel", "karma"} <= paths
         assert {"logout", "whoami", "passwd"} <= paths
         assert "login" not in paths
 
-    def test_setup_shows_only_before_the_box_is_set_up(self):
-        assert "setup" in self._paths(logged_in=False, set_up=False, on_head=False)
-        assert "setup" not in self._paths(logged_in=False, set_up=True, on_head=False)
+    def test_setup_shows_until_the_box_carries_a_role(self):
+        """Pointed is NOT provisioned. A box the installer pointed at a Head still has to be able to
+        become an Arm — hiding `setup` there was the installer bug."""
+        assert "setup" in self._paths(logged_in=False, provisioned=False, pointed=False,
+                                      on_head=False)
+        assert "setup" in self._paths(logged_in=False, provisioned=False, pointed=True,
+                                      on_head=False)
+        assert "setup" not in self._paths(logged_in=False, provisioned=True, pointed=True,
+                                          on_head=False)
 
-    def test_teardown_shows_only_once_the_box_is_set_up(self):
-        assert "teardown" not in self._paths(logged_in=False, set_up=False, on_head=False)
-        assert "teardown" in self._paths(logged_in=True, set_up=True, on_head=False)
+    def test_teardown_shows_once_there_is_anything_to_remove(self):
+        """A role, or a client's own `~/.ccc` — but not a bare box that has merely been run once."""
+        assert "teardown" not in self._paths(logged_in=False, provisioned=False, pointed=False,
+                                             on_head=False)
+        assert "teardown" in self._paths(logged_in=False, provisioned=False, pointed=True,
+                                         on_head=False)
+        assert "teardown" in self._paths(logged_in=True, provisioned=True, pointed=True,
+                                         on_head=False)
+
+    def test_a_freshly_installed_box_leads_with_login_then_setup(self):
+        """What a baked bundle leaves behind: pointed, roleless, logged out. `install.sh` says to run
+        `cuttle login`, so that must be the pre-selected row — with `setup` still there beneath it."""
+        root = typer.main.get_command(main.app)
+        st = menu.MenuState(logged_in=False, provisioned=False, pointed=True, on_head=False)
+        rows = [p for p, _, _ in menu._entries(root, st)]
+        assert rows[0] == "login"
+        assert rows.index("setup") > rows.index("login")
 
     def test_the_admin_family_is_the_heads_alone(self):
         admin = {"user", "arm", "build-installer"}
-        assert admin.isdisjoint(self._paths(logged_in=True, set_up=True, on_head=False))
-        assert admin <= self._paths(logged_in=True, set_up=True, on_head=True)
+        assert admin.isdisjoint(self._paths(logged_in=True, provisioned=True, pointed=True,
+                                            on_head=False))
+        assert admin <= self._paths(logged_in=True, provisioned=True, pointed=True, on_head=True)
 
     def test_karma_descends_to_standings_plus_ledger_and_never_hides_standings(self):
         """karma has a client-visible read now (ledger), so it is a group everywhere — but its own
         action (standings) must not fall out of the menu behind its subcommands. Descending shows
         standings as an explicit leaf plus ledger on a client; the Head adds override/bump."""
         karma = typer.main.get_command(main.app).commands["karma"]
-        client = menu.MenuState(logged_in=True, set_up=True, on_head=False)
-        head = menu.MenuState(logged_in=True, set_up=True, on_head=True)
+        client = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=False)
+        head = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
         assert menu._visible_children("karma", karma, client) is True
         client_rows = [p for p, _, _ in menu._entries(karma, client, "karma ")]
         head_rows = [p for p, _, _ in menu._entries(karma, head, "karma ")]

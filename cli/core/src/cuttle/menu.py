@@ -14,11 +14,19 @@ here. `--help` still lists everything, and an explicitly typed command still run
 real message. If a detection bug ever hides something wrongly, the command must still be reachable;
 silently vanishing is indistinguishable from "this version doesn't have it", and costs hours.
 
-Three axes decide what shows (see `MenuState`): whether you are **logged in** (a live session on the
-Head — validated, not just a file on disk), whether the box is **set up** (a Head/Arm role, or any
-local `~/.ccc` state), and whether you are **on the Head** (the operator, who does admin with no
-session at all). "Admin" is not an axis: the admin commands are Head-local operator commands, gated
-by being on the Head, never by a session's `is_admin`.
+Four axes decide what shows (see `MenuState`): whether you are **logged in** (a live session on the
+Head — validated, not just a file on disk), whether the box is **provisioned** (it carries a role —
+Head or Arm), whether it is **pointed** (cuttle here knows which Head to talk to), and whether you are
+**on the Head** (the operator, who does admin with no session at all). "Admin" is not an axis: the
+admin commands are Head-local operator commands, gated by being on the Head, never by a session's
+`is_admin`.
+
+Provisioned and pointed are deliberately separate (glossary: `cli/CONTEXT.md`). They were once one
+"set up" flag, and conflating them broke the installer: a **baked** bundle's `install.sh` points the
+box (config + cert pin) without provisioning it, which read as "already set up" and hid `setup` — so
+a freshly-installed box could not be turned into an Arm from the menu. The flag was also testing the
+wrong thing outright: it keyed off `~/.ccc` existing, and `ui._open_log` mkdirs `~/.ccc/logs` on any
+command that prints, so it went true after roughly the first `cuttle` command ever run.
 """
 
 from dataclasses import dataclass
@@ -47,10 +55,11 @@ PROBE_TIMEOUT = 2.0
 
 @dataclass
 class MenuState:
-    """The three facts the menu filters on. Computed once per `choose`, then threaded down so the
+    """The four facts the menu filters on. Computed once per `choose`, then threaded down so the
     tests can fabricate a state without a network probe (and so the probe runs exactly once)."""
     logged_in: bool
-    set_up: bool
+    provisioned: bool
+    pointed: bool
     on_head: bool
 
 # Short labels for the menu. The command's own help is written for `--help` and is a paragraph; a
@@ -104,7 +113,11 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # Top-level order — by how often you reach for it, not by declaration order in main.py. The first
 # entry is pre-selected, so it should be the daily verb rather than the one that re-provisions the
 # box. Anything unlisted keeps its declared position, after these.
-ORDER = ["run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide", "account"]
+# `login` trails the submit verbs but leads everything unlisted, so on a freshly-installed box the
+# pre-selected row is "Log in" — what install.sh printed as the next step — rather than `setup`. It
+# only ever shows when logged out, so this costs the everyday menu nothing.
+ORDER = ["run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide", "account",
+         "login"]
 
 
 def is_head() -> bool:
@@ -128,12 +141,22 @@ def is_arm() -> bool:
     return bool(settings.load().get("arm")) or config.SLURMD_DROPIN.exists()
 
 
-def is_set_up() -> bool:
-    """Has this box been provisioned at all? A Head or an Arm, or — for a plain client, whose setup is
-    just dirs + a login and leaves no role marker — any local `~/.ccc` state. `login` creates that
-    directory, so logging in counts as set up (and hides `setup`, which is fine: you can still type
-    it to promote the box into an Arm/Head)."""
-    return is_head() or is_arm() or config.CCC_HOME.exists()
+def is_provisioned() -> bool:
+    """Does this box carry a role — Head or Arm? The state with cluster machinery installed on it, and
+    the state `teardown` reverses. A client is never provisioned: `setup --client` installs nothing on
+    the box, it only points the tool."""
+    return is_head() or is_arm()
+
+
+def is_pointed() -> bool:
+    """Does cuttle here know which Head to talk to? A recorded Head URL is the whole test — that is
+    what "pointed" means, and it is what a **baked** bundle's `install.sh` writes (config.yaml + the
+    matching cert pin) and what `setup --client` writes.
+
+    Deliberately NOT `CCC_HOME.exists()`: `ui._open_log` mkdirs `~/.ccc/logs` on any command that
+    prints, so the directory says "this tool has been run here", not "this box is configured".
+    """
+    return bool(settings.load().get("head"))
 
 
 def _session() -> tuple[bool, str | None]:
@@ -159,7 +182,8 @@ def _session() -> tuple[bool, str | None]:
 
 def _detect_state() -> tuple[MenuState, str | None]:
     logged_in, warning = _session()
-    return MenuState(logged_in=logged_in, set_up=is_set_up(), on_head=is_head()), warning
+    return MenuState(logged_in=logged_in, provisioned=is_provisioned(), pointed=is_pointed(),
+                     on_head=is_head()), warning
 
 
 def _is_group(cmd) -> bool:
@@ -178,10 +202,15 @@ def _visible(path: str, st: MenuState) -> bool:
     top = path.split()[0]
     if path in HEAD_ONLY or top in HEAD_ONLY:
         return st.on_head
+    # `setup` goes when there is nothing left to provision. A merely *pointed* box still shows it —
+    # that is the whole promote-a-client-to-an-Arm path, and hiding it is what the installer broke.
+    # (`setup --arm --re-enroll` on a live Arm is a typed recovery command; mesh.py prints it.)
     if top == "setup":
-        return not st.set_up
+        return not st.provisioned
+    # `teardown` goes when there is anything to remove — a role, or a client's own `~/.ccc`. A stray
+    # logs dir alone is not worth a menu entry.
     if top == "teardown":
-        return st.set_up
+        return st.provisioned or st.pointed
     if top == "login":
         return not st.logged_in
     if path in LOGIN_REQUIRED or top in LOGIN_REQUIRED:
