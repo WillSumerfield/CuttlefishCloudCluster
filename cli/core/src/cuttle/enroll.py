@@ -222,16 +222,20 @@ def _await_enrollment(name: str, timeout_s: int = 300) -> dict:
     pre-declaration is what lets the Enroll API refuse un-named machines), so its mere existence
     proves nothing. `mesh_ip` and `gpu_device` are null until the donor's POST fills them in.
     """
-    print(f"cuttle: waiting for {name} to enroll (the donor runs `cuttle setup --arm --token ...`)")
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        reg = load_registry()
-        if reg.get(name, {}).get("mesh_ip"):
-            return reg
-        time.sleep(2)
-    raise ui.abort(
-        f"{name} has not enrolled yet. Nothing is broken and the pre-declaration stands",
-        next_step=f"when the donor has run `cuttle setup --arm`, finish with `cuttle arm admit {name}`")
+    # A step, not a print: this blocks for up to five minutes waiting on another human, and stdout is
+    # held back until the flow ends — so a `print` here is a silent screen for the entire wait, which
+    # is indistinguishable from a hang. The spinner says it is still waiting, and on whom.
+    with ui.step(f"Waiting for {name} to enroll (the donor runs `cuttle setup --arm --token …`)"):
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            reg = load_registry()
+            if reg.get(name, {}).get("mesh_ip"):
+                return reg
+            time.sleep(2)
+        raise ui.abort(
+            f"{name} has not enrolled yet. Nothing is broken and the pre-declaration stands",
+            next_step=f"when the donor has run `cuttle setup --arm`, finish with "
+                      f"`cuttle arm admit {name}`")
 
 
 # --- the Power benchmark (Head only, operator + sudo) -----------------------
@@ -247,15 +251,16 @@ def _wait_for_node(name: str, timeout_s: int = 300) -> None:
     """Block until the node is registered and idle. `arm authorize` reaches here the moment it has
     written gres.conf — but the donor's `setup --arm` is still polling for that admission and hasn't
     started its slurmd yet, so for a few seconds the node Slurm is about to benchmark does not exist."""
-    print(f"cuttle: waiting for {name} to come up in Slurm")
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        r = run(["sinfo", "-h", "-n", name, "-o", "%T"], capture_output=True, text=True, check=False)
-        if r.stdout.strip().rstrip("*") in ("idle", "mixed", "allocated"):
-            return
-        time.sleep(3)
-    raise ui.abort(f"{name} never came up in Slurm",
-                   next_step=f"benchmark it later with `cuttle arm benchmark {name}`")
+    with ui.step(f"Waiting for {name} to come up in Slurm"):
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            r = run(["sinfo", "-h", "-n", name, "-o", "%T"],
+                    capture_output=True, text=True, check=False)
+            if r.stdout.strip().rstrip("*") in ("idle", "mixed", "allocated"):
+                return
+            time.sleep(3)
+        raise ui.abort(f"{name} never came up in Slurm",
+                       next_step=f"benchmark it later with `cuttle arm benchmark {name}`")
 
 
 def benchmark_arm(name: str) -> dict:
@@ -265,7 +270,17 @@ def benchmark_arm(name: str) -> dict:
     so there is one code path for a donor's box and for the Head's own co-located Arm (which simply
     rsyncs to itself over the mesh). The Head pre-creates the landing directory because rsync will not
     invent one.
+
+    Its own box when run as `cuttle arm benchmark` — it waits on Slurm and then on a Spawn, minutes
+    with nothing to show otherwise. Reached from `_admit` a box is already open, and a nested
+    `section` is transparent (no second frame, and the outer one releases the results).
     """
+    with ui.section(f"Benchmarking {name}", lambda: "benchmarked"):
+        system.prime_sudo()
+        return _benchmark_arm(name)
+
+
+def _benchmark_arm(name: str) -> dict:
     _wait_for_node(name)
     head_ip = mesh.tailscale_ip()
     dest = config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME / name
@@ -278,27 +293,27 @@ def benchmark_arm(name: str) -> dict:
         job_file = f.name
     Path(job_file).chmod(0o644)  # sbatch reads it as ccc, not as the operator
 
-    print(f"cuttle: benchmarking {name} (matmul in the Pod — this is what prices a second on it)")
-    run(["-u", config.HEAD_API_USER, "sbatch", "--parsable", job_file], sudo=True, check=True)
-
-    deadline = time.time() + config.BENCH_TIMEOUT_S
-    while time.time() < deadline:
-        r = run(["cat", str(dest / "power")], sudo=True, capture_output=True, text=True, check=False)
-        if r.returncode == 0 and r.stdout.strip():
-            result = json.loads(r.stdout)
-            break
-        time.sleep(3)
-    else:
-        raise ui.abort(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s",
-                       next_step=f"retry with `cuttle arm benchmark {name}`")
+    with ui.step(f"Benchmarking {name} (matmul in the Pod — this is what prices a second on it)"):
+        run(["-u", config.HEAD_API_USER, "sbatch", "--parsable", job_file], sudo=True, check=True)
+        deadline = time.time() + config.BENCH_TIMEOUT_S
+        while time.time() < deadline:
+            r = run(["cat", str(dest / "power")], sudo=True,
+                    capture_output=True, text=True, check=False)
+            if r.returncode == 0 and r.stdout.strip():
+                result = json.loads(r.stdout)
+                break
+            time.sleep(3)
+        else:
+            raise ui.abort(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s",
+                           next_step=f"retry with `cuttle arm benchmark {name}`")
 
     reg = load_registry()
     reg[name]["power"] = result["power"]
     reg[name]["gpu"] = result["gpu"]
     save_registry(reg)
     apply_weight(name, result["power"])
-    print(f"cuttle: {name} = {result['gpu']}, {result['power']} TFLOP/s, "
-          f"{result['vram_mb']} MiB VRAM")
+    ui.result("gpu", f"{result['gpu']} — {result['vram_mb']} MiB VRAM")
+    ui.result("power", f"{result['power']} TFLOP/s")
     return result
 
 
@@ -332,6 +347,15 @@ def authorize_arm(name: str, owner: str, write_root_file) -> None:
        it must be in place before any machine can possibly reach /enroll.
     4. *Mint the key* (1h, single-use — mesh.mint_preauthkey's defaults) and print the token.
     """
+    # A box of its own. Everything below either blocks on another human or shells out with sudo, and
+    # `ui.result` is only released when a section closes — outside one the token would be collected
+    # and then dropped on the floor.
+    with ui.section(f"Authorizing {name}", lambda: "authorized"):
+        system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
+        _authorize_arm(name, owner, write_root_file)
+
+
+def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     if not auth.user_exists(owner):
         raise ui.abort(f"no such user {owner!r}",
                        next_step=f"create them first with `cuttle user add {owner}`")
@@ -351,10 +375,23 @@ def authorize_arm(name: str, owner: str, write_root_file) -> None:
     save_registry(reg)
 
     token = _mint_token(name, mesh.mint_preauthkey())
-    print(f"\ncuttle: authorized '{name}' (owner: {owner}).\n")
-    print("  SECRET — send this privately. It admits one machine, once, within the hour:\n")
-    print(f"  {token}\n")
-    print(f"  The donor runs:  cuttle setup --arm --token <token>\n")
+    # The token has to be readable RIGHT NOW: the next line blocks for up to five minutes waiting for
+    # the donor to redeem it, and they cannot redeem what they have not been sent. `ui.say` draws it
+    # in the box immediately; `ui.data` puts it on stdout so `t=$(cuttle arm authorize …)` still
+    # works (held by the alternate screen and replayed when the terminal comes back); `ui.result`
+    # carries it onto the real terminal after the screen is discarded.
+    ui.say(f"[ok]✓[/ok] authorized [bold]{name}[/bold] (owner: {owner})")
+    ui.say("")
+    ui.say("  [warn]SECRET[/warn] — send this privately. It admits one machine, once, "
+           "within the hour:")
+    ui.say(f"  [bold]{token}[/bold]")
+    ui.say("  the donor runs:  [accent]cuttle setup --arm --token <token>[/accent]")
+    ui.say("")
+    ui.data(token)
+    # Registered BEFORE the wait, deliberately: a wait that times out is exactly when the operator
+    # still needs the token — it stays valid for the hour, and `cuttle arm admit` finishes the job.
+    ui.result("arm", f"{name} (owner: {owner})")
+    ui.result("token", token)
 
     reg = _await_enrollment(name)
     _admit(name, reg, write_root_file)
@@ -374,15 +411,19 @@ def admit_arm(name: str, write_root_file) -> None:
     if not reg[name].get("mesh_ip"):
         raise ui.abort(f"{name!r} is authorized but has not enrolled yet — it appears once "
                        f"the donor has run `cuttle setup --arm --token ...`")
-    _admit(name, reg, write_root_file)
+    # Its own box, for the same reason `authorize` has one: it benchmarks, which blocks for minutes
+    # and reports its findings as results.
+    with ui.section(f"Admitting {name}", lambda: "admitted"):
+        system.prime_sudo()
+        ui.result("arm", f"{name} (owner: {reg[name].get('owner')})")
+        _admit(name, reg, write_root_file)
 
 
 def _admit(name: str, reg: dict, write_root_file) -> None:
-    reg[name]["admitted"] = True
-    save_registry(reg)
-    render_gres(reg, write_root_file)
-    print(f"cuttle: {name} admitted ({reg[name]['gpu_device']}, owner {reg[name].get('owner')}) — "
-          f"its slurmd can now register")
+    with ui.step(f"Admitting {name} to Slurm ({reg[name]['gpu_device']})"):
+        reg[name]["admitted"] = True
+        save_registry(reg)
+        render_gres(reg, write_root_file)
     # An Arm with no Power cannot be priced, so it is benchmarked as part of joining — not as an
     # optional follow-up an operator might forget.
     benchmark_arm(name)
