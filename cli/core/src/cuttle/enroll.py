@@ -214,24 +214,28 @@ def reapply_weights(reg: dict) -> None:
             apply_weight(name, e["power"])
 
 
-def _await_enrollment(name: str, timeout_s: int = 300) -> dict:
+def _await_enrollment(name: str, token: str, timeout_s: int = 300) -> dict:
     """Block until the Arm POSTs /enroll — the only thing that tells us the GPU device we must write
     into gres.conf.
 
     Waits for `mesh_ip`, not for the row: `authorize` pre-declared the row itself moments ago (that
     pre-declaration is what lets the Enroll API refuse un-named machines), so its mere existence
     proves nothing. `mesh_ip` and `gpu_device` are null until the donor's POST fills them in.
+
+    `token` is here only to keep the copy hotkey live: this wait is precisely the window in which the
+    operator still has to *send* the token, so it is where `c` has to work.
     """
     # A step, not a print: this blocks for up to five minutes waiting on another human, and stdout is
     # held back until the flow ends — so a `print` here is a silent screen for the entire wait, which
     # is indistinguishable from a hang. The spinner says it is still waiting, and on whom.
-    with ui.step(f"Waiting for {name} to enroll (the donor runs `cuttle setup --arm --token …`)"):
+    with ui.step(f"Waiting for {name} to enroll (the donor runs `cuttle setup --arm --token …`)"), \
+            ui.copy_hotkey(token) as wait:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             reg = load_registry()
             if reg.get(name, {}).get("mesh_ip"):
                 return reg
-            time.sleep(2)
+            wait(2)
         raise ui.abort(
             f"{name} has not enrolled yet. Nothing is broken and the pre-declaration stands",
             next_step=f"when the donor has run `cuttle setup --arm`, finish with "
@@ -392,8 +396,10 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     # still needs the token — it stays valid for the hour, and `cuttle arm admit` finishes the job.
     ui.result("arm", f"{name} (owner: {owner})")
     ui.result("token", token)
-
-    reg = _await_enrollment(name)
+    # Straight into the wait — no pause to acknowledge. The wait IS the window in which the operator
+    # sends the token, and `c` copies it throughout (ui.copy_hotkey), so stopping the flow first to
+    # offer that would only have interrupted it.
+    reg = _await_enrollment(name, token)
     _admit(name, reg, write_root_file)
 
 
