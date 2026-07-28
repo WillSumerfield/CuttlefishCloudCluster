@@ -38,6 +38,20 @@ CERT_MISMATCH = (
     "Either the Head was rebuilt with a new certificate, or something is impersonating it.\n"
     "If you rebuilt it: delete the pin and log in again.")
 
+# The Head's cert is genuine but does not *list* the address we dialled. A different fault entirely
+# from a swap, and it must not borrow the swap's alarm: nothing is impersonating anything, the
+# operator simply pointed this box at an address `setup` never put in the SANs (it covers the LAN IP,
+# the mesh IP, the hostname and localhost — see setup.install_tls). Told apart by verify_code, which
+# OpenSSL sets to HOSTNAME_MISMATCH/IP_ADDRESS_MISMATCH here and to a signature/issuer error on a real
+# swap. Getting this wrong costs an hour: it reads as a security incident.
+CERT_WRONG_ADDRESS = (
+    "{url} is not an address the Head's certificate covers.\n"
+    "The certificate is the right one — it just does not list this address, so TLS refuses it.\n"
+    "Point this box at an address the Head serves (its LAN IP, or its mesh IP once you are on the "
+    "CCC mesh).")
+# X509_V_ERR_HOSTNAME_MISMATCH / X509_V_ERR_IP_ADDRESS_MISMATCH.
+_NAME_MISMATCH_CODES = {62, 64}
+
 
 class ApiError(Exception):
     """A Head API call that did not succeed. Carries the status so callers can tell a *normal*
@@ -132,9 +146,13 @@ class Api:
             # Head is off or off-mesh, and left uncaught it reaches the user as a bare "timed out"
             # that names neither the Head nor the fact that it was unreachable.
             if isinstance(e.__cause__, ssl.SSLCertVerificationError):
-                # A swapped certificate lands here. Say so plainly — this is the alarm the pin exists
-                # to raise, and "connection error" would bury it.
-                raise ApiError(path, CERT_MISMATCH.format(url=self.url or "the Head")) from None
+                # A swapped certificate lands here — say so plainly, it is the alarm the pin exists to
+                # raise and "connection error" would bury it. But so does dialling an address the
+                # genuine cert doesn't list, which is not an alarm at all; separate them.
+                where = self.url or "the Head"
+                template = (CERT_WRONG_ADDRESS
+                            if e.__cause__.verify_code in _NAME_MISMATCH_CODES else CERT_MISMATCH)
+                raise ApiError(path, template.format(url=where)) from None
             where = self.url or "the Head"
             # No httpx class name (`ConnectTimeout`, `ReadError`) in the user's face — it names a
             # library, not a fix. The cause is always the same one thing to check; say that. The raw
