@@ -111,9 +111,10 @@ def is_head() -> bool:
     """Is this box the Head?
 
     The predicate is the API venv's interpreter, **not head.db**. head.db lives under
-    `/var/lib/ccc/head`, which is `drwx------ ccc ccc` — so `HEAD_DB.exists()` is False for every
-    user except `ccc` and root, *including the operator standing on the Head*. Using it would hide
-    user management on the one machine where it works.
+    `/var/lib/ccc/head`, which is `drwx------ ccc ccc` — so for every user except `ccc` and root,
+    *including the operator standing on the Head*, `HEAD_DB.exists()` doesn't answer "no", it RAISES
+    PermissionError (pathlib swallows only not-found-ish errors, never EACCES). Using it would crash
+    the menu on the one machine where user management works.
 
     `/opt/ccc/api` is world-readable, and this interpreter is exactly what `auth._admin_argv` execs,
     so "offered in the menu" and "actually runnable" cannot drift apart.

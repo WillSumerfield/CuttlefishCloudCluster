@@ -183,11 +183,14 @@ def _write_ccc_file(path, content, write_unit) -> None:
 
 
 def _read_existing_conf() -> dict:
-    """Root-owned-by-mode-0600, ccc-owned by user — needs sudo to read back, same idiom as
-    mesh._state_prefs(). Used only so `prompt_smtp()` can default to what's already configured on a
-    re-run, instead of making the operator retype every field."""
-    if not config.MONITOR_CONF.exists():
-        return {}
+    """Mode 0600, ccc-owned — needs sudo to read back, same idiom as mesh._state_prefs(). Used only so
+    `prompt_smtp()` can default to what's already configured on a re-run, instead of making the
+    operator retype every field.
+
+    No `.exists()` guard, deliberately: it lives under HEAD_STATE_DIR (`drwx------ ccc ccc`), and
+    pathlib only swallows not-found-ish errors — EACCES propagates, so stat'ing it as the operator
+    raises PermissionError rather than returning False. `sudo cat` answers both questions at once:
+    absent or unreadable, non-zero means "nothing configured yet"."""
     r = run(["cat", str(config.MONITOR_CONF)], sudo=True, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         return {}
