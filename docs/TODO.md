@@ -213,7 +213,7 @@ Fix later: have the job push `.out`/`.err` to the Head periodically (background 
 seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
 racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
 
-## GPU cgroup isolation — WRITTEN, awaiting hardware verification — [effort: med]
+## GPU cgroup isolation — DONE, verified on hardware 2026-07-29 — [effort: med]
 
 **The bug this fixes, measured on the first remote job:** `srun -w will-personal --gres=gpu:1`
 succeeded, but `SLURM_JOB_GPUS` came back **empty**. Slurm counted the GRES for scheduling and never
@@ -235,26 +235,25 @@ served to every Arm over configless. Scope decisions, all deliberate:
 - **No preflight cgroup-version check** — `setup.py`'s WSL/`dxg` warning stays as-is; a symmetric
   cgroup warning waits until the hardware test shows it's needed.
 
-**Remaining, and the only thing left here:** the hardware test. Re-run `cuttle setup --head` and
-`cuttle setup --arm` (both restart their daemons; a plugin change needs a restart, `scontrol
-reconfigure` won't do it), then two checks decide it:
+**Verified on hardware (2026-07-29)**, two `sbatch` jobs on `willimperial` (native Linux, cgroup v2,
+RTX 5080). Both landed in `/system.slice/willimperial_slurmstepd.scope/job_<id>/step_batch/user/task_0`:
 
-1. **Allocation sees its GPU.** An `sbatch --gres=gpu:1` job reports a populated `SLURM_JOB_GPUS`.
-   Must be `sbatch`, not `srun`: inside a step that variable is empty by design and `SLURM_STEP_GPUS`
-   carries the value instead, so an `srun` probe fails whether isolation works or not.
-2. **A job with no `--gres` is denied `/dev/nvidia0` (EPERM).** The real isolation proof, and it works
-   on today's one-GPU-per-node fleet. Run it on a **native Linux** Arm only — WSL has no
-   `/dev/nvidia0` at all, so there the open raises `FileNotFoundError`, which is not a denial and must
-   not be read as a pass.
+1. **Allocation sees its GPU** — `--gres=gpu:1` → `SLURM_JOB_GPUS=0`, `CUDA_VISIBLE_DEVICES=0`,
+   `nvidia-smi -L` lists the 5080. The original bug is gone. Use `sbatch`, not `srun`: inside a step
+   `SLURM_JOB_GPUS` is empty by design and `SLURM_STEP_GPUS` carries the value, so an `srun` probe
+   fails whether isolation works or not — that trap is what made the first measurement look broken.
+2. **Isolation holds** — no `--gres` → opening `/dev/nvidia0` fails **EPERM**, and `nvidia-smi -L`
+   reports `No devices found`. Allocation is now enforced, not advisory. This is the check that
+   decides the item, and it needs a **native Linux** Arm: WSL has no `/dev/nvidia0` at all, so there
+   the open raises `FileNotFoundError`, which is not a denial and must not be scored as a pass.
 
 cgroup v2 enforces devices via eBPF, so there is no `devices.list` to read — behaviour is the only
-observable. Two Spawns confined to separate slices of one *shared* card stays unverifiable until a
-multi-GPU box exists — a documented gap, not a blocker.
+observable, which is why both checks are behavioural.
 
-**Observed so far (2026-07-28), nothing yet proven:** jobs do land in a per-job cgroup on both boxes —
-the Head (v2) shows `job_<id>/step_<n>/user/task_0`, the WSL Arm (v1) shows
-`devices:/slurm_<cluster>/uid_60000/job_<id>/step_<n>/task_0`. Neither check above has been run to a
-verdict yet.
+**Known gap, not a blocker:** two Spawns confined to separate slices of one *shared* card is still
+unverified, and stays that way until a multi-GPU box exists. The WSL Arm (cgroup v1, `/dev/dxg`) is
+permanently out of scope per the scope decision above; it schedules and runs fine, it is simply not
+isolated.
 
 ## Low Karma long jobs get cancelled / Spawn Code Format Solidifcation — [effort: high]
 There should be some disincentive for queuing long jobs when you have very low karma. Jobs should probably be cancelled. 
