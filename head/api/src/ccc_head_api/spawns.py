@@ -97,21 +97,36 @@ else
     proj="$scratch/%%UUID%%"
     trap 'rm -rf "$scratch"' EXIT
     mkdir -p "$scratch/outputs"
+    # Named BEFORE the stage-in, so a stage-in that fails still has somewhere to say so and a way to
+    # send it home. Nothing has run yet, so out/err start empty rather than absent — rsync would skip
+    # a missing file and the Head would show no reason at all.
+    out="$scratch/out"; err="$scratch/err"; exitf="$scratch/exit"; ccc_out="$scratch/outputs"
+    : > "$out"; : > "$err"
+    stage_out() {
+        # out/err/outputs first, then exit LAST — its arrival is the Head's "done" marker. Bail before
+        # sending exit if the logs did not land: a "done" marker with no logs beside it is worse than
+        # no marker, because it claims the Spawn was accounted for. The destination spawns/<jid>/
+        # already exists: the API pre-created it at submit, for every Spawn.
+        rsync -a "$out" "$err" "$ccc_out" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" || return 1
+        rsync -a "$exitf" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
+    }
     # files-from paths are module-root-relative (<uuid>/...) and pulled from the MODULE ROOT — NOT a
     # subpath source, which makes rsyncd (use chroot = no) report every file "vanished". rsync
     # recreates <uuid>/... under $scratch, so $proj resolves.
     cat > "$scratch/filelist" <<'CCC_FILELIST'
 %%FILELIST%%
 CCC_FILELIST
-    rsync -a --files-from="$scratch/filelist" \
-        "rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/" "$scratch/"
-    out="$scratch/out"; err="$scratch/err"; exitf="$scratch/exit"; ccc_out="$scratch/outputs"
-    stage_out() {
-        # out/err/outputs first, then exit LAST — its arrival is the Head's "done" marker. The
-        # destination spawns/<jid>/ already exists: the API pre-created it at submit, for every Spawn.
-        rsync -a "$out" "$err" "$ccc_out" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
-        rsync -a "$exitf" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
-    }
+    # Stop here if the project never arrived. Without this the script walks on into `cd "$proj"` — a
+    # directory rsync never created — and runs the payload against whatever /tmp happens to hold,
+    # which surfaces as a confusing python error instead of "the files could not be fetched".
+    if ! rsync -a --files-from="$scratch/filelist" \
+            "rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/" "$scratch/" 2>>"$err"; then
+        echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/ —" >> "$err"
+        echo "ccc: this Spawn never started. Is the Head's rsync daemon up, and is this Arm on the mesh?" >> "$err"
+        echo 1 > "$exitf"
+        stage_out
+        exit 1
+    fi
 fi
 
 cd "$proj"
@@ -125,7 +140,11 @@ apptainer exec --nv --bind "$ccc_out" --env "$wenv,CCC_OUT=$ccc_out" \
   "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err"
 rc=$?
 echo $rc > "$exitf"
-stage_out
+# A failed stage-out is indistinguishable, from the Head, from an Arm that dropped mid-Spawn: no exit
+# file ever lands, so the Spawn reads as "killed". Say so in the node-local slurm log, which is the
+# only place left that can still be written.
+stage_out || echo "ccc: staging results back to rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/ FAILED —" \
+                  "the Spawn ran (rc=$rc) but the Head will report it as lost." >&2
 exit $rc
 """
 
@@ -180,6 +199,14 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
     never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally.
     """
+    # Refuse rather than render `rsync:///project/`. An empty mesh IP is a Head that does not know its
+    # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
+    # Arm, and only discoverable minutes later, on another machine, as a Spawn that "vanished". We
+    # cannot know where it will land, so no Spawn goes out at all.
+    if not MESH_IP:
+        raise ValueError("the Head does not know its own mesh address (CCC_MESH_IP is empty in the "
+                         "ccc-head-api unit) — a remote Arm would have nowhere to fetch this Spawn's "
+                         "files from. Re-run `cuttle setup --head` on the Head to rewrite the unit")
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
     staging.mkdir(parents=True)
@@ -190,13 +217,20 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
 
     body = _render(uuid, staging, gpu, script, args, files, node, minutes, constraint, exclude)
+    # delete=False so `sbatch` — a separate process — can open the path; we unlink it ourselves the
+    # moment sbatch returns. sbatch has copied the script into slurmctld's state by then, so the file
+    # has no reader left. Leaving them behind accumulates one per Spawn, each carrying the project's
+    # full file list, under an account nobody logs in as to clean up.
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
         f.write(body)
         job_file = f.name
 
     env = {**os.environ, **wandb_env}
-    r = subprocess.run(["sbatch", "--parsable", job_file],
-                       capture_output=True, text=True, check=True, env=env)
+    try:
+        r = subprocess.run(["sbatch", "--parsable", job_file],
+                           capture_output=True, text=True, check=True, env=env)
+    finally:
+        Path(job_file).unlink(missing_ok=True)
     job_id = int(r.stdout.strip())
     # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
     # into rsync://<head>/spawns/<jid>/, and rsync will not invent that directory. Safe to do after

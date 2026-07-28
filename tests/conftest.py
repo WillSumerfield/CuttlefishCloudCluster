@@ -134,6 +134,10 @@ def fake_slurm(monkeypatch, tmp_path):
     monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
     monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
+    # A real Head always knows its mesh address (the unit injects it) and refuses to submit without
+    # one, since a remote Arm would have nowhere to rsync from. Read from the environment at import,
+    # which no test process sets.
+    monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
