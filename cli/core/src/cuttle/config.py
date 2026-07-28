@@ -340,3 +340,26 @@ LOG_DIR = CCC_HOME / "logs"
 CREDENTIALS_FILE = CCC_HOME / "credentials"
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
+
+# --- Head-box health monitoring (Phase 8 loose end) ---
+# Disk/process-liveness/rogue-GPU-CPU checks on the Head itself, scoped Head-only (an Arm is a donor's
+# machine, not ours to watch the same way — see docs/TODO.md). One standalone script (no cuttle
+# import) on a systemd timer, run as `ccc` — nothing here needs root.
+MONITOR_SCRIPT = Path("/opt/ccc/bin/ccc-monitor.py")
+MONITOR_SERVICE = "ccc-monitor"
+MONITOR_SERVICE_UNIT = Path("/etc/systemd/system/ccc-monitor.service")
+MONITOR_TIMER_UNIT = Path("/etc/systemd/system/ccc-monitor.timer")
+MONITOR_INTERVAL_MIN = 5
+MONITOR_CHECKS = HEAD_STATE_DIR / "monitor_checks.json"  # thresholds + service list, ccc:ccc 0600
+MONITOR_CONF = HEAD_STATE_DIR / "monitor.yaml"            # SMTP creds + recipient, ccc:ccc 0600
+MONITOR_STATE = HEAD_STATE_DIR / "monitor_state.json"     # per-check last-alert time, ccc:ccc 0600
+MONITOR_DISK_PATH = "/"
+MONITOR_DISK_PCT = 85
+# telemetry/CONTEXT.md's rogue-actor threshold (">10% util, 0 jobs"), applied to the Head's own node.
+# Sustained over MONITOR_ROGUE_STREAK checks so one transient blip doesn't fire.
+MONITOR_ROGUE_UTIL_PCT = 10
+MONITOR_ROGUE_STREAK = 3
+MONITOR_COOLDOWN_S = 24 * 3600  # at most one email per check-type per day
+# Every daemon _setup_head installs — liveness-checked each run.
+MONITOR_SERVICES = ["slurmctld", "munge", "headscale", CCC_TS_SERVICE, ENROLL_API_SERVICE,
+                    HEAD_API_SERVICE, KARMA_SERVICE, RSYNCD_SERVICE]

@@ -13,7 +13,7 @@ import getpass
 import tempfile
 from pathlib import Path
 
-from . import auth, backup, config, enroll, headapi, mesh, settings, system, templates, ui
+from . import auth, backup, config, enroll, headapi, mesh, monitor, settings, system, templates, ui
 from .system import run, sh
 
 
@@ -368,6 +368,9 @@ def _setup_head(address: str | None = None) -> None:
         headapi.install_karma(_write_root_file)  # ranks the queue by standing (same venv)
     with ui.step("Installing the nightly backup timer"):
         backup.install_timer(_write_root_file)   # head.db + arms.json + headscale db, see backup.py
+    with ui.step("Installing the Head-box monitor"):
+        monitor.install(_write_root_file)        # disk/services/rogue-usage, see monitor.py
+        monitor.prompt_smtp(_write_root_file)     # SMTP creds for alerting; skippable
     with ui.step("Building the Pod image"):
         build_base_sif()                         # Mantle-readable, at the cluster-wide path
     # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because the
