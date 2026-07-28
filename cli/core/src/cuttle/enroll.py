@@ -24,10 +24,12 @@ Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import base64
+import ipaddress
 import json
 import re
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -36,6 +38,47 @@ from .system import run
 
 
 # --- enrollment token (a secret: it admits one machine) ---------------------
+
+# The address blocks that are LAN-only: a donor off this network has no route to any of them. NOT
+# 100.64.0.0/10 — that is the CGNAT range Tailscale allocates from, and a coordinator advertised there
+# is precisely how a remote donor bootstraps. Written out rather than using `ipaddress.is_private`,
+# whose membership has moved between Python point releases (it counts 100.64.0.0/10 as private in some,
+# which would flag the one address that works).
+_LAN_ONLY_BLOCKS = [ipaddress.ip_network(b) for b in
+                    ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16")]
+
+
+def _lan_only(host: str) -> bool:
+    """Is `host` an address only this LAN can reach? False for a DNS name — a name can resolve to
+    anything, and guessing wrong in either direction is worse than staying quiet."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in block for block in _LAN_ONLY_BLOCKS)
+
+
+def warn_if_coordinator_is_lan_only() -> None:
+    """Say so when the coordinator only answers on this LAN, before a token is minted against it.
+
+    Every token carries this address, and it is the first thing the donor's box dials — before the
+    mesh exists, so there is no other route to fall back on. A remote donor handed a LAN address does
+    not fail fast: the packets look routable, leave, and die, so `setup --arm` hangs until it times
+    out and the donor reports that enrollment is broken.
+
+    A warning, not a refusal: a donor *on* this LAN is the ordinary case and this address is right for
+    them. Only the admin knows where the box is.
+    """
+    coordinator = settings.load().get("mesh", {}).get("coordinator", "")
+    host = urllib.parse.urlparse(coordinator).hostname or ""
+    if not _lan_only(host):
+        return
+    ui.warn(f"the coordinator is {coordinator} — an address only this LAN can reach.")
+    ui.hint("The donor's box dials this before it is on the mesh, so a box off this network will "
+            "hang until it times out. Fine if they are on this LAN. If they are not, re-point the "
+            "Head at an address they can reach (e.g. its Tailscale IP) with "
+            "`cuttle setup --head --address=<addr>`, then authorize again.")
+
 
 def _mint_token(node_name: str, authkey: str) -> str:
     """Everything the donor's `setup --arm` needs, and nothing it can choose for itself.
@@ -370,6 +413,10 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
             f"      cuttle arm remove {name}\n"
             f"  To only change its owner, leave it running and use:\n"
             f"      cuttle arm chown {name} --user <owner>")
+
+    # Before the key is minted, not after: a preauth key is single-use and expires in an hour, so an
+    # admin who reads this and re-points the Head should not have burned one first.
+    warn_if_coordinator_is_lan_only()
 
     reg = load_registry()
     # vram_mb arrives with the donor's /enroll; power only after the benchmark, which can't run until
