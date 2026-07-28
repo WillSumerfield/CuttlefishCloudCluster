@@ -1,26 +1,5 @@
 # Durable TODOs
 
-## Untriaged — launch-readiness grill (2026-07-15)
-
-Found by exploring the actual `head/api` + `head/web` code against `temp/ROADMAP.md`, `docs/TODO.md`,
-and `CONTEXT.md` — each item below was confirmed absent from all three (not deferred, not resolved,
-just never written down). Direction below is a first pass, not a locked design; each item gets its own
-grill before landing in `temp/ROADMAP.md`'s new **Phase 7 — Loose Ends**.
-
-- **[high] No lighter redeploy path than full `teardown`+`setup`.** Several hardware slices (Mantle uid pin,
-  the ccc-user rename) needed a full reprovision to ship a code change. Direction from the grill:
-  containerize the three Head-side app services (**Head API, Enroll API, karma tick**) so an update is
-  an image pull + restart; explicitly **leave Slurm/Headscale/munge bare-metal** (GPU/cgroup/mesh-bind
-  needs would fight containerizing them, and the roadmap already defaults Slurm to bare-metal). →
-  Phase 7. Supersedes/absorbs the "Polish: `cuttle` on PATH" item below where they overlap (the
-  installer question is about the *client* CLI, not the Head services — keep both).
-- **[high] Nothing monitors the Head box itself.** Phase 2's telemetry item watches Arms (rogue GPU use);
-  Phase 7(→8)'s completeness pass only *audits* unbounded `head/projects`/`head/spawns` growth once.
-  Wanted: disk-space + process-liveness checks, a GPU/CPU usage-over-time monitor with anomaly
-  reporting, an explicit pass hunting memory leaks / unbounded disk growth (not just an audit — ongoing
-  monitoring), and email alerting for all of the above. → Phase 7.
-
-
 ## Dashboard Spawns silently disable W&B → Phase 5 — [effort: med/high]
 
 `head/web/src/api.ts` hardcodes `wandb_env: {WANDB_MODE: 'disabled'}` on every browser submission,
@@ -231,20 +210,6 @@ is missing. Local Spawns (Head's co-located Arm) already stream, since the file 
 Fix later: have the job push `.out`/`.err` to the Head periodically (background rsync loop, every few
 seconds) so `logs -f` tracks a remote run live. Deferred for the machinery — a background pusher
 racing the main process, with its own stall/failure modes — which Phase 1 doesn't need.
-
-## WSL2 Arms: supported, with one permanent limit — [status — no task; permanent limit]
-
-`preflight()` now detects WSL (`/proc/sys/kernel/osrelease` contains `microsoft`) and allows it as an
-Arm, never as a Head — headscale and slurmctld have never run there. `setup_arm` adds two lines to
-Apptainer's config on WSL boxes (`bind path = /usr/lib/wsl`, `libdxcore.so` in `nvliblist.conf`),
-after which plain `apptainer exec --nv` behaves as on native Linux. Verified: `torch.cuda` sees the
-RTX 4090 and a matmul runs. The platform quirk stops at the Arm; no job-layer flags.
-
-Permanent limit, not a TODO: `/dev/dxg` is a single device node for **all** GPUs, so device cgroups
-can never partition GPUs per-Spawn on WSL. See the cgroup item below — a WSL Arm is single-GPU-
-exclusive forever, or excluded from multi-user sharing.
-
-An `apt` upgrade of apptainer will raise a dpkg conffile prompt on both edited files.
 
 ## Before multi-node / multi-user: GPU cgroup isolation → Phase 9 — [effort: med]
 
