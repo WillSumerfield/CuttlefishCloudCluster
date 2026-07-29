@@ -169,7 +169,10 @@ BENCH_SBATCH_TMPL = """\
 #SBATCH --error=/tmp/ccc-bench-%j.log
 set -e
 out=/tmp/ccc-bench-$SLURM_JOB_ID
-trap 'rm -rf "$out"' EXIT
+# The .log is sbatch's own sink and stays empty unless the shell itself failed — kept only then, or
+# every benchmark would leave a 0-byte file behind (same rule as a Spawn's /tmp/ccc-<jid>.slurm).
+sink=/tmp/ccc-bench-$SLURM_JOB_ID.log
+trap 'rm -rf "$out"; [ -s "$sink" ] || rm -f "$sink"' EXIT
 mkdir -p "$out"
 cat > "$out/bench.py" <<'CCC_BENCH_PY'
 {bench_py}

@@ -73,6 +73,11 @@ JOB_SCRIPT = """\
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
+# sbatch's own stdout sink, on whichever node runs this. The wrapper redirects everything it cares
+# about into out/err, so this stays EMPTY unless the shell itself failed before those existed — which
+# is the one case worth keeping. Anything else would leave a 0-byte file per Spawn in /tmp forever.
+sink="/tmp/ccc-$jid.slurm"
+cleanup() { rm -rf "$scratch"; [ -s "$sink" ] || rm -f "$sink"; }
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
@@ -80,7 +85,7 @@ if [ -d "$staging_dir" ]; then
     # so `cuttle logs -f` streams live). The Spawn dir was pre-created by the API at submit.
     scratch="%%HEAD_SCRATCH%%/$jid"
     proj="$scratch/proj"
-    trap 'rm -rf "$scratch"' EXIT
+    trap cleanup EXIT
     mkdir -p "$proj"
     cp -a "$staging_dir/." "$proj/"
     spawn_dir="%%SPAWNS%%/$jid"
@@ -95,7 +100,7 @@ else
     # fires. Apptainer auto-mounts /tmp, so the Pod sees it with no extra bind.
     scratch="/tmp/ccc-$jid"
     proj="$scratch/%%UUID%%"
-    trap 'rm -rf "$scratch"' EXIT
+    trap cleanup EXIT
     mkdir -p "$scratch/outputs"
     # Named BEFORE the stage-in, so a stage-in that fails still has somewhere to say so and a way to
     # send it home. Nothing has run yet, so out/err start empty rather than absent — rsync would skip

@@ -325,7 +325,12 @@ def _benchmark_arm(name: str) -> dict:
     Path(job_file).chmod(0o644)  # sbatch reads it as ccc, not as the operator
 
     with ui.step(f"Benchmarking {name} (matmul in the Pod — this is what prices a second on it)"):
-        run(["-u", config.HEAD_API_USER, "sbatch", "--parsable", job_file], sudo=True, check=True)
+        # Unlinked the moment sbatch has read it — it holds no state past submission, and left behind
+        # it is one /tmp/tmp*.sbatch per benchmark, forever.
+        try:
+            run(["-u", config.HEAD_API_USER, "sbatch", "--parsable", job_file], sudo=True, check=True)
+        finally:
+            Path(job_file).unlink(missing_ok=True)
         deadline = time.time() + config.BENCH_TIMEOUT_S
         while time.time() < deadline:
             r = run(["cat", str(dest / "power")], sudo=True,
