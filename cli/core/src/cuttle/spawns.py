@@ -24,7 +24,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import api, auth, settings, ui
+from . import api, auth, config, settings, ui
 from .system import run
 
 
@@ -181,16 +181,24 @@ def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:
         # scancel, not the API: every Spawn runs as the Mantle, so the operator's sudo is what makes
         # this possible at all. No ledger lookup — an operator reaping a runaway may well be doing it
         # for a Spawn the Head never recorded.
+        #
+        # The marker `DELETE /spawns/{id}` writes has to be written here too, as the Head API user
+        # that owns the Spawn dir, or the Spawn this operator deliberately ended would still report
+        # itself as having died on its own. check=False: an id the Head never recorded has no dir,
+        # and reaping a runaway is exactly when that is true.
         run(["scancel", str(spawn_id)], sudo=True)
+        run(["-u", config.HEAD_API_USER, "touch",
+             str(config.HEAD_SPAWNS_DIR / str(spawn_id) / "cancelled")], sudo=True, check=False)
     else:
         auth._api("DELETE", f"/spawns/{spawn_id}")
     ui.ok(f"spawn {spawn_id} cancelled")
 
 
 def _outcome(st: dict) -> str:
-    """A finished Spawn's verdict. `failed` carries no exit code by definition — it's the state of a
-    Spawn that never recorded one (scancel'd, OOM-killed, or its Arm vanished before stage-out), so
-    don't reach for st['exit'] there."""
+    """A finished Spawn's verdict. Neither `cancelled` nor `failed` carries an exit code — both are
+    states in which none was ever recorded — so don't reach for st['exit'] in either."""
+    if st["state"] == "cancelled":
+        return "CANCELLED (ended early — no exit code recorded)"
     if st["state"] == "failed":
         return "FAILED (killed or its Arm dropped — no exit code recorded)"
     return f"done (exit {st['exit']})"
@@ -263,13 +271,14 @@ def _short(ts: str | None) -> str:
 
 def _history_outcome(r: dict) -> str:
     """A finished Spawn's verdict, as a word. Mirrors GET /spawns/{id}: a NULL exit code with a
-    recorded end is a Spawn that died without one (scancel'd, OOM, or its Arm dropped); a row still
-    unstamped left the queue seconds ago and the tick has not settled it yet."""
+    recorded end is a Spawn that ended without one — deliberately (`cancelled`) or not (OOM, or its
+    Arm dropped); a row still unstamped left the queue seconds ago and the tick has not settled it
+    yet."""
     if r.get("finished_at") is None:
         return "—"
     code = r.get("exit_code")
     if code is None:
-        return "failed"
+        return "cancelled" if r.get("cancelled") else "failed"
     return "done" if code == 0 else f"failed ({code})"
 
 

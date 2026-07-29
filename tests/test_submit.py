@@ -71,6 +71,10 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
     # store this process cannot read.
     monkeypatch.setattr(db, "DB_PATH", Path(tempfile.mkdtemp()) / "head.db")
     db.ensure_schema()
+    # Same reason as DB_PATH: on a live Head the default is a real ccc-owned tree this process cannot
+    # write. A cancel now leaves a marker there (spawns.mark_cancelled), so "no disk" has to mean a
+    # disk of our own, not the operator's.
+    monkeypatch.setattr(head_spawns, "SPAWNS_DIR", Path(tempfile.mkdtemp()) / "spawns")
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
     monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
     monkeypatch.setattr(slurm, "queue", lambda: [])  # no live Spawns — submit_checked's cap check

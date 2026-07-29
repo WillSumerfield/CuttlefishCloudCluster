@@ -280,7 +280,14 @@ def spawns_history(days: int = 30, limit: int | None = None,
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.connect() as conn:
-        return [dict(r) for r in db.spawn_history(conn, since, live, limit)]
+        rows = [dict(r) for r in db.spawn_history(conn, since, live, limit)]
+    # The same distinction GET /spawns/{id} draws, so a Spawn does not read "failed" here and
+    # "cancelled" there. The ledger cannot answer it — it records the absent exit code, not the
+    # reason — so the marker is consulted, and only for the rows that lack one.
+    for r in rows:
+        r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
+                          and spawns_mod.was_cancelled(r["job_id"]))
+    return rows
 
 
 @api.get("/spawns/{job_id}")
@@ -292,6 +299,10 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     Arm dropped off the mesh before staging out. That is `failed`, not 404, and only the ledger can say
     so. Remote Arms are the flakiest nodes in the cluster (donor box sleeps, WSL shuts down), so this
     is the common case there, not a corner.
+
+    A Spawn somebody *cancelled* lands in that same exit-code-less state, and reporting it as died-on-
+    us is a lie the submitter can see through. It is told apart by the marker `DELETE /spawns/{id}`
+    leaves — see spawns.mark_cancelled.
     """
     state = spawns_mod.active_state(job_id)
     if state is not None:
@@ -302,6 +313,9 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     with db.connect() as conn:
         known = db.get_spawn(conn, job_id) is not None
     if known:
+        # `cancelled` before `failed`: both lack an exit code, but one of them somebody asked for.
+        if spawns_mod.was_cancelled(job_id):
+            return {"id": job_id, "done": True, "state": "cancelled"}
         return {"id": job_id, "done": True, "state": "failed"}
     raise HTTPException(404, f"unknown Spawn {job_id}")
 
@@ -350,6 +364,11 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     if row["user_id"] != user["id"]:
         raise HTTPException(403, "you can only cancel your own Spawns")
     slurm.cancel(job_id)
+    # AFTER the scancel, never before: the marker only changes how this Spawn is *described*, and a
+    # Spawn left running because we could not write a file would be a real cost to its submitter. The
+    # window between the two is a status read that says "failed" — the answer given before this
+    # existed at all.
+    spawns_mod.mark_cancelled(job_id)
     log.info("cancel id=%s by %s", job_id, user["username"])
     return Response(status_code=204)
 

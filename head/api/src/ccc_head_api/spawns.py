@@ -316,6 +316,24 @@ def exit_code(job_id: int) -> int | None:
     return int(f.read_text().strip()) if f.exists() else None
 
 
+def mark_cancelled(job_id: int) -> None:
+    """Record that WE ended this Spawn, before scancel does it.
+
+    A cancelled Spawn records no exit code — scancel's TERM kills the wrapper before it can write one
+    — so it is otherwise indistinguishable from a Spawn whose Arm dropped off the mesh. Slurm cannot
+    settle the question afterwards either: accounting storage is off (`AccountingStorageType = null`),
+    so there is no `sacct` to ask once the job leaves squeue. The one moment the answer is known for
+    certain is right here, so it is written down rather than inferred later.
+    """
+    d = _spawn_dir(job_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cancelled").touch()
+
+
+def was_cancelled(job_id: int) -> bool:
+    return (_spawn_dir(job_id) / "cancelled").exists()
+
+
 def out_text(job_id: int) -> str | None:
     f = _spawn_dir(job_id) / "out"
     return f.read_text() if f.exists() else None
