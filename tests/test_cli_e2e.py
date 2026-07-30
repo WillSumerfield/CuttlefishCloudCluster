@@ -144,7 +144,7 @@ class TestSubmit:
     """`cuttle run` — the operation the whole cluster exists for."""
 
     def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
         assert result.exit_code == 0, result.output
         assert "submitted spawn" in result.output
         # Attribution is the ledger's, not Slurm's — every Spawn runs as the Mantle, so Slurm's own
@@ -158,13 +158,13 @@ class TestSubmit:
     def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm, project):
         """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
         been charged for — precisely the window a queue-flooder wants."""
-        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
         with db.connect() as conn:
             escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
         assert _spawn_id(result.output) in escrows
 
     def test_the_uploaded_project_reaches_the_head(self, signed_in, fake_slurm, project):
-        signed_in("run", "train.py", "--time", "60", "--vram", "24")
+        signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
         staged = list((fake_slurm / "projects").glob("*/train.py"))
         assert staged, "the project tree was not unpacked on the Head"
         assert "hello from a Spawn" in staged[0].read_text()
@@ -183,7 +183,7 @@ class TestSubmit:
         assert no_vram.exit_code != 0 and "--vram" in no_vram.output
 
     def test_submitting_without_a_session_is_refused(self, cli, fake_slurm, project):
-        result = cli("run", "train.py", "--time", "60", "--vram", "24")
+        result = cli("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
         assert result.exit_code != 0
         assert "not logged in" in result.output
 
@@ -192,7 +192,7 @@ class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
     def _spawn(self, cli):
-        return _spawn_id(cli("run", "train.py", "--time", "60", "--vram", "24").output)
+        return _spawn_id(cli("run", "train.py", "--time", "60", "--vram", "24", "--output", "out").output)
 
     def test_you_may_cancel_your_own(self, signed_in, fake_slurm, project, monkeypatch):
         killed = []
@@ -229,7 +229,7 @@ class TestArmRetraction:
     def _own_gpu_box(self, monkeypatch, owner="alice"):
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "vram_mb": 24564,
                                                       "admitted": True, "state": "idle",
-                                                      "power": 60.0, "gpu": 1, "owner": owner}])
+                                                      "powers": [60.0], "gpu": 1, "owner": owner}])
 
     def test_you_may_retract_and_return_your_own(self, signed_in, fake_slurm, monkeypatch):
         self._own_gpu_box(monkeypatch)
@@ -455,6 +455,7 @@ class TestNoAdminWritesOverTheApi:
         token = config.CREDENTIALS_FILE.read_text().strip()
         r = head.post("/submit", content=b"",
                       headers={"Authorization": f"Bearer {token}",
-                               "X-CCC-Meta": '{"script":"t.py","minutes":60,"vram":24,"node":"gpu-box"}'})
+                               "X-CCC-Meta": '{"script":"t.py","minutes":60,"vram":24,"node":"gpu-box",'
+                                             '"outputs":["out"]}'})
         assert r.status_code == 403
         assert "on the Head" in r.json()["detail"]

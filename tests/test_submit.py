@@ -8,7 +8,9 @@ admin-only.
 command. The tests below were updated to pin that invariant instead.)*
 """
 
+import io
 import json
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -30,6 +32,7 @@ class TestRenderedSbatch:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
+        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
 
@@ -48,6 +51,125 @@ class TestRenderedSbatch:
     def test_nodelist_only_when_pinned(self):
         assert "#SBATCH --nodelist=box" in self.render(node="box")
         assert "--nodelist" not in self.render(node=None)
+
+
+class TestRemoteLiveStreaming:
+    """docs/TODO.md's now-closed "Live log streaming for remote Spawns": a backgrounded loop in the
+    REMOTE branch of JOB_SCRIPT pushes out/err/outputs home every 5s instead of only at stage_out()'s
+    one-shot call at job end. The Head's own co-located branch writes straight to the final path
+    already (`stage_out() { :; }`) and must stay untouched — these tests pin that boundary too."""
+
+    def render(self, **kw):
+        kw.setdefault("minutes", 60)
+        kw.setdefault("constraint", "vram24|vram80")
+        kw.setdefault("node", None)
+        kw.setdefault("outputs", ["outputs"])
+        return head_spawns._render(
+            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+
+    def _remote_branch(self, script: str) -> str:
+        """The `else` (remote Arm) block of JOB_SCRIPT, isolated from the Head branch above it."""
+        start = script.index("else")
+        end = script.index("\ncd \"$proj\"")
+        return script[start:end]
+
+    def _head_branch(self, script: str) -> str:
+        start = script.index('if [ -d "$staging_dir" ]')
+        end = script.index("\nelse")
+        return script[start:end]
+
+    def test_loop_is_backgrounded_after_its_function_is_defined(self):
+        remote = self._remote_branch(self.render())
+        assert "push_periodic() {" in remote
+        assert remote.index("push_periodic() {") < remote.index("push_periodic &")
+
+    def test_loop_pid_is_captured_right_after_backgrounding(self):
+        remote = self._remote_branch(self.render())
+        assert remote.index("push_periodic &") < remote.index("loop_pid=$!")
+
+    def test_trap_still_points_at_cleanup_and_cleanup_kills_the_loop(self):
+        """`trap cleanup EXIT` is unchanged (both branches still use it) — the kill lives inside
+        `cleanup()` itself, as a fallback for any exit path that isn't one of the two explicit kills."""
+        script = self.render()
+        assert script.count("trap cleanup EXIT") == 2   # once per branch, same as before
+        assert 'cleanup() { kill "$loop_pid"' in script
+
+    def test_loop_is_killed_before_both_stage_out_call_sites(self):
+        """Design: 'kill the loop before the final stage_out() call ... so the last full sync isn't
+        racing a partial periodic one.' Applies to the early stage-in-failure exit too, same race."""
+        script = self.render()
+        early_kill = script.index('kill "$loop_pid" 2>/dev/null  # stop the periodic pusher first')
+        early_stage_out = script.index("\n        stage_out\n        exit 1")
+        assert early_kill < early_stage_out
+
+        final_kill = script.rindex('kill "$loop_pid" 2>/dev/null')
+        final_stage_out = script.index('stage_out || echo "ccc: staging results back')
+        assert final_kill < final_stage_out
+
+    def test_out_err_push_every_5_seconds_no_settle_check(self):
+        remote = self._remote_branch(self.render())
+        assert "sleep 5" in remote
+        # the out/err line syncs unconditionally — no -newermt / find gate, unlike outputs below.
+        outerr_line = next(l for l in remote.splitlines() if 'rsync -a "$out" "$err"' in l)
+        assert "newermt" not in outerr_line
+        assert "find" not in outerr_line
+
+    def test_outputs_push_is_gated_on_a_settle_check(self):
+        remote = self._remote_branch(self.render())
+        assert '-not -newermt "@$(( $(date +%s) - 10 ))"' in remote
+        assert "-printf '%P\\n'" in remote   # relative paths, matching the outputs/ --files-from dest
+        assert "$ccc_out/outputs/" not in remote  # sanity: dest is .../$jid/outputs/, not doubled
+
+    def test_head_branch_has_no_pusher_at_all(self):
+        """The Head's co-located Arm already streams live (same-FS write) — a pusher there would be
+        pure overhead, and the design explicitly excludes it."""
+        head = self._head_branch(self.render())
+        assert "push_periodic" not in head
+        assert "loop_pid" not in head
+        assert head.count('stage_out() { :; }') == 1
+
+
+class TestDeclaredOutputsBecomeMkdirs:
+    """docs/TODO.md's now-closed "Spawn Output Enforcement": each declared `--output` name becomes one
+    `mkdir -p "$ccc_out/<name>"` in JOB_SCRIPT, made ONCE — after the if/else that sets `$ccc_out` in
+    EITHER branch, before the payload runs — rather than duplicated inside each branch. That single
+    placement is what makes it apply to the Head-local and remote paths alike."""
+
+    def render(self, **kw):
+        kw.setdefault("minutes", 60)
+        kw.setdefault("constraint", "vram24|vram80")
+        kw.setdefault("node", None)
+        return head_spawns._render(
+            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+
+    def test_one_mkdir_per_declared_name(self):
+        script = self.render(outputs=["checkpoints", "logs"])
+        assert 'mkdir -p "$ccc_out/checkpoints"' in script
+        assert 'mkdir -p "$ccc_out/logs"' in script
+
+    def test_a_single_output_still_works(self):
+        script = self.render(outputs=["checkpoints"])
+        assert script.count('mkdir -p "$ccc_out/') == 1
+
+    def test_mkdirs_land_after_both_branches_close_and_before_the_payload_runs(self):
+        script = self.render(outputs=["checkpoints"])
+        mkdir_at = script.index('mkdir -p "$ccc_out/checkpoints"')
+        # The LAST "\nfi\n" — the branch has its own nested if/fi (the stage-in failure check) that
+        # closes earlier; what matters is being after the OUTER one.
+        fi_at = script.rindex("\nfi\n", 0, mkdir_at)
+        # Anchored with the leading newline: `cd "$proj"` also appears inside a comment a few lines
+        # earlier ("walks on into `cd \"$proj\"`"), which a bare substring search would match instead.
+        cd_at = script.index('\ncd "$proj"\n')
+        assert fi_at < mkdir_at < cd_at
+
+    def test_not_duplicated_into_either_branch(self):
+        """The mkdir line is written ONCE in the template, not once per branch — so it must not appear
+        inside the Head-local `if` block or the remote `else` block, only between them and the payload."""
+        script = self.render(outputs=["checkpoints"])
+        head_branch = script[script.index('if [ -d "$staging_dir" ]'):script.index("\nelse")]
+        remote_branch = script[script.index("\nelse"):script.index("\nfi\n")]
+        assert "mkdir -p \"$ccc_out/checkpoints\"" not in head_branch
+        assert "mkdir -p \"$ccc_out/checkpoints\"" not in remote_branch
 
 
 class FakeUser(dict):
@@ -84,6 +206,7 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 
 def post(c: TestClient, **meta):
     meta.setdefault("script", "train.py")
+    meta.setdefault("outputs", ["outputs"])
     return c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
 
 
@@ -136,6 +259,46 @@ class TestNodeIsNotAvailableOverTheApi:
     def test_submitting_without_a_pin_still_works(self, monkeypatch):
         """The [U] needs-based path is untouched — only the admin branch was removed."""
         assert post(client(monkeypatch, is_admin=False), minutes=60, vram=24).status_code == 200
+
+
+class TestFeatureRequirement:
+    """Arm Features (docs/TODO.md): a Spawn may optionally require named capabilities (VSim,
+    IsaacSim, ...) an Arm declared having at enroll. Most Spawns need none, and declaring some must
+    behave exactly like `--vram` — hard-refused before sbatch if unsatisfiable, never queued to fail
+    silently later."""
+
+    def _capture_constraint(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(head_spawns, "submit",
+                            lambda *a, **kw: captured.setdefault("constraint", a[7]) or 4242)
+        return captured
+
+    def test_absent_features_change_nothing(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)  # sets its own `submit` stub first — ours must win
+        captured = self._capture_constraint(monkeypatch)
+        r = post(c, minutes=60, vram=24)
+        assert r.status_code == 200
+        assert captured["constraint"] == "vram24"
+
+    def test_satisfiable_request_ands_onto_the_vram_constraint(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)
+        monkeypatch.setattr(slurm, "arms_with_features", lambda feats: ["gpu-box"])
+        monkeypatch.setattr(slurm, "feature_constraint", lambda feats: "&".join(sorted(feats)))
+        captured = self._capture_constraint(monkeypatch)
+        r = post(c, minutes=60, vram=24, features=["vsim"])
+        assert r.status_code == 200
+        assert captured["constraint"] == "(vram24)&vsim"
+
+    def test_unsatisfiable_request_is_refused_before_sbatch(self, monkeypatch):
+        """No Arm carries every requested Feature — refused NOW, naming what the cluster actually has,
+        exactly like `vram_constraint`'s "no Arm has that much VRAM"."""
+        c = client(monkeypatch, is_admin=False)
+        monkeypatch.setattr(slurm, "arms_with_features", lambda feats: [])
+        monkeypatch.setattr(slurm, "all_feature_names", lambda: ["isaacsim"])
+        r = post(c, minutes=60, vram=24, features=["vsim"])
+        assert r.status_code == 422
+        assert "vsim" in r.json()["detail"]
+        assert "isaacsim" in r.json()["detail"]
 
 
 class TestCliRequiresTimeAndVram:
@@ -209,6 +372,164 @@ class TestConcurrentSpawnCap:
         self._seed_owned_spawns(1, job_ids)
         monkeypatch.setattr(slurm, "queue", lambda: [{"id": j} for j in job_ids])
         assert post(c, minutes=60, vram=24).status_code == 200
+
+
+class TestOutputsRequiredOverTheApi:
+    """docs/TODO.md's now-closed "Spawn Output Enforcement": a Spawn that names no output folder is one
+    whose results have nowhere retrievable to land, so the Head 422s it — same tier of hard requirement
+    as `minutes`/`vram`, checked at the same route-level gate (`submit` in `spawns.py` is mocked here,
+    same as TestSubmitRequiresDeclarations above)."""
+
+    def test_an_empty_list_is_refused(self, monkeypatch):
+        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, outputs=[])
+        assert r.status_code == 422
+        assert "outputs" in r.json()["detail"]
+
+    def test_a_missing_field_is_refused(self, monkeypatch):
+        c = client(monkeypatch, is_admin=False)
+        meta = {"script": "train.py", "minutes": 60, "vram": 24}  # no 'outputs' key at all
+        r = c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
+        assert r.status_code == 422
+        assert "outputs" in r.json()["detail"]
+
+    def test_declaring_one_still_works(self, monkeypatch):
+        assert post(client(monkeypatch, is_admin=False), minutes=60, vram=24,
+                    outputs=["checkpoints"]).status_code == 200
+
+
+class TestSubmitValidatesOutputsAndScript:
+    """The real `spawns.submit()` (not the mocked route above) — since non-empty outputs, a safe output
+    name, and the script actually being present in the tar are all checked here, before anything is
+    written to disk or handed to sbatch. This is what the Head-local pinned path (`cuttle run --node`,
+    which never travels over HTTP) gets for free by sharing this function."""
+
+    def _tar(self, tmp_path: Path, *names: str) -> Path:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for n in names:
+                data = b"print('hi')\n"
+                info = tarfile.TarInfo(n)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        path = tmp_path / "project.tar.gz"
+        path.write_bytes(buf.getvalue())
+        return path
+
+    def _submit(self, monkeypatch, tmp_path, **kw):
+        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
+        kw.setdefault("script", "train.py")
+        kw.setdefault("outputs", ["out"])
+        kw.setdefault("tar_path", self._tar(tmp_path, "train.py"))
+        return head_spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, minutes=60,
+                                  constraint="", **kw)
+
+    def test_empty_outputs_is_refused(self, monkeypatch, tmp_path):
+        with pytest.raises(ValueError, match="output"):
+            self._submit(monkeypatch, tmp_path, outputs=[])
+
+    def test_a_traversal_attempt_is_refused(self, monkeypatch, tmp_path):
+        with pytest.raises(ValueError, match="invalid output name"):
+            self._submit(monkeypatch, tmp_path, outputs=["../../etc"])
+
+    def test_a_slash_is_refused_even_without_dots(self, monkeypatch, tmp_path):
+        with pytest.raises(ValueError, match="invalid output name"):
+            self._submit(monkeypatch, tmp_path, outputs=["a/b"])
+
+    def test_a_bare_dot_or_dotdot_is_refused(self, monkeypatch, tmp_path):
+        """Both start with '.', which OUTPUT_NAME_RE never matches — no special-case needed."""
+        for bad in (".", ".."):
+            with pytest.raises(ValueError, match="invalid output name"):
+                self._submit(monkeypatch, tmp_path, outputs=[bad])
+
+    def test_a_normal_name_is_accepted(self, monkeypatch, tmp_path):
+        """Sanity check the regex isn't so strict it refuses ordinary names — carried all the way
+        through to a (faked) sbatch, which needs a real user row for record_spawn's FK. A distinct job
+        id per name: record_spawn's job_id is a PRIMARY KEY, and the same fake id twice would collide."""
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        with db.connect() as conn:
+            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                        "VALUES (1,'alice',0,'x',0)")
+            conn.commit()
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        counter = iter(range(4200, 4300))
+        monkeypatch.setattr(head_spawns.subprocess, "run",
+                            lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n"})())
+        for good in ("checkpoints", "run-1", "epoch_09", "v2.final"):
+            job_id = self._submit(monkeypatch, tmp_path, outputs=[good])
+            assert job_id >= 4200
+
+    def test_a_script_missing_from_the_tar_is_refused(self, monkeypatch, tmp_path):
+        with pytest.raises(ValueError, match="was not found in the uploaded project"):
+            self._submit(monkeypatch, tmp_path, script="missing.py",
+                         tar_path=self._tar(tmp_path, "other.py"))
+
+    def test_nothing_is_staged_when_the_script_is_missing(self, monkeypatch, tmp_path):
+        """The refusal is checked against the tar's own member list, BEFORE `staging.mkdir()` — a bad
+        submission leaves no half-written project dir behind."""
+        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
+        with pytest.raises(ValueError):
+            head_spawns.submit(user_id=1, script="missing.py", gpu=1, args=[], wandb_env={},
+                              tar_path=self._tar(tmp_path, "other.py"), minutes=60, constraint="",
+                              outputs=["out"])
+        projects = tmp_path / "projects"
+        assert not projects.exists() or not any(projects.iterdir())
+
+
+class TestOutputsPlumbThroughToTheRenderedScript:
+    """End-to-end: what `cuttle run --output` declares is what actually reaches the script sbatch is
+    handed — not just what a mocked `submit` was called with. Same rig as
+    TestItReachesSbatch.sbatch_env in test_wandb_key.py, but capturing the rendered job file's BODY
+    (read off disk before submit() unlinks it) instead of the env."""
+
+    @pytest.fixture
+    def rendered(self, monkeypatch, tmp_path):
+        state = tmp_path / "head-state"
+        for name in ("projects", "spawns", "scratch"):
+            (state / name).mkdir(parents=True)
+        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
+        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
+        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+        monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
+        monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
+        monkeypatch.setattr(slurm, "queue", lambda: [])
+        # submit_checked reads the DB even for a non-admin's cap check, retracted-node check, and Tide
+        # quote — and submit() writes the Attribution row at the end (FK'd to a real user).
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        with db.connect() as conn:
+            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                        "VALUES (1,'alice',0,'x',0)")
+            conn.commit()
+        captured: dict[str, str] = {}
+
+        def fake_run(argv, **kw):
+            # argv[2] is the sbatch job file's path — still on disk here, since submit() unlinks it
+            # only AFTER this call returns.
+            captured["body"] = Path(argv[2]).read_text()
+            return type("R", (), {"stdout": "4242\n"})()
+
+        monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
+        return captured
+
+    def test_declared_outputs_reach_the_actual_sbatch_script(self, rendered, tmp_path):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            data = b"print('hi')\n"
+            info = tarfile.TarInfo("train.py")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        tar_path = tmp_path / "upload.tar.gz"
+        tar_path.write_bytes(buf.getvalue())
+
+        head_spawns.submit_checked(1, False, "train.py", 1, [], {}, tar_path, 60, 24,
+                                   ["checkpoints", "logs"])
+
+        assert 'mkdir -p "$ccc_out/checkpoints"' in rendered["body"]
+        assert 'mkdir -p "$ccc_out/logs"' in rendered["body"]
 
 
 class TestCancel:

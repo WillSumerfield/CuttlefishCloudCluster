@@ -19,6 +19,7 @@ def fake_host(monkeypatch):
     monkeypatch.setattr(system, "cpu_topology", lambda: (1, 8, 2))
     monkeypatch.setattr(system, "real_memory_mb", lambda: 63188)
     monkeypatch.setattr(system, "gpu_vram_mb", lambda: 24564)
+    monkeypatch.setattr(system, "gpu_devices", lambda: ["/dev/nvidia0"])
 
 
 def directives(conf: str) -> dict[str, str]:
@@ -122,6 +123,57 @@ class TestSlurmConf:
         assert "Weight=1" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
 
 
+def gres_lines(conf: str) -> list[str]:
+    return [ln for ln in conf.splitlines() if ln and not ln.startswith("#")]
+
+
+class TestGresConf:
+    """The file that maps a Slurm GRES to a real device node — and, since the Devices are indexed in
+    the order these lines are read, the file that decides which **Power** a running Spawn is settled
+    at. A wrong line here is not a crash: it is a bill quietly charged at the other card's rate."""
+
+    def test_a_single_card_arm_gets_one_line(self, fake_host):
+        conf = templates.render_gres_conf([("donor-box", ["/dev/nvidia0"])])
+        assert gres_lines(conf) == ["NodeName=donor-box Name=gpu File=/dev/nvidia0"]
+
+    def test_every_card_gets_its_own_line_in_order(self, fake_host):
+        """One line per Device, not `File=/dev/nvidia[0-3]` and not `MultipleFiles` (which is MIG's,
+        and would declare ONE resource backed by four files). Order is the index order Slurm reports
+        back as `IDX:n`, so it must follow the device list exactly."""
+        conf = templates.render_gres_conf([("big-box", [f"/dev/nvidia{i}" for i in range(4)])])
+        assert gres_lines(conf) == [f"NodeName=big-box Name=gpu File=/dev/nvidia{i}"
+                                    for i in range(4)]
+
+    def test_a_gappy_device_set_is_described_exactly(self, fake_host):
+        """A box with a card pulled has no contiguous range to abbreviate. Separate lines say what is
+        actually there; a bracket range would have to invent hostlist syntax for it."""
+        conf = templates.render_gres_conf([("gappy", ["/dev/nvidia0", "/dev/nvidia2"])])
+        assert gres_lines(conf) == ["NodeName=gappy Name=gpu File=/dev/nvidia0",
+                                    "NodeName=gappy Name=gpu File=/dev/nvidia2"]
+
+    def test_a_wsl_arm_gets_exactly_one_dxg_line(self, fake_host):
+        """Permanent, not deferred: /dev/dxg is one device node for ALL of a Windows box's cards and a
+        device cgroup cannot partition it, so a WSL Arm is one Device however many GPUs it holds."""
+        conf = templates.render_gres_conf([("wsl-box", ["/dev/dxg"])])
+        assert gres_lines(conf) == ["NodeName=wsl-box Name=gpu File=/dev/dxg"]
+
+    def test_the_head_and_the_arms_share_one_file(self, monkeypatch, fake_host):
+        """Configless serves ONE gres.conf to the whole fleet, so the Head's own co-located Arm and
+        every donor are described in the same file — and the Head is the box most likely to be the
+        multi-card one."""
+        monkeypatch.setattr(system, "gpu_devices", lambda: ["/dev/nvidia0", "/dev/nvidia1"])
+        conf = templates.render_gres_conf([templates.head_gres_node(), ("donor", ["/dev/dxg"])])
+        assert gres_lines(conf) == ["NodeName=headbox Name=gpu File=/dev/nvidia0",
+                                    "NodeName=headbox Name=gpu File=/dev/nvidia1",
+                                    "NodeName=donor Name=gpu File=/dev/dxg"]
+
+    def test_the_head_node_declares_all_of_its_cards(self, monkeypatch, fake_host):
+        """slurm.conf's static NodeName line must agree with the gres.conf lines above, or slurmctld
+        marks the node invalid and the Head's own Arm takes no work at all."""
+        monkeypatch.setattr(system, "gpu_devices", lambda: [f"/dev/nvidia{i}" for i in range(4)])
+        assert "Gres=gpu:4" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
+
+
 class TestCgroupIsolation:
     """What makes a GRES allocation real. Measured on the first remote job: `--gres=gpu:1` scheduled
     fine and `SLURM_JOB_GPUS` came back EMPTY — Slurm counted the card and never bound it. Both plugins
@@ -174,6 +226,15 @@ class TestScratchEpilog:
         the script must end in an unconditional success."""
         assert templates.render_epilog().rstrip().endswith("exit 0")
 
+    def test_epilog_reaps_sbatch_sinks_too(self):
+        """The job script's own `trap ... EXIT` already reaps its empty sbatch sink — but that trap
+        misses SIGKILL just like the scratch dir does (docs/TODO.md, sbatch wrapper litters /tmp).
+        The epilog is the catch-all, so it must apply the same 'keep only if non-empty' rule to both
+        the Spawn's and the benchmark's sink."""
+        script = templates.render_epilog()
+        assert '[ -s "/tmp/ccc-$SLURM_JOB_ID.slurm" ] || rm -f "/tmp/ccc-$SLURM_JOB_ID.slurm"' in script
+        assert '[ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"' in script
+
 
 class TestSlurmdDropin:
     """A donor Arm's slurmd flags. The node is *dynamic*, so this string is re-sent to slurmctld on
@@ -184,27 +245,48 @@ class TestSlurmdDropin:
         systemd splits a variable's value at whitespace WITHOUT honouring quotes inside it. Via that
         hook, `--conf "Gres=gpu:1 Feature=vram24"` reaches slurmd as three mangled arguments. Quotes
         written literally in a unit file ARE honoured — hence a drop-in that states the command."""
-        unit = enroll.slurmd_dropin("donor-box", "100.99.0.1:6817", 24564)
+        unit = enroll.slurmd_dropin("donor-box", "100.99.0.1:6817", 24564, 1)
         assert '--conf "Gres=gpu:1 Feature=vram24"' in unit
         assert "SLURMD_OPTIONS" not in unit  # never go back to the /etc/default hook
 
     def test_resets_the_distro_execstart(self):
         """A drop-in APPENDS to ExecStart unless you clear it first. Without the bare `ExecStart=`,
         systemd would refuse the unit (two ExecStart lines on a Type=notify service)."""
-        unit = enroll.slurmd_dropin("donor-box", "100.99.0.1:6817", 24564)
+        unit = enroll.slurmd_dropin("donor-box", "100.99.0.1:6817", 24564, 1)
         lines = [ln for ln in unit.splitlines() if ln.startswith("ExecStart")]
         assert lines[0] == "ExecStart="
         assert lines[1].startswith("ExecStart=/usr/sbin/slurmd")
         assert len(lines) == 2
 
     def test_dynamic_registration_flags_survive(self):
-        unit = enroll.slurmd_dropin("donor-box", "100.99.0.1:6817", 24564)
+        unit = enroll.slurmd_dropin("donor-box", "100.99.0.1:6817", 24564, 1)
         assert "-Z -N donor-box" in unit           # register as a dynamic node, under this name
         assert "--conf-server 100.99.0.1:6817" in unit  # configless: fetch slurm.conf from slurmctld
 
     def test_feature_tracks_the_card(self):
-        assert "Feature=vram80" in enroll.slurmd_dropin("a", "h:1", 81920)
-        assert "Feature=vram8" in enroll.slurmd_dropin("a", "h:1", 8192)
+        assert "Feature=vram80" in enroll.slurmd_dropin("a", "h:1", 81920, 1)
+        assert "Feature=vram8" in enroll.slurmd_dropin("a", "h:1", 8192, 1)
+
+    def test_gres_counts_every_card(self):
+        """The whole point of multi-GPU registration. A dynamic node's `--conf` is re-sent at EVERY
+        registration and is the only thing that declares its GRES count — understate it and three of a
+        donor's four cards are simply invisible to the cluster forever."""
+        assert '--conf "Gres=gpu:4 Feature=vram80"' in \
+            enroll.slurmd_dropin("donor-box", "h:1", 81920, 4)
+
+    def test_arm_features_join_the_vram_bucket(self):
+        """Arm Features (docs/TODO.md) ride the SAME Feature= a Spawn's --vram already matches against
+        — a Slurm Feature is a flat per-node set, so there is no structural difference between them
+        once rendered. Without this, a re-registration (this string is re-sent every time) would drop
+        whatever the donor declared at `setup --arm` and every requiring Spawn would stop matching."""
+        unit = enroll.slurmd_dropin("donor-box", "h:1", 24564, 1, ["vsim", "isaacsim"])
+        assert "Feature=vram24,isaacsim,vsim" in unit  # sorted, so re-registration is deterministic
+
+    def test_no_features_is_unchanged(self):
+        """Backward compatible: an Arm with none declared renders exactly as it did before this
+        existed — no trailing comma, no empty token."""
+        assert "Feature=vram24" in enroll.slurmd_dropin("donor-box", "h:1", 24564, 1)
+        assert "Feature=vram24," not in enroll.slurmd_dropin("donor-box", "h:1", 24564, 1)
 
 
 def bench_body(job: str) -> str:
@@ -250,3 +332,19 @@ class TestBenchmarkSbatch:
         body = bench_body(templates.render_bench_sbatch("n", "ip"))
         warmup, timed = body.index(f"range({config.BENCH_WARMUP})"), body.index("perf_counter()")
         assert warmup < timed
+
+    def test_one_job_holds_every_card(self):
+        """Power is per **Device**, so a four-card box needs four numbers — but from ONE Spawn. Four
+        separate jobs would queue behind each other and could each land while a sibling card was held
+        by somebody else's work, measuring a box under contention rather than the card itself."""
+        job = templates.render_bench_sbatch("big-box", "100.99.0.1", 4)
+        assert "#SBATCH --gres=gpu:4" in job
+        assert len([ln for ln in job.splitlines() if ln.startswith("#SBATCH --gres")]) == 1
+
+    def test_it_measures_each_visible_device(self):
+        """Identical models still differ in practice — an x4 slot, the card that throttles under the
+        other — so every card is timed, not one and multiplied."""
+        body = bench_body(templates.render_bench_sbatch("big-box", "100.99.0.1", 4))
+        assert "torch.cuda.device_count()" in body
+        assert "for i in range(ndev)" in body
+        assert '"powers": powers' in body

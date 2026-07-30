@@ -72,3 +72,58 @@ class TestVramConstraint:
         with pytest.raises(HTTPException) as e:
             slurm.vram_constraint(8)
         assert e.value.status_code == 422
+
+
+def arm_with_features(admitted: bool, features: list[str]) -> dict:
+    return {"admitted": admitted, "features": [{"name": n, "path": f"/opt/{n}"} for n in features]}
+
+
+class TestFeatureConstraint:
+    """Arm Features (docs/TODO.md): a named, admin-curated capability an Arm may report having (VSim,
+    IsaacSim, ...). Unlike VRAM (a bucketed OR — no card is EXACTLY the size asked for), a Feature is
+    an exact name a node either has or doesn't, so requiring several is a plain AND."""
+
+    def test_ands_every_requested_feature(self):
+        assert slurm.feature_constraint(["isaacsim", "vsim"]) == "isaacsim&vsim"
+
+    def test_duplicates_collapse(self):
+        assert slurm.feature_constraint(["vsim", "vsim"]) == "vsim"
+
+
+class TestArmsWithFeatures:
+    """The feasibility check `submit_checked` runs before ever calling sbatch — mirroring
+    `vram_constraint`'s "no Arm has that much VRAM" refusal, but for an exact-name AND instead of a
+    size OR."""
+
+    def test_finds_every_admitted_arm_carrying_all_of_them(self, monkeypatch):
+        registry(monkeypatch, {
+            "both": arm_with_features(True, ["vsim", "isaacsim"]),
+            "one": arm_with_features(True, ["vsim"]),
+            "none": arm_with_features(True, []),
+        })
+        assert sorted(slurm.arms_with_features(["vsim"])) == ["both", "one"]
+        assert slurm.arms_with_features(["vsim", "isaacsim"]) == ["both"]
+
+    def test_unadmitted_arms_do_not_count(self, monkeypatch):
+        """An authorized-but-not-yet-admitted Arm has a registry row and no node in Slurm — offering
+        its declared feature would render a constraint no live node can ever match."""
+        registry(monkeypatch, {"pending": arm_with_features(False, ["vsim"])})
+        assert slurm.arms_with_features(["vsim"]) == []
+
+    def test_no_arm_satisfies_an_uncarried_feature(self, monkeypatch):
+        registry(monkeypatch, {"a": arm_with_features(True, ["vsim"])})
+        assert slurm.arms_with_features(["ghost"]) == []
+
+    def test_empty_request_is_satisfied_by_any_admitted_arm(self, monkeypatch):
+        registry(monkeypatch, {"any": arm_with_features(True, [])})
+        assert slurm.arms_with_features([]) == ["any"]
+
+
+class TestAllFeatureNames:
+    def test_union_of_every_admitted_arms_features(self, monkeypatch):
+        registry(monkeypatch, {
+            "a": arm_with_features(True, ["vsim"]),
+            "b": arm_with_features(True, ["isaacsim"]),
+            "pending": arm_with_features(False, ["ghost"]),
+        })
+        assert slurm.all_feature_names() == ["isaacsim", "vsim"]
