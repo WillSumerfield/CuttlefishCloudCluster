@@ -36,6 +36,14 @@ def pick_arm(message: str = "Which Arm?") -> str:
     return _pick(message, rows, "Arm")
 
 
+def pick_feature(message: str = "Which feature?") -> str:
+    try:
+        names = enroll.load_feature_catalog()
+    except Exception:
+        names = []
+    return _pick(message, [(n, "") for n in names], "feature")
+
+
 def pick_backup(message: str = "Which backup?") -> str:
     try:
         paths = backup.list_backups()
