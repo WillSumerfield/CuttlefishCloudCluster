@@ -43,10 +43,16 @@ export function ArmRow({
         className="relative z-10 grid items-center gap-3 px-5"
         style={{ gridTemplateColumns: ROSTER_COLS, paddingTop: 13, paddingBottom: 13 }}
       >
-        {/* NAME — with the card model as a quiet subtitle (useful, not a column of its own). */}
+        {/* NAME — with the card model, and any declared Arm Features, as quiet subtitles (useful, not
+            columns of their own — most Arms have none). */}
         <div className="min-w-0">
           <div className="num truncate text-[14px] text-ink">{arm.name}</div>
           {arm.gpu && <div className="truncate text-[11px] text-ink-mute">{arm.gpu}</div>}
+          {arm.features.length > 0 && (
+            <div className="truncate text-[11px] text-ink-mute">
+              {arm.features.map((f) => f.name).join(", ")}
+            </div>
+          )}
         </div>
 
         {/* OWNER — plain ink. Unowned (awaiting a donor) reads as a dash, never blank. */}

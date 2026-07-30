@@ -12,7 +12,7 @@ export function demoRoster(): Arm[] {
   const me = session.username || "you";
   const A = (o: Partial<Arm> & { name: string }): Arm => ({
     state: "idle", gpus: 0, owner: null, mesh_ip: null, gpu_device: null,
-    admitted: true, retracted: false, gpu: null, vram_mb: null, power: null, ...o,
+    admitted: true, retracted: false, gpu: null, vram_mb: null, power: null, features: [], ...o,
   });
   return [
     A({ name: "arm-cephalo-04", state: "allocated", gpus: 4, owner: me, gpu: "H100", vram_mb: 81920, power: 989, mesh_ip: "100.72.0.4" }),
