@@ -55,7 +55,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 
 - **User** — a person with an account on the Head (admin-provisioned: username + password, argon2
   hash). A User's identity ties every Spawn they submit to them, marks any Arms they **own** (donate),
-  and anchors their Karma wallet.
+  and anchors their Karma wallet. It also carries their **experiment-tracking credential**: the Head
+  holds it once, on their behalf, and injects it into every Spawn they submit from *either* client — so
+  a Spawn logs to its submitter's own account whichever machine it was launched from, and a User who
+  has set no credential is told their Spawns will log nothing rather than discovering it afterwards.
 - **Admin / Maintainer** — the privileged User (the operator) who provisions accounts, mints
   **enrollment tokens** (naming each Arm's owner), and can **override** Karma. One person today.
   The Admin is **outside the economy** — a role for *running* the cluster, not for *using* it. They
@@ -98,6 +101,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   answers "whose Spawn is this?" for the queue, the Dashboard, and (later) Karma billing.
 - **Shared storage** — the unified cluster-wide filesystem (home dirs, code, base envs) mounted
   identically on every node. Distinct from the `shared/` code context.
+- **Feature** — a named, admin-curated capability an Arm may report having (e.g. `vsim`, `isaacsim`) —
+  heavy or licence-gated software that isn't installed everywhere. Declared by the Arm owner at
+  `setup --arm` from the Head's catalog, never auto-probed. A Spawn requests one the same way it
+  declares VRAM: as a *need*, not a machine name — expanding **Eligibility** exactly like VRAM does.
+  The Head rejects a request no enrolled Arm can ever satisfy, same as an impossible VRAM ask.
 
 ## Economy concepts
 
@@ -120,11 +128,38 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Decay** — every Balance drifts back toward 0 over time, absent market forces. Debt is forgiven and
   hoarded wealth evaporates, so standing reflects recent conduct rather than history. Also what makes
   the system self-correcting: any Karma destroyed or granted out of thin air is absorbed automatically.
+- **Device** — the unit a **Spawn** actually holds, and the thing **Power**, **Demand**, **Eligibility**
+  and **Settlement** are all reckoned per. A Device is either a whole GPU or a **Slice** of one; nothing
+  else in the economy needs to know which.
+- **Slice** — a division of one **carvable** GPU into several Devices, each holding its own memory and
+  its own share of the card, isolated *by the hardware* rather than by agreement. Several Spawns can
+  therefore hold one card at once without being able to reach — or starve — each other. A Slice is a
+  Device in every respect: it is priced, held, and settled as one.
+- **Carvable** — a property of a GPU: whether its hardware can divide it into **Slice**s at all. Most
+  cards cannot, and a GPU donated through a virtualization layer never can. So the fleet is permanently
+  mixed, and a Spawn is never told which kind it got.
+- **Beak** — the Head-side authority that decides how each **carvable** card is divided, and re-divides
+  it as the queue changes. It shapes *supply* only: it never chooses which **Spawn** gets a **Slice**,
+  it only decides which Slices exist. A Slice being held is untouchable, so the Beak works exclusively
+  in the space nothing is using.
+  It may leave a card **deliberately idle**. If filling free space would delay a Spawn of higher
+  standing, the Beak holds that space empty and waits — so a short Spawn that can finish before the
+  waiting one starts is carved for, and a long one is not. This is the only place in CCC where
+  hardware is knowingly left unused, and it is what stops **Slice**s from becoming a way to shoulder
+  ahead of the queue.
+  An idle Slice holds no claim on anything: it is free space that merely happens to have a shape, and
+  the Beak will unmake it for a Spawn of higher standing. Only a Slice being *held* is untouchable.
+  And no Spawn is ever given a Slice larger than it asked for — the Beak reshapes rather than hand out
+  Power nobody requested, so what a Spawn is billed for is always what it declared.
 - **Power** — what a device can *do*: its throughput, **measured** when its Arm enrolls, by running a
   benchmark **inside a Pod** — so it reflects the machine as Spawns will really meet it (a virtualized
   WSL GPU, a throttled laptop card, a stale driver), not what its spec sheet claims. Intrinsic and
   fixed. It is what stops the meter paying an owner *more* for being *slower*: a second is worth only
   what a second on that card actually buys.
+  A **carvable** card is measured once *per size of **Slice*** it can be divided into. A Slice's Power
+  is measured like any other Device's and never derived from the whole card's, because dividing a card
+  costs more than it takes — a quarter of a card is not a quarter of its Power, and only a benchmark
+  knows by how much.
 - **Demand** — how badly a device is *wanted*: the device-time being **asked for** (running *and*
   queued) against the device-time that exists. A GPU busy an hour with someone waiting behind it the
   whole hour was demanded for *two* hours. Extrinsic and live. Utilization pins to 100% the moment a
@@ -134,15 +169,23 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   ceiling a queue could bill a **Spawn** arbitrarily.
   Any device actually running work has a Demand of at least 1 — so a second is never sold below its
   **Power**.
+  Demand attaches to the **physical card**, never to a **Slice**, and is counted in whole-card-hours:
+  a Spawn holding or queuing for a quarter of a card asks for a quarter of an hour. So how a card is
+  carved can never move its price — size is carried by **Power**, scarcity by Demand, and the two
+  multiply out at **Settlement**.
 - **Eligibility** — the set of devices a Spawn may run on, derived from what it *declares it needs*
-  (VRAM; hardware licences later) rather than which machine it wants. A queued Spawn adds **Demand**
+  (VRAM, **Feature**s) rather than which machine it wants. A queued Spawn adds **Demand**
   to every device it is eligible for — so scarce big-VRAM cards, wanted by big jobs *and* small ones,
   price highest. Users declare needs; only the **Admin** may name a machine outright.
+  On a **carvable** card what a Spawn declares stops merely *filtering* and starts *shaping*: it is
+  eligible for **Slice**s that do not exist yet but that the **Beak** could carve for it. Eligibility
+  is therefore about what the fleet *could* offer, not only what it happens to be offering now.
 - **The Tide** — the **forecast** of Demand: what an hour on a given device has typically cost, by
   hour of day. **High Tide** = the busy hours, **Low Tide** = the quiet ones. The Tide does not *set*
   the price (Demand does, live) — it lets a User plan around it, and it is what the **Escrow** is
   quoted from.
-- **Escrow** — Karma reserved against a Balance the moment a Spawn is queued, quoted from the **Tide**
+- **Escrow** — Karma reserved against a Balance the moment a Spawn is queued — meaning the moment the
+  **Head** accepts it, whether or not a Device is yet waiting for it — quoted from the **Tide**
   and its declared duration. It suppresses the submitter's **Share** while the Spawn is outstanding —
   so flooding the queue immediately costs you your own queue position — and is released at
   **Settlement**. Escrow is a hold, not a charge.
@@ -153,9 +196,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   held, accumulated while it runs. The Meter is the number **Settlement** actually moves — the
   **Escrow** was only ever the estimate of it.
 - **Settlement** — the single moment a Spawn's Karma actually moves, when it ends: the **Escrow** is
-  released and the real cost is **transferred** to the Arm's owner. The cost of a device is the
-  seconds it was *held* (not the seconds it was *busy* — you paid for exclusive access) × its
-  **Power** × the **Demand** it ran under. Several devices are several separate purchases.
+  released and the real cost is **transferred** to the Arm's owner. The cost of a **Device** is the
+  seconds it was *held* (not the seconds it was *busy* — you paid for exclusive access to it, whether
+  it was a whole card or a **Slice**) × its **Power** × the **Demand** it ran under. Several Devices
+  are several separate purchases.
   Over-reserving therefore costs a User nothing but queue position; under-reserving costs them
   nothing at all.
 - **Retract** — a volatile Arm owner's instant reclaim of their machine (the panic-switch);
