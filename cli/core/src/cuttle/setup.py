@@ -10,7 +10,10 @@ Drives apt+sudo directly. Intended path only — no fallbacks (test box; failure
 """
 
 import getpass
+import hashlib
 import ipaddress
+import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -49,8 +52,19 @@ def preflight(role: str) -> None:
             raise ui.abort("WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven here)",
                            next_step="run `cuttle setup --arm` on this box, and host the Head elsewhere")
         ui.say("  [muted]WSL2 — supported as an Arm, with one permanent limit: /dev/dxg is a single "
-               "device node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here[/muted]")
+               "device node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here — this box "
+               "registers one Device however many cards it has[/muted]")
     run([system.nvidia_smi(), "--query-gpu=name,driver_version", "--format=csv,noheader"])
+    # Before anything is installed, joined, or written: a box whose GPUs are not all the same cannot be
+    # described by ONE `vramN` Feature, and both roles hit this — the Head's own co-located Arm is an
+    # Arm like any other. Aborts (a clean ✗ naming the cards it found), never a traceback.
+    model, vram_mb = system.gpu_profile()
+    # Physical cards vs schedulable Devices: equal natively, and deliberately NOT on WSL, where every
+    # card sits behind the one /dev/dxg. Printed together so a WSL donor sees why their second card
+    # bought them nothing.
+    cards, devices = len(system.gpu_inventory()), len(system.gpu_devices())
+    ui.say(f"  [muted]gpu={cards}x {model} ({vram_mb} MiB each) → "
+           f"Gres=gpu:{devices} Feature={config.vram_feature(vram_mb)}[/muted]")
 
 
 def configure_apptainer_wsl() -> None:
@@ -69,8 +83,17 @@ def configure_apptainer_wsl() -> None:
            f"{config.WSL_EXTRA_NVLIB}; --nv now behaves as on native Linux[/muted]")
 
 
-def add_repos() -> None:
-    run(["add-apt-repository", "-y", "ppa:apptainer/ppa"], sudo=True)
+def add_repos(head: bool = False) -> None:
+    """Add the apt sources CCC's pins need. Every one of them is an EXTRA file under
+    sources.list.d — this box's own sources are never rewritten (see the snapshot template).
+
+    The apptainer PPA is added on the **Head only**. An Arm installs the Head's pinned .deb by path
+    (install_apptainer), so a donor's machine gains no third-party repo at all — which is both the
+    hygiene win and the reason two Arms set up months apart now run the same apptainer.
+    """
+    _write_root_file(config.UBUNTU_SNAPSHOT_LIST, templates.render_ubuntu_snapshot_list())
+    if head:
+        run(["add-apt-repository", "-y", config.APPTAINER_PPA], sudo=True)
     sh(
         # --yes: clobber the keyring on re-run instead of prompting (public repo key; setup is idempotent).
         "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey "
@@ -84,20 +107,108 @@ def add_repos() -> None:
     )
 
 
-def install_packages(slurm_pkg: str = config.SLURM_PKG) -> None:
-    """`slurm_pkg` is the full suite on a Head, just the node daemon on an Arm."""
+def _version_available(spec: str) -> bool:
+    """Can any configured apt source still supply `pkg=version`? Asked only after an install failed."""
+    name, _, version = spec.partition("=")
+    out = run(["apt-cache", "madison", name], capture_output=True, text=True, check=False).stdout
+    return version in {line.split("|")[1].strip() for line in out.splitlines() if "|" in line}
+
+
+def _apt_install(pkgs: list[str]) -> None:
+    """`apt-get install`, with a *rotted pin* turned into something the operator can act on.
+
+    apt reports an unavailable pin as `E: Version '23.11.4-1.2ubuntu5' for 'slurm-wlm' was not found` —
+    accurate, and useless unless you already know CCC pinned it and where. That is exactly the raw tool
+    error Phase 6 says must not reach the user, so the one failure we can name precisely gets named:
+    which package, which pin, that the repo dropped it, and the single file to edit.
+
+    Anything else re-raises untouched — `run` has already printed apt's own output.
+    """
+    try:
+        run(["apt-get", "install", "-y", *pkgs], sudo=True)
+    except subprocess.CalledProcessError:
+        for spec in pkgs:
+            if "=" not in spec or _version_available(spec):
+                continue
+            name, _, version = spec.partition("=")
+            raise ui.abort(
+                f"{name} {version} is gone from every apt source this box has — CCC pins that exact "
+                f"version, and the repository no longer carries it",
+                next_step=f"`apt-cache madison {name}` lists what IS available; bump the pin (and "
+                          f"UBUNTU_SNAPSHOT with it) in cli/core/src/cuttle/config.py, then re-run "
+                          f"setup and re-test the cluster on the new version")
+        raise
+
+
+def install_packages(slurm_pkg: str = config.SLURM_PKG) -> set[str]:
+    """Install the pinned system stack, EXCEPT apptainer — that arrives as the Head's pinned .deb
+    (install_apptainer), which on the Head does not exist yet when this runs.
+
+    `slurm_pkg` is the full suite on a Head, just the node daemon on an Arm. Returns the set of
+    packages installed *before* this ran, so the caller can close the manifest window with
+    `record_installed` once apptainer is in too — teardown purges from that manifest, and apptainer
+    plus its deps must be in it.
+    """
     run(["apt-get", "update"], sudo=True)
     before = system.installed_packages()
-    run(
-        ["apt-get", "install", "-y",
-         slurm_pkg, config.APPTAINER_PKG, config.NVIDIA_CTK_PKG, config.MUNGE_PKG],
-        sudo=True,
-    )
-    # Record exactly what we added (incl. pulled deps) so teardown removes only these.
+    _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG])
+    return before
+
+
+def install_apptainer(deb: Path) -> None:
+    """Install the Head's pinned apptainer from the .deb itself — the same bytes on the Head and on
+    every Arm, whatever the PPA holds by then.
+
+    By PATH, not by name: apt treats an argument containing `/` as a file, installs that exact file,
+    and resolves its dependencies from the configured sources (all of apptainer's are plain Ubuntu
+    archive packages — measured; the PPA carries nothing else apptainer needs).
+    """
+    _apt_install([str(deb)])
+
+
+def record_installed(before: set[str]) -> None:
+    """Record exactly what setup added (incl. pulled deps) so teardown removes only these."""
     added = sorted(system.installed_packages() - before)
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config.APT_MANIFEST.write_text("\n".join(added) + "\n" if added else "")
     ui.say(f"  [muted]recorded {len(added)} newly-installed packages → {config.APT_MANIFEST}[/muted]")
+
+
+def pin_apptainer_deb() -> Path:
+    """**Head only.** Fetch the apptainer .deb once and keep it forever, as the fleet's one build.
+
+    Launchpad's PPA keeps only its newest build, so an Arm enrolled today and one enrolled in three
+    months would otherwise get different apptainer versions — and the earlier one would by then be
+    unfetchable. Serving the file removes the PPA from the equation entirely: the Head hands the same
+    bytes to every Arm, and to itself.
+
+    **A re-run keeps the recorded .deb.** That is the whole point — re-fetching would silently give
+    later Arms a build the rest of the fleet is not running. Bumping it is a deliberate act: delete
+    config.APPTAINER_RECORD and re-run.
+    """
+    if config.APPTAINER_RECORD.exists():
+        rec = json.loads(config.APPTAINER_RECORD.read_text())
+        ui.say(f"  [muted]apptainer {rec['version']} already pinned for this cluster — keeping it "
+               f"(delete {config.APPTAINER_RECORD} to re-pin)[/muted]")
+        return config.HEAD_DEBS_DIR / rec["filename"]
+
+    run(["install", "-d", "-m", "0755", str(config.HEAD_DEBS_DIR)], sudo=True)
+    # `apt-get download` needs no root, and run as root it warns about the unsandboxed _apt user —
+    # so it runs as the operator, into a temp dir, and the result is installed root-side.
+    with tempfile.TemporaryDirectory() as tmp:
+        run(["apt-get", "download", config.APPTAINER_PKG], cwd=tmp)
+        deb = next(Path(tmp).glob("apptainer_*.deb"))
+        rec = {
+            "version": run(["dpkg-deb", "-f", str(deb), "Version"],
+                           capture_output=True, text=True).stdout.strip(),
+            "filename": deb.name,
+            "sha256": hashlib.sha256(deb.read_bytes()).hexdigest(),
+        }
+        run(["install", "-m", "0644", str(deb), str(config.HEAD_DEBS_DIR / deb.name)], sudo=True)
+    _write_root_file(config.APPTAINER_RECORD, json.dumps(rec, indent=2, sort_keys=True) + "\n")
+    ui.say(f"  [muted]pinned apptainer {rec['version']} for the whole fleet → "
+           f"{config.HEAD_DEBS_DIR / rec['filename']}[/muted]")
+    return config.HEAD_DEBS_DIR / rec["filename"]
 
 
 def write_slurm_config(mesh_ip: str) -> None:
@@ -106,15 +217,16 @@ def write_slurm_config(mesh_ip: str) -> None:
                      (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     # The Head plus any Arms already admitted (a re-run must not un-admit them). The Head's own row is
-    # skipped: head_gres_node() already supplies its line (see enroll.render_gres).
+    # skipped: head_gres_node() already supplies its lines (see enroll.render_gres).
     reg = enroll.load_registry()
     # The Head's Weight goes in the file, not just `scontrol update`, or the next reconfigure wipes it.
     # Unknown on a first setup (the benchmark runs later, and re-renders this) -> node_weight's floor.
-    power = (reg.get(system.hostname()) or {}).get("power")
-    _write_root_file(config.SLURM_CONF,
-                     templates.render_slurm_conf(mesh_ip, config.node_weight(power) if power else 1))
+    powers = (reg.get(system.hostname()) or {}).get("powers")
+    _write_root_file(
+        config.SLURM_CONF,
+        templates.render_slurm_conf(mesh_ip, config.node_weight(powers) if powers else 1))
     nodes = [templates.head_gres_node()]
-    nodes += [(n, e["gpu_device"]) for n, e in sorted(reg.items())
+    nodes += [(n, e["gpu_devices"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]
     _write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
     # What task/cgroup enforces. Configless serves it to every Arm with slurm.conf, so it is written
@@ -367,7 +479,7 @@ def resolve_coordinator_address(address: str | None) -> str:
     stored = settings.load().get("mesh", {})
     addr = address or stored.get("head_address") or _pick_coordinator_address()
     old = stored.get("coordinator")
-    new = f"http://{addr}:{config.HEADSCALE_PORT}"
+    new = f"https://{addr}:{config.HEADSCALE_PORT}"
 
     # Re-pointing the coordinator is a cluster-wide event, not a config tweak, so it is confirmed
     # rather than announced. Unreachable unless --address names something new: an unflagged re-run now
@@ -393,8 +505,13 @@ def mesh_up_head(addr: str) -> str:
 
     Two addresses, two jobs: `addr` is where Arms reach the coordinator *before* they're on the
     mesh (public/DDNS); the returned mesh IP is where they reach slurmctld *after*.
+
+    HTTPS (Phase 9 #3): node keys and preauth keys cross this address before the mesh exists to
+    protect them, so it carries a self-signed cert like the Head API's dashboard does — except
+    `tailscaled`, not cuttle's own client, is what verifies it (see mesh.trust_own_headscale_cert /
+    mesh.ensure_headscale_trusted).
     """
-    server_url = f"http://{addr}:{config.HEADSCALE_PORT}"
+    server_url = f"https://{addr}:{config.HEADSCALE_PORT}"
 
     old = settings.load().get("mesh", {}).get("coordinator")
     if old and old != server_url:
@@ -402,7 +519,7 @@ def mesh_up_head(addr: str) -> str:
 
     # NB: forgetting stale mesh state is mesh.up_head's job, not ours — a changed address is only one
     # of the ways the daemon's state goes stale, and it was never the dangerous one. See its docstring.
-    hs_ver, mesh_ip = mesh.up_head(server_url, _write_root_file)
+    hs_ver, mesh_ip = mesh.up_head(server_url, addr, _write_root_file)
     # Persist for later Arm enrollment (join token) + reproducibility.
     data = settings.load()
     data["mesh"] = {"head_address": addr, "coordinator": server_url,
@@ -430,14 +547,19 @@ def _setup_head(address: str | None = None) -> None:
         mesh_ip = mesh_up_head(address)
         system.allow_mesh_iface(config.CCC_TS_TUN)
     with ui.step("Adding package repositories"):
-        add_repos()
+        add_repos(head=True)  # the apptainer PPA is added HERE and nowhere else in the fleet
     with ui.step("Installing Slurm, munge and Apptainer"):
-        install_packages()
+        before = install_packages()
+        # /var/lib/ccc must exist before the .deb can be stored under it, and it is munge-owned — so
+        # this waits until apt has created the `munge` user, i.e. until just now.
+        make_registry_dir()
+        install_apptainer(pin_apptainer_deb())  # the Head runs exactly what it serves its Arms
+        record_installed(before)
     with ui.step("Configuring Slurm"):
         write_slurm_config(mesh_ip)
         start_daemons()
-        make_registry_dir()
     with ui.step("Installing the Enroll API"):
+        headapi.install_enroll_sudoers(_write_root_file)   # one grant: read-only `headscale nodes list`
         headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: it serves munge.key
     with ui.step("Provisioning the Mantle and the auth store"):
         provision_head_auth()                    # ccc account + head.db + submission dirs (needs venv)
@@ -531,6 +653,25 @@ def setup_client() -> None:
 setup_local = setup_head
 
 
+def _prompt_arm_features(catalog: list[str]) -> list[dict]:
+    """Ask which of the Head's known Arm Features (`cuttle feature add`) this box has, and where each
+    is installed — `[{"name", "path"}, ...]`, /enroll's shape. A y/n per catalog entry rather than a
+    free-typed name: the catalog IS the only valid answer set (Head-side validation is the real gate,
+    but there is no reason to let a typo reach it).
+
+    Empty when the catalog is empty (nothing to ask) or off-terminal (`--no-input`, a scripted setup) —
+    same as any other optional wizard field: declares none, an operator adds them later by re-running.
+    """
+    if not catalog or not ui.interactive():
+        return []
+    features = []
+    for name in catalog:
+        if ui.ask_confirm(f"Does this Arm have the {name!r} feature?", False):
+            path = ui.ask_text(f"Install path for {name!r} on this box?")
+            features.append({"name": name, "path": path})
+    return features
+
+
 def setup_arm(token: str, re_enroll: bool = False) -> None:
     """Enroll this box as an Arm, redeeming the **enrollment token** an Admin minted for it.
 
@@ -563,12 +704,21 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     #      apt would hold the Admin's terminal hostage for our entire package install.
     #   2. If the Head is unroutable over the mesh, we learn now — not five minutes into an apt we
     #      would then have to throw away.
-    # The POST needs nothing but the mesh (gpu_device() is a path check). It reports our GPU device —
-    # /dev/nvidia0 natively, /dev/dxg under WSL2 — which the Head needs to author our gres.conf line,
-    # and returns the munge key. We hold that key in memory: writing it needs the `munge` user, which
+    # The POST needs nothing but the mesh (gpu_devices() is a path check). It reports our GPU devices —
+    # one /dev/nvidiaN per card natively, a single /dev/dxg under WSL2 — which the Head needs to author
+    # our gres.conf lines, and returns the munge key. We hold that key in memory: writing it needs the `munge` user, which
     # apt has not created yet.
+    # Arm Features (docs/TODO.md): ask which of the Head's catalog this box has, and where each is
+    # installed, before /enroll — so the declaration rides the SAME POST as the hardware report rather
+    # than a second round trip. Only offered when the catalog isn't empty and there's someone to ask; a
+    # scripted/off-terminal setup declares none, exactly like any other optional wizard field (the
+    # operator adds them later by re-running `setup --arm` — never guessed).
+    with ui.step("Checking the Head's Arm Feature catalog"):
+        catalog = enroll.fetch_feature_catalog(t["mesh_ip"])
+    features = _prompt_arm_features(catalog)
+
     with ui.step("Enrolling with the Head"):
-        info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip)
+        info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)
 
     # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
     # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
@@ -578,16 +728,23 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
         enroll.wait_for_admit(t["mesh_ip"], node_name)
 
     with ui.step("Adding package repositories"):
-        add_repos()
+        add_repos()  # no apptainer PPA: this is a donor's box, and it gains no third-party repo
     with ui.step("Installing Slurm, munge and Apptainer"):
-        install_packages(config.SLURMD_PKG)
+        before = install_packages(config.SLURMD_PKG)
+        # Apptainer comes from the HEAD, not from Launchpad — the same .deb every other node in this
+        # cluster installed, checksum-verified. `info` carried its version + sha256 back from /enroll.
+        deb = enroll.fetch_apptainer_deb(t["mesh_ip"], info["apptainer"])
+        install_apptainer(deb)
+        deb.unlink()  # 35 MB, kept only as long as apt needed to read it
+        record_installed(before)
         if system.is_wsl():
             configure_apptainer_wsl()  # after apptainer is installed, before base.sif is built
         enroll.write_munge_key(info["munge_key"])  # now that `munge` exists to own it
 
     data = settings.load()
     data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
-                   "ctld_addr": info["ctld_addr"], "gpu_device": enroll.gpu_device()}
+                   "ctld_addr": info["ctld_addr"], "gpu_devices": system.gpu_devices(),
+                   "features": features}
     # Point the box at the Head over the MESH — an Arm's owner is a User too, and until now enrolling
     # left them with no Head URL at all, so `cuttle login` on their own Arm said "no Head URL set".
     #
@@ -607,9 +764,15 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     with ui.step("Building the Pod image"):
         build_base_sif()
 
+    if features:
+        with ui.step("Recording Arm Features"):
+            # World-readable like the other rendered configs here: install paths aren't secret, and a
+            # Spawn's payload (running as the home-less Mantle) needs to read this on every node.
+            _write_root_file(config.ARM_FEATURES_ENV, enroll.render_features_env(features))
+
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     with ui.step("Starting slurmd"):
-        _start_slurmd(node_name, info["ctld_addr"])
+        _start_slurmd(node_name, info["ctld_addr"], [f["name"] for f in features])
     with ui.step("Checking the Head can reach us"):
         # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
         enroll.check_head_can_reach_us(t["mesh_ip"])
@@ -623,14 +786,18 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     ui.result("check it", "run `sinfo` on the Head")
 
 
-def _start_slurmd(node_name: str, ctld_addr: str) -> None:
+def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None) -> None:
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     # Configless serves the conf (which names Epilog=) but NOT the script it points at — that must be on
     # the node, written before slurmd starts, or the first Spawn's epilog fails and drains this Arm.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
+    # The same detection that was reported to /enroll, so the count claimed here and the gres.conf
+    # File lines the Head wrote from that POST cannot disagree (slurmctld invalidates the node if
+    # they do). `feature_names` are the same Arm Features just reported at /enroll.
     _write_root_file(config.SLURMD_DROPIN,
-                     enroll.slurmd_dropin(node_name, ctld_addr, system.gpu_vram_mb()))
+                     enroll.slurmd_dropin(node_name, ctld_addr, system.gpu_vram_mb(),
+                                          len(system.gpu_devices()), feature_names))
     run(["systemctl", "daemon-reload"], sudo=True)  # the drop-in rewrites slurmd's ExecStart
     run(["systemctl", "enable", "slurmd"], sudo=True)
     run(["systemctl", "restart", "slurmd"], sudo=True)

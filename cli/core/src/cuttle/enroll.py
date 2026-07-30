@@ -13,7 +13,7 @@ Two gates guard the cluster, and both now fall out of that *single* admin decisi
 2. **Slurm admission.** `cuttle arm authorize` pre-declares the Arm's name in the registry before the
    token is ever handed out, so the mesh-only Enroll API can refuse a name no Admin ever named. Being
    on the mesh is no longer sufficient to fetch the munge key. The Arm then `POST`s /enroll to report
-   its GPU device, and `authorize` — still blocked, waiting — renders gres.conf and reconfigures Slurm.
+   its GPU devices, and `authorize` — still blocked, waiting — renders gres.conf and reconfigures Slurm.
    Nothing from the network reaches root unvalidated.
 
 Unlike the invite it replaces, **the token is a secret**: it admits one machine to the mesh. It
@@ -24,6 +24,7 @@ Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import base64
+import hashlib
 import json
 import re
 import tempfile
@@ -86,23 +87,61 @@ def decode_token(token: str) -> dict:
 
 # --- /enroll ----------------------------------------------------------------
 
-def gpu_device() -> str:
-    """This box's GPU device node. WSL2 has no /dev/nvidiaN — CUDA reaches the GPU through /dev/dxg
-    with the driver shimmed in from /usr/lib/wsl/lib."""
-    if Path("/dev/dxg").exists():
-        return "/dev/dxg"
-    return config.GPU_DEVICE
-
-
-def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str) -> dict:
+def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
+                     features: list[dict] | None = None) -> dict:
     """Record this Arm with the Head and pull the munge key + ctld address. Only routable from
-    inside the mesh — which is exactly why the munge key is safe to send here and nowhere else."""
-    body = json.dumps({"node_name": node_name, "gpu_device": gpu_device(),
-                       "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb()}).encode()
+    inside the mesh — which is exactly why the munge key is safe to send here and nowhere else.
+
+    Reports every **Device** this box has (system.gpu_devices), because the Head authors gres.conf
+    for the whole fleet and a card it was never told about is a card no Spawn can ever be placed on.
+
+    `features` = the Arm Features (docs/TODO.md) this box's owner picked at `setup --arm`, as
+    `[{"name", "path"}, ...]` — the Head validates each name against its catalog and re-sends this on
+    every call, so a re-enrollment (mesh IP moved, `arm sync-key`) never silently drops a declaration.
+    """
+    body = json.dumps({"node_name": node_name, "gpu_devices": system.gpu_devices(),
+                       "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb(),
+                       "features": features or []}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
+
+
+def fetch_feature_catalog(head_mesh_ip: str) -> list[str]:
+    """The Head's admin-curated catalog of Arm Features, over the mesh — so a donor's setup wizard can
+    offer real names before this box has any other way to reach the Head (no login yet)."""
+    with urllib.request.urlopen(f"{headapi.enroll_url(head_mesh_ip)}/features", timeout=15) as r:
+        return json.load(r)
+
+
+def fetch_apptainer_deb(head_mesh_ip: str, pin: dict) -> Path:
+    """Pull the apptainer .deb the Head pinned for this cluster, and refuse anything else.
+
+    Reproducibility here is fleet-internal by necessity: the Launchpad PPA keeps only its newest build,
+    so a version cannot be resurrected once pruned — but the Head downloaded it once and hands every
+    Arm those same bytes, so a node enrolled today and one enrolled next year agree. `pin` is the
+    {version, sha256, filename} block /enroll returned.
+
+    The sha256 is checked because it is nearly free, not because the mesh is doubted: this file becomes
+    root-installed software, and a truncated download (the ordinary failure) would otherwise reach
+    `apt-get install` as an unreadable archive.
+    """
+    dest = Path(tempfile.gettempdir()) / pin["filename"]
+    urllib.request.urlretrieve(f"{headapi.enroll_url(head_mesh_ip)}/apptainer.deb", dest)
+    got = hashlib.sha256(dest.read_bytes()).hexdigest()
+    if got != pin["sha256"]:
+        dest.unlink(missing_ok=True)
+        raise ui.abort(
+            f"the apptainer .deb from the Head does not match what the Head said it would be\n"
+            f"  expected sha256 {pin['sha256']}\n"
+            f"  got      sha256 {got}",
+            next_step="re-run `cuttle setup --arm` — if it happens again, the Head's copy is damaged "
+                      "and the operator should delete /var/lib/ccc/apptainer.json and re-run "
+                      "`cuttle setup --head`")
+    ui.say(f"  [muted]apptainer {pin['version']} from the Head — the build the rest of this cluster "
+           f"runs[/muted]")
+    return dest
 
 
 def wait_for_admit(head_mesh_ip: str, node_name: str, timeout_s: int = 900) -> None:
@@ -160,25 +199,60 @@ def write_munge_key(b64_key: str) -> None:
     run(["systemctl", "restart", "munge"], sudo=True)
 
 
+def sync_munge_key() -> None:
+    """Re-fetch the CURRENT munge key from the Head. `cuttle munge rotate`'s counterpart on an Arm:
+    that command mints a fresh key on the Head and can reach no further — a donor's box is the
+    donor's, and this is the one thing only they can run.
+
+    Deliberately narrow. `/enroll` already hands back whatever key is live to any admitted node on
+    every call (head/api's POST handler doesn't special-case rotation — the key it reads off disk is
+    just whatever the Head currently has), so no new endpoint was needed, only a reason to call the
+    old one again. Everything else `fetch_enrollment`/`setup --arm` would normally touch — mesh
+    identity, gres.conf, slurmd's `--conf-server` — is left exactly as it was; a re-sync is not a
+    re-enrollment.
+    """
+    arm = settings.load().get("arm")
+    if not arm:
+        raise ui.abort("this box was never enrolled as an Arm",
+                       next_step="run `cuttle setup --arm --token <token>` first")
+    with ui.section("Syncing the munge key", lambda: "synced"):
+        system.prime_sudo()
+        # `features` re-sent from what setup last recorded (not re-collected): /enroll is an UPDATE, so
+        # omitting them here would read as "this Arm has none" and silently erase a real declaration.
+        info = fetch_enrollment(arm["head_mesh_ip"], arm["node_name"], arm["mesh_ip"],
+                                features=arm.get("features"))
+        write_munge_key(info["munge_key"])
+
+
 # --- slurmd (dynamic + configless) ------------------------------------------
 
-def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int) -> str:
+def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
+                  feature_names: list[str] | None = None) -> str:
     """This Arm's slurmd flags. `-Z` = register as a dynamic node; `--conf-server` = fetch slurm.conf
     from slurmctld instead of having one installed. Gres must be declared here: slurm-wlm ships no
-    NVML, so the node cannot introspect its own GPUs (Phase 1 = one GPU per Arm).
+    NVML, so the node cannot introspect its own GPUs — CCC counts them itself at enrollment
+    (system.gpu_devices) and states the count here, which is why no NVML-enabled rebuild is needed.
 
-    `Feature=vramN` rides along, and `--conf` is the only durable place for it: a dynamic node's config
-    is re-sent from `--conf` at *every* registration, so a feature set any other way (`scontrol
-    update`) would silently vanish the next time this slurmd restarted — and a Spawn's `--vram`
-    constraint would then match nothing. Weight (∝ 1/Power) is deliberately NOT here, and can't be:
-    Power is only measurable once the node is live. Losing Weight costs nothing worse than the
-    fastest-free-card preference; losing Feature would make the node unschedulable.
+    `gpus` must agree with the number of gres.conf File lines the Head wrote for this node, or
+    slurmctld sets the node INVALID: the count claimed here is checked against the devices configured
+    there. Both come from the same `gpu_devices` list this Arm reported at /enroll.
+
+    `Feature=vramN[,feature,...]` rides along, and `--conf` is the only durable place for it: a dynamic
+    node's config is re-sent from `--conf` at *every* registration, so a feature set any other way
+    (`scontrol update`) would silently vanish the next time this slurmd restarted — and a Spawn's
+    `--vram`/Arm-Feature constraint would then match nothing. `feature_names` are this Arm's declared
+    Arm Features (docs/TODO.md — VSim, IsaacSim, ...), comma-joined onto the one vram bucket exactly
+    like it: Slurm Features are a flat per-node set, so there is no structural difference between the
+    two once rendered. Weight (∝ 1/Power) is deliberately NOT here, and can't be: Power is only
+    measurable once the node is live. Losing Weight costs nothing worse than the fastest-free-card
+    preference; losing a Feature would make the node unschedulable for anything that requires it.
 
     A drop-in rather than `/etc/default/slurmd` (see config.SLURMD_DROPIN): systemd does not honour
     quotes *inside* an expanded variable, so the distro's `$SLURMD_OPTIONS` hook cannot express a
     `--conf` with a space in it. Quotes written literally in a unit file are honoured.
     """
-    conf = f"Gres=gpu:1 Feature={config.vram_feature(vram_mb)}"
+    feature = ",".join([config.vram_feature(vram_mb), *sorted(feature_names or [])])
+    conf = f"Gres=gpu:{gpus} Feature={feature}"
     return (
         "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
         "[Service]\n"
@@ -202,21 +276,96 @@ def save_registry(reg: dict) -> None:
          tmp, str(config.ARMS_REGISTRY)], sudo=True)
 
 
+# --- Arm Feature catalog (Head only, operator + sudo) -----------------------
+# The admin-curated list of names an Arm may claim to have (docs/TODO.md "Arm Features"). Lives beside
+# the registry — munge-owned JSON under CCC_LIB, not head.db — for the same reason arms.json does: the
+# mesh-only Enroll API validates a donor's declared features against it, and that API runs as `munge`,
+# which cannot read the ccc-owned, 0600 head.db (see config.FEATURES_CATALOG).
+
+def load_feature_catalog() -> list[str]:
+    return sorted(json.loads(config.FEATURES_CATALOG.read_text())) \
+        if config.FEATURES_CATALOG.exists() else []
+
+
+def save_feature_catalog(names: list[str]) -> None:
+    with tempfile.NamedTemporaryFile("w", suffix=".ccc", delete=False) as f:
+        f.write(json.dumps(sorted(set(names)), indent=2) + "\n")
+        tmp = f.name
+    run(["install", "-D", "-m", "0644", "-o", config.ENROLL_API_USER, "-g", config.ENROLL_API_USER,
+         tmp, str(config.FEATURES_CATALOG)], sudo=True)
+
+
+def add_feature(name: str) -> None:
+    if not re.match(config.FEATURE_NAME_RE, name):
+        raise ui.abort(f"invalid feature name {name!r} — letters/digits/'.'/'_'/'-' only, must start "
+                       f"with a letter or digit (it becomes a Slurm Feature= token and an env var name)")
+    names = load_feature_catalog()
+    if name in names:
+        raise ui.abort(f"feature {name!r} already exists")
+    save_feature_catalog(names + [name])
+    print(f"cuttle: feature {name!r} added")
+
+
+def remove_feature(name: str) -> None:
+    """Removes it from the catalog only — it does NOT touch any Arm that already declared it (their
+    registry rows, and the Feature= a running slurmd advertises, are left exactly as they are). A
+    dangling declaration is inert: nothing new can request a feature no longer in the catalog, and
+    nothing here evicts an Arm for having reported one honestly."""
+    names = load_feature_catalog()
+    if name not in names:
+        raise ui.abort(f"no such feature {name!r}",
+                       next_step="run `cuttle feature list` to see the catalog")
+    save_feature_catalog([n for n in names if n != name])
+    print(f"cuttle: feature {name!r} removed from the catalog")
+
+
+def list_features(as_json: bool = False) -> None:
+    names = load_feature_catalog()
+    if as_json:
+        ui.emit(names, True, lambda: None)
+        return
+    if not names:
+        ui.say("no Arm Features defined")
+        ui.hint("add one with `cuttle feature add <name>`")
+        return
+    for n in names:
+        ui.say(f"  {n}")
+
+
+def render_features_env(features: list[dict]) -> str:
+    """One `export <NAME>_PATH=<path>` line per declared Arm Feature, written to config.ARM_FEATURES_ENV
+    by `setup --arm`. `export`, not a bare assignment: ccc_head_api.spawns.JOB_SCRIPT sources this file
+    with no `set -a`, and Apptainer's default (non `--cleanenv`) behaviour is to pass the WHOLE calling
+    environment into the Pod — so only an exported var actually reaches a Spawn's payload.
+
+    A feature name may contain `.`/`-` (config.FEATURE_NAME_RE) which a shell identifier cannot, hence
+    the substitution — `vsim-pro` becomes `VSIM_PRO_PATH`, not a syntax error.
+    """
+    lines = [f"export {re.sub(r'[^A-Za-z0-9]', '_', f['name']).upper()}_PATH={f['path']}"
+            for f in features]
+    header = "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
+    return header + "\n".join(lines) + ("\n" if lines else "")
+
+
 def render_gres(reg: dict, write_root_file) -> None:
     """gres.conf = the Head + every ADMITTED Arm. Re-validated here, root-side: the API is
     unprivileged and its registry is only as trustworthy as the mesh.
 
     The Head's own co-located Arm has a registry row too (so it can carry an owner, like any other
-    Arm), but it is `head: true` and templates.head_gres_node() already supplies its line — skip it
+    Arm), but it is `head: true` and templates.head_gres_node() already supplies its lines — skip it
     or gres.conf names it twice.
+
+    Every device path is re-checked, not just the first: a multi-GPU Arm POSTs a whole list, and each
+    entry of it is about to be written into a root-owned file.
     """
     nodes = [templates.head_gres_node()]
     for name, e in sorted(reg.items()):
         if not e["admitted"] or e.get("head"):
             continue
         assert re.match(config.NODE_NAME_RE, name), f"bad node name in registry: {name!r}"
-        assert re.match(config.GPU_DEVICE_RE, e["gpu_device"]), f"bad device: {e['gpu_device']!r}"
-        nodes.append((name, e["gpu_device"]))
+        for device in e["gpu_devices"]:
+            assert re.match(config.GPU_DEVICE_RE, device), f"bad device: {device!r}"
+        nodes.append((name, e["gpu_devices"]))
     write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
     run(["scontrol", "reconfigure"], sudo=True)
     reapply_weights(reg)
@@ -237,17 +386,17 @@ def reapply_weights(reg: dict) -> None:
     the meter settles on what actually ran. Closing it needs a privileged loop on the Head (Phase 2).
     """
     for name, e in sorted(reg.items()):
-        if e["admitted"] and e.get("power"):
-            apply_weight(name, e["power"])
+        if e["admitted"] and e.get("powers"):
+            apply_weight(name, e["powers"])
 
 
 def _await_enrollment(name: str, token: str, timeout_s: int = 300) -> dict:
-    """Block until the Arm POSTs /enroll — the only thing that tells us the GPU device we must write
+    """Block until the Arm POSTs /enroll — the only thing that tells us the GPU devices we must write
     into gres.conf.
 
     Waits for `mesh_ip`, not for the row: `authorize` pre-declared the row itself moments ago (that
     pre-declaration is what lets the Enroll API refuse un-named machines), so its mere existence
-    proves nothing. `mesh_ip` and `gpu_device` are null until the donor's POST fills them in.
+    proves nothing. `mesh_ip` and `gpu_devices` are null until the donor's POST fills them in.
 
     `token` is here only to keep the copy hotkey live: this wait is precisely the window in which the
     operator still has to *send* the token, so it is where `c` has to work.
@@ -314,13 +463,17 @@ def benchmark_arm(name: str) -> dict:
 def _benchmark_arm(name: str) -> dict:
     _wait_for_node(name)
     head_ip = mesh.tailscale_ip()
+    reg = load_registry()
+    # The job takes every card this Arm registered, so one Spawn returns one Power per **Device**.
+    # Read from the registry rather than counted on the Head: these are the donor's cards.
+    gpus = len(reg[name]["gpu_devices"])
     dest = config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME / name
     run(["install", "-d", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER, str(dest)],
         sudo=True)
-    run(["rm", "-f", str(dest / "power")], sudo=True)  # a re-benchmark must not read the old number
+    run(["rm", "-f", str(dest / "power")], sudo=True)  # a re-benchmark must not read the old numbers
 
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
-        f.write(templates.render_bench_sbatch(name, head_ip))
+        f.write(templates.render_bench_sbatch(name, head_ip, gpus))
         job_file = f.name
     Path(job_file).chmod(0o644)  # sbatch reads it as ccc, not as the operator
 
@@ -343,23 +496,33 @@ def _benchmark_arm(name: str) -> dict:
             raise ui.abort(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s",
                            next_step=f"retry with `cuttle arm benchmark {name}`")
 
+    # Re-read: the benchmark blocked for minutes, and `authorize` may have written the row since.
     reg = load_registry()
-    reg[name]["power"] = result["power"]
+    if len(result["powers"]) != gpus:
+        raise ui.abort(
+            f"{name} registered {gpus} GPU(s) but the benchmark priced {len(result['powers'])} — "
+            f"the Pod saw different hardware than enrollment did",
+            next_step=f"check `scontrol show node {name}` against nvidia-smi on that box, then "
+                      f"re-run `cuttle arm benchmark {name}`")
+    reg[name]["powers"] = result["powers"]
     reg[name]["gpu"] = result["gpu"]
     save_registry(reg)
-    apply_weight(name, result["power"])
-    ui.result("gpu", f"{result['gpu']} — {result['vram_mb']} MiB VRAM")
-    ui.result("power", f"{result['power']} TFLOP/s")
+    apply_weight(name, result["powers"])
+    ui.result("gpu", f"{gpus}x {result['gpu']} — {result['vram_mb']} MiB VRAM each")
+    ui.result("power", ", ".join(f"{p} TFLOP/s" for p in result["powers"]))
     return result
 
 
-def apply_weight(name: str, power: float) -> None:
+def apply_weight(name: str, powers: list[float]) -> None:
     """Weight ∝ 1/Power, so Slurm hands out the fastest *free* eligible card first.
 
     Not a reservation: Slurm won't hold a Spawn back waiting for a better GPU to free up — it takes the
     best one available now, which is what "the first one that fits, else queue" means.
+
+    A node has ONE Weight however many cards it holds, so config.node_weight reduces the list — see
+    there for why the mean is sound here and would not be at Settlement.
     """
-    run(["scontrol", "update", f"NodeName={name}", f"Weight={config.node_weight(power)}"], sudo=True)
+    run(["scontrol", "update", f"NodeName={name}", f"Weight={config.node_weight(powers)}"], sudo=True)
 
 
 # --- authorize / admit / chown (Head only, operator + sudo) -----------------
@@ -408,10 +571,11 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     warn_if_coordinator_is_lan_only()
 
     reg = load_registry()
-    # vram_mb arrives with the donor's /enroll; power only after the benchmark, which can't run until
-    # the node is live. Both are named here so a row's shape never depends on how far it got.
-    reg[name] = {"owner": owner, "gpu_device": None, "mesh_ip": None, "admitted": False,
-                 "vram_mb": None, "power": None, "gpu": None}
+    # gpu_devices + vram_mb arrive with the donor's /enroll; powers only after the benchmark, which
+    # can't run until the node is live. All are named here so a row's shape never depends on how far
+    # it got. `powers` is index-aligned with `gpu_devices` once both are filled.
+    reg[name] = {"owner": owner, "gpu_devices": None, "mesh_ip": None, "admitted": False,
+                 "vram_mb": None, "powers": None, "gpu": None}
     save_registry(reg)
 
     token = _mint_token(name, mesh.mint_preauthkey())
@@ -462,7 +626,7 @@ def admit_arm(name: str, write_root_file) -> None:
 
 
 def _admit(name: str, reg: dict, write_root_file) -> None:
-    with ui.step(f"Admitting {name} to Slurm ({reg[name]['gpu_device']})"):
+    with ui.step(f"Admitting {name} to Slurm ({', '.join(reg[name]['gpu_devices'])})"):
         reg[name]["admitted"] = True
         save_registry(reg)
         render_gres(reg, write_root_file)
@@ -493,13 +657,13 @@ def register_head_arm(mesh_ip: str) -> None:
     It never enrolls (it is a *static* Slurm node, and there is no donor), so without this it would be
     the one Arm in the cluster with no owner — and Karma (3b) exempts admin-owned Arms, which it can
     only do if it knows this one is admin-owned. `head: true` keeps render_gres from emitting its GRES
-    line twice (templates.head_gres_node() already has it).
+    lines twice (templates.head_gres_node() already has them).
     """
     reg = load_registry()
     name = system.hostname()
-    reg[name] = {"owner": config.FIRST_ADMIN_USER, "gpu_device": config.GPU_DEVICE,
+    reg[name] = {"owner": config.FIRST_ADMIN_USER, "gpu_devices": system.gpu_devices(),
                  "mesh_ip": mesh_ip, "admitted": True, "head": True,
-                 "vram_mb": system.gpu_vram_mb(), "power": None, "gpu": None}
+                 "vram_mb": system.gpu_vram_mb(), "powers": None, "gpu": None}
     save_registry(reg)
 
 
@@ -520,11 +684,23 @@ def list_arms(as_json: bool = False) -> None:
     if not reg:
         ui.say("no Arms have enrolled")
         return
+    # POWER lists every Device, never a node average: two 4090s in one box measure differently (an x4
+    # slot, the one that throttles under the other) and the operator is the person who wants to see it.
     ui.table(
         ["NAME", "OWNER", "MESH IP", "GPU", "VRAM", "POWER", "STATE"],
-        [[a["name"], a.get("owner") or "-", a.get("mesh_ip") or "-", a.get("gpu") or "-",
+        [[a["name"], a.get("owner") or "-", a.get("mesh_ip") or "-", _gpu_label(a),
           f"{round(a['vram_mb'] / 1024)}G" if a.get("vram_mb") else "-",
-          f"{a['power']} TF" if a.get("power") else "-", a["state"]] for a in payload])
+          "/".join(str(p) for p in a["powers"]) + " TF" if a.get("powers") else "-",
+          a["state"]] for a in payload])
+
+
+def _gpu_label(a: dict) -> str:
+    """`4x NVIDIA RTX 4090` — the count comes from the devices (known at /enroll), the model from the
+    benchmark (known only once it has run), so either half can be missing on its own."""
+    n = len(a.get("gpu_devices") or [])
+    if not a.get("gpu"):
+        return f"{n}x ?" if n else "-"
+    return f"{n}x {a['gpu']}" if n > 1 else a["gpu"]
 
 
 # --- node removal (Head only) -----------------------------------------------
@@ -539,6 +715,51 @@ def remove_arm(name: str, write_root_file) -> None:
         save_registry(reg)
         render_gres(reg, write_root_file)
     print(f"cuttle: {name} removed from Slurm, the registry, and evicted from the mesh")
+    # What removal does NOT do: this box's copy of the munge key is not invalidated by any of the
+    # above (munge has no per-holder revocation — see docs/TODO.md's Phase 9 items). Said every time,
+    # not just when it might matter, because "might matter" is a judgment this command has no way to
+    # make about a donor it just evicted.
+    print(f"cuttle: {name}'s copy of the munge key is still technically valid — "
+          f"if you don't trust it to be gone, `cuttle munge rotate`")
+
+
+# --- munge rotation (Head only, operator + sudo) -----------------------------
+
+def rotate_munge_key() -> None:
+    """Mint a fresh cluster-wide munge key and push it live on the Head. The one lever against "an
+    Arm's copy never expires on its own" (docs/TODO.md, Phase 9 #1): rotating invalidates every
+    existing copy AT ONCE, cluster-wide — which is the thing missing before this (`setup.
+    ensure_munge_key` only ever mints a FIRST key; nothing rekeyed a live one).
+
+    Same generation `setup.ensure_munge_key` uses for the very first key, just unconditional: that one
+    refuses to touch a key that already exists (a fresh cluster's one chance to mint one at all), and
+    this one's entire job is to replace one that already works.
+
+    Every already-ADMITTED Arm's on-disk copy is stale the instant this returns — this command cannot
+    reach a donor's box to fix that, so it only prints who needs `cuttle arm sync-key` and stops.
+    Until an Arm re-syncs, its slurmd/sbatch simply fails munge auth against the rotated Head; nothing
+    here degrades more gracefully than that; the Head's own co-located Arm needs no such notice, since
+    it holds no separate copy — the file this just overwrote IS its copy.
+    """
+    with ui.section("Rotating the cluster's munge key", lambda: "rotated"):
+        system.prime_sudo()
+        run(["rm", "-f", str(config.MUNGE_KEY)], sudo=True)
+        run([config.MUNGEKEY_BIN, "--create", "--keyfile", str(config.MUNGE_KEY)], sudo=True)
+        run(["chown", "munge:munge", str(config.MUNGE_KEY)], sudo=True)
+        run(["chmod", "0400", str(config.MUNGE_KEY)], sudo=True)
+        # Both authenticate every RPC via munged; a munged that kept its old credential cached (or a
+        # slurmctld that did) is exactly the state a plain restart avoids finding out about mid-Spawn.
+        run(["systemctl", "restart", "munge"], sudo=True)
+        run(["systemctl", "restart", "slurmctld"], sudo=True)
+        stale = [name for name, e in sorted(load_registry().items())
+                if e["admitted"] and not e.get("head")]
+    if stale:
+        ui.warn("every Arm below is now carrying a stale key and cannot reach slurmctld until its "
+                "owner runs `cuttle arm sync-key` on that box:")
+        for name in stale:
+            ui.say(f"    {name}")
+    else:
+        ui.say("  [muted]no admitted Arms yet — nothing to re-sync[/muted]")
 
 
 # --- Retract / Return (Phase 2 loose end) -----------------------------------

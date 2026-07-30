@@ -38,6 +38,15 @@ app.add_typer(karma_app, name="karma")
 backup_app = typer.Typer(no_args_is_help=True,
                          help="Backup/restore head.db + arms.json + Headscale's db (run on the Head).")
 app.add_typer(backup_app, name="backup")
+wandb_app = typer.Typer(no_args_is_help=True,
+                        help="Your W&B key, held on the Head and injected into every Spawn.")
+app.add_typer(wandb_app, name="wandb")
+munge_app = typer.Typer(no_args_is_help=True,
+                        help="The cluster's shared munge key (rotate on the Head, sync from an Arm).")
+app.add_typer(munge_app, name="munge")
+feature_app = typer.Typer(no_args_is_help=True,
+                          help="Arm Features: heavy/hardware-licence-gated software (run on the Head).")
+app.add_typer(feature_app, name="feature")
 
 
 def _version(value: bool) -> None:
@@ -248,6 +257,14 @@ def arm_return(
     enroll_mod.return_arm(name, any_owner)
 
 
+@arm_app.command("sync-key")
+def arm_sync_key():
+    """ON THIS ARM: re-fetch the cluster's current munge key from the Head. Run after an operator's
+    `cuttle munge rotate` — nothing else changes (mesh identity, gres.conf, and slurmd's
+    --conf-server are all left alone; this touches only the key)."""
+    enroll_mod.sync_munge_key()
+
+
 @arm_app.command("remove")
 def arm_remove(
     name: str = typer.Argument(None, help="The Arm's node name."),
@@ -418,6 +435,33 @@ def karma_ledger(
     karma_mod.ledger(days=days, as_json=as_json)
 
 
+@wandb_app.command("set")
+def wandb_set(
+    key: str = typer.Argument(None, help="Your W&B API key (prompted for if omitted)."),
+):
+    """Store your W&B API key on the Head. It is injected into every Spawn you submit, from the CLI
+    or the Dashboard, and is held encrypted — no other User can read it, and it never touches this
+    box's disk."""
+    # Visible, not a password prompt: a pasted key has to be verifiable by eye (the same call the
+    # setup wizard used to make when the key lived in config.yaml).
+    key = ui.need(key, "the key", lambda: ui.ask_text("Paste your W&B API key"))
+    auth_mod.wandb_set(key)
+
+
+@wandb_app.command("show")
+def wandb_show(
+    reveal: bool = typer.Option(False, "--reveal", help="Print the key in full, not masked."),
+):
+    """Show whether a W&B key is stored for you, masked to its last 4 characters."""
+    auth_mod.wandb_show(reveal=reveal)
+
+
+@wandb_app.command("clear")
+def wandb_clear():
+    """Forget your stored W&B key. Your Spawns go back to running with W&B disabled."""
+    auth_mod.wandb_clear()
+
+
 @backup_app.command("create")
 def backup_create():
     """ON THE HEAD: snapshot head.db, arms.json, and Headscale's own db into one tarball under
@@ -447,6 +491,48 @@ def backup_restore(
     with ui.section("Restoring cluster state", lambda: Path(archive).name):
         backup_mod.restore(Path(archive), setup_mod._write_root_file)
     ui.ok("restored — the Enroll API, Head API, Karma tick, and Headscale are back up")
+    # The one thing a restore silently does NOT bring back. Said here because the alternative is a User
+    # discovering it as a Spawn that quietly logged nothing (see backup.py's docstring for why the
+    # keyfile is left out of the archive on purpose).
+    ui.warn("stored W&B keys did not come back — the key that decrypts them is deliberately left out "
+            "of every backup, so each User must re-paste theirs (`cuttle wandb set`, or the "
+            "Dashboard's Account page)")
+
+
+@munge_app.command("rotate")
+def munge_rotate(yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation.")):
+    """ON THE HEAD: mint a fresh cluster-wide munge key. Every already-admitted Arm's copy goes stale
+    the instant this returns — each one needs `cuttle arm sync-key`, run by its owner, before it can
+    reach slurmctld again. Prints the list of Arms that need it."""
+    if not yes and ui.interactive():
+        ui.warn("this replaces the key every Arm authenticates to slurmctld with — every "
+                "already-admitted Arm needs `cuttle arm sync-key` afterward, run by its owner")
+        if not ui.ask_confirm("Rotate the cluster's munge key?", False):
+            raise ui.abort("not rotated")
+    enroll_mod.rotate_munge_key()
+
+
+@feature_app.command("add")
+def feature_add(name: str = typer.Argument(None, help="New Arm Feature's name (e.g. vsim, isaacsim).")):
+    """ON THE HEAD: add a name to the Arm Feature catalog, so a donor's `setup --arm` can offer it and
+    a Spawn can require it. Letters/digits/'.'/'_'/'-' only — it also becomes a Slurm Feature= token
+    and (uppercased) an env var name."""
+    name = ui.need(name, "the feature's name", lambda: ui.ask_text("Name for the new Arm Feature?"))
+    enroll_mod.add_feature(name)
+
+
+@feature_app.command("list")
+def feature_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+    """List the Arm Feature catalog."""
+    enroll_mod.list_features(as_json=as_json)
+
+
+@feature_app.command("remove")
+def feature_remove(name: str = typer.Argument(None, help="Arm Feature to remove from the catalog.")):
+    """ON THE HEAD: remove a name from the catalog. Does not touch any Arm that already declared it —
+    only what a NEW enrollment or Spawn may reference."""
+    name = ui.need(name, "the feature's name", lambda: pickers.pick_feature("Which feature to remove?"))
+    enroll_mod.remove_feature(name)
 
 
 @app.command("build-installer")
@@ -565,17 +651,30 @@ def run(
     node: str = typer.Option(
         None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
                              "need (--vram), never which machine they want."),
+    output: list[str] = typer.Option(
+        None, "--output", "-o", help="Name of a subdir under $CCC_OUT your script writes results to "
+                                     "(repeatable). Required — at least one."),
+    feature: list[str] = typer.Option(
+        # No short alias: `-f` is already `--follow` on this command.
+        None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
+                                "none; unsatisfiable requests are refused, not queued."),
 ):
     """Submit a Spawn: uploads the working dir to the Head, which runs
     apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
-    script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -- --epochs 5`).
+    script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -o checkpoints -- --epochs 5`).
 
     --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody
     declared, and a --vram that defaulted to the fleet's biggest card would make every untouched
     field eligible for that one GPU alone — queued behind everything, at the highest Demand, for work
     that may need 2 GB.
+
+    --output/-o has no default either, and none is offered anywhere: a Spawn nobody named an output
+    for is one whose results (docs/TODO.md's now-closed "Spawn Output Enforcement") have nowhere
+    retrievable to land — `mkdir -p "$CCC_OUT/<name>"` runs before your script does, once per name.
     """
     wizard = script is None
+    output = list(output) if output else []
+    feature = list(feature) if feature else []
     with ui.section("Submit a Spawn", lambda: f"{script}  {time}min  {vram}G"):
         # No file picker: you pass the path. Prompting through a directory listing is slower than
         # typing a name you already know, and wrong the moment the script lives in a subdirectory.
@@ -592,12 +691,50 @@ def run(
             entity = entity or (ui.ask_text("W&B entity? (blank = config default)") or None)
             no_gitignore = not ui.ask_confirm("Honor .gitignore when uploading?", True)
             follow = follow or ui.ask_confirm("Stream output until it ends?", False)
+            # Collected here, like every other wizard field — but never pre-filled, and the hard gate
+            # below still runs regardless of how these were collected. At least one is required before
+            # the loop lets you move on; blank only ends it once you have one.
+            while not output:
+                name = ui.ask_text("Output folder name (--output) — where your script writes results")
+                if name:
+                    output.append(name)
+                else:
+                    ui.warn("at least one output folder is required")
+            while ui.ask_confirm("Add another output folder?", False):
+                name = ui.ask_text("Output folder name")
+                if name:
+                    output.append(name)
+            # Optional, and never gates submission — most Spawns need no Arm Feature at all. Offered
+            # only when asked for, and only from the real catalog (no free typing): a name that can't
+            # be satisfied is refused later, at submit, not guessed at here.
+            if not feature and ui.ask_confirm("Require any Arm Features?", False):
+                try:
+                    catalog = auth_mod._api("GET", "/features")
+                except Exception:
+                    catalog = []
+                if not catalog:
+                    ui.warn("no Arm Features exist yet on this Head — nothing to require")
+                for name in catalog:
+                    if ui.ask_confirm(f"Require {name!r}?", False):
+                        feature.append(name)
+    # Hard validation, unconditional — NOT gated on `wizard`. A flag-driven `cuttle run` never passes
+    # through the wizard block above, so this is the only gate a direct invocation ever sees. No y/n
+    # override for either: a Spawn with no output declared or a script that isn't there is refused, not
+    # warned about.
+    if not output:
+        raise ui.abort("at least one --output/-o is required — name the folder(s) under $CCC_OUT your "
+                       "script writes results to (e.g. `--output checkpoints`)")
+    if not (Path.cwd() / script).is_file():
+        raise ui.abort(f"script {script!r} was not found (looked for it relative to the current "
+                       f"directory, {Path.cwd()})")
     if wizard:
-        spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore)
+        spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore,
+                          outputs=output, features=feature)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
-                      no_gitignore=no_gitignore, node=node, minutes=time, vram=vram)
+                      no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
+                      features=feature)
 
 
 @app.command()

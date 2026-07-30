@@ -18,6 +18,7 @@ Transport is HTTPS, verified against the Head's certificate pinned on this machi
 """
 
 import io
+import json
 import subprocess
 import tarfile
 import tempfile
@@ -74,13 +75,18 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
 
 
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
-                   gpu: int, node: str) -> int:
+                   gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
+                   features: list[str] | None = None) -> int:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and since Phase 6 the Head API has none — so this does not travel over
     HTTP at all. Authorization is *being the operator on this box*; attribution is whoever is logged
     in here. It shells into the API venv rather than reimplementing submission, so the Escrow and the
     Attribution row are written by the same code that serves `/submit` (see spawns.submit_checked).
+
+    `wandb_env` rides across as JSON — the same dict the HTTP path puts in its meta, so `--project`
+    and `--entity` mean the same thing on both roads. It used to be dropped here entirely, which made
+    both flags silently no-ops the moment a Spawn was pinned.
     """
     me = auth._api("GET", "/me")["username"]
     # The tar has to be readable by the `ccc` account the admin module runs as, so it goes to a
@@ -93,7 +99,13 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         r = run(auth._admin_argv([
             "submit", "--user", me, "--script", script, "--tar", tar_path,
             "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-            "--node", node, *args]), sudo=True, capture_output=True, text=True, check=False)
+            "--node", node, "--wandb-env", json.dumps(wandb_env),
+            # Repeatable, one `--output NAME` / `--feature NAME` per declared name — placed before the
+            # trailing `*args` positional (the admin parser's `nargs="*"`) so argparse never mistakes a
+            # script argument for another output/feature name.
+            *[f for name in outputs for f in ("--output", name)],
+            *[f for name in (features or []) for f in ("--feature", name)],
+            *args]), sudo=True, capture_output=True, text=True, check=False)
     finally:
         Path(tar_path).unlink(missing_ok=True)
     if r.returncode != 0:
@@ -107,7 +119,8 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
     return int(r.stdout.strip().splitlines()[-1])
 
 
-def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool) -> None:
+def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
+           outputs: list[str], features: list[str] | None = None) -> None:
     """Show what is about to be uploaded, before it is.
 
     The Dashboard gates submission behind a preview; the CLI has never had one, so `cuttle run` in
@@ -126,28 +139,39 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool) 
         ("upload", f"{len(paths)} files, {total / 1_048_576:.1f} MB"
                    f"{'' if no_gitignore else '  (.gitignore honored)'}"),
         ("limit", f"{minutes} min"),
-        ("needs", f"{vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"),
+        ("needs", f"{vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"
+                  + (f", features: {', '.join(features)}" if features else "")),
+        ("outputs", ", ".join(outputs)),
     ], title="About to submit")
 
 
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
-           project: str | None = None, entity: str | None = None,
-           no_gitignore: bool = False, node: str | None = None) -> None:
+           outputs: list[str], project: str | None = None, entity: str | None = None,
+           no_gitignore: bool = False, node: str | None = None,
+           features: list[str] | None = None) -> None:
     root = Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
+    features = features or []
     # The Head turns `vram` into a Slurm constraint: it knows every distinct card in the fleet and we
     # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
     # works if someone OR-expands it (`--constraint=vram24|vram48`). That someone is the Head.
     #
+    # Composed once, for both roads: which W&B run this Spawn is (project/entity, and nothing else —
+    # the Head owns the key). A pinned Spawn used to skip this, so `--project/--entity` did nothing
+    # whenever `--node` was given.
+    wandb_env = settings.wandb_env(project, entity)
     # `node` pins the Spawn to one Arm. Since Phase 6 it does not travel over HTTP at all — the Head
     # API refuses it for everyone — so a pinned Spawn takes the Head-local path below instead.
     if node:
-        spawn_id = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node)
+        spawn_id = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node, wandb_env, outputs,
+                                  features=features)
     else:
         meta = {"script": script, "gpu": gpu, "args": args,
-                "minutes": minutes, "vram": vram,
-                "wandb_env": settings.wandb_env(project, entity)}
+                "minutes": minutes, "vram": vram, "wandb_env": wandb_env, "outputs": outputs,
+                # Omitted rather than sent empty, matching the rest of this dict's optional fields —
+                # most Spawns declare none, and the Head reads an absent key as "no requirement".
+                **({"features": features} if features else {})}
         client = auth._client()
         client.token = auth._load_token()
         try:

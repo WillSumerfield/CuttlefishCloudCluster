@@ -40,13 +40,13 @@ from . import api, config, settings, ui
 # through: the Head API exposes zero admin-write endpoints, so admin work happens on the Head as the
 # operator, never over a session. `teardown` is NOT here — it is gated by "is this box set up",
 # because a client tears down its own `~/.ccc` too (`teardown --client`).
-HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "backup"}
+HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "backup", "munge"}
 
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide",
-                  "account", "logout", "whoami", "passwd"}
+                  "account", "logout", "whoami", "passwd", "wandb"}
 
 # How long the session probe (GET /me) may take before we give up and show the offline safe-set.
 # Short on purpose: this runs every time bare `cuttle` opens a menu, and a menu must never hang.
@@ -98,7 +98,14 @@ LABELS = {
     "arm chown": "Change an Arm's owner",
     "arm retract": "Pause your Arm (stop new work, end what's running)",
     "arm return": "Reopen a retracted Arm",
+    "arm sync-key": "Re-fetch the munge key from the Head",
     "arm remove": "Remove an Arm",
+    "wandb": "My W&B key",
+    "wandb set": "Store my W&B key",
+    "wandb show": "Show my W&B key",
+    "wandb clear": "Forget my W&B key",
+    "munge": "The cluster's munge key",
+    "munge rotate": "Rotate the cluster's munge key",
 }
 
 # Sentinels for the navigation entries. Deliberately NOT None: `ui._ask` reads a None answer as
