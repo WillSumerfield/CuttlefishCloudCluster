@@ -30,6 +30,9 @@ export type Arm = {
   gpu: string | null
   vram_mb: number | null
   power: number | null
+  // Arm Features (docs/TODO.md) this Arm declared at enroll — heavy/hardware-licence-gated software
+  // (VSim, IsaacSim, ...), each with the local path it's installed at. Empty for most Arms.
+  features: { name: string; path: string }[]
 }
 
 // `submitted_by` is Attribution: who actually submitted the Spawn. Slurm's own owner field says the
@@ -123,6 +126,9 @@ export const errMessage = (e: unknown): string => (e instanceof Error ? e.messag
 const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
 
 export const getArms = () => json<Arm[]>('/arms')
+// The admin-curated catalog of Arm Features (`cuttle feature add`) — what the submit composer offers
+// to require. Read-only from the Dashboard; mutating it is CLI+sudo only, like every other admin write.
+export const getFeatureCatalog = () => json<string[]>('/features')
 export const getSpawns = () => json<Spawn[]>('/spawns')
 // Finished Spawns, newest first. The Head does not serve this yet; live, History shows its empty state
 // until it does. Design review runs on ?demo (see history/mock.ts).
@@ -188,6 +194,13 @@ export type NewRecipe = {
   gpus: number
   vram_mb: number
   minutes: number
+  // The Recipe's experiment-tracking config — the same three questions a Spawn answers, frozen with the
+  // code rather than asked again on every run. NOT PERSISTED YET: the Head serves no /recipes route at
+  // all (see below), so these ride the header and are dropped on the floor. They are here so the shape
+  // is already right when Phase 5 lands the backend.
+  wandb: boolean
+  wandb_project: string
+  wandb_entity: string
 }
 
 export async function createRecipe(r: NewRecipe): Promise<Recipe> {
@@ -196,7 +209,10 @@ export async function createRecipe(r: NewRecipe): Promise<Recipe> {
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
   }
   const body = await gzip(makeTar(entries))
-  const meta = { name: r.name, script: r.script, args: r.args, gpus: r.gpus, vram_mb: r.vram_mb, minutes: r.minutes }
+  const meta = {
+    name: r.name, script: r.script, args: r.args, gpus: r.gpus, vram_mb: r.vram_mb, minutes: r.minutes,
+    wandb: r.wandb, wandb_project: r.wandb_project, wandb_entity: r.wandb_entity,
+  }
   const res = await req('/recipes', {
     method: 'POST',
     headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
@@ -219,8 +235,7 @@ export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent
 
 // The W&B key the Head injects into every Spawn you submit (from either client). Held ENCRYPTED at rest —
 // a third-party secret the Head keeps on your behalf, and unlike a password it must be recoverable in
-// plaintext to be used, so it can't be hashed. The Head serves none of these routes yet, so live they 404
-// and the Account module shows "not available yet"; ?demo runs them on local state (account/mock.ts).
+// plaintext to be used, so it can't be hashed. ?demo runs these on local state (account/mock.ts).
 export type WandbKeyStatus = { set: boolean; last4: string | null }
 
 /** Masked status only — whether a key is stored, and its last 4 chars. Never the plaintext. */
@@ -294,6 +309,21 @@ export type SubmitOpts = {
   vram: number
   node: string | null // admin-only; the Head 403s it for everyone else
   args: string[]
+  // Log this Spawn to W&B at all. A stored key is otherwise used for EVERY Spawn, and "not this one"
+  // has to be sayable — but only as intent: we send a boolean, never WANDB_MODE, so the Head stays the
+  // one composing the environment. False disables it there even with a key stored.
+  wandb: boolean
+  // Which W&B run this Spawn is — the only part of the W&B environment a client gets to decide (the
+  // Head holds the key). Blank means "unset": the project falls back to the Head's `ccc` default, the
+  // entity to the W&B account's own. Ignored by the Head when `wandb` is false.
+  wandbProject: string
+  wandbEntity: string
+  // Subdirs made under the one $CCC_OUT root before the payload runs (docs/TODO.md's now-closed "Spawn
+  // Output Enforcement") — required, non-empty; the Head 422s a Spawn that declares none.
+  outputs: string[]
+  // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
+  // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
+  features: string[]
 }
 
 /**
@@ -302,17 +332,34 @@ export type SubmitOpts = {
  * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
  */
 export async function submit({
-  picked, name, script, gpu, minutes, vram, node, args,
+  picked, name, script, gpu, minutes, vram, node, args, wandb, wandbProject, wandbEntity, outputs,
+  features,
 }: SubmitOpts): Promise<number> {
   const entries: TarEntry[] = []
   for (const f of picked.files) {
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
   }
   const body = await gzip(makeTar(entries))
-  // W&B is disabled for browser Spawns: the API key lives in the CLI's ~/.ccc/config, and the browser
-  // has no equivalent yet. Send the same env the CLI sends when it has no key — an EMPTY wandb_env
-  // would leave WANDB_MODE unset, which makes wandb.init() fail rather than skip.
-  const meta = { name, script, gpu, minutes, vram, node, args, wandb_env: { WANDB_MODE: 'disabled' } }
+  // The Head owns the key, the client owns the run: we send WANDB_PROJECT/WANDB_ENTITY and nothing else
+  // — never a key (the browser has none), never WANDB_MODE (this used to hardcode `disabled`, which
+  // silently cost every Dashboard Spawn its metrics). The Head fills in the key it holds for you.
+  //
+  // A blank field is OMITTED rather than sent empty. WANDB_ENTITY="" breaks wandb.init() outright
+  // instead of falling back to the account default, and a blank project is the Head's `ccc` default —
+  // which lives there alone, so the placeholder in the composer only ever displays it.
+  //
+  // `wandb` is the off-switch and travels OUTSIDE wandb_env for that reason: inside it, it would have
+  // to be a WANDB_MODE, and a client-sent mode is exactly what the Head stopped honouring. The Head
+  // reads an absent flag as true, so sending it always is a statement, never a requirement.
+  const wandb_env: Record<string, string> = {}
+  if (wandbProject.trim()) wandb_env.WANDB_PROJECT = wandbProject.trim()
+  if (wandbEntity.trim()) wandb_env.WANDB_ENTITY = wandbEntity.trim()
+  // Omitted rather than sent empty, matching wandb_env's fields above — most Spawns require none, and
+  // the Head reads an absent key the same as an empty list.
+  const meta = {
+    name, script, gpu, minutes, vram, node, args, wandb, wandb_env, outputs,
+    ...(features.length ? { features } : {}),
+  }
   const r = await req('/submit', {
     method: 'POST',
     headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },

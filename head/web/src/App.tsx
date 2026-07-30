@@ -183,6 +183,10 @@ function SubmitPanel({
   const [vram, setVram] = useState('')
   const [node, setNode] = useState('')
   const [args, setArgs] = useState('')
+  // Comma-separated subdir names under $CCC_OUT — required, no default. This composer is legacy (dies
+  // with App.tsx) so it gets the plain-text version rather than SubmitComposer's chip input, but the
+  // Head enforces the same non-empty rule either way.
+  const [outputs, setOutputs] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -204,7 +208,8 @@ function SubmitPanel({
     await rescan(lastList.current, v) // re-filter the same selection; still no upload
   }
 
-  const ready = picked && script && Number(minutes) > 0 && Number(vram) > 0
+  const outputList = outputs.split(',').map((o) => o.trim()).filter(Boolean)
+  const ready = picked && script && Number(minutes) > 0 && Number(vram) > 0 && outputList.length > 0
 
   const go = async () => {
     if (!ready) return
@@ -220,6 +225,14 @@ function SubmitPanel({
         vram: Number(vram),
         node: node || null,
         args: args.split(/\s+/).filter(Boolean),
+        // No W&B fields here and there never will be — this composer dies with App.tsx. On, blank,
+        // blank means the Head's own defaults, which is what /legacy has always sent.
+        wandb: true,
+        wandbProject: '',
+        wandbEntity: '',
+        outputs: outputList,
+        // No Arm Feature picker in this legacy composer (it dies with App.tsx) — always none required.
+        features: [],
       })
       onSubmitted(id)
       setPicked(null)
@@ -288,6 +301,9 @@ function SubmitPanel({
           <input className={`${input} ${isAdmin ? 'sm:col-span-2' : 'sm:col-span-3'}`}
                  placeholder="extra args (optional)"
                  value={args} onChange={(e) => setArgs(e.target.value)} />
+          <input className={`${input} sm:col-span-2`}
+                 placeholder="output folders (comma-separated, required)"
+                 value={outputs} onChange={(e) => setOutputs(e.target.value)} />
         </div>
 
         <p className="text-xs text-slate-500">
