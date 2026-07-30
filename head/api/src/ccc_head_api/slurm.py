@@ -72,6 +72,38 @@ def _gpu_count(gres: str) -> int:
     return sum(int(n) for n in re.findall(r"gpu(?::[a-z0-9_]+)?[:=](\d+)", gres or "", re.I))
 
 
+def _gpu_indices(gres_detail: list[str] | None) -> list[int]:
+    """Which of the node's GPUs a RUNNING Spawn actually holds — the **Devices** Settlement prices.
+
+    Slurm's `gres_detail` is one string per allocated node, `gpu:2(IDX:0-1)`, built by slurmctld at
+    ALLOCATION time (gres_ctld_job_build_details). `IDX` is a bitmap of the node's GRES indices, and a
+    node's GRES are indexed in the order its gres.conf `File=` records were read — which
+    templates.render_gres_conf writes in system.gpu_devices() order. So index i here is the i'th entry
+    of that Arm's registry `gpu_devices`, and therefore of its `powers`. That correspondence is the
+    whole mechanism by which a Spawn is billed for the card it held rather than a node average.
+
+    `squeue --json` sets `detail_flag`, hence SHOW_DETAIL, which is what makes slurmctld pack this at
+    all (job_mgr.c `_pack_job`); without it the field is packed as empty and every Spawn would look
+    device-less. It is also empty by construction for a job that is not started, or that requested no
+    GRES — so this returns [] for a PENDING Spawn and for a CPU-only one, and the caller distinguishes
+    those from the pathological case by the Spawn's GPU count.
+
+    CCC Spawns are single-node (`--gres` is per-node and the batch step takes one node), so the list is
+    flattened rather than kept per-node — the whole allocation is on `job["node"]`.
+    """
+    out = []
+    for span in re.findall(r"IDX:([\d,\-]+)", ",".join(gres_detail or [])):
+        for part in span.split(","):
+            lo, _, hi = part.partition("-")
+            out.extend(range(int(lo), int(hi or lo) + 1))
+    return sorted(out)
+
+
+def _mean(powers: list[float] | None) -> float | None:
+    """A node's Powers as one number, for display. None until the Arm has been benchmarked."""
+    return round(sum(powers) / len(powers), 2) if powers else None
+
+
 def arms() -> list[dict]:
     """Every compute node's live Slurm status, enriched with enrollment facts the scheduler never
     sees: mesh address, admitted, and the **owner** — the User who donated the machine, named by the
@@ -91,13 +123,21 @@ def arms() -> list[dict]:
                 "gpus": gpus,
                 "owner": e.get("owner"),
                 "mesh_ip": e.get("mesh_ip"),
-                "gpu_device": e.get("gpu_device"),
                 "admitted": e.get("admitted", True),
-                # The hardware profile Karma prices from: what the card can DO (Power, measured at
-                # enroll by a benchmark Spawn) and how much it can HOLD (the thing --vram matches).
+                # The hardware profile Karma prices from: what each card can DO (**Power**, measured
+                # at enroll by a benchmark Spawn — one number per **Device**) and how much it can HOLD
+                # (the thing --vram matches; one number for the node, since a mixed-GPU box is refused
+                # at enrollment).
                 "gpu": e.get("gpu"),
                 "vram_mb": e.get("vram_mb"),
-                "power": e.get("power"),
+                "gpu_devices": e.get("gpu_devices"),
+                "powers": e.get("powers"),
+                # Node-level summaries, DERIVED here and stored nowhere — a summary saved beside the
+                # list it came from is a second number that can silently disagree with it. Both are
+                # display/description only: `power` is what the Dashboard's one-per-Arm column shows,
+                # and nothing prices from it (tick._meter bills each held Device at its own Power).
+                "power": _mean(e.get("powers")),
+                "gpu_device": ", ".join(e.get("gpu_devices") or []) or None,
             })
     return sorted(out, key=lambda a: a["name"])
 
@@ -124,9 +164,10 @@ def queue() -> list[dict]:
     pass, because the tick needs both halves and they must agree with each other:
 
     * **PENDING** Spawns are what it re-ranks (by `nice`) and what generates queued **Demand**.
-    * **RUNNING** Spawns are what it meters — `node` says which Arm's Power and Demand to bill, and
-      `start_time` is where the very first accrual bills *from* (a Spawn that started between two ticks
-      still owes for the seconds before the tick noticed).
+    * **RUNNING** Spawns are what it meters — `node` says which Arm's Demand to bill, `devices` says
+      which of that Arm's cards it holds (and so which **Power**s it is priced at), and `start_time`
+      is where the very first accrual bills *from* (a Spawn that started between two ticks still owes
+      for the seconds before the tick noticed).
 
     Absence from a *successful* poll is the only signal a Spawn has **ended** — it is what triggers
     Settlement. There is no other: a killed Spawn writes no end-time, Slurm forgets jobs after
@@ -156,6 +197,9 @@ def queue() -> list[dict]:
             "nice": _num(j.get("nice")) or 0,
             "node": (j.get("nodes") or None) if live == "RUNNING" else None,
             "gpus": _gpu_count(gres),
+            # Empty until the Spawn starts — a PENDING Spawn holds no Device, which is exactly why the
+            # Escrow is a forecast over eligible cards and the Meter is not.
+            "devices": _gpu_indices(j.get("gres_detail")),
             "start_time": _num(j.get("start_time")),
         })
     return out
@@ -176,8 +220,10 @@ def spawns() -> list[dict]:
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         if j.get("partition") != PARTITION:
             continue
-        # tres_per_node ('gres/gpu:1') is the reliable GPU source — the *allocated* TRES omits gpu
-        # (no gres accounting), and gres_detail is empty until/unless the step runs.
+        # gres_detail when the Spawn is running (it names the exact cards); tres_per_node
+        # ('gres/gpu:1') otherwise. The *allocated* TRES is no use for either — it omits gpu entirely,
+        # since we run no gres accounting. slurmctld packs gres_detail only for a STARTED job that
+        # requested GRES, so a pending Spawn falls through to what it asked for. See _gpu_indices.
         gres = ",".join(j.get("gres_detail") or []) or j.get("tres_per_node", "")
         out.append({
             "id": _num(j.get("job_id")),
