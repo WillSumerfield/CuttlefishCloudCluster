@@ -11,12 +11,16 @@ import base64
 import ipaddress
 import json
 import shutil
+import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
+from pathlib import Path
+from urllib.parse import urlparse
 
-from . import config, ui
+from . import config, tls, ui
 from .system import hostname, run, sh
 
 
@@ -175,8 +179,56 @@ _POLICY = """\
 """ % {"user": config.HEADSCALE_USER}
 
 
-def configure_headscale(server_url: str, write_root_file) -> None:
-    """Patch the package-shipped config: server_url, bind-all, the CCC IP prefixes, and the policy.
+def _san_entry(addr: str) -> str:
+    """`IP:<addr>` or `DNS:<addr>` — whichever the coordinator's advertised host actually is.
+    `--address` may be a literal IP (the ordinary case) or a public/DDNS name (docs/TODO.md's
+    reachability item), and a cert's SAN has to say which kind each entry is or the check fails."""
+    try:
+        ipaddress.ip_address(addr)
+        return f"IP:{addr}"
+    except ValueError:
+        return f"DNS:{addr}"
+
+
+def install_headscale_tls(addr: str) -> tuple[Path, Path]:
+    """Generate the coordinator's own self-signed cert (Phase 9 #3) — separate from the Head API's
+    (setup.install_tls): different service, different reader, different trust story. That one is
+    pinned by cuttle's own HTTP client (cuttle/tls.py); this one has to be trusted by `tailscaled` —
+    a separate binary with no pinning option of its own — on every box that ever dials this
+    coordinator (see trust_headscale_cert).
+
+    Lives INSIDE HEADSCALE_LIB (0750 headscale:headscale, set by the package) rather than
+    CCC_TLS_DIR, so the `headscale` unix account can read it with no chown of its own — cuttle never
+    loosens that directory. Generated only if absent, for the same reason install_tls is: once any
+    box has trusted these exact bytes, regenerating them silently un-trusts every one of them at once.
+
+    SANs: the coordinator's advertised host (what every Arm actually dials, `--address`) plus this
+    box's hostname and localhost — NOT the mesh IP, unlike the Head API's cert. The coordinator is
+    dialed BEFORE the mesh exists; a mesh address here would be the one SAN that can never be used.
+    """
+    if config.HEADSCALE_CERT.exists():
+        print(f"cuttle: Headscale TLS cert exists ({config.HEADSCALE_CERT}) — keeping it "
+              f"(re-generating would un-trust it on every Arm that has already trusted it)")
+        return config.HEADSCALE_CERT, config.HEADSCALE_KEY
+    host = hostname()
+    san = f"DNS:{host},DNS:localhost,IP:127.0.0.1,{_san_entry(addr)}"
+    run(["openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
+         "-days", str(config.CERT_DAYS),
+         "-subj", f"/CN={host}", "-addext", f"subjectAltName={san}",
+         "-keyout", str(config.HEADSCALE_KEY), "-out", str(config.HEADSCALE_CERT)], sudo=True)
+    run(["chown", f"{config.HEADSCALE_SERVICE_USER}:{config.HEADSCALE_SERVICE_USER}",
+         str(config.HEADSCALE_KEY)], sudo=True)
+    run(["chmod", "0600", str(config.HEADSCALE_KEY)], sudo=True)   # the private half: headscale-only
+    run(["chown", f"{config.HEADSCALE_SERVICE_USER}:{config.HEADSCALE_SERVICE_USER}",
+         str(config.HEADSCALE_CERT)], sudo=True)
+    run(["chmod", "0644", str(config.HEADSCALE_CERT)], sudo=True)  # the public half: readable, once in
+    print(f"cuttle: Headscale TLS cert for {san}")
+    return config.HEADSCALE_CERT, config.HEADSCALE_KEY
+
+
+def configure_headscale(server_url: str, addr: str, write_root_file) -> None:
+    """Patch the package-shipped config: server_url, bind-all, TLS, the CCC IP prefixes, and the
+    policy.
 
     We edit the shipped /etc/headscale/config.yaml rather than render our own — robust to
     Headscale's config-schema drift across versions (only well-known keys touched). The prefixes
@@ -190,8 +242,12 @@ def configure_headscale(server_url: str, write_root_file) -> None:
     """
     run(["install", "-d", "-o", "root", "-g", "root", str(config.HEADSCALE_LIB)], sudo=True)
     write_root_file(config.HEADSCALE_POLICY, _POLICY, "644")
+    cert, key = install_headscale_tls(addr)
     # magic_dns/override_local_dns OFF: a node accepting them claims resolved's `~.` default-route
     # domain and hijacks host-wide DNS. Nodes address each other by mesh IP; MagicDNS is unwanted.
+    # tls_cert_path/tls_key_path is what actually turns TLS on — headscale reads their presence, not
+    # a separate on/off key; `server_url`'s https:// and `listen_addr` (still bare host:port, schemes
+    # don't apply to it) agreeing with that is on the caller (setup.mesh_up_head builds both).
     sh(f"sed -ri "
        f"-e 's#^server_url:.*#server_url: {server_url}#' "
        f"-e 's#^listen_addr:.*#listen_addr: 0.0.0.0:{config.HEADSCALE_PORT}#' "
@@ -199,6 +255,8 @@ def configure_headscale(server_url: str, write_root_file) -> None:
        f"-e 's#^([[:space:]]*)v6:.*#\\1v6: {config.MESH_V6_PREFIX}#' "
        f"-e 's#^([[:space:]]*)magic_dns:.*#\\1magic_dns: false#' "
        f"-e 's#^([[:space:]]*)override_local_dns:.*#\\1override_local_dns: false#' "
+       f"-e 's#^tls_cert_path:.*#tls_cert_path: {cert}#' "
+       f"-e 's#^tls_key_path:.*#tls_key_path: {key}#' "
        f"-e '/^policy:/,/^[a-z_]*:/ s#^([[:space:]]*)path:.*#\\1path: {config.HEADSCALE_POLICY}#' "
        f"{config.HEADSCALE_CONF}", sudo=True)
 
@@ -206,6 +264,75 @@ def configure_headscale(server_url: str, write_root_file) -> None:
 def start_headscale() -> None:
     run(["systemctl", "enable", "headscale"], sudo=True)
     run(["systemctl", "restart", "headscale"], sudo=True)
+
+
+# --- trusting the coordinator's cert (Phase 9 #3) ----------------------------
+# `tailscaled` makes the actual TLS connection when it dials `--login-server https://...` — a
+# separate Go binary, not cuttle's own Python HTTP client, and it has no pinning flag of its own
+# (`tailscale up --help` carries no --insecure-skip-verify, no custom-CA option, nothing). The ONLY
+# lever it reads is the OS's own CA trust store, so that is what these install into — a heavier,
+# coarser mechanism than cuttle/tls.py's fingerprint-pin (which only ever governed cuttle's own
+# urllib client, e.g. the Head API dashboard): trusting this CA trusts anything it ever signs, with
+# no per-connection "this exact cert, and only this one" check the way a pin gives.
+
+def trust_headscale_cert(pem: str) -> None:
+    """Install a Headscale coordinator's cert into THIS box's OS trust store. Idempotent in effect
+    (update-ca-certificates re-runs happily), but callers still gate on `HEADSCALE_CA_PATH.exists()`
+    so a normal run doesn't re-announce a decision already made."""
+    with tempfile.NamedTemporaryFile("w", suffix=".crt", delete=False) as f:
+        f.write(pem)
+        tmp = f.name
+    run(["install", "-D", "-m", "0644", tmp, str(config.HEADSCALE_CA_PATH)], sudo=True)
+    run(["update-ca-certificates"], sudo=True)
+
+
+def trust_own_headscale_cert() -> None:
+    """The Head trusting the cert it just minted for its OWN coordinator, before its own tailscaled
+    can join it. Not a TOFU moment — setup wrote these exact bytes to disk a few lines ago — so there
+    is nothing to confirm, only to announce: installing anything into the OS CA store is a real host
+    mutation regardless of who authored the cert, and system.allow_mesh_iface/ufw rules already set
+    the precedent of a one-line print rather than silence for this class of change.
+
+    Reads HEADSCALE_CERT via `sudo cat`, not a bare Python open(): the file's own mode is 0644, but
+    its parent (HEADSCALE_LIB, 0750 headscale:headscale) blocks the operator's own login user from
+    even traversing into the directory to reach it — same reason mesh._state_prefs reads CCC_TS_STATE
+    the same way.
+    """
+    if config.HEADSCALE_CA_PATH.exists():
+        return
+    pem = run(["cat", str(config.HEADSCALE_CERT)], sudo=True, capture_output=True, text=True).stdout
+    print(f"cuttle: trusting this Head's own coordinator certificate ({config.HEADSCALE_CERT}) so "
+          f"its own tailscaled can join it — installing into the OS CA store ({config.HEADSCALE_CA_PATH})")
+    trust_headscale_cert(pem)
+
+
+def ensure_headscale_trusted(coordinator: str) -> None:
+    """TOFU for an Arm's FIRST contact with a coordinator, mirroring cuttle/tls.py's ensure_pinned —
+    except what gets trusted differs (see the module note above): this installs into the OS CA store,
+    the one thing tailscaled actually reads, not cuttle/tls.py's PINS_DIR.
+
+    No-op for a plain-HTTP coordinator (nothing to trust — a transitional/already-http deployment) or
+    once this box has already trusted A Headscale cert (one coordinator per Arm; see HEADSCALE_CA_PATH).
+    """
+    if not coordinator.startswith("https://") or config.HEADSCALE_CA_PATH.exists():
+        return
+    host = urlparse(coordinator).hostname
+    port = urlparse(coordinator).port or 443
+    # No verification possible here by definition — this IS the first look at the cert, same as
+    # tls.ensure_pinned's identical line for the Head API.
+    pem = ssl.get_server_certificate((host, port))
+    ui.warn(f"{host} presented a certificate this machine has never seen — it's the CCC mesh "
+           f"coordinator, self-signed (no public CA will sign a cert for a box with no public "
+           f"domain; docs/TODO.md Phase 9 #3).")
+    ui.hint("Trusting it installs it into this box's OS certificate store, not just a cuttle-side "
+            "pin — tailscaled has no lighter-weight option. A DIFFERENT certificate presented later "
+            "at this address is still refused normally; what is not protected is a swap at this "
+            "exact moment, the same weak point SSH's known_hosts has on a first connection.")
+    ui.say(f"  SHA-256  {tls.fingerprint(pem)}")
+    if not ui.ask_confirm("Trust this coordinator's certificate?"):
+        raise ui.abort("not trusted — the mesh join did not proceed")
+    trust_headscale_cert(pem)
+    ui.say(f"  [muted]installed → {config.HEADSCALE_CA_PATH}[/muted]")
 
 
 def ensure_user() -> None:
@@ -358,9 +485,11 @@ def delete_node(name: str) -> None:
 
 # --- orchestration ---------------------------------------------------------
 
-def up_head(server_url: str, write_unit) -> tuple[str, str]:
-    """Bring up the Head's coordinator and join it via CCC's isolated tailscaled instance.
-    `write_unit` writes a root-owned file (setup._write_root_file). Returns (headscale_version, mesh_ip).
+def up_head(server_url: str, addr: str, write_unit) -> tuple[str, str]:
+    """Bring up the Head's coordinator and join it via CCC's isolated tailscaled instance. `addr` is
+    the coordinator's bare advertised host (no scheme/port — goes into the cert's SANs; `server_url`
+    is built from it by the caller). `write_unit` writes a root-owned file (setup._write_root_file).
+    Returns (headscale_version, mesh_ip).
 
     Re-runnable, and it has to be: `setup --head` is the only way to re-provision a live Head, so it
     meets a daemon that already holds mesh state far more often than a fresh one. Three cases, and the
@@ -369,19 +498,22 @@ def up_head(server_url: str, write_unit) -> tuple[str, str]:
     - **Already joined to this coordinator** — nothing to do. Skip the join entirely rather than
       `up --reset`-ing a working daemon, and leave the (single-use) preauth key unminted.
     - **Holding stale state** (a rebuilt Head, a re-pointed coordinator, or a join that half-failed) —
-      `forget_state()` first. Without it `tailscale up` inherits a dialer that has latched onto TLS and
-      will not dial plain HTTP:8080 again, so the join fails against a Headscale that is demonstrably
-      up (`register request: ... TLS forced: no port 80 dialed`). Observed on a same-address re-run,
-      2026-07-14 — the old guard only forgot state when the *address* changed, which is the one case
-      this failure does not need.
+      `forget_state()` first. Without it `tailscale up` inherits a dialer that has latched onto the
+      control URL it last spoke to, so a re-point to a genuinely different coordinator fails against
+      one that is demonstrably up. Observed on a same-address re-run, 2026-07-14 (back when the
+      coordinator was plain HTTP) — the old guard only forgot state when the *address* changed, which
+      is the one case that failure did not need; kept unconditional since.
     - **Fresh box** — no state; `forget_state()` is a no-op beyond an "already gone" print. It must run
       here and not in the caller, because it shells out to `headscale`, which only exists after
       `install_headscale()` above.
     """
     hs_ver = install_headscale()
-    configure_headscale(server_url, write_unit)
+    configure_headscale(server_url, addr, write_unit)
     start_headscale()
     ensure_user()
+    # Before ANY tailscale contact with this coordinator, including the Head's own self-join two
+    # lines down — tailscaled verifies the cert on every `tailscale up`, itself included.
+    trust_own_headscale_cert()
     install_tailscale()
     start_ccc_tailscaled(write_unit)
 
@@ -417,6 +549,10 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
     2026-07-14: a first run joined the mesh, failed later against an unreachable Head, and the retry
     looked like a mesh bug when the mesh was fine).
     """
+    # Before ANYTHING else: this is the donor's first-ever contact with this coordinator, and
+    # tailscaled will refuse the join outright if it doesn't trust the cert (Phase 9 #3) — no point
+    # installing/starting a daemon first only to fail at the one step that needed this.
+    ensure_headscale_trusted(coordinator)
     install_tailscale()
     start_ccc_tailscaled(write_unit)
 

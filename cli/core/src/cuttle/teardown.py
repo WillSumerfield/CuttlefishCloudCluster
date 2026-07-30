@@ -27,9 +27,12 @@ _SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SE
              config.RSYNCD_SERVICE, "munge", "slurmctld", "slurmd"]
 _ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / API / rsyncd / headscale
 _PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
-_NVIDIA_REPO_FILES = [
+# Every apt source file setup ADDED — and only those. The box's own sources.list/ubuntu.sources were
+# never touched (see templates.UBUNTU_SNAPSHOT_LIST_TMPL), so there is nothing there to restore.
+_APT_SOURCE_FILES = [
     "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
     "/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
+    str(config.UBUNTU_SNAPSHOT_LIST),
 ]
 
 
@@ -48,6 +51,12 @@ def _leave_ccc_mesh() -> None:
     run(["systemctl", "disable", "--now", config.CCC_TS_SERVICE], sudo=True, check=False)
     run(["rm", "-f", str(config.CCC_TS_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.CCC_TS_STATEDIR)], sudo=True, check=False)
+    # The coordinator's cert this box trusted into its OS CA store (Phase 9 #3,
+    # mesh.trust_own_headscale_cert / mesh.ensure_headscale_trusted) — a host-wide trust decision,
+    # not a cuttle-local file, so it needs the same undo `update-ca-certificates` gave it on the way
+    # in. Runs on both roles: `_leave_ccc_mesh` is shared by the Head (remove_mesh) and every Arm.
+    run(["rm", "-f", str(config.HEADSCALE_CA_PATH)], sudo=True, check=False)
+    run(["update-ca-certificates"], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -64,9 +73,10 @@ def remove_mesh(keep_packages: bool = False) -> None:
 
 
 def remove_enroll_api() -> None:
-    """Enroll API (Head-only, CCC-only). Drop its unit, the shared API venv (install_enroll built it),
-    and the munge-owned registry dir."""
-    run(["rm", "-f", str(config.ENROLL_API_UNIT)], sudo=True, check=False)
+    """Enroll API (Head-only, CCC-only). Drop its unit, its one sudo grant, the shared API venv
+    (install_enroll built it), and the munge-owned registry dir."""
+    run(["rm", "-f", str(config.ENROLL_API_UNIT), str(config.SUDOERS_MUNGE_HEADSCALE)],
+        sudo=True, check=False)
     run(["rm", "-rf", str(config.API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
@@ -135,8 +145,10 @@ def purge_packages() -> None:
 
 
 def remove_repos() -> None:
-    run(["add-apt-repository", "-y", "--remove", "ppa:apptainer/ppa"], sudo=True, check=False)
-    run(["rm", "-f", *_NVIDIA_REPO_FILES], sudo=True, check=False)
+    # The apptainer PPA is added on the Head only now, but the removal stays unconditional: it is
+    # idempotent, and boxes set up before that change still have it.
+    run(["add-apt-repository", "-y", "--remove", config.APPTAINER_PPA], sudo=True, check=False)
+    run(["rm", "-f", *_APT_SOURCE_FILES], sudo=True, check=False)
 
 
 def remove_user_dirs() -> None:
