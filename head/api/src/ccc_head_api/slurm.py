@@ -22,6 +22,11 @@ log = logging.getLogger("ccc.api")
 
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 PARTITION = os.environ.get("CCC_PARTITION", "ccc")
+# The admin-curated catalog of Arm Features (docs/TODO.md) — mirrors ccc_head_api.enroll's own
+# FEATURES_CATALOG constant (that app can't import this one's module; see its docstring on why the two
+# LAN/mesh apps stay split). Read-only here: mutation is `cuttle feature add/remove`, CLI+sudo only —
+# this (authed, LAN-facing) API exposes no admin writes, same as everywhere else in it.
+FEATURES_CATALOG = Path(os.environ.get("CCC_FEATURES_CATALOG", "/var/lib/ccc/features.json"))
 
 
 def reachable() -> bool:
@@ -132,6 +137,8 @@ def arms() -> list[dict]:
                 "vram_mb": e.get("vram_mb"),
                 "gpu_devices": e.get("gpu_devices"),
                 "powers": e.get("powers"),
+                # Arm Features (docs/TODO.md) this Arm declared at enroll — [{"name","path"}, ...].
+                "features": e.get("features") or [],
                 # Node-level summaries, DERIVED here and stored nowhere — a summary saved beside the
                 # list it came from is a second number that can silently disagree with it. Both are
                 # display/description only: `power` is what the Dashboard's one-per-Arm column shows,
@@ -157,6 +164,42 @@ def vram_constraint(vram_gb: int) -> str:
         have = ", ".join(f"{g}GB" for g in sizes) or "none"
         raise HTTPException(422, f"no Arm has {vram_gb}GB of VRAM — the cluster has: {have}")
     return "|".join(f"vram{g}" for g in eligible)
+
+
+def feature_catalog() -> list[str]:
+    """The admin-curated catalog of Arm Features, for the Dashboard's submit composer (`GET
+    /features`) and the CLI's `--feature` picker."""
+    return sorted(json.loads(FEATURES_CATALOG.read_text())) if FEATURES_CATALOG.exists() else []
+
+
+def feature_constraint(features: list[str]) -> str:
+    """Turn a Spawn's declared Arm Features into the AND-clause of a Slurm constraint: `vsim&isaacsim`.
+
+    Unlike VRAM (set-membership OR over size buckets an exact number rarely matches), a Feature is an
+    exact name a node either has or doesn't — so requiring several is a plain conjunction, no catalog
+    expansion needed. Feasibility (does any ADMITTED Arm carry every one?) is `arms_with_features`'
+    job, checked separately before this is ever combined into a constraint string.
+    """
+    return "&".join(sorted(set(features)))
+
+
+def arms_with_features(features: list[str]) -> list[str]:
+    """Every ADMITTED Arm whose declared Feature set is a superset of `features` — the feasibility
+    check `submit_checked` runs before ever calling sbatch, mirroring `vram_constraint`'s "no Arm has
+    that much VRAM" refusal (docs/TODO.md "Arm Features")."""
+    need = set(features)
+    return [name for name, e in load_registry().items()
+            if e.get("admitted") and need <= {f["name"] for f in (e.get("features") or [])}]
+
+
+def all_feature_names() -> list[str]:
+    """Every Arm Feature any ADMITTED Arm actually carries — narrower than `feature_catalog()` (which
+    includes names no live Arm has yet), and what an "unsatisfiable request" error names as "known"."""
+    names: set[str] = set()
+    for e in load_registry().values():
+        if e.get("admitted"):
+            names.update(f["name"] for f in (e.get("features") or []))
+    return sorted(names)
 
 
 def queue() -> list[dict]:
