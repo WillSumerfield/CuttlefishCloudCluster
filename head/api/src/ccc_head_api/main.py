@@ -74,9 +74,9 @@ async def access_log(request: Request, call_next):
     """One line per request: who, what, the outcome, and how long. The authenticated username is read
     from `request.state` (stashed by `current_user` during routing) — no extra DB lookup, and `-` for
     the routes that never resolve a user (healthz/readyz, a failed login). Path only, never the query
-    string, headers, or body: `/passwd` and `/login` carry passwords and `/submit`'s `X-CCC-Meta` header
-    carries the W&B key, none of which may reach a log. This supersedes uvicorn's own access log (the
-    Head API unit runs it with `--no-access-log`)."""
+    string, headers, or body: `/passwd` and `/login` carry passwords and `/account/wandb` carries a W&B
+    key, none of which may reach a log. This supersedes uvicorn's own access log (the Head API unit
+    runs it with `--no-access-log`)."""
     start = time.perf_counter()
     try:
         response = await call_next(request)
@@ -113,6 +113,10 @@ class LoginRequest(BaseModel):
 class PasswdRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class WandbKeyRequest(BaseModel):
+    key: str
 
 
 def password_policy_error(new: str, current: str) -> str | None:
@@ -211,6 +215,13 @@ def arms(user: dict = Depends(current_user)) -> list[dict]:
 
 def _arm_owner(name: str) -> str | None:
     return next((a.get("owner") for a in slurm.arms() if a["name"] == name), None)
+
+
+@api.get("/features")
+def features(user: dict = Depends(current_user)) -> list[str]:
+    """The admin-curated catalog of Arm Features (`cuttle feature add`) — what the submit composer
+    offers to require. Read-only: mutating the catalog is CLI+sudo only, like every other admin write."""
+    return slurm.feature_catalog()
 
 
 @api.post("/arms/{name}/retract", status_code=204)
@@ -451,6 +462,59 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
     return {"ok": True}
 
 
+# --- your account: the stored W&B key (authed) ------------------------------
+# The Head holds one W&B key per User and injects it into every Spawn they submit, from either client
+# (see spawns.compose_wandb_env). It lives here rather than in the CLI's config file because the
+# **Dashboard** is the primary submission surface and a browser has no config file to read — every
+# Spawn from it ran with W&B disabled until these routes existed.
+#
+# Reveal takes no password re-prompt, deliberately. A stolen session can already exfiltrate the key by
+# submitting a Spawn that echoes $WANDB_API_KEY, so a prompt here would guard a door with no wall
+# beside it — it would cost every honest User a password every time they wanted to check what they had
+# pasted, and cost an attacker nothing.
+
+@api.get("/account/wandb")
+def wandb_key(user: dict = Depends(current_user)) -> dict:
+    """Masked status: whether a key is stored, and its last 4 characters. Never the plaintext."""
+    with db.connect() as conn:
+        return db.wandb_key_status(conn, user["id"])
+
+
+@api.get("/account/wandb/reveal")
+def wandb_key_reveal(user: dict = Depends(current_user)) -> dict:
+    """The plaintext, for the deliberate Reveal. Its own route so the masked read — which both clients
+    poll — never carries the secret at all."""
+    with db.connect() as conn:
+        key = db.get_wandb_key(conn, user["id"])
+    if key is None:
+        raise HTTPException(404, "you have no W&B key stored")
+    return {"key": key}
+
+
+@api.post("/account/wandb")
+def set_wandb_key(req: WandbKeyRequest, user: dict = Depends(current_user)) -> dict:
+    """Store (or replace) your key. Encrypted at rest — see atrest.py, which is honest about what that
+    does and does not buy."""
+    key = req.key.strip()
+    if not key:
+        raise HTTPException(422, "the key is empty")
+    with db.connect() as conn:
+        db.set_wandb_key(conn, user["id"], key)
+    # Never the key, and never its length: this line goes to journald, which is not where a secret's
+    # shape belongs. That a User set one is worth knowing; what they set is not.
+    log.info("wandb key set by %s", user["username"])
+    return {"ok": True}
+
+
+@api.delete("/account/wandb", status_code=204)
+def clear_wandb_key(user: dict = Depends(current_user)) -> Response:
+    """Forget the key — the Head stops injecting it, and your Spawns go back to WANDB_MODE=disabled."""
+    with db.connect() as conn:
+        db.clear_wandb_key(conn, user["id"])
+    log.info("wandb key cleared by %s", user["username"])
+    return Response(status_code=204)
+
+
 # --- Karma (authed; Override is admin-only) ---------------------------------
 
 @api.get("/karma")
@@ -509,8 +573,24 @@ def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
     authed mutation in slice 2. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
-    {script, gpu, args, node, wandb_env} — metadata in a header (not query params) keeps the W&B key
-    out of access logs. Runs the render/sbatch/Attribution as the Mantle; returns the Spawn id.
+    {script, gpu, args, node, wandb_env, outputs, features}. Runs the render/sbatch/Attribution as the
+    Mantle; returns the Spawn id.
+
+    `features` (docs/TODO.md "Arm Features") is optional, and empty when absent — a Spawn that
+    requests none is placed exactly as it always was. Each name is checked against every currently
+    admitted Arm's declared features (`slurm.arms_with_features`); a request no Arm can satisfy is
+    refused with 422 before ever reaching sbatch, same hard-validation stance as `vram`.
+
+    `outputs` is a non-empty list of subdir names made under the one `$CCC_OUT` root before the payload
+    runs (docs/TODO.md's now-closed "Spawn Output Enforcement") — required, with no default: a Spawn
+    nobody named an output for would produce results with nowhere retrievable to land.
+
+    `wandb_env` no longer carries a key — it never could from the browser, which is why the Dashboard
+    logged no metrics at all. The caller's W&B *project/entity* are honoured and everything else in it
+    is discarded; the key is the Head's, per User (see spawns.compose_wandb_env, /account/wandb).
+    Whether to log at all is the separate `wandb` flag, defaulting to true when absent — it rides
+    beside `wandb_env` rather than inside it so a client can still say "not this one" without being
+    handed back the WANDB_MODE the Head just took off it.
 
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
     with no declared need cannot be placed. `vram` is OR-expanded here into a Slurm constraint over the
@@ -533,6 +613,14 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     for field in ("minutes", "vram"):
         if not meta.get(field):
             raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
+    # At least one declared output subdir (docs/TODO.md's now-closed "Spawn Output Enforcement"): a
+    # Spawn nobody named an output for is one whose results have nowhere retrievable to land, which is
+    # worse discovered after the fact than refused up front. `outputs` also gets the shell-injection
+    # check (OUTPUT_NAME_RE) in spawns.submit — this is only the "did the client send any" gate.
+    outputs = meta.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise HTTPException(422, "missing 'outputs' in X-CCC-Meta — at least one output folder name is "
+                                 "required (--output/-o)")
     if meta.get("node"):
         raise HTTPException(403, "pinning a Spawn to an Arm is not available over the API — it is "
                                  "`cuttle run --node`, on the Head.")
@@ -542,10 +630,12 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         # Placement, pricing and the Attribution row all live in submit_checked, shared with the
         # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
         # ValueError covers both the unknown-Arm case (Head-local only in practice — `node` can never
-        # reach here, see above) and the per-User concurrent-Spawn cap (Phase 8 loose end).
+        # reach here, see above), the per-User concurrent-Spawn cap (Phase 8 loose end), an invalid
+        # output name, and a `script` that isn't actually in the uploaded tar.
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta["script"], gpus, meta.get("args", []),
-            meta.get("wandb_env", {}), tar_path, minutes, vram_gb)
+            meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
+            wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [])
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:

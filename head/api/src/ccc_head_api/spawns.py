@@ -29,6 +29,7 @@ Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a re
 
 import io
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -36,6 +37,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import db
+
+# A declared output name becomes a shell-interpolated path segment (`mkdir -p "$ccc_out/<name>"` in
+# JOB_SCRIPT) — anchored, no slashes, no leading dot, so neither `../../etc` nor a hidden `.` / `..`
+# can walk it outside $ccc_out. This is the ONLY thing standing between a submitted name and a shell
+# string, so it is checked here, not left to the client (the CLI validates too, but the Head never
+# trusts that a client did).
+OUTPUT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 HEAD_STATE_DIR = Path(os.environ.get("CCC_HEAD_STATE", "/var/lib/ccc/head"))
 PROJECTS_DIR = HEAD_STATE_DIR / "projects"
@@ -70,6 +78,12 @@ JOB_SCRIPT = """\
 %%CONSTRAINT%%
 %%NODELIST%%
 %%EXCLUDE%%
+# Arm Features (docs/TODO.md): an Arm optionally declares install paths for heavy/hardware-licence-
+# gated software (VSim, IsaacSim, ...) at `cuttle setup --arm`, written locally to
+# /etc/ccc/features.env as `export <NAME>_PATH=...` lines. Sourced unconditionally and guarded — a
+# harmless no-op on any Arm/Spawn that never touches a feature — and `export`ed there (not here) so
+# Apptainer's default env passthrough (no --cleanenv below) carries it straight into the Pod.
+[ -f /etc/ccc/features.env ] && . /etc/ccc/features.env
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
@@ -77,7 +91,11 @@ sif="%%CCC_SIF%%"
 # about into out/err, so this stays EMPTY unless the shell itself failed before those existed — which
 # is the one case worth keeping. Anything else would leave a 0-byte file per Spawn in /tmp forever.
 sink="/tmp/ccc-$jid.slurm"
-cleanup() { rm -rf "$scratch"; [ -s "$sink" ] || rm -f "$sink"; }
+# kill "$loop_pid": a no-op on the Head branch (never set there) and at the two remote-branch call
+# sites that already kill it explicitly first for ordering (see the stage_out call sites below) — this
+# is the fallback for any OTHER way the script ends (e.g. scancel's TERM), so the periodic out/err/
+# outputs pusher (below) never outlives the script as an orphan.
+cleanup() { kill "$loop_pid" 2>/dev/null; rm -rf "$scratch"; [ -s "$sink" ] || rm -f "$sink"; }
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
@@ -115,6 +133,30 @@ else
         rsync -a "$out" "$err" "$ccc_out" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" || return 1
         rsync -a "$exitf" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
     }
+    # Live streaming (docs/TODO.md's now-closed "Live log streaming for remote Spawns"): a backgrounded
+    # loop pushes out/err home every 5s so `cuttle logs -f` tracks a remote run instead of staying blind
+    # until stage_out() at the very end. rsync -a of a growing file needs no --append/--partial — it
+    # just re-sends the file's current bytes, and the CLI's _drain() already tolerates a partial
+    # trailing line. $CCC_OUT rides the same loop, but gated on a settle check: a checkpoint caught
+    # mid-write would land corrupted, unlike append-only log text, so only files whose mtime is older
+    # than the quiet window (10s = 2x the push interval, long enough a normal write has finished) go
+    # out. `-printf '%P\\n'` gives paths already relative to $ccc_out, which is what the outputs/
+    # --files-from below wants. Best-effort throughout: a failed tick just retries next one, and the
+    # unconditional stage_out() at EXIT remains the real source of truth regardless.
+    push_periodic() {
+        while true; do
+            sleep 5
+            rsync -a "$out" "$err" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" 2>/dev/null || true
+            find "$ccc_out" -type f -not -newermt "@$(( $(date +%s) - 10 ))" -printf '%P\\n' \
+                > "$scratch/outputs_filelist" 2>/dev/null
+            if [ -s "$scratch/outputs_filelist" ]; then
+                rsync -a --files-from="$scratch/outputs_filelist" "$ccc_out/" \
+                    "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/outputs/" 2>/dev/null || true
+            fi
+        done
+    }
+    push_periodic &
+    loop_pid=$!
     # files-from paths are module-root-relative (<uuid>/...) and pulled from the MODULE ROOT — NOT a
     # subpath source, which makes rsyncd (use chroot = no) report every file "vanished". rsync
     # recreates <uuid>/... under $scratch, so $proj resolves.
@@ -129,10 +171,17 @@ CCC_FILELIST
         echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/ —" >> "$err"
         echo "ccc: this Spawn never started. Is the Head's rsync daemon up, and is this Arm on the mesh?" >> "$err"
         echo 1 > "$exitf"
+        kill "$loop_pid" 2>/dev/null  # stop the periodic pusher first — it can't race the sync below
         stage_out
         exit 1
     fi
 fi
+
+# Declared output subdirs, under the ONE $ccc_out root — made before the payload runs so the script can
+# rely on them existing rather than having to mkdir its own. Names are validated server-side (no slashes,
+# no leading dot) before they ever reach this template, so quoting the name is enough; there is no second
+# root or env var per output — see docs/TODO.md's now-closed "Spawn Output Enforcement".
+%%MKDIR_OUTPUTS%%
 
 cd "$proj"
 # Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
@@ -145,6 +194,8 @@ apptainer exec --nv --bind "$ccc_out" --env "$wenv,CCC_OUT=$ccc_out" \
   "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err"
 rc=$?
 echo $rc > "$exitf"
+kill "$loop_pid" 2>/dev/null  # stop the periodic pusher (remote branch only — unset is a no-op here)
+                              # first, so it can't race the full sync below
 # A failed stage-out is indistinguishable, from the Head, from an Arm that dropped mid-Spawn: no exit
 # file ever lands, so the Spawn reads as "killed". Say so in the node-local slurm log, which is the
 # only place left that can still be written.
@@ -155,7 +206,7 @@ exit $rc
 
 
 def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
-            files: list[str], node: str | None, minutes: int, constraint: str,
+            files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
             exclude: str = "") -> str:
     subs = {
         "%%GPU%%": str(gpu),
@@ -183,6 +234,10 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
         "%%FILELIST%%": "\n".join(files),
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
+        # One `mkdir -p` per declared name, all under the same $ccc_out root — validated (OUTPUT_NAME_RE)
+        # before this is ever built, so quoting is enough. Never empty: submit() refuses a Spawn with no
+        # declared outputs before rendering ever happens.
+        "%%MKDIR_OUTPUTS%%": "\n".join(f'mkdir -p "$ccc_out/{name}"' for name in outputs),
     }
     body = JOB_SCRIPT
     for k, v in subs.items():
@@ -191,7 +246,7 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
 
 
 def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
-           tar_path: Path, minutes: int, constraint: str, node: str | None = None,
+           tar_path: Path, minutes: int, constraint: str, outputs: list[str], node: str | None = None,
            vram_gb: int = 0, hold: float | None = None, exclude: str = "") -> int:
     """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row +
     the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
@@ -203,6 +258,13 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
 
     `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
     never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally.
+
+    `outputs` names the subdirs made under the one `$CCC_OUT` root before the payload runs (docs/TODO.md's
+    now-closed "Spawn Output Enforcement") — checked here, not just at the HTTP boundary, so the
+    Head-local pinned path (`cuttle run --node`) gets the identical guarantee. Both checks below (outputs
+    non-empty, script present in the tar) are hard validation: a Spawn that failed either would either
+    write nowhere retrievable or never start at all, so neither is worth a Spawn's Escrow and a wasted
+    place in the queue.
     """
     # Refuse rather than render `rsync:///project/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
@@ -212,16 +274,30 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
         raise ValueError("the Head does not know its own mesh address (CCC_MESH_IP is empty in the "
                          "ccc-head-api unit) — a remote Arm would have nowhere to fetch this Spawn's "
                          "files from. Re-run `cuttle setup --head` on the Head to rewrite the unit")
+    if not outputs:
+        raise ValueError("at least one output folder (--output/-o) is required — declare where your "
+                         "script writes its results before submitting")
+    for name in outputs:
+        if not OUTPUT_NAME_RE.match(name):
+            raise ValueError(f"invalid output name {name!r} — letters/digits/'.'/'_'/'-' only, may not "
+                             f"start with '.' (no slashes, no '..')")
+
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
-    staging.mkdir(parents=True)
+    # Checked against the tar's own member list, BEFORE anything is written to disk: a script that isn't
+    # here would never start (or, worse, silently run some OTHER script if bash's glob ever changed
+    # underneath us), and refusing before staging.mkdir() means a bad submission leaves nothing behind.
     with tarfile.open(tar_path, mode="r:gz") as tf:
+        if script not in tf.getnames():
+            raise ValueError(f"script {script!r} was not found in the uploaded project — check the "
+                             f"path matches exactly (and isn't excluded by .gitignore)")
+        staging.mkdir(parents=True)
         tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
     # Module-root-relative list (<uuid>/...) for a remote Arm's --files-from. The upload was already
     # gitignore-filtered client-side, so every file here is meant to transfer.
     files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
 
-    body = _render(uuid, staging, gpu, script, args, files, node, minutes, constraint, exclude)
+    body = _render(uuid, staging, gpu, script, args, files, outputs, node, minutes, constraint, exclude)
     # delete=False so `sbatch` — a separate process — can open the path; we unlink it ourselves the
     # moment sbatch returns. sbatch has copied the script into slurmctld's state by then, so the file
     # has no reader left. Leaving them behind accumulates one per Spawn, each carrying the project's
@@ -230,6 +306,9 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
         f.write(body)
         job_file = f.name
 
+    # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
+    # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
+    # stored key, never the client's.
     env = {**os.environ, **wandb_env}
     try:
         r = subprocess.run(["sbatch", "--parsable", job_file],
@@ -247,9 +326,45 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     return job_id
 
 
+def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True) -> dict[str, str]:
+    """The Spawn's W&B environment: **the Head owns the key, the client owns the run.**
+
+    A client used to send the whole thing, which is why the Dashboard had no metrics at all — the
+    browser has no key to send, so it sent `WANDB_MODE=disabled` on every Spawn. The key is now the
+    submitting User's, held here (db.get_wandb_key), and only the run's *identity* still comes from the
+    client: WANDB_PROJECT and WANDB_ENTITY, which are `cuttle run --project/--entity`.
+
+    Anything else the client sent is dropped, `WANDB_API_KEY` and `WANDB_MODE` above all. Honouring a
+    client-sent key would let a submitter log another User's Spawns into an account of their choosing,
+    and honouring a client-sent mode would let one silently disable the metrics they had just asked the
+    Head to enable. Neither is the client's to decide any more, so neither is read.
+
+    No stored key means no W&B, and that has to be said out loud: an EMPTY env leaves WANDB_MODE unset,
+    which makes `wandb.init()` fail rather than skip. WANDB_ENTITY stays absent when there is none — an
+    empty entity breaks `wandb.init` too, instead of falling back to the account default (see the
+    rendered job script's `wenv` line).
+
+    `wandb` is the client's *intent* — "not this one", per Spawn — and it is a separate flag rather
+    than a client-sent WANDB_MODE precisely so the rule above still holds: the client says whether to
+    log, never how. False means disabled even with a key stored, and the key is not injected at all —
+    there is no reason to hand a Pod a secret it was just told not to use. Absent is True, so every
+    client that never heard of this keeps the behaviour it had.
+    """
+    if not wandb:
+        return {"WANDB_MODE": "disabled"}
+    env = {k: v for k, v in client_env.items() if k in ("WANDB_PROJECT", "WANDB_ENTITY") and v}
+    with db.connect() as conn:
+        key = db.get_wandb_key(conn, user_id)
+    if key is None:
+        return {"WANDB_MODE": "disabled"}
+    env.setdefault("WANDB_PROJECT", "ccc")
+    return {**env, "WANDB_API_KEY": key, "WANDB_MODE": "online"}
+
+
 def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: list[str],
                    wandb_env: dict[str, str], tar_path: Path, minutes: int, vram_gb: int,
-                   node: str | None = None) -> int:
+                   outputs: list[str], node: str | None = None, wandb: bool = True,
+                   features: list[str] | None = None) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Extracted in Phase 6, when pinning a Spawn to an Arm (`node`) stopped being reachable over HTTP and
@@ -258,8 +373,19 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that consumes a
     donated card while nobody pays for it, and that no ledger can explain.
 
-    Raises ValueError for an unknown Arm, a retracted one, or for a User already at the
-    concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
+    `wandb_env` arrives as whatever the client asked for and is **recomposed here**, not taken as
+    given — see compose_wandb_env. Here rather than in the route so the Head-local pinned path
+    (`cuttle run --node`) gets the identical treatment, for the same reason the Escrow does. `wandb`
+    is the per-Spawn off-switch that rides alongside it, and defaults on: a caller that never sets it
+    submits exactly the Spawn it always did.
+
+    `features` (docs/TODO.md "Arm Features") is optional and empty by default — most Spawns need none.
+    When given, every name must be carried by at least one currently-admitted Arm or the Spawn is
+    refused outright before ever reaching sbatch (mirrors `slurm.vram_constraint`'s "no Arm has that
+    much VRAM" — hard validation, no partial/best-effort placement).
+
+    Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
+    already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
@@ -290,11 +416,22 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     # retracted node it wasn't headed for anyway would be a no-op.
     exclude = ",".join(sorted(retracted)) if not node else ""
     constraint = slurm.vram_constraint(vram_gb)
+    features = features or []
+    if features:
+        wanted = sorted(set(features))
+        if not slurm.arms_with_features(wanted):
+            known = ", ".join(slurm.all_feature_names()) or "(none)"
+            raise ValueError(f"no Arm has every requested feature ({', '.join(wanted)}) — Arm "
+                             f"Features currently in the cluster: {known}")
+        # AND onto the vram OR-expansion — parenthesized so `(vram24|vram48)&vsim` reads unambiguously
+        # rather than relying on Slurm's own operator precedence.
+        constraint = f"({constraint})&{slurm.feature_constraint(wanted)}" if constraint \
+            else slurm.feature_constraint(wanted)
     need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
-    return submit(user_id, script, gpu, args, wandb_env, tar_path, minutes, constraint, node,
-                  vram_gb=vram_gb, hold=hold, exclude=exclude)
+    return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
+                  minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude)
 
 
 # --- reads (anonymous in slice 2) -------------------------------------------

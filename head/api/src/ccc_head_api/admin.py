@@ -11,6 +11,7 @@ first login. Nothing here ever prints or stores a reusable password.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -128,12 +129,18 @@ def _return(node: str) -> int:
 
 
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
-            node: str | None, args: list[str]) -> int:
+            node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
+            features: list[str] | None = None) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username`.
 
     Head-local since Phase 6 (`cuttle run --node`). Authorization is being the operator on the Head;
-    attribution is the account named here. Goes through `spawns.submit_checked`, so the Escrow and the
-    Attribution row are written exactly as they are for a Spawn that arrived over HTTP.
+    attribution is the account named here. Goes through `spawns.submit_checked`, so the Escrow, the
+    Attribution row and the W&B environment are all produced exactly as they are for a Spawn that
+    arrived over HTTP.
+
+    `wandb_env` is the caller's project/entity hint and only that — never a key, which comes from
+    whichever User this is attributed to (spawns.compose_wandb_env). It was hardcoded `{}` here, so
+    `cuttle run --node --project X` quietly logged into `ccc` instead of X.
     """
     from . import spawns
     with db.connect() as conn:
@@ -143,8 +150,9 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
             print(f"no such user {username!r}", file=sys.stderr)
             return 1
     try:
-        job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script, gpu, args, {},
-                                       Path(tar), minutes, vram, node)
+        job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script, gpu, args,
+                                       wandb_env, Path(tar), minutes, vram, outputs, node,
+                                       features=features)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -182,6 +190,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--vram", type=int, required=True)
     s.add_argument("--gpu", type=int, default=1)
     s.add_argument("--node")
+    s.add_argument("--output", action="append", default=[], dest="outputs",
+                   help="declared output subdir name (repeatable; at least one required).")
+    s.add_argument("--feature", action="append", default=[], dest="features",
+                   help="required Arm Feature (repeatable; optional — default none).")
+    # The client's project/entity hint, as the JSON dict submit_checked takes — not two --project/
+    # --entity flags, so the CLI and the HTTP route hand over the *same* value and there is one place
+    # that decides what a W&B run is called (cuttle.settings.wandb_env).
+    s.add_argument("--wandb-env", default="{}", help="JSON WANDB_PROJECT/WANDB_ENTITY hint.")
     s.add_argument("args", nargs="*", help="extra arguments for the script.")
 
     args = p.parse_args(argv)
@@ -203,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         return _return(args.node)
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
-                       args.node, args.args)
+                       args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features)
     return 2
 
 
