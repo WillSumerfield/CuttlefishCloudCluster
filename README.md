@@ -44,6 +44,34 @@ so host duties (`setup --head`, `build-installer`) need it pointed at the checko
 Then provision the box: `cuttle setup --head` (control plane), `--arm` (donor node), or
 `--client` (submit only).
 
+### Making the Head reachable to remote Arms
+
+An Arm contacts the **Coordinator** to *get* a mesh address, so the coordinator address can never be
+a mesh address — it is the one hop that happens before the Mesh exists. By default `setup --head`
+advertises the box's primary LAN IP, which only Arms on that same LAN can reach; a remote donor hangs
+at `setup --arm` until it times out.
+
+For a Head that remote Arms can reach, advertise its **Tailscale** IP instead:
+
+```sh
+tailscale ip -4                      # the Head's personal-tailnet address, e.g. 100.x.y.z
+cuttle setup --head --address=100.x.y.z
+```
+
+Use the plain `tailscale` command here. CCC runs its **own** isolated `tailscaled-ccc` daemon on a
+separate socket for the cluster Mesh, so this never returns the CCC mesh address (`100.99.x.x`) — and
+it must not: that is the address Arms cannot reach yet.
+
+The address is a durable property of the Head, not a per-run argument. A bare `cuttle setup --head`
+re-run keeps whatever is stored, and changing it is confirmed rather than announced — re-pointing the
+coordinator makes every enrollment token already handed out stop working and forces every Arm to
+re-register.
+
+> **Caveat.** This requires the donor's box to also be on your personal tailnet, which is exactly the
+> grant the CCC Mesh exists to avoid asking a donor for. It is fine for machines you own and is how
+> remote enrollment is tested today; a real public route (tunnel or port-forward + DDNS + TLS) is
+> still open.
+
 **From a bundle** (clients/Arms). On the Head, build a portable installer — run there, it bakes in
 the Head's address and pinned certificate, so the client comes pre-pointed and pre-pinned:
 
