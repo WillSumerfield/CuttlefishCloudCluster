@@ -747,6 +747,22 @@ input[type="number"].field::-webkit-inner-spin-button {
 }
 
 /*
+ * A row of ghost controls that belong to ONE thing (the actions on a stored secret, say). Same recess as
+ * btn-ghost — the background is the point, so they read as pressable rather than as bare text on a
+ * surface — but they light GOLD on hover, the way FactRow does. Gold is this app's "the live, pressable
+ * thing" everywhere else; a row of actions that stayed grey was the odd one out.
+ */
+@utility btn-ghost-gold {
+  &:hover { color: var(--gold); text-shadow: 0 0 10px color-mix(in oklab, var(--gold) 55%, transparent); }
+}
+
+/* The destructive verb in such a row. Alarm on hover only — resting state stays quiet, so "Remove" does
+ * not shout at you every time you glance at your own account. Replaces an inline style. */
+@utility btn-ghost-alarm {
+  &:hover { color: var(--alarm); text-shadow: 0 0 10px color-mix(in oklab, var(--alarm) 45%, transparent); }
+}
+
+/*
  * THE PASSING CLOUD — the signature motion of a WORKING machine, a real cuttlefish behaviour: dark bands
  * that travel across the skin. These two utilities are the STATIC half; the emission timer and the
  * left→right travel live in `queue/CloudDrift.tsx`, which appends `.cloud-band` elements to a `.cloud-layer`

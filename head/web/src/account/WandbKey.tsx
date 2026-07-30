@@ -14,14 +14,12 @@ import {
  * you pasted the right one); Replace overwrites it; Remove clears it. Unset, it's an invitation to paste
  * one, with a line on what it does.
  *
- * The Head serves no /account/wandb route yet, so live this loads to "not available yet"; under ?demo it
- * runs on a local copy seeded from the mock persona. `demoKey` is that seed (undefined once cleared).
+ * The key is stored on the Head, per User, and injected into every spawn you submit from either client.
+ * Under ?demo it runs on a local copy seeded from the mock persona instead — `demoKey` is that seed
+ * (undefined once cleared).
  */
 
-type State =
-  | { kind: "loading" }
-  | { kind: "unavailable" }
-  | { kind: "status"; status: WandbKeyStatus };
+type State = { kind: "loading" } | { kind: "status"; status: WandbKeyStatus };
 
 export function WandbKey({
   demo,
@@ -51,7 +49,10 @@ export function WandbKey({
     if (demo) { setState(maskFrom(localKey)); return; }
     getWandbKey()
       .then((status) => setState({ kind: "status", status }))
-      .catch((e) => (e instanceof Unauthorized ? onUnauthorized() : setState({ kind: "unavailable" })));
+      .catch((e) => {
+        if (e instanceof Unauthorized) return onUnauthorized();
+        setError(`Couldn't read your W&B key — ${errMessage(e)}`);
+      });
   }, [demo, localKey, onUnauthorized]);
 
   useEffect(() => { load(); }, [load]);
@@ -110,15 +111,37 @@ export function WandbKey({
 
   return (
     <div>
-      <div className="label mb-2">W&amp;B key</div>
+      {/* Label and every action on ONE row, the same header idiom PasswordForm uses — the actions belong
+          to the thing named beside them, not to the value below. They light gold on hover like FactRow,
+          so this module stops being the one place on the page where a control reads as bare text. */}
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="label">W&amp;B key</span>
+        {state.kind === "status" && state.status.set && !editing && (
+          <div className="flex items-center gap-2">
+            <button
+              className="btn-ghost btn-ghost-gold"
+              onClick={revealed !== null ? () => setRevealed(null) : reveal}
+            >
+              {revealed !== null ? "Hide" : "Reveal"}
+            </button>
+            <button
+              className="btn-ghost btn-ghost-gold"
+              onClick={() => { setEditing(true); setRevealed(null); }}
+            >
+              Replace
+            </button>
+            <button className="btn-ghost btn-ghost-alarm" onClick={remove}>
+              Remove
+            </button>
+          </div>
+        )}
+      </div>
 
       {error && <p role="alert" className="mb-2 text-[12px]" style={{ color: "var(--alarm)" }}>{error}</p>}
 
-      {state.kind === "loading" && <p className="text-[13px] text-ink-mute">Loading…</p>}
-
-      {state.kind === "unavailable" && (
-        <p className="text-[13px] text-ink-mute">W&amp;B key storage isn't available yet.</p>
-      )}
+      {/* The load failing leaves this stuck on "loading" forever, so the error above replaces the
+          spinner line rather than sitting beneath a promise that will never resolve. */}
+      {state.kind === "loading" && !error && <p className="text-[13px] text-ink-mute">Loading…</p>}
 
       {state.kind === "status" && (
         <>
@@ -149,22 +172,10 @@ export function WandbKey({
               )}
             </div>
           ) : (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <span className="num text-[13px] text-ink-soft">
-                {revealed !== null ? revealed : `•••••••••• ${state.status.last4 ?? ""}`}
-              </span>
-              <div className="ml-auto flex items-center gap-2">
-                <button className="btn-ghost" onClick={revealed !== null ? () => setRevealed(null) : reveal}>
-                  {revealed !== null ? "Hide" : "Reveal"}
-                </button>
-                <button className="btn-ghost" onClick={() => { setEditing(true); setRevealed(null); }}>
-                  Replace
-                </button>
-                <button className="btn-ghost" style={{ color: "var(--alarm)" }} onClick={remove}>
-                  Remove
-                </button>
-              </div>
-            </div>
+            /* Just the value now — its actions moved up into the header row above. */
+            <span className="num text-[13px] text-ink-soft">
+              {revealed !== null ? revealed : `•••••••••• ${state.status.last4 ?? ""}`}
+            </span>
           )}
         </>
       )}

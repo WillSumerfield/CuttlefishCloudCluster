@@ -21,11 +21,13 @@ from pathlib import Path
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
+from . import atrest
+
 # Path comes from the environment (the systemd unit sets CCC_HEAD_DB) so the API package never
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -191,8 +193,21 @@ CREATE TABLE retracted_jobs (
 );
 """
 
+# A User's own W&B key, so the **Dashboard** can log metrics at all: the browser has no ~/.ccc to read
+# a key out of, so every Spawn submitted from it ran with WANDB_MODE=disabled. The key belongs to the
+# User, not the box, so it is a column on `users` — NULL is unset, and deleting a User takes their key
+# with them.
+#
+# BLOB, not TEXT: it is stored ENCRYPTED (AES-256-GCM, see atrest.py). Unlike a password, a W&B key must
+# come back out in plaintext to be usable, so it cannot be hashed. The keyfile lives beside this
+# database — which protects a head.db that leaks on its own (a copy, a backup archive, a pulled disk)
+# and nothing more. atrest.py's docstring is honest about the limit.
+_SCHEMA_V7 = """
+ALTER TABLE users ADD COLUMN wandb_key BLOB;
+"""
+
 # index i takes user_version i -> i+1
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -299,6 +314,37 @@ def set_password(conn: sqlite3.Connection, username: str, new_password: str) -> 
 
 # A precomputed hash so verify_password does equal work whether or not the user exists.
 _DUMMY_HASH = _ph.hash("__ccc_dummy__")
+
+
+# --- the stored W&B key -----------------------------------------------------
+# One key per User, encrypted at rest (see atrest.py and _SCHEMA_V7). The Head holds it so BOTH clients
+# get metrics: the Dashboard has no config file to read a key out of, and even the CLI no longer keeps
+# one on disk. Every read goes through atrest.decrypt, which answers None rather than raising when the
+# blob cannot be recovered — so an unreadable key is simply an unset one, everywhere below.
+
+def set_wandb_key(conn: sqlite3.Connection, user_id: int, key: str) -> None:
+    conn.execute("UPDATE users SET wandb_key=? WHERE id=?", (atrest.encrypt(key), user_id))
+    conn.commit()
+
+
+def get_wandb_key(conn: sqlite3.Connection, user_id: int) -> str | None:
+    """This User's W&B key in plaintext, or None if they have none stored (or it cannot be read)."""
+    row = conn.execute("SELECT wandb_key FROM users WHERE id=?", (user_id,)).fetchone()
+    if row is None or row["wandb_key"] is None:
+        return None
+    return atrest.decrypt(row["wandb_key"])
+
+
+def wandb_key_status(conn: sqlite3.Connection, user_id: int) -> dict:
+    """The masked view: is one stored, and its last 4 characters — enough to tell "the key I pasted"
+    from "some other key" without ever putting the secret on the wire."""
+    key = get_wandb_key(conn, user_id)
+    return {"set": key is not None, "last4": key[-4:] if key else None}
+
+
+def clear_wandb_key(conn: sqlite3.Connection, user_id: int) -> None:
+    conn.execute("UPDATE users SET wandb_key=NULL WHERE id=?", (user_id,))
+    conn.commit()
 
 
 # --- sessions ---------------------------------------------------------------

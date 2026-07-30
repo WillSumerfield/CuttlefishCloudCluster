@@ -177,6 +177,40 @@ def account(as_json: bool = False) -> None:
     ui.emit(payload, as_json, render)
 
 
+# --- your stored W&B key (on the Head) --------------------------------------
+# The CLI-parity counterpart of the Dashboard's Account page: one key per User, held encrypted on the
+# Head, injected into every Spawn you submit from either client. It used to sit in this box's
+# ~/.ccc/config/config.yaml, which meant the Dashboard — with no config file to read — logged no
+# metrics at all, and that a submitter with two machines pasted it twice.
+
+def wandb_set(key: str) -> None:
+    _api("POST", "/account/wandb", token=_load_token(), body={"key": key})
+    # The last 4 only, and only as confirmation you pasted what you meant to. Same masking the
+    # Dashboard shows, for the same reason: a terminal keeps scrollback.
+    ui.ok(f"W&B key stored on the Head (…{key[-4:]})")
+
+
+def wandb_show(reveal: bool = False) -> None:
+    """Masked by default; `--reveal` prints the plaintext, which is the only way to check you pasted
+    the right key. No password re-prompt for it — the Head does not ask for one either (a session that
+    can submit a Spawn can already echo $WANDB_API_KEY out of one)."""
+    status = _api("GET", "/account/wandb", token=_load_token())
+    if not status["set"]:
+        ui.say("no W&B key stored — your Spawns run with W&B disabled")
+        ui.hint("set one with `cuttle wandb set`")
+        return
+    if reveal:
+        ui.data(_api("GET", "/account/wandb/reveal", token=_load_token())["key"])
+        return
+    ui.data(f"•••••••••• {status['last4']}")
+    ui.hint("`cuttle wandb show --reveal` prints it in full")
+
+
+def wandb_clear() -> None:
+    _api("DELETE", "/account/wandb", token=_load_token())
+    ui.ok("W&B key cleared — your Spawns will run with W&B disabled")
+
+
 def logout() -> None:
     if config.CREDENTIALS_FILE.exists():
         _api("POST", "/logout", token=_load_token())

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { human, pick, type Picked } from "../project";
 import { NumberField } from "../app/NumberField";
+import { Chip } from "../app/Chip";
 import { ALLOWANCE, size } from "./format";
 
 /**
@@ -32,6 +33,13 @@ export type RecipePayload = {
   gpus: number;
   vram_mb: number;
   minutes: number;
+  // Experiment-tracking config, frozen with the code — a Recipe holds it (CONTEXT.md) so a re-run
+  // doesn't re-answer it. NOTHING PERSISTS IT YET: the Head serves no /recipes route at all, so these
+  // are collected, sent, and dropped, exactly like every other field here. Asked now so the Recipe's
+  // shape is already right when Phase 5 lands the backend.
+  wandb: boolean;
+  wandb_project: string;
+  wandb_entity: string;
 };
 
 export function RecipeComposer({
@@ -58,6 +66,9 @@ export function RecipeComposer({
   const [minutes, setMinutes] = useState("");
   const [vram, setVram] = useState("");
   const [args, setArgs] = useState("");
+  const [wandbLog, setWandbLog] = useState(true);
+  const [wandbProject, setWandbProject] = useState("");
+  const [wandbEntity, setWandbEntity] = useState("");
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastList = useRef<FileList | null>(null);
@@ -119,6 +130,9 @@ export function RecipeComposer({
       gpus: gpu,
       vram_mb: Number(vram) * 1024,
       minutes: Number(minutes),
+      wandb: wandbLog,
+      wandb_project: wandbProject.trim(),
+      wandb_entity: wandbEntity.trim(),
     });
   };
 
@@ -213,6 +227,41 @@ export function RecipeComposer({
           <Labeled label="Arguments" className="sm:col-span-2">
             <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
           </Labeled>
+          {/* Experiment tracking, asked once and frozen with the code rather than on every run — see
+              RecipePayload for why it lands nowhere yet.
+
+              Deliberately NOT gated on whether a key is stored, unlike the Spawn composer. A Spawn runs
+              now, so the now-state is exactly the right thing to gate it on; a Recipe is durable config
+              that outlives it. Hiding these because the User has no key today would freeze a Recipe with
+              no project for a reason that stops being true the moment they paste one. Off still hides
+              project/entity — that is the User's own answer, not a fact about their account. */}
+          <div className="sm:col-span-2">
+            <span className="label mb-1.5 block">Use W&amp;B?</span>
+            <div className="flex gap-1">
+              <Chip on={wandbLog} onClick={() => setWandbLog(true)}>Enabled</Chip>
+              <Chip on={!wandbLog} onClick={() => setWandbLog(false)}>Disabled</Chip>
+            </div>
+          </div>
+          {wandbLog && (
+            <>
+              <Labeled label="W&B project">
+                <input
+                  className="field"
+                  placeholder="ccc"
+                  value={wandbProject}
+                  onChange={(e) => setWandbProject(e.target.value)}
+                />
+              </Labeled>
+              <Labeled label="W&B entity">
+                <input
+                  className="field"
+                  placeholder="account default"
+                  value={wandbEntity}
+                  onChange={(e) => setWandbEntity(e.target.value)}
+                />
+              </Labeled>
+            </>
+          )}
           <Labeled label="Memory">
             <NumberField value={vram} onChange={setVram} min={1} placeholder="VRAM, GB" ariaLabel="Memory, VRAM in GB" />
           </Labeled>
