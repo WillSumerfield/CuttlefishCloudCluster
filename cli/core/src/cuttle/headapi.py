@@ -68,6 +68,26 @@ def enroll_url(mesh_ip: str) -> str:
     return f"http://{mesh_ip}:{config.ENROLL_API_PORT}"
 
 
+# --- the Enroll API's one sudo grant (Phase 9 #2) ----------------------------
+# `POST /enroll` used to trust the caller's claimed `mesh_ip` outright. Now it checks who Headscale
+# actually thinks is calling — but `munge` can't reach Headscale's unix socket to ask (it's
+# `750 headscale:headscale`, and `munge` is in neither), so it needs exactly enough privilege to run
+# the one read-only lookup that answers that question, and nothing headscale's CLI can otherwise do
+# (nodes delete, preauthkeys create, ...). NOPASSWD: this fires inside a request handler with no tty
+# to prompt.
+_SUDOERS_MUNGE_HEADSCALE = f"""\
+# Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
+# The Enroll API (User={config.ENROLL_API_USER}; see ccc_head_api.enroll) verifies an /enroll
+# caller's real mesh identity by asking Headscale who is registered at the peer's address. One
+# command, no wildcard, no argument taken from the request.
+{config.ENROLL_API_USER} ALL=(root) NOPASSWD: /usr/bin/headscale nodes list --output json
+"""
+
+
+def install_enroll_sudoers(write_unit) -> None:
+    write_unit(config.SUDOERS_MUNGE_HEADSCALE, _SUDOERS_MUNGE_HEADSCALE, "440")
+
+
 # --- Head API (⑥): read API + SPA, bound to LAN + mesh ----------------------
 # A second unit off the SAME venv (enroll app = munge key; main app = read board + SPA). Phase 1 runs
 # as `nobody` (holds no secrets; only read-only squeue/sinfo + static files). Binds 0.0.0.0 so a LAN
