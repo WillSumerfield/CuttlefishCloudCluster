@@ -3,8 +3,8 @@
 Every 30s, one pass, in this order:
 
 1. **Sample Demand** on every Arm (running claims + queued claims spread over eligible cards).
-2. **Accrue** onto every RUNNING Spawn: the seconds it held its card, at that card's Power and the
-   Demand it held it under.
+2. **Accrue** onto every RUNNING Spawn: the seconds it held each of its cards, at *that card's* Power
+   (Slurm reports which of the node's GPUs it holds) and the Demand it held them under.
 3. **Force-kill** any Spawn a Retract caught whose grace period has expired and is still running (see
    ccc_head_api.retraction) — Retract itself only sends TERM; this is the deadline behind it.
 4. **Settle** every Spawn that has vanished from the queue: one ledger row, and the claim is released.
@@ -49,13 +49,40 @@ def _parse(ts: str) -> datetime:
     return datetime.strptime(ts, _TS).replace(tzinfo=timezone.utc)
 
 
+def _held_powers(job: dict, arm: dict | None) -> list[float] | None:
+    """The Power of every **Device** this RUNNING Spawn holds — the prices Settlement multiplies out.
+
+    Slurm reports the GRES indices a running job was allocated (slurm._gpu_indices), and those index
+    straight into the Arm's registry `powers`, because gres.conf's `File=` lines were written in the
+    same order (templates.render_gres_conf). So a Spawn that landed on the throttled second 4090 of a
+    two-card box is billed at *that* card's number.
+
+    Returns **None** — not a guess — when the answer cannot be had: an unpriced Arm, a card count that
+    disagrees with the priced list, or a GPU Spawn Slurm reports no indices for. Averaging the node's
+    Powers would settle every one of those silently and plausibly, at a price nobody could ever check.
+    A CPU-only Spawn is not that case: it holds no Device and legitimately costs [] → 0.
+    """
+    powers = (arm or {}).get("powers")
+    if not powers:
+        return None
+    devices = job["devices"]
+    if not devices:
+        return [] if not job["gpus"] else None
+    if max(devices) >= len(powers):
+        return None      # Slurm knows about a card the registry does not: the Arm needs re-benchmarking
+    return [powers[i] for i in devices]
+
+
 def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, float],
-           needs: dict, now: datetime) -> None:
-    """Bill every RUNNING Spawn for the time it has held its card since we last looked.
+           now: datetime) -> None:
+    """Bill every RUNNING Spawn for the time it has held its cards since we last looked.
 
     Elapsed *time*, not tick count: if the service was down for an hour, the User still held the card
     for that hour and still owes for it. The first accrual bills from Slurm's `start_time`, so the gap
     between a Spawn starting and the tick noticing is not free either.
+
+    **Several Devices are several separate purchases** (glossary, Settlement): a Spawn on two cards is
+    billed each card's own Power, summed — never a count times an average.
     """
     live = {e["job_id"]: e for e in db.live_escrows(conn)}
     for job in jobs:
@@ -65,22 +92,23 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
         if esc is None:
             continue  # the benchmark, or an Admin's Spawn: nobody is charged for it
         node = job["node"]
-        power = (arms.get(node) or {}).get("power")
-        if not power:
-            # An unpriced Arm cannot be sold. The intended path always has a Power (setup benchmarks
-            # the Head's own Arm; _admit benchmarks each donor), so this means a benchmark FLAKED — and
-            # no invented fallback constant would be more honest than a loud zero. It is a free GPU
-            # until someone reads this line. `last_at` still advances, so the free seconds are not
-            # billed retroactively if the Arm is later priced.
-            log.error("arm %s has no Power — spawn %s runs FREE. Fix: cuttle arm benchmark %s",
-                      node, job["id"], node)
+        powers = _held_powers(job, arms.get(node))
+        if powers is None:
+            # A Device we cannot price cannot be sold. The intended path always has one (setup
+            # benchmarks the Head's own Arm; _admit benchmarks each donor, and Slurm always reports the
+            # indices of a running GPU job), so this means a benchmark FLAKED or the Arm's hardware
+            # changed under us — and no invented fallback would be more honest than a loud zero. It is
+            # a free GPU until someone reads this line. `last_at` still advances, so the free seconds
+            # are not billed retroactively once the Arm is priced again.
+            log.error("cannot price spawn %s on arm %s (devices=%s, gpus=%s) — it runs FREE. "
+                      "Fix: cuttle arm benchmark %s",
+                      job["id"], node, job["devices"], job["gpus"], node)
             db.accrue(conn, job["id"], node, esc["accrued"], now.strftime(_TS))
             continue
         since = _parse(esc["last_at"]) if esc["last_at"] else \
             datetime.fromtimestamp(job["start_time"], timezone.utc)
         seconds = max(0.0, (now - since).total_seconds())
-        gpus = (needs[job["id"]]["gpus"] if job["id"] in needs else job["gpus"]) or 0
-        add = karma.cost(seconds, gpus, power, demand.get(node, 1.0))
+        add = karma.cost(seconds, powers, demand.get(node, 1.0))
         db.accrue(conn, job["id"], node, esc["accrued"] + add, now.strftime(_TS))
 
 
@@ -173,7 +201,9 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         db.record_demand(conn, now.strftime(_TS), demand)
         db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS, now)
 
-        _meter(conn, jobs, arms, demand, needs, now)
+        # `needs` is the queue's *declared* GPU count, and feeds Demand only. The meter no longer reads
+        # it: what a Spawn is billed for is the Devices Slurm actually gave it, not what it asked for.
+        _meter(conn, jobs, arms, demand, now)
         _force_expired_retractions(conn, set(ids), now)
         settled = _settle(conn, set(ids), arms, now)
         _record_endings(conn, set(ids), now)

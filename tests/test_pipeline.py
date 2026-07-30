@@ -41,7 +41,9 @@ def user(conn, name, is_admin=False):
 
 
 def arm(name, power, owner, vram_mb=24564):
-    return {"name": name, "power": power, "vram_mb": vram_mb, "owner": owner}
+    """One single-card Arm. `powers` is a list because a Device is what carries a Power — a one-card
+    box is just the shortest such list."""
+    return {"name": name, "powers": [power], "vram_mb": vram_mb, "owner": owner}
 
 
 def total_balance(conn, now):

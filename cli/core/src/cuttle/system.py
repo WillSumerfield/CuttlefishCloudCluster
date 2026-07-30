@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 from . import config, ui
 
@@ -152,19 +153,81 @@ def nvidia_smi() -> str:
                 else "nvidia-smi"))
 
 
+def gpu_devices() -> list[str]:
+    """Every GPU **Device** node this box can hand to a Spawn, in Slurm's GRES index order.
+
+    **WSL2 is permanently single, and that is not a deferral.** `/dev/dxg` is ONE device node for ALL
+    of the Windows box's cards, and a device cgroup can only grant or deny that node whole — there is
+    nothing in it to partition. So a WSL Arm registers `gpu:1` however many physical cards it holds,
+    and no Slurm release can change that: the limit is the device node, not the scheduler.
+
+    Sorted NUMERICALLY, not lexically. This order is the mapping from a Slurm GRES index to a device
+    (see templates.render_gres_conf) and therefore from a Spawn's held index to the Power it is billed
+    at — and `/dev/nvidia10` sorts before `/dev/nvidia2` as a string.
+    """
+    if Path("/dev/dxg").exists():
+        return ["/dev/dxg"]
+    # `nvidia[0-9]*` and not `nvidia*`: /dev/nvidiactl, /dev/nvidia-uvm and /dev/nvidia-caps are
+    # control nodes, not cards, and a Spawn holds none of them.
+    return sorted((str(p) for p in Path("/dev").glob("nvidia[0-9]*")),
+                  key=lambda p: int(p.removeprefix("/dev/nvidia")))
+
+
+def gpu_inventory() -> list[tuple[str, int]]:
+    """(model, VRAM MiB) for every GPU nvidia-smi can see, in its index order.
+
+    On WSL this lists every *physical* card even though `gpu_devices()` reports one — which is the
+    point: `gpu_profile()` must still judge the real hardware, not the one device node fronting it.
+    """
+    out = subprocess.run(
+        [nvidia_smi(), "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+        check=True, capture_output=True, text=True).stdout
+    return [(name.strip(), int(vram)) for name, vram in
+            (line.split(",") for line in out.strip().splitlines() if line.strip())]
+
+
+def gpu_profile() -> tuple[str, int]:
+    """The ONE (model, VRAM MiB) this box may advertise — or a refusal, if its GPUs disagree.
+
+    A Slurm node **Feature** is per-node: a box advertises exactly one `vramN`
+    (config.vram_feature), and that string is the only thing a Spawn's `--vram` can be matched
+    against. A machine holding a 24 GB card and an 80 GB one cannot honestly advertise either — one
+    choice starves the big jobs, the other sends them to a card that cannot hold them. So CCC refuses
+    such a box outright rather than pick a side and misprice every Spawn that lands on the wrong card.
+
+    Compared on model AND memory because they answer different questions: the model is what **Power**
+    tracks, the memory is what **Eligibility** matches. A difference in either is disqualifying.
+    """
+    gpus = gpu_inventory()
+    if not gpus:
+        raise ui.abort("nvidia-smi reports no GPU on this box",
+                       next_step="check the driver with `nvidia-smi`; a CCC node must have a GPU")
+    if len(set(gpus)) > 1:
+        found = "\n".join(f"    GPU {i}: {name} — {vram} MiB" for i, (name, vram) in enumerate(gpus))
+        raise ui.abort(
+            f"all GPUs in one Arm must be the same model — this box has more than one kind:\n{found}",
+            next_step="a Slurm node advertises ONE VRAM size and carries ONE Weight, so a mixed box "
+                      "cannot be described honestly. Leave one kind of card visible to this box "
+                      "(e.g. CUDA_VISIBLE_DEVICES is not enough — remove or blacklist the others) "
+                      "and re-run, or enroll the cards as separate machines")
+    return gpus[0]
+
+
 def gpu_vram_mb() -> int:
     """This box's GPU memory, in MiB. Becomes the node's `vramN` Slurm feature — the thing a Spawn's
     `--vram` is matched against.
+
+    Reads EVERY card and takes the agreed value, rather than card 0's. They agree because
+    `gpu_profile()` refuses the box otherwise — and reading them all is what *makes* that check, so
+    this cannot silently describe a 4-card box by whichever card the driver happened to enumerate
+    first.
 
     From nvidia-smi on the host, NOT from the Pod-side Power benchmark, even though that measures VRAM
     too: a dynamic Arm's features must be baked into its `slurmd -Z --conf` at registration, and the
     benchmark cannot run until the node is already registered. Host and Pod agree on this number
     anyway (unlike throughput, which is exactly why Power is measured and VRAM is merely read).
     """
-    out = subprocess.run(
-        [nvidia_smi(), "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-        check=True, capture_output=True, text=True).stdout
-    return int(out.split("\n")[0].strip())
+    return gpu_profile()[1]
 
 
 def installed_packages() -> set[str]:

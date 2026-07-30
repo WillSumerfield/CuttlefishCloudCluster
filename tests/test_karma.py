@@ -327,18 +327,23 @@ class TestQueueBump:
 
 # --- slice 2: the meter -----------------------------------------------------
 
-def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=True):
-    return {"name": name, "power": power, "vram_mb": vram_mb, "owner": owner,
-            "state": state, "admitted": admitted}
+def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=True, powers=None):
+    """`power=` is the single-card shorthand; `powers=` gives a multi-Device Arm its own list."""
+    return {"name": name, "powers": powers if powers is not None else ([power] if power else None),
+            "vram_mb": vram_mb, "owner": owner, "state": state, "admitted": admitted}
 
 
 def need(gpus=1, vram_gb=8, node=None):
     return {"gpus": gpus, "vram_gb": vram_gb, "node": node}
 
 
-def job(jid, state="PENDING", node=None, gpus=1, nice=0, start_time=None):
+def job(jid, state="PENDING", node=None, gpus=1, nice=0, start_time=None, devices=None):
+    """`devices` = the GRES indices Slurm reports a RUNNING Spawn holds (slurm._gpu_indices). Defaults
+    to the first `gpus` cards, the ordinary case on a one-card Arm."""
     return {"id": jid, "state": state, "node": node, "gpus": gpus, "nice": nice,
-            "start_time": start_time}
+            "start_time": start_time,
+            "devices": devices if devices is not None else
+            (list(range(gpus)) if state == "RUNNING" else [])}
 
 
 class TestDemand:
@@ -406,6 +411,20 @@ class TestDemand:
         Arm. The honest price of sidestepping eligibility."""
         d = karma.demand_by_arm([arm("a"), arm("b")], [job(1)], {1: need(node="b")})
         assert d == {"a": 0.0, "b": 1.0}
+
+    def test_demand_is_per_card_not_per_arm(self):
+        """Demand is 'the device-claims on it over the devices it has' — a per-card figure. One held
+        card out of four reads 0.25, not 1.0: a busy 4-card box must not quadruple every bill it
+        charges. A fully-busy 4-card box (all four running) reads exactly 1.0, same as a fully-busy
+        single-card Arm — cost() multiplies Demand by a Spawn's own Power sum once, so this figure has
+        to mean the same thing regardless of how many cards share it."""
+        one_of_four = karma.demand_by_arm(
+            [arm("a", powers=[50.0] * 4)], [job(1, "RUNNING", node="a", gpus=1)], {})
+        assert one_of_four["a"] == pytest.approx(0.25)
+
+        all_four = karma.demand_by_arm(
+            [arm("a", powers=[50.0] * 4)], [job(1, "RUNNING", node="a", gpus=4)], {})
+        assert all_four["a"] == pytest.approx(1.0)
 
 
 class TestTheHold:
@@ -533,6 +552,75 @@ class TestTheMeter:
         self.spawn(conn, 208, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=2)
         cluster["jobs"] = [job(208, "RUNNING", node="donor", start_time=started.timestamp())]
+        tick.once()
+        assert db.live_escrows(conn)[0]["accrued"] == 0.0
+
+    def test_a_spawn_is_billed_for_the_card_it_actually_held(self, conn, cluster):
+        """The claim per-Device Power exists to make true. Two Spawns, same box, same second, same
+        Demand — the one on the throttled card pays less, because a second on that card really does buy
+        less. A node average would charge them identically and nothing in the system would ever notice.
+
+        `devices` are the GRES indices Slurm reports for a running job (`gres_detail`, IDX:n), and they
+        index straight into the Arm's `powers` because gres.conf's File lines were written in that
+        order."""
+        cluster["arms"] = [arm("donor", powers=[80.0, 20.0])]
+        started = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.spawn(conn, 301, "alice")
+        self.spawn(conn, 302, "alice")
+        cluster["jobs"] = [
+            job(301, "RUNNING", node="donor", devices=[0], start_time=started.timestamp()),
+            job(302, "RUNNING", node="donor", devices=[1], start_time=started.timestamp()),
+        ]
+        tick.once()
+        accrued = {e["job_id"]: e["accrued"] for e in db.live_escrows(conn)}
+        # Same node, same hour, same Demand (1.0 — Demand is per-card: two claims over two devices).
+        # Only the Power differs.
+        assert accrued[301] == pytest.approx(80.0, rel=0.01)   # 1h x 80 TFLOP/s x 1.0
+        assert accrued[302] == pytest.approx(20.0, rel=0.01)   # 1h x 20 TFLOP/s x 1.0
+
+    def test_two_cards_are_two_separate_purchases(self, conn, cluster):
+        """'Several Devices are several separate purchases.' A Spawn holding both cards pays each one's
+        own Power added together — not twice the faster, and not twice the average."""
+        cluster["arms"] = [arm("donor", powers=[80.0, 20.0])]
+        self.spawn(conn, 303, "alice")
+        started = datetime.now(timezone.utc) - timedelta(hours=1)
+        cluster["jobs"] = [job(303, "RUNNING", node="donor", gpus=2, devices=[0, 1],
+                               start_time=started.timestamp())]
+        tick.once()
+        # 1h x (80 + 20) TFLOP/s x Demand 1.0 (a 2-GPU claim over the node's 2 devices) => 100 Karma
+        assert db.live_escrows(conn)[0]["accrued"] == pytest.approx(100.0, rel=0.01)
+
+    def test_a_spawn_slurm_reports_no_device_for_runs_free_and_loudly(self, conn, cluster):
+        """The failure this design refuses to paper over. If the held card cannot be identified, the
+        Spawn is NOT billed at the node's average — a bill nobody could ever check is worse than an
+        obvious zero and a log line, which is exactly how an unpriced Arm already behaves."""
+        cluster["arms"] = [arm("donor", powers=[80.0, 20.0])]
+        self.spawn(conn, 304, "alice")
+        started = datetime.now(timezone.utc) - timedelta(hours=1)
+        cluster["jobs"] = [job(304, "RUNNING", node="donor", devices=[],
+                               start_time=started.timestamp())]
+        tick.once()
+        assert db.live_escrows(conn)[0]["accrued"] == 0.0
+
+    def test_a_cpu_only_spawn_holds_no_device_and_pays_nothing(self, conn, cluster):
+        """The same empty device list, and NOT the same case: a Spawn that asked for no GPU is
+        correctly free, and must not be confused with one whose card we failed to identify."""
+        cluster["arms"] = [arm("donor", powers=[80.0])]
+        self.spawn(conn, 305, "alice")
+        started = datetime.now(timezone.utc) - timedelta(hours=1)
+        cluster["jobs"] = [job(305, "RUNNING", node="donor", gpus=0, devices=[],
+                               start_time=started.timestamp())]
+        tick.once()
+        assert db.live_escrows(conn)[0]["accrued"] == 0.0
+
+    def test_a_card_the_registry_never_priced_is_not_guessed_at(self, conn, cluster):
+        """A donor added a fourth GPU and slurmd re-registered with it; the registry still holds three
+        Powers. Billing index 3 at index 0's rate would be silent and wrong, so it bills nothing."""
+        cluster["arms"] = [arm("donor", powers=[80.0, 80.0, 80.0])]
+        self.spawn(conn, 306, "alice")
+        started = datetime.now(timezone.utc) - timedelta(hours=1)
+        cluster["jobs"] = [job(306, "RUNNING", node="donor", devices=[3],
+                               start_time=started.timestamp())]
         tick.once()
         assert db.live_escrows(conn)[0]["accrued"] == 0.0
 

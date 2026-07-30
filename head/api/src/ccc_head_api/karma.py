@@ -114,10 +114,14 @@ def eligible(arms: list[dict], need) -> list[dict]:
 
 
 def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, float]:
-    """How badly each Arm is wanted, right now: the device-claims on it over the devices it has.
+    """How badly each Arm is wanted, right now: the device-claims on it over the devices it has — a
+    **per-card** figure, so it stays comparable across Arms with different card counts (`cost` relies
+    on this: Demand multiplies a Spawn's own Power sum once, never per Device it holds).
 
-    A **running** Spawn claims the card it holds — so any Arm actually running something reads ≥ 1.0,
-    and **a second is therefore never sold below its Power**. A **queued** Spawn spreads one claim
+    A **running** Spawn claims the card it holds — so a single-card Arm running anything reads ≥ 1.0,
+    and **a second is therefore never sold below its Power**. On a multi-card Arm the same claim only
+    pushes the *average* toward 1.0 — a card sitting idle beside a busy one still dilutes the price,
+    correctly, since Demand is shared by everything on the node. A **queued** Spawn spreads one claim
     evenly across every Arm it is eligible for, so its total contribution to the fleet is 1.0 wherever
     it eventually lands, and the scarce big-VRAM cards — wanted by big jobs *and* small ones —
     accumulate the most. An idle Arm nobody wants reads 0, and is charged to nobody.
@@ -127,6 +131,7 @@ def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, 
     and once it *runs* it claims its card like anything else.
     """
     d = {a["name"]: 0.0 for a in arms}
+    devices = {a["name"]: len(a["powers"]) if a["powers"] else 1 for a in arms}
     for j in jobs:
         if j["state"] == "RUNNING" and j["node"] in d:
             d[j["node"]] += j["gpus"]
@@ -139,17 +144,25 @@ def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, 
         elig = eligible(arms, need)
         for a in elig:
             d[a["name"]] += need["gpus"] / len(elig)
-    return {name: min(DEMAND_MAX, v) for name, v in d.items()}
+    return {name: min(DEMAND_MAX, v / devices[name]) for name, v in d.items()}
 
 
-def cost(seconds: float, gpus: int, power: float, demand: float) -> float:
+def cost(seconds: float, powers: list[float], demand: float) -> float:
     """What a slice of held device-time is worth. **1 Karma = 1 TFLOP-hour**, and Power is already
     TFLOP/s, so there is no reference constant to choose — the unit falls out of the measurement.
 
     Seconds **held**, not seconds busy: a Spawn buys exclusive access to a card, so squatting on one
     idle is expensive and finishing early is cheap.
+
+    `powers` is one entry per **Device** held, not a count and an average — "several Devices are
+    several separate purchases". Summing them is what makes a Spawn that landed on a box's slow card
+    cost less than one that landed on its fast card, on the same node, in the same second. An empty
+    list is a CPU-only Spawn, which holds no Device and costs nothing.
+
+    Demand is per *card* and shared by everything on the node, so it multiplies the sum once rather
+    than per Device — how a node is divided can never move its scarcity.
     """
-    return seconds * gpus * power * demand / 3600.0
+    return seconds * sum(powers) * demand / 3600.0
 
 
 def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None = None,
@@ -167,11 +180,16 @@ def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None 
 
     Over-holding costs a User nothing but queue position — it is refunded in full at Settlement, since
     what actually moves is `accrued`, never this number.
+
+    **Max over an Arm's own Devices too**, for the same reason it is max over Arms: Weight prefers the
+    fastest free card, so a Spawn on a two-card box is more likely to land on its faster one, and the
+    hold is a floor that only ever ratchets up. This is the one reduction of a node's per-Device
+    Powers that cannot underquote — the mean could, and an underquoted hold is the gameable direction.
     """
     hours = hours or [0]
     tides = tides or {}
-    forecasts = [a["power"] * sum(tide(tides, a["name"], h) for h in hours) / len(hours)
-                 for a in elig if a["power"]]
+    forecasts = [max(a["powers"]) * sum(tide(tides, a["name"], h) for h in hours) / len(hours)
+                 for a in elig if a["powers"]]
     return (minutes / 60.0) * gpus * max(forecasts, default=0.0)
 
 

@@ -157,8 +157,8 @@ def fake_slurm(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "vram_mb": 24564,
-                                                 "admitted": True, "state": "idle", "power": 60.0,
-                                                 "gpu": 1}])
+                                                 "admitted": True, "state": "idle",
+                                                 "powers": [60.0], "gpu": 1}])
     monkeypatch.setattr(slurm, "vram_constraint", lambda gb: f"vram{gb}")
     return state
 

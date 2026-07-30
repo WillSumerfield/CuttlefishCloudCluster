@@ -34,8 +34,9 @@ _MAX_AGE_DAYS = 1.0  # mirrors cli_config.PRIORITY_MAX_AGE = "1-0"; age_factor s
 
 class FakeCluster:
     def __init__(self, conn, arms: list[dict], start: datetime | None = None):
-        """`arms`: registry-shaped dicts (name, power, vram_mb, owner, admitted, state). `conn`: the real
-        temp head.db the economy reads and writes."""
+        """`arms`: registry-shaped dicts (name, powers, vram_mb, owner, admitted, state) — `powers` is
+        one Power per **Device**, as the registry holds it. `conn`: the real temp head.db the economy
+        reads and writes."""
         self.conn = conn
         self._arms = {a["name"]: {"state": "idle", "admitted": True, **a} for a in arms}
         self.jobs: dict[int, dict] = {}
@@ -65,8 +66,12 @@ class FakeCluster:
                 # start_time is a Unix epoch, as slurm.queue() returns it (the meter calls
                 # datetime.fromtimestamp on it); None while PENDING.
                 st = j["start_time"].timestamp() if j["start_time"] else None
+                # `devices` are the GRES indices Slurm reports for a RUNNING job (slurm._gpu_indices).
+                # A fake Arm holds one card, so a placed Spawn holds index 0; a PENDING one holds none.
+                devices = list(range(j["gpus"])) if j["state"] == "RUNNING" else []
                 out.append({"id": j["id"], "state": j["state"], "nice": j["nice"],
-                            "node": j["node"], "gpus": j["gpus"], "start_time": st})
+                            "node": j["node"], "gpus": j["gpus"], "devices": devices,
+                            "start_time": st})
         return out
 
     def set_nice(self, job_id: int, nice: int) -> None:
@@ -120,7 +125,7 @@ class FakeCluster:
             elig = [a for a in karma.eligible(self.arms(), j["need"]) if a["name"] in free]
             if not elig:
                 continue
-            elig.sort(key=lambda a: cli_config.node_weight(a["power"] or 1e-9))  # fastest free card wins
+            elig.sort(key=lambda a: cli_config.node_weight(a["powers"] or [1e-9]))  # fastest free card
             pick = elig[0]["name"]
             free.discard(pick)
             j["state"] = "RUNNING"

@@ -9,26 +9,48 @@ from pathlib import Path
 # --- pinned system stack (Ubuntu 24.04 noble / amd64) ---
 SLURM_PKG = "slurm-wlm=23.11.4-1.2ubuntu5"
 SLURMD_PKG = "slurmd=23.11.4-1.2ubuntu5"  # Arms need the node daemon only, not slurmctld
-# Unpinned: the apptainer PPA keeps only its newest build, so an exact version pin breaks on every
-# apptainer release (1.5.2 → 1.5.3 → …). Take the PPA's latest instead — reproducibility traded for
-# a setup that doesn't break when upstream rotates. The other two pins are safe (Ubuntu universe /
-# the NVIDIA repo both retain old versions).
-APPTAINER_PKG = "apptainer"
-NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"
+NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"  # NVIDIA's repo retains old versions — safe
 MUNGE_PKG = "munge"  # auth; distro version fine
 
+# The archive publishes ONE version of a package per pocket, so the day Ubuntu supersedes a pin above
+# it stops being installable and every future setup dies at `apt-get install`. snapshot.ubuntu.com
+# serves the archive *as it was* at a timestamp, so setup adds it as an EXTRA apt source (never a
+# replacement — see setup.add_repos) and the pinned versions stay fetchable however long noble lives.
+# The timestamp is the archive state these pins were verified against; bump it with them.
+UBUNTU_SNAPSHOT = "20260729T000000Z"
+UBUNTU_SNAPSHOT_URL = "https://snapshot.ubuntu.com/ubuntu"
+UBUNTU_CODENAME = "noble"
+# Signed by the ordinary Ubuntu archive keys — the snapshot serves the original Release/InRelease
+# untouched, so the keyring every 24.04 box already ships verifies it with no key of ours to install.
+UBUNTU_ARCHIVE_KEYRING = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+UBUNTU_SNAPSHOT_LIST = Path("/etc/apt/sources.list.d/ccc-ubuntu-snapshot.list")
+
+# apptainer is NOT a version pin, because there is nothing durable to pin to: it comes from a Launchpad
+# PPA, which keeps only its newest build (measured 2026-07-29: 1.5.3-1~noble, and nothing else). So the
+# reproducibility on offer is fleet-internal — the HEAD downloads the .deb once and serves that exact
+# file to every Arm forever (setup.pin_apptainer_deb). We cannot resurrect a build Launchpad pruned;
+# we can guarantee every node in the cluster runs the same one. The Arm side gains a second win: a
+# donor's box never has a third-party repo added to it.
+APPTAINER_PKG = "apptainer"
+APPTAINER_PPA = "ppa:apptainer/ppa"  # added on the HEAD only
+
 # --- pinned base Pod image (built from a def: pytorch image + pip wandb) ---
-BASE_IMAGE_DOCKER = "pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime"
-WANDB_PKG = "wandb==0.28.1"
+# By DIGEST, not by tag: `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` is mutable and upstream
+# re-pushes it, so a tag would silently hand two nodes different CUDA/torch builds of "the same" image.
+# The digest below is that tag as of 2026-07-29 (linux/amd64). `docker://` accepts a digest reference.
+BASE_IMAGE_DOCKER = ("pytorch/pytorch@sha256:"
+                     "db80a41f8428644cebcb3d75b0b62df334ab6c0e75785951eb25f48bfbd42407")
+WANDB_PKG = "wandb==0.28.1"  # PyPI is immutable per version — this pin cannot rot
 
 # --- cluster identity ---
 CLUSTER_NAME = "ccc"
 PARTITION = "ccc"
 
-# --- GPU device (distro Slurm lacks NVML; map GRES to the device node explicitly) ---
-# One line, no NodeName= → applies to every node. Any single-GPU Arm matches it unchanged.
-# Multi-GPU Arms need per-node lines (deferred; see docs/TODO.md NVML entry).
-GPU_DEVICE = "/dev/nvidia0"
+# --- GPU devices (distro Slurm lacks NVML; map GRES to the device nodes explicitly) ---
+# There is no constant here on purpose: a node's device list is DETECTED (system.gpu_devices()), not
+# assumed. CCC does its own hardware **Registration** at enrollment, which is exactly the job
+# `AutoDetect=nvml` would have done — so rebuilding slurm-wlm against NVML would buy a Slurm fork and
+# an `apt-mark hold` blocking security updates, to autodetect what we already detect ourselves.
 
 # --- Karma substrate: priority, Power, VRAM features (Phase 4 slice 0) ---
 # Nice is how Karma reaches the queue: the Head lowers the priority of a poor-standing User's pending
@@ -74,8 +96,18 @@ BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may s
 WEIGHT_SCALE = 10000
 
 
-def node_weight(power: float) -> int:
-    return max(1, round(WEIGHT_SCALE / power))
+def node_weight(powers: list[float]) -> int:
+    """A node's Slurm Weight, from its per-**Device** Powers. Takes the list and reduces to the MEAN.
+
+    Weight is inherently node-level — Slurm has one per node, not one per GRES — so a multi-GPU box's
+    cards must be summarised somehow. The mean is the honest summary *here specifically*, and only
+    here: Weight is a **preference ordering among nodes**, never a price. It decides which free box
+    Slurm reaches for first; it never multiplies a second of held time. A Spawn's bill is still
+    settled against the Power of the Device it actually held (tick._meter), so the reduction cannot
+    reach anyone's Balance. Max would over-prefer a box whose one fast card is already busy; the mean
+    ranks a box by what it is typically worth to land on.
+    """
+    return max(1, round(WEIGHT_SCALE / (sum(powers) / len(powers))))
 
 
 def vram_feature(vram_mb: int) -> str:
@@ -135,16 +167,45 @@ ENROLL_API_SERVICE = "ccc-enroll-api"
 ENROLL_API_UNIT = Path("/etc/systemd/system/ccc-enroll-api.service")
 # Runs as munge: the only user that can read munge.key without chmod'ing it or running as root.
 # It is otherwise UNPRIVILEGED — it fills in the hardware fields of a registry row an operator already
-# created, and the operator admits the Arm with `cuttle arm admit`. No sudoers rule, so no root path
-# out of a POST body.
+# created, and the operator admits the Arm with `cuttle arm admit`. Its one sudo grant (Phase 9 #2,
+# SUDOERS_MUNGE_HEADSCALE below) is a single parameterless command with nothing a POST body can steer —
+# no wildcard, no argument taken from the request, nothing else headscale's CLI can do.
+SUDOERS_MUNGE_HEADSCALE = Path("/etc/sudoers.d/ccc-munge-headscale")
 ENROLL_API_USER = "munge"
 CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only writable location
 # The Arm registry. `cuttle arm authorize` CREATES each row (owner + name) before the donor's token is
 # issued — /enroll refuses a name that isn't here, so mesh membership alone can't fetch the munge key.
-# The donor's POST only fills in gpu_device + mesh_ip; it never gets to say who owns the machine.
-# `head: true` marks the Head's own co-located Arm (admin-owned, never enrolls, GRES line comes from
+# The donor's POST only fills in gpu_devices + mesh_ip; it never gets to say who owns the machine.
+# `head: true` marks the Head's own co-located Arm (admin-owned, never enrolls, GRES lines come from
 # templates.head_gres_node() — so gres rendering skips it).
-ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_device, mesh_ip, admitted, head?}}
+# `gpu_devices` and `powers` are parallel lists, index-aligned, and that alignment is load-bearing:
+# it is what turns a Slurm GRES index back into the Power a Spawn is settled at. There is deliberately
+# no node-level `power` beside them — a summary stored next to the list it came from is a second
+# number that can silently disagree with it. Where one is needed it is derived at the point of use.
+ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_devices, powers, mesh_ip, admitted, ...}}
+
+# --- Arm Features (docs/TODO.md "Arm Features") ---
+# Named, admin-curated capabilities an Arm may report having: heavy/hardware-licence-gated software
+# (VSim, IsaacSim) that is not installed everywhere. The catalog lives beside the registry it enriches
+# — munge-owned JSON under CCC_LIB, not head.db — because /enroll (which validates a donor's declared
+# features against it) runs as `munge` and cannot read head.db (0600, ccc-owned). Mutated only by
+# `cuttle feature add/remove` (Head-local, operator + sudo, same `install` pattern as save_registry);
+# read by both the Enroll API (validation) and the Head API (GET /features, for the Dashboard/wizard).
+FEATURES_CATALOG = CCC_LIB / "features.json"   # [name, ...]
+# Also becomes a Slurm Feature= token and (uppercased) an env var name, so it is validated with the
+# same shape the codebase already uses for a shell-safe identifier (config.py's OUTPUT_NAME_RE analog).
+FEATURE_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+# Where `cuttle setup --arm` records this box's declared features + install paths, so a Spawn's payload
+# can find e.g. $VSIM_PATH without knowing whether this node has it — see
+# ccc_head_api.spawns.JOB_SCRIPT, which sources this unconditionally (a no-op where it's absent).
+ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
+# The apptainer .deb the Head serves to every Arm, and the record that pins it:
+# {version, filename, sha256}. Under CCC_LIB rather than HEAD_STATE_DIR because the Enroll API is what
+# serves the file, and it runs as `munge` — HEAD_STATE_DIR is 0700 ccc and it could not even traverse
+# it. Both are root-owned and world-readable; the Enroll API only ever READS them, so it needs no
+# write access here (unlike arms.json).
+HEAD_DEBS_DIR = CCC_LIB / "debs"
+APPTAINER_RECORD = CCC_LIB / "apptainer.json"
 
 # An Arm's GPU device node. Native Linux exposes /dev/nvidiaN; WSL2 exposes /dev/dxg with CUDA
 # shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
@@ -252,11 +313,25 @@ HEADSCALE_RELEASES = "https://api.github.com/repos/juanfont/headscale/releases/l
 # Deterministic asset URL for a known tag — no API call, so no unauthenticated rate limit.
 HEADSCALE_DEB = ("https://github.com/juanfont/headscale/releases/download/"
                  "{tag}/headscale_{ver}_linux_amd64.deb")
-HEADSCALE_USER = "ccc"  # the Headscale user/namespace Arms enroll under
+HEADSCALE_USER = "ccc"  # the Headscale TAILNET user/namespace Arms enroll under — NOT the unix
+                        # account below; two unrelated things this project happens to both call "user"
 HEADSCALE_PORT = 8080
 HEADSCALE_CONF = Path("/etc/headscale/config.yaml")
 HEADSCALE_LIB = Path("/var/lib/headscale")
 HEADSCALE_POLICY = Path("/etc/headscale/policy.hujson")  # empty policy == deny-all; see mesh._POLICY
+# The coordinator's own TLS identity (Phase 9 #3) — distinct from the Head API's (setup.install_tls /
+# CCC_TLS_DIR): different service, different reader. This one lives INSIDE HEADSCALE_LIB (0750
+# headscale:headscale, set by the package — cuttle never loosens it) so the `headscale` unix account
+# can read it with no ownership dance; anything else that needs these bytes goes through `sudo cat`
+# (see mesh.trust_own_headscale_cert), the same way mesh.py already reads CCC_TS_STATE.
+HEADSCALE_CERT = HEADSCALE_LIB / "headscale.crt"   # 0644 headscale:headscale
+HEADSCALE_KEY = HEADSCALE_LIB / "headscale.key"    # 0600 headscale:headscale
+HEADSCALE_SERVICE_USER = "headscale"  # the unix account systemd runs headscale as (package-created)
+# Where a box that trusts the coordinator's cert installs it (mesh.trust_headscale_cert): the OS CA
+# store, because `tailscaled` — not cuttle's own client — is what verifies it, and that store is the
+# only lever it reads (see mesh.py's "trusting the coordinator's cert" section). Every node that has
+# ever joined this mesh, Head included, has a copy here; teardown removes it (teardown._leave_ccc_mesh).
+HEADSCALE_CA_PATH = Path("/usr/local/share/ca-certificates/ccc-headscale.crt")
 # Tailscale client ships from its own apt repo (noble). Keyring + list installed by setup.
 TAILSCALE_REPO_KEY = "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg"
 TAILSCALE_REPO_LIST = "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list"
