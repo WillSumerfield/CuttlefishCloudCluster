@@ -1,5 +1,6 @@
 import type { Outcome } from "../api";
 import { Select } from "../app/Select";
+import { Chip } from "../app/Chip";
 
 /**
  * The archive's filter panel — sidebar, sticky, mirroring the Queue composer's slot. No borders, no
@@ -24,25 +25,6 @@ export const EMPTY_FILTER: Filter = { query: "", who: "everyone", outcomes: new 
 
 // Two rows of two: the quiet outcomes (done, cancelled) on top, the loud ones (failed, retracted) below.
 const OUTCOMES: Outcome[] = ["done", "cancelled", "failed", "retracted"];
-
-/** A quiet toggle: lit = raised, ink; unlit = flush, muted. Colour is never spent on a control. */
-function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={on}
-      className="rounded-[var(--radius-control)] px-3 py-1.5 text-[13px] transition-[background,color] duration-150"
-      style={{
-        background: on ? "color-mix(in oklab, var(--shoal) 45%, transparent)" : "transparent",
-        color: on ? "var(--ink)" : "var(--ink-mute)",
-        fontWeight: on ? 500 : 400,
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
