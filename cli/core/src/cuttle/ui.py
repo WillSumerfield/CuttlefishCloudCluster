@@ -252,7 +252,9 @@ def emit(payload, as_json: bool, render) -> None:
     human rendering stays free to change.
     """
     if as_json:
-        out.print_json(json.dumps(payload, default=str))
+        # Never through `out` — Rich's Console honours FORCE_COLOR from the environment even when
+        # stdout isn't a tty, so a colourised Console would ANSI-wrap this and break every parser.
+        print(json.dumps(payload, default=str))
     else:
         render()
 
