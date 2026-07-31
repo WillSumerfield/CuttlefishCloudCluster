@@ -91,14 +91,23 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   **Pod** on an **eligible** Arm, for debugging against real hardware. Bills Karma for as long as it is
   held. Like a **Spawn**, it declares *needs* and is *placed* — a User cannot name the machine
   (see **Eligibility**); it is told which Arm it got.
-- **Pod** — the isolated environment a job runs inside on an Arm.
-- **Mantle** — the single service identity every Spawn *executes as*, identically on every node of
-  the cluster. It is not the submitter: the cluster has no per-**User** identity on its nodes, so
-  every Spawn — whoever submitted it — runs as the Mantle. Distinct from **Pod**: the Pod is *what a
-  Spawn runs inside* (its isolated environment), the Mantle is *who it runs as*.
-- **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. Because Spawns
-  all execute as the **Mantle**, this is the *only* link between a Spawn and a person — the thing that
-  answers "whose Spawn is this?" for the queue, the Dashboard, and (later) Karma billing.
+- **Mantle** — the cluster's *own* identity: who the **Head** is, to itself and to every **Arm**. It
+  owns what the cluster owns — the account records, the Head's key, every **User**'s uploaded work and
+  every **Spawn**'s results — and it is what the Head acts as when it does work of its own rather than
+  a User's. It is nobody's: no User is ever the Mantle, and nothing a User submits runs as it.
+- **Guise** — the identity a **Spawn** runs as on the machine that runs it. One per **User**, the same
+  one wherever the cluster places their work, and taken on by a machine the first time that User's work
+  lands there. It is what stops one User's Spawn from reading, killing or interfering with another's —
+  a boundary the operating system enforces rather than one the cluster merely agrees to. A Guise is
+  *not* an account a person can log into: it authenticates nobody, carries no authority, and is
+  unrelated to a User's **Session**. Distinct from **Pod** (*what* a Spawn runs inside), from the
+  **Mantle** (who the *cluster* is), and from **Attribution** (the Head's own record of whose it is).
+- **Pod** — the isolated environment a job runs inside on an Arm. Its walls are real: a Spawn cannot
+  see the host's filesystem, the machine's other processes, or any concurrent Spawn's working files.
+- **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
+  answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
+  *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the
+  Head knows who is billed for it, and only the Head can be asked about a Spawn that has ended.
 - **Shared storage** — the unified cluster-wide filesystem (home dirs, code, base envs) mounted
   identically on every node. Distinct from the `shared/` code context.
 - **Feature** — a named, admin-curated capability an Arm may report having (e.g. `vsim`, `isaacsim`) —
