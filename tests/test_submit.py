@@ -129,6 +129,182 @@ class TestRemoteLiveStreaming:
         assert head.count('stage_out() { :; }') == 1
 
 
+class TestPodContainment:
+    """Spawn Isolation phase 1 (temp/spawn-isolation.md). Apptainer's own model is "the user inside is
+    the user outside" — and outside is the Mantle, which owns head.db, head.key and every User's upload.
+    Verified on hardware 2026-07-31: without these flags a payload reads all of it through
+    `/proc/<pid>/root` of any ccc-owned host process, and reads every concurrent Spawn's scratch through
+    the auto-mounted /tmp.
+
+    Both payloads are pinned here — the script path and the Tide Pool path — because the Tide Pool is
+    the one that hands a User a live shell rather than running code they wrote.
+    """
+
+    def render(self, **kw):
+        kw.setdefault("minutes", 60)
+        kw.setdefault("constraint", "vram24")
+        kw.setdefault("node", None)
+        kw.setdefault("outputs", ["outputs"])
+        return head_spawns._render(
+            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+
+    def tidepool(self):
+        return self.render(outputs=[], tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+
+    @pytest.mark.parametrize("what", ["script", "tidepool"])
+    def test_both_payloads_are_contained(self, what):
+        script = self.render() if what == "script" else self.tidepool()
+        payload = script[script.index("apptainer exec"):]
+        # --contain: no $HOME, no host /tmp, no cwd auto-bind. --pid: its own procfs, which is the one
+        # flag that closes /proc/<pid>/root and another Spawn's /proc/<pid>/environ (their WANDB key).
+        assert "--contain" in payload
+        assert "--pid" in payload
+
+    @pytest.mark.parametrize("what", ["script", "tidepool"])
+    def test_the_project_is_bound_and_is_the_working_dir(self, what):
+        """`--contain` drops the cwd auto-bind both payloads used to rely on, so $proj has to be named
+        twice over: once as a bind source (or the code is not in the Pod at all) and once as --pwd (or
+        cwd is $HOME and `python train.py` fails on a file that is right there)."""
+        script = self.render() if what == "script" else self.tidepool()
+        payload = script[script.index("apptainer exec"):]
+        assert '--pwd "$proj"' in payload
+        assert '$proj' in payload[payload.index("--bind"):payload.index("--env")]
+
+    @pytest.mark.parametrize("what", ["script", "tidepool"])
+    def test_the_locale_is_forced(self, what):
+        """The base PyTorch image never ran locale-gen, so an inherited locale makes the payload's own
+        shell write a "cannot change locale" warning into the Spawn's `err` before it has done
+        anything. C.UTF-8 ships pre-generated on every Debian/Ubuntu image."""
+        script = self.render() if what == "script" else self.tidepool()
+        payload = script[script.index("apptainer exec"):]
+        assert "LC_ALL=C.UTF-8" in payload and "LANG=C.UTF-8" in payload
+
+    def test_the_script_path_also_refuses_the_host_passwd(self):
+        """`--contain` blocks this by itself now (measured: host 55 lines -> image 21), but the script
+        path never got the Tide Pool's explicit flag and the intent is worth stating in both."""
+        assert "--no-mount /etc/passwd,/etc/group" in self.render()
+
+    def test_the_remote_branch_creates_the_project_dir_itself(self):
+        """rsync makes <uuid>/ only as a side effect of copying files INTO it, so a Spawn with an empty
+        project — which every Tide Pool is, it uploads an empty tar — would leave it absent. $proj is
+        now a bind source and a --pwd target, and apptainer treats a missing one as fatal."""
+        script = self.tidepool()
+        remote = script[script.index("\nelse"):script.index("\nfi\n")]
+        assert 'mkdir -p "$scratch/outputs" "$proj"' in remote
+
+    def test_the_pod_keeps_the_host_network(self):
+        """--net is deliberately NOT here: the payload needs W&B egress, and the Tide Pool's sshd has to
+        be reachable at its port on the Arm's own address for the Head-side relay to reach it."""
+        for script in (self.render(), self.tidepool()):
+            assert "--net" not in script[script.index("apptainer exec"):]
+
+
+class TestSpawnsRunAsTheirSubmitter:
+    """Spawn Isolation phase 3 (temp/spawn-isolation.md): a Spawn is its submitter's **Guise**, never
+    the Mantle. Phase 1's flags lock the door; this is what moves the valuables out of the room, and
+    every failure here silently puts them back — a Spawn owned by `ccc` again reaches head.db,
+    head.key, and every other User's upload, and nothing about it looks wrong.
+    """
+
+    @pytest.fixture
+    def submitted(self, monkeypatch, tmp_path):
+        """One real submit (render, unpack, Attribution row, Escrow) against a captured sbatch.
+        Returns every shell-out it made, so the argv AND the account can be asserted on."""
+        state = tmp_path / "head-state"
+        for name in ("projects", "spawns", "scratch"):
+            (state / name).mkdir(parents=True)
+        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
+        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
+        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        with db.connect() as conn:
+            db.add_user(conn, "alice")
+        calls = []
+        # A distinct id per submit: record_spawn's job_id is a PRIMARY KEY, so a repeated fake id
+        # would collide rather than record the second Spawn.
+        counter = iter(range(4242, 4300))
+
+        def fake_run(argv, **kw):
+            calls.append((list(argv), kw))
+            return type("R", (), {"stdout": f"{next(counter)}\n", "stderr": "",
+                                  "returncode": 0})()
+
+        monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
+        return calls
+
+    def _submit(self, tmp_path, user_id=1):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            info = tarfile.TarInfo("train.py")
+            info.size = 0
+            tf.addfile(info, io.BytesIO(b""))
+        tar = tmp_path / "up.tar.gz"
+        tar.write_bytes(buf.getvalue())
+        return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[], wandb_env={},
+                                  tar_path=tar, minutes=60, constraint="vram24", outputs=["out"])
+
+    def _sbatch(self, calls):
+        return next(argv for argv, _ in calls if "sbatch" in argv)
+
+    def test_sbatch_runs_as_the_submitters_guise(self, submitted, tmp_path):
+        self._submit(tmp_path)
+        assert self._sbatch(submitted)[:5] == ["sudo", "-n", "-u", "ccc-u60002", "sbatch"]
+
+    def test_no_spawn_is_ever_submitted_as_the_mantle(self, submitted, tmp_path):
+        """The one testable line the whole phase reduces to."""
+        self._submit(tmp_path)
+        assert "ccc" not in self._sbatch(submitted)
+
+    def test_two_users_submit_as_different_accounts(self, submitted, tmp_path):
+        with db.connect() as conn:
+            db.add_user(conn, "bob")
+        self._submit(tmp_path, user_id=1)
+        self._submit(tmp_path, user_id=2)
+        accounts = [argv[3] for argv, _ in submitted if "sbatch" in argv]
+        assert accounts == ["ccc-u60002", "ccc-u60003"]
+
+    def test_the_script_goes_in_on_stdin_not_as_a_path(self, submitted, tmp_path):
+        """It used to be a 0600 NamedTemporaryFile owned by the Mantle — which the Guise sbatch now
+        runs as cannot read. Feeding it here is strictly better anyway: nothing on disk holds the
+        project's full file list, and the delete-after-return dance goes away with it."""
+        self._submit(tmp_path)
+        argv, kw = next((a, k) for a, k in submitted if "sbatch" in a)
+        assert argv[-1] == "--parsable"          # no path argument follows
+        assert kw["input"].startswith("#!/bin/bash")
+
+    def test_the_project_is_lent_to_that_guise_before_sbatch(self, submitted, tmp_path):
+        """The Head-local branch copies the project out of `projects/<uuid>` AS the Guise. The ACL is
+        set before the job exists at all — a prolog-side chown could not be, because the prolog would
+        have to be told the uuid, and the only channel for that needs a job id sbatch has not returned
+        yet."""
+        self._submit(tmp_path)
+        facl = next((argv, i) for i, (argv, _) in enumerate(submitted) if "setfacl" in argv)
+        assert "u:ccc-u60002:rX" in facl[0]
+        assert "-R" in facl[0]
+        sbatch_at = next(i for i, (argv, _) in enumerate(submitted) if "sbatch" in argv)
+        assert facl[1] < sbatch_at
+
+    def test_a_head_without_setfacl_still_submits(self, submitted, monkeypatch, tmp_path):
+        """Refusing here would take the whole cluster down over a Head-local optimisation — every
+        REMOTE Spawn stages in over rsync and never touches this tree."""
+        def flaky(argv, **kw):
+            if "setfacl" in argv:
+                return type("R", (), {"stdout": "", "stderr": "no such tool", "returncode": 1})()
+            submitted.append((list(argv), kw))
+            return type("R", (), {"stdout": "9001\n", "stderr": "", "returncode": 0})()
+        monkeypatch.setattr(head_spawns.subprocess, "run", flaky)
+        assert self._submit(tmp_path) == 9001
+
+    def test_the_head_branch_does_not_try_to_restore_ownership(self):
+        """`cp -a` implies --preserve=all: the upload is ccc:ccc, so a Guise copying it would try to
+        chown back to the Mantle, get EPERM, and fail the WHOLE copy. Mode and timestamps still cross;
+        ownership is the one attribute a Guise has no business restoring."""
+        script = head_spawns.JOB_SCRIPT
+        assert 'cp -a --no-preserve=ownership "$staging_dir/." "$proj/"' in script
+
+
 class TestDeclaredOutputsBecomeMkdirs:
     """docs/TODO.md's now-closed "Spawn Output Enforcement": each declared `--output` name becomes one
     `mkdir -p "$ccc_out/<name>"` in JOB_SCRIPT, made ONCE — after the if/else that sets `$ccc_out` in
@@ -455,7 +631,8 @@ class TestSubmitValidatesOutputsAndScript:
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
         counter = iter(range(4200, 4300))
         monkeypatch.setattr(head_spawns.subprocess, "run",
-                            lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n"})())
+                            lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n",
+                                                            "stderr": "", "returncode": 0})())
         for good in ("checkpoints", "run-1", "epoch_09", "v2.final"):
             job_id = self._submit(monkeypatch, tmp_path, outputs=[good])
             assert job_id >= 4200
@@ -481,8 +658,9 @@ class TestSubmitValidatesOutputsAndScript:
 class TestOutputsPlumbThroughToTheRenderedScript:
     """End-to-end: what `cuttle run --output` declares is what actually reaches the script sbatch is
     handed — not just what a mocked `submit` was called with. Same rig as
-    TestItReachesSbatch.sbatch_env in test_wandb_key.py, but capturing the rendered job file's BODY
-    (read off disk before submit() unlinks it) instead of the env."""
+    TestItReachesSbatch.sbatch_env in test_wandb_key.py, but capturing the script BODY instead of the
+    env. The body arrives on sbatch's STDIN now — there is no temp file to read off disk any more,
+    because a 0600 file owned by the Mantle is not readable by the **Guise** sbatch runs as."""
 
     @pytest.fixture
     def rendered(self, monkeypatch, tmp_path):
@@ -507,10 +685,12 @@ class TestOutputsPlumbThroughToTheRenderedScript:
         captured: dict[str, str] = {}
 
         def fake_run(argv, **kw):
-            # argv[2] is the sbatch job file's path — still on disk here, since submit() unlinks it
-            # only AFTER this call returns.
-            captured["body"] = Path(argv[2]).read_text()
-            return type("R", (), {"stdout": "4242\n"})()
+            # Two shell-outs reach here: the project lend (`setfacl ...`) and the submission itself.
+            # Only the latter carries the script, and it carries it on stdin.
+            if "sbatch" in argv:
+                captured["argv"] = list(argv)
+                captured["body"] = kw["input"]
+            return type("R", (), {"stdout": "4242\n", "stderr": "", "returncode": 0})()
 
         monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
         return captured

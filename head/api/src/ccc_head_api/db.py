@@ -22,12 +22,13 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 from . import atrest
+from . import guises
 
 # Path comes from the environment (the systemd unit sets CCC_HEAD_DB) so the API package never
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 10
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -258,8 +259,33 @@ CREATE TABLE recovery_copies (
 );
 """
 
+# **Guises** (temp/spawn-isolation.md Phase 3): the uid a User's Spawns run as, on every node. See
+# guises.py for what one is; this table is only the allocator, and it has exactly one job the obvious
+# `MAX(users.uid)+1` cannot do — **never hand out a uid twice**.
+#
+# `remove_user` HARD-deletes, so an allocator keyed off the users table would give a deleted User's uid
+# to the next one created, along with every file they left behind on every Arm they ever ran on. That
+# is precisely the failure a per-User uid exists to prevent, so the allocation is kept here instead,
+# where a removed User leaves a **tombstone**: `uid` is the primary key, `user_id` goes NULL when they
+# are deleted (ON DELETE SET NULL), and the row stays forever to keep that uid retired. UNIQUE on
+# user_id is what makes it one Guise per User — SQLite allows many NULLs in a UNIQUE column, which is
+# exactly right: many tombstones, one live row each.
+#
+# Backfilled for every User already in the database, in `id` order, so an upgrade needs no separate
+# migration step and no User is left without one.
+_SCHEMA_V10 = f"""
+CREATE TABLE guises (
+  uid        INTEGER PRIMARY KEY,
+  user_id    INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+INSERT INTO guises (uid, user_id)
+  SELECT {guises.UID_BASE} + ROW_NUMBER() OVER (ORDER BY id) - 1, id FROM users;
+"""
+
 # index i takes user_version i -> i+1
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
+              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -301,12 +327,20 @@ def _now() -> datetime:
 
 def add_user(conn: sqlite3.Connection, username: str, is_admin: bool = False) -> str:
     """Create a user with a random temp password (forced-change on first login). Returns the plaintext
-    temp password to hand off once — it is never recoverable after this."""
+    temp password to hand off once — it is never recoverable after this.
+
+    A **Guise** uid is allocated here, for everyone: an Admin gets one like any other User, because
+    "the Admin's laptop is compromised" is as realistic as anyone's and an Admin's payload must not be
+    able to write head.db either. Allocated with the User rather than lazily at first submit, so the
+    account can be provisioned by the operator standing at the Head right now — the only moment there
+    is one (see cuttle.auth.ensure_guise_accounts).
+    """
     temp_pw = secrets.token_urlsafe(12)
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO users (username, pw_hash, is_admin, must_change_password) VALUES (?,?,?,1)",
         (username, _ph.hash(temp_pw), int(is_admin)),
     )
+    allocate_guise(conn, cur.lastrowid)
     conn.commit()
     return temp_pw
 
@@ -366,6 +400,45 @@ def set_password(conn: sqlite3.Connection, username: str, new_password: str) -> 
 
 # A precomputed hash so verify_password does equal work whether or not the user exists.
 _DUMMY_HASH = _ph.hash("__ccc_dummy__")
+
+
+# --- Guises (temp/spawn-isolation.md Phase 3) -------------------------------
+# See _SCHEMA_V10 for the table and why it is its own. Allocating a uid needs no privilege whatsoever —
+# it is one row in head.db — which is what lets `cuttle user add` stay a Head-local command with an
+# operator at a tty, and keeps a root helper out of the Head API entirely. CREATING the Unix account
+# from that uid is the privileged half, and it lives in the CLI (cuttle.auth.ensure_guise_accounts).
+
+def allocate_guise(conn: sqlite3.Connection, user_id: int) -> int:
+    """This User's uid, allocating one if they have none. Idempotent — the second call returns the
+    first call's answer, so `setup --head` can re-run over an already-provisioned Head.
+
+    One statement, so two concurrent callers cannot read the same MAX(): the loser hits the UNIQUE on
+    `uid` (or on `user_id`) and raises rather than quietly minting a duplicate.
+    """
+    row = conn.execute("SELECT uid FROM guises WHERE user_id=?", (user_id,)).fetchone()
+    if row is not None:
+        return row["uid"]
+    conn.execute(
+        "INSERT INTO guises (uid, user_id) "
+        "SELECT COALESCE(MAX(uid), ?) + 1, ? FROM guises",
+        (guises.UID_BASE - 1, user_id),
+    )
+    conn.commit()
+    return conn.execute("SELECT uid FROM guises WHERE user_id=?", (user_id,)).fetchone()["uid"]
+
+
+def guise_uid(conn: sqlite3.Connection, user_id: int) -> int | None:
+    row = conn.execute("SELECT uid FROM guises WHERE user_id=?", (user_id,)).fetchone()
+    return row["uid"] if row else None
+
+
+def live_guises(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every uid with a User still behind it, newest last. Tombstones (a removed User's retired uid)
+    are deliberately absent: this is what the Head provisions accounts FOR, not the retirement record.
+    """
+    return conn.execute(
+        "SELECT g.uid, u.username FROM guises g JOIN users u ON u.id = g.user_id ORDER BY g.uid"
+    ).fetchall()
 
 
 # --- the stored W&B key -----------------------------------------------------

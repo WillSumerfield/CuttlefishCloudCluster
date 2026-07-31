@@ -11,6 +11,10 @@ SLURM_PKG = "slurm-wlm=23.11.4-1.2ubuntu5"
 SLURMD_PKG = "slurmd=23.11.4-1.2ubuntu5"  # Arms need the node daemon only, not slurmctld
 NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"  # NVIDIA's repo retains old versions — safe
 MUNGE_PKG = "munge"  # auth; distro version fine
+# HEAD ONLY. `setfacl` is how the Mantle lends ONE **Guise** read access to ONE uploaded project
+# without any privilege at all (it already owns the directory) — see ccc_head_api.spawns.submit. Distro
+# version: the ACL syscalls are kernel/ext4, and this package is just the CLI over them.
+ACL_PKG = "acl"
 
 # The archive publishes ONE version of a package per pocket, so the day Ubuntu supersedes a pin above
 # it stops being installable and every future setup dies at `apt-get install`. snapshot.ubuntu.com
@@ -135,6 +139,13 @@ CGROUP_CONF = Path("/etc/slurm/cgroup.conf")
 # slurmd runs this on the node after every Spawn, however it ended — the reclaim the job script's own
 # `trap ... EXIT` can't do because SIGKILL (OOM, `scancel -9`, a Phase-2 Retract) bypasses the trap.
 SLURM_EPILOG = Path("/etc/slurm/ccc-epilog.sh")
+# slurmd runs this on the node BEFORE every Spawn, as root: it creates the **Guise** the Spawn will run
+# as, if this node has never run one of that User's before. Like the epilog it is served by neither
+# configless nor any push — every node writes its own at `cuttle setup` (see templates.PROLOG_TMPL).
+SLURM_PROLOG = Path("/etc/slurm/ccc-prolog.sh")
+# What an Arm reports having written, in its /enroll POST, so the Head can refuse to name a file the
+# fleet does not have yet (see enroll.arms_missing and the Rollout section of temp/spawn-isolation.md).
+ARM_CAP_PROLOG = "prolog"
 SLURM_STATE_DIR = Path("/var/spool/slurmctld")
 SLURMD_SPOOL_DIR = Path("/var/spool/slurmd")
 SLURM_LOG_DIR = Path("/var/log/slurm")
@@ -230,6 +241,34 @@ HEAD_API_USER = "ccc"
 # can have taken it. Collision ⇒ useradd fails and setup halts (no fallback; decide live).
 CCC_UID = 60000
 CCC_GID = 60000
+# --- Guises (temp/spawn-isolation.md Phase 3): a per-User Unix identity on every node ---
+# A **Guise** is what a Spawn runs as. The Mantle above is what the *cluster* is — after Phase 3 no
+# Spawn runs as it, and one that does is a bug. Every Guise is `ccc-u<uid>`, named after its uid and
+# nothing else: the Prolog that creates the account on a donor's Arm has `SLURM_JOB_UID` and no other
+# input at all (no network, no head.db), so the name must be derivable from the uid alone. It also
+# cannot collide with a donor's own accounts, and needs no CCC-username regex.
+GUISE_PREFIX = "ccc-u"
+# Reserved for the cluster itself — the enrollment benchmark, the one Spawn no User submits. It is a
+# Guise like any other, so that "a Spawn owned by `ccc` is a bug" has no exceptions.
+GUISE_CLUSTER_UID = 60001
+GUISE_UID_BASE = 60002   # Users allocate from here: monotonic, never reused (see db.allocate_guise)
+GUISE_UID_MAX = 61182    # same reserved block as CCC_UID, below systemd's DynamicUser (61184+)
+# The shared SECONDARY group every Guise joins, and the only thing the Head's sudoers rule names: `ccc`
+# may run Slurm's client commands as any member of it (never as root). Each Guise's PRIMARY group is
+# its own (gid == uid), so nothing is ever group-owned by this one — it is a sudo Runas list, not a
+# sharing mechanism. gid at the top of the reserved block, above every allocatable Guise uid.
+GUISE_GROUP = "ccc-guises"
+GUISE_GROUP_GID = 61183
+# Stamped into GECOS so `teardown --arm` can find exactly the accounts CCC created on a donor's box and
+# nothing else. Matched as a prefix, never parsed.
+GUISE_GECOS = "CCC Guise"
+# The Head's one unattended sudo grant: sbatch/scancel/scontrol as a Guise. Not root — see templates.
+SUDOERS_CCC_SLURM = Path("/etc/sudoers.d/ccc-slurm")
+
+
+def guise_name(uid: int) -> str:
+    """The Unix account a Spawn owned by this uid runs as. The ONLY place the name is formed."""
+    return f"{GUISE_PREFIX}{uid}"
 # The first CCC login account, seeded at `setup --head`. A fixed name (NOT the operator's OS username):
 # it's an app-level account in head.db, unrelated to any Unix uid. Spawns show `submitted_by: admin`.
 FIRST_ADMIN_USER = "admin"

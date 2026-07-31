@@ -86,9 +86,10 @@ def remove_head_api() -> None:
     Mantle account. Already stopped/disabled by stop_daemons; head.db (under CCC_LIB) is swept by
     remove_enroll_api."""
     system.deny_tcp_port(config.HEAD_API_PORT)
-    run(["rm", "-f", str(config.HEAD_API_UNIT)], sudo=True, check=False)
+    run(["rm", "-f", str(config.HEAD_API_UNIT), str(config.SUDOERS_CCC_SLURM)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
     remove_mantle()  # created by provision_head_auth -> provision_mantle
+    remove_guises()  # one per User, created by provision_head_auth -> ensure_guise_accounts
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -235,6 +236,28 @@ def remove_mantle() -> None:
     run(["groupdel", config.HEAD_API_USER], sudo=True, check=False)
 
 
+def remove_guises() -> None:
+    """Every **Guise** this node accumulated — one per User whose Spawn ever landed here, created by
+    the Slurm prolog as they arrived (temp/spawn-isolation.md Phase 3f).
+
+    Found by their GECOS tag, which is the only reason it exists: the accounts are named after uids,
+    not people, so nothing else on a donor's box distinguishes them from the box's own users. That
+    matters most on the machine we care about most — a donor's — where the whole promise is that CCC
+    leaves nothing behind.
+
+    `userdel` with no `--remove`: a Guise is `useradd -M`, so there is no home to delete, and nothing
+    of the donor's can be caught in the blast radius. The private group goes with the account (userdel
+    removes a group that matches the user's name and has no other members); the shared group is dropped
+    once explicitly, after the last member is gone.
+    """
+    r = run(["getent", "passwd"], sudo=True, capture_output=True, text=True, check=False)
+    for line in (r.stdout or "").splitlines():
+        f = line.split(":")
+        if len(f) > 4 and f[0].startswith(config.GUISE_PREFIX) and f[4].startswith(config.GUISE_GECOS):
+            run(["userdel", f[0]], sudo=True, check=False)
+    run(["groupdel", config.GUISE_GROUP], sudo=True, check=False)
+
+
 def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     """Reverse `setup --arm`. Leaves the mesh and wipes local state — but an Arm has no `headscale`
     binary, so it cannot delete its own node on the Head, which is left holding a live mesh address.
@@ -259,9 +282,10 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         remove_slurm_config()
         undo_apptainer_wsl()
         remove_wsl_dashboard_forward()
-    with ui.step("Removing the cluster key and the Mantle account"):
+    with ui.step("Removing the cluster key and the CCC accounts"):
         remove_munge_key()
         remove_mantle()  # created by setup_arm.provision_mantle
+        remove_guises()  # one per User whose Spawn ever landed here — created by the Slurm prolog
     if not keep_packages:
         with ui.step("Purging packages and repositories"):
             purge_packages()
@@ -344,12 +368,13 @@ def teardown_full(keep_packages: bool = False) -> None:
             remove_rsyncd()
         with ui.step("Tearing down the mesh"):
             remove_mesh(keep_packages=keep_packages)
-        with ui.step("Removing Slurm, the cluster key and the Mantle account"):
+        with ui.step("Removing Slurm, the cluster key and the CCC accounts"):
             undo_apptainer_wsl()
             remove_wsl_dashboard_forward()
             remove_munge_key()
             remove_slurm_config()   # shared by both roles
             remove_mantle()
+            remove_guises()
         if not keep_packages:
             with ui.step("Purging packages and repositories"):
                 purge_packages()

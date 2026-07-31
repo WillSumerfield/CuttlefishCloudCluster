@@ -152,6 +152,17 @@ def fake_slurm(monkeypatch, tmp_path):
     # neither of which exists yet with any live jobs, but still needs valid empty JSON, not silence).
     (bin_dir / "squeue").write_text(
         '#!/bin/sh\ncase "$*" in\n  *--json*) echo \'{"jobs": []}\' ;;\n  *) exit 0 ;;\nesac\n')
+    # A **Guise** owns every Spawn now (temp/spawn-isolation.md Phase 3), so the Head reaches Slurm
+    # through `sudo -n -u ccc-u<uid>`. Faked at the same level as the binaries above, and for the same
+    # reason: the real argv is still built by guises.as_owner, the real sbatch stub still runs, and the
+    # account it was asked to become is recorded so a test can assert WHO submitted rather than just
+    # that something did. Anything else would mean stubbing out the one line Phase 3 is about.
+    (bin_dir / "sudo").write_text(
+        f'#!/bin/sh\nwhile [ "$1" = "-n" ]; do shift; done\n'
+        f'if [ "$1" = "-u" ]; then echo "$2" >> {tmp_path / "sudo-users"}; shift 2; fi\nexec "$@"\n')
+    # The project lend (spawns._lend_project). Stubbed rather than left to the real tool so the suite
+    # does not depend on `acl` being installed, or on tmp_path's filesystem carrying ACLs.
+    (bin_dir / "setfacl").write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "setfacl-calls"}\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")

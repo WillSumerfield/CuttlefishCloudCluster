@@ -15,7 +15,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import db
+from . import db, guises
 
 
 def _add(username: str, is_admin: bool) -> int:
@@ -25,10 +25,27 @@ def _add(username: str, is_admin: bool) -> int:
             print(f"user {username!r} already exists", file=sys.stderr)
             return 1
         temp_pw = db.add_user(conn, username, is_admin=is_admin)
+        uid = db.guise_uid(conn, db.get_user(conn, username)["id"])
     role = "admin" if is_admin else "user"
-    print(f"created {role} {username!r}")
+    print(f"created {role} {username!r} (guise {guises.name(uid)})")
     print(f"temp password: {temp_pw}")
     print("hand this to the user; they must change it on first login")
+    return 0
+
+
+def _guises() -> int:
+    """`<uid> <username>` per line — every allocated Guise with a User still behind it.
+
+    The Unix half of `cuttle user add` reads this: allocating a uid is a row in head.db and needs no
+    privilege (so it happens here, as `ccc`), while creating the account it names needs root (so it
+    happens in the CLI, with the operator's sudo — cuttle.auth.ensure_guise_accounts). Listing rather
+    than returning the one just added is deliberate: the same call provisions a brand-new User and
+    back-fills every User who predates Guises, so an upgrade is just a `setup --head` re-run.
+    """
+    with db.connect() as conn:
+        db.init_schema(conn)
+        for r in db.live_guises(conn):
+            print(f"{r['uid']} {r['username']}")
     return 0
 
 
@@ -178,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("username")
     e = sub.add_parser("exists", help="exit 0 if the user exists, 1 if not (no output).")
     e.add_argument("username")
+    sub.add_parser("guises", help="list allocated Guise uids ('<uid> <username>' per line).")
     o = sub.add_parser("override", help="add/remove Karma from a User's Balance.")
     o.add_argument("username")
     o.add_argument("amount", type=float)
@@ -217,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
         return _reset(args.username)
     if args.cmd == "exists":
         return _exists(args.username)
+    if args.cmd == "guises":
+        return _guises()
     if args.cmd == "override":
         return _override(args.username, args.amount, args.note)
     if args.cmd == "retract":

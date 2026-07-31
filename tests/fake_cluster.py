@@ -71,12 +71,12 @@ class FakeCluster:
                 devices = list(range(j["gpus"])) if j["state"] == "RUNNING" else []
                 out.append({"id": j["id"], "state": j["state"], "nice": j["nice"],
                             "node": j["node"], "gpus": j["gpus"], "devices": devices,
-                            "start_time": st})
+                            "start_time": st, "user": j.get("user")})
         return out
 
-    def set_nice(self, job_id: int, nice: int) -> None:
-        # Real Slurm refuses a negative nice from the job's owner, and the tick is the owner (the Mantle).
-        # If the economy ever tried to push one, this is where hardware would have rejected it.
+    def set_nice(self, job_id: int, nice: int, owner: str | None = None) -> None:
+        # Real Slurm refuses a negative nice from the job's owner, and the tick acts AS the owner (the
+        # Spawn's Guise). If the economy ever tried to push one, hardware would have rejected it here.
         assert nice >= 0, "the economy must never push a negative nice — that is the operator's Bump"
         self.jobs[job_id]["nice"] = nice
 

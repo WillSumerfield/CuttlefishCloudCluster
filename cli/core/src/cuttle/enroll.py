@@ -88,7 +88,8 @@ def decode_token(token: str) -> dict:
 # --- /enroll ----------------------------------------------------------------
 
 def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
-                     features: list[dict] | None = None) -> dict:
+                     features: list[dict] | None = None,
+                     provides: list[str] | None = None) -> dict:
     """Record this Arm with the Head and pull the munge key + ctld address. Only routable from
     inside the mesh — which is exactly why the munge key is safe to send here and nowhere else.
 
@@ -98,10 +99,15 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     `features` = the Arm Features (docs/TODO.md) this box's owner picked at `setup --arm`, as
     `[{"name", "path"}, ...]` — the Head validates each name against its catalog and re-sends this on
     every call, so a re-enrollment (mesh IP moved, `arm sync-key`) never silently drops a declaration.
+
+    `provides` = Arm-side files this box has ALREADY WRITTEN (temp/spawn-isolation.md, Rollout), which
+    is why the first POST of a `setup --arm` sends none: at that point in the run the prolog is not on
+    disk yet, and claiming otherwise is exactly the lie that drains a node. `report_capabilities`
+    re-POSTs once it is.
     """
     body = json.dumps({"node_name": node_name, "gpu_devices": system.gpu_devices(),
                        "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb(),
-                       "features": features or []}).encode()
+                       "features": features or [], "provides": provides or []}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -266,6 +272,27 @@ def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
 
 def load_registry() -> dict:
     return json.loads(config.ARMS_REGISTRY.read_text()) if config.ARMS_REGISTRY.exists() else {}
+
+
+def arms_missing(capability: str) -> list[str]:
+    """Every ADMITTED Arm that has not reported `capability` in its /enroll POST — the Arms holding up
+    a fleet-wide Slurm change (temp/spawn-isolation.md, Rollout).
+
+    Configless Slurm serves slurm.conf but NOT the scripts it names, so turning on `Prolog=` before
+    every node has the file fails those nodes' jobs and drains them — and a drained node stays drained
+    across a slurmd restart, so putting the file there afterwards does not bring it back. The Head
+    therefore will not render the line at all while this list is non-empty.
+
+    The Head's own co-located Arm is excluded: it never enrolls (it has no registry POST to report in),
+    and `setup --head` writes its files itself, in the same run that renders the config.
+
+    A retracted Arm is deliberately NOT excluded. Retraction lives in head.db, which this side does not
+    read — and a Retract can be Returned at any moment, which would put a node with no prolog straight
+    back into the placement pool.
+    """
+    return sorted(name for name, e in load_registry().items()
+                  if e.get("admitted") and not e.get("head")
+                  and capability not in (e.get("provides") or []))
 
 
 def save_registry(reg: dict) -> None:
@@ -475,13 +502,19 @@ def _benchmark_arm(name: str) -> dict:
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
         f.write(templates.render_bench_sbatch(name, head_ip, gpus))
         job_file = f.name
-    Path(job_file).chmod(0o644)  # sbatch reads it as ccc, not as the operator
+    Path(job_file).chmod(0o644)  # sbatch reads it as the cluster Guise, not as the operator
 
     with ui.step(f"Benchmarking {name} (matmul in the Pod — this is what prices a second on it)"):
         # Unlinked the moment sbatch has read it — it holds no state past submission, and left behind
         # it is one /tmp/tmp*.sbatch per benchmark, forever.
+        #
+        # As the **cluster's own Guise** (temp/spawn-isolation.md Phase 3g), not as the Mantle. This is
+        # the one Spawn no User submits, and it was the last thing still running as `ccc` — which would
+        # have made "a Spawn owned by the Mantle is a bug" a rule with an exception, and an exception is
+        # not a rule you can test. Its uid is reserved, so it collides with no User's.
         try:
-            run(["-u", config.HEAD_API_USER, "sbatch", "--parsable", job_file], sudo=True, check=True)
+            run(["-u", config.guise_name(config.GUISE_CLUSTER_UID), "sbatch", "--parsable", job_file],
+                sudo=True, check=True)
         finally:
             Path(job_file).unlink(missing_ok=True)
         deadline = time.time() + config.BENCH_TIMEOUT_S

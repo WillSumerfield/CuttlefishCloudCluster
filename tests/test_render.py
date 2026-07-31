@@ -5,11 +5,12 @@ as a node that registered but can't be scheduled. That is exactly the class of b
 the render is pure, and the consequence is remote.
 """
 
+import json
 import re
 
 import pytest
 
-from cuttle import config, enroll, system, templates
+from cuttle import config, enroll, headapi, system, templates
 
 
 @pytest.fixture
@@ -234,6 +235,135 @@ class TestScratchEpilog:
         script = templates.render_epilog()
         assert '[ -s "/tmp/ccc-$SLURM_JOB_ID.slurm" ] || rm -f "/tmp/ccc-$SLURM_JOB_ID.slurm"' in script
         assert '[ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"' in script
+
+
+class TestGuiseProlog:
+    """The Slurm prolog: where a **Guise** comes into existence on a machine (temp/spawn-isolation.md
+    Phase 3c). It runs as root, on a donor's box, with `SLURM_JOB_UID` as its only input — so every
+    failure here is a `useradd` running on someone else's machine with the wrong argument, or a node
+    drained for a job it had no opinion about."""
+
+    def test_the_account_is_named_after_the_uid_and_nothing_else(self):
+        """The prolog has no network and no head.db. If the name came from anywhere but the uid it
+        could not be formed at all — this is the whole reason a Guise is `ccc-u<uid>`."""
+        script = templates.render_prolog()
+        assert 'uid="$SLURM_JOB_UID"' in script
+        assert f'guise="{config.GUISE_PREFIX}$uid"' in script
+        assert config.guise_name(60002) == "ccc-u60002"
+
+    def test_a_uid_outside_the_reserved_block_is_left_alone(self, ):
+        """root, slurm, a donor's own login, the Mantle itself — all outside the block, none of them
+        ours to create, and NONE of them a reason to fail the job."""
+        script = templates.render_prolog()
+        assert f'[ "$uid" -lt {config.GUISE_CLUSTER_UID} ]' in script
+        assert f'[ "$uid" -gt {config.GUISE_UID_MAX} ]' in script
+        assert config.CCC_UID < config.GUISE_CLUSTER_UID   # the Mantle is below the block
+
+    def test_a_uid_held_by_a_stranger_fails_the_job(self):
+        """The one case the prolog refuses. Running a Spawn as an account CCC did not create is worse
+        than draining the node, because it would run a User's payload as a donor's own login."""
+        script = templates.render_prolog()
+        assert 'elif [ "$existing" != "$guise" ]; then' in script
+        # The refusal branch, not the "created it" branch, is what exits non-zero.
+        refusal = script.split('elif [ "$existing" != "$guise" ]; then')[1].split("fi")[0]
+        assert "exit 1" in refusal
+
+    def test_the_account_is_homeless_and_tagged(self):
+        """`-M` so a donor's box gains no directory; the GECOS tag so `teardown --arm` can find exactly
+        these accounts again — they are named after uids, so nothing else distinguishes them."""
+        script = templates.render_prolog()
+        assert "--no-create-home" in script
+        assert f'--comment "{config.GUISE_GECOS}"' in script
+        assert "--remove" not in script   # nothing of the donor's may be in the blast radius
+
+    def test_it_always_exits_zero_on_the_ordinary_path(self):
+        """Same rule as the epilog: a non-zero prolog drains the node. Only the two real failures
+        (useradd failed, the uid is a stranger's) may do that."""
+        assert templates.render_prolog().rstrip().endswith("exit 0")
+
+    def test_the_head_only_lending_is_guarded_by_the_directory(self):
+        """The Spawn/scratch dirs exist only on the Head's co-located Arm. On a donor Arm both branches
+        must no-op rather than create a directory tree CCC has no business making there."""
+        script = templates.render_prolog()
+        assert f'if [ -d "{config.HEAD_SPAWNS_DIR}" ]; then' in script
+        assert f'if [ -d "{config.HEAD_SCRATCH_DIR}" ]; then' in script
+
+    def test_the_epilog_gives_the_spawn_dir_back(self):
+        """Prolog lends, epilog returns — so the grant lasts exactly the job, and survives a SIGKILL
+        that the job script's own trap does not. Without this a User's LATER Spawn could rewrite an
+        earlier one's recorded exit code, since both run as the same Guise."""
+        epilog = templates.render_epilog()
+        assert f'chown -R {config.HEAD_API_USER}:{config.HEAD_API_USER} ' \
+               f'"{config.HEAD_SPAWNS_DIR}/$SLURM_JOB_ID"' in epilog
+        # ...and still never drains the node over a failed give-back.
+        assert epilog.rstrip().endswith("exit 0")
+
+
+class TestPrologRollout:
+    """`Prolog=` is the one fleet-wide setting that punishes being early: an Arm named by it without
+    the script fails its jobs and drains, and *stays* drained across a slurmd restart — so putting the
+    file there afterwards does not heal it. The Head refuses to name it until every Arm has it."""
+
+    def test_the_line_is_absent_while_any_arm_is_missing_it(self, fake_host):
+        conf = templates.render_slurm_conf("100.99.0.1", missing_prolog=["willpersonal"])
+        assert "Prolog" not in directives(conf)
+
+    def test_the_arms_holding_it_up_are_named_in_the_file(self, fake_host):
+        """The operator's next move is to go and re-run `setup --arm` on those boxes, so the file has
+        to say which."""
+        conf = templates.render_slurm_conf("100.99.0.1", missing_prolog=["willpersonal", "spare"])
+        assert "willpersonal" in conf and "spare" in conf
+
+    def test_the_line_appears_once_the_fleet_is_ready(self, fake_host):
+        conf = templates.render_slurm_conf("100.99.0.1", missing_prolog=[])
+        assert directives(conf)["Prolog"] == str(config.SLURM_PROLOG)
+
+    def test_an_arm_that_has_not_reported_holds_it_up(self, monkeypatch, tmp_path):
+        reg = tmp_path / "arms.json"
+        reg.write_text(json.dumps({
+            "ready": {"admitted": True, "provides": ["prolog"]},
+            "stale": {"admitted": True, "provides": []},
+            "old": {"admitted": True},                       # never sent the field at all
+            "unadmitted": {"admitted": False},               # takes no placement — not a blocker
+            "headbox": {"admitted": True, "head": True},     # never enrolls; setup writes its own
+        }))
+        monkeypatch.setattr(config, "ARMS_REGISTRY", reg)
+        assert enroll.arms_missing("prolog") == ["old", "stale"]
+
+    def test_a_retracted_arm_still_holds_it_up(self, monkeypatch, tmp_path):
+        """Retraction lives in head.db, which this side never reads — and a Retract can be Returned at
+        any moment, which would put a prolog-less node straight back into the placement pool."""
+        reg = tmp_path / "arms.json"
+        reg.write_text(json.dumps({"paused": {"admitted": True, "provides": []}}))
+        monkeypatch.setattr(config, "ARMS_REGISTRY", reg)
+        assert enroll.arms_missing("prolog") == ["paused"]
+
+
+class TestSlurmSudoers:
+    """The Head's ONE unattended privileged grant in Phase 3. What it is NOT is the whole point."""
+
+    def test_the_runas_is_the_guise_group_never_root(self):
+        rule = headapi._SUDOERS_CCC_SLURM
+        assert f"({config.HEAD_API_USER} ALL=(%{config.GUISE_GROUP})" not in rule  # sanity on shape
+        assert f"ALL=(%{config.GUISE_GROUP})" in rule
+        assert "ALL=(root)" not in rule and "ALL=(ALL)" not in rule
+
+    def test_it_grants_exactly_the_three_slurm_clients(self):
+        rule = headapi._SUDOERS_CCC_SLURM
+        cmds = rule.split("NOPASSWD:")[1]
+        assert set(c.strip() for c in cmds.replace("\\\n", "").split(",")) == {
+            "/usr/bin/sbatch", "/usr/bin/scancel", "/usr/bin/scontrol"}
+
+    def test_the_wandb_environment_survives_sudos_scrub(self):
+        """sbatch propagates its own env to the job — that is how a User's W&B key reaches the Pod.
+        sudo scrubs it by default, so without this every Spawn silently logs nothing, which its
+        submitter only discovers afterwards in an empty W&B project."""
+        rule = headapi._SUDOERS_CCC_SLURM
+        assert "env_keep" in rule
+        for var in ("WANDB_API_KEY", "WANDB_MODE", "WANDB_PROJECT", "WANDB_ENTITY"):
+            assert var in rule
+        # NOT the blanket alternatives, both of which grant more than is needed.
+        assert "SETENV" not in rule
 
 
 class TestSlurmdDropin:

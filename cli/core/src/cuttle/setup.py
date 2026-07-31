@@ -140,7 +140,7 @@ def _apt_install(pkgs: list[str]) -> None:
         raise
 
 
-def install_packages(slurm_pkg: str = config.SLURM_PKG) -> set[str]:
+def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> set[str]:
     """Install the pinned system stack, EXCEPT apptainer — that arrives as the Head's pinned .deb
     (install_apptainer), which on the Head does not exist yet when this runs.
 
@@ -148,10 +148,15 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG) -> set[str]:
     packages installed *before* this ran, so the caller can close the manifest window with
     `record_installed` once apptainer is in too — teardown purges from that manifest, and apptainer
     plus its deps must be in it.
+
+    `head` adds `acl`, which only the Head can use: it is what lets the Mantle hand ONE Guise read
+    access to ONE uploaded project (temp/spawn-isolation.md Phase 3d), and the uploads only ever exist
+    here. A donor's box gains nothing it cannot use.
     """
     run(["apt-get", "update"], sudo=True)
     before = system.installed_packages()
-    _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG])
+    _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG,
+                  *([config.ACL_PKG] if head else [])])
     return before
 
 
@@ -222,9 +227,20 @@ def write_slurm_config(mesh_ip: str) -> None:
     # The Head's Weight goes in the file, not just `scontrol update`, or the next reconfigure wipes it.
     # Unknown on a first setup (the benchmark runs later, and re-renders this) -> node_weight's floor.
     powers = (reg.get(system.hostname()) or {}).get("powers")
+    # Guises (temp/spawn-isolation.md Phase 3c): `Prolog=` goes in only once every admitted Arm has
+    # reported having the script. Named out loud, because the operator's next move is to go and re-run
+    # `setup --arm` on those boxes — and a silently-absent Prolog would mean every Spawn quietly keeps
+    # running as the Mantle.
+    missing = enroll.arms_missing(config.ARM_CAP_PROLOG)
+    if missing:
+        # ui.warn, not ui.say: this lands in the end-of-run trouble summary, and an operator who
+        # misses it believes Guises are live when every Spawn is still running as the Mantle.
+        ui.warn(f"Guises are held back — these Arms have no prolog yet: {', '.join(missing)}. "
+                f"Re-run `cuttle setup --arm` on each, then re-run this.")
     _write_root_file(
         config.SLURM_CONF,
-        templates.render_slurm_conf(mesh_ip, config.node_weight(powers) if powers else 1))
+        templates.render_slurm_conf(mesh_ip, config.node_weight(powers) if powers else 1,
+                                    missing_prolog=missing))
     nodes = [templates.head_gres_node()]
     nodes += [(n, e["gpu_devices"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]
@@ -232,9 +248,10 @@ def write_slurm_config(mesh_ip: str) -> None:
     # What task/cgroup enforces. Configless serves it to every Arm with slurm.conf, so it is written
     # here only — an Arm never authors one.
     _write_root_file(config.CGROUP_CONF, templates.render_cgroup_conf())
-    # The Head's own slurmd (its co-located Arm) runs Spawns too, so the scratch-reclaim epilog its
-    # slurm.conf now references must exist here as well as on every Arm (setup_arm writes it there).
+    # The Head's own slurmd (its co-located Arm) runs Spawns too, so the two hook scripts its
+    # slurm.conf references must exist here as well as on every Arm (setup_arm writes them there).
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
+    _write_root_file(config.SLURM_PROLOG, templates.render_prolog(), mode="755")
 
 
 def make_registry_dir() -> None:
@@ -278,9 +295,14 @@ def provision_head_auth() -> None:
     scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
     API unit and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
     provision_mantle()
+    # 0711 — traverse, never list (temp/spawn-isolation.md Phase 3d). A **Guise** has to reach its own
+    # `spawns/<jid>`, `scratch/<jid>` and `projects/<uuid>`, and a 0700 parent stops it at the door. It
+    # is `--x` on purpose: reaching a directory whose exact name you already have is all a Spawn needs,
+    # and it is the whole difference from `r-x`, which would let any Spawn enumerate every other User's
+    # uploads and results. head.db stays 0600 ccc, so what these parents contain is still unreadable.
     for d in (config.HEAD_STATE_DIR, config.HEAD_PROJECTS_DIR, config.HEAD_SPAWNS_DIR,
               config.HEAD_SCRATCH_DIR):
-        run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+        run(["install", "-d", "-m", "0711", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
              str(d)], sudo=True)
     admin_user = config.FIRST_ADMIN_USER
     auth.seed_admin(admin_user)  # registers the one-time temp password as a result
@@ -553,7 +575,7 @@ def _setup_head(address: str | None = None) -> None:
     with ui.step("Adding package repositories"):
         add_repos(head=True)  # the apptainer PPA is added HERE and nowhere else in the fleet
     with ui.step("Installing Slurm, munge and Apptainer"):
-        before = install_packages()
+        before = install_packages(head=True)
         # /var/lib/ccc must exist before the .deb can be stored under it, and it is munge-owned — so
         # this waits until apt has created the `munge` user, i.e. until just now.
         make_registry_dir()
@@ -568,6 +590,11 @@ def _setup_head(address: str | None = None) -> None:
     with ui.step("Provisioning the Mantle and the auth store"):
         provision_head_auth()                    # ccc account + head.db + submission dirs (needs venv)
         enroll.register_head_arm(mesh_ip)        # our co-located Arm is admin-owned (needs the admin)
+    with ui.step("Provisioning Guises"):
+        # Every User's Unix identity on this box, including the reserved cluster one the enrollment
+        # benchmark runs as. Back-fills on an upgrade, and needs the auth store above to exist first.
+        auth.ensure_guise_accounts()
+        headapi.install_slurm_sudoers(_write_root_file)  # act on a Spawn as its Guise — never as root
     with ui.step("Installing stage-in/out"):
         install_rsyncd(mesh_ip)                  # mesh-bound; needs ccc + its dirs first
     with ui.step("Building the Dashboard"):
@@ -765,6 +792,11 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # Head renders into the job script.
     with ui.step("Provisioning the Mantle"):
         provision_mantle()
+        # The cluster's own **Guise**, which the enrollment benchmark below runs as. Created here
+        # rather than left to the prolog because the benchmark is the FIRST Spawn this box ever runs,
+        # and `Prolog=` may still be held back fleet-wide at that moment (enroll.arms_missing). Every
+        # other Guise on this box is created lazily, by the prolog, when that User's work first lands.
+        auth.provision_guise(config.GUISE_CLUSTER_UID)
     with ui.step("Building the Pod image"):
         build_base_sif()
 
@@ -777,6 +809,12 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     with ui.step("Starting slurmd"):
         _start_slurmd(node_name, info["ctld_addr"], [f["name"] for f in features])
+    with ui.step("Reporting this Arm's Slurm hooks to the Head"):
+        # ONLY now — the prolog is on disk and slurmd is up. Until this lands the Head will not render
+        # `Prolog=` at all (enroll.arms_missing), because a node named by that line without the file
+        # fails its jobs and drains, and does not recover when the file appears later.
+        enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features,
+                                provides=[config.ARM_CAP_PROLOG])
     with ui.step("Checking the Head can reach us"):
         # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
         enroll.check_head_can_reach_us(t["mesh_ip"])
@@ -793,9 +831,12 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
 def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None) -> None:
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
-    # Configless serves the conf (which names Epilog=) but NOT the script it points at — that must be on
-    # the node, written before slurmd starts, or the first Spawn's epilog fails and drains this Arm.
+    # Configless serves the conf (which names Epilog=/Prolog=) but NOT the scripts it points at — those
+    # must be on the node, written before slurmd starts, or the first Spawn's hook fails and drains this
+    # Arm. The prolog is what creates a **Guise** here (temp/spawn-isolation.md Phase 3c); it is written
+    # unconditionally, ahead of the Head ever naming it, which is the whole ordering the rollout needs.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
+    _write_root_file(config.SLURM_PROLOG, templates.render_prolog(), mode="755")
     # The same detection that was reported to /enroll, so the count claimed here and the gres.conf
     # File lines the Head wrote from that POST cannot disagree (slurmctld invalidates the node if
     # they do). `feature_names` are the same Arm Features just reported at /enroll.

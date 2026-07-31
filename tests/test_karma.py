@@ -191,7 +191,8 @@ class TestTheTick:
         pushed = {}
         monkeypatch.setattr(db, "connect", lambda: conn)
         monkeypatch.setattr(tick.slurm, "arms", lambda: [])
-        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice: pushed.__setitem__(job, nice))
+        monkeypatch.setattr(tick.slurm, "set_nice",
+                            lambda job, nice, owner=None: pushed.__setitem__(job, nice))
         return pushed
 
     def queue(self, monkeypatch, jobs):
@@ -454,7 +455,7 @@ class TestTheMeter:
         monkeypatch.setattr(db, "connect", lambda: conn)
         monkeypatch.setattr(tick.slurm, "queue", lambda: state["jobs"])
         monkeypatch.setattr(tick.slurm, "arms", lambda: state["arms"])
-        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice: None)
+        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice, owner=None: None)
         return state
 
     def spawn(self, conn, jid, user, hold=100.0, **kw):
@@ -655,7 +656,7 @@ class TestRetraction:
         monkeypatch.setattr(db, "connect", lambda: conn)
         monkeypatch.setattr(tick.slurm, "queue", lambda: state["jobs"])
         monkeypatch.setattr(tick.slurm, "arms", lambda: state["arms"])
-        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice: None)
+        monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice, owner=None: None)
         signalled = []
         monkeypatch.setattr(tick.slurm, "signal", lambda jid, sig: signalled.append((jid, sig)))
         return state, signalled

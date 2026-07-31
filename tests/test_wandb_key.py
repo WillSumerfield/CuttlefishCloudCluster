@@ -431,8 +431,11 @@ class TestItReachesSbatch:
         seen: dict[str, str] = {}
 
         def fake_run(argv, **kw):
-            seen.update(kw["env"])
-            return types.SimpleNamespace(stdout="4242\n")
+            # `setfacl` (the project lend) comes through here too and carries no env — only the
+            # submission's is what this fixture is about.
+            if "sbatch" in argv:
+                seen.update(kw["env"])
+            return types.SimpleNamespace(stdout="4242\n", stderr="", returncode=0)
 
         monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
         return seen

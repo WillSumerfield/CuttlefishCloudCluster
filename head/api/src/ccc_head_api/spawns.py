@@ -3,15 +3,17 @@
 This is the render + stage machinery that used to live in the CLI's `cuttle/spawns.py`. It moved here
 when `cuttle run` stopped being Head-local: the CLI now tars its working dir and POSTs it, and the
 Head API (running as the **Mantle**, the `ccc` account) unpacks it, renders the sbatch script, submits
-via the munge socket (munged authenticates the Mantle's local uid — no munge.key read), and records an
-Attribution row. Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back
+it **as the submitter's Guise** over the munge socket (munged authenticates whichever local uid calls
+it, so becoming the Guise is enough — no munge.key is ever read), and records an Attribution row. Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back
 over the API — the submitter never touches the Head's disk.
 
-Every Spawn runs as the Mantle on EVERY node, under one uid pinned cluster-wide (cuttle.config
-CCC_UID). That is what makes a remote Arm work at all: slurmd setuid()s to the submitting uid, so the
-account must exist, identically, wherever Slurm places the Spawn. The Mantle is home-less by design —
-it owns no per-node state — so nothing here is resolved against a home directory: the Pod image is at
-one absolute path on every node (CCC_SIF) and a remote Arm scratches in /tmp.
+Every Spawn runs as its submitter's **Guise** on EVERY node, under one uid pinned cluster-wide (see
+guises.py). That is what makes a remote Arm work at all: slurmd setuid()s to the submitting uid, so
+the account must exist, identically, wherever Slurm places the Spawn — which is what the Slurm prolog
+provisions, lazily, the first time that User's work lands on a box. Nothing runs as the Mantle any
+more, and a Spawn that does is a bug. A Guise is home-less by design, like the Mantle before it, so
+nothing here is resolved against a home directory: the Pod image is at one absolute path on every node
+(CCC_SIF) and a remote Arm scratches in /tmp.
 
 Isolation (grill 2026-07-12c). A job NEVER runs in the served `[project]` tree — that would mutate the
 copy the rsync daemon serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
@@ -28,15 +30,19 @@ Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a re
 """
 
 import io
+import logging
 import os
 import re
 import subprocess
 import tarfile
-import tempfile
 from pathlib import Path
 from uuid import uuid4
 
 from . import db
+from . import guises
+from . import recovery
+
+log = logging.getLogger("ccc.api")
 
 # A declared output name becomes a shell-interpolated path segment (`mkdir -p "$ccc_out/<name>"` in
 # JOB_SCRIPT) — anchored, no slashes, no leading dot, so neither `../../etc` nor a hidden `.` / `..`
@@ -404,21 +410,51 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
         # One `mkdir -p` per declared name, all under the same $ccc_out root — validated (OUTPUT_NAME_RE)
-        # before this is ever built, so quoting is enough. Never empty: submit() refuses a Spawn with no
-        # declared outputs before rendering ever happens.
+        # before this is ever built, so quoting is enough. Empty only for a Tide Pool (docs/TODO.md): the
+        # "at least one --output" gate is skipped for it alone, so this line is simply blank there.
         "%%MKDIR_OUTPUTS%%": "\n".join(f'mkdir -p "$ccc_out/{name}"' for name in outputs),
+        # Only ever non-empty when `payload` is PAYLOAD_TIDEPOOL, which is the only place either token
+        # appears — an ordinary Spawn's rendered script never even contains the literal string.
+        "%%TIDEPOOL_PORT%%": str(tidepool_port) if tidepool_port is not None else "",
+        "%%TIDEPOOL_PUBKEY%%": tidepool_pubkey or "",
     }
-    body = JOB_SCRIPT
     for k, v in subs.items():
         body = body.replace(k, v)
     return body
 
 
-def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict[str, str],
+def _lend_project(staging: Path, guise: str) -> None:
+    """Let one **Guise** read one uploaded project, and nothing else.
+
+    The Head's co-located Arm copies the project out of `projects/<uuid>` as the Guise (JOB_SCRIPT's
+    Head branch). That directory is `ccc:ccc 0700` and stays that way — this adds a POSIX ACL naming
+    exactly one account, which the Mantle can do with **no privilege at all**, because it already owns
+    the directory. `rX` is read plus traverse-if-directory; the 0711 on `projects/` above it is what
+    lets the Guise reach this dir by name without being able to list its siblings.
+
+    Done here rather than in the prolog, and that is not a style choice: the prolog would have to be
+    TOLD the uuid, and the only channel for that (a file under `spawns/<jid>/`) cannot exist until
+    sbatch has returned the job id — by which time the prolog may already have run. This happens before
+    the job exists at all, so there is no race to lose.
+
+    Best-effort: a Head whose filesystem has no ACL support, or no `setfacl`, still runs every REMOTE
+    Spawn correctly (they stage in over rsync and never touch this tree). Refusing the submission
+    outright would take the whole cluster down over a Head-local optimisation.
+    """
+    r = subprocess.run(["setfacl", "-R", "-m", f"u:{guise}:rX", str(staging)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        log.warning("could not lend %s to %s (%s) — a Spawn placed on the Head's own Arm will not be "
+                    "able to read its project", staging, guise, (r.stderr or "").strip())
+
+
+def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
            tar_path: Path, minutes: int, constraint: str, outputs: list[str], node: str | None = None,
-           vram_gb: int = 0, hold: float | None = None, exclude: str = "") -> int:
-    """Unpack an uploaded project, render + sbatch it as the Mantle, and record the Attribution row +
-    the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
+           vram_gb: int = 0, hold: float | None = None, exclude: str = "",
+           tidepool: bool = False) -> int:
+    """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
+    Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
+    Spawn to one Arm.
 
     `hold` is the Escrow quoted by the caller, or **None** for a Spawn nobody is charged for (an
     Admin's — the Admin is outside the economy). It is written in the SAME transaction as the
@@ -472,32 +508,44 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     # gitignore-filtered client-side, so every file here is meant to transfer.
     files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
 
-    body = _render(uuid, staging, gpu, script, args, files, outputs, node, minutes, constraint, exclude)
-    # delete=False so `sbatch` — a separate process — can open the path; we unlink it ourselves the
-    # moment sbatch returns. sbatch has copied the script into slurmctld's state by then, so the file
-    # has no reader left. Leaving them behind accumulates one per Spawn, each carrying the project's
-    # full file list, under an account nobody logs in as to clean up.
-    with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
-        f.write(body)
-        job_file = f.name
+    # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
+    # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
+    # Spawn it belongs to are decided in one place. See ccc_head_api.tidepool's module docstring for why
+    # the port has to be reserved ahead of a job_id that does not exist yet.
+    tp_port = tp_pubkey = tp_privkey = None
+    if tidepool:
+        from . import tidepool as tidepool_mod
+        with db.connect() as conn:
+            tp_port, tp_pubkey, tp_privkey = tidepool_mod.grant(conn)
+
+    body = _render(uuid, staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
+                   exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey)
+    with db.connect() as conn:
+        guise = guises.name(db.allocate_guise(conn, user_id))
+    _lend_project(staging, guise)
 
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
-    # stored key, never the client's.
+    # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
+    # `env_keep` on the sudoers rule (cuttle.headapi) — without that every Spawn would silently log
+    # nothing, which a User only discovers afterwards in an empty W&B project.
     env = {**os.environ, **wandb_env}
-    try:
-        r = subprocess.run(["sbatch", "--parsable", job_file],
-                           capture_output=True, text=True, check=True, env=env)
-    finally:
-        Path(job_file).unlink(missing_ok=True)
+    # The script goes in on STDIN, not as a path. It used to be a 0600 NamedTemporaryFile owned by the
+    # Mantle, which the Guise sbatch now runs as cannot read — and feeding it here is strictly better
+    # anyway: there is no temp file to leak the project's full file list, and the delete-after-return
+    # dance goes with it.
+    r = subprocess.run(guises.as_owner(["sbatch", "--parsable"], guise), input=body,
+                       capture_output=True, text=True, check=True, env=env)
     job_id = int(r.stdout.strip())
     # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
     # into rsync://<head>/spawns/<jid>/, and rsync will not invent that directory. Safe to do after
     # sbatch — the job cannot start before sbatch has returned its id.
     (SPAWNS_DIR / str(job_id) / "outputs").mkdir(parents=True, exist_ok=True)
     with db.connect() as conn:
-        db.record_spawn(conn, job_id, user_id, script, uuid, minutes=minutes, gpus=gpu,
-                        vram_gb=vram_gb, node=node, hold=hold)
+        db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
+                        vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool)
+        if tidepool:
+            db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
     return job_id
 
 

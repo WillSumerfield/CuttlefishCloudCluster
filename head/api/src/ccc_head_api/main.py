@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, karma, ratelimit, retraction, slurm
+from . import db, guises, karma, ratelimit, retraction, slurm
 from . import recovery as recovery_mod
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod

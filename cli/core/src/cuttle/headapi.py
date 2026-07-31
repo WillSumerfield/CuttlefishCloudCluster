@@ -88,6 +88,39 @@ def install_enroll_sudoers(write_unit) -> None:
     write_unit(config.SUDOERS_MUNGE_HEADSCALE, _SUDOERS_MUNGE_HEADSCALE, "440")
 
 
+# --- the Mantle's one sudo grant (temp/spawn-isolation.md Phase 3b) ----------
+# Every Slurm operation CCC performs on a Spawn — submit it, re-nice it for Karma, cancel it, signal it
+# on a Retract — is one the job's OWNER may perform with no privilege at all. That was free while every
+# Spawn ran as the Mantle and the Head *was* the owner of every job in the queue. Now a Spawn belongs
+# to a **Guise**, so the Head has to become one to touch its own cluster's queue.
+#
+# **`(%ccc-guises)`, never `(root)`** — and that distinction is the whole of Phase 3's privilege story.
+# This grant lets `ccc` act as an account that owns nothing but one Spawn's working files; it cannot
+# read head.db, head.key, or another User's upload, because a Guise cannot. Escalating it to root would
+# hand back everything the phase just took away. It is the ONE unattended grant Phase 3 adds; `cuttle
+# user add`'s useradd runs under the operator's own sudo, at a tty, and is not here.
+#
+# `env_keep` is load-bearing, not hygiene. sbatch propagates ITS OWN environment to the job, which is
+# how the submitting User's W&B key reaches the Pod (ccc_head_api.spawns.compose_wandb_env writes it
+# into the child env). sudo scrubs the environment by default, so without this every Spawn would run
+# with no key and silently log nothing — a failure a User only discovers afterwards, in an empty W&B
+# project. Four named variables, scoped to this user: not `SETENV:`+`--preserve-env` (a far wider grant
+# than needed) and never `sbatch --export=...WANDB_API_KEY=`, which would put a User's secret in argv
+# where `ps` can read it.
+_SUDOERS_CCC_SLURM = f"""\
+# Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
+# The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Spawns as the Guise that owns
+# them: submit, re-nice, cancel, signal. Runas is the Guise group — NOT root.
+Defaults:{config.HEAD_API_USER} env_keep += "WANDB_API_KEY WANDB_MODE WANDB_PROJECT WANDB_ENTITY"
+{config.HEAD_API_USER} ALL=(%{config.GUISE_GROUP}) NOPASSWD: /usr/bin/sbatch, /usr/bin/scancel, \
+/usr/bin/scontrol
+"""
+
+
+def install_slurm_sudoers(write_unit) -> None:
+    write_unit(config.SUDOERS_CCC_SLURM, _SUDOERS_CCC_SLURM, "440")
+
+
 # --- Head API (⑥): read API + SPA, bound to LAN + mesh ----------------------
 # A second unit off the SAME venv (enroll app = munge key; main app = read board + SPA). Phase 1 runs
 # as `nobody` (holds no secrets; only read-only squeue/sinfo + static files). Binds 0.0.0.0 so a LAN

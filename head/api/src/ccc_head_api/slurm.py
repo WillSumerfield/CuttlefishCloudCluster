@@ -16,6 +16,8 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from . import guises
+
 # Shares the Head API's `ccc.api` logger (configured in main.py) so the diagnostic we keep OUT of the
 # client's 503 still lands in the journal.
 log = logging.getLogger("ccc.api")
@@ -226,8 +228,12 @@ def queue() -> list[dict]:
 
     `nice` is read back rather than remembered: it is the one piece of state the tick shares with an
     operator, and Slurm is where they meet. A **negative** nice is a Queue bump — only an operator can
-    set one (Slurm refuses a negative nice from a job's owner, and every Spawn is owned by the Mantle),
-    so its mere presence is the bump flag. No bump table, no coordination state.
+    set one (Slurm refuses a negative nice from a job's own owner, and CCC only ever acts AS the owner,
+    never as root), so its mere presence is the bump flag. No bump table, no coordination state.
+
+    `user` is the Spawn's **Guise**, and it rides along for one reason: it is who the tick has to
+    become to re-nice the job. Taken from the same poll rather than looked up per job, because the
+    alternative is one `squeue` subprocess per pending Spawn per 30-second pass.
     """
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
@@ -245,6 +251,7 @@ def queue() -> list[dict]:
             "id": _num(j.get("job_id")),
             "state": live,
             "nice": _num(j.get("nice")) or 0,
+            "user": j.get("user_name"),
             "node": (j.get("nodes") or None) if live == "RUNNING" else None,
             "gpus": _gpu_count(gres),
             # Empty until the Spawn starts — a PENDING Spawn holds no Device, which is exactly why the
@@ -255,21 +262,46 @@ def queue() -> list[dict]:
     return out
 
 
-def set_nice(job_id: int, nice: int) -> None:
-    """Lower a queued Spawn's priority. Needs no privilege at all: every Spawn runs as the Mantle, so
-    the Head *owns* every job in the queue, and setting your own job's nice is an owner's right (only a
-    negative nice — a boost — needs a Slurm operator)."""
-    subprocess.run(["scontrol", "update", f"JobId={job_id}", f"Nice={nice}"],
+def owner_of(job_id: int) -> str | None:
+    """Which account Slurm says owns this Spawn, or None if it no longer knows the job.
+
+    Ground truth for `guises.as_owner`, and deliberately squeue rather than the Attribution row: it is
+    what `sudo -u` has to MATCH, so asking anything else can only ever disagree. It also answers three
+    cases the ledger gets wrong — a Spawn queued before Guises deployed (row present, owned by the
+    Mantle), the enrollment benchmark (no row at all), and a job that has already ended (None, and the
+    command below is a no-op anyway).
+
+    One extra squeue per call, which is why the tick does NOT use it: `queue()` already carries `user`
+    for every live Spawn, and re-asking per pending job every 30s would be a subprocess per Spawn per
+    pass. This is for the one-shot paths (cancel, signal) where the caller has only an id.
+    """
+    r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%u"],
+                       capture_output=True, text=True, timeout=15)
+    return r.stdout.strip() or None
+
+
+def set_nice(job_id: int, nice: int, owner: str | None = None) -> None:
+    """Lower a queued Spawn's priority — as the **Guise** that owns it, which is what makes this need
+    no privilege beyond `sudo -u` (a job's owner may always nice their own job; only a NEGATIVE nice, a
+    boost, needs a Slurm operator, which is exactly what keeps the admin Queue bump unforgeable).
+
+    `owner` comes from the caller because it already has it: the Karma tick re-nices from the same
+    `queue()` poll that reported who owns each job. None means the Mantle — a Spawn from before Guises,
+    run plain exactly as it always was."""
+    subprocess.run(guises.as_owner(["scontrol", "update", f"JobId={job_id}", f"Nice={nice}"], owner),
                    capture_output=True, text=True, timeout=15, check=True)
 
 
 def spawns() -> list[dict]:
-    """The live Spawn queue — pending/running jobs in the CCC partition. Completed Spawns drop out of
-    squeue after MinJobAge; durable history waits for Phase 3 slurmdbd (see module docstring)."""
+    """The live Spawn queue — pending/running jobs in the CCC partition. Finished ones are dropped here
+    (LIVE_JOB_STATES) rather than left to squeue's own MinJobAge aging-out, which lags well behind a
+    Spawn actually ending; durable history waits for Phase 3 slurmdbd (see module docstring)."""
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         if j.get("partition") != PARTITION:
             continue
+        if not LIVE_JOB_STATES.intersection(j.get("job_state") or []):
+            continue  # squeue hasn't aged it out yet, but it's already done — history's job now
         # gres_detail when the Spawn is running (it names the exact cards); tres_per_node
         # ('gres/gpu:1') otherwise. The *allocated* TRES is no use for either — it omits gpu entirely,
         # since we run no gres accounting. slurmctld packs gres_detail only for a STARTED job that
@@ -293,19 +325,20 @@ def spawns() -> list[dict]:
 
 
 def cancel(job_id: int) -> None:
-    """End a live Spawn now. `scancel` needs no privilege here — every Spawn runs as the Mantle, so the
-    Head owns every job in the queue.
+    """End a live Spawn now, as the **Guise** that owns it — `scancel` from a job's own owner needs no
+    privilege, which is why this is a `sudo -u` and not a root grant.
 
     Settlement is NOT done here: the Karma tick settles a Spawn on its *disappearance from squeue*
     (slurm.queue()), which is exactly what this causes, so a cancel bills for the seconds actually held
-    with no second code path. Idempotent — scancel on an already-gone job is a no-op, not an error."""
-    subprocess.run(["scancel", str(job_id)], capture_output=True, text=True, timeout=15, check=True)
+    with no second code path. Idempotent — scancel on an already-gone job is a no-op, not an error, and
+    a job squeue has already forgotten reports no owner and takes the plain path below."""
+    subprocess.run(guises.as_owner(["scancel", str(job_id)], owner_of(job_id)),
+                   capture_output=True, text=True, timeout=15, check=True)
 
 
 def signal(job_id: int, sig: str) -> None:
-    """Send a signal to a live Spawn, without ending it the way `cancel` does. Needs no privilege here
-    either, for the same reason — every Spawn runs as the Mantle. Used by a Retract's initial nudge
-    (TERM, so the job's own EXIT trap can stage out what it can) and by the Karma tick's force-kill once
-    its grace period has passed (KILL)."""
-    subprocess.run(["scancel", f"--signal={sig}", str(job_id)],
+    """Send a signal to a live Spawn, without ending it the way `cancel` does. As its owner, for the
+    same reason. Used by a Retract's initial nudge (TERM, so the job's own EXIT trap can stage out what
+    it can) and by the Karma tick's force-kill once its grace period has passed (KILL)."""
+    subprocess.run(guises.as_owner(["scancel", f"--signal={sig}", str(job_id)], owner_of(job_id)),
                    capture_output=True, text=True, timeout=15, check=True)

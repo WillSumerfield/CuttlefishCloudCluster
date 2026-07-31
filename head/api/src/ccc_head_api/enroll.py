@@ -107,6 +107,13 @@ class EnrollRequest(BaseModel):
     # Arm Features (docs/TODO.md) this box declares, each validated against FEATURES_CATALOG below.
     # Optional and defaults empty — most Arms have none, and older CLIs never sent the field at all.
     features: list[FeatureDecl] = []
+    # What Arm-side files this box has WRITTEN (temp/spawn-isolation.md, Rollout). Configless Slurm
+    # serves slurm.conf but not the scripts it names, so a `Prolog=` naming a file an Arm does not have
+    # fails that Arm's jobs and DRAINS it — and a drained node stays drained across a slurmd restart,
+    # so fixing the file afterwards does not heal it. The Head therefore refuses to render `Prolog=`
+    # until every admitted Arm has reported it here. Defaults empty: an Arm running an older CLI has
+    # not written the prolog, and saying so is exactly right.
+    provides: list[str] = []
 
 
 def _load() -> dict:
@@ -300,6 +307,10 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     # whatever this Arm currently has, so a genuine removal (the owner un-picks a feature and re-runs
     # setup) actually takes — a setdefault here would let a stale declaration outlive its removal.
     entry["features"] = [f.model_dump() for f in req.features]
+    # An UPDATE for the same reason, and a load-bearing one: this is what the Head gates `Prolog=` on
+    # (temp/spawn-isolation.md, Rollout). A stale "yes, I have the prolog" surviving a downgrade is
+    # precisely the claim that would drain a node, so the answer is always this run's.
+    entry["provides"] = list(req.provides)
     # Re-enrolling an already-admitted Arm (e.g. after the Head's mesh IP moved) stays admitted.
     entry.setdefault("admitted", False)
     _save(reg)

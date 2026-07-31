@@ -238,7 +238,9 @@ def once(now: datetime | None = None) -> tuple[int, int]:
             continue
         want = nice[user_id]
         if want != job["nice"]:
-            slurm.set_nice(job["id"], want)
+            # The Guise the job runs as, straight off this pass's own poll — the account the tick has
+            # to become to re-nice it (temp/spawn-isolation.md Phase 3b).
+            slurm.set_nice(job["id"], want, job.get("user"))
             changed += 1
     return changed, settled
 

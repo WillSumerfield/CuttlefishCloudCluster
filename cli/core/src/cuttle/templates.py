@@ -34,6 +34,7 @@ SlurmdUser=root
 # SIGKILL). Served configless like the rest of this file; the script itself is written on every node by
 # `cuttle setup`. Runs as root (SlurmdUser), at job end, on the node that ran the Spawn.
 Epilog={epilog}
+{prolog}
 StateSaveLocation={state}
 SlurmdSpoolDir={spool}
 SlurmctldPidFile=/run/slurmctld.pid
@@ -185,8 +186,10 @@ json.dump({{
 }}, open(os.environ["CCC_OUT"] + "/power", "w"))
 """
 
-# Submitted as the Mantle (`sudo -u ccc sbatch`), like every Spawn — it must be, or slurmd on a remote
-# Arm would setuid() to an operator uid that does not exist there. --nodelist pins it to the node being
+# Submitted as the **cluster's own Guise** (`sudo -u ccc-u60001 sbatch`), like every Spawn is submitted
+# as somebody's — it must be, or slurmd on a remote Arm would setuid() to an operator uid that does not
+# exist there. The uid is reserved (config.GUISE_CLUSTER_UID) and the prolog creates the account on the
+# Arm being priced, exactly as it would for any User. --nodelist pins it to the node being
 # priced, and --gres=gpu:N takes ALL of its cards at once so one job measures every Device. Results come home the way every remote Spawn's do: rsync to the Head's [spawns] module, which
 # the Head then reads. That path is identical on the Head's own co-located Arm (it rsyncs to itself over
 # the mesh), so there is no is-this-the-Head branch here.
@@ -327,10 +330,26 @@ def render_rsyncd_unit() -> str:
 
 
 def render_base_def() -> str:
-    return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER, wandb=config.WANDB_PKG)
+    return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER, wandb=config.WANDB_PKG,
+                                uid=config.CCC_UID, gid=config.CCC_GID)
 
 
-def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None = None) -> str:
+# The `Prolog=` line, or the reason there isn't one. Rendering the line is the moment Guises become
+# mandatory fleet-wide, and it is the ONE fleet change in this project that punishes being early: an
+# Arm named by it without the script drains, and stays drained across a slurmd restart. So the Head
+# states, in the file itself, that it is deliberately absent and what would turn it on.
+_PROLOG_LINE = """\
+# Creates the **Guise** each Spawn runs as, on whatever node Slurm picked, before the job step. Runs as
+# root (SlurmdUser). Written on every node by `cuttle setup`, exactly like the epilog above.
+Prolog={prolog}"""
+_PROLOG_HELD = """\
+# NO Prolog= — {n} admitted Arm(s) have not reported having the prolog script: {missing}.
+# Naming it here would fail their jobs and DRAIN them, and a drained node stays drained across a slurmd
+# restart. Re-run `cuttle setup --arm` on each, then `cuttle setup --head` here."""
+
+
+def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None = None,
+                      missing_prolog: list[str] | None = None) -> str:
     """`mesh_ip` = the Head's address on the CCC mesh. Baked in because MagicDNS is off: nothing in
     this system can resolve a hostname, so Slurm gets the address literally.
 
@@ -341,10 +360,17 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
     `features` = Arm Features (docs/TODO.md) the Head's own co-located Arm has, comma-joined onto its
     one vram bucket exactly like a donor Arm's `enroll.slurmd_dropin` — a Slurm Feature is a flat
     per-node set either way. Defaults to none: the Head's own box declares no catalog features today.
+
+    `missing_prolog` = admitted Arms that have not reported the prolog script (enroll.arms_missing).
+    Non-empty holds `Prolog=` back for the WHOLE fleet, including the Arms that are ready — the line is
+    one setting for every node, so it is on for all of them or none.
     """
     sockets, cores, threads = system.cpu_topology()
     feature = ",".join([config.vram_feature(system.gpu_vram_mb()), *sorted(features or [])])
+    prolog = (_PROLOG_HELD.format(n=len(missing_prolog), missing=", ".join(missing_prolog))
+              if missing_prolog else _PROLOG_LINE.format(prolog=config.SLURM_PROLOG))
     return SLURM_CONF_TMPL.format(
+        prolog=prolog,
         weight=weight,
         cluster=config.CLUSTER_NAME,
         partition=config.PARTITION,
@@ -384,12 +410,98 @@ rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
 # trap: a sink that caught real stderr (the shell died before out/err existed) is worth keeping.
 [ -s "/tmp/ccc-$SLURM_JOB_ID.slurm" ] || rm -f "/tmp/ccc-$SLURM_JOB_ID.slurm"
 [ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"
+# Take the Spawn dir back off the **Guise** the prolog lent it to (temp/spawn-isolation.md Phase 3c).
+# The prolog takes, the epilog returns, so the loan lasts exactly the job's lifetime — and unlike the
+# job script's own EXIT trap, this still runs after a SIGKILL. Without it a User's LATER Spawn could
+# rewrite an earlier one's recorded `exit` code and outputs, since both run as the same Guise.
+# Head's co-located Arm only; the directory does not exist on a donor Arm, so this no-ops there.
+[ -d "{head_spawns}/$SLURM_JOB_ID" ] && chown -R {mantle}:{mantle} "{head_spawns}/$SLURM_JOB_ID"
 exit 0
 """
 
 
 def render_epilog() -> str:
-    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR)
+    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR,
+                              head_spawns=config.HEAD_SPAWNS_DIR,
+                              mantle=config.HEAD_API_USER)
+
+
+# --- the Prolog (temp/spawn-isolation.md Phase 3c) ---------------------------
+# Where a **Guise** comes into existence on a machine, and the only place it can be: it runs as root
+# (SlurmdUser=root), before the job step, on whatever node Slurm picked, with no network and no head.db.
+# `SLURM_JOB_UID` is its ONLY input — which is why a Guise is named `ccc-u<uid>` after its uid and
+# nothing else. Measured on hardware (Probe 1/1b, 2026-07-31): a Slurm job LAUNCHES fine as a uid with
+# no local account, but `apptainer exec` refuses one outright ("Couldn't determine user account
+# information"), and every Spawn is an apptainer exec. So this is mandatory, not an optimisation — and
+# it lands in time, because the job step is where apptainer is invoked and this runs before it.
+#
+# Written on every node by `cuttle setup` exactly as the epilog is (setup._start_slurmd): configless
+# Slurm serves slurm.conf but NOT the scripts it names, and a `Prolog=` pointing at a file a node does
+# not have fails that node's jobs and DRAINS it — which does not self-heal when the file is fixed. See
+# the rollout gate in enroll.fleet_is_prolog_ready.
+PROLOG_TMPL = """\
+#!/bin/bash
+# CCC Spawn prolog. Rendered by `cuttle setup`; slurm.conf's Prolog= points here on every node.
+# Creates the **Guise** this Spawn runs as, if this node has never run one of that User's Spawns
+# before, and lends it the two directories it needs to work in. Runs as root, before the job step.
+uid="$SLURM_JOB_UID"
+jid="$SLURM_JOB_ID"
+guise="{prefix}$uid"
+# Anything outside the reserved Guise block is not ours to touch: the Mantle at {mantle_uid} (a Spawn
+# queued before this phase deployed), root, slurm, a donor's own accounts. They already exist, and
+# creating an account for one would be a bug. Nothing to do — and NEVER a non-zero exit, which would
+# drain the node over a job we simply have no opinion about.
+if [ "$uid" -lt {uid_min} ] || [ "$uid" -gt {uid_max} ]; then exit 0; fi
+existing=$(getent passwd "$uid" | cut -d: -f1)
+if [ -z "$existing" ]; then
+    # First Spawn of this User's ever to land on this box. The shared group exists only so the HEAD's
+    # sudoers rule has a Runas list (sudo never runs on an Arm); created here too so a Guise is the
+    # same account everywhere. Home-less: nothing reads it, and the Pod makes its own in its overlay.
+    groupadd --gid "$uid" "$guise" 2>/dev/null
+    groupadd --gid {group_gid} {group} 2>/dev/null
+    useradd --uid "$uid" --gid "$uid" --groups {group} --no-create-home \\
+            --shell /usr/sbin/nologin --comment "{gecos}" "$guise" || exit 1
+elif [ "$existing" != "$guise" ]; then
+    # The uid is taken by an account CCC did not create. Refusing is the whole point: running a
+    # stranger's Spawn as a donor's own login account is worse than draining this node, which is what
+    # this exit does. Loud, and in the node's slurmd log.
+    echo "ccc-prolog: uid $uid is '$existing' on this node, not '$guise' — refusing to run a Spawn" \\
+         "as an account CCC does not own" >&2
+    exit 1
+fi
+
+# Head's co-located Arm ONLY: the two directories a Spawn writes in are under the Head's state dir, and
+# they are ccc-owned. Lend them to the Guise for exactly this job; the epilog takes them back. Both are
+# keyed by the JOB ID, which is why this needs nothing the prolog cannot already see. Absent on a donor
+# Arm (a remote Spawn scratches in /tmp and rsyncs its results home), so both branches no-op there.
+#
+# `install -d` rather than mkdir+chown: it is idempotent and it applies the ownership either way, so it
+# does not matter whether this or the API's own mkdir got here first.
+if [ -d "{head_spawns}" ]; then
+    # group {mantle}: the Head API still reads out/err back and rsyncd still stages results in as the
+    # Mantle. 0770 gives both sides everything they need and everyone else nothing.
+    install -d -o "$guise" -g {mantle} -m 0770 "{head_spawns}/$jid" "{head_spawns}/$jid/outputs"
+fi
+if [ -d "{head_scratch}" ]; then
+    install -d -o "$guise" -g "$guise" -m 0700 "{head_scratch}/$jid"
+fi
+exit 0
+"""
+
+
+def render_prolog() -> str:
+    return PROLOG_TMPL.format(
+        prefix=config.GUISE_PREFIX,
+        mantle=config.HEAD_API_USER,
+        mantle_uid=config.CCC_UID,
+        uid_min=config.GUISE_CLUSTER_UID,
+        uid_max=config.GUISE_UID_MAX,
+        group=config.GUISE_GROUP,
+        group_gid=config.GUISE_GROUP_GID,
+        gecos=config.GUISE_GECOS,
+        head_spawns=config.HEAD_SPAWNS_DIR,
+        head_scratch=config.HEAD_SCRATCH_DIR,
+    )
 
 
 def render_bench_sbatch(node: str, head_mesh_ip: str, gpus: int = 1) -> str:

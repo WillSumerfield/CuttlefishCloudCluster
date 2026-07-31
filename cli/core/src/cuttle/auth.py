@@ -257,6 +257,67 @@ def _admin(args: list[str], check: bool = True):
 
 def user_add(username: str, admin: bool = False) -> None:
     _admin(["add", *(["--admin"] if admin else []), username])
+    ensure_guise_accounts()
+
+
+# --- Guises (temp/spawn-isolation.md Phase 3) -------------------------------
+# The uid is allocated in head.db by the command above, which needs no privilege at all. The Unix
+# account it names does need root — and gets it the only way Phase 3 allows: from the operator who is
+# standing at the Head running this command, at a tty, through the same sudo every other `cuttle`
+# command uses. There is no helper, no NOPASSWD root grant, and no HTTP route that creates a User (so
+# nothing unattended ever needs to do this).
+
+def guise_accounts() -> list[tuple[int, str]]:
+    """[(uid, username), ...] for every allocated Guise. Empty on any failure — the caller is a
+    provisioning step, and one that cannot read the list has nothing to create."""
+    r = run(_admin_argv(["guises"]), sudo=True, capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit():
+            out.append((int(parts[0]), parts[1]))
+    return out
+
+
+def ensure_guise_accounts() -> None:
+    """Create the Head-local Unix account for every Guise that doesn't have one yet.
+
+    Idempotent and backfilling by construction: it asks head.db for the whole list every time, so the
+    same call provisions a User created seconds ago and every User who predates Guises entirely. That
+    is the upgrade path — a `setup --head` re-run, which the rollout already requires for the Prolog.
+
+    Head-only. On an Arm the accounts are created lazily by the Prolog, as root, at the moment a Spawn
+    lands there — the only mechanism that can reach a donor's box that is powered off today and
+    enrolled tomorrow (temp/spawn-isolation.md, Probe 1b).
+    """
+    for uid, _username in guise_accounts():
+        provision_guise(uid)
+    provision_guise(config.GUISE_CLUSTER_UID)  # the enrollment benchmark's — belongs to no User
+
+
+def provision_guise(uid: int) -> None:
+    """One Guise account, at exactly `uid`. Non-fatal if it is already there (a re-run).
+
+    The same account the Slurm prolog creates on a donor's Arm, by the same rules — this is just the
+    path for the two boxes where an account is needed BEFORE any Spawn has landed: the Head (which
+    submits, and so must be able to `sudo -u` into every Guise) and an Arm at `setup --arm` (whose
+    enrollment benchmark runs as the cluster Guise before `Prolog=` may even be switched on).
+
+    Home-less (`-M`) for the same reason the Mantle is: nothing on any node reads a Guise's home — the
+    Pod makes its own inside the `--writable-tmpfs` overlay — so a donor's box is left with an empty
+    account and no directory. `nologin` for the same reason too: slurmd execs the batch script by its
+    shebang, and a Tide Pool's sshd runs INSIDE the Pod against the image's own passwd, not the host's.
+    Its private group (gid == uid) is what keeps the shared group from ever owning a file — that group
+    exists only to be the Runas list on the Head's sudoers rule.
+    """
+    name = config.guise_name(uid)
+    run(["groupadd", "--gid", str(config.GUISE_GROUP_GID), config.GUISE_GROUP], sudo=True, check=False)
+    run(["groupadd", "--gid", str(uid), name], sudo=True, check=False)
+    run(["useradd", "--uid", str(uid), "--gid", str(uid), "--groups", config.GUISE_GROUP,
+         "--no-create-home", "--shell", "/usr/sbin/nologin", "--comment", config.GUISE_GECOS, name],
+        sudo=True, check=False)
 
 
 def user_list() -> None:
