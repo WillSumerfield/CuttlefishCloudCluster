@@ -1,0 +1,146 @@
+"""Tide Pool (docs/TODO.md, now built): connection plumbing for an interactive Spawn — a live shell in
+a Pod instead of a script. Three jobs live here:
+
+1. **Mint the keypair** a Tide Pool authenticates with (`grant`) — a fresh ed25519 pair per Spawn, never
+   reused, never seen by the User themselves. The public half is baked into the job script's
+   authorized_keys (spawns.JOB_SCRIPT's tidepool payload); the private half is handed to the CLI, once
+   authenticated, over `GET /spawns/{id}/tidepool` (see db.tidepool_private_key) — the CLI never manages
+   a key of its own, mirroring the built-in (no SSO/IdP) auth model everywhere else in CCC.
+
+2. **Reserve the port** (`reserve_port`) — one number, reused as BOTH the sshd port inside the Pod on the
+   Arm and the Head-side relay's listen port, so nothing has to reconcile the two. Reserved before the
+   job_id exists (it has to be baked into the job script, rendered before sbatch ever runs).
+
+3. **Run the relay** (`ensure_relay`) — Users are not Mesh members and have no route to an Arm's mesh
+   address (only Head + Arm are on the Mesh — see CONTEXT.md), so the Head, which every client already
+   reaches for the Dashboard/API, forwards raw bytes from its own reachable address to the Arm's mesh
+   address for the life of one Spawn. A narrow purpose-built TCP proxy (relay.py), not a jump-host sshd
+   on the Head itself (a new attack surface plus a host-key/user story of its own) and not a websocket
+   tunnel (a new dependency this project does not otherwise need, and real SSH end to end — not a
+   bespoke shell-over-websocket protocol — is the explicit ask).
+
+The relay is a SEPARATE PROCESS (relay.py, its own asyncio loop), not a task inside the sync Head API or
+the karma tick — so a relay carrying live bytes is never blocked behind a slurmctld poll, and a wedged
+relay can never wedge either of them. `ensure_relay` is idempotent (checks the tracked pid is actually
+alive before starting a new one) and is called from both the polled `GET .../tidepool` route — so attach
+does not wait on the tick's 30s cadence — and `reap_dead` below, belt and suspenders.
+"""
+
+import logging
+import os
+import signal
+import subprocess
+import sys
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
+from . import db
+
+log = logging.getLogger("ccc.api")
+
+# One port range, reserved once at `cuttle setup --head` (cuttle.system.allow_tcp_port_range — CLI-side,
+# must stay numerically in step with these two constants). 200 concurrent Tide Pools is far past
+# anything this project's single-cluster scale will ever hold open at once.
+PORT_BASE = 41000
+PORT_RANGE = 200
+
+
+def _keypair() -> tuple[str, str]:
+    """A fresh ed25519 keypair, OpenSSH-formatted so `ssh -i` and an authorized_keys line can use them
+    with no conversion. Returns (private_pem_text, public_line_text)."""
+    key = ed25519.Ed25519PrivateKey.generate()
+    private = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.OpenSSH,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public = key.public_key().public_bytes(
+        encoding=serialization.Encoding.OpenSSH,
+        format=serialization.PublicFormat.OpenSSH,
+    ).decode()
+    return private, public + "\n"
+
+
+def reserve_port(conn) -> int:
+    """The lowest free port in the reserved range, actually CLAIMED (not just read) before returning —
+    see db.reserve_tidepool_port for why the claim has to be its own table. Retries on the rare race
+    where another submission claims the same candidate between our read and our insert."""
+    for _ in range(10):
+        used = db.used_tidepool_ports(conn)
+        candidates = (p for p in range(PORT_BASE, PORT_BASE + PORT_RANGE) if p not in used)
+        port = next(candidates, None)
+        if port is None:
+            raise ValueError(f"no free Tide Pool port in {PORT_BASE}-{PORT_BASE + PORT_RANGE} — too "
+                             f"many Tide Pools running at once; cancel one and retry")
+        if db.reserve_tidepool_port(conn, port):
+            return port
+    raise ValueError("could not reserve a Tide Pool port — too much contention, try again")
+
+
+def grant(conn) -> tuple[int, str, str]:
+    """Mint a Tide Pool's port + keypair, BEFORE the job script is rendered (both are baked into it).
+    Returns (port, pubkey_line, privkey_pem). The `tidepools` row itself is written by the caller once
+    the real job_id exists (spawns.submit, after sbatch returns — mirrors how the staging uuid is minted
+    before sbatch and the Attribution row is written after)."""
+    port = reserve_port(conn)
+    private, public = _keypair()
+    return port, public, private
+
+
+def _alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def ensure_relay(conn, job_id: int, node_mesh_ip: str, node: str) -> None:
+    """Make sure a Tide Pool's Head-side relay is up, starting one if it is missing or dead.
+
+    Idempotent by design: called on every poll of `GET /spawns/{id}/tidepool` while the Spawn is
+    RUNNING, so "is the process I already started still alive" has to be cheap and safe to repeat.
+    `node_mesh_ip` is read fresh by the caller (off `slurm.arms()`) rather than cached here — an Arm's
+    address cannot change under a running Spawn, but re-deriving it costs nothing and one fewer thing to
+    keep in sync is one fewer way for this to drift from the source of truth.
+    """
+    row = db.get_tidepool(conn, job_id)
+    if row is None:
+        return  # not a Tide Pool, or already reaped — nothing to do
+    if _alive(row["relay_pid"]):
+        return
+    port = row["port"]
+    # Own process group (start_new_session): a relay must outlive the Head API worker that spawned it
+    # (a request handler), and must not receive a signal meant for its parent. DEVNULL throughout — its
+    # stdout/stderr are not worth a pipe (see ui.py's note on the same tradeoff for the clipboard tool);
+    # a relay that cannot forward simply looks like a connection refused to the CLI, which is diagnosis
+    # enough for a feature this narrow.
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "ccc_head_api.relay", str(port), node_mesh_ip, str(port)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    db.set_tidepool_relay(conn, job_id, proc.pid, node)
+    log.info("tidepool relay job=%s port=%s -> %s:%s pid=%s", job_id, port, node_mesh_ip, port, proc.pid)
+
+
+def _kill(pid: int | None) -> None:
+    if not pid:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass  # already gone
+
+
+def reap_dead(conn, live_job_ids: set[int]) -> None:
+    """Called every karma-tick pass: kill the relay and forget the connection state for any Tide Pool
+    whose Spawn has left the queue. Mirrors retraction.py's shape (state + signal here, the tick is what
+    calls it periodically) rather than adding a fourth systemd service just to watch one table."""
+    for row in db.live_tidepools(conn):
+        if row["job_id"] in live_job_ids:
+            continue
+        _kill(row["relay_pid"])
+        db.delete_tidepool(conn, row["job_id"])

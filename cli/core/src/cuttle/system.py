@@ -328,6 +328,17 @@ def allow_tcp_port(port: int, comment: str) -> None:
     run(["ufw", "allow", f"{port}/tcp", "comment", comment], sudo=True)
 
 
+def allow_tcp_port_range(base: int, count: int, comment: str) -> None:
+    """Like `allow_tcp_port`, for a whole range at once — Tide Pool's relay ports (docs/TODO.md), opened
+    ONCE at `setup --head` rather than per-Spawn: a ufw rule added and removed on every submit/end would
+    be firewall churn for no benefit, since the range itself is a fixed, harmless-when-idle constant."""
+    if not ufw_active():
+        print(f"ufw inactive or absent — leaving the host firewall alone (nothing blocks "
+             f":{base}-{base + count - 1})")
+        return
+    run(["ufw", "allow", f"{base}:{base + count - 1}/tcp", "comment", comment], sudo=True)
+
+
 def deny_tcp_port(port: int) -> None:
     """Reverse of allow_tcp_port. Tolerant of partial state (teardown), like deny_mesh_iface."""
     if not shutil.which("ufw"):

@@ -17,6 +17,7 @@ from . import setup as setup_mod
 from . import spawns as spawns_mod
 from . import system
 from . import teardown as teardown_mod
+from . import tidepool as tidepool_mod
 from . import ui
 
 # pretty_exceptions_enable=False: Typer's traceback rendering is for a developer, and every escaping
@@ -633,7 +634,15 @@ def teardown(
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
-    script: str = typer.Argument(None, help="Python script to run inside the Pod."),
+    script: str = typer.Argument(
+        None, help="Python script to run inside the Pod. With --tidepool: a Spawn id to attach/reattach "
+                   "to instead of requesting a new one (unused otherwise)."),
+    tidepool: bool = typer.Option(
+        False, "--tidepool", help="A live interactive shell instead of a script — see docs/TODO.md "
+                                  "'Tide Pool'. Requests one (or attaches to an existing id given as "
+                                  "the positional arg), waits for placement, and drops you into it. "
+                                  "Disconnecting does NOT end it — `cuttle cancel <id>` does, or "
+                                  "--time running out."),
     time: int = typer.Option(
         None, "--time", help="Wall-clock limit, in MINUTES. Required. The Spawn is killed at this "
                             "limit, and Karma is escrowed against it — over-estimating costs you "
@@ -671,10 +680,21 @@ def run(
     --output/-o has no default either, and none is offered anywhere: a Spawn nobody named an output
     for is one whose results (docs/TODO.md's now-closed "Spawn Output Enforcement") have nowhere
     retrievable to land — `mkdir -p "$CCC_OUT/<name>"` runs before your script does, once per name.
+
+    A wrong or incomplete --output isn't fatal the instant the Spawn ends: docs/TODO.md's "Recovery
+    Window" keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
+    recoverable on the Head for 30 minutes afterward (`cuttle recover <id>`), up to 16GB. Past that, or
+    past the window, it's gone — declare `--output` correctly rather than leaning on it.
+
+    --tidepool replaces the whole script/output/upload story above with a live shell — see
+    cuttle.tidepool for that flow; everything below this point is the ordinary script path.
     """
-    wizard = script is None
     output = list(output) if output else []
     feature = list(feature) if feature else []
+    if tidepool:
+        return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
+                                features=feature, follow=follow)
+    wizard = script is None
     with ui.section("Submit a Spawn", lambda: f"{script}  {time}min  {vram}G"):
         # No file picker: you pass the path. Prompting through a directory listing is slower than
         # typing a name you already know, and wrong the moment the script lives in a subdirectory.

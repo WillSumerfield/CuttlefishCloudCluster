@@ -32,6 +32,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, karma, ratelimit, retraction, slurm
 from . import spawns as spawns_mod
+from . import tidepool as tidepool_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
@@ -604,11 +605,18 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     `cuttle run --node`, run on the Head. Users declare what they need (`--vram`) and let Slurm
     choose — naming a machine sidesteps eligibility, and with it the Demand the Spawn would have
     added to every card that could have run it.
+
+    `tidepool` (docs/TODO.md, "Tide Pool") is the one flag that changes what the other fields mean: a
+    live shell instead of a script. It relaxes exactly two of the checks below — `script` and `outputs`
+    — and nothing else; time/vram/gpu/features/pricing/placement/Attribution are all identical to any
+    other Spawn. The Dashboard's Tide Pool mode sends an EMPTY body (no project — there is nothing to
+    upload) and omits `script`; the CLI does the same for `cuttle run --tidepool`.
     """
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
     meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
-    if not meta.get("script"):
+    tidepool = bool(meta.get("tidepool"))
+    if not meta.get("script") and not tidepool:
         raise HTTPException(422, "missing 'script' in X-CCC-Meta — the entrypoint script is required")
     for field in ("minutes", "vram"):
         if not meta.get(field):
@@ -616,9 +624,12 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     # At least one declared output subdir (docs/TODO.md's now-closed "Spawn Output Enforcement"): a
     # Spawn nobody named an output for is one whose results have nowhere retrievable to land, which is
     # worse discovered after the fact than refused up front. `outputs` also gets the shell-injection
-    # check (OUTPUT_NAME_RE) in spawns.submit — this is only the "did the client send any" gate.
-    outputs = meta.get("outputs")
-    if not isinstance(outputs, list) or not outputs:
+    # check (OUTPUT_NAME_RE) in spawns.submit — this is only the "did the client send any" gate. Skipped
+    # for a Tide Pool (docs/TODO.md) alone — see submit_checked's docstring.
+    outputs = meta.get("outputs") or []
+    if not isinstance(outputs, list):
+        raise HTTPException(422, "'outputs' in X-CCC-Meta must be a list")
+    if not outputs and not tidepool:
         raise HTTPException(422, "missing 'outputs' in X-CCC-Meta — at least one output folder name is "
                                  "required (--output/-o)")
     if meta.get("node"):
@@ -633,16 +644,60 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         # reach here, see above), the per-User concurrent-Spawn cap (Phase 8 loose end), an invalid
         # output name, and a `script` that isn't actually in the uploaded tar.
         job_id = spawns_mod.submit_checked(
-            user["id"], user["is_admin"], meta["script"], gpus, meta.get("args", []),
+            user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
-            wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [])
+            wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [],
+            tidepool=tidepool)
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:
         tar_path.unlink(missing_ok=True)
-    log.info("submit id=%s by %s (gpu=%d vram=%d min=%d)", job_id, user["username"], gpus, vram_gb,
-             minutes)
+    log.info("submit id=%s by %s (gpu=%d vram=%d min=%d tidepool=%s)", job_id, user["username"], gpus,
+             vram_gb, minutes, tidepool)
     return {"id": job_id}
+
+
+@api.get("/spawns/{job_id}/tidepool")
+def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
+    """The one authenticated channel a Tide Pool's ephemeral SSH keypair ever travels over — the CLI
+    polls this after submitting (or when reattaching to an existing one) until `ready` is true, per the
+    "no user ever manages an SSH key themselves" rule (docs/TODO.md, "Tide Pool").
+
+    `ready` is false while the Spawn is not yet RUNNING, or RUNNING but the Head-side relay is not up
+    yet — this call is what BRINGS the relay up (`tidepool.ensure_relay`, idempotent), so polling here is
+    what makes attach converge in well under the karma tick's 30s cadence rather than waiting on it.
+
+    The SAME port + private key are returned every time, for the Spawn's whole life: a dropped
+    connection or a Dashboard-requested Tide Pool both reattach with `cuttle run --tidepool <id>`, and
+    both need the identical credential back, not a fresh one.
+
+    `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md Phase 3e). It
+    is on the wire because the CLI cannot derive it: it is `ccc-u<uid>`, and a uid is a Head-side fact.
+    The User never types it and never sees it; nobody is expected to know their own uid.
+    """
+    with db.connect() as conn:
+        row = db.get_spawn(conn, job_id)
+        tp = db.get_tidepool(conn, job_id) if row is not None else None
+    if row is None or not row["tidepool"]:
+        raise HTTPException(404, f"Spawn {job_id} is not a Tide Pool")
+    if row["user_id"] != user["id"]:
+        raise HTTPException(403, "you can only attach to your own Tide Pool")
+    if tp is None:
+        raise HTTPException(404, f"Tide Pool {job_id} has no connection state (already ended?)")
+    # Only past the ownership check: this is the caller's OWN Guise, so there is nothing to look up
+    # until we know the Tide Pool is theirs.
+    with db.connect() as conn:
+        guise = guises.name(db.allocate_guise(conn, user["id"]))
+    if spawns_mod.active_state(job_id) != "RUNNING":
+        return {"ready": False, "port": None, "private_key": None, "user": guise}
+    node_name = next((s["node"] for s in slurm.spawns() if s["id"] == job_id), None)
+    arm = next((a for a in slurm.arms() if a["name"] == node_name), None) if node_name else None
+    if arm is None or not arm.get("mesh_ip"):
+        return {"ready": False, "port": None, "private_key": None, "user": guise}
+    with db.connect() as conn:
+        tidepool_mod.ensure_relay(conn, job_id, arm["mesh_ip"], node_name)
+        key = db.tidepool_private_key(conn, job_id)
+    return {"ready": key is not None, "port": tp["port"], "private_key": key, "user": guise}
 
 
 def _human(n: int) -> str:

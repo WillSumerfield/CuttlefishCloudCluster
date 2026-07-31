@@ -28,6 +28,13 @@ PARTITION = os.environ.get("CCC_PARTITION", "ccc")
 # this (authed, LAN-facing) API exposes no admin writes, same as everywhere else in it.
 FEATURES_CATALOG = Path(os.environ.get("CCC_FEATURES_CATALOG", "/var/lib/ccc/features.json"))
 
+# squeue keeps a finished job around (in a terminal state: COMPLETED, FAILED, CANCELLED, TIMEOUT, ...)
+# for MinJobAge (slurm.conf, default 300s) after it ends — spawns() must not hand those back, or a Spawn
+# that just finished briefly reappears in the live queue as "waiting" (LiveQueue.tsx's isRunning() has no
+# terminal-state case; the Dashboard trusts /spawns to already be queue-only, per spawns_history()'s
+# "queue is now, history is done").
+LIVE_JOB_STATES = {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED"}
+
 
 def reachable() -> bool:
     """slurmctld liveness for `/readyz`. `scontrol ping` is the cheapest canonical check — it asks the

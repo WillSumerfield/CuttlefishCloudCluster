@@ -76,7 +76,7 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
 
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
-                   features: list[str] | None = None) -> int:
+                   features: list[str] | None = None, tidepool: bool = False) -> int:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and since Phase 6 the Head API has none — so this does not travel over
@@ -87,6 +87,9 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
     `wandb_env` rides across as JSON — the same dict the HTTP path puts in its meta, so `--project`
     and `--entity` mean the same thing on both roads. It used to be dropped here entirely, which made
     both flags silently no-ops the moment a Spawn was pinned.
+
+    `tidepool` (docs/TODO.md) lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
+    node-pinning, threaded through for completeness (the common Tide Pool path is unpinned).
     """
     me = auth._api("GET", "/me")["username"]
     # The tar has to be readable by the `ccc` account the admin module runs as, so it goes to a
@@ -105,6 +108,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
             # script argument for another output/feature name.
             *[f for name in outputs for f in ("--output", name)],
             *[f for name in (features or []) for f in ("--feature", name)],
+            *(["--tidepool"] if tidepool else []),
             *args]), sudo=True, capture_output=True, text=True, check=False)
     finally:
         Path(tar_path).unlink(missing_ok=True)
@@ -186,6 +190,33 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     ui.data(str(spawn_id))
     if follow:
         _follow(spawn_id)
+
+
+def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
+                    features: list[str] | None = None) -> int:
+    """Request a Tide Pool (docs/TODO.md) — no project upload, no script: only declared needs travel.
+    Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in tidepool.py, owns the UI
+    from here, since it still has to poll for placement and attach).
+
+    The upload body is a genuinely empty gzip-tar (`_make_tar` with an empty file list), not raw empty
+    bytes — the Head unconditionally opens it as a tar archive (spawns.submit), and every client sends
+    the same wire shape whether or not there is a project behind it.
+    """
+    features = features or []
+    empty_tar = _make_tar(Path.cwd(), [])
+    if node:
+        return _submit_pinned(empty_tar, "", [], minutes, vram, gpu, node, {}, outputs,
+                              features=features, tidepool=True)
+    meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,
+           **({"features": features} if features else {})}
+    client = auth._client()
+    client.token = auth._load_token()
+    try:
+        return client.upload("/submit", empty_tar, meta)["id"]
+    except api.ApiError as e:
+        if ui.DEBUG:
+            raise
+        raise ui.abort(e.user_message()) from None
 
 
 def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:

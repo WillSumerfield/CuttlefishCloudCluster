@@ -392,6 +392,10 @@ def build_spa() -> None:
     run(["cp", "-r", str(web_src / "dist"), str(config.HEAD_API_WEB_DIR)], sudo=True)
     run(["chmod", "-R", "a+rX", str(config.HEAD_API_WEB_DIR.parent)], sudo=True)
     system.allow_tcp_port(config.HEAD_API_PORT, "ccc head api (LAN+mesh)")
+    # Tide Pool's (docs/TODO.md) per-Spawn relay ports — one whole range, opened once, not one ufw rule
+    # per Spawn. Same LAN+mesh reachability as the Head API itself: a Tide Pool's `ssh` connects here.
+    system.allow_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE,
+                                "ccc tide pool relay (LAN+mesh)")
     print(f"cuttle: Dashboard SPA built → {config.HEAD_API_WEB_DIR}")
 
 

@@ -206,6 +206,44 @@ _SCHEMA_V7 = """
 ALTER TABLE users ADD COLUMN wandb_key BLOB;
 """
 
+# Tide Pool (docs/TODO.md, now built): a Spawn whose payload is a live shell instead of a script.
+# `spawns.tidepool` marks which ones (submit_checked skips the outputs/script requirements for them).
+# Two tables because the port has to be reserved BEFORE the job_id exists (it is baked into the job
+# script, rendered before sbatch ever runs — sshd inside the Pod and the Head's relay both bind it), and
+# `tidepools.job_id` cannot be a key nothing has yet:
+#   * `tidepool_ports` — the reservation itself, keyed by the port alone. Its own table so two
+#                  submissions racing the same "lowest free port" collide on ITS primary key (caught and
+#                  retried — see tidepool.reserve_port) instead of racing a job_id neither has yet.
+#   * `tidepools`  — everything else, written once the job_id is known (mirrors record_spawn, written
+#                  after sbatch returns). `port` is copied in here too, for reads that only care about one
+#                  Tide Pool's state and would otherwise need a second table just to find its port.
+#     - `pubkey`/`privkey` — a keypair minted once at submit and baked into the job script's
+#                  authorized_keys (pubkey) — never regenerated, so a reattach after a dropped connection
+#                  or a Dashboard-requested Tide Pool gets the SAME key back. `privkey` is encrypted at
+#                  rest (atrest.py) exactly like a W&B key: a third-party-shaped secret that must come
+#                  back out in plaintext to be handed to the CLI, so it cannot be hashed.
+#     - `relay_pid` — the Head-side TCP relay subprocess forwarding this port to the Arm, once started
+#                  (tidepool.ensure_relay). NULL until the Spawn is actually RUNNING somewhere.
+#     - `node`     — the Arm the relay is forwarding to, cached so a restarted relay's liveness check does
+#                  not have to re-derive it from squeue every poll.
+# Both rows are deleted (not decayed like the escrow, ended like retracted_jobs) the moment the Spawn
+# leaves the queue — tick.py's reap_dead is the one place that happens, and it kills relay_pid first.
+_SCHEMA_V8 = """
+ALTER TABLE spawns ADD COLUMN tidepool INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE tidepool_ports (
+  port        INTEGER PRIMARY KEY,
+  reserved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE TABLE tidepools (
+  job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
+  port       INTEGER NOT NULL,
+  pubkey     TEXT    NOT NULL,
+  privkey    BLOB    NOT NULL,
+  relay_pid  INTEGER,
+  node       TEXT
+);
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7]
 
@@ -387,7 +425,8 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
                  staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
-                 node: str | None = None, hold: float | None = None) -> None:
+                 node: str | None = None, hold: float | None = None,
+                 tidepool: bool = False) -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
     ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
     submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
@@ -396,9 +435,10 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
     Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
     """
     conn.execute(
-        """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node),
+        """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
+                              tidepool)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool)),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -675,3 +715,73 @@ def clear_retracting_job(conn: sqlite3.Connection, job_id: int) -> None:
     """Called only at Settlement, once the zero-billed ledger row is written."""
     conn.execute("DELETE FROM retracted_jobs WHERE job_id=?", (job_id,))
     conn.commit()
+
+
+# --- Tide Pool (docs/TODO.md, now built) -------------------------------------
+# See _SCHEMA_V8's comment for the table shapes. `privkey` is always encrypted (atrest.encrypt) going in
+# and decrypted (atrest.decrypt) coming out — nothing outside this module ever sees the ciphertext.
+
+def used_tidepool_ports(conn: sqlite3.Connection) -> set[int]:
+    """Every port currently reserved — a Tide Pool being placed (job_id unknown yet) as well as a live
+    one. This is the WHOLE point of the separate `tidepool_ports` table: a reservation has to exist
+    before there is a job_id to key `tidepools` on."""
+    return {r["port"] for r in conn.execute("SELECT port FROM tidepool_ports").fetchall()}
+
+
+def reserve_tidepool_port(conn: sqlite3.Connection, port: int) -> bool:
+    """Claim `port`, or report someone already has it (its PRIMARY KEY does the real work — this just
+    turns the race into a retry instead of an IntegrityError the caller has to know to catch)."""
+    try:
+        conn.execute("INSERT INTO tidepool_ports (port) VALUES (?)", (port,))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def release_tidepool_port(conn: sqlite3.Connection, port: int) -> None:
+    conn.execute("DELETE FROM tidepool_ports WHERE port=?", (port,))
+    conn.commit()
+
+
+def create_tidepool(conn: sqlite3.Connection, job_id: int, port: int, pubkey: str,
+                    privkey_plain: str) -> None:
+    from . import atrest
+    conn.execute("INSERT INTO tidepools (job_id, port, pubkey, privkey) VALUES (?,?,?,?)",
+                 (job_id, port, pubkey, atrest.encrypt(privkey_plain)))
+    conn.commit()
+
+
+def get_tidepool(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM tidepools WHERE job_id=?", (job_id,)).fetchone()
+
+
+def tidepool_private_key(conn: sqlite3.Connection, job_id: int) -> str | None:
+    """The plaintext private key for a live Tide Pool, or None if there is none (not a Tide Pool, or the
+    at-rest key cannot be read — see atrest.py; either way there is nothing to hand the CLI)."""
+    from . import atrest
+    row = get_tidepool(conn, job_id)
+    return atrest.decrypt(row["privkey"]) if row else None
+
+
+def set_tidepool_relay(conn: sqlite3.Connection, job_id: int, relay_pid: int, node: str) -> None:
+    conn.execute("UPDATE tidepools SET relay_pid=?, node=? WHERE job_id=?", (relay_pid, node, job_id))
+    conn.commit()
+
+
+def live_tidepools(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every Tide Pool's connection state — the tick's working set for reaping a dead one."""
+    return conn.execute("SELECT job_id, port, relay_pid, node FROM tidepools").fetchall()
+
+
+def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
+    """Release the port and forget the keypair. Called once the Spawn has left the queue — after its
+    relay subprocess has already been killed (tidepool.reap_dead), never before."""
+    row = get_tidepool(conn, job_id)
+    if row is None:
+        return
+    conn.execute("DELETE FROM tidepools WHERE job_id=?", (job_id,))
+    conn.execute("DELETE FROM tidepool_ports WHERE port=?", (row["port"],))
+    conn.commit()
+
+

@@ -245,7 +245,17 @@ def render_ubuntu_snapshot_list() -> str:
     )
 
 
-# Base Pod image: official PyTorch + pinned wandb (so Spawns can log W&B out of the box).
+# Base Pod image: official PyTorch + pinned wandb (so Spawns can log W&B out of the box), plus what a
+# Tide Pool (docs/TODO.md) needs to run a live shell:
+#
+# * `openssh-server` — sshd runs INSIDE the Pod, unprivileged, as the Mantle (see
+#   ccc_head_api.spawns.PAYLOAD_TIDEPOOL). It never setuid()s: the "login" is to the SAME uid already
+#   running the Pod, so there is no privilege drop and no per-User account to provision on the Arm.
+# * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
+#   sshd still needs that a stock PyTorch image does not have: the connecting uid has to resolve via
+#   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
+#   directly rather than via useradd/groupadd (not guaranteed present in every base image) — three text
+#   appends and a directory, nothing that can fail for a missing tool.
 BASE_DEF_TMPL = """\
 Bootstrap: docker
 From: {image}
@@ -253,6 +263,11 @@ From: {image}
 %post
     # Runs inside the (disposable) build container only — never the host.
     python -m pip install --no-cache-dir --break-system-packages {wandb}
+    apt-get update && apt-get install -y --no-install-recommends openssh-server \
+      && rm -rf /var/lib/apt/lists/*
+    echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
+    echo "mantle:x:{gid}:" >> /etc/group
+    mkdir -p /home/mantle && chown {uid}:{gid} /home/mantle
 """
 
 

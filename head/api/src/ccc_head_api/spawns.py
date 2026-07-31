@@ -188,10 +188,10 @@ cd "$proj"
 # fail rather than fall back to the account default.
 wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MODE=${WANDB_MODE:-},WANDB_NAME=spawn-$jid"
 [ -n "${WANDB_ENTITY:-}" ] && wenv="$wenv,WANDB_ENTITY=$WANDB_ENTITY"
-# --bind the outputs dir: Apptainer auto-mounts only $HOME/tmp/cwd, and it now lives under
-# /var/lib/ccc (ccc-owned Head state), so $CCC_OUT is invisible in the Pod without an explicit bind.
-apptainer exec --nv --bind "$ccc_out" --env "$wenv,CCC_OUT=$ccc_out" \
-  "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err"
+# Under `--contain` (see the payloads below) apptainer auto-mounts NOTHING — not $HOME, not /tmp, not
+# the cwd — so every directory the payload needs is bound by name: $proj (the code, and the working dir)
+# and $ccc_out (where results are written and staged home from).
+%%PAYLOAD%%
 rc=$?
 echo $rc > "$exitf"
 kill "$loop_pid" 2>/dev/null  # stop the periodic pusher (remote branch only — unset is a no-op here)
@@ -204,10 +204,136 @@ stage_out || echo "ccc: staging results back to rsync://%%HEAD_IP%%/%%SPAWNS_MOD
 exit $rc
 """
 
+# The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
+# periodic $CCC_OUT pusher — is identical either way, which is the whole point of the slot: a Tide Pool
+# (docs/TODO.md) is a normal Spawn that happens to run a live shell instead of a script, not a second
+# pipeline.
+#
+# `--contain --pid --pwd "$proj"` is the containment set (verified on hardware 2026-07-31, apptainer
+# 1.5.3), and it is what makes a Pod a boundary rather than a packaging format. Apptainer's own model is
+# "the user inside is the user outside" — and outside used to be the Mantle, which owns head.db,
+# head.key, and every User's upload. Without these flags a payload reached all of it through
+# `/proc/<pid>/root` of any ccc-owned host process. A **Guise** now moves those valuables out of the
+# room entirely; these flags are still what locks the door, and neither alone is the whole answer:
+#
+# * `--contain` drops the automatic $HOME/tmp/cwd binds and gives the Pod a private, empty /tmp — so a
+#   Spawn on a shared Arm can no longer read every concurrent Spawn's scratch. It also blocks the host
+#   passwd/group bind on its own (measured: host 55 lines -> image 21), which is why `--no-mount` below
+#   is now belt-and-braces rather than the load-bearing thing it used to be.
+# * `--pid` puts the payload in its own PID namespace with its own procfs — the single flag that closes
+#   `/proc/<pid>/root` and `/proc/<pid>/environ` (another Spawn's WANDB_API_KEY). Apptainer starts its
+#   own `appinit` shim as PID 1, so there is no zombie-reaping problem and no tini to ship.
+# * `--pwd "$proj"` is load-bearing, not cosmetic: `--contain` drops the cwd auto-bind this payload
+#   used to rely on to find %%SCRIPT%%, so $proj is now bound EXPLICITLY and named as the working dir.
+#   Without it cwd is $HOME and `python <script>` fails outright.
+#
+# LC_ALL/LANG: the base PyTorch image never ran locale-gen, so any inherited locale makes the payload's
+# own shell/tooling write a "cannot change locale" warning into the Spawn's `err` before it has done
+# anything. C.UTF-8 ships pre-generated on every Debian/Ubuntu image.
+PAYLOAD_SCRIPT = """\
+apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group \\
+  --bind "$proj,$ccc_out" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
+  "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
+
+# sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
+# runs with no --net — full host netns, same as the script path, because the Pod still needs W&B egress
+# and the mesh to stage its results home) — the Head-side relay (ccc_head_api.tidepool/relay.py) is what
+# makes that reachable from a client that is not a Mesh member.
+#
+# `--contain --pid --pwd "$proj"` applies here for exactly the reasons it applies to PAYLOAD_SCRIPT
+# (see above) — and it matters MORE here, because this payload hands a User a live interactive shell
+# rather than running a script they wrote. Verified end to end on hardware (2026-07-31) against the full
+# boot path below: sshd, pubkey auth, `UsePAM=no` and an interactive pty all work under containment
+# (`--contain`'s minimal /dev still provides devpts), /tmp is private and empty, and the PID namespace
+# holds — `/proc/1/root` is the container root, not the host's.
+#
+# sshd never setuid()s: the "login" is to the SAME uid already running the Pod (the submitter's
+# **Guise**, homeless-by-design on the host — see the module docstring), so there is no privilege drop
+# to fail. The Arm-side account it needs is provisioned by the Slurm prolog before the job step, not by
+# sshd. That still needs the connecting uid to resolve via getpwuid — and it does, but NOT under the
+# name this once assumed.
+#
+# Found on real hardware (2026-07-30/31), in two parts:
+#
+# 1. The HOST's passwd/group must not land over the image's own, or every OTHER host account (not just
+#    the invoking one's) leaks into the Pod. `--contain` now does this by itself (measured: host 55 lines ->
+#    image 21); `--no-mount /etc/passwd,/etc/group` is kept below as an explicit statement of intent,
+#    not because anything depends on it any more.
+# 2. Neither flag is enough on its own: with --writable-tmpfs (needed below so sshd can write host keys
+#    + authorized_keys), apptainer still patches /etc/passwd for the INVOKING uid in place — a direct
+#    edit to the writable overlay, not a bind, so no mount-level flag touches it. It does not add a fake
+#    line; it overwrites templates.BASE_DEF_TMPL's baked `mantle:...:/home/mantle:...` entry, in place,
+#    with the invoking uid's REAL host identity — measured again under a Guise (Probe 1b, 2026-07-31):
+#    `ccc-u60002:x:60002:60002:CCC Guise:/home/ccc-u60002:/bin/bash`. So the home inside the Pod is the
+#    Guise's, not `/home/mantle` and no longer `/home/ccc`, and the boot script below reads it back out
+#    of getpwuid rather than naming it — it is per-User now, and the Head is the only side that knows
+#    the uid. The CLI connects as that same account (tidepool.py, from `GET /spawns/{id}/tidepool`).
+PAYLOAD_TIDEPOOL = """\
+cat > "$scratch/tp_boot.sh" <<'CCC_TP_BOOT'
+#!/bin/bash
+set -e
+home=$(getent passwd "$(id -u)" | cut -d: -f6)
+mkdir -p /run/sshd "$home/.ssh"
+cat > "$home/.ssh/authorized_keys" <<'CCC_TP_PUBKEY'
+%%TIDEPOOL_PUBKEY%%
+CCC_TP_PUBKEY
+chmod 700 "$home/.ssh"
+chmod 600 "$home/.ssh/authorized_keys"
+ssh-keygen -A >/dev/null 2>&1
+# apptainer runs unprivileged (a user namespace, not setuid-root), and its gid_map does not cover the
+# container's `tty` group (gid 5) — so when sshd allocates a pty, glibc's grantpt() tries to chown it to
+# that unmapped gid and fails EINVAL ("chown(/dev/pts/N, uid, 5) failed: Invalid argument"), and sshd
+# aborts the session ("Attempt to write login records by non-root user"). Documented upstream
+# (apptainer/apptainer#297) with no real fix, only this workaround: with no `tty` group to look up,
+# grantpt() falls back to the caller's own (correctly-mapped) gid instead. Found on real hardware
+# (2026-07-31). `sed -i` itself doesn't survive this overlay — it writes a temp file and rename()s over
+# the original, which fails "Device or resource busy" here — so this truncates and rewrites in place
+# instead, no rename involved.
+grep -v '^tty:' /etc/group > /tmp/ccc_group.new
+cat /tmp/ccc_group.new > /etc/group
+rm -f /tmp/ccc_group.new
+# So an interactive login shell (sshd starts one as `-bash`, sourcing /etc/profile.d) can find where to
+# write results — the same $CCC_OUT the stage_out/EXIT-trap machinery rsyncs home either way, just not
+# under a name the Head enforced (the "at least one --output" gate is skipped for a Tide Pool) — and
+# lands in the optional project a User picked (CCC_PROJ, the same $proj a Script Spawn's `cd` already
+# puts on the host side; an explicit `--bind "$proj"` is what makes it visible in here at all, since
+# `--contain` drops the cwd auto-bind this used to lean on — see PAYLOAD_SCRIPT, which binds it the same
+# way to find %%SCRIPT%%). An EMPTY dir when no project was picked, never a missing one (both branches
+# mkdir it) — `cd` into an empty dir is a harmless no-op.
+echo "export CCC_OUT=\\"$CCC_OUT\\"" > /etc/profile.d/ccc-tidepool.sh
+echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" >> /etc/profile.d/ccc-tidepool.sh
+# UsePAM no: `ccc` is a `useradd --system` account with no /etc/shadow entry inside the Pod (the image
+# only bakes /etc/passwd + /etc/group — see BASE_DEF_TMPL), so PAM's account phase (pam_unix, checking a
+# shadow entry that doesn't exist) refuses the session even after the ephemeral keypair already
+# authenticated it — "Access denied ... by PAM account configuration". Found on real hardware (2026-07-31).
+# There is no real system session here worth PAM's policy checks (password aging, nologin, securetty):
+# the one and only auth boundary is the ephemeral key itself.
+#
+# SetEnv LC_ALL/LANG=C.UTF-8: sshd's default AcceptEnv forwards the connecting client's LANG/LC_* (most
+# desktop ssh_configs SendEnv them), and the base PyTorch image never ran locale-gen for whatever locale
+# a random User's machine happens to use — bash's very first line is then a "cannot change locale"
+# warning. SetEnv overrides whatever AcceptEnv would otherwise apply (man sshd_config), forcing a locale
+# every Debian/Ubuntu image ships pre-generated, without needing to know or match the User's own.
+exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8"
+CCC_TP_BOOT
+chmod +x "$scratch/tp_boot.sh"
+apptainer exec --nv --contain --pid --pwd "$proj" \\
+  --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
+  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj" \\
+  "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
+
 
 def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
             files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
-            exclude: str = "") -> str:
+            exclude: str = "", tidepool_port: int | None = None,
+            tidepool_pubkey: str | None = None) -> str:
+    payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
+    # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
+    # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
+    # depending which payload this is), and every token below is a plain single-pass `.replace()`.
+    # Doing it here rather than relying on dict order keeps that dependency from being invisible.
+    body = JOB_SCRIPT.replace("%%PAYLOAD%%", payload)
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -257,14 +383,19 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     Share had not yet been charged for, which is precisely the window a queue-flooder wants.
 
     `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
-    never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally.
+    never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally. A
+    Tide Pool (docs/TODO.md) still uploads one (an empty gzip-tar — every client sends the same wire
+    shape) since there is no project to run; `script` rides along as None and the tar's member list is
+    never checked against it.
 
     `outputs` names the subdirs made under the one `$CCC_OUT` root before the payload runs (docs/TODO.md's
     now-closed "Spawn Output Enforcement") — checked here, not just at the HTTP boundary, so the
     Head-local pinned path (`cuttle run --node`) gets the identical guarantee. Both checks below (outputs
-    non-empty, script present in the tar) are hard validation: a Spawn that failed either would either
-    write nowhere retrievable or never start at all, so neither is worth a Spawn's Escrow and a wasted
-    place in the queue.
+    non-empty, script present in the tar) are hard validation for an ORDINARY Spawn: a Spawn that failed
+    either would either write nowhere retrievable or never start at all, so neither is worth a Spawn's
+    Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no script to
+    find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can enforce ahead
+    of time (the CLI still warns, see cuttle/tidepool.py).
     """
     # Refuse rather than render `rsync:///project/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
@@ -274,7 +405,7 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
         raise ValueError("the Head does not know its own mesh address (CCC_MESH_IP is empty in the "
                          "ccc-head-api unit) — a remote Arm would have nowhere to fetch this Spawn's "
                          "files from. Re-run `cuttle setup --head` on the Head to rewrite the unit")
-    if not outputs:
+    if not outputs and not tidepool:
         raise ValueError("at least one output folder (--output/-o) is required — declare where your "
                          "script writes its results before submitting")
     for name in outputs:
@@ -287,8 +418,9 @@ def submit(user_id: int, script: str, gpu: int, args: list[str], wandb_env: dict
     # Checked against the tar's own member list, BEFORE anything is written to disk: a script that isn't
     # here would never start (or, worse, silently run some OTHER script if bash's glob ever changed
     # underneath us), and refusing before staging.mkdir() means a bad submission leaves nothing behind.
+    # Skipped for a Tide Pool — `script` is None, and its (empty) tar names nothing to find.
     with tarfile.open(tar_path, mode="r:gz") as tf:
-        if script not in tf.getnames():
+        if not tidepool and script not in tf.getnames():
             raise ValueError(f"script {script!r} was not found in the uploaded project — check the "
                              f"path matches exactly (and isn't excluded by .gitignore)")
         staging.mkdir(parents=True)
@@ -361,10 +493,10 @@ def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = Tr
     return {**env, "WANDB_API_KEY": key, "WANDB_MODE": "online"}
 
 
-def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: list[str],
+def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
                    wandb_env: dict[str, str], tar_path: Path, minutes: int, vram_gb: int,
                    outputs: list[str], node: str | None = None, wandb: bool = True,
-                   features: list[str] | None = None) -> int:
+                   features: list[str] | None = None, tidepool: bool = False) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Extracted in Phase 6, when pinning a Spawn to an Arm (`node`) stopped being reachable over HTTP and
@@ -383,6 +515,11 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     When given, every name must be carried by at least one currently-admitted Arm or the Spawn is
     refused outright before ever reaching sbatch (mirrors `slurm.vram_constraint`'s "no Arm has that
     much VRAM" — hard validation, no partial/best-effort placement).
+
+    `tidepool` (docs/TODO.md) rides straight through to `submit()`, which is the one place either the
+    outputs-required gate or the script-in-tar check are actually skipped — placement, pricing and
+    Attribution are otherwise completely unaffected, because a Tide Pool holds a Device exactly like any
+    other Spawn.
 
     Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
     already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
@@ -431,7 +568,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str, gpu: int, args: li
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
-                  minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude)
+                  minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
+                  tidepool=tidepool)
 
 
 # --- reads (anonymous in slice 2) -------------------------------------------

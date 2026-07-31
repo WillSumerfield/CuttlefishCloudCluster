@@ -389,7 +389,9 @@ class TestSchemaMigration:
         self._at_v6(tmp_path / "head.db")
         db.ensure_schema()
         with db.connect() as conn:
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+            # The ladder runs every step it is behind on, not just to v7 — a v6 db lands on whatever
+            # SCHEMA_VERSION is now (v8 added Tide Pool's tables), same as a fresh db would.
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
             row = conn.execute("SELECT username, wandb_key FROM users").fetchone()
         assert row["username"] == "alice"   # the existing User survived
         assert row["wandb_key"] is None     # NULL is unset

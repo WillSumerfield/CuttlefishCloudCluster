@@ -731,11 +731,16 @@ _TICK_STOP = None
 # so the one command whose output must be live would show nothing at all until it was over. These
 # runs stay inline. Read off argv rather than the parsed flag because the screen is claimed before
 # any command function is entered.
+#
+# `--tidepool` (docs/TODO.md) needs the same exemption for a different reason: it execs a real `ssh`
+# that takes the terminal into raw mode and draws its own remote pty. Fighting the alternate screen's
+# absolute repaints (or having its bytes captured by fullscreen's stdout redirect, meant for a box's
+# results) would corrupt the session rather than merely look wrong.
 STREAMING = False
 
 
 def _detect_streaming() -> bool:
-    return any(a in ("--follow", "-f") for a in sys.argv[1:])
+    return any(a in ("--follow", "-f", "--tidepool") for a in sys.argv[1:])
 
 
 @contextmanager

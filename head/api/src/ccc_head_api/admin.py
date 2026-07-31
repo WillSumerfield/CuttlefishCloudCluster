@@ -130,7 +130,7 @@ def _return(node: str) -> int:
 
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
             node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
-            features: list[str] | None = None) -> int:
+            features: list[str] | None = None, tidepool: bool = False) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username`.
 
     Head-local since Phase 6 (`cuttle run --node`). Authorization is being the operator on the Head;
@@ -141,6 +141,10 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     `wandb_env` is the caller's project/entity hint and only that — never a key, which comes from
     whichever User this is attributed to (spawns.compose_wandb_env). It was hardcoded `{}` here, so
     `cuttle run --node --project X` quietly logged into `ccc` instead of X.
+
+    `tidepool` (docs/TODO.md) lets an Admin pin a Tide Pool the same way they pin any other Spawn —
+    orthogonal to node-pinning, and threaded through for completeness rather than because it is the
+    common path (the common path is unpinned, over `/submit`).
     """
     from . import spawns
     with db.connect() as conn:
@@ -150,9 +154,9 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
             print(f"no such user {username!r}", file=sys.stderr)
             return 1
     try:
-        job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script, gpu, args,
+        job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
-                                       features=features)
+                                       features=features, tidepool=tidepool)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -184,16 +188,18 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("node")
     s = sub.add_parser("submit", help="submit a Spawn pinned to an Arm (prints the Spawn id).")
     s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
-    s.add_argument("--script", required=True)
-    s.add_argument("--tar", required=True, help="gzip-tar of the project tree.")
+    s.add_argument("--script", default=None, help="omit only for --tidepool.")
+    s.add_argument("--tar", required=True, help="gzip-tar of the project tree (empty for --tidepool).")
     s.add_argument("--minutes", type=int, required=True)
     s.add_argument("--vram", type=int, required=True)
     s.add_argument("--gpu", type=int, default=1)
     s.add_argument("--node")
     s.add_argument("--output", action="append", default=[], dest="outputs",
-                   help="declared output subdir name (repeatable; at least one required).")
+                   help="declared output subdir name (repeatable; required unless --tidepool).")
     s.add_argument("--feature", action="append", default=[], dest="features",
                    help="required Arm Feature (repeatable; optional — default none).")
+    s.add_argument("--tidepool", action="store_true",
+                   help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
     # The client's project/entity hint, as the JSON dict submit_checked takes — not two --project/
     # --entity flags, so the CLI and the HTTP route hand over the *same* value and there is one place
     # that decides what a W&B run is called (cuttle.settings.wandb_env).
@@ -219,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
         return _return(args.node)
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
-                       args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features)
+                       args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features,
+                       tidepool=args.tidepool)
     return 2
 
 

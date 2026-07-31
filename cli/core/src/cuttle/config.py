@@ -280,6 +280,15 @@ CCC_SIF = CCC_IMAGES_DIR / "base.sif"
 KARMA_SERVICE = "ccc-karma"
 KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 
+# --- Tide Pool (docs/TODO.md, now built): interactive Spawn relay ---
+# The Head-side TCP relay's listen-port range (ccc_head_api.tidepool.PORT_BASE/PORT_RANGE) — MUST match
+# those constants exactly; duplicated here rather than shared because the CLI and the head-side API
+# package do not import each other (same reason FEATURES_CATALOG's path is duplicated between
+# ccc_head_api.enroll and ccc_head_api.slurm). Opened once, as a whole range, at `setup --head`
+# (system.allow_tcp_port_range) — a per-Tide-Pool ufw rule would mean firewall churn on every submit.
+TIDEPOOL_PORT_BASE = 41000
+TIDEPOOL_PORT_RANGE = 200
+
 # --- WSL Arm dashboard forward (⑥ convenience) ---
 # A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
 # Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head
