@@ -4,7 +4,6 @@ import { Rail } from "./Rail";
 import { spawnIdFrom, usePath } from "./router";
 import { session } from "./session";
 
-import App from "../App";
 import { KarmaPage } from "../karma/KarmaPage";
 import { QueuePage } from "../pages/QueuePage";
 import { HistoryPage } from "../pages/HistoryPage";
@@ -53,13 +52,6 @@ function Route() {
 }
 
 export function Shell() {
-  const path = usePath();
-
-  // The old dashboard is fully self-contained — its own sign-in, its own polling — and is the only
-  // thing that can submit a job today. It stays reachable at /legacy, unlinked and OUTSIDE the new
-  // auth gate, until the new pages replace what it does. Delete this and App.tsx together, not before.
-  if (path === "/legacy") return <App />;
-
   return (
     <>
       <AbyssBackground />

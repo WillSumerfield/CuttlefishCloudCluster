@@ -374,7 +374,7 @@
   outline: none;
   transition: background-color 160ms var(--ease-swim), box-shadow 160ms var(--ease-swim);
 
-  &::placeholder { color: var(--ink); }
+  &::placeholder { color: var(--ink-mute); }
   /* Hover LIFTS toward the surface above (shoal), never toward the card body — otherwise it reads as
      melting into the card instead of standing out. */
   &:hover { --fill: color-mix(in oklab, var(--shoal) 65%, var(--body)); }

@@ -34,7 +34,7 @@ export function QueuePage() {
     // ?demo — design harness, no live cluster needed. Don't fetch, don't poll; hold the mock rows.
     if (demo) return;
     refresh();
-    // The queue is a live board; poll it. 4s is the legacy dashboard's cadence.
+    // The queue is a live board; poll it.
     timer.current = window.setInterval(refresh, 4000);
     return () => {
       if (timer.current) window.clearInterval(timer.current);

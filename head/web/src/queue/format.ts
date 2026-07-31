@@ -13,3 +13,12 @@ export function duration(minutes: number | null): string {
 export function armLabel(node: string | null): string {
   return node ?? "unplaced";
 }
+
+/** "recoverable 12m" for a History row whose Recovery Window (docs/TODO.md) is still open, else null.
+ *  NOT live-ticking — History is a static archive, fetched once and never polled (see HistoryPage), so
+ *  this is computed at render time and simply goes stale like every other cell until the next visit. */
+export function recoveryLabel(expiresAt: string | null | undefined): string | null {
+  if (!expiresAt) return null;
+  const left = Math.round((new Date(expiresAt).getTime() - Date.now()) / 60_000);
+  return left > 0 ? `recoverable ${left}m` : null;
+}

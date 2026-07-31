@@ -55,8 +55,7 @@ export type Spawn = {
 export type Outcome = 'done' | 'failed' | 'cancelled' | 'retracted'
 
 // A finished Spawn, as History serves it. Extends the live Spawn with its verdict and what it settled
-// at. There is NO live endpoint for this yet — getSpawns() serves pending+running only — so History runs
-// on ?demo mock until the Head grows a /history route.
+// at. Served by GET /spawns/history — getHistory() above adapts that wire shape into this one.
 export type ArchivedSpawn = Spawn & {
   outcome: Outcome
   // Process exit code. Present on done (0) and failed (non-zero); null on cancelled/retracted, which
@@ -69,6 +68,12 @@ export type ArchivedSpawn = Spawn & {
   held: number | null
   // Epoch ms it finished — the sort key. History is one flat stream, newest first.
   finished_at: number
+  // Recovery Window (docs/TODO.md): null/absent once it's closed (or was never made) — everything else
+  // the Spawn wrote outside its declared outputs, held on the Head for 30 min. bytes rides alongside for
+  // the same reason it does on RecoveryStatus: a size worth showing, not just a countdown. Optional (not
+  // just nullable) so history/mock.ts's demo rows — predating this field — still typecheck as "none".
+  recovery_bytes?: number | null
+  recovery_expires_at?: string | null
 }
 
 export type Me = { username: string; is_admin: boolean; must_change_password: boolean }
@@ -79,6 +84,12 @@ export type SpawnStatus = {
   state: string
   exit?: number
 }
+
+// Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever a Spawn wrote OUTSIDE
+// its declared $CCC_OUT — separate from (and never merged with) the permanent outputs tar. `expires_at`
+// is an ISO timestamp; callers compute their own remaining-time countdown from it rather than a
+// server-computed "seconds left" that would go stale the moment it's rendered.
+export type RecoveryStatus = { bytes: number; expires_at: string }
 
 export class Unauthorized extends Error {}
 
@@ -130,11 +141,65 @@ export const getArms = () => json<Arm[]>('/arms')
 // to require. Read-only from the Dashboard; mutating it is CLI+sudo only, like every other admin write.
 export const getFeatureCatalog = () => json<string[]>('/features')
 export const getSpawns = () => json<Spawn[]>('/spawns')
-// Finished Spawns, newest first. The Head does not serve this yet; live, History shows its empty state
-// until it does. Design review runs on ?demo (see history/mock.ts).
-export const getHistory = () => json<ArchivedSpawn[]>('/history')
+
+// The wire shape GET /spawns/history actually answers with (see ccc_head_api.main.spawns_history) —
+// job_id/script/exit_code/cancelled, an ISO finished_at — which is not ArchivedSpawn's shape below.
+// Mirrors the CLI's own read of the same rows (cuttle/spawns.py's _history_outcome).
+type HistoryRow = {
+  job_id: number
+  submitted_at: string
+  finished_at: string | null
+  exit_code: number | null
+  cancelled: boolean
+  script: string
+  node: string | null
+  gpus: number
+  minutes: number | null
+  submitted_by: string | null
+  cost: number | null
+  recovery_bytes: number | null
+  recovery_expires_at: string | null
+}
+
+function outcomeOf(r: HistoryRow): Outcome {
+  if (r.exit_code === null) return r.cancelled ? 'cancelled' : 'failed'
+  return r.exit_code === 0 ? 'done' : 'failed'
+}
+
+// Finished Spawns, newest first. Design review runs on ?demo (see history/mock.ts).
+export const getHistory = () =>
+  json<HistoryRow[]>('/spawns/history').then((rows) =>
+    rows.map(
+      (r): ArchivedSpawn => ({
+        id: r.job_id,
+        name: r.script,
+        state: r.cancelled ? 'cancelled' : 'finished',
+        node: r.node,
+        gpus: r.gpus,
+        submitted_by: r.submitted_by,
+        time_limit: r.minutes,
+        outcome: outcomeOf(r),
+        exit: r.exit_code,
+        cost: r.cost,
+        held: null, // the Head does not report actual held minutes yet, only the declared limit
+        finished_at: r.finished_at ? Date.parse(r.finished_at) : Date.now(),
+        recovery_bytes: r.recovery_bytes,
+        recovery_expires_at: r.recovery_expires_at,
+      }),
+    ),
+  )
 export const getMe = () => json<Me>('/me')
 export const getStatus = (id: number) => json<SpawnStatus>(`/spawns/${id}`)
+// null = no open Recovery Window (never made, over the 16GB cap, evicted for the 50GB pool cap, or its
+// 30 min are up) — a normal outcome for a finished Spawn, not surfaced as an error to the caller.
+export async function getRecovery(id: number): Promise<RecoveryStatus | null> {
+  try {
+    return await json<RecoveryStatus>(`/spawns/${id}/recovery`)
+  } catch (e) {
+    if (e instanceof Unauthorized) throw e
+    return null
+  }
+}
 export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.text())
 
 /** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
@@ -298,6 +363,19 @@ export async function downloadOutputs(id: number): Promise<void> {
   URL.revokeObjectURL(url)
 }
 
+/** Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE $CCC_OUT, while the window is
+ *  still open. Same shape as downloadOutputs, distinct route and filename (docs/TODO.md: never merge
+ *  the two into one artifact whose contents would silently change once the window closes). */
+export async function downloadRecovery(id: number): Promise<void> {
+  const blob = await req(`/spawns/${id}/recovery/download`).then((r) => r.blob())
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `spawn-${id}-recovery.tar.gz`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export type SubmitOpts = {
   picked: Picked
   name: string | null // optional label for the run; the Head falls back to the script name when unset
@@ -358,6 +436,46 @@ export async function submit({
   // the Head reads an absent key the same as an empty list.
   const meta = {
     name, script, gpu, minutes, vram, node, args, wandb, wandb_env, outputs,
+    ...(features.length ? { features } : {}),
+  }
+  const r = await req('/submit', {
+    method: 'POST',
+    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
+    body,
+  })
+  return (await r.json()).id
+}
+
+// A Tide Pool (docs/TODO.md): request one from the Dashboard, same queue/Eligibility/Escrow as any
+// Spawn — but there is no script to name, so this is deliberately NOT `submit` with a few fields
+// blanked out. A project folder is optional (unlike Script mode, where it's required): picking one just
+// lands it at $proj on the Arm so the live shell has it to hand — nothing in it is ever run
+// automatically. Actual shell access is CLI-only; the Dashboard's part ends the moment the Spawn appears
+// (it shows up in the queue like anything else — see QueuePage).
+export type SubmitTidepoolOpts = {
+  minutes: number
+  vram: number
+  gpu: number
+  node: string | null
+  features: string[]
+  picked: Picked | null
+  name: string | null
+}
+
+export async function submitTidepool({
+  minutes, vram, gpu, node, features, picked, name,
+}: SubmitTidepoolOpts): Promise<number> {
+  // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens
+  // the upload as a tar archive (ccc_head_api.spawns.submit), whether or not there is a project behind
+  // it. `makeTar([])` writes the two all-zero end-of-archive blocks tar readers expect, the same bytes
+  // Python's tarfile writes for no members.
+  const entries: TarEntry[] = []
+  for (const f of picked?.files ?? []) {
+    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
+  }
+  const body = await gzip(makeTar(entries))
+  const meta = {
+    minutes, vram, gpu, node, tidepool: true, outputs: [], name,
     ...(features.length ? { features } : {}),
   }
   const r = await req('/submit', {

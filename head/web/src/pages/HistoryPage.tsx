@@ -13,8 +13,6 @@ import { isDemo } from "../queue/mock";
  * inverse of the Queue: finished Spawns, no motion, no colour but the loud outcomes. Unlike the Queue it
  * does NOT poll — the archive is a record, not a live board, so it's fetched once. New completions appear
  * on the next visit.
- *
- * There is no live /history endpoint yet, so without ?demo the page correctly shows its empty state.
  */
 export function HistoryPage() {
   const { logout } = useAuth();
@@ -30,7 +28,7 @@ export function HistoryPage() {
       .catch((e) => {
         // A session can expire while the archive is open; fall back to sign-in rather than a dead page.
         if (e instanceof Unauthorized) logout();
-        // Any other error (e.g. the Head has no /history yet) leaves rows empty → the empty state.
+        // Any other error (Head unreachable, a 5xx) leaves rows empty → the empty state.
       })
       .finally(() => setLoaded(true));
   }, [demo, logout]);

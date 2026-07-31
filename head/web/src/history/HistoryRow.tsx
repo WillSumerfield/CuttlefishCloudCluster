@@ -1,6 +1,6 @@
 import type { ArchivedSpawn, Outcome } from "../api";
 import { Link } from "../app/router";
-import { duration, armLabel } from "../queue/format";
+import { duration, armLabel, recoveryLabel } from "../queue/format";
 
 /**
  * One finished Spawn in the archive. NOT a shard: the archive is a single surface and rows are soft pools
@@ -38,6 +38,10 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
   // so the archive sinks into the dark instead of stopping on a line. Newest (depth 0) sits at the surface.
   const band = Math.max(0, 20 * (1 - depth * 0.9));
   const dim = 1 - depth * 0.42;
+  // Recovery Window (docs/TODO.md): a quiet TEXT indicator, never a button — this row's whole docstring
+  // rule ("no per-row buttons") stands; a User who wants the actual download clicks through to the
+  // Spawn's own page (SpawnPage's RecoveryPanel), same as every other action this row doesn't offer.
+  const recovery = recoveryLabel(spawn.recovery_expires_at);
   return (
     <li>
       <Link
@@ -61,6 +65,12 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
                 <>
                   <span aria-hidden>·</span>
                   <span className="num">{duration(spawn.held)} held</span>
+                </>
+              )}
+              {recovery && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="num" style={{ color: "var(--ink-soft)" }}>{recovery}</span>
                 </>
               )}
             </div>

@@ -79,7 +79,9 @@ export function Select({
         onClick={() => (open ? setOpen(false) : openMenu())}
         onKeyDown={onKey}
       >
-        <span className="truncate text-ink">{current?.label}</span>
+        {/* No real placeholder here (this isn't a native input) — an empty value stands in for one, so
+            it gets the same muted color a real placeholder would. */}
+        <span className={`truncate ${value ? "text-ink" : "text-ink-mute"}`}>{current?.label}</span>
         {/* Same chevron as the field's, rotating up when open. */}
         <svg
           width="12"
@@ -107,7 +109,15 @@ export function Select({
               className="menu-item"
               data-active={i === active || undefined}
               onMouseEnter={() => setActive(i)}
-              onClick={() => pick(o.value)}
+              // A field label (Labeled, SubmitComposer.tsx) is a real <label> wrapping this whole
+              // control; the toggle button is its "labeled control" but this <li> is only the label's
+              // descendant, not the button's. Left alone, a native click here bubbles to the <label>,
+              // which forwards a SECOND click onto the toggle button — reopening the menu this pick()
+              // just closed. Stopping propagation keeps the click from ever reaching the <label>.
+              onClick={(e) => {
+                e.stopPropagation();
+                pick(o.value);
+              }}
             >
               {o.label}
             </li>

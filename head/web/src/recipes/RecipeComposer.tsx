@@ -172,10 +172,10 @@ export function RecipeComposer({
         <span className="relative text-[15px] text-ink-soft">
           {picked ? (
             <>
-              <span className="num text-ink">{picked.root}</span> — choose a different folder
+              <span className="num text-ink">{picked.root}</span>
             </>
           ) : (
-            <>Drop a project to freeze, or choose a folder</>
+            <>Drop/choose a folder — optional</>
           )}
         </span>
       </label>
