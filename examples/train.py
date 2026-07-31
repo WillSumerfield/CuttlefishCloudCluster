@@ -34,7 +34,10 @@ print(f"20x 4096^2 matmul on GPU: {elapsed:.3f}s  (checksum {checksum:.1f})")
 
 # The result the Spawn hands back. $CCC_OUT is bound into the Pod by the job script and is the ONLY
 # path out — anything written elsewhere dies with the scratch dir.
-out = Path(os.environ["CCC_OUT"])
+os.mkdir("out")
+print(f"writing out/result.txt")
+print(f"CCC OUT: {os.environ.get('CCC_OUT', '?')}")
+out = Path("out")
 (out / "result.txt").write_text(
     f"node {os.environ.get('SLURMD_NODENAME', '?')}\n"
     f"uid {os.getuid()}\n"
