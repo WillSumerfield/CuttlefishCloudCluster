@@ -95,7 +95,14 @@ sink="/tmp/ccc-$jid.slurm"
 # sites that already kill it explicitly first for ordering (see the stage_out call sites below) — this
 # is the fallback for any OTHER way the script ends (e.g. scancel's TERM), so the periodic out/err/
 # outputs pusher (below) never outlives the script as an orphan.
-cleanup() { kill "$loop_pid" 2>/dev/null; rm -rf "$scratch"; [ -s "$sink" ] || rm -f "$sink"; }
+#
+# recover_scratch, defined per-branch below, runs BEFORE the rm -rf that used to be the only thing here
+# (docs/TODO.md "Recovery Window") — it copies $proj home (Head-local: a same-filesystem `mv`; remote:
+# an rsync) so a User whose --output was wrong or incomplete has a 30-minute window to get the rest of
+# what the Spawn wrote back, instead of losing it the instant this trap fires. Unset/undefined is a safe
+# no-op in bash (prints to stderr, does not abort the function), so this is harmless even if the script
+# exited before either branch got far enough to define it.
+cleanup() { kill "$loop_pid" 2>/dev/null; recover_scratch; rm -rf "$scratch"; [ -s "$sink" ] || rm -f "$sink"; }
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
@@ -105,21 +112,40 @@ if [ -d "$staging_dir" ]; then
     proj="$scratch/proj"
     trap cleanup EXIT
     mkdir -p "$proj"
-    cp -a "$staging_dir/." "$proj/"
+    # --no-preserve=ownership is load-bearing, not tidiness: the upload is ccc:ccc and this now runs as
+    # the submitter's **Guise**, so plain `cp -a` would try to chown the copy back to the Mantle, get
+    # EPERM, and FAIL the whole copy (-a implies --preserve=all, which cp treats as required). Mode and
+    # timestamps still come across; ownership is the one attribute a Guise has no business restoring.
+    cp -a --no-preserve=ownership "$staging_dir/." "$proj/"
     spawn_dir="%%SPAWNS%%/$jid"
     out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"; ccc_out="$spawn_dir/outputs"
     stage_out() { :; }  # already on the Head
+    recover_scratch() {
+        # $proj already lives on the Head's own disk — no network hop, just relocate it under the Spawn
+        # dir before cleanup()'s rm -rf reaches it. Same size gate as the remote branch (RECOVERY_MAX_BYTES,
+        # see ccc_head_api.recovery): over it, skip entirely — no copy attempted, same as today.
+        sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
+        [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
+        mv "$proj" "$spawn_dir/recovery" && echo "$sz" > "$spawn_dir/recovery.size"
+    }
 else
     # remote Arm: none of these files are here. Stage the project in from the Head's rsync daemon into
     # ephemeral scratch, run, and stage out/err/exit/outputs back at the end.
     #
-    # Scratch is /tmp, NOT the Mantle's home: the Mantle is home-less by design (one pinned uid,
-    # cluster-wide, owning no per-node state), so a donor box is left with nothing after the trap
-    # fires. Apptainer auto-mounts /tmp, so the Pod sees it with no extra bind.
+    # Scratch is /tmp, NOT the Guise's home: a Guise is home-less by design (one pinned uid per User,
+    # cluster-wide, owning no per-node state — the account itself is `useradd -M`), so a donor box is
+    # left with nothing after the trap fires. The Pod does NOT see this path as /tmp — `--contain` gives it a private, empty /tmp of its
+    # own (that is the point: the host /tmp on a shared Arm holds every concurrent Spawn's scratch) — so
+    # the two directories the payload actually needs, $proj and $ccc_out, are bound in by name.
     scratch="/tmp/ccc-$jid"
     proj="$scratch/%%UUID%%"
     trap cleanup EXIT
-    mkdir -p "$scratch/outputs"
+    # $proj is created HERE, not left to the stage-in. rsync makes <uuid>/ as a side effect of copying
+    # files into it, so a Spawn with an EMPTY project (every Tide Pool: it uploads an empty tar) would
+    # otherwise leave the directory absent — and $proj is now an explicit `--bind` source and `--pwd`
+    # target for both payloads, which apptainer treats as fatal when it does not exist. The Head branch
+    # has always mkdir'd it; this makes the two branches agree.
+    mkdir -p "$scratch/outputs" "$proj"
     # Named BEFORE the stage-in, so a stage-in that fails still has somewhere to say so and a way to
     # send it home. Nothing has run yet, so out/err start empty rather than absent — rsync would skip
     # a missing file and the Head would show no reason at all.
@@ -132,6 +158,21 @@ else
         # already exists: the API pre-created it at submit, for every Spawn.
         rsync -a "$out" "$err" "$ccc_out" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" || return 1
         rsync -a "$exitf" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
+    }
+    recover_scratch() {
+        # $proj is the whole working dir the payload ran in — everything it wrote OUTSIDE the declared
+        # $CCC_OUT subdirs (relative paths land here; see `cd "$proj"` below) is only ever here, and
+        # cleanup()'s rm -rf destroys it the instant this script exits. rsync it home first, UNLESS it's
+        # over RECOVERY_MAX_BYTES (docs/TODO.md "Recovery Window") — then skip entirely, no copy
+        # attempted, same as today. The size marker (recovery.size) is written and sent home LAST, after
+        # the transfer lands — its presence on the Head is the karma tick's "a copy is ready to
+        # register" signal (ccc_head_api.recovery), since this trap can still be mid-rsync well after
+        # stage_out() has already told the Head the Spawn is done.
+        sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
+        [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
+        rsync -a "$proj/" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/recovery/" 2>/dev/null || return 0
+        echo "$sz" > "$scratch/recovery.size"
+        rsync -a "$scratch/recovery.size" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" 2>/dev/null
     }
     # Live streaming (docs/TODO.md's now-closed "Live log streaming for remote Spawns"): a backgrounded
     # loop pushes out/err home every 5s so `cuttle logs -f` tracks a remote run instead of staying blind
@@ -350,6 +391,8 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
         # outright rather than silently excluding the one node the operator explicitly named.
         "%%EXCLUDE%%": f"#SBATCH --exclude={exclude}" if exclude else "",
         "%%STAGING_DIR%%": str(staging),
+        # Recovery Window (docs/TODO.md): the per-Spawn cap `recover_scratch` gates on, both branches.
+        "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
         "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),

@@ -244,6 +244,20 @@ CREATE TABLE tidepools (
 );
 """
 
+# Recovery Window (docs/TODO.md, now built): one row per Spawn currently holding a copy of its
+# undeclared working dir on the Head (ccc_head_api.recovery). `bytes` feeds the 50GB pool cap (SUM
+# across every row); `created_at` is both the 30-minute expiry clock AND the oldest-first eviction
+# order — the same column does both jobs because they're the same question ("how long has this been
+# held?") asked two ways. A row here always has a matching `SPAWNS_DIR/<id>/recovery/` dir on disk;
+# recovery.py's `_evict` deletes both together, never one without the other.
+_SCHEMA_V9 = """
+CREATE TABLE recovery_copies (
+  job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
+  bytes      INTEGER NOT NULL,
+  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7]
 
@@ -534,13 +548,17 @@ def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int],
     # whole table — so the exclusion is a clause only when there is something live to exclude.
     clause = f" AND s.job_id NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
     limit_clause = " LIMIT ?" if limit else ""
+    # recovery_copies joins in NULL for the (common) case of no open Recovery Window — main.py's
+    # spawns_history route turns `recovery_created_at` into the wire-facing `recovery_expires_at`, since
+    # the window length (recovery.WINDOW_MINUTES) is that module's constant, not this one's business.
     return conn.execute(
         f"""SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
                    s.gpus, s.vram_gb, s.minutes, s.node, u.username AS submitted_by,
-                   l.amount AS cost
+                   l.amount AS cost, r.bytes AS recovery_bytes, r.created_at AS recovery_created_at
             FROM spawns s
             LEFT JOIN users u ON u.id = s.user_id
             LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
+            LEFT JOIN recovery_copies r ON r.job_id = s.job_id
             WHERE s.submitted_at >= ?{clause}
             ORDER BY s.submitted_at DESC{limit_clause}""",
         (since, *exclude, *((limit,) if limit else ())),
@@ -785,3 +803,52 @@ def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
     conn.commit()
 
 
+# --- Recovery Window (docs/TODO.md, now built) -------------------------------
+# See _SCHEMA_V9's comment for the table shape. All of this is driven by ccc_head_api.recovery, from the
+# karma tick — nothing here decides policy (window length, size caps), it just reads/writes the ledger.
+
+def recently_finished_without_recovery(conn: sqlite3.Connection, since: str) -> list[int]:
+    """Spawns that finished at or after `since` and have no recovery_copies row yet — register_new's
+    candidates each pass. Bounded to a recent window on purpose: a Spawn whose copy never lands (skipped
+    for size, or the Arm dropped mid-transfer) must not be re-checked forever, or this list only grows."""
+    return [r["job_id"] for r in conn.execute(
+        """SELECT s.job_id FROM spawns s
+           LEFT JOIN recovery_copies r ON r.job_id = s.job_id
+           WHERE s.finished_at >= ? AND r.job_id IS NULL""",
+        (since,),
+    ).fetchall()]
+
+
+def add_recovery(conn: sqlite3.Connection, job_id: int, size_bytes: int, at: str | None = None) -> None:
+    if at is None:
+        conn.execute("INSERT INTO recovery_copies (job_id, bytes) VALUES (?,?)", (job_id, size_bytes))
+    else:
+        conn.execute("INSERT INTO recovery_copies (job_id, bytes, created_at) VALUES (?,?,?)",
+                     (job_id, size_bytes, at))
+    conn.commit()
+
+
+def get_recovery(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM recovery_copies WHERE job_id=?", (job_id,)).fetchone()
+
+
+def delete_recovery(conn: sqlite3.Connection, job_id: int) -> None:
+    conn.execute("DELETE FROM recovery_copies WHERE job_id=?", (job_id,))
+    conn.commit()
+
+
+def expired_recoveries(conn: sqlite3.Connection, cutoff: str) -> list[int]:
+    """Every Spawn whose recovery copy was created at or before `cutoff` — reap_expired's candidates."""
+    return [r["job_id"] for r in
+            conn.execute("SELECT job_id FROM recovery_copies WHERE created_at <= ?", (cutoff,)).fetchall()]
+
+
+def recovery_pool_bytes(conn: sqlite3.Connection) -> int:
+    (total,) = conn.execute("SELECT COALESCE(SUM(bytes), 0) FROM recovery_copies").fetchone()
+    return total
+
+
+def oldest_recovery(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The longest-held copy — `_make_room`'s eviction candidate when a new one would blow the pool cap."""
+    return conn.execute(
+        "SELECT job_id, bytes FROM recovery_copies ORDER BY created_at LIMIT 1").fetchone()

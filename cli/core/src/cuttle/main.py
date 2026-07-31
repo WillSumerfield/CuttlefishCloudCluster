@@ -662,7 +662,11 @@ def run(
                              "need (--vram), never which machine they want."),
     output: list[str] = typer.Option(
         None, "--output", "-o", help="Name of a subdir under $CCC_OUT your script writes results to "
-                                     "(repeatable). Required — at least one."),
+                                     "(repeatable). Required — at least one (optional, with a y/n "
+                                     "warning, for --tidepool). Anything your script writes OUTSIDE "
+                                     "these dirs is still recoverable for 30 min after the Spawn ends "
+                                     "(`cuttle recover`) — but declare the right dirs here rather than "
+                                     "relying on it."),
     feature: list[str] = typer.Option(
         # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
@@ -836,6 +840,15 @@ def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
     """Download a Spawn's $CCC_OUT dir as a tar into the current directory."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Download which Spawn?"))
     spawns_mod.outputs(spawn_id)
+
+
+@app.command()
+def recover(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
+    """Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared $CCC_OUT,
+    while the 30-minute window since it ended is still open. See `--output`'s help on `cuttle run` for
+    what this is a safety net for; `cuttle outputs` is the separate, permanent $CCC_OUT download."""
+    spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Recover which Spawn?"))
+    spawns_mod.recover(spawn_id)
 
 
 def main() -> None:

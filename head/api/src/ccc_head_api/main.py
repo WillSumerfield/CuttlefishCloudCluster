@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, karma, ratelimit, retraction, slurm
+from . import recovery as recovery_mod
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod
 
@@ -288,7 +289,9 @@ def spawns_history(days: int = 30, limit: int | None = None,
     forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
     history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
     carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
-    finished_at)."""
+    finished_at). Also carries a Recovery Window countdown (docs/TODO.md), for the History row that
+    still has one open — `recovery_expires_at` is null for every row that never had a copy, already had
+    it evicted, or whose 30 minutes are up."""
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.connect() as conn:
@@ -299,6 +302,15 @@ def spawns_history(days: int = 30, limit: int | None = None,
     for r in rows:
         r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
                           and spawns_mod.was_cancelled(r["job_id"]))
+        # recovery_created_at came straight off the SQL join (db.spawn_history) — turned into the
+        # wire-facing expires_at here, not there, since the window length is this module's constant
+        # (recovery_mod.WINDOW_MINUTES), not db.py's business.
+        created = r.pop("recovery_created_at")
+        r["recovery_expires_at"] = None
+        if created is not None:
+            expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) \
+                + timedelta(minutes=recovery_mod.WINDOW_MINUTES)
+            r["recovery_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
     return rows
 
 
@@ -352,6 +364,37 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
         raise HTTPException(404, f"no outputs for Spawn {job_id}")
     return Response(data, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
+
+
+@api.get("/spawns/{job_id}/recovery")
+def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
+    """Whether Spawn `job_id` still has an open Recovery Window copy (docs/TODO.md), and if so how much
+    of it and when it closes. 404 means no copy: never made (skipped for the 16GB per-Spawn cap, or the
+    Arm dropped before it landed), already evicted for the 50GB pool cap, or its 30 minutes are up —
+    the CLI and Dashboard both read all three the same way, "nothing left to recover".
+
+    Same permission shape as `/spawns/{id}/outputs` (authed, no ownership check) — this is data about a
+    shared cluster's Spawn, not a secret, unlike the Tide Pool SSH keypair route, which IS ownership-
+    gated for exactly that reason.
+    """
+    with db.connect() as conn:
+        st = recovery_mod.status(conn, job_id)
+    if st is None:
+        raise HTTPException(404, f"no recovery copy for Spawn {job_id}")
+    return st
+
+
+@api.get("/spawns/{job_id}/recovery/download")
+def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> Response:
+    """gzip-tar of Spawn `job_id`'s Recovery Window copy — everything it wrote OUTSIDE its declared
+    `$CCC_OUT` (docs/TODO.md), while the 30-minute window is still open. Distinct download from
+    `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
+    artifact whose contents would otherwise silently change once the window closes."""
+    data = recovery_mod.tar_bytes(job_id)
+    if data is None:
+        raise HTTPException(404, f"no recovery copy for Spawn {job_id}")
+    return Response(data, media_type="application/gzip", headers={
+        "Content-Disposition": f'attachment; filename="spawn-{job_id}-recovery.tar.gz"'})
 
 
 @api.delete("/spawns/{job_id}", status_code=204)

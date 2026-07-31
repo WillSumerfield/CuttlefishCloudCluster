@@ -23,10 +23,13 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import api, auth, config, settings, ui
 from .system import run
+
+_TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
 
 
 def _project_files(root: Path) -> list[str]:
@@ -382,13 +385,67 @@ def logs(spawn_id: int, follow: bool) -> None:
     ui.data(f"=== stdout ===\n{out}\n\n=== stderr ===\n{err}")
 
 
+def _recovery_status(spawn_id: int) -> dict | None:
+    """The Recovery Window's live state (docs/TODO.md) for `spawn_id`, or None if it has none —
+    never made (skipped for size, or the Arm dropped before it landed), evicted, or already expired.
+    A courtesy lookup, not a load-bearing one: any failure here (not just a 404) is swallowed rather
+    than aborting whatever command called it, since the caller has already succeeded or failed on its
+    own terms by the time it asks."""
+    client = auth._client()
+    client.token = auth._load_token()
+    try:
+        return client.json("GET", f"/spawns/{spawn_id}/recovery", missing_ok=True)
+    except api.ApiError:
+        return None
+
+
+def _minutes_left(expires_at: str) -> int:
+    expires = datetime.strptime(expires_at, _TS).replace(tzinfo=timezone.utc)
+    return int((expires - datetime.now(timezone.utc)).total_seconds() // 60)
+
+
+def _hint_recovery(spawn_id: int) -> None:
+    """Reactive Recovery Window messaging (docs/TODO.md): the moment a User discovers `--output` was
+    wrong or incomplete — right here, at the "no outputs" miss — is exactly when they need to know the
+    rest of the Spawn's working dir might still be recoverable. Silent when it isn't (closed, skipped
+    for size, or none was ever made): there's nothing more honest to say than what `outputs()` already
+    said above."""
+    st = _recovery_status(spawn_id)
+    if st is None:
+        return
+    left = _minutes_left(st["expires_at"])
+    if left <= 0:
+        return
+    ui.hint(f"the Recovery Window is still open ({left}m left) — `cuttle recover {spawn_id}` grabs "
+            f"everything else the Spawn wrote, not just $CCC_OUT")
+
+
 def outputs(spawn_id: int) -> None:
     """Download a Spawn's $CCC_OUT dir as a tar into the cwd."""
     data = _get_bytes(f"/spawns/{spawn_id}/outputs", missing_ok=True)
     if data is None:
         ui.warn(f"spawn {spawn_id} produced no outputs")
         ui.hint("a Spawn returns files by writing them to $CCC_OUT inside the Pod")
+        _hint_recovery(spawn_id)
         return
     dest = Path.cwd() / f"spawn-{spawn_id}-outputs.tar.gz"
+    dest.write_bytes(data)
+    ui.ok(f"wrote {dest}")
+
+
+def recover(spawn_id: int) -> None:
+    """Download a Spawn's Recovery Window copy (docs/TODO.md) — its whole working dir as it stood when
+    the Spawn ended, not just what it wrote to $CCC_OUT — for as long as the 30-minute window is open.
+
+    A separate artifact from `outputs()` on purpose: the declared $CCC_OUT tar is permanent and never
+    changes shape; this one expires, so the two are never merged into one download whose contents would
+    otherwise silently change once the window closes.
+    """
+    data = _get_bytes(f"/spawns/{spawn_id}/recovery/download", missing_ok=True)
+    if data is None:
+        ui.warn(f"spawn {spawn_id} has no open Recovery Window "
+                f"(already closed, over the 16GB cap, or none was made)")
+        return
+    dest = Path.cwd() / f"spawn-{spawn_id}-recovery.tar.gz"
     dest.write_bytes(data)
     ui.ok(f"wrote {dest}")

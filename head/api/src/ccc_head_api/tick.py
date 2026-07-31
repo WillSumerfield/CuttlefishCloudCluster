@@ -9,7 +9,13 @@ Every 30s, one pass, in this order:
    ccc_head_api.retraction) — Retract itself only sends TERM; this is the deadline behind it.
 4. **Settle** every Spawn that has vanished from the queue: one ledger row, and the claim is released.
    One caught by a Retract settles at ZERO regardless of what it accrued.
-5. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
+5. **Reap** any Tide Pool (docs/TODO.md) whose Spawn just vanished: kill its Head-side relay and forget
+   its port/keypair (ccc_head_api.tidepool.reap_dead) — a live Tide Pool holds a Device exactly like any
+   other RUNNING Spawn, so steps 1-4 above already meter/settle it with no branch of their own.
+6. **Register** any Recovery Window copy (docs/TODO.md) that has fully landed since the last pass, and
+   **expire** any whose 30 minutes are up (ccc_head_api.recovery) — see that module's docstring for why
+   registration is polled here rather than pushed by the job script that made the copy.
+7. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
 
 It runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
 privilege whatsoever — no sudo, no root helper, no SlurmUser. Its own service, not a task inside the
@@ -34,7 +40,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, slurm, spawns
+from . import db, karma, recovery, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -207,6 +213,15 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         _force_expired_retractions(conn, set(ids), now)
         settled = _settle(conn, set(ids), arms, now)
         _record_endings(conn, set(ids), now)
+        # Tide Pool (docs/TODO.md): kill the Head-side relay and drop its port/keypair the moment its
+        # Spawn leaves the queue. `ensure_relay` (main.spawn_tidepool) is what brings a relay UP — this
+        # is the one place a relay ever goes back down, belt-and-suspenders alongside it.
+        tidepool.reap_dead(conn, set(ids))
+        # Recovery Window (docs/TODO.md): pick up any copy that finished landing since the last pass
+        # (register_new), then drop anything whose 30 minutes are up (reap_expired). Order doesn't
+        # matter between the two — a copy just registered is never also expired in the same pass.
+        recovery.register_new(conn, now)
+        recovery.reap_expired(conn, now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,
         # and a settlement moves their Balance. Both change the nice we are about to push, and pushing
