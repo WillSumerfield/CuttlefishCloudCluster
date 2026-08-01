@@ -121,8 +121,13 @@ def remove_rsyncd() -> None:
 
 
 def remove_slurm_config() -> None:
+    # job_container.conf goes with /etc/slurm, but its BasePath tree does not: the plugin creates that
+    # itself and leaves it behind at shutdown (man 5 job_container.conf), so a torn-down donor box would
+    # keep an empty per-job mount tree forever. Every caller stops slurmd first, which is required —
+    # slurmd holds BasePath mounted `private` for as long as it runs.
     run(["rm", "-rf",
          str(config.SLURM_CONF.parent),  # /etc/slurm
+         str(config.JOB_CONTAINER_ROOT),
          str(config.SLURM_STATE_DIR),
          str(config.SLURMD_SPOOL_DIR),
          str(config.SLURM_LOG_DIR)],

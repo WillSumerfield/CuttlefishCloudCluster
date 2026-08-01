@@ -35,6 +35,7 @@ SlurmdUser=root
 # `cuttle setup`. Runs as root (SlurmdUser), at job end, on the node that ran the Spawn.
 Epilog={epilog}
 {prolog}
+{tmpfs}
 StateSaveLocation={state}
 SlurmdSpoolDir={spool}
 SlurmctldPidFile=/run/slurmctld.pid
@@ -368,9 +369,26 @@ _PROLOG_HELD = """\
 # Naming it here would fail their jobs and DRAIN them, and a drained node stays drained across a slurmd
 # restart. Re-run `cuttle setup --arm` on each, then `cuttle setup --head` here."""
 
+# A private /tmp and /dev/shm per job (temp/spawn-isolation.md Phase 4) — the wall that contains the
+# WRAPPER, not just the Apptainer child inside it. Without it a remote Spawn's scratch sits in the
+# host's shared /tmp beside every concurrent Spawn's.
+#
+# The two lines are one setting: "'PrologFlags=Contain' must be set to use this plugin" (man 5
+# slurm.conf), so they are held back together and there is no state where one is on without the other.
+# Each node's own job_container.conf supplies BasePath; this file cannot, since configless has no
+# per-node override and a BasePath must be unique per node.
+_TMPFS_LINE = """\
+JobContainerType=job_container/tmpfs
+PrologFlags=Contain"""
+_TMPFS_HELD = """\
+# NO JobContainerType= — {n} admitted Arm(s) have not reported having job_container.conf: {missing}.
+# The plugin refuses to start without that file, so naming it here DRAINS them, and a drained node
+# stays drained across a slurmd restart. Re-run `cuttle setup --arm` on each, then this."""
+
 
 def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None = None,
-                      missing_prolog: list[str] | None = None) -> str:
+                      missing_prolog: list[str] | None = None,
+                      missing_tmpfs: list[str] | None = None) -> str:
     """`mesh_ip` = the Head's address on the CCC mesh. Baked in because MagicDNS is off: nothing in
     this system can resolve a hostname, so Slurm gets the address literally.
 
@@ -382,16 +400,21 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
     one vram bucket exactly like a donor Arm's `enroll.slurmd_dropin` — a Slurm Feature is a flat
     per-node set either way. Defaults to none: the Head's own box declares no catalog features today.
 
-    `missing_prolog` = admitted Arms that have not reported the prolog script (enroll.arms_missing).
-    Non-empty holds `Prolog=` back for the WHOLE fleet, including the Arms that are ready — the line is
-    one setting for every node, so it is on for all of them or none.
+    `missing_prolog` / `missing_tmpfs` = admitted Arms that have not reported the prolog script, and
+    those that have not reported job_container.conf (enroll.arms_missing, one call per capability).
+    Non-empty holds that line back for the WHOLE fleet, including the Arms that are ready — a line here
+    is one setting for every node, so it is on for all of them or none. The two are tracked separately
+    because they arrived in different phases: an Arm can legitimately have the prolog and not the other.
     """
     sockets, cores, threads = system.cpu_topology()
     feature = ",".join([config.vram_feature(system.gpu_vram_mb()), *sorted(features or [])])
     prolog = (_PROLOG_HELD.format(n=len(missing_prolog), missing=", ".join(missing_prolog))
               if missing_prolog else _PROLOG_LINE.format(prolog=config.SLURM_PROLOG))
+    tmpfs = (_TMPFS_HELD.format(n=len(missing_tmpfs), missing=", ".join(missing_tmpfs))
+             if missing_tmpfs else _TMPFS_LINE)
     return SLURM_CONF_TMPL.format(
         prolog=prolog,
+        tmpfs=tmpfs,
         weight=weight,
         cluster=config.CLUSTER_NAME,
         partition=config.PARTITION,
@@ -508,6 +531,29 @@ if [ -d "{head_scratch}" ]; then
 fi
 exit 0
 """
+
+
+# --- job_container/tmpfs (temp/spawn-isolation.md Phase 4) -------------------
+# Written on every node by `cuttle setup`, exactly as the two hook scripts are: the plugin reads it from
+# beside slurm.conf, and configless serves slurm.conf but NOT its siblings that are per-node. A
+# `JobContainerType=` naming a plugin whose conf is absent drains the node, which is what the rollout
+# gate in enroll.arms_missing exists to prevent (config.ARM_CAP_TMPFS).
+#
+# `Dirs` is deliberately absent: it defaults to "/tmp,/dev/shm", which is exactly what we want, and
+# /dev/shm "has special handling, and instead of a bind mount is always a fresh tmpfs filesystem" (man
+# 5 job_container.conf). So shared-memory IPC — a torch DataLoader's workers, above all — keeps a real
+# RAM-backed filesystem. Only /tmp is a bind mount off BasePath's disk.
+JOB_CONTAINER_CONF_TMPL = """\
+# Rendered by `cuttle setup`. Do not hand-edit.
+# A private /tmp and /dev/shm per Spawn. slurmd creates BasePath itself (AutoBasePath) and holds it
+# mounted `private` from start to shutdown; it does NOT remove it, so teardown does.
+AutoBasePath=true
+BasePath={base}
+"""
+
+
+def render_job_container_conf() -> str:
+    return JOB_CONTAINER_CONF_TMPL.format(base=config.JOB_CONTAINER_BASE)
 
 
 def render_prolog() -> str:

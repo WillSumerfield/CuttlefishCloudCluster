@@ -339,6 +339,52 @@ class TestPrologRollout:
         assert enroll.arms_missing("prolog") == ["paused"]
 
 
+class TestPrivateTmpRollout:
+    """Phase 4. `job_container/tmpfs` is what contains the WRAPPER around a Spawn's payload — without
+    it a remote Spawn's scratch sits in the host's shared /tmp beside every concurrent Spawn's. It
+    carries the same drain-the-node hazard as the prolog, and the same gate, with its OWN capability."""
+
+    def test_both_lines_are_absent_while_any_arm_is_missing_the_conf(self, fake_host):
+        d = directives(templates.render_slurm_conf("100.99.0.1", missing_tmpfs=["willpersonal"]))
+        assert "JobContainerType" not in d and "PrologFlags" not in d
+
+    def test_the_arms_holding_it_up_are_named_in_the_file(self, fake_host):
+        conf = templates.render_slurm_conf("100.99.0.1", missing_tmpfs=["willpersonal", "spare"])
+        assert "willpersonal" in conf and "spare" in conf
+
+    def test_both_lines_appear_once_the_fleet_is_ready(self, fake_host):
+        """PrologFlags=Contain is not optional decoration — the plugin refuses to work without it
+        ("'PrologFlags=Contain' must be set to use this plugin", man 5 slurm.conf), so a render that
+        turned one on without the other would be a container that never contains anything."""
+        d = directives(templates.render_slurm_conf("100.99.0.1", missing_tmpfs=[]))
+        assert d["JobContainerType"] == "job_container/tmpfs"
+        assert d["PrologFlags"] == "Contain"
+
+    def test_an_arm_without_the_conf_does_not_cost_the_fleet_its_guises(self, fake_host):
+        """The reason tmpfs has a capability of its own. Every Arm set up during the Phase 3 rollout
+        reported `provides: ["prolog"]` and nothing else, so a shared gate would take working Guises
+        away from those boxes the moment Phase 4 shipped — silently putting every Spawn back to
+        running as the Mantle."""
+        d = directives(templates.render_slurm_conf("100.99.0.1", missing_tmpfs=["oldarm"]))
+        assert d["Prolog"] == str(config.SLURM_PROLOG)
+        assert "JobContainerType" not in d
+
+    def test_the_reverse_holds_too(self, fake_host):
+        d = directives(templates.render_slurm_conf("100.99.0.1", missing_prolog=["newarm"]))
+        assert d["JobContainerType"] == "job_container/tmpfs"
+        assert "Prolog" not in d
+
+    def test_the_two_capabilities_are_asked_about_separately(self, monkeypatch, tmp_path):
+        reg = tmp_path / "arms.json"
+        reg.write_text(json.dumps({
+            "ready": {"admitted": True, "provides": ["prolog", "tmpfs"]},
+            "phase3only": {"admitted": True, "provides": ["prolog"]},
+        }))
+        monkeypatch.setattr(config, "ARMS_REGISTRY", reg)
+        assert enroll.arms_missing(config.ARM_CAP_PROLOG) == []
+        assert enroll.arms_missing(config.ARM_CAP_TMPFS) == ["phase3only"]
+
+
 class TestTheFleetActuallyGetsTheNewConfig:
     """Rendering a fleet-wide line and DELIVERING it are two different things, and for the whole life
     of this project only the first one happened. A configless slurmd caches the copy it fetched and
@@ -364,6 +410,60 @@ class TestTheFleetActuallyGetsTheNewConfig:
         setup.start_daemons()
         restart = next(i for i, c in enumerate(ran) if c[:2] == ["systemctl", "restart"])
         assert ran.index(["scontrol", "reconfigure"]) > restart
+
+
+class TestJobContainerConf:
+    """The per-node file the plugin refuses to start without — its contents, and its lifetime."""
+
+    def test_an_arm_writes_it_before_its_slurmd_starts(self, monkeypatch, fake_host):
+        """The whole ordering the rollout rests on. slurmd reads job_container.conf at startup, so a
+        node that starts first and gets the file second runs uncontained until someone notices — and
+        the /enroll POST that follows would claim otherwise."""
+        from cuttle import setup
+        events = []
+        monkeypatch.setattr(setup, "_write_root_file",
+                            lambda p, *a, **kw: events.append(("write", str(p))))
+        monkeypatch.setattr(setup, "run",
+                            lambda argv, **kw: events.append(("run", " ".join(map(str, argv)))))
+        setup._start_slurmd("donor-box", "100.99.0.1:6817")
+        wrote = events.index(("write", str(config.JOB_CONTAINER_CONF)))
+        started = next(i for i, (kind, v) in enumerate(events)
+                       if kind == "run" and v == "systemctl restart slurmd")
+        assert wrote < started
+
+    def test_a_departing_donor_keeps_no_mount_tree(self, monkeypatch):
+        """AutoBasePath creates BasePath and "the directory is not deleted during slurm shutdown", so
+        nothing but teardown will ever reclaim it. Every caller stops slurmd first — it holds BasePath
+        mounted `private` for as long as it runs."""
+        from cuttle import teardown
+        calls = []
+        monkeypatch.setattr(teardown, "run", lambda argv, **kw: calls.append(list(argv)))
+        teardown.remove_slurm_config()
+        removed = [a for c in calls if c[:2] == ["rm", "-rf"] for a in c[2:]]
+        assert str(config.JOB_CONTAINER_ROOT) in removed
+        # The tree, not one node's directory — `%h` is expanded by slurmd, never by us.
+        assert config.JOB_CONTAINER_BASE not in removed
+
+    def test_slurmd_creates_the_base_path_itself(self):
+        """AutoBasePath=false (the default) means the plugin EXPECTS the directory to exist — and a
+        BasePath that isn't there is another drain, on a directory nothing else would ever create."""
+        assert "AutoBasePath=true" in templates.render_job_container_conf()
+
+    def test_the_base_path_is_per_node(self):
+        """"The BasePath must be unique to each node" (man 5 job_container.conf). slurmd expands %h to
+        its own hostname; the Head never learns or writes which node it is."""
+        assert f"BasePath={config.JOB_CONTAINER_ROOT}/%h" in templates.render_job_container_conf()
+
+    def test_dev_shm_is_left_to_the_default(self):
+        """Naming `Dirs` at all is how this gets broken. The default is "/tmp,/dev/shm", and /dev/shm
+        "has special handling, and instead of a bind mount is always a fresh tmpfs filesystem" — so
+        shared-memory IPC (a torch DataLoader's workers, above all) keeps a RAM-backed filesystem
+        rather than landing on BasePath's disk. Only /tmp is the bind mount."""
+        assert "Dirs" not in templates.render_job_container_conf()
+
+    def test_it_lives_beside_slurm_conf(self):
+        """Not a choice: "the file will always be located in the same directory as the slurm.conf"."""
+        assert config.JOB_CONTAINER_CONF.parent == config.SLURM_CONF.parent
 
 
 class TestSlurmSudoers:

@@ -238,10 +238,17 @@ def write_slurm_config(mesh_ip: str) -> None:
         # misses it believes Guises are live when every Spawn is still running as the Mantle.
         ui.warn(f"Guises are held back — these Arms have no prolog yet: {', '.join(missing)}. "
                 f"Re-run `cuttle setup --arm` on each, then re-run this.")
+    # The same gate for job_container/tmpfs (temp/spawn-isolation.md Phase 4), asked separately: an Arm
+    # set up during the Guises rollout reported only the prolog, and holding BOTH lines back over that
+    # would take working Guises away from a box that has them.
+    missing_tmpfs = enroll.arms_missing(config.ARM_CAP_TMPFS)
+    if missing_tmpfs:
+        ui.warn(f"Private per-Spawn /tmp is held back — these Arms have no job_container.conf yet: "
+                f"{', '.join(missing_tmpfs)}. Re-run `cuttle setup --arm` on each, then re-run this.")
     _write_root_file(
         config.SLURM_CONF,
         templates.render_slurm_conf(mesh_ip, config.node_weight(powers) if powers else 1,
-                                    missing_prolog=missing))
+                                    missing_prolog=missing, missing_tmpfs=missing_tmpfs))
     nodes = [templates.head_gres_node()]
     nodes += [(n, e["gpu_devices"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]
@@ -249,10 +256,12 @@ def write_slurm_config(mesh_ip: str) -> None:
     # What task/cgroup enforces. Configless serves it to every Arm with slurm.conf, so it is written
     # here only — an Arm never authors one.
     _write_root_file(config.CGROUP_CONF, templates.render_cgroup_conf())
-    # The Head's own slurmd (its co-located Arm) runs Spawns too, so the two hook scripts its
-    # slurm.conf references must exist here as well as on every Arm (setup_arm writes them there).
+    # The Head's own slurmd (its co-located Arm) runs Spawns too, so the per-node files its slurm.conf
+    # references must exist here as well as on every Arm (setup_arm writes them there). The Head is
+    # never in `missing` — it has no /enroll POST to report in, and this run is what writes its files.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
     _write_root_file(config.SLURM_PROLOG, templates.render_prolog(), mode="755")
+    _write_root_file(config.JOB_CONTAINER_CONF, templates.render_job_container_conf())
 
 
 def make_registry_dir() -> None:
@@ -867,11 +876,12 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     with ui.step("Starting slurmd"):
         _start_slurmd(node_name, info["ctld_addr"], [f["name"] for f in features])
     with ui.step("Reporting this Arm's Slurm hooks to the Head"):
-        # ONLY now — the prolog is on disk and slurmd is up. Until this lands the Head will not render
-        # `Prolog=` at all (enroll.arms_missing), because a node named by that line without the file
-        # fails its jobs and drains, and does not recover when the file appears later.
+        # ONLY now — both per-node files are on disk and slurmd is up. Until this lands the Head will
+        # render neither `Prolog=` nor `JobContainerType=` (enroll.arms_missing, once per capability),
+        # because a node named by either without its file fails its jobs and drains, and does not
+        # recover when the file appears later.
         enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features,
-                                provides=[config.ARM_CAP_PROLOG])
+                                provides=[config.ARM_CAP_PROLOG, config.ARM_CAP_TMPFS])
     with ui.step("Checking the Head can reach us"):
         # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
         enroll.check_head_can_reach_us(t["mesh_ip"])
@@ -888,12 +898,15 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
 def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None) -> None:
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
-    # Configless serves the conf (which names Epilog=/Prolog=) but NOT the scripts it points at — those
-    # must be on the node, written before slurmd starts, or the first Spawn's hook fails and drains this
-    # Arm. The prolog is what creates a **Guise** here (temp/spawn-isolation.md Phase 3c); it is written
-    # unconditionally, ahead of the Head ever naming it, which is the whole ordering the rollout needs.
+    # Configless serves the conf (which names Epilog=/Prolog=/JobContainerType=) but NOT the per-node
+    # files it points at — those must be on the node, written before slurmd starts, or the first Spawn's
+    # hook fails and drains this Arm. The prolog is what creates a **Guise** here (Phase 3c) and
+    # job_container.conf is what the private-/tmp plugin refuses to start without (Phase 4). All three
+    # are written unconditionally, ahead of the Head ever naming them, which is the ordering the rollout
+    # needs: harmless on a node whose slurm.conf still says nothing about them.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
     _write_root_file(config.SLURM_PROLOG, templates.render_prolog(), mode="755")
+    _write_root_file(config.JOB_CONTAINER_CONF, templates.render_job_container_conf())
     # The same detection that was reported to /enroll, so the count claimed here and the gres.conf
     # File lines the Head wrote from that POST cannot disagree (slurmctld invalidates the node if
     # they do). `feature_names` are the same Arm Features just reported at /enroll.

@@ -109,8 +109,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Spawn's results, even though every **Arm** shares one **Mesh**. Being on the Mesh admits a *machine*;
   a Siphon authorizes one *Spawn*. Its closing is tied to that Spawn's last transfer and not to
   **Settlement**: a Spawn's final copy home can still be arriving well after it has been billed.
-- **Pod** — the isolated environment a job runs inside on an Arm. Its walls are real: a Spawn cannot
-  see the host's filesystem, the machine's other processes, or any concurrent Spawn's working files.
+- **Pod** — the isolated environment a job runs inside on an Arm. Its walls are real, and they enclose
+  the **whole** Spawn — the payload and the wrapper that stages its files in and out, not just the
+  payload: a Spawn cannot see the host's filesystem, the machine's other processes, or any concurrent
+  Spawn's working files, including their scratch.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the

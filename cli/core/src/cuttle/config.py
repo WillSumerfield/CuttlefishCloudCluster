@@ -143,9 +143,26 @@ SLURM_EPILOG = Path("/etc/slurm/ccc-epilog.sh")
 # as, if this node has never run one of that User's before. Like the epilog it is served by neither
 # configless nor any push — every node writes its own at `cuttle setup` (see templates.PROLOG_TMPL).
 SLURM_PROLOG = Path("/etc/slurm/ccc-prolog.sh")
+# job_container/tmpfs's settings. The plugin looks for this beside slurm.conf and nowhere else ("the
+# file will always be located in the same directory as the slurm.conf", man 5 job_container.conf), and
+# like the two hook scripts it is served by neither configless nor any push — every node writes its own.
+JOB_CONTAINER_CONF = Path("/etc/slurm/job_container.conf")
+# Where the plugin builds each job's private /tmp. slurmd creates it (AutoBasePath) and holds it mounted
+# `private` for its whole life, and does NOT remove it at shutdown — so teardown does, which is why the
+# ROOT is a constant of its own: `%h` is expanded by slurmd, not by us, so removing the tree means
+# removing the whole `jobcontainer/` directory rather than guessing which hostname is inside it.
+# `%h` is required of any BasePath that might sit on a shared filesystem; ours does not, but the
+# expansion costs nothing and the alternative silently collides if one ever does.
+JOB_CONTAINER_ROOT = Path("/var/lib/slurm/jobcontainer")
+JOB_CONTAINER_BASE = f"{JOB_CONTAINER_ROOT}/%h"
 # What an Arm reports having written, in its /enroll POST, so the Head can refuse to name a file the
 # fleet does not have yet (see enroll.arms_missing and the Rollout section of temp/spawn-isolation.md).
+#
+# Two names, not one, and they are gated independently: an Arm enrolled during the Phase 3 rollout
+# reports only "prolog", so folding tmpfs into that name would either hold `Prolog=` back on an Arm
+# that has it, or claim tmpfs of a node with no job_container.conf — which drains it.
 ARM_CAP_PROLOG = "prolog"
+ARM_CAP_TMPFS = "tmpfs"
 SLURM_STATE_DIR = Path("/var/spool/slurmctld")
 SLURMD_SPOOL_DIR = Path("/var/spool/slurmd")
 SLURM_LOG_DIR = Path("/var/log/slurm")
