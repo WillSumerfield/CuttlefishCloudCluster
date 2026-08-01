@@ -339,6 +339,33 @@ class TestPrologRollout:
         assert enroll.arms_missing("prolog") == ["paused"]
 
 
+class TestTheFleetActuallyGetsTheNewConfig:
+    """Rendering a fleet-wide line and DELIVERING it are two different things, and for the whole life
+    of this project only the first one happened. A configless slurmd caches the copy it fetched and
+    re-fetches on its own startup or on a reconfigure — a slurmctld restart is neither. `Prolog=`
+    reached willpersonal only because the deploy happened to include an `arm admit`, which reconfigures
+    for its own reasons (enroll.render_gres). Without this the same silence swallows Phase 4."""
+
+    def test_setting_up_the_head_pushes_the_config_to_the_arms(self, monkeypatch):
+        from cuttle import setup
+        ran = []
+        monkeypatch.setattr(setup, "run", lambda argv, **kw: ran.append(list(argv)))
+        monkeypatch.setattr(setup, "ensure_munge_key", lambda: None)
+        setup.start_daemons()
+        assert ["scontrol", "reconfigure"] in ran
+
+    def test_it_comes_after_the_restart_not_before(self, monkeypatch):
+        """Order is the point: reconfigure tells the daemons to re-read, so a reconfigure issued
+        before slurmctld has the new file on disk pushes the OLD one to every Arm."""
+        from cuttle import setup
+        ran = []
+        monkeypatch.setattr(setup, "run", lambda argv, **kw: ran.append(list(argv)))
+        monkeypatch.setattr(setup, "ensure_munge_key", lambda: None)
+        setup.start_daemons()
+        restart = next(i for i, c in enumerate(ran) if c[:2] == ["systemctl", "restart"])
+        assert ran.index(["scontrol", "reconfigure"]) > restart
+
+
 class TestSlurmSudoers:
     """The Head's ONE unattended privileged grant in Phase 3. What it is NOT is the whole point."""
 

@@ -336,6 +336,20 @@ def start_daemons() -> None:
     # enable = start on boot; restart = start if down, else reload new config (idempotent re-run).
     run(["systemctl", "enable", "munge", "slurmctld", "slurmd"], sudo=True)
     run(["systemctl", "restart", "munge", "slurmctld", "slurmd"], sudo=True)
+    # What actually delivers the slurm.conf just rendered to a REMOTE Arm. Restarting slurmctld does
+    # not: a configless slurmd caches its fetched copy and re-fetches only on its own startup or on a
+    # reconfigure, so without this a donor box keeps serving the previous config until something else
+    # happens to reconfigure (an `arm admit`, say — which is the only reason `Prolog=` ever reached
+    # willpersonal). Every fleet-wide line this project renders depends on it landing.
+    #
+    # Unconditional and safe on 23.11+, where reconfigure "operates by creating new processes for the
+    # daemons, then passing control to the new processes when or if they start up successfully" — so
+    # plugin types (JobContainerType) reload without a hand-rolled restart pass over the fleet, and a
+    # config that fails to load leaves the old process serving rather than killing slurmd.
+    #
+    # check=False: slurmctld was restarted a moment ago and may not have finished coming up. Failing
+    # setup over that would be wrong — the files are written, and the next reconfigure lands them.
+    run(["scontrol", "reconfigure"], sudo=True, check=False)
 
 
 def ensure_bench_secret() -> None:
