@@ -58,32 +58,9 @@ one free action in the economy.
 
 Notably, only the head is planned to have multi-gpus. Could we instead make multi-gpu setup manually defined?
 
-## Recovery Window -- [effort: med]
-A Spawn's declared `$CCC_OUT` outputs already survive forever on the Head — nothing deletes them. The
-gap: everything ELSE a Spawn wrote (relative paths, its whole working dir) is destroyed the instant it
-ends, by the `cleanup()` EXIT trap's `rm -rf "$scratch"` (`head/api/src/ccc_head_api/spawns.py`). A
-User who mis-declared `--output` loses that work permanently, with zero warning. "Hold" is avoided as
-a name — it already means Escrow in this codebase.
-
-- Always on, every Spawn (including Tide Pools) — the mistake this catches is by definition one the
-  User didn't know they were making, so it can't be opt-in.
-- On Spawn end: rsync the whole scratch dir home (widens the existing `stage_out`) instead of just
-  `rm -rf`'ing it, *then* delete on the Arm — the donor box still ends up with nothing, same as today.
-  Held on the Head for 30 minutes, then deleted.
-- Two size caps: skip the recovery copy entirely for a Spawn whose scratch exceeds **16GB** (falls
-  back to today's immediate `rm -rf`, no copy attempted); a **50GB** total pool cap across everything
-  currently held, oldest evicted first when a new copy would exceed it.
-- Separate artifact from `cuttle outputs` (declared, permanent) — a new command downloads the
-  recovery-window copy while it's still open, distinct from the permanent output tar.
-- Surfaced in two places: proactively at submission time (output-folder field, CLI and Dashboard —
-  "anything outside a declared output dir is recoverable for 30 min after the Spawn ends") and
-  reactively the moment it's discovered (`cuttle outputs` on a miss — tells you the window's still
-  open + time left, if it is). Dashboard also shows time remaining on a finished Spawn with a real
-  download button — full parity with the CLI, not just informational.
-
 ## Output retention: 7-day TTL + share the Recipe storage allowance -- [effort: high, blocked]
 
-**Blocked on the Recipe backend, which does not exist yet** (`head/web/src/api.ts:198-199` says so
+**Blocked on the Recipe backend, which does not exist yet** (`head/web/src/api.ts:263-266` says so
 outright — Recipes today are entirely frontend-mocked, no DB table, no `/recipes` route, no server-side
 quota check; the 20GB "wall" in `RECIPE_ALLOWANCE_BYTES` only exists client-side against mock data).
 Do this once Recipes get a real backend (Phase 5), not before.
@@ -94,8 +71,10 @@ Two changes, once Recipes are real:
 - **Share the per-User 20GB Recipe allowance** with Recipes — but asymmetrically: a Recipe stays the
   hard-wall citizen (submission fails past the wall, User deletes one manually, unchanged from today);
   an output is the soft/evictable citizen, auto-evicted **oldest-first** to make room, for either a new
-  output or a new Recipe save. Precedent for oldest-first eviction under a pool cap already exists in
-  this same doc's Recovery Window section (50GB scratch pool) — reuse that shape, not a new one.
+  output or a new Recipe save. Reuse the eviction shape the Recovery Window already ships — a pool cap
+  enforced by evicting the oldest row first (`head/api/src/ccc_head_api/recovery.py`, `_make_room` +
+  `db.oldest_recovery`) — rather than inventing a second one. The TTL sweep likewise belongs in the
+  same `tick.py` pass that already reaps expired Recovery copies.
 
 Not yet designed beyond this: exact warning timing/surface, and how output size gets tracked (nothing
 computes or stores it anywhere today — new bookkeeping regardless of when this is built).

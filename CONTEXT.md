@@ -113,6 +113,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   the **whole** Spawn — the payload and the wrapper that stages its files in and out, not just the
   payload: a Spawn cannot see the host's filesystem, the machine's other processes, or any concurrent
   Spawn's working files, including their scratch.
+- **Recovery Window** — the brief, always-on grace period in which a finished **Spawn**'s *undeclared*
+  writes can still be retrieved. A Spawn's declared outputs are permanent; everything else it wrote —
+  the working directory it ran in — is destroyed when it ends, and this is the window between those two
+  facts. It exists for a mistake the **User** by definition did not know they were making, so it is
+  never opt-in and never something to plan around: it is capped in size, expires on its own, and a
+  Spawn whose work exceeds the cap simply never gets one. Distinct from an output (declared, kept) and
+  from **Escrow** — "hold" means Escrow in this cluster, and never this.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the
