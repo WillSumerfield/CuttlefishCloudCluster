@@ -428,7 +428,7 @@ class TestBenchmarkSbatch:
     """The Power benchmark: a real Spawn, submitted by the Head, pinned to the node being priced."""
 
     def test_pinned_to_the_node_under_test(self):
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1")
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
         assert "#SBATCH --nodelist=donor-box" in job
         assert "#SBATCH --gres=gpu:1" in job
 
@@ -436,22 +436,32 @@ class TestBenchmarkSbatch:
         """Measured in the Pod, not on the host and not from a spec sheet — so the number reflects the
         machine as Spawns really meet it (a WSL GPU behind /dev/dxg, a throttling laptop card, a stale
         driver). None of that is on a spec sheet, and all of it is what an hour on the card is worth."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1")
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
         assert "apptainer exec --nv" in job
         assert str(config.CCC_SIF) in job
 
     def test_result_comes_home_by_rsync(self):
         """One code path for a donor's box and for the Head's own Arm (which rsyncs to itself over the
         mesh). rsync will not invent the destination directory — the Head pre-creates it."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1")
-        assert (f"rsync://100.99.0.1/{config.RSYNC_MODULE_SPAWNS}/"
-                f"{config.BENCH_DIR_NAME}/donor-box/") in job
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        assert (f"rsync://{config.RSYNC_BENCH_USER}@100.99.0.1/{config.RSYNC_MODULE_BENCH}/"
+                f"donor-box/") in job
+
+    def test_it_authenticates_to_the_bench_module(self):
+        """A benchmark cannot be handed a **Siphon** — it never goes through the Head API — so it is
+        the one job carrying the cluster-lifetime credential instead. Without the password in its
+        environment the module's `auth users` refuses it and the Power file never arrives, which
+        surfaces as an Arm that enrolled and then priced at nothing."""
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        assert "export RSYNC_PASSWORD=b3nch" in job
+        # The bench tree, not the Spawns tree: a benchmark must not be able to reach a Spawn's results.
+        assert str(config.HEAD_SPAWNS_DIR) not in job
 
     def test_embedded_python_is_intact(self):
         """The benchmark body is str.format()-ed into a heredoc, and it contains a dict literal — so
         every brace of that literal has to be doubled. Get it wrong and the render either raises, or
         (worse) quietly emits Python that doesn't parse, on a node nobody is watching."""
-        body = bench_body(templates.render_bench_sbatch("donor-box", "100.99.0.1"))
+        body = bench_body(templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch"))
         compile(body, "bench.py", "exec")  # the real check: it is valid Python
         assert re.search(r"\{\w+\}", body) is None, "an unrendered {placeholder} survived"
         assert f"range({config.BENCH_ITERS})" in body  # ...and the substitutions really happened
@@ -459,7 +469,7 @@ class TestBenchmarkSbatch:
     def test_warmup_is_not_timed(self):
         """The first matmul pays cuBLAS init. Timing it would under-report Power on every card, and by
         an amount that depends on how fast the card is — a systematic bias, not noise."""
-        body = bench_body(templates.render_bench_sbatch("n", "ip"))
+        body = bench_body(templates.render_bench_sbatch("n", "ip", "b3nch"))
         warmup, timed = body.index(f"range({config.BENCH_WARMUP})"), body.index("perf_counter()")
         assert warmup < timed
 
@@ -467,14 +477,14 @@ class TestBenchmarkSbatch:
         """Power is per **Device**, so a four-card box needs four numbers — but from ONE Spawn. Four
         separate jobs would queue behind each other and could each land while a sibling card was held
         by somebody else's work, measuring a box under contention rather than the card itself."""
-        job = templates.render_bench_sbatch("big-box", "100.99.0.1", 4)
+        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
         assert "#SBATCH --gres=gpu:4" in job
         assert len([ln for ln in job.splitlines() if ln.startswith("#SBATCH --gres")]) == 1
 
     def test_it_measures_each_visible_device(self):
         """Identical models still differ in practice — an x4 slot, the card that throttles under the
         other — so every card is timed, not one and multiplied."""
-        body = bench_body(templates.render_bench_sbatch("big-box", "100.99.0.1", 4))
+        body = bench_body(templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4))
         assert "torch.cuda.device_count()" in body
         assert "for i in range(ndev)" in body
         assert '"powers": powers' in body

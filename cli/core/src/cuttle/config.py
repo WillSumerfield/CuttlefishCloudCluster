@@ -436,16 +436,33 @@ BACKUP_TIMER_UNIT = Path("/etc/systemd/system/ccc-backup.timer")
 # --- stage-in/out (Phase 1 ④): rsync daemon on the Head, bound to the mesh ---
 # A Spawn on a remote Arm has none of the submitter's files. The Head runs an rsync daemon on its
 # mesh address ONLY (never 0.0.0.0 / the personal tailnet); the job pulls the project in and pushes
-# results back. Auth == being on the mesh (hosts allow = the mesh prefixes), same model as /enroll.
-# Two modules: [project] read-only at the Head user's $HOME (a job can't corrupt the source tree),
-# [spawns] read-write at $HOME/.ccc/spawns (the one place a job may write home). rsync 873 is
-# privileged, so the daemon runs as root and each module drops to the Head user via uid=/gid=.
+# results back. rsync 873 is privileged, so the daemon runs as root and each module drops to the Head
+# user via uid=/gid=.
+#
+# Mesh membership is NO LONGER the authz (temp/spawn-isolation.md Phase 2). The two shared modules it
+# used to serve — [project] over every upload, [spawns] over every Spawn's results — are gone: a
+# payload on any Arm could name either URL and read every other User's code or overwrite any Spawn's
+# `exit` marker, and nothing about a uid or a namespace closes a network service. What the daemon
+# serves now is one pair of modules per Spawn, rooted at that Spawn's own upload and its own results
+# dir, minted at submit and revoked when its transfers end — a **Siphon** (ccc_head_api.siphons).
+# Those live in RSYNCD_DIR, which the Head API writes and rsyncd `&include`s; this file's job is the
+# globals they inherit (mesh-only `hosts allow`, the drop to `ccc`) plus [bench], below.
 RSYNCD_CONF = Path("/etc/ccc-rsyncd.conf")
 RSYNCD_SERVICE = "ccc-rsyncd"
 RSYNCD_UNIT = Path("/etc/systemd/system/ccc-rsyncd.service")
 RSYNCD_PORT = 873
-RSYNC_MODULE_PROJECT = "project"  # ro, rooted at HEAD_PROJECTS_DIR (a remote Arm pulls <uuid>/...)
-RSYNC_MODULE_SPAWNS = "spawns"    # rw, rooted at HEAD_SPAWNS_DIR — stage-out target
+# Per-Spawn module files (+ their secrets), written by the Head API as `ccc`, re-read by rsyncd on
+# every connection — so opening and closing a Siphon needs no reload, no signal, and no root.
+RSYNCD_DIR = HEAD_STATE_DIR / "rsyncd.d"
+# The one module that is NOT per-Spawn: the enrollment benchmark's stage-out target, rooted at the
+# bench subtree so a benchmark can reach the Power files and nothing else. It cannot borrow a Siphon —
+# it never goes through the Head API at all (enroll.py sbatches it directly) — so it carries a
+# cluster-lifetime secret instead. Both the module and its secret stay in the ROOT-owned conf above,
+# out of RSYNCD_DIR: that directory is writable by the Head API by necessity, and this is the one part
+# of the daemon's config a compromised Head API should not be able to rewrite.
+RSYNC_MODULE_BENCH = "bench"
+RSYNC_BENCH_USER = "ccc-bench"
+RSYNCD_BENCH_SECRETS = Path("/etc/ccc-rsyncd.bench.secrets")
 
 # --- CCC user artifacts ---
 # The OPERATOR's own dir — settings + credentials only. It holds no Spawn machinery: images live in

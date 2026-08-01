@@ -215,7 +215,11 @@ CCC_BENCH_PY
 # /tmp is auto-mounted by Apptainer, so $CCC_OUT needs no explicit --bind (unlike a Spawn's, which
 # lives under /var/lib/ccc).
 apptainer exec --nv --env CCC_OUT="$out" {sif} python "$out/bench.py"
-rsync -a "$out/power" "rsync://{head_ip}/{spawns_mod}/{bench_dir}/{node}/"
+# The [bench] module is rooted at the bench subtree, so this URL can reach the Power files and nothing
+# else on the Head. Its secret is the cluster-lifetime one from RSYNCD_BENCH_SECRETS — a benchmark
+# never goes through the Head API, so there is no **Siphon** for it to be handed.
+export RSYNC_PASSWORD={bench_secret}
+rsync -a "$out/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """
 
 
@@ -275,11 +279,24 @@ From: {image}
 
 
 # rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the
-# LAN or the personal tailnet. `hosts allow` = the mesh prefixes: being on the mesh IS the authz,
-# same as /enroll. Runs as root (873 is privileged) but each module drops to `ccc` (the service
-# account that owns the Head state), so files are read/written as ccc. `use chroot = no`: no root
-# chroot (simpler; the mesh is the boundary). Both module roots live under HEAD_STATE_DIR (ccc-owned);
-# [project] is read-only so a job can never write back into a served upload.
+# LAN or the personal tailnet. Runs as root (873 is privileged) but each module drops to `ccc` (the
+# service account that owns the Head state), so files are read/written as ccc. `use chroot = no`: no
+# root chroot (simpler; a module's own root is the boundary now).
+#
+# This file defines NO per-Spawn module. It sets the globals every module inherits and `&include`s the
+# directory the Head API mints **Siphon**s into (temp/spawn-isolation.md Phase 2) — an &include'd file
+# starts parsing with the parent's defaults, so `hosts allow`, the drop to `ccc`, and read-only-by-
+# default all apply to a Siphon without the Head API having to know any of them. rsyncd re-reads this
+# file, and re-scans that directory, on EVERY connection, so a Siphon opens and closes with no reload.
+#
+# `hosts allow` is now defence in depth rather than the authorization: the mesh is flat, so it cannot
+# tell one Spawn from another on the same Arm. What isolates a Spawn is its module's root plus its own
+# secret. `list = false` keeps the live Siphon names out of a bare `rsync rsync://<head>/`.
+#
+# [bench] is the one module here, and the one that is not per-Spawn: the enrollment benchmark stages
+# its Power file home and never touches the Head API, so it cannot be handed a Siphon. Rooted at the
+# bench subtree, so it reaches the Power files and nothing else. `strict modes` stays TRUE for it —
+# its secrets file is root-owned, unlike a Siphon's, which must be writable by the Head API.
 RSYNCD_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 address = {mesh_ip}
@@ -288,14 +305,16 @@ use chroot = no
 uid = {user}
 gid = {group}
 read only = true
-[{project_mod}]
-    path = {projects_dir}
-    read only = true
-    hosts allow = {v4} {v6}
-[{spawns_mod}]
-    path = {spawns_dir}
+list = false
+hosts allow = {v4} {v6}
+strict modes = false
+[{bench_mod}]
+    path = {bench_dir}
     read only = false
-    hosts allow = {v4} {v6}
+    auth users = {bench_user}
+    secrets file = {bench_secrets}
+    strict modes = true
+&include {rsyncd_dir}
 """
 
 RSYNCD_UNIT_TMPL = """\
@@ -319,8 +338,10 @@ def render_rsyncd_conf(mesh_ip: str) -> str:
     return RSYNCD_CONF_TMPL.format(
         mesh_ip=mesh_ip, port=config.RSYNCD_PORT,
         user=config.HEAD_API_USER, group=config.HEAD_API_USER,
-        project_mod=config.RSYNC_MODULE_PROJECT, projects_dir=config.HEAD_PROJECTS_DIR,
-        spawns_mod=config.RSYNC_MODULE_SPAWNS, spawns_dir=config.HEAD_SPAWNS_DIR,
+        bench_mod=config.RSYNC_MODULE_BENCH,
+        bench_dir=config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME,
+        bench_user=config.RSYNC_BENCH_USER, bench_secrets=config.RSYNCD_BENCH_SECRETS,
+        rsyncd_dir=config.RSYNCD_DIR,
         v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
     )
 
@@ -504,7 +525,7 @@ def render_prolog() -> str:
     )
 
 
-def render_bench_sbatch(node: str, head_mesh_ip: str, gpus: int = 1) -> str:
+def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, gpus: int = 1) -> str:
     """`gpus` = how many Devices this node registered. The job holds all of them and returns one Power
     each, so a re-benchmark of a 4-card box is still a single Spawn."""
     bench_py = BENCH_PY.format(n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP,
@@ -516,8 +537,9 @@ def render_bench_sbatch(node: str, head_mesh_ip: str, gpus: int = 1) -> str:
         bench_py=bench_py,
         sif=config.CCC_SIF,
         head_ip=head_mesh_ip,
-        spawns_mod=config.RSYNC_MODULE_SPAWNS,
-        bench_dir=config.BENCH_DIR_NAME,
+        bench_mod=config.RSYNC_MODULE_BENCH,
+        bench_user=config.RSYNC_BENCH_USER,
+        bench_secret=bench_secret,
     )
 
 

@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 from ccc_head_api import db
 from ccc_head_api import main as head_main
 from ccc_head_api import ratelimit
+from ccc_head_api import siphons
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
 from cuttle import api, auth, config, settings, ui
@@ -115,6 +116,17 @@ def cli(monkeypatch, head, ccc_home):
             ui.install_answers(None)
 
     return invoke
+
+
+@pytest.fixture(autouse=True)
+def _siphon_dir(monkeypatch, tmp_path_factory):
+    """Every **Siphon** a test opens lands in a throwaway directory.
+
+    Autouse, and deliberately not opt-in: `submit()` mints one for every Spawn, so ANY test that
+    reaches real submission would otherwise write rsync module files into the live /var/lib/ccc of
+    whatever box the suite is running on. A test that wants to inspect them just re-patches this.
+    """
+    monkeypatch.setattr(siphons, "RSYNCD_DIR", tmp_path_factory.mktemp("rsyncd.d"))
 
 
 @pytest.fixture

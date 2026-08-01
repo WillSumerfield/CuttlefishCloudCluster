@@ -34,7 +34,8 @@ class TestRenderedSbatch:
         kw.setdefault("node", None)
         kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
-            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
 
     def test_time_limit_is_declared(self):
         """A bare integer is minutes to Slurm. Required of every Spawn: the partition is
@@ -65,7 +66,8 @@ class TestRemoteLiveStreaming:
         kw.setdefault("node", None)
         kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
-            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
 
     def _remote_branch(self, script: str) -> str:
         """The `else` (remote Arm) block of JOB_SCRIPT, isolated from the Head branch above it."""
@@ -146,7 +148,8 @@ class TestPodContainment:
         kw.setdefault("node", None)
         kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
-            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
 
     def tidepool(self):
         return self.render(outputs=[], tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
@@ -316,7 +319,8 @@ class TestDeclaredOutputsBecomeMkdirs:
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
         return head_spawns._render(
-            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
 
     def test_one_mkdir_per_declared_name(self):
         script = self.render(outputs=["checkpoints", "logs"])

@@ -40,7 +40,8 @@ class TestRenderedScript:
         kw.setdefault("node", None)
         kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
-            uuid="u", staging="/tmp/u", gpu=1, script="train.py", args=[], files=[], **kw)
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
 
     def _head_branch(self, script: str) -> str:
         start = script.index('if [ -d "$staging_dir" ]')

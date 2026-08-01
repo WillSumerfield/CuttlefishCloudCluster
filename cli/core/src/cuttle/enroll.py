@@ -487,6 +487,17 @@ def benchmark_arm(name: str) -> dict:
         return _benchmark_arm(name)
 
 
+def _bench_secret() -> str:
+    """The [bench] rsync module's password, read off the root-owned secrets file `setup --head` minted.
+
+    A benchmark stages its Power file home over rsync like any remote Spawn, but it never goes through
+    the Head API, so there is no **Siphon** for it — it uses the one cluster-lifetime credential
+    instead (temp/spawn-isolation.md Phase 2). Read at render time rather than held anywhere: this runs
+    on the Head, with an operator at a tty who has already primed sudo."""
+    r = run(["cat", str(config.RSYNCD_BENCH_SECRETS)], sudo=True, capture_output=True, text=True)
+    return r.stdout.strip().split(":", 1)[1]
+
+
 def _benchmark_arm(name: str) -> dict:
     _wait_for_node(name)
     head_ip = mesh.tailscale_ip()
@@ -500,7 +511,7 @@ def _benchmark_arm(name: str) -> dict:
     run(["rm", "-f", str(dest / "power")], sudo=True)  # a re-benchmark must not read the old numbers
 
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
-        f.write(templates.render_bench_sbatch(name, head_ip, gpus))
+        f.write(templates.render_bench_sbatch(name, head_ip, _bench_secret(), gpus))
         job_file = f.name
     Path(job_file).chmod(0o644)  # sbatch reads it as the cluster Guise, not as the operator
 

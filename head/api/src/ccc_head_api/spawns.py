@@ -15,14 +15,14 @@ more, and a Spawn that does is a bug. A Guise is home-less by design, like the M
 nothing here is resolved against a home directory: the Pod image is at one absolute path on every node
 (CCC_SIF) and a remote Arm scratches in /tmp.
 
-Isolation (grill 2026-07-12c). A job NEVER runs in the served `[project]` tree — that would mutate the
-copy the rsync daemon serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
+Isolation (grill 2026-07-12c). A job NEVER runs in the tree the rsync daemon serves — that would
+mutate the copy it serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
 branch is "are the files already on this node?":
   * Head's co-located Arm — the <uuid> upload is on this FS. COPY it into node-local scratch, run
     there, and write out/err/exit/outputs STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
     streams live).
-  * remote Arm — the upload isn't here. rsync-stage the project in from the Head's [project] module
-    into ephemeral /tmp scratch, run, then stage out/err/exit/outputs BACK to the [spawns] module.
+  * remote Arm — the upload isn't here. rsync-stage the project in over this Spawn's own **Siphon**
+    (siphons.py) into ephemeral /tmp scratch, run, then stage out/err/exit/outputs BACK through it.
 Either way: fresh copy in, `$CCC_OUT` out, source untouched.
 
 Paths are fixed (defaults below match cuttle.config; this package never imports the CLI). Only the
@@ -41,6 +41,7 @@ from uuid import uuid4
 from . import db
 from . import guises
 from . import recovery
+from . import siphons
 
 log = logging.getLogger("ccc.api")
 
@@ -59,8 +60,6 @@ SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 # rendered script names the sif identically wherever Slurm places the Spawn.
 CCC_SIF = Path(os.environ.get("CCC_SIF", "/opt/ccc/images/base.sif"))
 MESH_IP = os.environ.get("CCC_MESH_IP", "")
-PROJECT_MOD = "project"
-SPAWNS_MOD = "spawns"
 
 # Per-User concurrent-Spawn cap (Phase 8 loose end — see docs/TODO.md's "No rate-limiting anywhere").
 # Escrow already prices queue-flooding but never hard-stops it; this does. Admins are exempt — they are
@@ -90,6 +89,13 @@ JOB_SCRIPT = """\
 # harmless no-op on any Arm/Spawn that never touches a feature — and `export`ed there (not here) so
 # Apptainer's default env passthrough (no --cleanenv below) carries it straight into the Pod.
 [ -f /etc/ccc/features.env ] && . /etc/ccc/features.env
+# This Spawn's **Siphon** (temp/spawn-isolation.md Phase 2, ccc_head_api.siphons): the secret for the
+# two rsync modules that exist only for this job. In the script body rather than the job environment
+# because sudo scrubs the environment on the way to sbatch, and widening the sudoers `env_keep` for it
+# would trade a bigger unattended grant for nothing — Slurm stores the job env exactly as it stores the
+# script. Deliberately NOT in the apptainer --env list below, so it stops at the Pod wall: a Tide Pool's
+# shell is a User's, and it has no business holding the credential the wrapper stages out with.
+export RSYNC_PASSWORD=%%RSYNC_SECRET%%
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
@@ -144,7 +150,7 @@ else
     # own (that is the point: the host /tmp on a shared Arm holds every concurrent Spawn's scratch) — so
     # the two directories the payload actually needs, $proj and $ccc_out, are bound in by name.
     scratch="/tmp/ccc-$jid"
-    proj="$scratch/%%UUID%%"
+    proj="$scratch/proj"
     trap cleanup EXIT
     # $proj is created HERE, not left to the stage-in. rsync makes <uuid>/ as a side effect of copying
     # files into it, so a Spawn with an EMPTY project (every Tide Pool: it uploads an empty tar) would
@@ -162,8 +168,8 @@ else
         # sending exit if the logs did not land: a "done" marker with no logs beside it is worse than
         # no marker, because it claims the Spawn was accounted for. The destination spawns/<jid>/
         # already exists: the API pre-created it at submit, for every Spawn.
-        rsync -a "$out" "$err" "$ccc_out" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" || return 1
-        rsync -a "$exitf" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/"
+        rsync -a "$out" "$err" "$ccc_out" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" || return 1
+        rsync -a "$exitf" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/"
     }
     recover_scratch() {
         # $proj is the whole working dir the payload ran in — everything it wrote OUTSIDE the declared
@@ -176,9 +182,9 @@ else
         # stage_out() has already told the Head the Spawn is done.
         sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
         [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
-        rsync -a "$proj/" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/recovery/" 2>/dev/null || return 0
+        rsync -a "$proj/" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/recovery/" 2>/dev/null || return 0
         echo "$sz" > "$scratch/recovery.size"
-        rsync -a "$scratch/recovery.size" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" 2>/dev/null
+        rsync -a "$scratch/recovery.size" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null
     }
     # Live streaming (docs/TODO.md's now-closed "Live log streaming for remote Spawns"): a backgrounded
     # loop pushes out/err home every 5s so `cuttle logs -f` tracks a remote run instead of staying blind
@@ -193,12 +199,12 @@ else
     push_periodic() {
         while true; do
             sleep 5
-            rsync -a "$out" "$err" "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/" 2>/dev/null || true
+            rsync -a "$out" "$err" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
             find "$ccc_out" -type f -not -newermt "@$(( $(date +%s) - 10 ))" -printf '%P\\n' \
                 > "$scratch/outputs_filelist" 2>/dev/null
             if [ -s "$scratch/outputs_filelist" ]; then
                 rsync -a --files-from="$scratch/outputs_filelist" "$ccc_out/" \
-                    "rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/outputs/" 2>/dev/null || true
+                    "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/outputs/" 2>/dev/null || true
             fi
         done
     }
@@ -214,8 +220,8 @@ CCC_FILELIST
     # directory rsync never created — and runs the payload against whatever /tmp happens to hold,
     # which surfaces as a confusing python error instead of "the files could not be fetched".
     if ! rsync -a --files-from="$scratch/filelist" \
-            "rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/" "$scratch/" 2>>"$err"; then
-        echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/%%PROJECT_MOD%%/ —" >> "$err"
+            "rsync://%%TOKEN%%@%%HEAD_IP%%/proj-%%TOKEN%%/" "$proj/" 2>>"$err"; then
+        echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/proj-%%TOKEN%%/ —" >> "$err"
         echo "ccc: this Spawn never started. Is the Head's rsync daemon up, and is this Arm on the mesh?" >> "$err"
         echo 1 > "$exitf"
         kill "$loop_pid" 2>/dev/null  # stop the periodic pusher first — it can't race the sync below
@@ -246,7 +252,7 @@ kill "$loop_pid" 2>/dev/null  # stop the periodic pusher (remote branch only —
 # A failed stage-out is indistinguishable, from the Head, from an Arm that dropped mid-Spawn: no exit
 # file ever lands, so the Spawn reads as "killed". Say so in the node-local slurm log, which is the
 # only place left that can still be written.
-stage_out || echo "ccc: staging results back to rsync://%%HEAD_IP%%/%%SPAWNS_MOD%%/$jid/ FAILED —" \
+stage_out || echo "ccc: staging results back to rsync://%%HEAD_IP%%/out-%%TOKEN%%/ FAILED —" \
                   "the Spawn ran (rc=$rc) but the Head will report it as lost." >&2
 exit $rc
 """
@@ -371,9 +377,9 @@ apptainer exec --nv --contain --pid --pwd "$proj" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
-def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
+def _render(staging: Path, gpu: int, script: str, args: list[str],
             files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
-            exclude: str = "", tidepool_port: int | None = None,
+            token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
             tidepool_pubkey: str | None = None) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
@@ -402,10 +408,12 @@ def _render(uuid: str, staging: Path, gpu: int, script: str, args: list[str],
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
         "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),
-        "%%UUID%%": uuid,
         "%%HEAD_IP%%": MESH_IP,
-        "%%PROJECT_MOD%%": PROJECT_MOD,
-        "%%SPAWNS_MOD%%": SPAWNS_MOD,
+        # This Spawn's Siphon (siphons.py). The token is both rsync module suffix and rsync username;
+        # the secret is what `auth users` checks it against. Neither is the job id: the modules have to
+        # exist before sbatch can return one.
+        "%%TOKEN%%": token,
+        "%%RSYNC_SECRET%%": secret,
         "%%FILELIST%%": "\n".join(files),
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
@@ -476,7 +484,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can enforce ahead
     of time (the CLI still warns, see cuttle/tidepool.py).
     """
-    # Refuse rather than render `rsync:///project/`. An empty mesh IP is a Head that does not know its
+    # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
     # Arm, and only discoverable minutes later, on another machine, as a Spawn that "vanished". We
     # cannot know where it will land, so no Spawn goes out at all.
@@ -504,9 +512,11 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
                              f"path matches exactly (and isn't excluded by .gitignore)")
         staging.mkdir(parents=True)
         tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
-    # Module-root-relative list (<uuid>/...) for a remote Arm's --files-from. The upload was already
-    # gitignore-filtered client-side, so every file here is meant to transfer.
-    files = [p.relative_to(PROJECTS_DIR).as_posix() for p in staging.rglob("*") if p.is_file()]
+    # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
+    # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
+    # that re-rooting IS the isolation, and it is why the list no longer carries a <uuid>/ prefix. The
+    # upload was already gitignore-filtered client-side, so every file here is meant to transfer.
+    files = [p.relative_to(staging).as_posix() for p in staging.rglob("*") if p.is_file()]
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -518,8 +528,12 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         with db.connect() as conn:
             tp_port, tp_pubkey, tp_privkey = tidepool_mod.grant(conn)
 
-    body = _render(uuid, staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
-                   exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey)
+    # Opened BEFORE the render that bakes it in, and before sbatch — the Spawn stages in within
+    # milliseconds of starting, and sbatch returning the id is the same instant it becomes runnable, so
+    # a module named for the id could not exist in time. See ccc_head_api.siphons.
+    token, secret = siphons.open(uuid)
+    body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
+                   token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey)
     with db.connect() as conn:
         guise = guises.name(db.allocate_guise(conn, user_id))
     _lend_project(staging, guise)
@@ -534,13 +548,20 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # Mantle, which the Guise sbatch now runs as cannot read — and feeding it here is strictly better
     # anyway: there is no temp file to leak the project's full file list, and the delete-after-return
     # dance goes with it.
-    r = subprocess.run(guises.as_owner(["sbatch", "--parsable"], guise), input=body,
-                       capture_output=True, text=True, check=True, env=env)
+    try:
+        r = subprocess.run(guises.as_owner(["sbatch", "--parsable"], guise), input=body,
+                           capture_output=True, text=True, check=True, env=env)
+    except Exception:
+        siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it
+        raise
     job_id = int(r.stdout.strip())
     # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
-    # into rsync://<head>/spawns/<jid>/, and rsync will not invent that directory. Safe to do after
-    # sbatch — the job cannot start before sbatch has returned its id.
+    # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory a
+    # module points at. Safe to do after sbatch — the job cannot start before sbatch has returned its id.
     (SPAWNS_DIR / str(job_id) / "outputs").mkdir(parents=True, exist_ok=True)
+    # Only now can the out module name a path. The proj half has been live since before sbatch; this
+    # adds the other and renames the pair to the job id, which is how the tick finds it to close.
+    siphons.bind(token, job_id)
     with db.connect() as conn:
         db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
                         vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool)

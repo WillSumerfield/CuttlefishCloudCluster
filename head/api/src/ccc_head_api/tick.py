@@ -40,7 +40,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, recovery, slurm, spawns, tidepool
+from . import db, karma, recovery, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -222,6 +222,11 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # matter between the two — a copy just registered is never also expired in the same pass.
         recovery.register_new(conn, now)
         recovery.reap_expired(conn, now)
+        # Siphons (temp/spawn-isolation.md Phase 2): close the rsync grant of every Spawn whose copy
+        # home has landed, or whose window for one has passed. AFTER register_new deliberately — that
+        # call is what consumes the `recovery.size` marker this one closes on, and closing first would
+        # revoke a Siphon in the same pass as the copy it was still carrying.
+        siphons.sweep(conn, now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,
         # and a settlement moves their Balance. Both change the nice we are about to push, and pushing

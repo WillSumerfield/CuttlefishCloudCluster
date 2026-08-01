@@ -112,8 +112,11 @@ def remove_backup() -> None:
 
 def remove_rsyncd() -> None:
     """Stage-in/out daemon (Head-only, CCC-only — safe to remove wholesale). The service was already
-    stopped/disabled by stop_daemons; drop its unit + config."""
-    run(["rm", "-f", str(config.RSYNCD_UNIT), str(config.RSYNCD_CONF)], sudo=True, check=False)
+    stopped/disabled by stop_daemons; drop its unit + config, the [bench] secret, and every open
+    **Siphon**. RSYNCD_DIR lives under HEAD_STATE_DIR, which teardown removes wholesale anyway — it is
+    named here too so the credentials go with the daemon that honoured them, whatever the order."""
+    run(["rm", "-rf", str(config.RSYNCD_UNIT), str(config.RSYNCD_CONF),
+         str(config.RSYNCD_BENCH_SECRETS), str(config.RSYNCD_DIR)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 

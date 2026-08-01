@@ -102,6 +102,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   *not* an account a person can log into: it authenticates nobody, carries no authority, and is
   unrelated to a User's **Session**. Distinct from **Pod** (*what* a Spawn runs inside), from the
   **Mantle** (who the *cluster* is), and from **Attribution** (the Head's own record of whose it is).
+- **Siphon** — the one channel through which a **Spawn** draws its project in and sends its results
+  home. Opened when the Spawn is submitted and closed once its transfers have finished, it reaches
+  exactly that Spawn's own uploaded work and its own results, and nothing else the **Head** holds — so
+  work running on a donated machine cannot read another **User**'s project or write into another
+  Spawn's results, even though every **Arm** shares one **Mesh**. Being on the Mesh admits a *machine*;
+  a Siphon authorizes one *Spawn*. Its closing is tied to that Spawn's last transfer and not to
+  **Settlement**: a Spawn's final copy home can still be arriving well after it has been billed.
 - **Pod** — the isolated environment a job runs inside on an Arm. Its walls are real: a Spawn cannot
   see the host's filesystem, the machine's other processes, or any concurrent Spawn's working files.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what

@@ -13,6 +13,7 @@ import getpass
 import hashlib
 import ipaddress
 import json
+import secrets
 import subprocess
 import tempfile
 from pathlib import Path
@@ -337,11 +338,34 @@ def start_daemons() -> None:
     run(["systemctl", "restart", "munge", "slurmctld", "slurmd"], sudo=True)
 
 
+def ensure_bench_secret() -> None:
+    """Mint the [bench] module's rsync secret if this Head has none.
+
+    Cluster-lifetime rather than per-run: the enrollment benchmark never goes through the Head API, so
+    there is no **Siphon** to hand it (temp/spawn-isolation.md Phase 2). Root-owned 0600 — `enroll`
+    reads it with sudo when it renders the benchmark's sbatch, and rsyncd (running as root) reads it to
+    check the login, which is what lets [bench] keep `strict modes = true` where a Siphon cannot.
+
+    Kept if it already exists, so a `setup --head` re-run does not invalidate a benchmark in flight."""
+    if run(["test", "-s", str(config.RSYNCD_BENCH_SECRETS)], sudo=True, check=False).returncode == 0:
+        return
+    _write_root_file(config.RSYNCD_BENCH_SECRETS,
+                     f"{config.RSYNC_BENCH_USER}:{secrets.token_urlsafe(32)}\n", mode="600")
+
+
 def install_rsyncd(mesh_ip: str) -> None:
     """Stage-in/out daemon, bound to the Head's mesh address only. Idle until a remote Arm uses it;
     started on every Head so admitting the first Arm needs no reconfigure. Runs as root (873 is
-    privileged) but serves each module as `ccc`, so files stay ccc-owned. Both module roots (projects,
-    spawns) are created ccc-owned by provision_head_auth, which must run first."""
+    privileged) but serves each module as `ccc`, so files stay ccc-owned.
+
+    The conf itself defines no per-Spawn module — it `&include`s RSYNCD_DIR, which the Head API mints
+    **Siphon**s into as `ccc` (Phase 2). That directory is 0700 ccc: rsyncd reads it as root, and
+    nothing else on the box has any business seeing one Spawn's stage-out credential. The module roots
+    a Siphon points at (projects, spawns) are created ccc-owned by provision_head_auth, which must run
+    first."""
+    run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+         str(config.RSYNCD_DIR)], sudo=True)
+    ensure_bench_secret()
     _write_root_file(config.RSYNCD_CONF, templates.render_rsyncd_conf(mesh_ip))
     _write_root_file(config.RSYNCD_UNIT, templates.render_rsyncd_unit())
     run(["systemctl", "daemon-reload"], sudo=True)
