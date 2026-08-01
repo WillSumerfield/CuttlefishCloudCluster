@@ -384,6 +384,16 @@ export function SubmitComposer({
                       onBlur={addOutput}
                     />
                   </div>
+                  {/* The Recovery Window (docs/TODO.md), said BEFORE the mistake rather than after it —
+                      parity with the CLI, where the same sentence is `cuttle run --output`'s help. Stated
+                      as a safety net that expires, never as a reason to skip this field: a User who reads
+                      it as "outputs are optional" gets 30 minutes and then loses the work anyway. Always
+                      shown, including once folders are named — a declared-but-WRONG name is the exact
+                      case this catches, and that one looks complete from here. */}
+                  <p className="mt-1.5 text-[12px] text-ink-mute">
+                    Anything written outside these folders is recoverable for 30 min after the Spawn
+                    ends, then gone — name the right folders rather than relying on it.
+                  </p>
                 </Labeled>
                 <Labeled label="Arguments" className={isAdmin ? "sm:col-span-2" : "sm:col-span-2"}>
                   <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
