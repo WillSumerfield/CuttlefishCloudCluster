@@ -195,6 +195,32 @@ class TestPodContainment:
         remote = script[script.index("\nelse"):script.index("\nfi\n")]
         assert 'mkdir -p "$scratch/outputs" "$proj"' in remote
 
+    @pytest.mark.parametrize("what", ["script", "tidepool"])
+    def test_wsls_gpu_node_is_bound_back_in(self, what):
+        """`--contain` cost a WSL Arm its GPU twice over, and both halves are needed. The device: /dev
+        drops from ~241 entries to 12 and `--nv` puts back only the nvidia* nodes, which WSL does not
+        have — its GPU is the single node /dev/dxg. The driver stack: `--contain` also ignores
+        apptainer.conf's `bind path` entries ("except for /etc/hosts and /etc/localtime", per the
+        config's own note), which is how configure_apptainer_wsl had been supplying /usr/lib/wsl.
+
+        Measured on hardware 2026-08-01, and the failure is quiet: --nv still injects libdxcore.so, so
+        torch imports and reports its CUDA build before `torch.cuda.is_available()` comes back False.
+
+        Decided on the NODE, not by the Head: an Arm's platform is a fact about the Arm, and the Head
+        renders one script for a fleet it does not survey."""
+        script = self.render() if what == "script" else self.tidepool()
+        assert 'dxg=""; [ -e /dev/dxg ] && dxg="--bind /dev/dxg,/usr/lib/wsl"' in script
+        assert "$dxg" in script[script.index("apptainer exec"):]
+
+    def test_a_native_arm_binds_no_gpu_node_of_its_own(self):
+        """The other half: unquoted and empty on native Linux, so it expands to NO argument. A literal
+        `--bind /dev/dxg` would make every native Arm's apptainer exec fail on a path that is not
+        there, which is every Arm we have but one."""
+        script = self.render()
+        payload = script[script.index("apptainer exec"):]
+        assert "/dev/dxg" not in payload      # the path appears only in the guarded assignment above
+        assert '"$dxg"' not in payload        # quoted, an empty var is an empty ARGUMENT, not nothing
+
     def test_the_pod_keeps_the_host_network(self):
         """--net is deliberately NOT here: the payload needs W&B egress, and the Tide Pool's sshd has to
         be reachable at its port on the Arm's own address for the Head-side relay to reach it."""

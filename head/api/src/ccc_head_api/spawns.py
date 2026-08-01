@@ -99,6 +99,22 @@ export RSYNC_PASSWORD=%%RSYNC_SECRET%%
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
+# WSL's GPU, resolved on the NODE so the Head never has to know which of its Arms is WSL. Native Linux
+# exposes /dev/nvidia*, which `--nv` binds itself; WSL2 exposes ONE node, /dev/dxg, plus a driver stack
+# under /usr/lib/wsl that libcuda dlopens at runtime. Phase 1 cost us BOTH, for two different reasons:
+#
+#   * `--contain` cuts /dev from ~241 entries to 12 (measured), and --nv puts back only the nvidia*
+#     nodes — it knows nothing about /dev/dxg.
+#   * `--contain` also IGNORES apptainer.conf's `bind path` entries — "except for /etc/hosts and
+#     /etc/localtime", says the config's own note — which is exactly how cuttle.setup's
+#     configure_apptainer_wsl had been putting /usr/lib/wsl into the Pod.
+#
+# --nv still injects libdxcore.so (it is in nvliblist, found via ldconfig), so the failure looks like
+# working GPU support right up until it doesn't: torch imports, reports its CUDA build, and then
+# torch.cuda.is_available() is False. Both halves are needed; neither alone is enough.
+#
+# Unquoted on purpose below: empty must expand to no argument at all, not to an empty one.
+dxg=""; [ -e /dev/dxg ] && dxg="--bind /dev/dxg,/usr/lib/wsl"
 # sbatch's own stdout sink, on whichever node runs this. The wrapper redirects everything it cares
 # about into out/err, so this stays EMPTY unless the shell itself failed before those existed — which
 # is the one case worth keeping. Anything else would leave a 0-byte file per Spawn in /tmp forever.
@@ -284,7 +300,7 @@ exit $rc
 # own shell/tooling write a "cannot change locale" warning into the Spawn's `err` before it has done
 # anything. C.UTF-8 ships pre-generated on every Debian/Ubuntu image.
 PAYLOAD_SCRIPT = """\
-apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group \\
+apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
   --bind "$proj,$ccc_out" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
   "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
@@ -370,7 +386,7 @@ echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" >> /etc/profile.d/ccc-tidepool.sh
 exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8"
 CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
-apptainer exec --nv --contain --pid --pwd "$proj" \\
+apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj" \\
