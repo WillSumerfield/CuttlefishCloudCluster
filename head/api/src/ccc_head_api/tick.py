@@ -220,8 +220,13 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # Recovery Window (docs/TODO.md): pick up any copy that finished landing since the last pass
         # (register_new), then drop anything whose 30 minutes are up (reap_expired). Order doesn't
         # matter between the two — a copy just registered is never also expired in the same pass.
+        # sweep_orphans then deletes what neither will ever touch: a copy that landed but whose marker
+        # never followed it home. Its order here is presentation, not correctness — it skips everything
+        # still inside register_new's window by construction (db.claimable_recovery_ids is that window's
+        # complement), so it cannot delete a copy this pass was about to claim whichever runs first.
         recovery.register_new(conn, now)
         recovery.reap_expired(conn, now)
+        recovery.sweep_orphans(conn, now)
         # Siphons (temp/spawn-isolation.md Phase 2): close the rsync grant of every Spawn whose copy
         # home has landed, or whose window for one has passed. AFTER register_new deliberately — that
         # call is what consumes the `recovery.size` marker this one closes on, and closing first would

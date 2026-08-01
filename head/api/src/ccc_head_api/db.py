@@ -915,6 +915,18 @@ def recently_finished_without_recovery(conn: sqlite3.Connection, since: str) -> 
     ).fetchall()]
 
 
+def claimable_recovery_ids(conn: sqlite3.Connection, since: str) -> set[int]:
+    """Every Spawn a copy landing on disk RIGHT NOW could still legitimately belong to: still running
+    (no `finished_at` yet), or finished recently enough that `register_new` is still watching for its
+    marker. `sweep_orphans`' inverse — a `recovery/` dir whose job_id is absent from this set is one no
+    ledger row will ever claim, so it is safe to delete. Deliberately the complement of
+    `recently_finished_without_recovery`'s window rather than a second policy: the two must agree, or
+    the sweep would delete a copy the registrar was about to pick up."""
+    return {r["job_id"] for r in conn.execute(
+        "SELECT job_id FROM spawns WHERE finished_at IS NULL OR finished_at >= ?", (since,),
+    ).fetchall()}
+
+
 def add_recovery(conn: sqlite3.Connection, job_id: int, size_bytes: int, at: str | None = None) -> None:
     if at is None:
         conn.execute("INSERT INTO recovery_copies (job_id, bytes) VALUES (?,?)", (job_id, size_bytes))

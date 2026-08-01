@@ -20,6 +20,12 @@ has FULLY landed — the same "presence means done" convention the `exit` file i
 row the pass it appears. A Spawn skipped for size (the per-Spawn cap) never gets a marker at all — "no
 copy attempted", per docs/TODO.md — so it is silently never registered, which is the correct outcome.
 
+The cost of polling is that a copy can land WITHOUT its marker ever following it (see `sweep_orphans`),
+leaving a dir no row will ever claim. So the three passes below divide the whole space between them:
+`register_new` claims what landed, `reap_expired` expires what was claimed, and `sweep_orphans` deletes
+what never will be. Everything on disk is exactly one of those three, which is what keeps the pool cap
+honest — a dir outside the ledger is a dir outside the SUM that cap is computed from.
+
 Two caps, both enforced here (never in the bash — a shell script can gate its OWN copy on its OWN size,
 but it cannot know what else the Head is already holding for every other Spawn):
   * `MAX_SPAWN_BYTES` — baked into the rendered JOB_SCRIPT (spawns._render) as the size `recover_scratch`
@@ -113,6 +119,40 @@ def register_new(conn, now: datetime | None = None) -> int:
         db.add_recovery(conn, job_id, size, at=now.strftime(_TS))
         registered += 1
     return registered
+
+
+def sweep_orphans(conn, now: datetime | None = None) -> int:
+    """Delete every `recovery/` dir on disk that no ledger row will ever claim. Returns how many.
+
+    The copy home and its registration are two separate events (see this module's header), so a copy can
+    land — wholly or partly — and then never be registered: the remote `rsync` of the marker failed after
+    the payload's own rsync succeeded, the Arm dropped between the two, or the marker simply arrived
+    later than `_REGISTRATION_WINDOW_MINUTES`. Such a dir is in NO ledger row, which means `reap_expired`
+    cannot see it and `recovery_pool_bytes` does not count it — it would otherwise sit on the Head
+    forever, unbounded, under precisely the failure mode the pool cap exists to bound. This is the only
+    thing that sweeps `SPAWNS_DIR` at all.
+
+    Disk-first, not ledger-first, because the whole point is finding what the ledger does not know
+    about. `claimable_recovery_ids` is what keeps this from racing the registrar: a Spawn still running,
+    or finished recently enough that `register_new` is still watching for its marker, is never swept."""
+    from . import spawns
+    now = now or _now()
+    since = (now - timedelta(minutes=_REGISTRATION_WINDOW_MINUTES)).strftime(_TS)
+    try:
+        entries = sorted(spawns.SPAWNS_DIR.iterdir())
+    except OSError:
+        return 0  # no Spawn dir at all yet — nothing has ever run here
+    claimable = db.claimable_recovery_ids(conn, since)
+    swept = 0
+    for entry in entries:
+        if not entry.name.isdigit() or not (entry / "recovery").is_dir():
+            continue
+        job_id = int(entry.name)
+        if job_id in claimable or db.get_recovery(conn, job_id) is not None:
+            continue  # still landing, or registered and thus reap_expired's to expire on schedule
+        _evict(conn, job_id)
+        swept += 1
+    return swept
 
 
 def reap_expired(conn, now: datetime | None = None) -> int:

@@ -328,6 +328,161 @@ class TestExpiry:
             assert db.get_recovery(conn, 2) is not None
 
 
+class TestOrphanSweep:
+    """A copy can land and then never be registered — the marker's own rsync failed, the Arm dropped
+    between the two transfers, or the marker simply arrived after the registration window. Such a dir
+    is in NO ledger row, so `reap_expired` cannot see it and `recovery_pool_bytes` does not count it.
+    Left alone it is unbounded disk under exactly the failure mode the pool cap exists to bound."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        with db.connect() as conn:
+            db.add_user(conn, "alice")
+
+    def _dir(self, job_id: int) -> Path:
+        d = head_spawns.SPAWNS_DIR / str(job_id) / "recovery"
+        d.mkdir(parents=True)
+        (d / "loss.csv").write_text("1.0\n")
+        return d
+
+    def _spawn(self, conn, job_id: int, finished_at: str | None) -> None:
+        db.record_spawn(conn, job_id, 1, "train.py", "uuid", minutes=10, gpus=1)
+        if finished_at is not None:
+            db.mark_finished(conn, job_id, 0, finished_at)
+
+    def test_a_dir_no_row_will_ever_claim_is_deleted(self):
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1)
+        with db.connect() as conn:
+            self._spawn(conn, 1, _iso(old))
+            d = self._dir(1)
+            assert recovery.sweep_orphans(conn, now) == 1
+            assert not d.exists()
+
+    def test_a_copy_still_inside_the_registration_window_is_left_alone(self):
+        """The race that matters: sweeping a dir whose marker is still in flight would delete the copy
+        `register_new` was one pass away from claiming."""
+        now = datetime.now(timezone.utc)
+        with db.connect() as conn:
+            self._spawn(conn, 2, _iso(now - timedelta(minutes=1)))
+            d = self._dir(2)
+            assert recovery.sweep_orphans(conn, now) == 0
+            assert d.exists()
+
+    def test_a_running_spawn_is_left_alone(self):
+        """No `finished_at` at all — the Spawn is still going, and anything under its dir is live."""
+        now = datetime.now(timezone.utc)
+        with db.connect() as conn:
+            self._spawn(conn, 3, None)
+            d = self._dir(3)
+            assert recovery.sweep_orphans(conn, now) == 0
+            assert d.exists()
+
+    def test_a_registered_copy_is_left_to_expire_on_schedule(self):
+        """Registered and long past the registration window, but well inside its 30 minutes: this is
+        the ordinary open Recovery Window, and the sweep must not shorten it."""
+        now = datetime.now(timezone.utc)
+        landed = now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1)
+        with db.connect() as conn:
+            self._spawn(conn, 4, _iso(landed))
+            db.add_recovery(conn, 4, 100, at=_iso(landed))
+            d = self._dir(4)
+            assert recovery.sweep_orphans(conn, now) == 0
+            assert d.exists()
+            assert recovery.status(conn, 4) is not None
+
+    def test_a_swept_dir_stops_counting_against_the_pool(self):
+        """The point of sweeping, not a side effect: an orphan is invisible to `recovery_pool_bytes`
+        while it sits there, so the only way it stops eating the 50GB budget is being deleted."""
+        now = datetime.now(timezone.utc)
+        old = _iso(now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1))
+        with db.connect() as conn:
+            self._spawn(conn, 5, old)
+            self._dir(5)
+            (head_spawns.SPAWNS_DIR / "5" / "recovery.size").write_text("999")
+            assert db.recovery_pool_bytes(conn) == 0  # it never counted — that IS the bug
+            recovery.sweep_orphans(conn, now)
+            assert not (head_spawns.SPAWNS_DIR / "5" / "recovery").exists()
+            assert not (head_spawns.SPAWNS_DIR / "5" / "recovery.size").exists()
+
+    def test_a_spawn_dir_without_a_recovery_copy_is_untouched(self):
+        """outputs/, out, err, exit all live in the same Spawn dir and are permanent. The sweep looks
+        at exactly one subdirectory."""
+        now = datetime.now(timezone.utc)
+        old = _iso(now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1))
+        with db.connect() as conn:
+            self._spawn(conn, 6, old)
+            outputs = head_spawns.SPAWNS_DIR / "6" / "outputs"
+            outputs.mkdir(parents=True)
+            (outputs / "ckpt.pt").write_text("x")
+            assert recovery.sweep_orphans(conn, now) == 0
+            assert (outputs / "ckpt.pt").exists()
+
+    def test_a_non_numeric_dir_is_ignored(self):
+        """SPAWNS_DIR is keyed by job id; anything else there is not ours to reason about."""
+        now = datetime.now(timezone.utc)
+        stray = head_spawns.SPAWNS_DIR / "staging" / "recovery"
+        stray.mkdir(parents=True)
+        with db.connect() as conn:
+            assert recovery.sweep_orphans(conn, now) == 0
+        assert stray.exists()
+
+    def test_no_spawns_dir_at_all_is_not_an_error(self):
+        """A Head that has never run a Spawn. The sweep runs every tick pass from the first one."""
+        with db.connect() as conn:
+            assert recovery.sweep_orphans(conn, datetime.now(timezone.utc)) == 0
+
+    def test_the_sweep_window_is_the_registrars_own(self):
+        """These two must agree by construction, not by coincidence: `claimable_recovery_ids` is the
+        complement of `recently_finished_without_recovery`'s candidate set, which is what makes the
+        two passes safe to run in either order. Drift here reintroduces the race silently."""
+        now = datetime.now(timezone.utc)
+        since = _iso(now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES))
+        with db.connect() as conn:
+            self._spawn(conn, 7, _iso(now - timedelta(minutes=1)))                # inside
+            self._spawn(conn, 8, _iso(now - timedelta(
+                minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1)))              # outside
+            candidates = set(db.recently_finished_without_recovery(conn, since))
+            claimable = db.claimable_recovery_ids(conn, since)
+            assert candidates <= claimable
+            assert 8 not in claimable and 8 not in candidates
+
+
+class TestTheTickSweeps:
+    """One wiring test, matching test_siphons' TestTheTickClosesThem. Every condition `sweep_orphans`
+    decides on is covered directly above; this drives the real `tick.once` for the one thing those
+    cannot see — that a pass CALLS it. Drop the line from tick.py and all of them still pass, while
+    every orphaned copy a Head ever makes stays on its disk until the box is rebuilt."""
+
+    def test_an_orphan_is_gone_after_one_pass(self, monkeypatch, tmp_path):
+        from ccc_head_api import tick
+
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+        with db.connect() as conn:
+            monkeypatch.setattr(db, "connect", lambda: conn)  # the tick opens its own; make it ours
+            monkeypatch.setattr(tick.slurm, "queue", lambda: [])
+            monkeypatch.setattr(tick.slurm, "arms", lambda: [])
+            db.add_user(conn, "alice")
+            uid = db.get_user(conn, "alice")["id"]
+            db.record_spawn(conn, 1, uid, "train.py", "uuid-1", minutes=60, gpus=1)
+            # Finished long enough ago that its marker is never coming — but with the copy on disk.
+            db.mark_finished(conn, 1, 0, _iso(
+                now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1)))
+            orphan = head_spawns.SPAWNS_DIR / "1" / "recovery"
+            orphan.mkdir(parents=True)
+            (orphan / "loss.csv").write_text("1.0\n")
+
+            tick.once(now=now)
+
+            assert not orphan.exists()
+
+
 class TestStatus:
     @pytest.fixture(autouse=True)
     def _db(self, monkeypatch, tmp_path):
