@@ -361,6 +361,16 @@ ssh-keygen -A >/dev/null 2>&1
 grep -v '^tty:' /etc/group > /tmp/ccc_group.new
 cat /tmp/ccc_group.new > /etc/group
 rm -f /tmp/ccc_group.new
+# A **Guise** is `--shell /usr/sbin/nologin` on the host, which is right there and wrong in here:
+# apptainer patches the Pod's /etc/passwd with the invoking uid's REAL host entry — shell field and all
+# (measured 2026-08-01, and already implied by Probe 1b) — so sshd execs nologin and the session dies
+# with "This account is currently not available." before the User sees anything. The host account keeps
+# nologin, which is correct (nothing should ever log into a Guise on a host, and nothing can — no
+# password, no authorized_keys); a Pod is the one place an interactive shell is the entire point.
+# Same truncate-in-place dance as the group file above, and for the same reason: no `sed -i` here.
+sed "s|^\\($(id -un):.*\\):[^:]*$|\\1:/bin/bash|" /etc/passwd > /tmp/ccc_passwd.new
+cat /tmp/ccc_passwd.new > /etc/passwd
+rm -f /tmp/ccc_passwd.new
 # So an interactive login shell (sshd starts one as `-bash`, sourcing /etc/profile.d) can find where to
 # write results — the same $CCC_OUT the stage_out/EXIT-trap machinery rsyncs home either way, just not
 # under a name the Head enforced (the "at least one --output" gate is skipped for a Tide Pool) — and

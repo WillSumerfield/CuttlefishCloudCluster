@@ -307,8 +307,14 @@ def provision_guise(uid: int) -> None:
 
     Home-less (`-M`) for the same reason the Mantle is: nothing on any node reads a Guise's home — the
     Pod makes its own inside the `--writable-tmpfs` overlay — so a donor's box is left with an empty
-    account and no directory. `nologin` for the same reason too: slurmd execs the batch script by its
-    shebang, and a Tide Pool's sshd runs INSIDE the Pod against the image's own passwd, not the host's.
+    account and no directory. `nologin` because nothing should ever log into a Guise on a host, and
+    nothing can: no password, no authorized_keys, and slurmd execs a batch script by its shebang.
+
+    That shell does NOT stay behind on the host, though — apptainer patches the Pod's /etc/passwd with
+    this entry verbatim, shell field included, so a Tide Pool's sshd would exec nologin and refuse the
+    session ("This account is currently not available"). The Pod repairs its own copy before sshd
+    starts; see PAYLOAD_TIDEPOOL in ccc_head_api.spawns. Measured 2026-08-01 — an earlier version of
+    this note claimed the Pod used the image's own passwd, and that is simply not what apptainer does.
     Its private group (gid == uid) is what keeps the shared group from ever owning a file — that group
     exists only to be the Runas list on the Head's sudoers rule.
     """

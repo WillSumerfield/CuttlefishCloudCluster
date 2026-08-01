@@ -8,7 +8,11 @@ hardware (same carve-out the Beak/MIG work already has in docs/TODO.md).
 """
 
 import json
+import os
+import socket
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -159,16 +163,46 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         with db.connect() as conn:
             tp = db.get_tidepool(conn, job_id)
         body = head_spawns._render(
-            "u", "/tmp/u", 1, "", [], [], [], None, 30, "vram24",
+            "/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s3cr3t",
             tidepool_port=tp["port"], tidepool_pubkey=tp["pubkey"])
         assert f"sshd -D -e -p {tp['port']}" in body
         assert tp["pubkey"].strip() in body
         assert "%%TIDEPOOL_PORT%%" not in body
         assert "%%TIDEPOOL_PUBKEY%%" not in body
 
+    def test_the_pod_repairs_its_own_passwd_before_sshd_starts(self, tmp_path):
+        """A **Guise** is `nologin` on the host, and apptainer patches the Pod's /etc/passwd with that
+        host entry verbatim — shell field included (measured 2026-08-01). sshd then execs nologin and
+        the User gets "This account is currently not available" instead of a shell, with the Spawn
+        running and billing Karma the whole time.
+
+        Ordering is the test: repaired before `exec sshd`, or the first login is the broken one."""
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        # The backreference is spelled `\\1` in the Python source for a reason: `"\1"` in a non-raw
+        # literal is chr(1), which renders a sed expression that silently replaces the whole line.
+        assert r"\1:/bin/bash|" in body
+        assert "\x01" not in body
+        assert body.index("/etc/passwd") < body.index("exec /usr/sbin/sshd")
+
+    def test_neither_identity_file_is_edited_in_place(self, tmp_path):
+        """`sed -i` writes a temp file and rename()s it over the original, which the --writable-tmpfs
+        overlay refuses with "Device or resource busy" (found on hardware with the tty-group
+        workaround). Both repairs must redirect to /tmp and truncate the target instead — a `sed -i`
+        creeping into either one fails at runtime, inside the Pod, where nobody is reading stderr."""
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        boot = body[body.index("tp_boot.sh"):]
+        # Comments are where the constraint is explained, so they mention `sed -i` on purpose.
+        code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
+        assert "sed -i" not in code
+        for f in ("/etc/passwd", "/etc/group"):
+            assert f"> {f}\n" in code          # truncated in place, never renamed over
+
     def test_an_ordinary_spawn_is_unaffected(self, tmp_path):
         """No token leakage the other direction: a normal render never mentions Tide Pool at all."""
-        body = head_spawns._render("u", "/tmp/u", 1, "train.py", [], [], ["out"], None, 30, "vram24")
+        body = head_spawns._render("/tmp/u", 1, "train.py", [], [], ["out"], None, 30, "vram24",
+                                   "a3f9", "s3cr3t")
         assert "sshd" not in body
         assert "PAYLOAD_TIDEPOOL" not in body
         assert 'python train.py' in body
@@ -293,6 +327,76 @@ class TestTidepoolRoute:
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "mesh_ip": None}])
         r = c.get("/api/spawns/77/tidepool")
         assert r.json() == {"ready": False, "port": None, "private_key": None, "user": _GUISE}
+
+
+class TestReadyMeansConnectable:
+    """`ready: true` is the CLI's cue to run `ssh` — there is no second check between the two. So the
+    route may only say it once the relay is accepting, and `Popen` returning is not that: the child
+    still has to start a Python interpreter and bind. The gap is ~200ms, which is precisely long
+    enough to lose to the CLI every time and be gone by the time anyone investigates — a "Connection
+    refused" on the FIRST attach to every Tide Pool, working on the retry (found on hardware
+    2026-08-01, twice, on Tide Pools 14 and 16).
+    """
+
+    def _seed(self, port):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                         "VALUES (1,'u1',0,'x',0)")
+            db.record_spawn(conn, job_id=77, user_id=1, script="", staging_uuid="u", tidepool=True)
+            db.create_tidepool(conn, 77, port, "ssh-ed25519 AAAA", "PRIVATEKEY")
+            conn.commit()
+
+    def _free_port(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def test_it_waits_for_the_relay_to_accept(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        port = self._free_port()
+        self._seed(port)
+        listening = []
+
+        def slow_listener():
+            """Stands in for the real relay: alive immediately, accepting a little later."""
+            time.sleep(0.3)
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", port))
+            srv.listen()
+            listening.append(srv)
+
+        def fake_popen(*a, **kw):
+            threading.Thread(target=slow_listener, daemon=True).start()
+            return type("P", (), {"pid": os.getpid()})()   # a pid that is genuinely alive
+
+        monkeypatch.setattr(head_tidepool.subprocess, "Popen", fake_popen)
+        try:
+            with db.connect() as conn:
+                head_tidepool.ensure_relay(conn, 77, "100.99.0.5", "gpu-box")
+            # The moment ensure_relay returns, a client must be able to connect — this IS the contract.
+            with socket.socket() as s:
+                s.settimeout(1.0)
+                assert s.connect_ex(("127.0.0.1", port)) == 0
+        finally:
+            for srv in listening:
+                srv.close()
+
+    def test_a_relay_that_never_binds_does_not_hang_the_route(self, monkeypatch, tmp_path):
+        """The other side of the wait: a relay that dies on startup must not wedge the request handler
+        (and with it the Head API worker) — the caller gets an unusable port and a logged warning,
+        which is the same outcome as before this wait existed."""
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        self._seed(self._free_port())
+        monkeypatch.setattr(head_tidepool, "_LISTEN_TIMEOUT", 0.3)
+        monkeypatch.setattr(head_tidepool.subprocess, "Popen",
+                            lambda *a, **kw: type("P", (), {"pid": os.getpid()})())
+        started = time.monotonic()
+        with db.connect() as conn:
+            head_tidepool.ensure_relay(conn, 77, "100.99.0.5", "gpu-box")
+        assert time.monotonic() - started < 2.0
 
 
 # --- tick.py reaps a dead Tide Pool ------------------------------------------

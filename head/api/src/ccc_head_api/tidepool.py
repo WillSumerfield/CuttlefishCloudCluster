@@ -29,8 +29,10 @@ does not wait on the tick's 30s cadence — and `reap_dead` below, belt and susp
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
+import time
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -124,6 +126,36 @@ def ensure_relay(conn, job_id: int, node_mesh_ip: str, node: str) -> None:
         start_new_session=True)
     db.set_tidepool_relay(conn, job_id, proc.pid, node)
     log.info("tidepool relay job=%s port=%s -> %s:%s pid=%s", job_id, port, node_mesh_ip, port, proc.pid)
+    if not _accepting(port):
+        log.warning("tidepool relay job=%s port=%s did not start listening in %ss", job_id, port,
+                    _LISTEN_TIMEOUT)
+
+
+# How long to give a freshly-spawned relay to bind. Generous: it is a Python interpreter start, paid
+# once per attach, and the alternative to waiting is handing out a port that refuses connections.
+_LISTEN_TIMEOUT = 5.0
+
+
+def _accepting(port: int) -> bool:
+    """Block until the relay is actually accepting on `port`, or the timeout runs out.
+
+    `Popen` returns as soon as the fork succeeds — long before the child has imported asyncio and bound
+    anything — so without this, `GET .../tidepool` reports `ready` roughly 200ms before the port
+    exists. The CLI believes it and runs `ssh` immediately, which is a plain "Connection refused" on
+    the FIRST attach to every Tide Pool; by the time anyone retries it works, which is exactly the
+    shape of bug that survives testing. `ready` has to mean "you can connect", or it means nothing.
+
+    A connect is the only honest test of that, and it costs one connection the relay dutifully forwards
+    to the Pod's sshd — so each attach leaves one extra "Connection closed [preauth]" line in the Tide
+    Pool's own stderr. Cheap, and visibly harmless next to the alternative."""
+    deadline = time.monotonic() + _LISTEN_TIMEOUT
+    while time.monotonic() < deadline:
+        with socket.socket() as s:
+            s.settimeout(0.2)
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.05)
+    return False
 
 
 def _kill(pid: int | None) -> None:
