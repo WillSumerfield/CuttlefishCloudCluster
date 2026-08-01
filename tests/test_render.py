@@ -7,6 +7,8 @@ the render is pure, and the consequence is remote.
 
 import json
 import re
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -337,6 +339,54 @@ class TestPrologRollout:
         reg.write_text(json.dumps({"paused": {"admitted": True, "provides": []}}))
         monkeypatch.setattr(config, "ARMS_REGISTRY", reg)
         assert enroll.arms_missing("prolog") == ["paused"]
+
+
+class TestNothingIsLeftInTmp:
+    """`install` COPIES, so every root-owned file this project writes leaves its source behind unless
+    something removes it. Four sites did not, and two of them write secrets — the [bench] rsync
+    credential and, on an Arm, the cluster munge key. Both are 0600/0400 at their destination and were
+    then left in /tmp indefinitely, which defeats the mode each was given. Found with 855 of them on
+    the Head, oldest 11 days, newest from that morning's `setup --head`."""
+
+    def test_the_temp_copy_does_not_outlive_the_install(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(system, "run", lambda argv, **kw: seen.append(argv[-2]))
+        system.install_file("some rendered config", Path("/etc/ccc/thing"))
+        assert seen and not Path(seen[0]).exists()
+
+    def test_it_is_removed_even_when_the_install_fails(self, monkeypatch):
+        """The case that matters most: a bad path, a full disk or a sudo timeout is exactly when the
+        temp file is likeliest to be holding something worth not leaving lying around."""
+        seen = []
+
+        def boom(argv, **kw):
+            seen.append(argv[-2])
+            raise subprocess.CalledProcessError(1, argv)
+
+        monkeypatch.setattr(system, "run", boom)
+        with pytest.raises(subprocess.CalledProcessError):
+            system.install_file("ccc-bench:a-real-looking-secret",
+                                config.RSYNCD_BENCH_SECRETS, mode="0600")
+        assert seen and not Path(seen[0]).exists()
+
+    def test_binary_content_survives_the_round_trip(self, monkeypatch):
+        """The munge key is bytes, not text. Routing it through a text-mode temp file would corrupt
+        the cluster's shared secret rather than merely leak it."""
+        written = []
+        monkeypatch.setattr(system, "run",
+                            lambda argv, **kw: written.append(Path(argv[-2]).read_bytes()))
+        key = bytes(range(256))
+        system.install_file(key, config.MUNGE_KEY, mode="0400", owner="munge", group="munge")
+        assert written == [key]
+
+    def test_ownership_is_passed_through_only_when_asked_for(self, monkeypatch):
+        """setup's own renders take the root default; the registry and the munge key name a user."""
+        argvs = []
+        monkeypatch.setattr(system, "run", lambda argv, **kw: argvs.append(list(argv)))
+        system.install_file("x", Path("/etc/ccc/plain"))
+        system.install_file("x", Path("/etc/ccc/owned"), owner="munge", group="munge")
+        assert "-o" not in argvs[0]
+        assert argvs[1][argvs[1].index("-o") + 1] == "munge"
 
 
 class TestPrivateTmpRollout:

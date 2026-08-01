@@ -23,11 +23,12 @@ from .system import run, sh
 
 
 def _write_root_file(path: Path, content: str, mode: str = "644") -> None:
-    """Write `content` to a root-owned path via a temp file + sudo install."""
-    with tempfile.NamedTemporaryFile("w", suffix=".ccc", delete=False) as f:
-        f.write(content)
-        tmp = f.name
-    run(["install", "-D", "-m", mode, tmp, str(path)], sudo=True)
+    """Write `content` to a root-owned path via a temp file + sudo install.
+
+    Kept as a wrapper rather than replaced by `system.install_file`: it is passed as a CALLBACK into
+    mesh.up_arm and headapi.install_enroll, so its (path, content, mode) shape is a contract.
+    """
+    system.install_file(content, path, mode)
 
 
 def preflight(role: str) -> None:

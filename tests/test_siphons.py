@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from ccc_head_api import db, recovery, siphons, spawns as head_spawns, tick
-from cuttle import config, setup, spawns as cli_spawns, templates
+from cuttle import config, setup, spawns as cli_spawns, system, templates
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -511,30 +511,48 @@ class TestTheBenchmarksSecretIsMintedOnce:
     sbatch, so a rotation orphans any benchmark already in flight. It stages its Power file home,
     fails auth, and the Arm sits admitted-but-unbenchmarked — a state with no error anywhere near it."""
 
-    def _mint(self, monkeypatch, exists: bool) -> list[list[str]]:
+    def _mint(self, monkeypatch, exists: bool) -> tuple[list[list[str]], list[str]]:
         """Run `ensure_bench_secret` against a Head that does (or does not) already have one, and
-        return every command it shelled out."""
+        return every command it shelled out plus whatever any `install` was handed.
+
+        The payload is captured DURING the call rather than read back after: `system.install_file`
+        unlinks its temp file on the way out, deliberately — this is the one that used to leave the
+        [bench] credential sitting in /tmp in plaintext. Both `run` bindings are patched because
+        setup.py does `from .system import run`, so the two names are separate objects: the `test -s`
+        probe goes through setup's, the install through system's.
+        """
         calls: list[list[str]] = []
+        payloads: list[str] = []
 
         def fake_run(argv, **kw):
             calls.append(argv)
+            if argv[0] == "install":
+                payloads.append(Path(argv[-2]).read_text())
             # `test -s <path>` is how it asks; every other call is the write itself.
             code = (0 if exists else 1) if argv[0] == "test" else 0
             return type("R", (), {"returncode": code, "stdout": "", "stderr": ""})()
 
         monkeypatch.setattr(setup, "run", fake_run)
+        monkeypatch.setattr(system, "run", fake_run)
         setup.ensure_bench_secret()
-        return calls
+        return calls, payloads
 
     def test_a_head_without_one_gets_one(self, monkeypatch):
-        calls = self._mint(monkeypatch, exists=False)
+        calls, payloads = self._mint(monkeypatch, exists=False)
         install = [c for c in calls if c[0] == "install"]
         assert len(install) == 1
         assert install[0][-1] == str(config.RSYNCD_BENCH_SECRETS)
         assert "600" in install[0]      # rsyncd refuses a world-readable secrets file outright
-        user, secret = Path(install[0][-2]).read_text().strip().split(":", 1)
+        user, secret = payloads[0].strip().split(":", 1)
         assert user == config.RSYNC_BENCH_USER
         assert len(secret) >= 32        # guessable here means writable [bench] from any mesh host
 
+    def test_the_credential_does_not_stay_in_tmp(self, monkeypatch):
+        """0600 root at its destination, and for 11 days a plaintext copy in /tmp beside it."""
+        calls, _ = self._mint(monkeypatch, exists=False)
+        tmp = [c[-2] for c in calls if c[0] == "install"][0]
+        assert not Path(tmp).exists()
+
     def test_a_setup_rerun_keeps_the_one_it_has(self, monkeypatch):
-        assert [c for c in self._mint(monkeypatch, exists=True) if c[0] == "install"] == []
+        calls, _ = self._mint(monkeypatch, exists=True)
+        assert [c for c in calls if c[0] == "install"] == []

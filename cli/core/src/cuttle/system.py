@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import config, ui
@@ -103,6 +104,36 @@ def sh(script: str, sudo: bool = False) -> subprocess.CompletedProcess:
     except subprocess.CalledProcessError as e:
         _dump(e)
         raise
+
+
+def install_file(content: str | bytes, dest: Path, mode: str = "644",
+                 owner: str | None = None, group: str | None = None) -> None:
+    """Write `content` to a root-owned `dest` via a temp file + sudo install, and ALWAYS remove the
+    temp — which is the entire reason this exists rather than four hand-rolled copies of it.
+
+    `install` COPIES, so the source survives every call. All four sites used to leave it behind, and
+    two of them write secrets: the [bench] rsync credential (setup.ensure_bench_secret) and, on an Arm,
+    the cluster munge key (enroll.write_munge_key). Both land 0600 root at their destination and were
+    then left in /tmp indefinitely, operator-owned — no Guise could read them (0600), but it defeated
+    the mode each destination was carefully given. Found 2026-08-01 with 855 of these on the Head, the
+    oldest 11 days old and the newest from that morning's `setup --head`.
+
+    `finally`, not a trailing unlink: a failed `install` (bad path, full disk, sudo timeout) is exactly
+    when the temp file is most likely to hold something worth not leaving lying around.
+    """
+    binary = isinstance(content, bytes)
+    with tempfile.NamedTemporaryFile("wb" if binary else "w", suffix=".ccc", delete=False) as f:
+        f.write(content)
+        tmp = f.name
+    argv = ["install", "-D", "-m", mode]
+    if owner:
+        argv += ["-o", owner]
+    if group:
+        argv += ["-g", group]
+    try:
+        run([*argv, tmp, str(dest)], sudo=True)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
 
 
 def hostname() -> str:

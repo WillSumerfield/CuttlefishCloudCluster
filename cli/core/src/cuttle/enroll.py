@@ -197,11 +197,8 @@ def check_head_can_reach_us(head_mesh_ip: str) -> None:
 
 def write_munge_key(b64_key: str) -> None:
     """The cluster-wide shared secret. 0400 munge:munge, same as the Head's."""
-    with tempfile.NamedTemporaryFile("wb", suffix=".ccc", delete=False) as f:
-        f.write(base64.b64decode(b64_key))
-        tmp = f.name
-    run(["install", "-D", "-m", "0400", "-o", "munge", "-g", "munge",
-         tmp, str(config.MUNGE_KEY)], sudo=True)
+    system.install_file(base64.b64decode(b64_key), config.MUNGE_KEY,
+                        mode="0400", owner="munge", group="munge")
     run(["systemctl", "restart", "munge"], sudo=True)
 
 
@@ -296,11 +293,8 @@ def arms_missing(capability: str) -> list[str]:
 
 
 def save_registry(reg: dict) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=".ccc", delete=False) as f:
-        f.write(json.dumps(reg, indent=2, sort_keys=True) + "\n")
-        tmp = f.name
-    run(["install", "-D", "-m", "0644", "-o", config.ENROLL_API_USER, "-g", config.ENROLL_API_USER,
-         tmp, str(config.ARMS_REGISTRY)], sudo=True)
+    system.install_file(json.dumps(reg, indent=2, sort_keys=True) + "\n", config.ARMS_REGISTRY,
+                        mode="0644", owner=config.ENROLL_API_USER, group=config.ENROLL_API_USER)
 
 
 # --- Arm Feature catalog (Head only, operator + sudo) -----------------------
@@ -315,11 +309,8 @@ def load_feature_catalog() -> list[str]:
 
 
 def save_feature_catalog(names: list[str]) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=".ccc", delete=False) as f:
-        f.write(json.dumps(sorted(set(names)), indent=2) + "\n")
-        tmp = f.name
-    run(["install", "-D", "-m", "0644", "-o", config.ENROLL_API_USER, "-g", config.ENROLL_API_USER,
-         tmp, str(config.FEATURES_CATALOG)], sudo=True)
+    system.install_file(json.dumps(sorted(set(names)), indent=2) + "\n", config.FEATURES_CATALOG,
+                        mode="0644", owner=config.ENROLL_API_USER, group=config.ENROLL_API_USER)
 
 
 def add_feature(name: str) -> None:
