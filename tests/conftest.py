@@ -129,6 +129,29 @@ def _siphon_dir(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(siphons, "RSYNCD_DIR", tmp_path_factory.mktemp("rsyncd.d"))
 
 
+@pytest.fixture(autouse=True)
+def _head_state(monkeypatch, tmp_path_factory):
+    """No test touches the live Head state dir, for the same reason as `_siphon_dir` above.
+
+    Autouse and unconditional: `tick.once` walks the Spawn tree on its own (the Recovery Window's
+    register/reap pass), so a test that never mentions a directory can still reach one — and
+    `recovery._evict` *unlinks*. On a box that is also a real Head, a simulated Spawn whose id happens
+    to match a real one then reads, and deletes, that Spawn's recovery copy. Found exactly that way
+    (2026-08-01): the Fake Cluster counts from 1, the Head had a real Spawn 10, and the suite failed
+    on a PermissionError that was the live /var/lib/ccc/head refusing — which on a Head running its
+    tests as `ccc` would not have refused at all.
+
+    `fake_slurm` sets the same four attributes to its own tmp dir; a test using it simply overrides
+    this, and both are undone at teardown."""
+    state = tmp_path_factory.mktemp("head-state")
+    for name in ("projects", "spawns", "scratch"):
+        (state / name).mkdir()
+    monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
+    monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
+    monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
+    monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
+
+
 @pytest.fixture
 def fake_slurm(monkeypatch, tmp_path):
     """Stand in for Slurm with two throwaway executables on PATH.
