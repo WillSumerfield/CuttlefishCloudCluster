@@ -193,6 +193,26 @@ class TestTheMenuGatesByState:
         assert {"logout", "whoami", "passwd"} <= paths
         assert "login" not in paths
 
+    def test_every_command_that_needs_a_session_is_declared_as_needing_one(self):
+        """`_visible` DEFAULTS to True, so a new submitter command that nobody adds to LOGIN_REQUIRED
+        is not merely unsorted — it is offered to a logged-OUT user, whose first act is a 401. That is
+        how `recover` shipped. This is the invariant, rather than a test naming one command: anything
+        reaching the Head with a session bearer belongs in that set."""
+        root = typer.main.get_command(main.app)
+        logged_out = {p for p, _, _ in menu._entries(
+            root, menu.MenuState(logged_in=False, provisioned=True, pointed=True, on_head=False))}
+        assert logged_out.isdisjoint({"run", "queue", "history", "status", "logs", "outputs",
+                                      "recover", "cancel", "karma", "tide", "account"})
+
+    def test_the_menu_never_falls_back_to_a_truncated_help_string(self):
+        """`_label` falls back to `get_short_help_str(limit=40)` — a command missing from LABELS gets
+        its docstring's first paragraph chopped mid-word as its menu row. Every row a User can actually
+        reach should be deliberately named."""
+        root = typer.main.get_command(main.app)
+        st = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
+        unlabelled = [p for p, _, _ in menu._entries(root, st) if p not in menu.LABELS]
+        assert unlabelled == []
+
     def test_setup_shows_until_the_box_carries_a_role(self):
         """Pointed is NOT provisioned. A box the installer pointed at a Head still has to be able to
         become an Arm — hiding `setup` there was the installer bug."""

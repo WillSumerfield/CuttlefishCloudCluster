@@ -45,8 +45,8 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
-LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide",
-                  "account", "logout", "whoami", "passwd", "wandb"}
+LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
+                  "tide", "account", "logout", "whoami", "passwd", "wandb"}
 
 # How long the session probe (GET /me) may take before we give up and show the offline safe-set.
 # Short on purpose: this runs every time bare `cuttle` opens a menu, and a menu must never hang.
@@ -71,6 +71,7 @@ LABELS = {
     "status": "Check a Spawn",
     "logs": "Read a Spawn's output",
     "outputs": "Download a Spawn's outputs",
+    "recover": "Recover a Spawn's undeclared files",
     "cancel": "Cancel a Spawn",
     "karma": "Karma standings",
     "karma ledger": "My Karma ledger",
@@ -106,6 +107,13 @@ LABELS = {
     "wandb clear": "Forget my W&B key",
     "munge": "The cluster's munge key",
     "munge rotate": "Rotate the cluster's munge key",
+    "backup": "Back up the Head",
+    "backup create": "Snapshot the Head's state",
+    "backup restore": "Restore the Head from a snapshot",
+    "feature": "Arm Features",
+    "feature add": "Add a Feature to the catalog",
+    "feature list": "List the Feature catalog",
+    "feature remove": "Remove a Feature from the catalog",
 }
 
 # Sentinels for the navigation entries. Deliberately NOT None: `ui._ask` reads a None answer as
@@ -123,8 +131,8 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # `login` trails the submit verbs but leads everything unlisted, so on a freshly-installed box the
 # pre-selected row is "Log in" — what install.sh printed as the next step — rather than `setup`. It
 # only ever shows when logged out, so this costs the everyday menu nothing.
-ORDER = ["run", "queue", "history", "status", "logs", "outputs", "cancel", "karma", "tide", "account",
-         "login"]
+ORDER = ["run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma", "tide",
+         "account", "login"]
 
 
 def is_head() -> bool:
