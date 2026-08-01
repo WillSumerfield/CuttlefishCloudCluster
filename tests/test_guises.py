@@ -8,6 +8,8 @@ ours. Both are exactly what this phase exists to prevent, so both are pinned her
 See temp/spawn-isolation.md Phase 3.
 """
 
+import stat
+
 import pytest
 
 from ccc_head_api import db, guises
@@ -198,3 +200,35 @@ class TestTheSlurmOpsBecomeTheOwner:
         from ccc_head_api import slurm
         slurm.cancel(7)
         assert ran[0][:3] == ["squeue", "-h", "-j"]
+
+
+class TestTheStoreIsNotReadableByAGuise:
+    """The other half of Phase 3d: a Guise must not be able to read `head.db`.
+
+    Found world-readable on the deployed Head (2026-08-01), which since this phase means every User's
+    Spawn could read every password hash, session token and admin flag on the cluster. sqlite creates a
+    database at 0644 and no code had ever changed it, while HEAD_STATE_DIR was deliberately loosened to
+    0711 (traverse, never list) *on the assumption* that this file was 0600. Two docstrings claimed the
+    mode; nothing enforced it, and no probe had ever attempted the read."""
+
+    def test_the_store_is_0600_from_the_moment_it_exists(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.connect()
+        assert stat.S_IMODE((tmp_path / "head.db").stat().st_mode) == 0o600
+
+    def test_the_wal_sidecars_are_restricted_too(self, monkeypatch, tmp_path):
+        """They hold the writes the store has not checkpointed yet — a session token minted a moment
+        ago is in the WAL, not in head.db. sqlite creates them on the first WRITE rather than at
+        `connect`, so the open that restricts them is always a later one; on a live Head there is
+        always another (every API request, and the tick every 30 seconds)."""
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        held = db.connect()  # stands in for the API service's long-lived connection
+        try:
+            db.init_schema(held)  # a write: the sidecars appear now, at sqlite's own 0644
+            db.connect()          # any later open restricts them
+            sidecars = sorted(p for p in tmp_path.iterdir() if p.name.startswith("head.db-"))
+            assert [p.name for p in sidecars] == ["head.db-shm", "head.db-wal"]
+            for p in sidecars:
+                assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
+        finally:
+            held.close()

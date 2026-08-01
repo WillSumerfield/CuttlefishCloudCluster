@@ -2,7 +2,8 @@
 
 Pure stdlib `sqlite3` + `argon2-cffi`, no ORM/framework (deliberate — see temp/ROADMAP.md Phase 3a).
 The Head API process (`main.py`) and the admin CLI (`admin.py`) both open the same `head.db`; setup
-seeds the schema + first admin. Owned by the `ccc` service account, 0600.
+seeds the schema + first admin. Owned by the `ccc` service account, 0600 — enforced on every open by
+`_restrict()`, because sqlite's own default is 0644 and nothing else would ever change it.
 
 Design notes worth keeping:
 - **Session tokens are stored hashed** (`sha256`, not the raw token): a leak of head.db grants no live
@@ -297,7 +298,29 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")  # two writers now — see BUSY_TIMEOUT_MS
+    _restrict()
     return conn
+
+
+def _restrict() -> None:
+    """0600 on the store and its WAL sidecars, on every open.
+
+    SQLite creates a missing database at a hardcoded 0644 (`SQLITE_DEFAULT_FILE_PERMISSIONS`), and only
+    a umask of 077 would trim that — so this mode has to be SET, never inherited. Measured on the
+    deployed Head 2026-08-01: head.db was world-readable, and since **Guises** landed that means every
+    User's Spawn could read the password hashes and session tokens in it. HEAD_STATE_DIR is 0711
+    (traverse, never list) precisely on the assumption that it could not.
+
+    Here rather than in `cuttle setup` because the -wal/-shm sidecars are recreated at runtime by
+    whichever process writes — the API service, the karma tick, and the admin CLI over sudo from an
+    operator's tty, three different umasks — so a one-time chmod at provisioning does not hold. They
+    appear on the first WRITE, not at the `journal_mode` pragma above, so on a brand-new store they are
+    0644 until the next open. Every caller of this function is one, and the tick alone opens one every
+    30 seconds.
+    """
+    for p in (DB_PATH, Path(f"{DB_PATH}-wal"), Path(f"{DB_PATH}-shm")):
+        if p.exists():
+            p.chmod(0o600)
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
