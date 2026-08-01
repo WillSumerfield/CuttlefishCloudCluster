@@ -13,6 +13,7 @@ import stat
 import pytest
 
 from ccc_head_api import db, guises
+from cuttle import config, setup
 
 
 @pytest.fixture
@@ -232,3 +233,39 @@ class TestTheStoreIsNotReadableByAGuise:
                 assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
         finally:
             held.close()
+
+
+class TestTheTlsKeyStaysMantleOnly:
+    """`head.key` is the private half of the cert every client pins, so a Guise that can read it can
+    impersonate the Head to any of them. Found 0644 on the deployed Head (2026-08-01).
+
+    The generating branch always chmod'd it correctly — but it runs once in a Head's life, since the
+    cert is kept deliberately (a new one invalidates every pin) and teardown clears it only under
+    `--all`. So the mode has to be re-asserted on the keep path too, or a box that drifts stays drifted
+    forever."""
+
+    def _install(self, monkeypatch, tmp_path, cert_exists: bool) -> list[list[str]]:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(setup, "run", lambda argv, **kw: calls.append(argv))
+        monkeypatch.setattr(config, "HEAD_CERT", tmp_path / "head.crt")
+        monkeypatch.setattr(config, "HEAD_KEY", tmp_path / "head.key")
+        if cert_exists:
+            (tmp_path / "head.crt").write_text("a cert every client has pinned")
+        else:
+            monkeypatch.setattr(setup.system, "hostname", lambda: "head")
+            monkeypatch.setattr(setup.system, "primary_ip", lambda: "192.168.1.2")
+        setup.install_tls("100.99.0.1")
+        return calls
+
+    def test_a_rerun_re_asserts_the_mode_on_a_cert_it_keeps(self, monkeypatch, tmp_path):
+        calls = self._install(monkeypatch, tmp_path, cert_exists=True)
+        assert not [c for c in calls if c[0] == "openssl"], "a kept cert must never be regenerated"
+        assert ["chmod", "0600", str(tmp_path / "head.key")] in calls
+        assert ["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}",
+                str(tmp_path / "head.key")] in calls
+
+    def test_a_freshly_minted_key_gets_it_too(self, monkeypatch, tmp_path):
+        calls = self._install(monkeypatch, tmp_path, cert_exists=False)
+        assert [c for c in calls if c[0] == "openssl"], "no cert was generated"
+        assert ["chmod", "0600", str(tmp_path / "head.key")] in calls
+        assert ["chmod", "0644", str(tmp_path / "head.crt")] in calls

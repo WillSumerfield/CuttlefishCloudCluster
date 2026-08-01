@@ -408,10 +408,12 @@ def install_tls(mesh_ip: str) -> None:
 
     Generated only if absent: regenerating would change the cert's fingerprint and invalidate the pin
     every client stored (see cuttle/tls.py), so a routine teardown+setup must not churn it. The key is
-    readable only by the Mantle, which is the user the Head API runs as.
+    readable only by the Mantle, which is the user the Head API runs as — re-asserted on every run,
+    see `_secure_tls`.
     """
     if config.HEAD_CERT.exists():
         print(f"cuttle: TLS cert exists ({config.HEAD_CERT}) — keeping it (clients have pinned it)")
+        _secure_tls()
         return
     host, lan = system.hostname(), system.primary_ip()
     san = (f"DNS:{host},DNS:localhost,IP:{lan},IP:{mesh_ip},IP:127.0.0.1")
@@ -420,10 +422,27 @@ def install_tls(mesh_ip: str) -> None:
          "-days", str(config.CERT_DAYS),
          "-subj", f"/CN={host}", "-addext", f"subjectAltName={san}",
          "-keyout", str(config.HEAD_KEY), "-out", str(config.HEAD_CERT)], sudo=True)
+    _secure_tls()
+    print(f"cuttle: TLS cert for {san}")
+
+
+def _secure_tls() -> None:
+    """Owner and modes on the keypair, re-asserted on EVERY `setup --head` — not only the run that
+    minted it.
+
+    The generating branch above runs once in a Head's life and then never again: the cert is kept
+    deliberately (a new one invalidates every client's pin), and `teardown.remove_tls` is `--all` only,
+    so a routine teardown does not clear it either. That makes anything which widens the key afterwards
+    permanent, with no path back short of throwing away every pin.
+
+    Found exactly that way on the deployed Head 2026-08-01: `head.key` was 0644. openssl writes the key
+    0600 itself and the chmod below has been here since the cert landed, so something outside setup
+    widened it — unattributable after the fact, which is the point. A **Guise** could read the private
+    half of the cert its own Head authenticates with.
+    """
     run(["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(config.HEAD_KEY)], sudo=True)
     run(["chmod", "0600", str(config.HEAD_KEY)], sudo=True)  # the private half: Mantle-only
     run(["chmod", "0644", str(config.HEAD_CERT)], sudo=True)  # the public ID card: anyone may read
-    print(f"cuttle: TLS cert for {san}")
 
 
 def build_spa() -> None:
