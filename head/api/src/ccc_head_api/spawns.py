@@ -150,8 +150,10 @@ if [ -d "$staging_dir" ]; then
     stage_out() { :; }  # already on the Head
     recover_scratch() {
         # $proj already lives on the Head's own disk — no network hop, just relocate it under the Spawn
-        # dir before cleanup()'s rm -rf reaches it. Same size gate as the remote branch (RECOVERY_MAX_BYTES,
-        # see ccc_head_api.recovery): over it, skip entirely — no copy attempted, same as today.
+        # dir before cleanup()'s rm -rf reaches it. Same two gates as the remote branch: nothing to
+        # recover, or over RECOVERY_MAX_BYTES (see ccc_head_api.recovery) — either way skip entirely,
+        # no copy attempted, same as today.
+        [ -n "$(ls -A "$proj" 2>/dev/null)" ] || return 0
         sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
         [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
         mv "$proj" "$spawn_dir/recovery" && echo "$sz" > "$spawn_dir/recovery.size"
@@ -196,6 +198,13 @@ else
         # the transfer lands — its presence on the Head is the karma tick's "a copy is ready to
         # register" signal (ccc_head_api.recovery), since this trap can still be mid-rsync well after
         # stage_out() has already told the Head the Spawn is done.
+        #
+        # An EMPTY $proj returns before any of that. Every Tide Pool starts as one (it uploads an empty
+        # tar) and a User who picked no project keeps it that way, so without this gate the common case
+        # would register a ~4KB copy of nothing: `cuttle outputs` and the Dashboard would both offer a
+        # Recovery Window whose download is empty. Nothing written means nothing to recover, and every
+        # surface should agree there is no window rather than one holding an empty dir.
+        [ -n "$(ls -A "$proj" 2>/dev/null)" ] || return 0
         sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
         [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
         rsync -a "$proj/" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/recovery/" 2>/dev/null || return 0

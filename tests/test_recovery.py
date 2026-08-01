@@ -91,6 +91,21 @@ class TestRenderedScript:
         script = self.render()
         assert script.count(f"-le {recovery.MAX_SPAWN_BYTES}") == 2
 
+    def test_both_branches_skip_an_empty_working_dir(self):
+        """Nothing written means nothing to recover. Every Tide Pool starts with an empty $proj (it
+        uploads an empty tar), so without this the common case registers a ~4KB copy of nothing and
+        every surface then advertises a Recovery Window whose download is empty."""
+        script = self.render()
+        assert script.count('[ -n "$(ls -A "$proj" 2>/dev/null)" ] || return 0') == 2
+
+    def test_the_empty_check_precedes_the_copy_in_both_branches(self):
+        """Gate first, or the branch it is supposed to prevent has already run."""
+        for branch in (self._head_branch(self.render()), self._remote_branch(self.render())):
+            gate = branch.index('ls -A "$proj"')
+            copy = min(i for i in (branch.find('mv "$proj"'), branch.find('rsync -a "$proj/"'))
+                       if i != -1)
+            assert gate < copy
+
     def test_trap_and_stage_out_ordering_is_unchanged(self):
         """recover_scratch is new; the existing EXIT-trap/stage_out contract (test_submit.py's
         TestRemoteLiveStreaming) must not have moved."""
