@@ -220,7 +220,7 @@ def logout() -> None:
 
 # --- user-admin (on the Head, as ccc) ---------------------------------------
 
-def _admin_argv(args: list[str]) -> list[str]:
+def _admin_argv(args: list[str], env: dict[str, str] | None = None) -> list[str]:
     """The auth store's admin CLI, as the `ccc` user through the API venv, with the db path set.
 
     **Returned without the leading `sudo`** — every caller passes `sudo=True` to `system.run`, which
@@ -230,8 +230,14 @@ def _admin_argv(args: list[str]) -> list[str]:
     point it shelled out, and `arm authorize` stopped after the name (its `--user` picker calls
     `user_names`). Anything that runs sudo must go through `system.run`, so one prompt is drawn once,
     as a Rich row, and fed over stdin.
+
+    `env` is anything the *service* gets from its systemd unit that this subprocess also needs. Only
+    `CCC_HEAD_DB` is unconditional: the other unit variables (`CCC_HEAD_STATE`, `CCC_SIF`) have
+    defaults identical to what the unit sets, so a subprocess without them behaves the same. The one
+    that does not is `CCC_MESH_IP`, which is dynamic and has no default — see `spawns._submit_pinned`.
     """
     return ["-u", config.HEAD_API_USER, "env", f"CCC_HEAD_DB={config.HEAD_DB}",
+            *[f"{k}={v}" for k, v in (env or {}).items()],
             str(config.API_VENV / "bin" / "python"), "-m", "ccc_head_api.admin", *args]
 
 

@@ -333,7 +333,8 @@ class TestThePinnedPath:
 
         argv: list[str] = []
         monkeypatch.setattr(cli_spawns.auth, "_api", lambda *a, **kw: {"username": "alice"})
-        monkeypatch.setattr(cli_spawns.auth, "_admin_argv", lambda a: a)
+        monkeypatch.setattr(cli_spawns.auth, "_admin_argv", lambda a, env=None: a)
+        monkeypatch.setattr(cli_spawns.mesh, "tailscale_ip", lambda: "100.99.0.1")
         monkeypatch.setattr(cli_spawns, "run", lambda a, **kw: argv.extend(a)
                             or types.SimpleNamespace(returncode=0, stdout="4242\n", stderr=""))
         cli_spawns._submit_pinned(b"", "train.py", [], 60, 24, 1, "gpu-box",

@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, auth, config, settings, ui
+from . import api, auth, config, mesh, settings, ui
 from .system import run
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
@@ -112,7 +112,15 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
             *[f for name in outputs for f in ("--output", name)],
             *[f for name in (features or []) for f in ("--feature", name)],
             *(["--tidepool"] if tidepool else []),
-            *args]), sudo=True, capture_output=True, text=True, check=False)
+            *args],
+            # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a
+            # fresh subprocess and inherits nothing from it. Without it every pinned Spawn renders
+            # `rsync://<tok>@/proj-<tok>/` with no host and dies at stage-in on the far side of the
+            # mesh, so `spawns.submit_checked` refuses outright rather than let one out (which is the
+            # "CCC_MESH_IP is empty in the ccc-head-api unit" error, reported against the unit that
+            # was in fact set correctly all along).
+            env={"CCC_MESH_IP": mesh.tailscale_ip()},
+        ), sudo=True, capture_output=True, text=True, check=False)
     finally:
         Path(tar_path).unlink(missing_ok=True)
     if r.returncode != 0:
