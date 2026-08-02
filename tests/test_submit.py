@@ -22,6 +22,7 @@ from ccc_head_api import db
 from ccc_head_api import main as head_main
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
+from cuttle import teardown
 from cuttle.main import app as cli_app
 
 
@@ -52,6 +53,96 @@ class TestRenderedSbatch:
     def test_nodelist_only_when_pinned(self):
         assert "#SBATCH --nodelist=box" in self.render(node="box")
         assert "--nodelist" not in self.render(node=None)
+
+
+class TestTheSbatchSinkOutlivesItsJobId:
+    """`cuttle teardown` drops Slurm's state dir, so the next cluster issues job ids from 1 again while
+    the previous cluster's /tmp sinks are still there — owned by accounts the new **Guise**s cannot
+    write to. slurmd does not degrade gracefully when it cannot open a batch step's stdout: it kills the
+    step before the script's first line ("Could not open stdout file ...: Permission denied" /
+    "_fork_all_tasks: IO setup failed", rc 0xfb5, which slurmctld prints as the meaningless "WTERMSIG
+    53"). The Head then has a Spawn with no out, no err, no exit code and nothing to say about it.
+
+    Found on hardware 2026-08-02: Spawns 9, 10, 12 and 14 each drew an id a cluster from two days
+    earlier had already used and died instantly; 8 and 13 drew fresh ids and ran. So the sink's name
+    must be unique per SUBMISSION, not per job id.
+    """
+
+    def render(self, staging="/var/lib/ccc/head/projects/deadbeef-1234-5678"):
+        return head_spawns._render(
+            staging=staging, gpu=1, script="train.py", args=[], files=[], outputs=["outputs"],
+            node=None, minutes=60, constraint="", token="a3f9", secret="s3cr3t")
+
+    def test_the_header_and_the_shell_name_the_same_file(self):
+        """Two places name this path — the #SBATCH header slurmd opens, and the `sink=` the wrapper's
+        trap reaps. They have to agree, or every Spawn leaves a file behind forever."""
+        body = self.render()
+        assert "#SBATCH --output=/tmp/ccc-%j-deadbeef.slurm" in body
+        assert "#SBATCH --error=/tmp/ccc-%j-deadbeef.slurm" in body
+        assert 'sink="/tmp/ccc-$jid-deadbeef.slurm"' in body
+
+    def test_two_submissions_never_share_a_sink(self):
+        a = self.render(staging="/var/lib/ccc/head/projects/aaaaaaaa-0000")
+        b = self.render(staging="/var/lib/ccc/head/projects/bbbbbbbb-0000")
+        assert "/tmp/ccc-%j-aaaaaaaa.slurm" in a
+        assert "/tmp/ccc-%j-bbbbbbbb.slurm" in b
+
+    def test_no_bare_job_id_sink_survives_anywhere(self):
+        """The whole point: a path keyed on `%j` or `$jid` alone is the bug."""
+        body = self.render()
+        assert "/tmp/ccc-%j.slurm" not in body
+        assert "/tmp/ccc-$jid.slurm" not in body
+
+    def test_the_trap_never_writes_into_its_own_sink(self):
+        """What kept those stale files alive. On the Head branch the Guise can empty its scratch dir but
+        not unlink it (the parent is ccc-owned; the root-run epilog does that), so an un-silenced
+        `rm -rf` puts one "Permission denied" line into $sink — making it non-empty, which is exactly
+        the condition under which both the trap and the epilog KEEP a sink. Every Spawn then left one."""
+        body = self.render()
+        assert 'rm -rf "$scratch" 2>/dev/null' in body
+        assert '[ -s "$sink" ] || rm -f "$sink"' in body
+
+
+class TestTeardownSweepsWhatItMakesAmbiguous:
+    """The third half of the same bug (see TestTheSbatchSinkOutlivesItsJobId): `remove_slurm_config`
+    drops Slurm's state dir and so resets the job-id counter, which is what turns every leftover
+    /tmp/ccc-<jid>* from the outgoing cluster into a landmine for the incoming one. The sweep belongs
+    beside the reset that causes it."""
+
+    def _fixture(self, tmp_path, monkeypatch):
+        for name in ("ccc-9.slurm", "ccc-10-deadbeef.slurm", "ccc-bench-25.log",
+                     "ccc-u60002-something", "ccc-notes.txt"):
+            (tmp_path / name).write_text("x")
+        (tmp_path / "ccc-9").mkdir()          # a remote Spawn's scratch dir
+        monkeypatch.setattr(teardown, "_JOB_TMP_GLOBS",
+                            (f"{tmp_path}/ccc-[0-9]*", f"{tmp_path}/ccc-bench-[0-9]*"))
+        calls = []
+        monkeypatch.setattr(teardown, "run", lambda cmd, **kw: calls.append(cmd))
+        return calls
+
+    def test_it_takes_every_job_keyed_leftover(self, tmp_path, monkeypatch):
+        calls = self._fixture(tmp_path, monkeypatch)
+        teardown._sweep_job_tmp()
+        swept = {Path(p).name for p in calls[0][2:]}
+        assert swept == {"ccc-9.slurm", "ccc-10-deadbeef.slurm", "ccc-bench-25.log", "ccc-9"}
+
+    def test_it_leaves_everything_else_alone(self, tmp_path, monkeypatch):
+        """`ccc-[0-9]*`, never `ccc-*`: a Guise's own files are `ccc-u<uid>-…`, and a teardown widening
+        its blast radius over a name it merely recognises is worse than the litter it removes."""
+        calls = self._fixture(tmp_path, monkeypatch)
+        teardown._sweep_job_tmp()
+        swept = {Path(p).name for p in calls[0][2:]}
+        assert "ccc-u60002-something" not in swept
+        assert "ccc-notes.txt" not in swept
+
+    def test_nothing_to_sweep_runs_nothing(self, tmp_path, monkeypatch):
+        """`rm -rf` with no paths is an error, and teardown runs check=False — so it would pass silently
+        while doing nothing, which is the shape of a sweep that quietly stops working."""
+        monkeypatch.setattr(teardown, "_JOB_TMP_GLOBS", (f"{tmp_path}/ccc-[0-9]*",))
+        calls = []
+        monkeypatch.setattr(teardown, "run", lambda cmd, **kw: calls.append(cmd))
+        teardown._sweep_job_tmp()
+        assert calls == []
 
 
 class TestRemoteLiveStreaming:
@@ -300,7 +391,7 @@ class TestSpawnsRunAsTheirSubmitter:
         project's full file list, and the delete-after-return dance goes away with it."""
         self._submit(tmp_path)
         argv, kw = next((a, k) for a, k in submitted if "sbatch" in a)
-        assert argv[-1] == "--parsable"          # no path argument follows
+        assert argv[-1].startswith("--")         # flags only — no path argument follows
         assert kw["input"].startswith("#!/bin/bash")
 
     def test_the_project_is_lent_to_that_guise_before_sbatch(self, submitted, tmp_path):

@@ -7,6 +7,7 @@ Default: full uninstall (daemons + packages + repos + Slurm config/state), but k
 safe to re-run, and every removal step no-ops on a box that never had it.
 """
 
+import glob
 import shutil
 
 from . import config, menu, settings, system, ui
@@ -136,6 +137,26 @@ def remove_slurm_config() -> None:
     # directory — an empty slurmd.service.d/ left behind would be litter in the distro's unit tree.
     run(["rm", "-rf", str(config.SLURMD_DROPIN.parent)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
+    _sweep_job_tmp()
+
+
+# The per-job files a Spawn leaves in /tmp: its scratch dir (remote branch), its sbatch sink, and an
+# enrolment benchmark's log. All named after a job id, and it is `remove_slurm_config` above that makes
+# a job id ambiguous — dropping the state dir resets Slurm's counter, so the NEXT cluster issues 1, 2, 3
+# over the top of a previous one's leftovers. Those leftovers belong to accounts the next cluster's
+# **Guise**s cannot write to, and a sink slurmd cannot open kills the batch step outright (see
+# ccc_head_api.spawns' `sink=` line; found on hardware 2026-08-02). So the sweep belongs exactly here,
+# beside the reset that causes the collision.
+#
+# `[0-9]*` and not `*`: only job-id-suffixed names are ours to take. Nothing else in /tmp starting
+# `ccc-` is (a Guise's own files are `ccc-u<uid>-…`), and a teardown must never widen its blast radius.
+_JOB_TMP_GLOBS = ("/tmp/ccc-[0-9]*", "/tmp/ccc-bench-[0-9]*")
+
+
+def _sweep_job_tmp() -> None:
+    stale = [p for g in _JOB_TMP_GLOBS for p in glob.glob(g)]
+    if stale:
+        run(["rm", "-rf", *stale], sudo=True, check=False)
 
 
 def purge_packages() -> None:

@@ -235,8 +235,15 @@ class TestScratchEpilog:
         The epilog is the catch-all, so it must apply the same 'keep only if non-empty' rule to both
         the Spawn's and the benchmark's sink."""
         script = templates.render_epilog()
-        assert '[ -s "/tmp/ccc-$SLURM_JOB_ID.slurm" ] || rm -f "/tmp/ccc-$SLURM_JOB_ID.slurm"' in script
+        assert '[ -s "$s" ] || rm -f "$s"' in script
         assert '[ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"' in script
+
+    def test_the_sink_sweep_matches_the_tag_the_epilog_cannot_derive(self):
+        """A Spawn's sink carries a per-submission tag (ccc_head_api.spawns, `sink=`) precisely because
+        a job id is not unique across teardowns. The epilog knows only the job id, so it has to glob —
+        and must still cover the untagged name a Spawn submitted before that change would have used."""
+        script = templates.render_epilog()
+        assert '"/tmp/ccc-$SLURM_JOB_ID.slurm" "/tmp/ccc-$SLURM_JOB_ID-"*.slurm' in script
 
 
 class TestGuiseProlog:

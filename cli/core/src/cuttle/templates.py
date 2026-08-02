@@ -452,7 +452,12 @@ rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
 # `trap ... EXIT` already reaps these when it runs — but that's the same trap that misses SIGKILL, so a
 # hard-killed job leaves one behind forever without this. Same "keep only if non-empty" rule as the
 # trap: a sink that caught real stderr (the shell died before out/err existed) is worth keeping.
-[ -s "/tmp/ccc-$SLURM_JOB_ID.slurm" ] || rm -f "/tmp/ccc-$SLURM_JOB_ID.slurm"
+# A glob, because the name carries a per-submission tag the epilog cannot derive (job id alone is not
+# unique across teardowns — see ccc_head_api.spawns' `sink=` line). A glob that matches nothing expands
+# to itself, and `rm -f` on a path that does not exist is a no-op, so the loop is safe either way.
+for s in "/tmp/ccc-$SLURM_JOB_ID.slurm" "/tmp/ccc-$SLURM_JOB_ID-"*.slurm; do
+    [ -s "$s" ] || rm -f "$s"
+done
 [ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"
 # Take the Spawn dir back off the **Guise** the prolog lent it to (temp/spawn-isolation.md Phase 3c).
 # The prolog takes, the epilog returns, so the loan lasts exactly the job's lifetime — and unlike the

@@ -79,8 +79,8 @@ JOB_SCRIPT = """\
 #SBATCH --gres=gpu:%%GPU%%
 #SBATCH --time=%%MINUTES%%
 #SBATCH --chdir=/tmp
-#SBATCH --output=/tmp/ccc-%j.slurm
-#SBATCH --error=/tmp/ccc-%j.slurm
+#SBATCH --output=/tmp/ccc-%j-%%SINK_TAG%%.slurm
+#SBATCH --error=/tmp/ccc-%j-%%SINK_TAG%%.slurm
 %%CONSTRAINT%%
 %%NODELIST%%
 %%EXCLUDE%%
@@ -119,7 +119,17 @@ dxg=""; [ -e /dev/dxg ] && dxg="--bind /dev/dxg,/usr/lib/wsl"
 # sbatch's own stdout sink, on whichever node runs this. The wrapper redirects everything it cares
 # about into out/err, so this stays EMPTY unless the shell itself failed before those existed — which
 # is the one case worth keeping. Anything else would leave a 0-byte file per Spawn in /tmp forever.
-sink="/tmp/ccc-$jid.slurm"
+#
+# %%SINK_TAG%% (the staging uuid's first 8 chars) is what keeps this path unique, and it is load-bearing:
+# a job id ALONE is not unique over time. `cuttle teardown` drops Slurm's state dir, so the next cluster
+# starts issuing ids from 1 again while every previous cluster's sink survives in /tmp — and slurmd,
+# running as this Spawn's **Guise**, cannot open a file a previous cluster's account owns. It does not
+# fail the redirect and carry on: it kills the batch step before its first line, reporting "Could not
+# open stdout file ... Permission denied" / "IO setup failed" in the node's slurmd log and rc 0xfb5 to
+# slurmctld (which prints it as the meaningless "WTERMSIG 53"). From the Head that is a Spawn with no
+# out, no err, no exit code and no explanation. Diagnosed on hardware 2026-08-02 (Spawns 9, 10, 12, 14
+# drew ids a cluster from two days earlier had already used).
+sink="/tmp/ccc-$jid-%%SINK_TAG%%.slurm"
 # kill "$loop_pid": a no-op on the Head branch (never set there) and at the two remote-branch call
 # sites that already kill it explicitly first for ordering (see the stage_out call sites below) — this
 # is the fallback for any OTHER way the script ends (e.g. scancel's TERM), so the periodic out/err/
@@ -131,7 +141,14 @@ sink="/tmp/ccc-$jid.slurm"
 # what the Spawn wrote back, instead of losing it the instant this trap fires. Unset/undefined is a safe
 # no-op in bash (prints to stderr, does not abort the function), so this is harmless even if the script
 # exited before either branch got far enough to define it.
-cleanup() { kill "$loop_pid" 2>/dev/null; recover_scratch; rm -rf "$scratch"; [ -s "$sink" ] || rm -f "$sink"; }
+#
+# `rm -rf "$scratch" 2>/dev/null`: on the Head branch this ALWAYS fails on the directory itself. The
+# prolog hands the Guise the scratch dir but not its ccc-owned parent, so the Guise can empty it and not
+# unlink it; the epilog, which runs as root, is what actually removes it. Left un-silenced, that one
+# "Permission denied" is written into $sink — which makes the sink non-empty, which defeats the "keep
+# only if non-empty" rule below, which leaves a file in /tmp for every Spawn ever run. That litter is
+# what poisoned later job ids (see the `sink=` line above); this is where the litter was made.
+cleanup() { kill "$loop_pid" 2>/dev/null; recover_scratch; rm -rf "$scratch" 2>/dev/null; [ -s "$sink" ] || rm -f "$sink"; }
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
