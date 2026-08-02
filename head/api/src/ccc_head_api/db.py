@@ -13,6 +13,7 @@ Design notes worth keeping:
 """
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -29,7 +30,7 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -302,9 +303,43 @@ CREATE TABLE output_copies (
 );
 """
 
+# Recipes (docs/TODO.md "Storage retention: the Recipe wall"). A User's frozen, re-runnable snapshots:
+# this row is *how* to run one, and `recipes/<user_id>/<name>/` on disk is the code itself. `bytes` is
+# what that tree costs against the 24GB per-User **Allowance**, measured UNCOMPRESSED — the composer
+# blocks a doomed save from `File.size` before spending the upload, and a Head that counted the gzip
+# instead would be answering a different question than the one the browser asked.
+#
+# Unlike `output_copies` this table does carry `user_id`: there is no Spawn to ask whose it is. And it
+# CASCADEs rather than leaving a `guises`-style tombstone — a Recipe is private to its owner and outlives
+# nothing, so a deleted User's shelf goes with them (`recipes.sweep_orphans` takes the directories, which
+# the cascade cannot reach).
+#
+# UNIQUE(user_id, name) is the shelf's own rule. A name is how its owner refers to a Recipe on a page
+# that shows no ids at all, so two called the same thing would be indistinguishable in the only place
+# they are ever seen. Scoped per User: two Users may both keep a "resnet".
+_SCHEMA_V12 = """
+CREATE TABLE recipes (
+  id            INTEGER PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name          TEXT    NOT NULL,
+  script        TEXT    NOT NULL,
+  args          TEXT    NOT NULL DEFAULT '[]',
+  outputs       TEXT    NOT NULL DEFAULT '[]',
+  gpus          INTEGER NOT NULL,
+  vram_mb       INTEGER NOT NULL,
+  minutes       INTEGER NOT NULL,
+  wandb         INTEGER NOT NULL DEFAULT 1,
+  wandb_project TEXT    NOT NULL DEFAULT '',
+  wandb_entity  TEXT    NOT NULL DEFAULT '',
+  bytes         INTEGER NOT NULL,
+  frozen_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  UNIQUE (user_id, name)
+);
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
-              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11]
+              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -1061,3 +1096,53 @@ def oldest_output(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
         """SELECT o.job_id, o.bytes FROM output_copies o
            JOIN spawns s ON s.job_id = o.job_id WHERE s.user_id = ?
            ORDER BY o.created_at LIMIT 1""", (user_id,)).fetchone()
+
+
+# --- recipes ----------------------------------------------------------------
+
+def recipes_for(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    """One User's whole shelf, oldest first. There is no all-Users read anywhere in this module: a
+    Recipe is private to its owner, so `GET /recipes` is the only reader and it is always scoped."""
+    return conn.execute("SELECT * FROM recipes WHERE user_id=? ORDER BY frozen_at, id",
+                        (user_id,)).fetchall()
+
+
+def get_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row | None:
+    """Scoped by owner, never by name alone — two Users may hold the same name, and a lookup that
+    forgot the owner would hand one User the other's."""
+    return conn.execute("SELECT * FROM recipes WHERE user_id=? AND name=?",
+                        (user_id, name)).fetchone()
+
+
+def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
+               outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
+               wandb_project: str, wandb_entity: str, size_bytes: int) -> sqlite3.Row:
+    conn.execute(
+        """INSERT INTO recipes (user_id, name, script, args, outputs, gpus, vram_mb, minutes,
+                                wandb, wandb_project, wandb_entity, bytes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (user_id, name, script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
+         int(wandb), wandb_project, wandb_entity, size_bytes))
+    conn.commit()
+    return get_recipe(conn, user_id, name)
+
+
+def delete_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> bool:
+    cur = conn.execute("DELETE FROM recipes WHERE user_id=? AND name=?", (user_id, name))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def user_recipe_bytes(conn: sqlite3.Connection, user_id: int) -> int:
+    """What one User's shelf holds, against their 24GB Allowance — the left side of the wall's
+    arithmetic. Independent of `user_output_bytes` in both directions (CONTEXT.md, **Allowance**)."""
+    (total,) = conn.execute("SELECT COALESCE(SUM(bytes), 0) FROM recipes WHERE user_id=?",
+                            (user_id,)).fetchone()
+    return total
+
+
+def recipe_owner_ids(conn: sqlite3.Connection) -> set[int]:
+    """Every User id that still exists — what `recipes.sweep_orphans` checks the directories against.
+    Read from `users`, not from `recipes`: the CASCADE has already taken the rows of a deleted User by
+    the time the sweep runs, so asking `recipes` would say every directory is legitimate."""
+    return {r["id"] for r in conn.execute("SELECT id FROM users").fetchall()}

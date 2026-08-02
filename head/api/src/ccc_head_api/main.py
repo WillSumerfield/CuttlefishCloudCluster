@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, guises, karma, ratelimit, retraction, slurm
+from . import recipes as recipes_mod
 from . import recovery as recovery_mod
 from . import retention as retention_mod
 from . import spawns as spawns_mod
@@ -739,15 +740,116 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     return {"id": job_id}
 
 
+# --- recipes (authed) -------------------------------------------------------
+# A **Recipe** is a User's frozen, re-runnable snapshot, and these routes are the whole of its lifecycle
+# except one: `run` is deferred (see below). Every route is scoped to the caller — a Recipe is private to
+# its owner, so there is no roster read here and no `user_id` any client can name. See recipes.py for the
+# 24GB wall these hang off, and docs/TODO.md "Storage retention: the Recipe wall" for why it is a wall
+# rather than the eviction `retention.py` does.
+#
+# Uploads here are spooled against the Recipe **Allowance**, not `MAX_UPLOAD_BYTES`: the 4GB cap is a
+# Spawn's, and a Recipe is bounded by the wall it is about to be weighed against instead. Both are the
+# same 413 to a client — this one just says which limit was hit.
+
+@api.get("/recipes")
+def recipes(user: dict = Depends(current_user)) -> list[dict]:
+    """The caller's own shelf. Never anyone else's: there is no admin view of Recipes, because a Recipe
+    holds a User's actual source code rather than a fact about the cluster."""
+    with db.connect() as conn:
+        return [recipes_mod.to_json(r) for r in db.recipes_for(conn, user["id"])]
+
+
+@api.post("/recipes", status_code=201)
+async def create_recipe(request: Request, user: dict = Depends(current_user)) -> dict:
+    """Freeze an upload into a new Recipe. Same wire shape as `/submit` — gzip-tar body, `X-CCC-Meta`
+    header — because it is the same upload, persisted instead of run once.
+
+    Runs **nothing**: no Spawn, no Escrow, no queue place. That is deliberate and it is what keeps the
+    wall out of the submit path, so a full shelf can never stop a User working (CONTEXT.md,
+    **Allowance**)."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before saving a recipe (run `cuttle passwd`)")
+    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
+    tar_path = await _spool_upload(request, limit=recipes_mod.MAX_USER_BYTES)
+    try:
+        with db.connect() as conn:
+            saved = recipes_mod.save(conn, user["id"], meta, tar_path)
+    except recipes_mod.WallExceeded as e:
+        raise HTTPException(413, _wall_message(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    finally:
+        tar_path.unlink(missing_ok=True)
+    log.info("recipe save %r by %s (%s)", saved["name"], user["username"], _human(saved["size_bytes"]))
+    return saved
+
+
+@api.post("/recipes/{name}/update")
+async def update_recipe(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
+    """Re-capture a Recipe around fresh code — the one moment a frozen thing moves.
+
+    Delete-then-save: the old snapshot's bytes are released before the new ones are weighed, so this is
+    charged what it GROWS BY rather than needing room for both at once. The wall is still weighed before
+    anything is written, so an update this refuses leaves the old version intact and still runnable."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before updating a recipe (run `cuttle passwd`)")
+    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
+    meta.setdefault("name", name)
+    tar_path = await _spool_upload(request, limit=recipes_mod.MAX_USER_BYTES)
+    try:
+        with db.connect() as conn:
+            saved = recipes_mod.save(conn, user["id"], meta, tar_path, replacing=name)
+    except recipes_mod.WallExceeded as e:
+        raise HTTPException(413, _wall_message(e))
+    except ValueError as e:
+        # "no recipe named X" is the one ValueError here that is a miss rather than a bad request.
+        raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
+    finally:
+        tar_path.unlink(missing_ok=True)
+    log.info("recipe update %r by %s (%s)", name, user["username"], _human(saved["size_bytes"]))
+    return saved
+
+
+@api.post("/recipes/{name}/run")
+def run_recipe(name: str, user: dict = Depends(current_user)) -> dict:
+    """Deferred. Running a Recipe means building a Spawn from code that is already ON the Head, which is
+    the one thing `spawns.submit_checked` has never had to do — it stages from an upload it is handed.
+    Threading it around a tree that is already staged is its own job, so this says so rather than
+    pretending: a route that 501s is discoverable, and one that silently does nothing is not."""
+    raise HTTPException(501, "running a Recipe isn't wired up yet — the snapshot is saved and safe; "
+                             "submit the project directly meanwhile")
+
+
+@api.delete("/recipes/{name}", status_code=204)
+def delete_recipe(name: str, user: dict = Depends(current_user)) -> Response:
+    """The only way bytes ever leave a shelf. Nothing on the Head deletes a Recipe on a User's behalf —
+    no TTL, no eviction — so this is what the wall sends them to do."""
+    with db.connect() as conn:
+        if not recipes_mod.delete(conn, user["id"], name):
+            raise HTTPException(404, f"you have no recipe named {name!r}")
+    log.info("recipe delete %r by %s", name, user["username"])
+    return Response(status_code=204)
+
+
+def _wall_message(e: "recipes_mod.WallExceeded") -> str:
+    """Say what was asked for, what is free, and what to do — a wall a User cannot see the far side of
+    is one they cannot act on, and this is the only refusal in CCC whose remedy is entirely theirs."""
+    return (f"this recipe needs {_human(e.incoming)} but only "
+            f"{_human(max(recipes_mod.MAX_USER_BYTES - e.used, 0))} of your "
+            f"{_human(recipes_mod.MAX_USER_BYTES)} recipe allowance is free — delete a recipe and retry")
+
+
 @api.get("/spawns/{job_id}/tidepool")
 def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     """The one authenticated channel a Tide Pool's ephemeral SSH keypair ever travels over — the CLI
     polls this after submitting (or when reattaching to an existing one) until `ready` is true, per the
     "no user ever manages an SSH key themselves" rule (docs/TODO.md, "Tide Pool").
 
-    `ready` is false while the Spawn is not yet RUNNING, or RUNNING but the Head-side relay is not up
-    yet — this call is what BRINGS the relay up (`tidepool.ensure_relay`, idempotent), so polling here is
-    what makes attach converge in well under the karma tick's 30s cadence rather than waiting on it.
+    `ready` is false while the Spawn is not yet RUNNING, or RUNNING but nothing is yet accepting on its
+    port — this call is what BRINGS the relay up (`tidepool.ensure_relay`, idempotent), so polling here
+    is what makes attach converge in well under the karma tick's 30s cadence rather than waiting on it.
+    On the Head's own co-located Arm there is no relay to bring up (and starting one breaks the Tide
+    Pool outright — see `ensure_relay`); `ready` there means the Pod's own sshd has finished booting.
 
     The SAME port + private key are returned every time, for the Spawn's whole life: a dropped
     connection or a Dashboard-requested Tide Pool both reattach with `cuttle run --tidepool <id>`, and
@@ -791,22 +893,27 @@ def _human(n: int) -> str:
     return f"{n} B"  # unreachable
 
 
-async def _spool_upload(request: Request) -> Path:
-    """Stream the request body to a temp file, aborting past MAX_UPLOAD_BYTES.
+async def _spool_upload(request: Request, limit: int | None = None) -> Path:
+    """Stream the request body to a temp file, aborting past `limit` (MAX_UPLOAD_BYTES by default).
 
     Never `await request.body()`: that holds the entire project in this process's memory (and
     `tarfile` then holds a decompressed copy on top). The Head is the one machine that must stay up,
     and a browser folder-picker makes selecting a folder with a huge `data/` or a venv a single click.
     Streaming to disk means a too-large upload costs disk we then release, not RAM we might not have.
+
+    `limit` exists for Recipes, which are bounded by their own **Allowance** rather than by a Spawn's
+    4GB cap. It is a floor on wasted disk, not the real check: the wall is weighed properly, against
+    what the caller already holds, once the tar can be read (see recipes.save).
     """
+    cap = MAX_UPLOAD_BYTES if limit is None else limit
     total = 0
     with tempfile.NamedTemporaryFile("wb", suffix=".tar.gz", delete=False) as f:
         path = Path(f.name)
         async for chunk in request.stream():
             total += len(chunk)
-            if total > MAX_UPLOAD_BYTES:
+            if total > cap:
                 path.unlink(missing_ok=True)
-                raise HTTPException(413, f"upload exceeds {_human(MAX_UPLOAD_BYTES)} — "
+                raise HTTPException(413, f"upload exceeds {_human(cap)} — "
                                          "exclude data/checkpoints (honor .gitignore) and retry")
             f.write(chunk)
     return path

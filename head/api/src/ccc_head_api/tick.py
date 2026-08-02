@@ -40,7 +40,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, projects, recovery, retention, siphons, slurm, spawns, tidepool
+from . import db, karma, projects, recipes, recovery, retention, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -239,6 +239,10 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # already established the outputs landed before this pass can see the Spawn as finished.
         retention.register_new(conn, now)
         retention.reap_expired(conn, now)
+        # ...and the third consumer. Recipes have no TTL and are never evicted — a User deletes their
+        # own, or nothing does (docs/TODO.md "the Recipe wall") — so the only collecting left is after a
+        # deleted account: the rows CASCADE, but nothing in SQLite can reach the files they name.
+        recipes.sweep_orphans(conn)
         # Siphons (temp/spawn-isolation.md Phase 2): close the rsync grant of every Spawn whose copy
         # home has landed, or whose window for one has passed. AFTER register_new deliberately — that
         # call is what consumes the `recovery.size` marker this one closes on, and closing first would
