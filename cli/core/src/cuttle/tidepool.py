@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import auth, config, settings, spawns as spawns_mod, ui
+from . import auth, config, settings, spawns as spawns_mod, ui, watch
 
 _POLL_S = 1.0
 _PLACEMENT_TIMEOUT_S = 3600     # an hour queued is already a long wait; fail loud rather than hang forever
@@ -66,7 +66,8 @@ def _cancel_hint(spawn_id: int) -> str:
 
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
-        node: str | None, outputs: list[str], features: list[str], follow: bool) -> None:
+        node: str | None, outputs: list[str], features: list[str], follow: bool,
+        download: bool = True) -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
     Spawn) unless `script_or_id` resolves to an existing one, then attaches either way."""
     if follow:
@@ -80,7 +81,16 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
         spawn_id = _request(minutes, vram, gpu, node, outputs, features)
+        # Only when it declared somewhere for results to land. A Tide Pool with no --output has
+        # nothing to auto-download by construction — everything it wrote lives and dies in the
+        # Recovery Window, which is deliberately not something to plan around (CONTEXT.md).
+        if download and outputs:
+            watch.arm(spawn_id, Path.cwd())
     _wait_and_attach(spawn_id)
+    # After the shell detaches, not before: attaching blocks, and a sweeper forked ahead of it would
+    # spend the whole session polling a Spawn this very process is sitting inside.
+    if download and outputs:
+        watch.ensure_sweeper()
 
 
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,

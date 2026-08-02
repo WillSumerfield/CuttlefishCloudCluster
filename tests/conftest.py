@@ -27,7 +27,7 @@ from ccc_head_api import ratelimit
 from ccc_head_api import siphons
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
-from cuttle import api, auth, config, settings, ui
+from cuttle import api, auth, config, settings, ui, watch
 from cuttle.main import app as cli_app
 
 USERS = {"alice": "hunter2", "root": "toor"}  # root is the Admin
@@ -69,6 +69,22 @@ def no_stray_log(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "_TROUBLE", [])
 
 
+@pytest.fixture(autouse=True)
+def no_real_sweeper(monkeypatch):
+    """No test ever forks the auto-download sweeper for real.
+
+    Autouse and unconditional: `cuttle run` arms a watch entry now, and the root callback of EVERY
+    command asks whether a sweeper should be running — so a test that never mentions downloading can
+    still reach the fork. The child is a fresh interpreter, so it inherits none of the monkeypatching
+    that keeps this suite off the operator's real `~/.ccc` and away from the real Head.
+
+    The launches are recorded rather than dropped, so a test can assert one was attempted.
+    """
+    launched: list[None] = []
+    monkeypatch.setattr(watch, "_launch", lambda: launched.append(None))
+    return launched
+
+
 @pytest.fixture
 def ccc_home(monkeypatch, tmp_path):
     """Redirect every piece of client-side state into tmp. A test that wrote a session into the real
@@ -80,6 +96,8 @@ def ccc_home(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CREDENTIALS_FILE", home / "credentials")
     monkeypatch.setattr(config, "PINS_DIR", home / "pins")
     monkeypatch.setattr(config, "LOG_DIR", home / "logs")
+    monkeypatch.setattr(config, "WATCH_DIR", home / "watch")
+    monkeypatch.setattr(config, "OUTPUTS_DIR", home / "outputs")
     # Plain http, so tls pinning is a no-op: certificate handling is its own concern and not one the
     # CLI's behaviour should be coupled to in every test.
     settings.save({"head": "http://head"})

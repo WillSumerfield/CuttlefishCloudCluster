@@ -534,6 +534,13 @@ LOG_DIR = CCC_HOME / "logs"
 # CLI session bearer (Phase 3a): the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 CREDENTIALS_FILE = CCC_HOME / "credentials"
+# Auto-download bookkeeping (cuttle.watch): one `<id>.json` per Spawn whose results this box is still
+# owed, plus its `<id>.log`. The FILE is the durable intent and the sweeper process is only the
+# current attempt at it — which is what lets a reboot, a logout or a `pkill` cost nothing but time.
+WATCH_DIR = CCC_HOME / "watch"
+# Where an auto-download lands when the directory it was submitted from no longer exists. Results are
+# the User's, never CCC's: nothing under here is ever expired or swept, unlike the Head's own copy.
+OUTPUTS_DIR = CCC_HOME / "outputs"
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
 

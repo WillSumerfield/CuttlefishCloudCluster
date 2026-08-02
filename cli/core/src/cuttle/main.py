@@ -20,6 +20,7 @@ from . import system
 from . import teardown as teardown_mod
 from . import tidepool as tidepool_mod
 from . import ui
+from . import watch as watch_mod
 
 # pretty_exceptions_enable=False: Typer's traceback rendering is for a developer, and every escaping
 # exception is handled by ui.run_app instead — which prints one line, or the real traceback under
@@ -80,6 +81,11 @@ def _root(
 ) -> None:
     """CCC front door."""
     ui.configure(debug=debug, verbose=verbose, no_input=no_input)
+    # Auto-download's re-arm hook, and the only reason it survives a reboot: the sweeper is a plain
+    # detached process with nothing keeping it alive, so *any* command is an opportunity to notice
+    # that results are still owed and start one. Costs one glob of an empty directory otherwise, and
+    # swallows everything — a client whose watch dir is unreadable must still be able to run `status`.
+    watch_mod.ensure_sweeper()
     if ctx.invoked_subcommand is None:
         _no_command()
 
@@ -792,6 +798,16 @@ def run(
         # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
                                 "none; unsatisfiable requests are refused, not queued."),
+    manifest: str = typer.Option(
+        None, "--manifest", help="Dependency file to build this Spawn's Python environment from "
+                                 "(e.g. requirements-gpu.txt, envs/cuda12.yml), relative to the "
+                                 "project root. 'none' builds no environment at all. Default: the "
+                                 "Head looks in the project root for uv.lock, pyproject.toml, "
+                                 "requirements.txt or environment.yml."),
+    no_download: bool = typer.Option(
+        False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
+                                     "they are downloaded into ./spawn-<id>-outputs/ as soon as it "
+                                     "finishes, whether or not this command is still running."),
 ):
     """Submit a Spawn: uploads the working dir to the Head, which runs
     apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
@@ -811,9 +827,14 @@ def run(
     recoverable on the Head for 30 minutes afterward (`cuttle recover <id>`), up to 16GB. Past that, or
     past the window, it's gone — declare `--output` correctly rather than leaning on it.
 
-    What you DID declare is kept 7 days after the Spawn ends, and only while your 8GB of output space
-    has room for it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/TODO.md's
-    "Storage retention"). Fetch results you care about; nothing on the Head is an archive.
+    What you DID declare is downloaded here automatically, into ./spawn-<id>-outputs/, as soon as the
+    Spawn finishes — you do not have to be running this command, or logged into this terminal, or even
+    have this machine switched on at the time (it resumes next time you run `cuttle`). `--no-download`
+    turns that off for one Spawn.
+
+    On the Head that same copy is kept 7 days, and only while your 8GB of output space has room for
+    it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/TODO.md's "Storage
+    retention"). Nothing on the Head is an archive; the automatic download is what makes that safe.
 
     --tidepool replaces the whole script/output/upload story above with a live shell — see
     cuttle.tidepool for that flow; everything below this point is the ordinary script path.
@@ -822,7 +843,7 @@ def run(
     feature = list(feature) if feature else []
     if tidepool:
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
-                                features=feature, follow=follow)
+                                features=feature, follow=follow, download=not no_download)
     wizard = script is None
     with ui.section("Submit a Spawn", lambda: f"{script}  {time}min  {vram}G"):
         # No file picker: you pass the path. Prompting through a directory listing is slower than
@@ -883,7 +904,7 @@ def run(
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
-                      features=feature)
+                      features=feature, manifest=manifest, download=not no_download)
 
 
 @app.command()

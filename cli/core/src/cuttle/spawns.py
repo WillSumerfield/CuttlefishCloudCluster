@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, auth, config, mesh, settings, ui
+from . import api, auth, config, mesh, settings, ui, watch
 from .system import run
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
@@ -79,7 +79,8 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
 
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
-                   features: list[str] | None = None, tidepool: bool = False) -> int:
+                   features: list[str] | None = None, tidepool: bool = False,
+                   manifest: str | None = None) -> tuple[int, str | None]:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and since Phase 6 the Head API has none — so this does not travel over
@@ -112,6 +113,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
             *[f for name in outputs for f in ("--output", name)],
             *[f for name in (features or []) for f in ("--feature", name)],
             *(["--tidepool"] if tidepool else []),
+            *(["--manifest", manifest] if manifest else []),
             *args],
             # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a
             # fresh subprocess and inherits nothing from it. Without it every pinned Spawn renders
@@ -131,7 +133,11 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         detail = why.splitlines()[-1] if why else "the pinned submit failed"
         raise ui.abort(f"couldn't submit to Arm {node!r}: {detail} "
                        f"(is it admitted? see `cuttle arm list`)")
-    return int(r.stdout.strip().splitlines()[-1])
+    # The Environment echo rides back on stderr (see ccc_head_api.admin._submit) — stdout is the id and
+    # nothing else. Picked out by prefix rather than position: stderr on this path may also carry sudo's
+    # own noise, and there is no line number that survives that.
+    note = next((ln for ln in (r.stderr or "").splitlines() if ln.startswith("environment:")), None)
+    return int(r.stdout.strip().splitlines()[-1]), note
 
 
 def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
@@ -163,7 +169,8 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
            outputs: list[str], project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, node: str | None = None,
-           features: list[str] | None = None) -> None:
+           features: list[str] | None = None, manifest: str | None = None,
+           download: bool = True) -> None:
     root = Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
@@ -178,29 +185,71 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     wandb_env = settings.wandb_env(project, entity)
     # `node` pins the Spawn to one Arm. Since Phase 6 it does not travel over HTTP at all — the Head
     # API refuses it for everyone — so a pinned Spawn takes the Head-local path below instead.
+    env_note = None
     if node:
-        spawn_id = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node, wandb_env, outputs,
-                                  features=features)
+        spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
+                                            wandb_env, outputs, features=features, manifest=manifest)
     else:
         meta = {"script": script, "gpu": gpu, "args": args,
                 "minutes": minutes, "vram": vram, "wandb_env": wandb_env, "outputs": outputs,
                 # Omitted rather than sent empty, matching the rest of this dict's optional fields —
                 # most Spawns declare none, and the Head reads an absent key as "no requirement".
-                **({"features": features} if features else {})}
+                **({"features": features} if features else {}),
+                # Absent means "look for one yourself"; "none" means "do not build one at all". Both
+                # differ from a missing key only at the Head, which is where the project actually is.
+                **({"manifest": manifest} if manifest else {})}
         client = auth._client()
         client.token = auth._load_token()
         try:
-            spawn_id = client.upload("/submit", tar_bytes, meta)["id"]
+            resp = client.upload("/submit", tar_bytes, meta)
         except api.ApiError as e:
             if ui.DEBUG:
                 raise
             raise ui.abort(e.user_message()) from None
+        spawn_id, env_note = resp["id"], resp.get("environment")
     # The id goes to stdout and the confirmation to stderr, so `id=$(cuttle run ...)` captures
     # exactly the id while a human still sees what happened.
     ui.ok(f"submitted spawn {spawn_id}")
+    # Which dependency file the Head picked up, or that it found none. Said HERE, while the User is
+    # still watching, because the failure this catches is not an error anywhere: a manifest one
+    # directory too deep builds nothing, and is otherwise only discoverable as an ImportError after the
+    # Spawn has queued, been placed, and held a card.
+    if env_note:
+        ui.say(f"  [muted]{env_note}[/muted]")
     ui.data(str(spawn_id))
+    # Armed BEFORE anything blocks, and armed even when we are about to follow: the entry is the
+    # durable intent (cuttle.watch), so a Ctrl-C out of `--follow` leaves the obligation standing and
+    # the next `cuttle` invocation of any kind picks it up.
+    if download:
+        watch.arm(spawn_id, root)
     if follow:
         _follow(spawn_id)
+    if download:
+        if follow:
+            # Already waited for it on this terminal — fetch inline rather than forking a sweeper to
+            # re-poll a Spawn we just watched end. A failure here settles nothing: the entry survives
+            # and is retried later, exactly as if we had never been watching.
+            _download_now(spawn_id)
+        else:
+            watch.ensure_sweeper()
+
+
+def _download_now(spawn_id: int) -> None:
+    """The foreground half of auto-download, for `--follow`. Says out loud what the sweeper would only
+    have written to a log file, because here there is a terminal and a User still in front of it."""
+    if not watch.drain_one(spawn_id):
+        # Not settled: the Head could not be reached, or the results have not landed from a remote Arm
+        # yet. Hand it to the sweeper rather than blocking this terminal any longer.
+        ui.hint("results are not on the Head yet — they will be downloaded in the background")
+        watch.ensure_sweeper()
+        return
+    ui.say(f"  [muted]{watch.summary(spawn_id)}[/muted]")
+    if (watch.read(spawn_id) or {}).get("state") == watch.EMPTY:
+        # The moment a User learns `--output` was wrong or incomplete — and the only moment the
+        # Recovery Window is still open. Same reasoning as `outputs()`, and it only reaches a person
+        # on this path: the sweeper has no terminal to say it on, and by the time they read its log
+        # the 30 minutes are long gone.
+        _hint_recovery(spawn_id)
 
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
@@ -216,8 +265,11 @@ def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node:
     features = features or []
     empty_tar = _make_tar(Path.cwd(), [])
     if node:
+        # The Environment echo is dropped here alone: a Tide Pool uploads an empty tar, so there is no
+        # project to have found a manifest in and the note would say "no dependency file found" about a
+        # project nobody sent. tidepool.py owns this flow's UI (see the docstring above).
         return _submit_pinned(empty_tar, "", [], minutes, vram, gpu, node, {}, outputs,
-                              features=features, tidepool=True)
+                              features=features, tidepool=True)[0]
     meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,
            **({"features": features} if features else {})}
     client = auth._client()
@@ -285,11 +337,17 @@ def _drain(label: str, text: str, pos: int) -> int:
 def _follow(spawn_id: int) -> None:
     """Interleave stdout and stderr live until the Spawn ends, each line tagged `[out]`/`[err]` (the two
     are separate files, indistinguishable once merged). Ordering is per-poll, so approximate. Local/
-    co-located Spawns stream live; a remote Spawn's streams arrive only at stage-out (post-hoc)."""
-    out_pos = err_pos = 0
+    co-located Spawns stream live; a remote Spawn's streams arrive only at stage-out (post-hoc).
+
+    The Environment build comes first, tagged `[env]`, and is followed on the same poll as the other
+    two: it is the only thing happening for the first minutes of a Spawn that declared dependencies,
+    and a User watching an otherwise silent BUILDING Spawn should see the solve rather than nothing."""
+    out_pos = err_pos = env_pos = 0
     while True:
+        env = _get_bytes(f"/spawns/{spawn_id}/build").decode()
         out = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
         err = _get_bytes(f"/spawns/{spawn_id}/stderr").decode()
+        env_pos = _drain("env", env, env_pos)
         out_pos = _drain("out", out, out_pos)
         err_pos = _drain("err", err, err_pos)
         st = auth._api("GET", f"/spawns/{spawn_id}")
@@ -370,14 +428,38 @@ def history(days: int = 30, as_json: bool = False, limit: int = 0) -> None:
              for r in rows])
         if limit and len(rows) >= limit:
             ui.hint(f"showing {limit}; use --limit 0 for all")
+        _hint_downloads()
 
     ui.emit(rows, as_json, render)
 
 
+def _hint_downloads() -> None:
+    """What auto-download (cuttle.watch) still owes this box. A line under `history` rather than a
+    column in it: the table is *everyone's* Spawns and this is only ever about yours. The actionable
+    case is the blocked one — a parked entry is waiting on a login nobody has been told to perform."""
+    blocked = [e for e in watch.entries() if e.get("state") == watch.PARKED]
+    if blocked:
+        ids = ", ".join(str(e["spawn_id"]) for e in blocked)
+        ui.warn(f"{len(blocked)} download(s) blocked ({ids}) — {blocked[0].get('note') or ''}")
+    waiting = watch.pending()
+    if waiting:
+        ui.hint(f"{len(waiting)} result(s) will download here when their Spawns finish "
+                f"({', '.join(str(e['spawn_id']) for e in waiting)})")
+
+
 def status(spawn_id: int, as_json: bool = False) -> None:
     st = auth._api("GET", f"/spawns/{spawn_id}")
-    ui.emit(st, as_json,
-            lambda: ui.data(_outcome(st).upper() if st.get("done") else st["state"]))
+
+    def render():
+        ui.data(_outcome(st).upper() if st.get("done") else st["state"])
+        # Where this box's copy of the results went, if it is owed one. `cuttle status` is the one
+        # command a User runs *about a specific Spawn*, so it is where "downloaded → ./spawn-41-outputs/"
+        # belongs — the sweeper had no terminal to say it on.
+        line = watch.summary(spawn_id)
+        if line:
+            ui.say(f"  [muted]{line}[/muted]")
+
+    ui.emit(st, as_json, render)
 
 
 def logs(spawn_id: int, follow: bool) -> None:
