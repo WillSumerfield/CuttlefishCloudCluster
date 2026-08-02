@@ -12,6 +12,7 @@ from . import installer as installer_mod
 from . import karma as karma_mod
 from . import menu as menu_mod
 from . import pickers
+from . import recipes as recipes_mod
 from . import settings
 from . import setup as setup_mod
 from . import spawns as spawns_mod
@@ -48,6 +49,9 @@ app.add_typer(munge_app, name="munge")
 feature_app = typer.Typer(no_args_is_help=True,
                           help="Arm Features: heavy/hardware-licence-gated software (run on the Head).")
 app.add_typer(feature_app, name="feature")
+recipe_app = typer.Typer(no_args_is_help=True,
+                         help="Recipes: frozen, re-runnable snapshots of a project (24GB allowance).")
+app.add_typer(recipe_app, name="recipe")
 
 
 def _version(value: bool) -> None:
@@ -536,6 +540,123 @@ def feature_remove(name: str = typer.Argument(None, help="Arm Feature to remove 
     enroll_mod.remove_feature(name)
 
 
+# --- recipes ------------------------------------------------------------------
+# Client duties, so these work from any machine (CONTEXT.md: the CLI is at operation parity with the
+# Dashboard). A Recipe holds the code, so `save`/`update` upload the working dir exactly as `run` does —
+# what differs is that neither runs anything. See cuttle.recipes.
+
+@recipe_app.command("list")
+def recipe_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+    """Your saved Recipes, and what they hold against your 24GB allowance. Yours alone — a Recipe holds
+    your actual source, so unlike the queue there is no everyone-else view of them."""
+    recipes_mod.listing(as_json=as_json)
+
+
+@recipe_app.command("save", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def recipe_save(
+    ctx: typer.Context,
+    name: str = typer.Argument(None, help="Name for the Recipe — how you run it later. Yours only, so "
+                                          "it need only be unique among your own."),
+    script: str = typer.Argument(None, help="Python script the Recipe runs, relative to this directory."),
+    time: int = typer.Option(None, "--time", help="Wall-clock limit in MINUTES, frozen with the code."),
+    vram: int = typer.Option(None, "--vram", help="GPU memory needed, in GB, frozen with the code."),
+    gpu: int = typer.Option(1, "--gpu", help="GPUs to request (GRES gpu:N)."),
+    output: list[str] = typer.Option(
+        None, "--output", "-o", help="Subdir under $CCC_OUT the script writes results to (repeatable). "
+                                     "Required — a Recipe with none could never be run."),
+    project: str = typer.Option(None, "--project", help="W&B project, frozen with the code."),
+    entity: str = typer.Option(None, "--entity", help="W&B entity/slug, frozen with the code."),
+    no_gitignore: bool = typer.Option(
+        False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the preview and confirmation."),
+):
+    """Freeze this directory into a Recipe: the code, plus how to run it.
+
+    Saving RUNS NOTHING — no Spawn, no Karma, no queue place. It uploads the working dir and keeps it,
+    so the Recipe can be re-run later from any machine with nothing to hand.
+
+    Unlike everything else `cuttle` uploads, this is kept indefinitely: a Spawn's project is deleted the
+    moment it stages in and its results expire after 7 days, but nothing on the Head ever deletes a
+    Recipe. It holds space against your 24GB allowance until you run `cuttle recipe delete`.
+
+    Extra args after the script are frozen as the Recipe's arguments
+    (`cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints -- --epochs 5`).
+    """
+    # Same shape as `cuttle run`: a bare invocation walks the wizard, a flag-driven one never prompts
+    # for anything it was not asked about. The hard gate is `recipes._validate`, unconditional — a
+    # flag-driven save never passes through the block below, so it must not be the only thing enforcing
+    # "at least one output".
+    wizard = name is None or script is None
+    with ui.section("Save a Recipe", lambda: f"{name}  {script}"):
+        name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Name for this recipe?"))
+        script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
+        time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
+        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
+        output = list(output) if output else []
+        if wizard:
+            while not output:
+                got = ui.ask_text("Output folder name (--output) — where the script writes results")
+                if got:
+                    output.append(got)
+                else:
+                    ui.warn("at least one output folder is required")
+    recipes_mod.save(name, script, minutes=time, vram=vram, gpu=gpu, args=ctx.args, outputs=output,
+                     project=project, entity=entity, no_gitignore=no_gitignore, yes=yes)
+
+
+@recipe_app.command("update", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def recipe_update(
+    ctx: typer.Context,
+    name: str = typer.Argument(None, help="Recipe to re-capture."),
+    script: str = typer.Option(None, "--script", help="Change the entry point too (default: keep)."),
+    time: int = typer.Option(None, "--time", help="Change the wall-clock limit (default: keep)."),
+    vram: int = typer.Option(None, "--vram", help="Change the VRAM need (default: keep)."),
+    gpu: int = typer.Option(None, "--gpu", help="Change the GPU count (default: keep)."),
+    output: list[str] = typer.Option(
+        None, "--output", "-o", help="REPLACE the declared outputs (repeatable; default: keep)."),
+    project: str = typer.Option(None, "--project", help="Change the W&B project (default: keep)."),
+    entity: str = typer.Option(None, "--entity", help="Change the W&B entity (default: keep)."),
+    no_gitignore: bool = typer.Option(
+        False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the preview and confirmation."),
+):
+    """Re-freeze a Recipe around this directory's current code.
+
+    Every setting keeps what the Recipe already holds unless you pass a flag, so a bare
+    `cuttle recipe update nightly` refreshes the CODE and changes nothing else.
+
+    The Recipe keeps running its old snapshot until this lands. On the Head an update is
+    delete-then-save: the old copy's bytes come off your allowance before the new ones are charged, so
+    this is measured by what it GROWS BY — and if it doesn't fit, the old snapshot is left untouched.
+    """
+    name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to update?"))
+    recipes_mod.update(name, script=script, minutes=time, vram=vram, gpu=gpu,
+                       args=ctx.args or None, outputs=list(output) if output else None,
+                       project=project, entity=entity, no_gitignore=no_gitignore, yes=yes)
+
+
+@recipe_app.command("run")
+def recipe_run(name: str = typer.Argument(None, help="Recipe to run.")):
+    """Run a Recipe's frozen snapshot as a Spawn.
+
+    NOT WIRED UP YET — the Head answers 501. Saving, updating, listing and deleting all work; only this
+    does not. Submit the project directly with `cuttle run` meanwhile.
+    """
+    name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to run?"))
+    recipes_mod.run(name)
+
+
+@recipe_app.command("delete")
+def recipe_delete(
+    name: str = typer.Argument(None, help="Recipe to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+):
+    """Delete a Recipe and free its bytes. The only thing that ever removes one — Recipes never expire
+    and are never evicted, so your shelf only shrinks when you say so."""
+    name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to delete?"))
+    recipes_mod.delete(name, yes=yes)
+
+
 @app.command("build-installer")
 def build_installer(
     out: Path = typer.Option(
@@ -689,6 +810,10 @@ def run(
     Window" keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
     recoverable on the Head for 30 minutes afterward (`cuttle recover <id>`), up to 16GB. Past that, or
     past the window, it's gone — declare `--output` correctly rather than leaning on it.
+
+    What you DID declare is kept 7 days after the Spawn ends, and only while your 8GB of output space
+    has room for it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/TODO.md's
+    "Storage retention"). Fetch results you care about; nothing on the Head is an archive.
 
     --tidepool replaces the whole script/output/upload story above with a live shell — see
     cuttle.tidepool for that flow; everything below this point is the ordinary script path.

@@ -459,3 +459,92 @@ class TestNoAdminWritesOverTheApi:
                                              '"outputs":["out"]}'})
         assert r.status_code == 403
         assert "on the Head" in r.json()["detail"]
+
+
+class TestRecipes:
+    """`cuttle recipe *` — the CLI half of the Dashboard's Recipes page (CONTEXT.md: the two clients are
+    at operation parity). The upload is `cuttle run`'s; the consequence is not, and that is the point."""
+
+    def test_save_freezes_the_directory_and_lists_it_back(self, signed_in, project):
+        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                      "-o", "checkpoints", "--yes")
+        assert r.exit_code == 0, r.output
+        assert "saved recipe nightly" in r.output
+        listed = signed_in("recipe", "list", "--json")
+        rows = json.loads(listed.output)
+        assert [x["name"] for x in rows] == ["nightly"]
+        assert rows[0]["outputs"] == ["checkpoints"]
+        assert rows[0]["script"] == "train.py"
+
+    def test_saving_runs_nothing(self, signed_in, project):
+        """No Spawn, no Escrow, no queue place — which is what keeps the 24GB wall out of the submit
+        path entirely, so a full shelf can never stop a User working."""
+        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                  "-o", "checkpoints", "--yes")
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM spawns").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM karma_escrow").fetchone()[0] == 0
+
+    def test_a_recipe_with_no_output_is_refused_before_uploading(self, signed_in, project):
+        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24", "--yes")
+        assert r.exit_code != 0
+        assert "could never be run" in r.output
+
+    def test_a_missing_script_is_refused_before_uploading(self, signed_in, project):
+        r = signed_in("recipe", "save", "nightly", "nope.py", "--time", "60", "--vram", "24",
+                      "-o", "out", "--yes")
+        assert r.exit_code != 0
+        assert "was not found" in r.output
+
+    def test_update_keeps_every_setting_it_was_not_given(self, signed_in, project):
+        """A bare update refreshes the CODE and nothing else — re-typing --time/--vram would be a
+        chance to silently change them."""
+        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                  "-o", "checkpoints", "--yes")
+        (project / "train.py").write_text("print('v2')\n")
+        r = signed_in("recipe", "update", "nightly", "--yes")
+        assert r.exit_code == 0, r.output
+        row = json.loads(signed_in("recipe", "list", "--json").output)[0]
+        assert row["minutes"] == 60 and row["vram_mb"] == 24 * 1024
+        assert row["outputs"] == ["checkpoints"]
+
+    def test_delete_frees_the_shelf(self, signed_in, project):
+        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                  "-o", "checkpoints", "--yes")
+        r = signed_in("recipe", "delete", "nightly", "--yes")
+        assert r.exit_code == 0, r.output
+        assert json.loads(signed_in("recipe", "list", "--json").output) == []
+
+    def test_a_name_that_is_not_yours_says_so(self, signed_in, project):
+        r = signed_in("recipe", "delete", "ghost", "--yes")
+        assert r.exit_code != 0
+        assert "no recipe named 'ghost'" in r.output
+
+    def test_run_says_it_is_not_wired_up_yet(self, signed_in, project):
+        """The one deferred verb. It must name itself as unbuilt rather than fail obscurely."""
+        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                  "-o", "checkpoints", "--yes")
+        r = signed_in("recipe", "run", "nightly")
+        assert r.exit_code != 0
+        assert "saved and safe" in r.output
+
+    def test_the_wall_refusal_reaches_the_user_intact(self, signed_in, project, monkeypatch):
+        """The Head's 413 is the only message that says how far over you are and that the fix is
+        deleting a Recipe. A client-side rewording would lose exactly that.
+
+        The payload is highly compressible on purpose: it gzips to well under the cap (so the upload is
+        never rejected as merely too large) while the allowance charges its full uncompressed size. That
+        gap is the wall doing its own job rather than the spool limit doing it for it."""
+        from ccc_head_api import recipes as head_recipes
+        (project / "weights.bin").write_bytes(b"x" * 200_000)
+        monkeypatch.setattr(head_recipes, "MAX_USER_BYTES", 50_000)
+        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                      "-o", "checkpoints", "--yes")
+        assert r.exit_code != 0
+        assert "delete a recipe" in r.output
+        assert "recipe allowance is free" in r.output
+
+    def test_recipes_need_a_session(self, cli, project):
+        r = cli("recipe", "list")
+        assert r.exit_code != 0
+        assert "not logged in" in r.output

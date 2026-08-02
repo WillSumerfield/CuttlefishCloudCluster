@@ -46,7 +46,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
-                  "tide", "account", "logout", "whoami", "passwd", "wandb"}
+                  "tide", "account", "logout", "whoami", "passwd", "wandb", "recipe"}
 
 # How long the session probe (GET /me) may take before we give up and show the offline safe-set.
 # Short on purpose: this runs every time bare `cuttle` opens a menu, and a menu must never hang.
@@ -66,6 +66,12 @@ class MenuState:
 # menu needs four words. Keyed by the path so subcommands can be labelled too.
 LABELS = {
     "run": "Submit a Spawn",
+    "recipe": "My recipes",
+    "recipe list": "List my recipes",
+    "recipe save": "Freeze this folder into a recipe",
+    "recipe run": "Run a recipe",
+    "recipe update": "Re-capture a recipe's code",
+    "recipe delete": "Delete a recipe",
     "queue": "See the queue",
     "history": "Spawn history",
     "status": "Check a Spawn",
@@ -131,8 +137,8 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # `login` trails the submit verbs but leads everything unlisted, so on a freshly-installed box the
 # pre-selected row is "Log in" — what install.sh printed as the next step — rather than `setup`. It
 # only ever shows when logged out, so this costs the everyday menu nothing.
-ORDER = ["run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma", "tide",
-         "account", "login"]
+ORDER = ["run", "recipe", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
+         "tide", "account", "login"]
 
 
 def is_head() -> bool:

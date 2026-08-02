@@ -66,7 +66,14 @@ class ApiError(Exception):
         (`/submit: ...`) — noise to a user — and a 5xx carries only a generic phrase like "Internal
         Server Error". A 4xx `detail`, by contrast, is the Head's own human-readable reason (a policy
         violation, a bad name) and must reach the user intact. So: verbatim `detail` for a refusal or
-        a transport failure (status None), a framed line for a server-side crash."""
+        a transport failure (status None), a framed line for a server-side crash.
+
+        **501 is the exception among the 5xx.** "Not Implemented" is never a crash — it is a route the
+        Head deliberately serves to say a feature is not wired up yet, and its `detail` names which one
+        and what to do meanwhile (`POST /recipes/{name}/run`). Framing that as "try again in a moment"
+        would be actively wrong: trying again never helps."""
+        if self.status == 501:
+            return self.detail
         if self.status and self.status >= 500:
             return ("the Head hit an internal error handling that request — try again in a moment; "
                     "if it keeps happening, check the Head's logs")
