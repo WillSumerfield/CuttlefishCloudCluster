@@ -83,10 +83,23 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Recipe** — a **User**'s saved, re-runnable snapshot of a piece of work: the project code itself,
   plus how to run it (entry point, arguments, declared needs, experiment-tracking config). Private to
   its owner. Because it holds the code, a Recipe can be re-run from any machine with nothing to hand —
-  and it is **frozen**: it keeps running what it captured until its owner deliberately updates it.
+  and it is **frozen**: it keeps running what it captured until its owner deliberately updates it. The
+  freeze is a promise the *cluster* keeps, not one it keeps against the owner — updating a Recipe simply
+  replaces it, releasing what it held before taking the new code, so an update abandoned half-way leaves
+  its owner with neither version.
+  Saving one is its own act, and runs nothing: a User uploads code to a Recipe and gets no **Spawn** for
+  it. So a Recipe is *captured*, never recovered — never reconstructed from a Spawn that has already run,
+  because the Head holds an ad-hoc **Spawn**'s uploaded project only while that Spawn is starting
+  (**Allowance**), and by the time there is a result to admire the code behind it is already gone.
+  Frozen covers what it *captured*, not what that captured thing later resolves to: a Recipe holds its
+  owner's dependency declaration, so one that names its needs loosely can build a different
+  **Environment** months later. Pinning is the User's to do, in the file they already keep.
 - **Spawn** — a single traceable execution of a piece of work on the cluster. It may come from a
   **Recipe** (re-running the snapshot) or be submitted ad-hoc (a project uploaded there and then); a
-  Recipe is a convenience, not a prerequisite.
+  Recipe is a convenience, not a prerequisite. A Spawn runs **once**: if the machine it was placed on
+  fails, or its **Arm** is retracted underneath it, the Spawn fails with it rather than quietly starting
+  over somewhere else. So "this Spawn" always names one attempt, never a series of them — what it was
+  billed for and what it produced both refer to the same single run.
 - **Tide Pool** — an interactive/testing session: an allocation that attaches a live shell inside a
   **Pod** on an **eligible** Arm, for debugging against real hardware. Bills Karma for as long as it is
   held. Like a **Spawn**, it declares *needs* and is *placed* — a User cannot name the machine
@@ -102,6 +115,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   *not* an account a person can log into: it authenticates nobody, carries no authority, and is
   unrelated to a User's **Session**. Distinct from **Pod** (*what* a Spawn runs inside), from the
   **Mantle** (who the *cluster* is), and from **Attribution** (the Head's own record of whose it is).
+  It is not confined to the machine that ultimately runs the work: anything the cluster does on a User's
+  behalf that involves *their* code — including building their **Environment** on the **Head** before
+  placement — is done as their Guise, never as the **Mantle**. A User's code has no way to be the
+  cluster, on any machine.
 - **Siphon** — the one channel through which a **Spawn** draws its project in and sends its results
   home. Opened when the Spawn is submitted and closed once its transfers have finished, it reaches
   exactly that Spawn's own uploaded work and its own results, and nothing else the **Head** holds — so
@@ -109,14 +126,41 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Spawn's results, even though every **Arm** shares one **Mesh**. Being on the Mesh admits a *machine*;
   a Siphon authorizes one *Spawn*. Its closing is tied to that Spawn's last transfer and not to
   **Settlement**: a Spawn's final copy home can still be arriving well after it has been billed.
-- **Pod** — the isolated environment a job runs inside on an Arm. Its walls are real, and they enclose
-  the **whole** Spawn — the payload and the wrapper that stages its files in and out, not just the
-  payload: a Spawn cannot see the host's filesystem, the machine's other processes, or any concurrent
-  Spawn's working files, including their scratch.
+- **Pod** — the isolated *place* a job runs inside, on whichever machine is running it. Its walls are
+  real, and they enclose the **whole** Spawn — the payload and the wrapper that stages its files in and
+  out, not just the payload: a Spawn cannot see the host's filesystem, the machine's other processes, or
+  any concurrent Spawn's working files, including their scratch. A Pod is the *walls*, never the
+  contents: what is installed within one is that Spawn's **Environment**. And a Pod is not only an
+  **Arm**'s: work the **Head** does on a User's behalf is walled the same way, as the same **Guise**.
+- **Environment** — the Python a **Spawn**'s code actually runs against inside its **Pod**. Every Spawn
+  gets a base one, identical on every machine in the cluster; a **User** who needs more than it holds
+  **declares** the difference in their project, in the dependency file their own tooling already writes.
+  CCC finds that declaration itself, but never insists on its own guess: a User may name which one to
+  use, and "none" is one of the things they may name — a file in a repo is not always an instruction to
+  the cluster.
+  The **Head** builds what was declared *before* the Spawn is placed, so no **Device** is ever held while
+  packages are fetched and building costs no **Karma**. It builds it in a **Pod**, as that User's
+  **Guise** — a declaration is code, and CCC runs no User's code as the **Mantle** on any machine.
+  An Environment is built for one Spawn and kept for none: it dies with that Spawn's staging and the next
+  run builds it again. So it is never something a User owns, holds, or spends **Allowance** on — only the
+  *declaration* persists, and only because it is part of their code. A Spawn whose declaration cannot be
+  built never reaches an **Arm**: it fails having held nothing, and is billed for nothing.
+- **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
+  held thing has its own, independent of the others: filling one never costs a User any of another. An
+  Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
+  and a full Allowance never affects who wins **Contention**. Which is why the two kinds behave
+  differently at the ceiling: a **Recipe** is something a User deliberately saves, so saving past the
+  wall simply fails and they delete one; an output arrives on its own from work already done, so it is
+  always accepted and the oldest are dropped to fit. An Allowance is not the only thing that ends a
+  held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
+  even when there is room to spare. Uploaded projects belong to no Allowance at all — the Head keeps
+  them only while a Spawn is starting.
 - **Recovery Window** — the brief, always-on grace period in which a finished **Spawn**'s *undeclared*
-  writes can still be retrieved. A Spawn's declared outputs are permanent; everything else it wrote —
-  the working directory it ran in — is destroyed when it ends, and this is the window between those two
-  facts. It exists for a mistake the **User** by definition did not know they were making, so it is
+  writes can still be retrieved. A Spawn's declared outputs are kept for as long as its submitter's
+  **Allowance** allows; everything else it wrote — the working directory it ran in — is destroyed when
+  it ends, and this is the window between those two facts. Both are finite, and the difference is one
+  of order rather than kind: days for what the User asked to keep, minutes for what they did not.
+  It exists for a mistake the **User** by definition did not know they were making, so it is
   never opt-in and never something to plan around: it is capped in size, expires on its own, and a
   Spawn whose work exceeds the cap simply never gets one. Distinct from an output (declared, kept) and
   from **Escrow** — "hold" means Escrow in this cluster, and never this.
