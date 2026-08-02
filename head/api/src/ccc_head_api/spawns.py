@@ -39,6 +39,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import db
+from . import environments
 from . import guises
 from . import recovery
 from . import siphons
@@ -262,6 +263,23 @@ fi
 %%MKDIR_OUTPUTS%%
 
 cd "$proj"
+# The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one. The Head built
+# it before this Spawn was ever placed, and it travelled INSIDE the project — so it needed no transfer of
+# its own on either branch.
+#
+# Moved OUT of $proj before anything runs, and that is not tidiness: $proj is what recover_scratch()
+# copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so an 8GB conda env left in
+# place would silently disable recovery for exactly the Spawns most likely to need it.
+#
+# Bound at ONE absolute path, the same one it was built at, because neither shape survives being moved:
+# a venv bakes its prefix into pyvenv.cfg and every console-script shebang, and a conda prefix bakes it
+# into hundreds of files. The directory underneath differs on the Head and on an Arm; the path the env
+# sees never does.
+py="%%BASE_INTERPRETER%%"; envbind=""
+if [ -d "$proj/%%ENV_DIRNAME%%" ]; then
+    mv "$proj/%%ENV_DIRNAME%%" "$scratch/env"
+    py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"
+fi
 # Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
 # fail rather than fall back to the account default.
 wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MODE=${WANDB_MODE:-},WANDB_NAME=spawn-$jid"
@@ -308,10 +326,14 @@ exit $rc
 # LC_ALL/LANG: the base PyTorch image never ran locale-gen, so any inherited locale makes the payload's
 # own shell/tooling write a "cannot change locale" warning into the Spawn's `err` before it has done
 # anything. C.UTF-8 ships pre-generated on every Debian/Ubuntu image.
+#
+# `$py` is the image's own `python` unless this Spawn's submitter declared an **Environment**, in which
+# case it is that env's interpreter and `$envbind` mounts it — both set above, together, so the
+# interpreter named here can never be one the bind did not provide.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
-  --bind "$proj,$ccc_out" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
-  "$sif" python %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
+  --bind "$proj,$ccc_out$envbind" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
+  "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
 # runs with no --net — full host netns, same as the script path, because the Pod still needs W&B egress
@@ -390,6 +412,12 @@ rm -f /tmp/ccc_passwd.new
 # mkdir it) — `cd` into an empty dir is a harmless no-op.
 echo "export CCC_OUT=\\"$CCC_OUT\\"" > /etc/profile.d/ccc-tidepool.sh
 echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" >> /etc/profile.d/ccc-tidepool.sh
+# A Tide Pool gets the SAME **Environment** its Spawn would get, so what you debug is what runs — put it
+# first on PATH rather than making the User type the interpreter's full path. Writable, too (it is this
+# session's own node-local copy, so read-only would buy no safety): `pip install` at the shell works and
+# dies with the session, which is most of what a Tide Pool is for.
+[ -x %%ENV_MOUNT%%/bin/python ] && \\
+  echo "export PATH=\\"%%ENV_MOUNT%%/bin:\\$PATH\\"" >> /etc/profile.d/ccc-tidepool.sh
 # UsePAM no: `ccc` is a `useradd --system` account with no /etc/shadow entry inside the Pod (the image
 # only bakes /etc/passwd + /etc/group — see BASE_DEF_TMPL), so PAM's account phase (pam_unix, checking a
 # shadow entry that doesn't exist) refuses the session even after the ephemeral keypair already
@@ -407,7 +435,7 @@ CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh" \\
+  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
@@ -438,9 +466,23 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # outright rather than silently excluding the one node the operator explicitly named.
         "%%EXCLUDE%%": f"#SBATCH --exclude={exclude}" if exclude else "",
         "%%STAGING_DIR%%": str(staging),
+        # What makes the sbatch sink's path unique per SUBMISSION rather than per job id — see the
+        # `sink=` line in JOB_SCRIPT for why that distinction is the difference between a Spawn running
+        # and a Spawn dying before its first line. The staging uuid is already unique per submission and
+        # is not a credential (`projects/<uuid>` is 0700 and its ACL names one Guise), so it needs no
+        # separate nonce; 8 chars is far past enough to never collide inside one /tmp.
+        "%%SINK_TAG%%": Path(staging).name[:8],
         # Recovery Window (docs/TODO.md): the per-Spawn cap `recover_scratch` gates on, both branches.
         "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
+        # The Spawn's **Environment** (environments.py). Every one of these is a constant, not a
+        # per-Spawn value: whether this Spawn HAS an env is decided by the rendered script at run time
+        # (`[ -d "$proj/.ccc-env" ]`), not here — so one rendering serves both cases and a build that
+        # produced nothing degrades to the base interpreter on its own.
+        "%%ENV_DIRNAME%%": environments.ENV_DIRNAME,
+        "%%ENV_MOUNT%%": environments.ENV_MOUNT,
+        "%%ENV_INTERPRETER%%": environments.ENV_INTERPRETER,
+        "%%BASE_INTERPRETER%%": environments.BASE_INTERPRETER,
         "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),
         "%%HEAD_IP%%": MESH_IP,
@@ -494,7 +536,7 @@ def _lend_project(staging: Path, guise: str) -> None:
 def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
            tar_path: Path, minutes: int, constraint: str, outputs: list[str], node: str | None = None,
            vram_gb: int = 0, hold: float | None = None, exclude: str = "",
-           tidepool: bool = False) -> int:
+           tidepool: bool = False, manifest: str | None = None) -> int:
     """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
     Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
     Spawn to one Arm.
@@ -547,11 +589,38 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
                              f"path matches exactly (and isn't excluded by .gitignore)")
         staging.mkdir(parents=True)
         tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
+    # The Guise is allocated HERE rather than just before sbatch, because the **Environment** build
+    # below runs as it — a manifest is code, and CCC runs no User's code as the Mantle (CONTEXT.md,
+    # **Guise**). `_lend_project` comes with it: the build enters a Pod with the project bound and this
+    # ACL is what lets the Guise read it.
+    with db.connect() as conn:
+        guise = guises.name(db.allocate_guise(conn, user_id))
+    _lend_project(staging, guise)
+
+    # Built BEFORE `files` is computed, so the env is in the list a remote Arm stages in — it rides the
+    # transfer that already exists rather than getting one of its own. Built before sbatch at all, so no
+    # Device is ever held while packages download (see environments.py). A BuildError here is a
+    # ValueError to the caller like every other refusal in this function: the Spawn does not exist yet,
+    # nothing has been Escrowed, and nothing is left behind but the staging dir the caller sweeps.
+    # A Tide Pool is included deliberately: you debug against the Environment your Spawn would get, or
+    # you are not debugging the thing that failed. (Its tar is empty, so it declares nothing and this is
+    # a no-op — unless a User picked a project for it, which is exactly when it matters.)
+    declared = environments.detect(staging, manifest)
+    if declared is not None:
+        environments.build(staging, declared, guise)
+    environments.prune_cache()
+
     # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
     # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
     # that re-rooting IS the isolation, and it is why the list no longer carries a <uuid>/ prefix. The
     # upload was already gitignore-filtered client-side, so every file here is meant to transfer.
-    files = [p.relative_to(staging).as_posix() for p in staging.rglob("*") if p.is_file()]
+    #
+    # Symlinks are listed too, and that is load-bearing for the Environment: a --system-site-packages
+    # venv's `bin/python` points into the Pod image, which does not exist on the Head's own filesystem,
+    # so `is_file()` alone reports it missing and the env would arrive on the Arm with no interpreter.
+    # rsync -a copies a symlink AS a symlink, and inside the Pod on the Arm it resolves.
+    files = [p.relative_to(staging).as_posix() for p in staging.rglob("*")
+             if p.is_symlink() or p.is_file()]
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -569,10 +638,6 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     token, secret = siphons.open(uuid)
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey)
-    with db.connect() as conn:
-        guise = guises.name(db.allocate_guise(conn, user_id))
-    _lend_project(staging, guise)
-
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in

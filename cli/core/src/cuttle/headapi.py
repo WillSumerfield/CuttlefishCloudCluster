@@ -111,9 +111,13 @@ _SUDOERS_CCC_SLURM = f"""\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
 # The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Spawns as the Guise that owns
 # them: submit, re-nice, cancel, signal. Runas is the Guise group — NOT root.
+# `apptainer` is here for one job only: building a Spawn's **Environment** before it is placed
+# (ccc_head_api.environments). A manifest is code — build backends, sdist setup.py, conda post-link
+# scripts all execute — so it runs inside base.sif as the submitter's Guise rather than as the Mantle,
+# which owns the Head's key and every User's work. Same walls a Spawn gets, not a weaker second kind.
 Defaults:{config.HEAD_API_USER} env_keep += "WANDB_API_KEY WANDB_MODE WANDB_PROJECT WANDB_ENTITY"
 {config.HEAD_API_USER} ALL=(%{config.GUISE_GROUP}) NOPASSWD: /usr/bin/sbatch, /usr/bin/scancel, \
-/usr/bin/scontrol
+/usr/bin/scontrol, /usr/bin/apptainer
 """
 
 
