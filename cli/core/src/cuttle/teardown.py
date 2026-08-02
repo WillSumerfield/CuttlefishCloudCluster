@@ -87,6 +87,11 @@ def remove_head_api() -> None:
     Mantle account. Already stopped/disabled by stop_daemons; head.db (under CCC_LIB) is swept by
     remove_enroll_api."""
     system.deny_tcp_port(config.HEAD_API_PORT)
+    system.deny_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE)
+    # The range Tide Pools used before 2026-08-02, when it moved out of the ephemeral port range (see
+    # config.TIDEPOOL_PORT_BASE). A Head set up before that has the old rule and nothing else would ever
+    # name it again. Drop when no such Head is left.
+    system.deny_tcp_port_range(41000, 200)
     run(["rm", "-f", str(config.HEAD_API_UNIT), str(config.SUDOERS_CCC_SLURM)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
     remove_mantle()  # created by provision_head_auth -> provision_mantle

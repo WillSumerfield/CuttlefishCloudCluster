@@ -342,7 +342,12 @@ KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 # package do not import each other (same reason FEATURES_CATALOG's path is duplicated between
 # ccc_head_api.enroll and ccc_head_api.slurm). Opened once, as a whole range, at `setup --head`
 # (system.allow_tcp_port_range) — a per-Tide-Pool ufw rule would mean firewall churn on every submit.
-TIDEPOOL_PORT_BASE = 41000
+#
+# BELOW Linux's default ephemeral range (net.ipv4.ip_local_port_range = 32768-60999): these ports are
+# LISTENED on, by the relay on the Head and by the Pod's sshd on an Arm, so a range inside the ephemeral
+# one is racing the kernel's own allocator on every box — any outbound connection can be handed the port
+# a Tide Pool is about to want, and the bind then fails with EADDRINUSE. Was 41000; moved 2026-08-02.
+TIDEPOOL_PORT_BASE = 31000
 TIDEPOOL_PORT_RANGE = 200
 
 # --- WSL Arm dashboard forward (⑥ convenience) ---

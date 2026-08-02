@@ -738,9 +738,10 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     if arm is None or not arm.get("mesh_ip"):
         return {"ready": False, "port": None, "private_key": None, "user": guise}
     with db.connect() as conn:
-        tidepool_mod.ensure_relay(conn, job_id, arm["mesh_ip"], node_name)
+        up = tidepool_mod.ensure_relay(conn, job_id, arm["mesh_ip"], node_name,
+                                       head_arm=bool(arm.get("head")))
         key = db.tidepool_private_key(conn, job_id)
-    return {"ready": key is not None, "port": tp["port"], "private_key": key, "user": guise}
+    return {"ready": up and key is not None, "port": tp["port"], "private_key": key, "user": guise}
 
 
 def _human(n: int) -> str:

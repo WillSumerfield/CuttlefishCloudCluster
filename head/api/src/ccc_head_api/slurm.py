@@ -138,6 +138,9 @@ def arms() -> list[dict]:
                 "owner": e.get("owner"),
                 "mesh_ip": e.get("mesh_ip"),
                 "admitted": e.get("admitted", True),
+                # The Head's OWN co-located Arm (enroll.register_head_arm). Same box as the Head, which
+                # is why a Tide Pool there needs no relay — tidepool.ensure_relay.
+                "head": bool(e.get("head")),
                 # The hardware profile Karma prices from: what each card can DO (**Power**, measured
                 # at enroll by a benchmark Spawn — one number per **Device**) and how much it can HOLD
                 # (the thing --vram matches; one number for the node, since a mixed-GPU box is refused

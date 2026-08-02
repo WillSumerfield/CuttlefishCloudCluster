@@ -14,16 +14,18 @@ a Pod instead of a script. Three jobs live here:
 3. **Run the relay** (`ensure_relay`) — Users are not Mesh members and have no route to an Arm's mesh
    address (only Head + Arm are on the Mesh — see CONTEXT.md), so the Head, which every client already
    reaches for the Dashboard/API, forwards raw bytes from its own reachable address to the Arm's mesh
-   address for the life of one Spawn. A narrow purpose-built TCP proxy (relay.py), not a jump-host sshd
-   on the Head itself (a new attack surface plus a host-key/user story of its own) and not a websocket
+   address for the life of one Spawn. **Except on the Head's own co-located Arm**, where the Pod is
+   already on the address the client is dialling and a relay would fight its sshd for the single shared
+   port and then forward to itself — see `ensure_relay`. A narrow purpose-built TCP proxy (relay.py),
+   not a jump-host sshd on the Head itself (a new attack surface plus a host-key/user story of its own) and not a websocket
    tunnel (a new dependency this project does not otherwise need, and real SSH end to end — not a
    bespoke shell-over-websocket protocol — is the explicit ask).
 
 The relay is a SEPARATE PROCESS (relay.py, its own asyncio loop), not a task inside the sync Head API or
 the karma tick — so a relay carrying live bytes is never blocked behind a slurmctld poll, and a wedged
 relay can never wedge either of them. `ensure_relay` is idempotent (checks the tracked pid is actually
-alive before starting a new one) and is called from both the polled `GET .../tidepool` route — so attach
-does not wait on the tick's 30s cadence — and `reap_dead` below, belt and suspenders.
+alive before starting a new one) and is called from the polled `GET .../tidepool` route, so attach does
+not wait on the tick's 30s cadence; `reap_dead` below is the one place a relay ever goes back down.
 """
 
 import logging
@@ -44,7 +46,10 @@ log = logging.getLogger("ccc.api")
 # One port range, reserved once at `cuttle setup --head` (cuttle.system.allow_tcp_port_range — CLI-side,
 # must stay numerically in step with these two constants). 200 concurrent Tide Pools is far past
 # anything this project's single-cluster scale will ever hold open at once.
-PORT_BASE = 41000
+#
+# BELOW Linux's default ephemeral range (net.ipv4.ip_local_port_range = 32768-60999) — see
+# cuttle.config.TIDEPOOL_PORT_BASE for why a listen port must never sit inside it.
+PORT_BASE = 31000
 PORT_RANGE = 200
 
 
@@ -100,20 +105,44 @@ def _alive(pid: int | None) -> bool:
         return False
 
 
-def ensure_relay(conn, job_id: int, node_mesh_ip: str, node: str) -> None:
-    """Make sure a Tide Pool's Head-side relay is up, starting one if it is missing or dead.
+def ensure_relay(conn, job_id: int, node_mesh_ip: str, node: str, head_arm: bool = False) -> bool:
+    """Make sure a Tide Pool's connection path is up, starting the Head-side relay if one is needed.
+    Returns whether the port is actually accepting connections — what `ready` means to the CLI.
 
     Idempotent by design: called on every poll of `GET /spawns/{id}/tidepool` while the Spawn is
     RUNNING, so "is the process I already started still alive" has to be cheap and safe to repeat.
     `node_mesh_ip` is read fresh by the caller (off `slurm.arms()`) rather than cached here — an Arm's
     address cannot change under a running Spawn, but re-deriving it costs nothing and one fewer thing to
     keep in sync is one fewer way for this to drift from the source of truth.
+
+    **No relay for the Head's own co-located Arm** (`head_arm`, off the registry's `head` flag — see
+    enroll.register_head_arm). The relay exists for exactly one reason: a User is not a Mesh member and
+    cannot reach an Arm's mesh address. For this one Arm they demonstrably can — it is the same box they
+    already reach for the Dashboard and this very API — so the Pod's sshd is already on a reachable
+    address and the CLI's `ssh <head>:<port>` lands on it directly.
+
+    Starting one anyway is not merely redundant, it is fatal, and it cost a hardware session to find
+    (Spawn 7, 2026-08-02). Relay and Pod sshd deliberately share ONE port number, which on this Arm is
+    one port on ONE box, and the relay gets there first: this route fires the moment Slurm says RUNNING,
+    seconds before apptainer has booted the Pod. sshd then finds 0.0.0.0 taken and — because OpenSSH
+    sets IPV6_V6ONLY on its v6 listener — still binds `::` and reports itself up, while being unable to
+    accept IPv4 at all. Mesh addresses are IPv4, so every connection reaches the relay instead, whose
+    forward target is this same Arm's mesh IP: **the relay forwards to itself**, one self-connection
+    chained onto the next, and no ssh session ever reaches the Pod. `_accepting` cannot see any of it —
+    it connects to the relay and is satisfied.
     """
     row = db.get_tidepool(conn, job_id)
     if row is None:
-        return  # not a Tide Pool, or already reaped — nothing to do
+        return False  # not a Tide Pool, or already reaped — nothing to do
+    if head_arm:
+        # Nothing to start and nothing to track, so this asks the only question left — has the Pod's
+        # sshd finished booting? A short probe, not _LISTEN_TIMEOUT: that budget is for a process we
+        # just forked and expect within milliseconds, whereas a Pod boot takes seconds and the CLI is
+        # already polling. Once it answers true the CLI stops polling, so this costs one extra
+        # "Connection closed [preauth]" line per attach — the same one the relay path already pays.
+        return _accepting(row["port"], timeout=_PROBE_TIMEOUT)
     if _alive(row["relay_pid"]):
-        return
+        return True
     port = row["port"]
     # Own process group (start_new_session): a relay must outlive the Head API worker that spawned it
     # (a request handler), and must not receive a signal meant for its parent. DEVNULL throughout — its
@@ -129,14 +158,19 @@ def ensure_relay(conn, job_id: int, node_mesh_ip: str, node: str) -> None:
     if not _accepting(port):
         log.warning("tidepool relay job=%s port=%s did not start listening in %ss", job_id, port,
                     _LISTEN_TIMEOUT)
+        return False
+    return True
 
 
 # How long to give a freshly-spawned relay to bind. Generous: it is a Python interpreter start, paid
 # once per attach, and the alternative to waiting is handing out a port that refuses connections.
 _LISTEN_TIMEOUT = 5.0
+# The head-Arm path waits on a Pod boot instead, which the CLI's own polling already covers — so this
+# only has to be long enough to answer "is it up *now*", not to wait for it.
+_PROBE_TIMEOUT = 0.3
 
 
-def _accepting(port: int) -> bool:
+def _accepting(port: int, timeout: float | None = None) -> bool:
     """Block until the relay is actually accepting on `port`, or the timeout runs out.
 
     `Popen` returns as soon as the fork succeeds — long before the child has imported asyncio and bound
@@ -148,7 +182,7 @@ def _accepting(port: int) -> bool:
     A connect is the only honest test of that, and it costs one connection the relay dutifully forwards
     to the Pod's sshd — so each attach leaves one extra "Connection closed [preauth]" line in the Tide
     Pool's own stderr. Cheap, and visibly harmless next to the alternative."""
-    deadline = time.monotonic() + _LISTEN_TIMEOUT
+    deadline = time.monotonic() + (_LISTEN_TIMEOUT if timeout is None else timeout)
     while time.monotonic() < deadline:
         with socket.socket() as s:
             s.settimeout(0.2)

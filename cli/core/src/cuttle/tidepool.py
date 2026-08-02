@@ -51,7 +51,9 @@ def _existing_id(token: str | None) -> int | None:
 
 def _head_host() -> str:
     """The bare host the CLI already talks to for the Head API — the Tide Pool relay listens on the
-    SAME box, at a different port, so there is no separate address to configure or discover."""
+    SAME box, at a different port, so there is no separate address to configure or discover. (When the
+    Spawn landed on the Head's own co-located Arm there is no relay at all and this reaches the Pod's
+    sshd directly — same address either way, which is the point. See ccc_head_api.tidepool.)"""
     url = settings.load().get("head") or ""
     host = urlsplit(url).hostname
     if not host:

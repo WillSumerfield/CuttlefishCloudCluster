@@ -72,6 +72,31 @@ class TestPortReservation:
                 head_tidepool.reserve_port(conn)
 
 
+class TestThePortRangeIsNotEphemeral:
+    """These ports are LISTENED on — by the relay on the Head, by the Pod's sshd on an Arm — so the
+    range must sit outside the kernel's ephemeral range. Inside it, the bind races the kernel's own
+    allocator on every box in the cluster: any outbound connection can be handed the port a Tide Pool
+    is about to want, and the bind then fails with EADDRINUSE for no reason anyone can reproduce."""
+
+    def test_it_is_below_the_default_ephemeral_range(self):
+        assert head_tidepool.PORT_BASE + head_tidepool.PORT_RANGE <= 32768   # Linux default low bound
+
+    def test_it_is_below_this_hosts_ephemeral_range(self):
+        proc = Path("/proc/sys/net/ipv4/ip_local_port_range")
+        if not proc.exists():
+            pytest.skip("not Linux")
+        low = int(proc.read_text().split()[0])
+        assert head_tidepool.PORT_BASE + head_tidepool.PORT_RANGE <= low
+
+    def test_the_cli_states_the_same_range(self):
+        """cuttle.config duplicates these to open the ufw rule at `setup --head` (the two packages do
+        not import each other), so a change on one side that misses the other silently firewalls off
+        every Tide Pool."""
+        from cuttle import config as cli_config
+        assert cli_config.TIDEPOOL_PORT_BASE == head_tidepool.PORT_BASE
+        assert cli_config.TIDEPOOL_PORT_RANGE == head_tidepool.PORT_RANGE
+
+
 class TestTidepoolCrud:
     @pytest.fixture(autouse=True)
     def _db(self, monkeypatch, tmp_path):
@@ -314,13 +339,43 @@ class TestTidepoolRoute:
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "mesh_ip": "100.99.0.5"}])
         # ensure_relay would actually fork a subprocess — not what this test is about.
         calls = []
-        monkeypatch.setattr(head_tidepool, "ensure_relay",
-                            lambda conn, jid, ip, node: calls.append((jid, ip, node)))
+
+        def fake(conn, jid, ip, node, head_arm=False):
+            calls.append((jid, ip, node, head_arm))
+            return True
+
+        monkeypatch.setattr(head_tidepool, "ensure_relay", fake)
         r = c.get("/api/spawns/77/tidepool")
         assert r.status_code == 200
         body = r.json()
         assert body == {"ready": True, "port": 41007, "private_key": "PRIVATEKEY", "user": _GUISE}
-        assert calls == [(77, "100.99.0.5", "gpu-box")]
+        assert calls == [(77, "100.99.0.5", "gpu-box", False)]
+
+    def test_not_ready_while_nothing_accepts_on_the_port(self, monkeypatch, tmp_path):
+        """`ready` is ensure_relay's answer, not merely "we called it" — a relay that never bound, or a
+        Pod whose sshd is still booting, both have to keep the CLI polling."""
+        c = _client(monkeypatch, tmp_path)
+        self._seed(tmp_path, port=41007)
+        monkeypatch.setattr(head_spawns, "active_state", lambda jid: "RUNNING")
+        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "gpu-box"}])
+        monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "mesh_ip": "100.99.0.5"}])
+        monkeypatch.setattr(head_tidepool, "ensure_relay", lambda *a, **kw: False)
+        assert c.get("/api/spawns/77/tidepool").json()["ready"] is False
+
+    def test_the_heads_own_arm_is_flagged_through_to_ensure_relay(self, monkeypatch, tmp_path):
+        """The whole fix rides on this one boolean reaching ensure_relay — see
+        TestTheHeadsOwnArmNeedsNoRelay for what happens when a relay starts there anyway."""
+        c = _client(monkeypatch, tmp_path)
+        self._seed(tmp_path, port=41007)
+        monkeypatch.setattr(head_spawns, "active_state", lambda jid: "RUNNING")
+        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "head-box"}])
+        monkeypatch.setattr(slurm, "arms",
+                            lambda: [{"name": "head-box", "mesh_ip": "100.99.0.1", "head": True}])
+        seen = []
+        monkeypatch.setattr(head_tidepool, "ensure_relay",
+                            lambda conn, jid, ip, node, head_arm=False: seen.append(head_arm) or True)
+        assert c.get("/api/spawns/77/tidepool").json()["ready"] is True
+        assert seen == [True]
 
     def test_not_ready_if_the_arm_has_no_mesh_ip_yet(self, monkeypatch, tmp_path):
         """Belt and suspenders: RUNNING in squeue but the registry hasn't caught up is not attachable."""
@@ -399,8 +454,74 @@ class TestReadyMeansConnectable:
                             lambda *a, **kw: type("P", (), {"pid": os.getpid()})())
         started = time.monotonic()
         with db.connect() as conn:
-            head_tidepool.ensure_relay(conn, 77, "100.99.0.5", "gpu-box")
+            assert head_tidepool.ensure_relay(conn, 77, "100.99.0.5", "gpu-box") is False
         assert time.monotonic() - started < 2.0
+
+
+class TestTheHeadsOwnArmNeedsNoRelay:
+    """Found on hardware (Tide Pool 7, 2026-08-02): a Tide Pool placed on the Head's co-located Arm
+    came up dead, with the Pod's sshd reporting `Bind to port 41000 on 0.0.0.0 failed: Address already
+    in use`.
+
+    Relay and Pod sshd share ONE port number by design — which on this Arm is one port on one box, and
+    the relay gets there first (the route fires the moment Slurm says RUNNING, seconds before apptainer
+    has booted the Pod). sshd then still binds `::` and looks healthy, because OpenSSH sets
+    IPV6_V6ONLY, while being unable to accept IPv4 at all; mesh addresses are IPv4, so every connection
+    reaches the relay — whose forward target is this same Arm. It forwards to itself, endlessly, and
+    `_accepting` connects to the relay and calls it ready.
+    """
+
+    def _seed(self, port):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                         "VALUES (1,'u1',0,'x',0)")
+            db.record_spawn(conn, job_id=77, user_id=1, script="", staging_uuid="u", tidepool=True)
+            db.create_tidepool(conn, 77, port, "ssh-ed25519 AAAA", "PRIVATEKEY")
+            conn.commit()
+
+    @pytest.fixture(autouse=True)
+    def _db(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        # Any Popen here is the bug itself.
+        monkeypatch.setattr(head_tidepool.subprocess, "Popen",
+                            lambda *a, **kw: pytest.fail("started a relay against the Head's own Arm"))
+
+    def test_the_pods_own_sshd_is_what_ready_means(self, tmp_path):
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        port = srv.getsockname()[1]
+        self._seed(port)
+        try:
+            with db.connect() as conn:
+                assert head_tidepool.ensure_relay(conn, 77, "100.99.0.1", "head-box",
+                                                  head_arm=True) is True
+        finally:
+            srv.close()
+
+    def test_not_ready_while_the_pod_is_still_booting(self, tmp_path):
+        """Nothing listening yet is the normal state for the first seconds of every Tide Pool — the CLI
+        keeps polling, and this must answer quickly rather than burning _LISTEN_TIMEOUT per poll."""
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        self._seed(port)
+        started = time.monotonic()
+        with db.connect() as conn:
+            assert head_tidepool.ensure_relay(conn, 77, "100.99.0.1", "head-box", head_arm=True) is False
+        assert time.monotonic() - started < 1.0
+
+    def test_no_relay_pid_is_ever_recorded(self, tmp_path):
+        """Nothing to kill, and reap_dead must still release the port when the Spawn ends."""
+        self._seed(31007)
+        with db.connect() as conn:
+            head_tidepool.ensure_relay(conn, 77, "100.99.0.1", "head-box", head_arm=True)
+            assert db.get_tidepool(conn, 77)["relay_pid"] is None
+            head_tidepool.reap_dead(conn, live_job_ids=set())
+            assert db.get_tidepool(conn, 77) is None
+            assert 31007 not in db.used_tidepool_ports(conn)
 
 
 # --- tick.py reaps a dead Tide Pool ------------------------------------------

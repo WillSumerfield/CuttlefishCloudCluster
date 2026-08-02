@@ -375,3 +375,12 @@ def deny_tcp_port(port: int) -> None:
     if not shutil.which("ufw"):
         return
     run(["ufw", "delete", "allow", f"{port}/tcp"], sudo=True, check=False)
+
+
+def deny_tcp_port_range(base: int, count: int) -> None:
+    """Reverse of allow_tcp_port_range. `ufw delete` matches on the rule's own text, so a teardown after
+    the range constant has moved leaves the OLD range open forever — nothing removes a rule nobody names
+    any more. Callers pass what the range was, not only what it is."""
+    if not shutil.which("ufw"):
+        return
+    run(["ufw", "delete", "allow", f"{base}:{base + count - 1}/tcp"], sudo=True, check=False)
