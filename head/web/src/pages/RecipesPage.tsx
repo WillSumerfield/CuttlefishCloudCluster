@@ -16,13 +16,18 @@ import type { RecipeAction } from "../recipes/format";
  * fills on the wall. The first cell of the grid is the way ON: a ghost tile that hands the shelf over to the
  * composer, which replaces the grid while you freeze a folder (the wall stays, previewing the new bytes).
  *
- * The action endpoints don't exist on the Head yet, so under ?demo everything plays out on the mock in
- * place: Save appends a card that blooms while it "uploads" then re-freezes; Delete drops it and frees its
- * bytes; Update code blooms for a beat then re-freezes. Live, they call out and a refetch confirms.
+ * Update code re-opens the composer rather than acting in place, because an update IS a fresh upload —
+ * there is no copy of the folder on the Head to re-freeze, and none on your machine the Head can reach.
+ * So it prefills the Recipe's settings, fixes its name, and hands the wall an allowance the Recipe's own
+ * bytes have already come off: on the Head an update is delete-then-save, charged what it grows by.
+ *
+ * Under ?demo everything plays out on the mock in place: Save appends a card that blooms while it
+ * "uploads" then re-freezes; Delete drops it and frees its bytes; Update code blooms for a beat then
+ * re-freezes. Live, they call out and a refetch confirms — except Run, which the Head answers 501 to.
  */
 
-const API: Record<"run" | "update" | "delete", (name: string) => Promise<void>> = {
-  run: runRecipe, update: updateRecipe, delete: deleteRecipe,
+const API: Record<"run" | "delete", (name: string) => Promise<void>> = {
+  run: runRecipe, delete: deleteRecipe,
 };
 
 export function RecipesPage() {
@@ -32,6 +37,9 @@ export function RecipesPage() {
   const [loaded, setLoaded] = useState(demo);
   const [hovered, setHovered] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
+  // The Recipe being re-captured, or null for a new one. Same composer either way — an update differs
+  // only in what it prefills and which endpoint takes the upload.
+  const [editing, setEditing] = useState<Recipe | null>(null);
   const [pending, setPending] = useState(0); // bytes of the folder being frozen right now → wall ghost
   // A failed action/save used to vanish silently — worst of all for Save, where a folder was picked and a
   // form filled. Name what failed until the next action.
@@ -56,42 +64,46 @@ export function RecipesPage() {
     (name: string, action: RecipeAction) => {
       if (action === "edit") return; // settings form — a later phase; the control is here, inert for now.
 
+      if (action === "update") {
+        // An update needs a folder, so it goes through the composer rather than firing an endpoint —
+        // nothing moves here, and nothing is charged, until a folder is picked and Update code is hit.
+        const target = recipes.find((r) => r.name === name);
+        if (!target) return;
+        setEditing(target);
+        setComposing(true);
+        setActionError(null);
+        return;
+      }
+
       if (action === "delete") {
         setRecipes((prev) => prev.filter((r) => r.name !== name));
-      } else if (action === "update") {
-        // Show the bloom, then re-freeze the snapshot at "now". Under ?demo this timer IS the upload; live,
-        // the refetch below tells the truth and this optimistic beat is just the immediate feedback.
-        setRecipes((prev) => prev.map((r) => (r.name === name ? { ...r, updating: true } : r)));
-        if (demo) {
-          window.setTimeout(() => {
-            setRecipes((prev) =>
-              prev.map((r) => (r.name === name ? { ...r, updating: false, frozen_at: Date.now() } : r)),
-            );
-          }, 2600);
-        }
       }
       // Run reshapes nothing here — it spawns a job that surfaces on the Queue, not on this page.
 
       setActionError(null);
       if (demo) return;
-      API[action as "run" | "update" | "delete"](name).catch((e) => {
+      API[action as "run" | "delete"](name).catch((e) => {
         if (e instanceof Unauthorized) return logout();
         setActionError(`Couldn't ${action} recipe '${name}' — ${errMessage(e)} The shelf has been refreshed.`);
         refresh(); // an action that failed live: re-sync to the truth.
       });
     },
-    [demo, logout, refresh],
+    [demo, logout, recipes, refresh],
   );
 
-  // Save a new Recipe: collapse to the grid at once, drop in a card that BLOOMS while its tree uploads, then
-  // settles to "frozen just now". Under ?demo the settle is a timer; live, createRecipe's answer replaces
-  // the optimistic card (and carries the Head's true size_bytes).
-  const onCreate = useCallback(
+  // Save a Recipe, new or re-captured: collapse to the grid at once, show a card that BLOOMS while its tree
+  // uploads, then settles to "frozen just now". Under ?demo the settle is a timer; live, the Head's answer
+  // replaces the optimistic card (and carries its true size_bytes).
+  //
+  // A new save appends; an update replaces in place, so the shelf never briefly shows two of one Recipe.
+  const onSave = useCallback(
     (r: RecipePayload) => {
+      const target = editing;
       const optimistic: Recipe = {
         name: r.name,
         script: r.script,
         args: r.args,
+        outputs: r.outputs,
         gpus: r.gpus,
         vram_mb: r.vram_mb,
         minutes: r.minutes,
@@ -99,9 +111,15 @@ export function RecipesPage() {
         frozen_at: Date.now(),
         updating: true,
         running: false,
+        wandb: r.wandb,
+        wandb_project: r.wandb_project,
+        wandb_entity: r.wandb_entity,
       };
-      setRecipes((prev) => [...prev, optimistic]);
+      setRecipes((prev) =>
+        target ? prev.map((x) => (x.name === target.name ? optimistic : x)) : [...prev, optimistic],
+      );
       setComposing(false);
+      setEditing(null);
       setPending(0);
       setActionError(null);
 
@@ -113,17 +131,19 @@ export function RecipesPage() {
         }, 2600);
         return;
       }
-      createRecipe(r)
+      const sent = target ? updateRecipe(target.name, r) : createRecipe(r);
+      sent
         .then((saved) => setRecipes((prev) => prev.map((x) => (x.name === r.name ? saved : x))))
         .catch((e) => {
           if (e instanceof Unauthorized) return logout();
-          // The save failed live: drop the optimistic card, re-sync, and say so — the folder wasn't
-          // uploaded, and without this the card just vanished.
-          setActionError(`Couldn't save recipe '${r.name}' — ${errMessage(e)} Nothing was saved.`);
+          // Failed live: re-sync and say so. The refetch is what puts an updated Recipe's OLD snapshot
+          // back on the shelf — the Head refuses before touching it, so it is still there and still runs.
+          const what = target ? `update recipe '${target.name}'` : `save recipe '${r.name}'`;
+          setActionError(`Couldn't ${what} — ${errMessage(e)} Nothing was changed.`);
           refresh();
         });
     },
-    [demo, logout, refresh],
+    [demo, editing, logout, refresh],
   );
 
   const used = recipes.reduce((n, r) => n + r.size_bytes, 0);
@@ -161,12 +181,17 @@ export function RecipesPage() {
 
         {composing ? (
           <RecipeComposer
-            used={used}
-            existingNames={recipes.map((r) => r.name)}
+            // Delete-then-save: an update's own bytes come off before the new folder is weighed, so the
+            // wall previews exactly the arithmetic recipes.save does on the Head. Its name comes off the
+            // taken list for the same reason — a Recipe is not a duplicate of itself.
+            used={used - (editing?.size_bytes ?? 0)}
+            existingNames={recipes.map((r) => r.name).filter((n) => n !== editing?.name)}
+            editing={editing ?? undefined}
             onPending={setPending}
-            onSave={onCreate}
+            onSave={onSave}
             onCancel={() => {
               setComposing(false);
+              setEditing(null);
               setPending(0);
             }}
           />
@@ -180,7 +205,12 @@ export function RecipesPage() {
               </p>
             )}
             <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <NewRecipeTile onClick={() => setComposing(true)} />
+              <NewRecipeTile
+                onClick={() => {
+                  setEditing(null); // never inherit the last Update's prefill
+                  setComposing(true);
+                }}
+              />
               {recipes.map((r) => (
                 <RecipeCard key={r.name} recipe={r} onHover={setHovered} onAct={onAct} />
               ))}

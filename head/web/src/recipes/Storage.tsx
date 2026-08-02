@@ -2,7 +2,7 @@ import type { Recipe } from "../api";
 import { ALLOWANCE, size } from "./format";
 
 /**
- * MY STORAGE — the signature of this page, and the one thing on it that is a wall. The 20 GB allowance is
+ * MY STORAGE — the signature of this page, and the one thing on it that is a wall. The 24 GB allowance is
  * a vessel; your Recipes fill it left to right as a single lit iridescent mass (storage is a Head fact, so
  * it is iridescence, never pigment). The fill's chroma rises as it fills — cool and faint when there's room,
  * deeper cyan as it nears the wall — because on the iridescence ramp chroma IS "how much". There are no rules

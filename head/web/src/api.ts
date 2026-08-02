@@ -252,12 +252,13 @@ export const removeArm = (name: string) => req(`/arms/${encodeURIComponent(name)
 // A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its
 // owner (the Head only ever serves you your own). It runs exactly what it captured until the owner hits
 // Update code, so `frozen_at` is how stale that snapshot is. `size_bytes` is what it costs against the
-// 20 GB per-User allowance. `updating` is true only while a fresh snapshot is uploading — the one moment
+// 24 GB per-User allowance. `updating` is true only while a fresh snapshot is uploading — the one moment
 // a Recipe moves (the bloom); at rest it is still, because a frozen thing does not move.
 export type Recipe = {
   name: string
   script: string          // entry point the snapshot runs
   args: string[]          // declared arguments, frozen with the code
+  outputs: string[]       // declared output folders, frozen too — a Recipe with none could never be run
   gpus: number
   vram_mb: number
   minutes: number         // declared wall-clock — the same ask a Spawn carries
@@ -265,46 +266,57 @@ export type Recipe = {
   frozen_at: number       // epoch ms the code was last captured; Update code refreshes it
   updating: boolean       // a new snapshot is uploading right now → the bloom
   running: boolean        // a Spawn of this Recipe is live on the cluster right now → the passing cloud
+  // Experiment tracking, frozen with the code. Read back (not just written) so Update code prefills what
+  // the owner already answered instead of quietly resetting it to the defaults on every re-capture.
+  wandb: boolean
+  wandb_project: string
+  wandb_entity: string
 }
 
-// Per-User storage allowance: 20 GB, a hard wall. Saving past it means deleting a Recipe first, never a
-// warning. Mirrored in recipes/format.ts, where the meter reads from it.
-export const RECIPE_ALLOWANCE_BYTES = 20 * 1024 ** 3
+// Per-User storage allowance: 24 GB, a hard wall. Saving past it means deleting a Recipe first, never a
+// warning. Mirrored in recipes/format.ts, where the meter reads from it — and on the Head, in
+// recipes.py's MAX_USER_BYTES, which is the one that actually decides. The number lives in both places
+// because the composer blocks a doomed save from File.size before spending the upload; the Head is still
+// the authority, and answers 413 to anything that gets past.
+export const RECIPE_ALLOWANCE_BYTES = 24 * 1024 ** 3
 
 export const getRecipes = () => json<Recipe[]>('/recipes')
 
 // Freeze a project into a new Recipe. Same wire shape as submit() — tar+gzip body, meta in the header —
 // because a Recipe IS the same upload a Spawn carries, just persisted on the Head instead of run once. The
-// Head weighs it against the 20 GB wall and answers 413 if it won't fit (the composer blocks first, from
+// Head weighs it against the 24 GB wall and answers 413 if it won't fit (the composer blocks first, from
 // File.size, so the browser never spends the upload on a doomed save). Returns the frozen Recipe.
 export type NewRecipe = {
   picked: Picked
   name: string
   script: string
   args: string[]
+  outputs: string[]
   gpus: number
   vram_mb: number
   minutes: number
   // The Recipe's experiment-tracking config — the same three questions a Spawn answers, frozen with the
-  // code rather than asked again on every run. NOT PERSISTED YET: the Head serves no /recipes route at
-  // all (see below), so these ride the header and are dropped on the floor. They are here so the shape
-  // is already right when Phase 5 lands the backend.
+  // code rather than asked again on every run.
   wandb: boolean
   wandb_project: string
   wandb_entity: string
 }
 
-export async function createRecipe(r: NewRecipe): Promise<Recipe> {
+// The upload both save and update make: tar the picked folder, gzip it, put the settings in the header.
+// Shared because an update IS a save — the Head releases the old snapshot's bytes and charges the new
+// ones (delete-then-save), so the two differ only in which path they POST to.
+async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
   const entries: TarEntry[] = []
   for (const f of r.picked.files) {
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
   }
   const body = await gzip(makeTar(entries))
   const meta = {
-    name: r.name, script: r.script, args: r.args, gpus: r.gpus, vram_mb: r.vram_mb, minutes: r.minutes,
+    name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
+    vram_mb: r.vram_mb, minutes: r.minutes,
     wandb: r.wandb, wandb_project: r.wandb_project, wandb_entity: r.wandb_entity,
   }
-  const res = await req('/recipes', {
+  const res = await req(path, {
     method: 'POST',
     headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
     body,
@@ -312,15 +324,25 @@ export async function createRecipe(r: NewRecipe): Promise<Recipe> {
   return res.json() as Promise<Recipe>
 }
 
-// Recipe actions. Like the Arm lifecycle, the Head serves none of these yet — the page runs them on
-// ?demo mock (recipes/mock.ts), mutating local state; live, they hit these paths.
-const recipePost = (name: string, verb: string) =>
-  req(`/recipes/${encodeURIComponent(name)}/${verb}`, { method: 'POST' }).then(() => {})
+export const createRecipe = (r: NewRecipe) => recipeUpload(r, '/recipes')
 
-/** Run the frozen snapshot — one click, from any machine, nothing to hand. Spawns a job (seen on Queue). */
-export const runRecipe = (name: string) => recipePost(name, 'run')
-/** Re-capture the project into the Recipe. Explicit: until it lands, the Recipe keeps running the old code. */
-export const updateRecipe = (name: string) => recipePost(name, 'update')
+/**
+ * Re-capture the project into an existing Recipe — the one moment a frozen thing moves.
+ *
+ * Carries a body, unlike every other action here, because an update IS a fresh upload: there is no copy
+ * of the old folder on your machine for the Head to diff against, and the Head deliberately keeps none
+ * of a Spawn's code either. Explicit: until it lands, the Recipe keeps running the old snapshot, and a
+ * save the 24 GB wall refuses leaves that old snapshot untouched.
+ */
+export const updateRecipe = (name: string, r: NewRecipe) =>
+  recipeUpload(r, `/recipes/${encodeURIComponent(name)}/update`)
+
+/**
+ * Run the frozen snapshot — one click, from any machine, nothing to hand. Spawns a job (seen on Queue).
+ * NOT WIRED UP YET: the Head answers 501. Saving, updating and deleting are all live; only this is not.
+ */
+export const runRecipe = (name: string) =>
+  req(`/recipes/${encodeURIComponent(name)}/run`, { method: 'POST' }).then(() => {})
 /** Delete a Recipe, freeing its bytes back to the allowance. */
 export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 

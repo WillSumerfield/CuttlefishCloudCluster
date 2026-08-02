@@ -2,7 +2,7 @@ import type { Recipe } from "../api";
 
 /**
  * Demo data for reviewing Recipes without a live cluster — loaded ONLY under `?demo`. Recipes are private,
- * so this is one User's shelf, not a roster: a spread of sizes (to fill the storage wall to ~16 of 20 GB),
+ * so this is one User's shelf, not a roster: a spread of sizes (to fill the storage wall to ~16 of 24 GB),
  * a spread of staleness (fresh to weeks old), and ONE mid-update so the bloom is on screen next to the
  * still, frozen rest.
  */
@@ -15,7 +15,8 @@ export function demoRecipes(): Recipe[] {
   const h = 3600_000;
   const d = 24 * h;
   const R = (o: Partial<Recipe> & { name: string }): Recipe => ({
-    script: "train.py", args: [], gpus: 1, vram_mb: 24576, minutes: 120, size_bytes: GB, frozen_at: now, updating: false, running: false, ...o,
+    script: "train.py", args: [], outputs: ["checkpoints"], gpus: 1, vram_mb: 24576, minutes: 120, size_bytes: GB, frozen_at: now, updating: false, running: false,
+    wandb: true, wandb_project: "ccc", wandb_entity: "", ...o,
   });
   return [
     R({ name: "grpo-sweep", script: "train.py", args: ["--config", "grpo.yaml"], gpus: 4, vram_mb: 81920, minutes: 720, size_bytes: 6.2 * GB, frozen_at: now - 5 * d, running: true }),

@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { human, pick, type Picked } from "../project";
+import type { Recipe } from "../api";
 import { NumberField } from "../app/NumberField";
 import { Chip } from "../app/Chip";
 import { ALLOWANCE, size } from "./format";
@@ -12,7 +13,7 @@ import { ALLOWANCE, size } from "./format";
  *   · Name is REQUIRED and unique — it is the Recipe's identity, the key you Run it by later.
  *   · No "Target an Arm" — a Recipe runs from ANY machine with nothing to hand; pinning a node contradicts
  *     the whole point.
- *   · The 20 GB wall is a hard gate. We know the folder's size from File.size at pick time (no upload), so
+ *   · The 24 GB wall is a hard gate. We know the folder's size from File.size at pick time (no upload), so
  *     a save that wouldn't fit is blocked HERE, before the upload — the wall shows the breach in --alarm and
  *     this copy names how far over. You delete a Recipe to make room, never dismiss a warning.
  *
@@ -20,6 +21,11 @@ import { ALLOWANCE, size } from "./format";
  */
 
 const GB = 1024 ** 3;
+
+// Mirrors the Head's OUTPUT_NAME_RE (ccc_head_api.spawns), same as the Spawn composer's copy. Frozen
+// into the Recipe rather than asked at run time: a Recipe with no declared outputs is one `/submit`
+// would refuse, and finding that out the day you need it is worse than the day you saved it.
+const OUTPUT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 // The drop strip's soft-edged pool — a rounded recess feathered by a blur, behind crisp copy. Copied from
 // the Spawn composer; see its note on why a blur (not the surface mask) is what makes the radius bite.
@@ -30,13 +36,12 @@ export type RecipePayload = {
   name: string;
   script: string;
   args: string[];
+  outputs: string[];
   gpus: number;
   vram_mb: number;
   minutes: number;
   // Experiment-tracking config, frozen with the code — a Recipe holds it (CONTEXT.md) so a re-run
-  // doesn't re-answer it. NOTHING PERSISTS IT YET: the Head serves no /recipes route at all, so these
-  // are collected, sent, and dropped, exactly like every other field here. Asked now so the Recipe's
-  // shape is already right when Phase 5 lands the backend.
+  // doesn't re-answer it.
   wandb: boolean;
   wandb_project: string;
   wandb_entity: string;
@@ -45,14 +50,25 @@ export type RecipePayload = {
 export function RecipeComposer({
   used,
   existingNames,
+  editing,
   onPending,
   onSave,
   onCancel,
 }: {
-  /** Bytes already committed to the wall — the fit test adds the picked folder to this. */
+  /**
+   * Bytes already committed to the wall — the fit test adds the picked folder to this. When `editing`,
+   * the page has ALREADY subtracted that Recipe's own bytes: an update is delete-then-save on the Head,
+   * charged what it grows by, and a preview that showed the peak would refuse saves the Head accepts.
+   */
   used: number;
   /** Names already taken on this shelf; a Recipe's name is its key, so it must be unique. */
   existingNames: string[];
+  /**
+   * The Recipe being re-captured, or undefined for a new one. Its settings prefill the form and its name
+   * is fixed — an update replaces a snapshot in place, and renaming through it would silently leave the
+   * old name behind holding bytes nobody meant to keep.
+   */
+  editing?: Recipe;
   /** Report the picked folder's bytes up so the page can preview them as a ghost on the wall. */
   onPending: (bytes: number) => void;
   onSave: (r: RecipePayload) => void;
@@ -60,15 +76,18 @@ export function RecipeComposer({
 }) {
   const [picked, setPicked] = useState<Picked | null>(null);
   const [honor, setHonor] = useState(true);
-  const [name, setName] = useState("");
-  const [script, setScript] = useState("");
-  const [gpu, setGpu] = useState(1);
-  const [minutes, setMinutes] = useState("");
-  const [vram, setVram] = useState("");
-  const [args, setArgs] = useState("");
-  const [wandbLog, setWandbLog] = useState(true);
-  const [wandbProject, setWandbProject] = useState("");
-  const [wandbEntity, setWandbEntity] = useState("");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [script, setScript] = useState(editing?.script ?? "");
+  const [gpu, setGpu] = useState(editing?.gpus ?? 1);
+  const [minutes, setMinutes] = useState(editing ? String(editing.minutes) : "");
+  const [vram, setVram] = useState(editing ? String(editing.vram_mb / 1024) : "");
+  const [args, setArgs] = useState(editing?.args.join(" ") ?? "");
+  const [outputs, setOutputs] = useState<string[]>(editing?.outputs ?? []);
+  const [outputDraft, setOutputDraft] = useState("");
+  const [outputError, setOutputError] = useState<string | null>(null);
+  const [wandbLog, setWandbLog] = useState(editing?.wandb ?? true);
+  const [wandbProject, setWandbProject] = useState(editing?.wandb_project ?? "");
+  const [wandbEntity, setWandbEntity] = useState(editing?.wandb_entity ?? "");
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastList = useRef<FileList | null>(null);
@@ -113,12 +132,28 @@ export function RecipeComposer({
     onCancel();
   };
 
+  const addOutput = () => {
+    const out = outputDraft.trim();
+    if (!out) return;
+    if (!OUTPUT_NAME_RE.test(out)) {
+      setOutputError(`"${out}" isn't a valid output name — letters, digits, '.', '_', '-' only, and it can't start with '.'`);
+      return;
+    }
+    setOutputError(null);
+    setOutputs((prev) => (prev.includes(out) ? prev : [...prev, out]));
+    setOutputDraft("");
+  };
+
+  const removeOutput = (out: string) => setOutputs((prev) => prev.filter((o) => o !== out));
+
   const trimmed = name.trim();
   const dup = existingNames.includes(trimmed);
   const projected = (picked?.bytes ?? 0) + used;
   const over = projected > ALLOWANCE;
   const overBy = projected - ALLOWANCE;
-  const ready = !!picked && !!trimmed && !dup && !!script && Number(minutes) > 0 && Number(vram) > 0 && !over;
+  const ready =
+    !!picked && !!trimmed && !dup && !!script && Number(minutes) > 0 && Number(vram) > 0 &&
+    outputs.length > 0 && !over;
 
   const save = () => {
     if (!ready || !picked) return;
@@ -127,6 +162,7 @@ export function RecipeComposer({
       name: trimmed,
       script,
       args: args.split(/\s+/).filter(Boolean),
+      outputs,
       gpus: gpu,
       vram_mb: Number(vram) * 1024,
       minutes: Number(minutes),
@@ -138,7 +174,17 @@ export function RecipeComposer({
 
   return (
     <section className="surface [--sink:35%]" style={{ padding: "calc(var(--pad) + 50px) calc(var(--pad) + 50px)" }}>
-      <h2 className="label mb-6">New recipe</h2>
+      <h2 className="label mb-6">{editing ? `Update ${editing.name}` : "New recipe"}</h2>
+
+      {/* An update replaces the snapshot, so say what is about to stop being true. Until Save lands, the
+          Recipe keeps running the old code — and a save the wall refuses leaves it doing exactly that. */}
+      {editing && (
+        <p className="mb-6 px-1 text-[13px] text-ink-mute">
+          Re-freezing this recipe around a new folder. It keeps running the old snapshot until this
+          lands, and its <span className="num">{size(editing.size_bytes)}</span> comes off the wall when
+          it does.
+        </p>
+      )}
 
       {/* The strip — a recess you drop a folder onto, or click to choose one. */}
       <label
@@ -175,7 +221,7 @@ export function RecipeComposer({
               <span className="num text-ink">{picked.root}</span>
             </>
           ) : (
-            <>Drop/choose a folder — optional</>
+            <>Drop/choose a folder</>
           )}
         </span>
       </label>
@@ -218,7 +264,15 @@ export function RecipeComposer({
 
         <div className="grid gap-3 sm:grid-cols-2">
           <Labeled label="Name" className="sm:col-span-2">
-            <input className="field" placeholder="optional" value={name} onChange={(e) => setName(e.target.value)} />
+            {/* Fixed while editing: an update replaces a snapshot in place, and letting the name move
+                through it would leave the old one behind holding bytes nobody meant to keep. */}
+            <input
+              className="field"
+              placeholder="optional"
+              value={name}
+              readOnly={!!editing}
+              onChange={(e) => setName(e.target.value)}
+            />
             {dup && <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>You already have a recipe named {trimmed}.</span>}
           </Labeled>
           <Labeled label="Script" className="sm:col-span-2">
@@ -226,6 +280,53 @@ export function RecipeComposer({
           </Labeled>
           <Labeled label="Arguments" className="sm:col-span-2">
             <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
+          </Labeled>
+          {/* Declared outputs, frozen with the code — the same chips the Spawn composer uses, asked once
+              here instead of on every run. Required: a Recipe with none is one the Head would refuse to
+              run, and that is far better discovered now than the day you reach for it. */}
+          <Labeled label="Output folders" className="sm:col-span-2">
+            <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
+              {outputs.map((o) => (
+                <span
+                  key={o}
+                  className="inline-flex items-center gap-1.5 rounded-[var(--radius-control)] px-3 py-1.5 text-[13px]"
+                  style={{ background: "color-mix(in oklab, var(--shoal) 45%, transparent)", color: "var(--ink)" }}
+                >
+                  {o}
+                  <button
+                    type="button"
+                    onClick={() => removeOutput(o)}
+                    aria-label={`Remove output ${o}`}
+                    className="text-ink-mute hover:text-ink"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <input
+                className="field min-w-[140px] flex-1"
+                placeholder={outputs.length ? "another name…" : "checkpoints, outputs, etc..."}
+                value={outputDraft}
+                onChange={(e) => setOutputDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === ",") {
+                    e.preventDefault();
+                    addOutput();
+                  } else if (e.key === "Backspace" && !outputDraft && outputs.length) {
+                    removeOutput(outputs[outputs.length - 1]);
+                  }
+                }}
+                onBlur={addOutput}
+              />
+            </div>
+            {outputError ? (
+              <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>{outputError}</span>
+            ) : (
+              <p className="mt-1.5 text-[12px] text-ink-mute">
+                Every run of this recipe writes here. Anything outside these folders is recoverable for
+                30 min after a Spawn ends, then gone; what lands in them is kept 7 days.
+              </p>
+            )}
           </Labeled>
           {/* Experiment tracking, asked once and frozen with the code rather than on every run — see
               RecipePayload for why it lands nowhere yet.
@@ -277,7 +378,7 @@ export function RecipeComposer({
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
           <span aria-hidden />
           <button className="btn-primary justify-self-center" onClick={save} disabled={!ready}>
-            Save recipe
+            {editing ? "Update code" : "Save recipe"}
           </button>
           <button className="btn-ghost justify-self-start" onClick={cancel}>
             Cancel
