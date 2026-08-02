@@ -525,11 +525,15 @@ class TestSlurmSudoers:
         assert f"ALL=(%{config.GUISE_GROUP})" in rule
         assert "ALL=(root)" not in rule and "ALL=(ALL)" not in rule
 
-    def test_it_grants_exactly_the_three_slurm_clients(self):
+    def test_it_grants_exactly_the_three_slurm_clients_and_apptainer(self):
+        """`apptainer` is the fourth and the only non-Slurm one: a Spawn's **Environment** is built
+        before placement inside base.sif AS the submitter's Guise (ccc_head_api.environments), because a
+        manifest is code and CCC runs no User's code as the Mantle. Still no shell, no root, and Runas
+        is still the Guise group — widening this set is exactly what this test exists to notice."""
         rule = headapi._SUDOERS_CCC_SLURM
         cmds = rule.split("NOPASSWD:")[1]
         assert set(c.strip() for c in cmds.replace("\\\n", "").split(",")) == {
-            "/usr/bin/sbatch", "/usr/bin/scancel", "/usr/bin/scontrol"}
+            "/usr/bin/sbatch", "/usr/bin/scancel", "/usr/bin/scontrol", "/usr/bin/apptainer"}
 
     def test_the_wandb_environment_survives_sudos_scrub(self):
         """sbatch propagates its own env to the job — that is how a User's W&B key reaches the Pod.

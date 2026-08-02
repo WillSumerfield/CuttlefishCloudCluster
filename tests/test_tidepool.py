@@ -205,7 +205,11 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
                                    "a3f9", "s3cr3t")
         assert "sshd" not in body
         assert "PAYLOAD_TIDEPOOL" not in body
-        assert 'python train.py' in body
+        # `$py`, not a literal `python`: the interpreter is chosen by the script at run time, since a
+        # Spawn whose submitter declared an **Environment** runs that env's python instead
+        # (ccc_head_api.environments). It still defaults to the image's own.
+        assert '$py train.py' in body
+        assert 'py="python"' in body
 
     def test_missing_outputs_still_required_without_tidepool(self, tmp_path):
         with pytest.raises(ValueError, match="output"):
