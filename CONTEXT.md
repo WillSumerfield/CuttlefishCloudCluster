@@ -46,7 +46,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **CLI** — one tool, the `cuttle` command (Python; usable on a client that hosts no Arm). Two distinct duties:
   - *Client duties* (from any machine): the alternative to the **Dashboard**, at operation **parity**
     with it — login, job submission, and following work. Scriptable throughout; `setup` is additionally
-    offered as a guided **wizard**.
+    offered as a guided **wizard**. Parity covers what can be asked of the *cluster*, not what each
+    client can do to the machine it runs on: the CLI alone brings a finished **Spawn**'s results down
+    onto that machine by itself, unattended, because a browser cannot write to a folder with nobody
+    there.
   - *Host duties* (only on the machine being changed): node bring-up and removal (`setup`/`teardown`).
     These are the one thing the **Dashboard** can never do, because they provision the box you run them
     on.

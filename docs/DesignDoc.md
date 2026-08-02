@@ -67,6 +67,12 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
     to the Head's mesh address, into node-local scratch, then a designated `$CCC_OUT`/`outputs` dir is
     staged back at the end. Per-Spawn, fresh copy (no persistent cache yet). Still open: dedup/caching
     for sweeps, live log streaming, and partial-result handling on Retract.
+*   **The last hop is automatic** (`cuttle.watch`): results do not stop at the Head. `cuttle run` records
+    what this box is owed and a single detached sweeper brings each Spawn's `$CCC_OUT` down into
+    `./spawn-<id>-outputs/` as it finishes — no daemon, nothing installed, and nothing lost to a reboot,
+    since the on-disk entry is the intent and any later `cuttle` command re-arms a sweeper for it. The
+    Head is unchanged by this: retention stays a pure function of time and **Allowance**, so the same
+    result is still fetchable by hand, from a second machine, for its 7 days.
 
 ---
 
