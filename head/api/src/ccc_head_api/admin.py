@@ -147,7 +147,8 @@ def _return(node: str) -> int:
 
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
             node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
-            features: list[str] | None = None, tidepool: bool = False) -> int:
+            features: list[str] | None = None, tidepool: bool = False,
+            manifest: str | None = None) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username`.
 
     Head-local since Phase 6 (`cuttle run --node`). Authorization is being the operator on the Head;
@@ -173,10 +174,16 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     try:
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
-                                       features=features, tidepool=tidepool)
+                                       features=features, tidepool=tidepool, manifest=manifest)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
+    # The Environment echo goes to STDERR, deliberately. stdout is a contract: the caller
+    # (cuttle.spawns._submit_pinned) reads the Spawn id off its last line, so a second line there
+    # would be parsed as the id. stderr is already where this tool's prose goes.
+    note = spawns.environment_note(job_id)
+    if note:
+        print(note, file=sys.stderr)
     print(job_id)
     return 0
 
@@ -218,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="required Arm Feature (repeatable; optional — default none).")
     s.add_argument("--tidepool", action="store_true",
                    help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
+    s.add_argument("--manifest", help="dependency file to build this Spawn's environment from, "
+                                      "relative to the project root, or 'none' to build none "
+                                      "(default: auto-detect in the project root).")
     # The client's project/entity hint, as the JSON dict submit_checked takes — not two --project/
     # --entity flags, so the CLI and the HTTP route hand over the *same* value and there is one place
     # that decides what a W&B run is called (cuttle.settings.wandb_env).
@@ -246,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
                        args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features,
-                       tidepool=args.tidepool)
+                       tidepool=args.tidepool, manifest=args.manifest)
     return 2
 
 

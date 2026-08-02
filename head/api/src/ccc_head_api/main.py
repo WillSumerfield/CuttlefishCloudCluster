@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -70,7 +71,24 @@ def _configure_logging() -> None:
 
 _configure_logging()
 
-app = FastAPI(title="CCC Head API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Fail any Spawn left `--hold`ed by an Environment build this process's predecessor did not finish.
+
+    Here rather than in the Karma tick because only this process can know the answer for certain:
+    builds run in threads of THIS process, so a Spawn still marked building in a freshly-started one is
+    necessarily orphaned (spawns.sweep_orphaned_builds). Best-effort — a Head that cannot reach its own
+    DB has worse problems than a held Spawn, and refusing to start over one would turn a single stuck
+    Spawn into an outage.
+    """
+    try:
+        spawns_mod.sweep_orphaned_builds()
+    except Exception:
+        log.exception("could not sweep orphaned environment builds")
+    yield
+
+
+app = FastAPI(title="CCC Head API", version="0.1.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -366,6 +384,16 @@ def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
 def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stderr — where a crash's traceback lands (`/logs` serves stdout, empty on a crash)."""
     return spawns_mod.err_text(job_id) or ""
+
+
+@api.get("/spawns/{job_id}/build", response_class=PlainTextResponse)
+def spawn_build_log(job_id: int, user: dict = Depends(current_user)) -> str:
+    """The Environment build's output — empty for a Spawn that declared none.
+
+    Its own route rather than folded into `/logs`, because it is the Head's work and not the Spawn's:
+    it exists before the payload has run a line, and it stays readable afterwards, when `out` and `err`
+    belong entirely to the script."""
+    return spawns_mod.build_log(job_id) or ""
 
 
 @api.get("/spawns/{job_id}/outputs")
@@ -730,14 +758,17 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
             wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [],
-            tidepool=tidepool)
+            tidepool=tidepool, manifest=meta.get("manifest"))
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:
         tar_path.unlink(missing_ok=True)
     log.info("submit id=%s by %s (gpu=%d vram=%d min=%d tidepool=%s)", job_id, user["username"], gpus,
              vram_gb, minutes, tidepool)
-    return {"id": job_id}
+    # `environment` rides back on the submit response so both clients can echo it in the same breath as
+    # the id — the point of the echo is that a User sees which dependency file was picked up (or that
+    # none was) BEFORE they walk away, not when they come back to a Spawn that ran against the wrong one.
+    return {"id": job_id, "environment": spawns_mod.environment_note(job_id)}
 
 
 # --- recipes (authed) -------------------------------------------------------

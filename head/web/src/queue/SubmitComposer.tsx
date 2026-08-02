@@ -81,6 +81,17 @@ export function SubmitComposer({
   // Starts empty and stays optional; the Head 422s only an UNSATISFIABLE request, never an empty one.
   const [featureCatalog, setFeatureCatalog] = useState<string[]>([]);
   const [features, setFeatures] = useState<string[]>([]);
+  // Which dependency file builds this Spawn's Python environment (docs/TODO.md "Python Environments").
+  // Blank is the normal case and means "look in the project root yourself" — auto-detection is the
+  // Head's job and it sees the uploaded tree, which this composer only sees a file list of. Free-typed
+  // rather than a picker over `picked`: the answer may be a file the User is about to add, and "none"
+  // is a valid answer that is not a path at all.
+  const [manifest, setManifest] = useState("");
+  // What the Head says it will build, echoed after a successful submit. Held here rather than in a
+  // toast because it is the answer to a question the User has already stopped thinking about — a
+  // manifest one directory too deep is not an error anywhere, and this line is the only mention it
+  // will ever get.
+  const [envNote, setEnvNote] = useState<string | null>(null);
   // Log THIS Spawn, default on: a stored key would otherwise log every Spawn a User submits, with no
   // way to keep a throwaway out of the project's run history.
   const [wandbLog, setWandbLog] = useState(true);
@@ -174,6 +185,9 @@ export function SubmitComposer({
     setOutputs([]);
     setOutputDraft("");
     setFeatures([]);
+    setManifest("");
+    // `envNote` is deliberately NOT cleared: it describes the Spawn that was just submitted, and this
+    // reset is what clears the form out from under it. Cleared when the next submit starts instead.
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -200,6 +214,7 @@ export function SubmitComposer({
     if (!ready) return;
     setBusy(true);
     setError(null);
+    setEnvNote(null);
     try {
       if (mode === "tidepool") {
         const id = await submitTidepool({
@@ -213,7 +228,7 @@ export function SubmitComposer({
         });
         setTidepoolId(id);
       } else {
-        await submit({
+        const res = await submit({
           picked: picked as Picked,
           name: name.trim() || null,
           script,
@@ -227,7 +242,9 @@ export function SubmitComposer({
           wandbEntity,
           outputs,
           features,
+          manifest,
         });
+        setEnvNote(res.environment);
       }
       reset();
       onSubmitted();
@@ -399,6 +416,18 @@ export function SubmitComposer({
                 <Labeled label="Arguments" className={isAdmin ? "sm:col-span-2" : "sm:col-span-2"}>
                   <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
                 </Labeled>
+                {/* Blank is the normal answer — the Head looks in the project root for uv.lock,
+                    pyproject.toml, requirements.txt or environment.yml. This field is for the two cases
+                    it can't guess: a manifest that isn't the obvious one, and "don't build anything".
+                    Grouped with Script/Arguments because it describes what the code IS, not what it needs. */}
+                <Labeled label="Dependencies" className="sm:col-span-2">
+                  <input
+                    className="field"
+                    placeholder="auto-detect (or a path, or 'none')"
+                    value={manifest}
+                    onChange={(e) => setManifest(e.target.value)}
+                  />
+                </Labeled>
                 {/* Which W&B run this is — the client's half of the environment; the key is the Head's.
                     Grouped with Name/Script/Arguments (what the run IS) rather than with the resource asks
                     below. Nothing renders until the status lands, so the fields never flicker in for a User
@@ -484,6 +513,10 @@ export function SubmitComposer({
           </div>
 
           {error && <p className="text-[13px] text-[var(--alarm)]">{error}</p>}
+
+          {/* Survives the form reset on purpose — it is about the Spawn that just went, and the form
+              it was submitted from is already gone. */}
+          {envNote && <p className="text-[13px] text-[var(--muted)]">{envNote}</p>}
 
           {/* Submit sits dead-centre; Clear hangs off its right without shifting it — the auto centre
               column is flanked by equal 1fr rails, so the primary verb stays centred whether or not

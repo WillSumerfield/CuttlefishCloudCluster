@@ -13,8 +13,10 @@ import getpass
 import hashlib
 import ipaddress
 import json
+import platform
 import secrets
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -420,6 +422,59 @@ def build_base_sif() -> None:
     run(["chmod", "-R", "a+rX", str(config.CCC_IMAGES_DIR)], sudo=True)
 
 
+def install_env_tools() -> None:
+    """**Head only.** Install the pinned uv + micromamba that build a Spawn's declared **Environment**
+    (ccc_head_api.environments), into config.ENV_TOOLS_DIR.
+
+    Not baked into base.sif, and not installed on Arms: an Arm never builds anything, and `base.sif` is
+    built once per node and skipped when it already exists, so baking them in would grow every donated
+    box's image for work only the Head does — and leave every already-enrolled node without them until
+    a full teardown.
+
+    Verified against the sha256 pinned in config, then installed 0755 into a root-owned tree: the build
+    runs as a **Guise** inside a Pod with this directory bound read-only, so the binaries must be
+    readable and executable by a uid that is not the Mantle and must not be writable by one either.
+
+    Re-runs re-verify and re-install — unlike the apptainer .deb, there is nothing fleet-wide to
+    preserve here (no Arm ever sees these), so bumping the pin in config and re-running is the whole
+    upgrade path.
+    """
+    arch = platform.machine()
+    if arch not in config.UV_SHA256:
+        ui.say(f"  [warn]no pinned uv/micromamba for {arch} — declared Environments will fall back to "
+               f"the cluster base image[/warn]")
+        return
+    run(["install", "-d", "-m", "0755", str(config.ENV_TOOLS_DIR)], sudo=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tar = Path(tmp) / "uv.tar.gz"
+        _fetch(config.UV_URL.format(v=config.UV_VERSION, arch=arch), tar, config.UV_SHA256[arch])
+        with tarfile.open(tar) as tf:
+            tf.extractall(tmp, filter="data")
+        uv = next(Path(tmp).rglob("uv"))
+        run(["install", "-m", "0755", str(uv), str(config.ENV_TOOLS_DIR / "uv")], sudo=True)
+
+        mm = Path(tmp) / "micromamba"
+        _fetch(config.MICROMAMBA_URL.format(v=config.MICROMAMBA_VERSION,
+                                            arch=config.MICROMAMBA_ARCH[arch]),
+               mm, config.MICROMAMBA_SHA256[arch])
+        run(["install", "-m", "0755", str(mm), str(config.ENV_TOOLS_DIR / "micromamba")], sudo=True)
+    ui.say(f"  [muted]uv {config.UV_VERSION} + micromamba {config.MICROMAMBA_VERSION} → "
+           f"{config.ENV_TOOLS_DIR}[/muted]")
+
+
+def _fetch(url: str, dest: Path, sha256: str) -> None:
+    """Download `url` to `dest` and refuse anything that is not exactly `sha256`.
+
+    A mismatch is fatal rather than a warning: these two binaries execute a User's build backends and
+    conda post-link scripts on the Head, as a Guise, and a Head that installed something else is not a
+    Head anyone should be submitting to.
+    """
+    run(["curl", "-fsSL", "-o", str(dest), url])
+    got = hashlib.sha256(dest.read_bytes()).hexdigest()
+    if got != sha256:
+        raise RuntimeError(f"checksum mismatch for {url}\n  expected {sha256}\n  got      {got}")
+
+
 def install_tls(mesh_ip: str) -> None:
     """Generate the Head's self-signed TLS cert, so the LAN path stops carrying passwords in the clear.
 
@@ -678,6 +733,8 @@ def _setup_head(address: str | None = None) -> None:
         monitor.prompt_smtp(_write_root_file)     # SMTP creds for alerting; skippable
     with ui.step("Building the Pod image"):
         build_base_sif()                         # Mantle-readable, at the cluster-wide path
+    with ui.step("Installing the Environment build tools"):
+        install_env_tools()                      # uv + micromamba, Head-only (environments.py)
     # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because the
     # benchmark is a real Spawn: it needs slurmd up, the Pod image built, and rsyncd listening.
     enroll.benchmark_arm(system.hostname())

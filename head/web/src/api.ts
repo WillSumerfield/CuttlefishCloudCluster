@@ -450,7 +450,13 @@ export type SubmitOpts = {
   // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
   // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
   features: string[]
+  // Which dependency file builds this Spawn's Python environment (docs/TODO.md "Python Environments"),
+  // relative to the project root. Blank = let the Head look in the root itself; 'none' = build nothing.
+  manifest: string
 }
+
+/** What the Head decided this Spawn's environment is, echoed back at submit. */
+export type SubmitResult = { id: number; environment: string | null }
 
 /**
  * Tar + gzip the picked files and POST them. This is the ONLY point at which file contents are read —
@@ -459,8 +465,8 @@ export type SubmitOpts = {
  */
 export async function submit({
   picked, name, script, gpu, minutes, vram, node, args, wandb, wandbProject, wandbEntity, outputs,
-  features,
-}: SubmitOpts): Promise<number> {
+  features, manifest,
+}: SubmitOpts): Promise<SubmitResult> {
   const entries: TarEntry[] = []
   for (const f of picked.files) {
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
@@ -485,13 +491,17 @@ export async function submit({
   const meta = {
     name, script, gpu, minutes, vram, node, args, wandb, wandb_env, outputs,
     ...(features.length ? { features } : {}),
+    // Omitted when blank, like the fields above: absent means "look for a dependency file yourself",
+    // which is not the same instruction as any string this field could hold.
+    ...(manifest.trim() ? { manifest: manifest.trim() } : {}),
   }
   const r = await req('/submit', {
     method: 'POST',
     headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
     body,
   })
-  return (await r.json()).id
+  const body_ = await r.json()
+  return { id: body_.id, environment: body_.environment ?? null }
 }
 
 // A Tide Pool (docs/TODO.md): request one from the Dashboard, same queue/Eligibility/Escrow as any

@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import tarfile
+import threading
 from pathlib import Path
 from uuid import uuid4
 
@@ -267,7 +268,16 @@ CCC_FILELIST
     # Stop here if the project never arrived. Without this the script walks on into `cd "$proj"` — a
     # directory rsync never created — and runs the payload against whatever /tmp happens to hold,
     # which surfaces as a confusing python error instead of "the files could not be fetched".
-    if ! rsync -a --files-from="$scratch/filelist" \
+    #
+    # -r is EXPLICIT and load-bearing. --files-from implies --dirs but NOT --recursive, and rsync(1)
+    # says so outright: "The --archive (-a) option's behavior does not imply --recursive (-r), so
+    # specify it explicitly, if you want it." Every ordinary entry in the list is a file, so this went
+    # unnoticed — but the Environment is named as a bare DIRECTORY (`.ccc-env`, see submit), because it
+    # does not exist yet when the list is written. Without -r it arrived as an empty directory, got
+    # bound over %%ENV_MOUNT%%, and the Spawn died on `stat /opt/ccc/env/bin/python` after a build that
+    # had succeeded. Found on hardware 2026-08-02 (Spawn 16); Head-local Spawns never saw it, that
+    # branch is a `cp -a`.
+    if ! rsync -a -r --files-from="$scratch/filelist" \
             "rsync://%%TOKEN%%@%%HEAD_IP%%/proj-%%TOKEN%%/" "$proj/" 2>>"$err"; then
         echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/proj-%%TOKEN%%/ —" >> "$err"
         echo "ccc: this Spawn never started. Is the Head's rsync daemon up, and is this Arm on the mesh?" >> "$err"
@@ -538,13 +548,25 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
 
 
 def _lend_project(staging: Path, guise: str) -> None:
-    """Let one **Guise** read one uploaded project, and nothing else.
+    """Let one **Guise** use one uploaded project, and nothing else.
 
     The Head's co-located Arm copies the project out of `projects/<uuid>` as the Guise (JOB_SCRIPT's
-    Head branch). That directory is `ccc:ccc 0700` and stays that way — this adds a POSIX ACL naming
-    exactly one account, which the Mantle can do with **no privilege at all**, because it already owns
-    the directory. `rX` is read plus traverse-if-directory; the 0711 on `projects/` above it is what
-    lets the Guise reach this dir by name without being able to list its siblings.
+    Head branch), and the **Environment** build runs in it as the Guise too. That directory is
+    `ccc:ccc 0700` and stays that way — this adds a POSIX ACL naming exactly one account, which the
+    Mantle can do with **no privilege at all**, because it already owns the directory. The 0711 on
+    `projects/` above it is what lets the Guise reach this dir by name without being able to list its
+    siblings.
+
+    `rwX`, not `rX`, and the w is the build's: a dependency resolve WRITES INTO THE PROJECT as a matter
+    of course, and read-only made that a failure with no useful message. `uv sync` writes `uv.lock`
+    beside the manifest (always — there is no flag that resolves without recording it, and --frozen
+    needs a lock that a `pyproject.toml`-only project has not got); micromamba writes the pip
+    requirements it hands to `pip` beside `environment.yml`; a src-layout build backend writes its
+    egg-info. Each of those came back as "Permission denied (os error 13)" and took the Spawn with it
+    (hardware, 2026-08-02, Spawn 15). Nothing is given away by allowing it: the writer is the submitter
+    of this upload, acting on their own files, one uuid that no other User can name — and what a build
+    leaves behind (a lock naming exactly what got installed) is worth carrying to the Arm, which it is,
+    since stage-in copies the project after the build.
 
     Done here rather than in the prolog, and that is not a style choice: the prolog would have to be
     TOLD the uuid, and the only channel for that (a file under `spawns/<jid>/`) cannot exist until
@@ -555,7 +577,7 @@ def _lend_project(staging: Path, guise: str) -> None:
     Spawn correctly (they stage in over rsync and never touch this tree). Refusing the submission
     outright would take the whole cluster down over a Head-local optimisation.
     """
-    r = subprocess.run(["setfacl", "-R", "-m", f"u:{guise}:rX", str(staging)],
+    r = subprocess.run(["setfacl", "-R", "-m", f"u:{guise}:rwX", str(staging)],
                        capture_output=True, text=True)
     if r.returncode != 0:
         log.warning("could not lend %s to %s (%s) — a Spawn placed on the Head's own Arm will not be "
@@ -626,18 +648,21 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         guise = guises.name(db.allocate_guise(conn, user_id))
     _lend_project(staging, guise)
 
-    # Built BEFORE `files` is computed, so the env is in the list a remote Arm stages in — it rides the
-    # transfer that already exists rather than getting one of its own. Built before sbatch at all, so no
-    # Device is ever held while packages download (see environments.py). A BuildError here is a
-    # ValueError to the caller like every other refusal in this function: the Spawn does not exist yet,
-    # nothing has been Escrowed, and nothing is left behind but the staging dir the caller sweeps.
+    # DETECTION is synchronous; the BUILD is not. Detection is a couple of stat calls, and everything it
+    # can raise is bad input — a manifest that does not exist, or one nothing can classify — so it stays
+    # here where a BuildError is still a plain 4xx and no Spawn has been brought into existence.
     # A Tide Pool is included deliberately: you debug against the Environment your Spawn would get, or
     # you are not debugging the thing that failed. (Its tar is empty, so it declares nothing and this is
     # a no-op — unless a User picked a project for it, which is exactly when it matters.)
-    declared = environments.detect(staging, manifest)
-    if declared is not None:
-        environments.build(staging, declared, guise)
-    environments.prune_cache()
+    found = environments.detect(staging, manifest)
+    # A Head with no uv/micromamba runs the Spawn on the cluster base instead of refusing it. Skipping
+    # is the whole point: a project with a `pyproject.toml` submitted fine before this feature existed,
+    # and a Head that cannot build must not be the reason it stops. `found` is kept either way — it is
+    # what the echo names, so the User is told which manifest went unbuilt and not merely that one did.
+    absent = environments.missing_tool(found) if found else None
+    if absent:
+        log.warning("no %s on this Head — spawn %s runs on the cluster base", absent, uuid)
+    declared = None if absent else found
 
     # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
     # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
@@ -650,6 +675,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # rsync -a copies a symlink AS a symlink, and inside the Pod on the Arm it resolves.
     files = [p.relative_to(staging).as_posix() for p in staging.rglob("*")
              if p.is_symlink() or p.is_file()]
+    # The env does not exist yet — it is built after sbatch, behind the held job — so it cannot be
+    # enumerated like the rest. One directory entry stands in for it, and the stage-in passes an
+    # explicit -r (which --files-from does NOT imply — see the JOB_SCRIPT) so the bare name pulls the
+    # whole tree, whatever the build eventually puts there. Safe to name something absent: the Arm only
+    # reads this list once the hold is released, and the hold is not released until the build has
+    # filled it in.
+    if declared is not None:
+        files.append(environments.ENV_DIRNAME)
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -684,7 +717,12 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # ccc_head_api.projects). It also makes explicit what retraction already assumed: a Spawn whose
         # node failed is a failed Spawn, not one that quietly restarts somewhere else hours later,
         # having been re-billed for and re-queued behind everyone who was waiting.
-        r = subprocess.run(guises.as_owner(["sbatch", "--parsable", "--no-requeue"], guise), input=body,
+        # --hold when an Environment is being built: the Spawn gets its real id, Attribution and Escrow
+        # now, and Slurm is forbidden to place it until `_build_then_release` says the env exists. The
+        # hold is a dispatch interlock, NOT a queue position — the build overlaps the wait for a card
+        # rather than being added to it, and a held job holds no Device, so the tick meters nothing.
+        argv = ["sbatch", "--parsable", "--no-requeue"] + (["--hold"] if declared else [])
+        r = subprocess.run(guises.as_owner(argv, guise), input=body,
                            capture_output=True, text=True, check=True, env=env)
     except Exception:
         siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it
@@ -694,15 +732,141 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory a
     # module points at. Safe to do after sbatch — the job cannot start before sbatch has returned its id.
     (SPAWNS_DIR / str(job_id) / "outputs").mkdir(parents=True, exist_ok=True)
+    # The Environment echo, written where both clients can read it back rather than returned, so no
+    # caller's signature changes and the Spawn page can still say months later what this Spawn ran
+    # against. Said at submit because the worst case — a manifest one directory too deep — is not a
+    # build failure at all: nothing else would ever mention it, and the User would meet it as an
+    # ImportError after paying for a GPU.
+    (SPAWNS_DIR / str(job_id) / "environment").write_text(
+        environments.describe(found, absent) + "\n")
     # Only now can the out module name a path. The proj half has been live since before sbatch; this
     # adds the other and renames the pair to the job id, which is how the tick finds it to close.
     siphons.bind(token, job_id)
     with db.connect() as conn:
         db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
-                        vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool)
+                        vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool,
+                        build_state=db.BUILDING if declared else None)
         if tidepool:
             db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
+    # LAST, and only once the row exists: the thread's first act on failure is to write that row's
+    # `build_state` away again, and a build that outran its own Attribution would have nothing to clear
+    # and no Escrow to settle.
+    if declared is not None:
+        start_build(job_id, staging, declared, guise)
     return job_id
+
+
+def start_build(job_id: int, staging: Path, declared, guise: str) -> None:
+    """Run this Spawn's Environment build behind the request that submitted it.
+
+    A thread rather than a unit of its own: the API process is already the only writer of
+    projects/<uuid>, the work is one `subprocess.run` waiting on apptainer (so the GIL is held for
+    none of it), and a build needs nothing that outlives the process. What a thread costs is
+    durability — a Head restarted mid-build leaves a Spawn held forever, with no thread left to
+    release it. That is what `build_state` and `sweep_orphaned_builds` are for.
+    """
+    threading.Thread(target=_build_then_release, args=(job_id, staging, declared, guise),
+                     name=f"ccc-build-{job_id}", daemon=True).start()
+
+
+def _build_then_release(job_id: int, staging: Path, declared, guise: str) -> None:
+    """Build, then either let the Spawn go or fail it. Never raises — it is a thread, and an exception
+    here would vanish into the void leaving a held Spawn nobody is coming back for."""
+    try:
+        log_text = environments.build(staging, declared, guise)
+        _write_build_log(job_id, log_text)
+        environments.prune_cache()
+    except environments.BuildError as e:
+        # A failed build is a failed SPAWN, not a rejection: it was accepted, Escrowed and queued
+        # minutes ago and its submitter has already walked away. So it ends the way every other failed
+        # Spawn does — an `err` they can read and a non-zero `exit` — and scancel takes it out of the
+        # queue, after which its absence from the tick's poll settles the Escrow. It held no Device for
+        # a second of this, so Settlement bills it nothing.
+        log.warning("environment build failed for spawn %s: %s", job_id, e)
+        _write_build_log(job_id, e.log)
+        _fail_spawn(job_id, guise, str(e))
+        return
+    except Exception:
+        log.exception("environment build crashed for spawn %s", job_id)
+        _fail_spawn(job_id, guise,
+                    "the Head failed while building this Spawn's environment — see the Head log")
+        return
+    _release(job_id, guise)
+
+
+def sweep_orphaned_builds() -> None:
+    """Fail every Spawn this Head was building when it last stopped. Called once at API startup.
+
+    Startup is the one moment the question has an exact answer, which is why it is asked here and not
+    in the Karma tick: builds run in *this* process's threads, so a `build_state` row surviving into a
+    fresh process is necessarily one whose thread is gone. The tick is a separate unit and could only
+    guess with a timeout, and guessing wrong either kills a live build or leaves a Spawn held forever.
+
+    Failed rather than rebuilt (the User resubmits). A rebuild would have to re-enter a Pod as a Guise
+    on behalf of a request that ended long ago, with an Escrow that has been suppressing its
+    submitter's Share the entire time the Head was down, for a Spawn they very likely gave up on.
+    """
+    with db.connect() as conn:
+        stuck = db.building_spawns(conn)
+    for job_id in stuck:
+        guise = _owner_of(job_id)
+        log.warning("spawn %s was still building when the Head stopped — failing it", job_id)
+        _fail_spawn(job_id, guise, "the Head restarted while building this Spawn's environment, so it "
+                                   "never started — resubmit it")
+
+
+def _owner_of(job_id: int) -> str:
+    """The Guise to act as. Slurm's answer where it still has one, the Attribution row where it does
+    not — a Spawn whose hold outlived slurmctld's memory of it still has a `guises` row, and scancel on
+    a job Slurm has forgotten is a harmless no-op either way."""
+    from . import slurm
+    owner = slurm.owner_of(job_id)
+    if owner:
+        return owner
+    with db.connect() as conn:
+        row = db.get_spawn(conn, job_id)
+        uid = db.guise_uid(conn, row["user_id"]) if row else None
+    return guises.name(uid) if uid is not None else ""
+
+
+def _write_build_log(job_id: int, text: str) -> None:
+    """Kept whether the build failed or not. A successful `uv sync` reports what it resolved, and that
+    is the only answer to "why did my Spawn get that version" once the env itself has been swept."""
+    if not text:
+        return
+    d = _spawn_dir(job_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "build.log").write_text(text)
+
+
+def _release(job_id: int, guise: str) -> None:
+    """Let a built Spawn into the queue. As the Guise, like everything else CCC does to a Spawn — Slurm
+    lets a job's owner release their own hold, and CCC holds no root."""
+    with db.connect() as conn:
+        db.clear_build_state(conn, job_id)
+    subprocess.run(guises.as_owner(["scontrol", "release", str(job_id)], guise),
+                   capture_output=True, text=True)
+
+
+def _fail_spawn(job_id: int, guise: str, message: str) -> None:
+    """End a Spawn that never ran, the way a Spawn that ran and failed ends.
+
+    `err` + a non-zero `exit` are what every read path already understands — `cuttle logs`, the Spawn
+    page, history — so a build failure needs no display path of its own. The order matters: write the
+    reason and clear the build state BEFORE scancel. Cancelling first would let the tick see the job
+    leave the queue and settle it while the Head still called it building, and record an ending with no
+    reason beside it.
+
+    scancel as the Guise, not as root: a job's own owner may always cancel it (slurm.cancel relies on
+    exactly this), and the Mantle holds no Slurm operator privilege anywhere in CCC.
+    """
+    d = _spawn_dir(job_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "err").write_text(message + "\n")
+    (d / "exit").write_text("1\n")
+    with db.connect() as conn:
+        db.clear_build_state(conn, job_id)
+    subprocess.run(guises.as_owner(["scancel", str(job_id)], guise), capture_output=True, text=True)
 
 
 def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True) -> dict[str, str]:
@@ -743,7 +907,8 @@ def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = Tr
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
                    wandb_env: dict[str, str], tar_path: Path, minutes: int, vram_gb: int,
                    outputs: list[str], node: str | None = None, wandb: bool = True,
-                   features: list[str] | None = None, tidepool: bool = False) -> int:
+                   features: list[str] | None = None, tidepool: bool = False,
+                   manifest: str | None = None) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Extracted in Phase 6, when pinning a Spawn to an Arm (`node`) stopped being reachable over HTTP and
@@ -816,7 +981,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool)
+                  tidepool=tidepool, manifest=manifest)
 
 
 # --- reads (anonymous in slice 2) -------------------------------------------
@@ -826,16 +991,42 @@ def _spawn_dir(job_id: int) -> Path:
 
 
 def active_state(job_id: int) -> str | None:
-    """Slurm state if the job is still known to squeue, else None."""
+    """Slurm state if the job is still known to squeue, else None.
+
+    BUILDING overrides Slurm's PENDING for a Spawn held while its Environment builds — squeue cannot
+    tell the two apart (a held job is just PENDING), and the difference is the whole of what a User
+    watching a silent Spawn wants to know. Same substitution slurm.queue() makes, so the single-Spawn
+    view and the queue never disagree about what a Spawn is doing.
+    """
     r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%T"],
                        capture_output=True, text=True)
-    return r.stdout.strip() or None
+    state = r.stdout.strip() or None
+    if state == "PENDING":
+        with db.connect() as conn:
+            if job_id in db.building_spawns(conn):
+                return "BUILDING"
+    return state
 
 
 def exit_code(job_id: int) -> int | None:
     """The recorded exit code once the Spawn is done, else None. Its presence == 'done'."""
     f = _spawn_dir(job_id) / "exit"
     return int(f.read_text().strip()) if f.exists() else None
+
+
+def environment_note(job_id: int) -> str | None:
+    """What this Spawn's **Environment** was decided to be, written at submit. None for Spawns that
+    predate the feature."""
+    f = _spawn_dir(job_id) / "environment"
+    return f.read_text().strip() if f.exists() else None
+
+
+def build_log(job_id: int) -> str | None:
+    """The Environment build's own output, or None if this Spawn never built one. Separate from `out`
+    and `err`, which belong to the payload — sbatch's redirects would clobber anything written there
+    before the job ran."""
+    f = _spawn_dir(job_id) / "build.log"
+    return f.read_text() if f.exists() else None
 
 
 def mark_cancelled(job_id: int) -> None:

@@ -30,7 +30,7 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -337,9 +337,33 @@ CREATE TABLE recipes (
 );
 """
 
+# The ONE state CCC owns rather than reads off `squeue` (docs/TODO.md "Python Environments").
+#
+# Everywhere else, a Spawn's state IS Slurm's: PENDING/RUNNING come from one poll (slurm.queue) and
+# absence from that poll is what triggers Settlement. A building Spawn breaks that, not by choice: it
+# is `sbatch --hold`ed so Slurm cannot place it before its **Environment** exists, and a held job is
+# reported by squeue as PENDING — indistinguishable from one waiting for a card. The difference
+# matters in three places, so it is written down rather than inferred: the queue shows BUILDING, the
+# tick must not count it as queued **Demand** (nobody is waiting on a Device yet) and must not re-nice
+# it (its position is not in question while it is held).
+#
+# Deliberately NOT derived from Slurm's hold flag instead. `priority = 0` would say the same thing
+# today, but it says it about an admin's manual hold too, and it forgets: a Head restarted mid-build
+# would leave a held Spawn with nothing anywhere recording that a build was ever running, and no way
+# for the tick to tell it apart from a job an operator held on purpose. This column is what
+# `sweep_builds` finds after a restart.
+#
+# NULL for every Spawn that declared no Environment — which is most of them, and all of the ones that
+# existed before this migration. Only 'building' is a live state; it is cleared on release and on
+# failure alike, so a non-NULL value never outlives the build it describes.
+_SCHEMA_V13 = """
+ALTER TABLE spawns ADD COLUMN build_state TEXT;
+CREATE INDEX idx_spawns_build ON spawns(build_state) WHERE build_state IS NOT NULL;
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
-              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12]
+              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -586,22 +610,31 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 
 # --- spawn ledger (slice 2) -------------------------------------------------
 
+BUILDING = "building"
+
+
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
                  staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
                  node: str | None = None, hold: float | None = None,
-                 tidepool: bool = False) -> None:
+                 tidepool: bool = False, build_state: str | None = None) -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
     ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
     submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
 
     `hold` is None for a Spawn nobody is charged for: the **Admin** is outside the economy, so their
     Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
+
+    `build_state` is BUILDING for a Spawn that was `sbatch --hold`ed while its **Environment** builds
+    (see _SCHEMA_V13). It is set in this same transaction rather than updated a moment later: between
+    the two there would be a held Spawn that nothing knew was building, and a Head that crashed in that
+    window would leave it held forever with no row to find it by.
     """
     conn.execute(
         """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
-                              tidepool)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool)),
+                              tidepool, build_state)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool),
+         build_state),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -611,6 +644,20 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
 
 def get_spawn(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM spawns WHERE job_id=?", (job_id,)).fetchone()
+
+
+def clear_build_state(conn: sqlite3.Connection, job_id: int) -> None:
+    """The build is over — released or failed, the column says nothing either way. What it meant is
+    recorded where it belongs: a released Spawn is in Slurm's hands again, a failed one has an `exit`."""
+    conn.execute("UPDATE spawns SET build_state=NULL WHERE job_id=?", (job_id,))
+    conn.commit()
+
+
+def building_spawns(conn: sqlite3.Connection) -> set[int]:
+    """Every Spawn this Head believes it is building. Read once per queue poll and per tick pass, so it
+    is a set rather than rows: both callers only ever ask "is this id in it"."""
+    return {r["job_id"] for r in
+            conn.execute("SELECT job_id FROM spawns WHERE build_state=?", (BUILDING,))}
 
 
 def spawns_by_staging_uuid(conn: sqlite3.Connection, uuids: list[str]) -> dict[str, sqlite3.Row]:

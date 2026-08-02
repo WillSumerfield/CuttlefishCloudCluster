@@ -11,6 +11,12 @@ allocation would make a User pay Karma to hold a GPU while pip downloads — Set
 a Device is *held*, not the seconds it is busy. Building here costs no Karma and no Device, and needs no
 per-Arm cache to start cold on every donated box.
 
+**Built while the Spawn queues, not while the User waits.** `spawns.submit` `sbatch --hold`s the Spawn
+first, so it has its real id, Attribution and Escrow immediately, and runs the build behind the request.
+The hold is a dispatch interlock and nothing more: Slurm cannot place the Spawn before the env exists,
+but the build overlaps the queue wait instead of being added to it. A Spawn that would have waited 40
+minutes for a card spends the first 3 of them building, not 43.
+
 **In a Pod, as the submitter's Guise.** A manifest is code: build backends, sdist `setup.py`, conda
 post-link scripts all execute. The Head is the one machine holding the Mantle's key and every User's
 work, so the build gets the same walls a Spawn gets — `base.sif`, entered as that User's Guise — rather
@@ -97,19 +103,17 @@ NONE = "none"
 class BuildError(ValueError):
     """The declared environment could not be built.
 
-    **INTERIM.** The design (docs/TODO.md) is that a failed build is a failed *Spawn*: accepted,
-    Escrowed, **Head-held** while it builds, then failed with the build log as its `err` and billed
-    nothing. That needs a CCC-owned state before Slurm — which does not exist yet, because today
-    PENDING/RUNNING come straight from `squeue` (slurm.py) and the whole Karma tick derives from that
-    poll. Until it does, the build runs inside `submit` and a failure is a *rejection*: a ValueError,
-    like every other refusal there (no outputs, script not in the tar, bad output name), which
-    `main.submit` already turns into a 4xx.
-
-    What that costs, stated plainly so it is not mistaken for the design: the submit request blocks for
-    the length of the build (up to BUILD_TIMEOUT_SECONDS), and a User whose manifest is broken gets an
-    error at submit instead of a Spawn in their history explaining itself. The build itself — where it
-    runs, as whom, what it produces — is final; only *when the Spawn comes into existence* is interim.
+    Raised at two quite different moments, and the difference is the whole reason this class carries a
+    log. From `detect` it is a *rejection* — a manifest that does not exist or cannot be classified is
+    bad input, decided in microseconds, and `main.submit` turns it into a 4xx before any Spawn exists.
+    From `build` it is a failed **Spawn**: by then the Spawn has been accepted, Escrowed and held, so
+    the failure is recorded as its `err` and a non-zero `exit`, and Settlement bills it nothing (it
+    never held a Device). `.log` is what the User reads to find out why.
     """
+
+    def __init__(self, message: str, log: str = "") -> None:
+        super().__init__(message)
+        self.log = log
 
 
 @dataclass(frozen=True)
@@ -182,10 +186,26 @@ def _classify(rel: str) -> str:
     )
 
 
-def describe(m: Manifest | None) -> str:
+def missing_tool(m: Manifest) -> str | None:
+    """The build binary `m` needs and this Head has not got, or None.
+
+    A Head set up before the Environment feature existed has an empty TOOLS_DIR, and every project
+    with a `pyproject.toml` — which is most of them — would otherwise have its build fail and take the
+    Spawn with it. A Head that cannot build must not turn a submission that used to work into a
+    failure: it runs on the cluster base, exactly as it did before, and `describe` says so out loud.
+    Re-running `cuttle setup --head` installs the tools (cuttle.setup.install_env_tools).
+    """
+    need = MICROMAMBA_BIN if m.kind == "conda" else UV_BIN
+    return None if need.exists() else str(need)
+
+
+def describe(m: Manifest | None, missing: str | None = None) -> str:
     """The submit-time echo. Said BEFORE the Spawn is accepted, because the worst case — a manifest one
     directory too deep — is not a build failure at all, so nothing else would ever mention it and the
     User discovers it as an ImportError after paying for a GPU."""
+    if missing:
+        return (f"environment: cluster base — {m.summary if m else 'a manifest'} was found, but this "
+                f"Head has no {Path(missing).name} to build it with (re-run `cuttle setup --head`)")
     return f"environment: {m.summary}" if m else "environment: cluster base (no dependency file found)"
 
 
@@ -211,14 +231,19 @@ def render_build(m: Manifest) -> list[list[str]]:
     # (or `package = false`, as this repo's own root pyproject does) as *virtual* and installs only its
     # dependencies, while a real src-layout package gets installed, which is the only way its imports
     # resolve. Suppressing that would break the packages and help nobody.
-    # --active targets the venv we just made rather than uv's default `.venv` beside the manifest;
+    # NOT --active: that only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it, so uv fell
+    # back to its default `.venv` beside the manifest — inside the Mantle-owned project the Guise
+    # cannot write — and every pyproject.toml/uv.lock Spawn died on "Permission denied" (hardware,
+    # 2026-08-02, Spawns 14/15). UV_PROJECT_ENVIRONMENT (set in `build`'s --env) names the path
+    # outright, which is the same thing the `uv pip` branch does with --python. `uv sync` still writes
+    # `uv.lock` into the project itself, unavoidably — see spawns._lend_project for why the Guise may.
     # --inexact leaves the inherited system packages alone instead of pruning to the lock.
-    return [venv, [uv, "sync", "--active", "--inexact", "--no-dev"]]
+    return [venv, [uv, "sync", "--inexact", "--no-dev"]]
 
 
-def build(project: Path, m: Manifest, guise: str) -> None:
-    """Build `m` into `project/ENV_DIRNAME`, as `guise`, inside a Pod. Raises BuildError with the text
-    the Spawn should show as its `err`.
+def build(project: Path, m: Manifest, guise: str) -> str:
+    """Build `m` into `project/ENV_DIRNAME`, as `guise`, inside a Pod. Returns the build log. Raises
+    BuildError, whose text is what the Spawn shows as its `err`, with the log so far as `.log`.
 
     The env dir is created HERE rather than inside the Pod so its ownership is the Guise's from the
     start — apptainer binds it, it does not create it, and a root-owned mountpoint would leave the build
@@ -237,36 +262,52 @@ def build(project: Path, m: Manifest, guise: str) -> None:
     for d in (env_dir, CACHE_DIR):
         os.chmod(d, 0o777)
 
+    log = [f"$ ccc build {m.summary}"]
     for argv in render_build(m):
         # --contain: the build gets the same walls the payload gets, and nothing of the Head's
-        # filesystem beyond the three paths named here. No --nv: a build needs no GPU, and asking for
-        # one on a Head whose cards are all busy would fail for no reason.
+        # filesystem beyond the four paths named here. TOOLS_DIR is bound read-only because uv and
+        # micromamba are the one thing in this command that lives on the HEAD rather than in the image
+        # — without the bind, `--contain` means the binary named in argv does not exist inside the Pod.
+        # No --nv: a build needs no GPU, and asking for one on a Head whose cards are all busy would
+        # fail for no reason.
         cmd = guises.as_owner([
             "apptainer", "exec", "--contain", "--pid", "--pwd", str(project),
-            "--bind", f"{project},{env_dir}:{ENV_MOUNT},{CACHE_DIR}:/ccc-cache",
-            "--env", f"UV_CACHE_DIR=/ccc-cache/uv,MAMBA_ROOT_PREFIX=/ccc-cache/mamba,"
-                     f"LC_ALL=C.UTF-8,LANG=C.UTF-8",
+            "--bind", f"{project},{env_dir}:{ENV_MOUNT},{CACHE_DIR}:/ccc-cache,"
+                      f"{TOOLS_DIR}:{TOOLS_DIR}:ro",
+            # UV_PROJECT_ENVIRONMENT is what points `uv sync` at ENV_MOUNT instead of the `.venv` it
+            # would otherwise create beside the manifest, in a project directory the Guise cannot write
+            # (see render_build). Harmless on the other two paths, which never consult it.
+            "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PROJECT_ENVIRONMENT={ENV_MOUNT},"
+                     f"MAMBA_ROOT_PREFIX=/ccc-cache/mamba,LC_ALL=C.UTF-8,LANG=C.UTF-8",
             str(CCC_SIF), *argv,
         ], guise)
+        log.append(f"$ {' '.join(argv)}")
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=BUILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             shutil.rmtree(env_dir, ignore_errors=True)
             raise BuildError(
                 f"environment build timed out after {BUILD_TIMEOUT_SECONDS // 60} minutes "
-                f"({m.path}) — a dependency solve that cannot finish is a Spawn that can never start"
+                f"({m.path}) — a dependency solve that cannot finish is a Spawn that can never start",
+                log="\n".join(log),
             )
+        # Both streams, in the log, on success too: `uv sync` reports what it resolved on stderr, and
+        # that is the answer to "why did my Spawn get that version" long after the build succeeded.
+        log.append((r.stdout + r.stderr).strip())
         if r.returncode != 0:
             shutil.rmtree(env_dir, ignore_errors=True)
-            raise BuildError(f"environment build failed ({m.path}):\n{r.stderr.strip()}")
+            raise BuildError(f"environment build failed ({m.path}):\n{r.stderr.strip()}",
+                             log="\n".join(log))
 
     size = _tree_bytes(env_dir)
     if size > MAX_ENV_BYTES:
         shutil.rmtree(env_dir, ignore_errors=True)
         raise BuildError(
             f"built environment is {size // 1024**3}GB, over the {MAX_ENV_BYTES // 1024**3}GB ceiling "
-            f"({m.path}) — nothing is cached, so this would be copied to the Arm on every Spawn"
+            f"({m.path}) — nothing is cached, so this would be copied to the Arm on every Spawn",
+            log="\n".join(log),
         )
+    return "\n".join(log)
 
 
 def _tree_bytes(root: Path) -> int:

@@ -238,13 +238,20 @@ def queue() -> list[dict]:
     become to re-nice the job. Taken from the same poll rather than looked up per job, because the
     alternative is one `squeue` subprocess per pending Spawn per 30-second pass.
     """
+    # The one thing this poll cannot see. A Spawn `sbatch --hold`ed while its **Environment** builds is
+    # reported by squeue as plain PENDING, indistinguishable from one waiting for a card — and the
+    # difference decides whether it generates Demand, whether the tick re-nices it, and what the queue
+    # calls it. Read once per poll, from the Head's own record of what it is building (db._SCHEMA_V13).
+    from . import db
+    with db.connect() as conn:
+        building = db.building_spawns(conn)
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         state = j.get("job_state") or []
         if j.get("partition") != PARTITION:
             continue
         if "PENDING" in state:
-            live = "PENDING"
+            live = "BUILDING" if _num(j.get("job_id")) in building else "PENDING"
         elif "RUNNING" in state:
             live = "RUNNING"
         else:
@@ -299,6 +306,11 @@ def spawns() -> list[dict]:
     """The live Spawn queue — pending/running jobs in the CCC partition. Finished ones are dropped here
     (LIVE_JOB_STATES) rather than left to squeue's own MinJobAge aging-out, which lags well behind a
     Spawn actually ending; durable history waits for Phase 3 slurmdbd (see module docstring)."""
+    # See queue()'s note: squeue reports a Spawn held for an Environment build as plain PENDING, and
+    # only the Head's own record can tell the two apart.
+    from . import db
+    with db.connect() as conn:
+        building = db.building_spawns(conn)
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         if j.get("partition") != PARTITION:
@@ -310,10 +322,16 @@ def spawns() -> list[dict]:
         # since we run no gres accounting. slurmctld packs gres_detail only for a STARTED job that
         # requested GRES, so a pending Spawn falls through to what it asked for. See _gpu_indices.
         gres = ",".join(j.get("gres_detail") or []) or j.get("tres_per_node", "")
+        # "building" REPLACES "pending" rather than joining onto it: both clients read this string
+        # straight through to a User, and "pending+building" describes the mechanism (a held job) where
+        # what a User needs is the reason (their dependencies are being installed).
+        state = "+".join(s.lower() for s in j.get("job_state", []))
+        if state == "pending" and _num(j.get("job_id")) in building:
+            state = "building"
         out.append({
             "id": _num(j.get("job_id")),
             "name": j.get("name"),
-            "state": "+".join(s.lower() for s in j.get("job_state", [])),
+            "state": state,
             "node": j.get("nodes") or None,
             "gpus": _gpu_count(gres),
             "user": j.get("user_name"),

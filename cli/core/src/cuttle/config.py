@@ -46,6 +46,33 @@ BASE_IMAGE_DOCKER = ("pytorch/pytorch@sha256:"
                      "db80a41f8428644cebcb3d75b0b62df334ab6c0e75785951eb25f48bfbd42407")
 WANDB_PKG = "wandb==0.28.1"  # PyPI is immutable per version — this pin cannot rot
 
+# --- pinned Environment build tools (Head only) ---
+# uv and micromamba build a Spawn's declared Environment (ccc_head_api.environments). Pinned by
+# version AND sha256, checked here rather than against the sidecar .sha256 each project publishes: a
+# sidecar fetched from the same host as the file it vouches for proves only that the download wasn't
+# truncated. These hashes are in the repo, so bumping a tool is a reviewed commit — which matters more
+# for these two than for apptainer, because a uv release can change what `uv sync` resolves and every
+# Spawn's dependencies would move underneath their Users with nothing to point at.
+#
+# Installed on the HEAD ONLY, so `uname -m` is the Head's own arch. Both are static binaries with no
+# runtime deps; uv ships a tarball, micromamba a bare binary.
+ENV_TOOLS_DIR = Path("/opt/ccc/tools")
+UV_VERSION = "0.12.1"
+UV_URL = ("https://github.com/astral-sh/uv/releases/download/{v}/"
+          "uv-{arch}-unknown-linux-gnu.tar.gz")
+UV_SHA256 = {
+    "x86_64": "90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb",
+    "aarch64": "769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4",
+}
+MICROMAMBA_VERSION = "2.8.1-1"
+MICROMAMBA_URL = ("https://github.com/mamba-org/micromamba-releases/releases/download/{v}/"
+                  "micromamba-{arch}")
+MICROMAMBA_ARCH = {"x86_64": "linux-64", "aarch64": "linux-aarch64"}
+MICROMAMBA_SHA256 = {
+    "x86_64": "77b7790ec97f64581118f103585b175df4306f95829b0fa6bfe4a19cc88a1182",
+    "aarch64": "49aa29008cafa6cd6027ebd643fc43ca32c20740e60b0a05378c4e5bb837c217",
+}
+
 # --- cluster identity ---
 CLUSTER_NAME = "ccc"
 PARTITION = "ccc"

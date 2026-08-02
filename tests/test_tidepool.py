@@ -271,7 +271,10 @@ class TestSubmitRouteAcceptsTidepool:
         meta = {"minutes": 60, "vram": 24, "tidepool": True}
         r = c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
         assert r.status_code == 200, r.text
-        assert r.json() == {"id": 4242}
+        # `environment` is the Environment echo every submit carries (docs/TODO.md "Python
+        # Environments"). None here for two reasons at once: submit is stubbed, so there is no Spawn
+        # dir — and a Tide Pool uploads an empty tar, so there is never a manifest to find in one.
+        assert r.json() == {"id": 4242, "environment": None}
 
     def test_still_requires_minutes_and_vram(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)

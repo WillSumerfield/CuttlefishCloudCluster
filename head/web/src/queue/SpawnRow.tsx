@@ -99,6 +99,16 @@ export function SpawnRow({
             <>
               <span aria-hidden>·</span>
               <span className="num">{duration(spawn.time_limit)}</span>
+              {/* A Spawn whose Python environment the Head is still building (docs/TODO.md "Python
+                  Environments"). It sits in Waiting because it is not running — but it is not waiting
+                  for a machine either, and a User wondering why their Spawn hasn't been placed
+                  deserves the actual answer rather than a queue position that isn't the reason. */}
+              {/building/i.test(spawn.state) && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>building environment</span>
+                </>
+              )}
             </>
           )}
         </div>

@@ -398,10 +398,15 @@ class TestSpawnsRunAsTheirSubmitter:
         """The Head-local branch copies the project out of `projects/<uuid>` AS the Guise. The ACL is
         set before the job exists at all — a prolog-side chown could not be, because the prolog would
         have to be told the uuid, and the only channel for that needs a job id sbatch has not returned
-        yet."""
+        yet.
+
+        `rwX`: the Environment build also runs in this tree as the Guise, and a dependency resolve
+        writes into the project as a matter of course — `uv sync`'s `uv.lock`, micromamba's pip
+        requirements file, a build backend's egg-info. Read-only turned each into "Permission denied"
+        and failed the Spawn (hardware, 2026-08-02, Spawn 15)."""
         self._submit(tmp_path)
         facl = next((argv, i) for i, (argv, _) in enumerate(submitted) if "setfacl" in argv)
-        assert "u:ccc-u60002:rX" in facl[0]
+        assert "u:ccc-u60002:rwX" in facl[0]
         assert "-R" in facl[0]
         sbatch_at = next(i for i, (argv, _) in enumerate(submitted) if "sbatch" in argv)
         assert facl[1] < sbatch_at
@@ -517,7 +522,10 @@ class TestSubmitRequiresDeclarations:
     def test_happy_path(self, monkeypatch):
         r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24)
         assert r.status_code == 200
-        assert r.json() == {"id": 4242}
+        # `environment` is the submit-time echo (docs/TODO.md "Python Environments"). None here because
+        # this route is stubbed at submit_checked, so no Spawn dir — and a client must treat it as
+        # optional anyway, since a Spawn submitted before the feature existed has no note to give back.
+        assert r.json() == {"id": 4242, "environment": None}
 
     @pytest.mark.parametrize("missing", ["minutes", "vram"])
     def test_missing_declaration_is_refused(self, monkeypatch, missing):
