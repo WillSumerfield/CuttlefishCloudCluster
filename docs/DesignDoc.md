@@ -81,7 +81,7 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
 ### `cuttle` Auto-Detection Layer
 *   **Purpose:** A lightweight, user-facing TUI/GUI and Python CLI that abstracts all Slurm syntax, allowing users to save full configuration "Recipes".
 *   *Static Code Analysis:* Automatically reads the target script. If strings like `cuda` or `.to('cuda')` are found, it auto-allocates 1 GPU. If `DistributedDataParallel` is found, it enforces a single-node Multi-GPU safety cap to block slow inter-network routing across individual Arms. Users can specify fixed max memory limits or leave it dynamic under a safety cap.
-*   *Environment Auto-Updates:* Hashes the project's `requirements.txt` or `environment.yml` on launch. If a hash mismatch is detected, it triggers a quiet update script inside the user's persistent storage slice before runtime to update the environment.
+*   *Environments:* A project declares its dependencies in the file its own tooling already writes (`uv.lock`/`pyproject.toml`, `requirements.txt`, or `environment.yml`); the Head builds that environment before the Spawn is placed and keeps none of it. Design: `docs/TODO.md`, "Python Environments".
 *   **Tech Stack (locked — split):** The `cuttle` tool is two layers matching where code runs:
     *   **Host-native launcher** — a single static **Go** binary installed on
         the raw OS with no prereqs. Bootstraps the Linux layer (WSL2/VM), joins the mesh, registers the
