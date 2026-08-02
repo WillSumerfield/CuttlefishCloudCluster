@@ -429,11 +429,23 @@ def _hint_recovery(spawn_id: int) -> None:
 
 
 def outputs(spawn_id: int) -> None:
-    """Download a Spawn's $CCC_OUT dir as a tar into the cwd."""
-    data = _get_bytes(f"/spawns/{spawn_id}/outputs", missing_ok=True)
-    if data is None:
-        ui.warn(f"spawn {spawn_id} produced no outputs")
-        ui.hint("a Spawn returns files by writing them to $CCC_OUT inside the Pod")
+    """Download a Spawn's $CCC_OUT dir as a tar into the cwd.
+
+    Two different misses, and the Head is the one that can tell them apart (see main.spawn_outputs), so
+    its 404 detail is printed verbatim rather than replaced by a guess here: a Spawn that WROTE nothing,
+    versus one whose results were held and are now gone — 7 days elapsed, or evicted for the submitter's
+    8GB Allowance (docs/TODO.md "Storage retention"). Telling a User their Spawn produced nothing when it
+    produced 3GB they simply came back too late for is the one answer worse than saying neither."""
+    client = auth._client()
+    client.token = auth._load_token()
+    try:
+        data = client.raw(f"/spawns/{spawn_id}/outputs")
+    except api.ApiError as e:
+        if e.status != 404:
+            if ui.DEBUG:
+                raise
+            raise ui.abort(e.user_message()) from None
+        ui.warn(e.user_message())
         _hint_recovery(spawn_id)
         return
     dest = Path.cwd() / f"spawn-{spawn_id}-outputs.tar.gz"

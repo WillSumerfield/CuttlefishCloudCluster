@@ -74,6 +74,12 @@ export type ArchivedSpawn = Spawn & {
   // just nullable) so history/mock.ts's demo rows — predating this field — still typecheck as "none".
   recovery_bytes?: number | null
   recovery_expires_at?: string | null
+  // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are
+  // deleted — 7 days after it ended, or sooner if the submitter's 8GB Allowance needed the room. The
+  // longer, quieter sibling of the pair above, and the more consequential one: it is the results the
+  // Spawn was submitted to produce. Null once they are gone, or before the tick has registered them.
+  output_bytes?: number | null
+  output_expires_at?: string | null
 }
 
 export type Me = { username: string; is_admin: boolean; must_change_password: boolean }
@@ -90,6 +96,12 @@ export type SpawnStatus = {
 // is an ISO timestamp; callers compute their own remaining-time countdown from it rather than a
 // server-computed "seconds left" that would go stale the moment it's rendered.
 export type RecoveryStatus = { bytes: number; expires_at: string }
+
+// Output retention (docs/TODO.md "Storage retention"): the same two fields on the same terms, for the
+// Spawn's DECLARED results — held 7 days from its end, and only while the submitter's 8GB Allowance has
+// room. Identical shape to RecoveryStatus on purpose: the two panels render the same way, and a User
+// learns one countdown rather than two.
+export type RetentionStatus = { bytes: number; expires_at: string }
 
 export class Unauthorized extends Error {}
 
@@ -159,6 +171,8 @@ type HistoryRow = {
   cost: number | null
   recovery_bytes: number | null
   recovery_expires_at: string | null
+  output_bytes: number | null
+  output_expires_at: string | null
 }
 
 function outcomeOf(r: HistoryRow): Outcome {
@@ -185,6 +199,8 @@ export const getHistory = () =>
         finished_at: r.finished_at ? Date.parse(r.finished_at) : Date.now(),
         recovery_bytes: r.recovery_bytes,
         recovery_expires_at: r.recovery_expires_at,
+        output_bytes: r.output_bytes,
+        output_expires_at: r.output_expires_at,
       }),
     ),
   )
@@ -195,6 +211,16 @@ export const getStatus = (id: number) => json<SpawnStatus>(`/spawns/${id}`)
 export async function getRecovery(id: number): Promise<RecoveryStatus | null> {
   try {
     return await json<RecoveryStatus>(`/spawns/${id}/recovery`)
+  } catch (e) {
+    if (e instanceof Unauthorized) throw e
+    return null
+  }
+}
+// null = nothing held (produced nothing, not yet registered by the tick, expired, or evicted for the
+// Allowance) — a normal outcome, not an error, exactly like getRecovery above.
+export async function getRetention(id: number): Promise<RetentionStatus | null> {
+  try {
+    return await json<RetentionStatus>(`/spawns/${id}/retention`)
   } catch (e) {
     if (e instanceof Unauthorized) throw e
     return null

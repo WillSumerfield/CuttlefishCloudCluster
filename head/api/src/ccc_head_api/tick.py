@@ -40,7 +40,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, recovery, siphons, slurm, spawns, tidepool
+from . import db, karma, projects, recovery, retention, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -227,6 +227,18 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         recovery.register_new(conn, now)
         recovery.reap_expired(conn, now)
         recovery.sweep_orphans(conn, now)
+        # Storage retention (docs/TODO.md): delete the Head's copy of every upload whose Spawn has
+        # staged it in, and revoke the `[proj-…]` half of its Siphon. BEFORE siphons.sweep below, which
+        # may close that Siphon outright in this same pass — close_proj on a conf that is already gone
+        # is a no-op, so the order only decides which of the two logs the revocation, but doing the
+        # narrower one first keeps "revoked at stage-in" true even for a Spawn that ended this tick.
+        projects.sweep(conn, now)
+        # ...and the other half of the same item: register every finished Spawn's declared results
+        # against its submitter's 8GB Allowance, then drop whatever is past its 7 days. Registration
+        # needs no marker of its own — `stage_out` sends `exit` LAST, so `_record_endings` above has
+        # already established the outputs landed before this pass can see the Spawn as finished.
+        retention.register_new(conn, now)
+        retention.reap_expired(conn, now)
         # Siphons (temp/spawn-isolation.md Phase 2): close the rsync grant of every Spawn whose copy
         # home has landed, or whose window for one has passed. AFTER register_new deliberately — that
         # call is what consumes the `recovery.size` marker this one closes on, and closing first would

@@ -164,6 +164,11 @@ if [ -d "$staging_dir" ]; then
     # timestamps still come across; ownership is the one attribute a Guise has no business restoring.
     cp -a --no-preserve=ownership "$staging_dir/." "$proj/"
     spawn_dir="%%SPAWNS%%/$jid"
+    # Stage-in is done, so the Head's copy of the upload has served its whole purpose (docs/TODO.md
+    # "Storage retention"): this marker is what lets ccc_head_api.projects delete it, and it is written
+    # only AFTER the cp above has returned — the same "presence means done" convention `exit` and
+    # `recovery.size` follow. Nothing below ever reads $staging_dir again.
+    : > "$spawn_dir/staged"
     out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"; ccc_out="$spawn_dir/outputs"
     stage_out() { :; }  # already on the Head
     recover_scratch() {
@@ -271,6 +276,13 @@ CCC_FILELIST
         stage_out
         exit 1
     fi
+    # The project is on this node now, so the Head's copy has served its whole purpose (docs/TODO.md
+    # "Storage retention"). Sent home LAST, after the stage-in rsync above returned — its presence on
+    # the Head is ccc_head_api.projects' "safe to delete" signal, the same convention `exit` and
+    # `recovery.size` follow. Best-effort: a marker that never lands only means the project waits for
+    # the Spawn to END before being swept, which is the fallback that path is there for.
+    : > "$scratch/staged"
+    rsync -a "$scratch/staged" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
 fi
 
 # Declared output subdirs, under the ONE $ccc_out root — made before the payload runs so the script can
@@ -666,7 +678,13 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # anyway: there is no temp file to leak the project's full file list, and the delete-after-return
     # dance goes with it.
     try:
-        r = subprocess.run(guises.as_owner(["sbatch", "--parsable"], guise), input=body,
+        # --no-requeue: a Spawn runs ONCE (CONTEXT.md). `JobRequeue` is unset in the conf template so
+        # Slurm's default (1) would otherwise apply, and a requeued job re-runs this script from the
+        # top — re-staging a project stage-in has already deleted (docs/TODO.md "Storage retention",
+        # ccc_head_api.projects). It also makes explicit what retraction already assumed: a Spawn whose
+        # node failed is a failed Spawn, not one that quietly restarts somewhere else hours later,
+        # having been re-billed for and re-queued behind everyone who was waiting.
+        r = subprocess.run(guises.as_owner(["sbatch", "--parsable", "--no-requeue"], guise), input=body,
                            capture_output=True, text=True, check=True, env=env)
     except Exception:
         siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it

@@ -29,7 +29,7 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -284,9 +284,27 @@ INSERT INTO guises (uid, user_id)
   SELECT {guises.UID_BASE} + ROW_NUMBER() OVER (ORDER BY id) - 1, id FROM users;
 """
 
+# Output retention (docs/TODO.md "Storage retention", phase 2). Exactly `recovery_copies`' shape, one
+# row per Spawn whose declared $CCC_OUT results the Head is holding, and `created_at` again does both
+# jobs — the 7-day expiry clock AND the oldest-first eviction order. It is copied from the Spawn's
+# `finished_at`, not stamped at registration, so a Spawn registered late by a tick that was down still
+# expires 7 days after it RAN (see retention.py). A row here always has a matching
+# `SPAWNS_DIR/<id>/outputs/` dir on disk; `retention._evict` deletes both together.
+#
+# No user_id column: the 8GB Allowance is per User, but `spawns.user_id` already says whose a Spawn is,
+# and duplicating it here would be a second answer that could disagree with the first — including after
+# `remove_user` NULLs the original.
+_SCHEMA_V11 = """
+CREATE TABLE output_copies (
+  job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
+  bytes      INTEGER NOT NULL,
+  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
-              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10]
+              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -560,6 +578,21 @@ def get_spawn(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM spawns WHERE job_id=?", (job_id,)).fetchone()
 
 
+def spawns_by_staging_uuid(conn: sqlite3.Connection, uuids: list[str]) -> dict[str, sqlite3.Row]:
+    """Map staging uuid -> its Spawn's `(job_id, finished_at)`, for the uuids currently on disk.
+
+    `projects.sweep`'s one query per pass. Takes the disk's list rather than returning the whole table
+    because that list is bounded by what has not been swept yet — a handful — while the `spawns` ledger
+    grows forever. A uuid absent from the result is one no Spawn (yet) claims; see that function."""
+    if not uuids:
+        return {}
+    marks = ",".join("?" * len(uuids))
+    rows = conn.execute(
+        f"SELECT staging_uuid, job_id, finished_at FROM spawns WHERE staging_uuid IN ({marks})", uuids,
+    ).fetchall()
+    return {r["staging_uuid"]: r for r in rows}
+
+
 def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str | None]:
     """Map job_id -> submitter username for the given ids (None if the user was since deleted).
     Used to enrich the live `GET /spawns` queue with app-level attribution."""
@@ -647,14 +680,18 @@ def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int],
     # recovery_copies joins in NULL for the (common) case of no open Recovery Window — main.py's
     # spawns_history route turns `recovery_created_at` into the wire-facing `recovery_expires_at`, since
     # the window length (recovery.WINDOW_MINUTES) is that module's constant, not this one's business.
+    # output_copies rides alongside it on exactly the same terms (retention.TTL_DAYS), so a row carries
+    # both countdowns or neither, and the Dashboard renders the pair the same way.
     return conn.execute(
         f"""SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
                    s.gpus, s.vram_gb, s.minutes, s.node, u.username AS submitted_by,
-                   l.amount AS cost, r.bytes AS recovery_bytes, r.created_at AS recovery_created_at
+                   l.amount AS cost, r.bytes AS recovery_bytes, r.created_at AS recovery_created_at,
+                   o.bytes AS output_bytes, o.created_at AS output_created_at
             FROM spawns s
             LEFT JOIN users u ON u.id = s.user_id
             LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
             LEFT JOIN recovery_copies r ON r.job_id = s.job_id
+            LEFT JOIN output_copies o ON o.job_id = s.job_id
             WHERE s.submitted_at >= ?{clause}
             ORDER BY s.submitted_at DESC{limit_clause}""",
         (since, *exclude, *((limit,) if limit else ())),
@@ -960,3 +997,67 @@ def oldest_recovery(conn: sqlite3.Connection) -> sqlite3.Row | None:
     """The longest-held copy — `_make_room`'s eviction candidate when a new one would blow the pool cap."""
     return conn.execute(
         "SELECT job_id, bytes FROM recovery_copies ORDER BY created_at LIMIT 1").fetchone()
+
+
+# --- Output retention (docs/TODO.md "Storage retention") ----------------------
+# See _SCHEMA_V11 for the table shape. Driven by ccc_head_api.retention from the karma tick; the TTL and
+# the per-User Allowance are that module's constants, never decided here.
+
+def output_registration_rows(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlite3.Row]:
+    """Map job_id -> `(user_id, finished_at, registered)` for the Spawns whose outputs are on disk.
+
+    `registered` is the LEFT JOIN's "is there already a row" as a 0/1, so one query answers all three
+    of `register_new`'s questions. Takes the disk's list for the same reason
+    `spawns_by_staging_uuid` does: it is bounded by the TTL, while the ledger is not."""
+    if not job_ids:
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    rows = conn.execute(
+        f"""SELECT s.job_id, s.user_id, s.finished_at, (o.job_id IS NOT NULL) AS registered
+            FROM spawns s LEFT JOIN output_copies o ON o.job_id = s.job_id
+            WHERE s.job_id IN ({marks})""",
+        job_ids,
+    ).fetchall()
+    return {r["job_id"]: r for r in rows}
+
+
+def add_output(conn: sqlite3.Connection, job_id: int, size_bytes: int, at: str | None = None) -> None:
+    if at is None:
+        conn.execute("INSERT INTO output_copies (job_id, bytes) VALUES (?,?)", (job_id, size_bytes))
+    else:
+        conn.execute("INSERT INTO output_copies (job_id, bytes, created_at) VALUES (?,?,?)",
+                     (job_id, size_bytes, at))
+    conn.commit()
+
+
+def get_output(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM output_copies WHERE job_id=?", (job_id,)).fetchone()
+
+
+def delete_output(conn: sqlite3.Connection, job_id: int) -> None:
+    conn.execute("DELETE FROM output_copies WHERE job_id=?", (job_id,))
+    conn.commit()
+
+
+def expired_outputs(conn: sqlite3.Connection, cutoff: str) -> list[int]:
+    """Every Spawn whose outputs were created at or before `cutoff` — reap_expired's candidates."""
+    return [r["job_id"] for r in
+            conn.execute("SELECT job_id FROM output_copies WHERE created_at <= ?", (cutoff,)).fetchall()]
+
+
+def user_output_bytes(conn: sqlite3.Connection, user_id: int) -> int:
+    """What one User currently holds, against their 8GB Allowance. Scoped through `spawns.user_id`
+    rather than a column here — see _SCHEMA_V11 for why there isn't one."""
+    (total,) = conn.execute(
+        """SELECT COALESCE(SUM(o.bytes), 0) FROM output_copies o
+           JOIN spawns s ON s.job_id = o.job_id WHERE s.user_id = ?""", (user_id,)).fetchone()
+    return total
+
+
+def oldest_output(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
+    """That User's longest-held result — `_make_room`'s eviction candidate. Theirs alone: one User's
+    results can never evict another's (CONTEXT.md, **Allowance**)."""
+    return conn.execute(
+        """SELECT o.job_id, o.bytes FROM output_copies o
+           JOIN spawns s ON s.job_id = o.job_id WHERE s.user_id = ?
+           ORDER BY o.created_at LIMIT 1""", (user_id,)).fetchone()

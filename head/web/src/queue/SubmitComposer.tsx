@@ -296,7 +296,7 @@ export function SubmitComposer({
             ) : mode === "tidepool" ? (
               <>Drop/choose a folder — optional</>
             ) : (
-              <>Drop/choose a folder — optional</>
+              <>Drop/choose a folder</>
             )}
           </span>
         </label>
@@ -392,7 +392,8 @@ export function SubmitComposer({
                       case this catches, and that one looks complete from here. */}
                   <p className="mt-1.5 text-[12px] text-ink-mute">
                     Anything written outside these folders is recoverable for 30 min after the Spawn
-                    ends, then gone — name the right folders rather than relying on it.
+                    ends, then gone — name the right folders rather than relying on it. What lands in
+                    them is kept 7 days.
                   </p>
                 </Labeled>
                 <Labeled label="Arguments" className={isAdmin ? "sm:col-span-2" : "sm:col-span-2"}>

@@ -32,6 +32,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, guises, karma, ratelimit, retraction, slurm
 from . import recovery as recovery_mod
+from . import retention as retention_mod
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod
 
@@ -291,7 +292,9 @@ def spawns_history(days: int = 30, limit: int | None = None,
     carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
     finished_at). Also carries a Recovery Window countdown (docs/TODO.md), for the History row that
     still has one open — `recovery_expires_at` is null for every row that never had a copy, already had
-    it evicted, or whose 30 minutes are up."""
+    it evicted, or whose 30 minutes are up — and, on the same terms, `output_expires_at`: when the
+    Spawn's declared results are deleted, 7 days after it ended (null once they are, or before the tick
+    has registered them)."""
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.connect() as conn:
@@ -311,6 +314,14 @@ def spawns_history(days: int = 30, limit: int | None = None,
             expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) \
                 + timedelta(minutes=recovery_mod.WINDOW_MINUTES)
             r["recovery_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # The outputs' own countdown, on identical terms — the TTL is retention.py's constant, so the
+        # conversion happens here for the same reason the one above does.
+        out_created = r.pop("output_created_at")
+        r["output_expires_at"] = None
+        if out_created is not None:
+            expires = datetime.strptime(out_created, "%Y-%m-%dT%H:%M:%SZ") \
+                .replace(tzinfo=timezone.utc) + timedelta(days=retention_mod.TTL_DAYS)
+            r["output_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
     return rows
 
 
@@ -358,12 +369,40 @@ def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
 
 @api.get("/spawns/{job_id}/outputs")
 def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
-    """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back."""
+    """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back.
+
+    Results are not permanent any more (docs/TODO.md "Storage retention"): 7 days from the Spawn's end,
+    or sooner if the submitter's 8GB Allowance evicted them to make room for newer ones. Both read as
+    404 here, and the detail says which of the two applies where the ledger still knows — a Spawn that
+    produced nothing and one whose results were deleted are very different things to be told."""
     data = spawns_mod.outputs_tar(job_id)
     if data is None:
-        raise HTTPException(404, f"no outputs for Spawn {job_id}")
+        with db.connect() as conn:
+            known = db.get_spawn(conn, job_id) is not None
+        if known and retention_mod.evicted(job_id):
+            raise HTTPException(404, f"Spawn {job_id}'s outputs are no longer held — results are kept "
+                                     f"for {retention_mod.TTL_DAYS} days after a Spawn ends, and only "
+                                     f"until the submitter's newer results need the room")
+        raise HTTPException(404, f"Spawn {job_id} wrote no outputs — a Spawn returns files by writing "
+                                 f"them to $CCC_OUT inside the Pod")
     return Response(data, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
+
+
+@api.get("/spawns/{job_id}/retention")
+def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
+    """How much of Spawn `job_id`'s declared results the Head still holds, and when it deletes them
+    (docs/TODO.md "Storage retention"). 404 means nothing held: the Spawn produced nothing, the tick has
+    not registered it yet, its 7 days are up, or the submitter's 8GB Allowance evicted it.
+
+    Named for the policy rather than `/outputs/…` because `/spawns/{id}/outputs` is already the tar
+    itself, and one path returning metadata for a GET and bytes for a sibling GET is the kind of shape
+    nobody reads twice. Same permission as that route and `/recovery`: authed, no ownership check."""
+    with db.connect() as conn:
+        st = retention_mod.status(conn, job_id)
+    if st is None:
+        raise HTTPException(404, f"no outputs held for Spawn {job_id}")
+    return st
 
 
 @api.get("/spawns/{job_id}/recovery")

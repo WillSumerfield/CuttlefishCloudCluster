@@ -1,0 +1,168 @@
+"""Output retention (docs/TODO.md "Storage retention", phase 2) — a Spawn's declared `$CCC_OUT` results
+live **7 days**, and a User holds at most **8GB** of them at once.
+
+Until this, `SPAWNS_DIR/<id>/outputs/` was permanent: the Recovery Window bounded a Spawn's UNDECLARED
+writes to 30 minutes and up to 50GB, while the declared results beside them — the ones every Spawn is
+submitted to produce — grew forever. This module is the mirror image of `recovery.py`, and deliberately
+so: register / make-room / reap, the same three moves in the same tick pass. What differs is only what
+the two are for, and every difference below follows from that one.
+
+**The TTL runs from the Spawn's END, not from registration.** `created_at` is copied from `finished_at`,
+so a Spawn registered late (a tick that was down, a Head that was rebooting) still expires exactly 7
+days after it ran, rather than being quietly granted extra time for the Head's own outage. There is no
+pinning and no reset-on-download: fetch them or lose them, the same bargain the Recovery Window makes at
+a shorter scale.
+
+**An output is always accepted.** The Karma is already spent and the Arm has already done the work, so
+refusing a result at the last moment loses the one thing the User paid for — the eviction happens on the
+User's OTHER, older outputs instead, oldest-first and **silent**. That is also why a single result
+larger than the whole Allowance still lands: `_make_room` empties what it can and registers it anyway,
+exactly as `recovery._make_room` does when a single copy exceeds the pool. There is no per-Spawn cap and
+no protection for a never-downloaded result — "oldest first" is the whole policy, and a User who wants
+one kept fetches it.
+
+**The Allowance is per User, not global** (see CONTEXT.md, **Allowance**). One User filling their 8GB
+can never evict another's results, which a shared pool like the Recovery Window's would allow — the
+Recovery Window can afford that because a copy there is a 30-minute accident, while these are results.
+An Attribution row whose User was since deleted has no Allowance to count against and is simply
+registered; its TTL still reaps it on schedule.
+
+**Registration needs no new marker.** `stage_out` sends `exit` LAST (see spawns.JOB_SCRIPT), so the tick
+pass that stamps `finished_at` is already downstream of the outputs having landed. Disk-first, like
+`recovery.sweep_orphans` and `projects.sweep`, and here that shape removes a whole category rather than
+adding one: a directory is registered, or its Spawn is still running, and there is no third state to
+sweep. Nothing in this module ever deletes an UNregistered outputs dir — a Head that missed a week of
+ticks registers late and expires late, where a window-bounded registrar would instead treat those
+results as orphans and destroy them.
+"""
+
+import os
+import shutil
+from datetime import datetime, timedelta, timezone
+
+from . import db
+
+TTL_DAYS = int(os.environ.get("CCC_OUTPUT_TTL_DAYS", 7))
+# Per-User, and env-overridable in the same shape recovery.py's caps are. Independent of every other
+# Allowance: filling this can never cost a User any of their Recipe space, and vice versa.
+MAX_USER_BYTES = int(os.environ.get("CCC_OUTPUT_MAX_USER", 8 * 1024**3))
+
+# A `spawns/<id>/` dir that no Attribution row names — the submission raised between sbatch returning
+# and `db.record_spawn`. Same reasoning and same length as `projects._ORPHAN_MINUTES`: the young ones
+# are indistinguishable from a Spawn whose row is milliseconds from being written.
+_ORPHAN_MINUTES = 60
+
+_TS = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse(ts: str) -> datetime:
+    return datetime.strptime(ts, _TS).replace(tzinfo=timezone.utc)
+
+
+def _outputs_dir(job_id: int):
+    from . import spawns
+    return spawns.SPAWNS_DIR / str(job_id) / "outputs"
+
+
+def _du(path) -> int:
+    """Bytes under `path`. Walked here rather than shelled out to `du` because this side is Python and
+    already has the tree open — the bash `du -sb` in JOB_SCRIPT exists only because that side is bash."""
+    try:
+        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    except OSError:
+        return 0
+
+
+def _evict(conn, job_id: int) -> None:
+    """Delete one Spawn's outputs, on disk and in the ledger. The dir is NOT recreated empty: a later
+    `GET /outputs` should 404 (and say the results expired), not serve an empty tar that reads as a
+    Spawn which produced nothing."""
+    shutil.rmtree(_outputs_dir(job_id), ignore_errors=True)
+    db.delete_output(conn, job_id)
+
+
+def _make_room(conn, user_id: int | None, incoming_bytes: int) -> None:
+    """Evict that User's oldest outputs until `incoming_bytes` more fit under MAX_USER_BYTES.
+
+    A None `user_id` (their account was deleted) counts against nothing — there is no Allowance left to
+    charge, and the TTL still bounds it."""
+    if user_id is None:
+        return
+    while db.user_output_bytes(conn, user_id) + incoming_bytes > MAX_USER_BYTES:
+        oldest = db.oldest_output(conn, user_id)
+        if oldest is None:
+            return  # nothing of theirs left and one result still wouldn't fit — it lands anyway
+        _evict(conn, oldest["job_id"])
+
+
+def register_new(conn, now: datetime | None = None) -> int:
+    """Register every finished Spawn's outputs that aren't in the ledger yet. Returns how many.
+
+    Safe to call every tick pass: a Spawn still running has no `finished_at` and is skipped, and one
+    already registered has a row. Sized once, here, and never re-measured — the payload has exited, so
+    the tree cannot still be growing."""
+    from . import spawns
+    now = now or _now()
+    try:
+        entries = sorted(spawns.SPAWNS_DIR.iterdir())
+    except OSError:
+        return 0  # nothing has ever run here
+    ids = [int(e.name) for e in entries if e.name.isdigit() and (e / "outputs").is_dir()]
+    rows = db.output_registration_rows(conn, ids)
+    cutoff = now - timedelta(minutes=_ORPHAN_MINUTES)
+    registered = 0
+    for job_id in ids:
+        row = rows.get(job_id)
+        outputs = _outputs_dir(job_id)
+        if row is None:
+            # No Attribution row names this Spawn. Never delete a young one — that is also what a
+            # submission looks like between sbatch returning and its row being written.
+            try:
+                mtime = datetime.fromtimestamp(outputs.stat().st_mtime, timezone.utc)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                shutil.rmtree(outputs, ignore_errors=True)
+            continue
+        if row["registered"] or row["finished_at"] is None:
+            continue  # already in the ledger, or still running
+        size = _du(outputs)
+        _make_room(conn, row["user_id"], size)
+        db.add_output(conn, job_id, size, at=row["finished_at"])
+        registered += 1
+    return registered
+
+
+def reap_expired(conn, now: datetime | None = None) -> int:
+    """Delete every Spawn's outputs whose 7 days are up. Returns how many."""
+    now = now or _now()
+    cutoff = (now - timedelta(days=TTL_DAYS)).strftime(_TS)
+    expired = db.expired_outputs(conn, cutoff)
+    for job_id in expired:
+        _evict(conn, job_id)
+    return len(expired)
+
+
+def evicted(job_id: int) -> bool:
+    """True when a Spawn's outputs directory is GONE from disk.
+
+    `spawns.submit` creates one for EVERY Spawn, before sbatch — so its absence is never "this Spawn
+    produced nothing" (that is an empty dir), only "`_evict` took it", whether for the TTL or the
+    Allowance. That distinction is the whole reason `_evict` does not recreate it, and it is what lets
+    a 404 say which of the two happened."""
+    return not _outputs_dir(job_id).exists()
+
+
+def status(conn, job_id: int) -> dict | None:
+    """`{bytes, expires_at}` for a Spawn's outputs, or None if it has none held — never produced any,
+    evicted for the Allowance, or expired. What both the History countdown and `cuttle outputs`' miss
+    hint read; the same shape `recovery.status` returns, so every surface renders the two identically."""
+    row = db.get_output(conn, job_id)
+    if row is None:
+        return None
+    expires = _parse(row["created_at"]) + timedelta(days=TTL_DAYS)
+    return {"bytes": row["bytes"], "expires_at": expires.strftime(_TS)}

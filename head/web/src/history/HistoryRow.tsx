@@ -1,6 +1,6 @@
 import type { ArchivedSpawn, Outcome } from "../api";
 import { Link } from "../app/router";
-import { duration, armLabel, recoveryLabel } from "../queue/format";
+import { duration, armLabel, recoveryLabel, outputsLabel } from "../queue/format";
 
 /**
  * One finished Spawn in the archive. NOT a shard: the archive is a single surface and rows are soft pools
@@ -42,6 +42,10 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
   // rule ("no per-row buttons") stands; a User who wants the actual download clicks through to the
   // Spawn's own page (SpawnPage's RecoveryPanel), same as every other action this row doesn't offer.
   const recovery = recoveryLabel(spawn.recovery_expires_at);
+  // The declared results' own countdown, on the same terms and for the same reason (docs/TODO.md
+  // "Storage retention"). Both can be present at once for a Spawn that just ended — they are different
+  // artifacts with different deadlines, so the row shows both rather than picking one.
+  const outputs = outputsLabel(spawn.output_expires_at);
   return (
     <li>
       <Link
@@ -71,6 +75,12 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
                 <>
                   <span aria-hidden>·</span>
                   <span className="num" style={{ color: "var(--ink-soft)" }}>{recovery}</span>
+                </>
+              )}
+              {outputs && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="num" style={{ color: "var(--ink-soft)" }}>{outputs}</span>
                 </>
               )}
             </div>
