@@ -1,0 +1,7 @@
+# Assembled by prepare.sh from a vlearn checkout — third-party and licence-restricted,
+# hundreds of MB. The recipe is committed; the payload is not.
+*.whl
+train/
+assets/
+cache/
+runs/
