@@ -18,6 +18,7 @@ TurboActivate looks and the one thing this script must NOT try to arrange itself
 """
 import os
 import pathlib
+import pwd
 import runpy
 import sys
 
@@ -45,11 +46,40 @@ def _lib_dirs() -> list[str]:
     return found
 
 
+def _licence_key() -> str:
+    """A product key for vlearn to activate WITH, if one travelled with the project.
+
+    Checked in two places, project first: `License.key` beside this file (put there by prepare.sh from
+    a checkout that has one), then the wheel's own bundled copy.
+
+    **The Linux wheels ship no key** — verified against all four of the 0.3.9 wheels, where only the
+    two `win_amd64` ones carry `<dist-info>/licenses/License.key`. So on this platform a key normally
+    has to come from the operator, and an Arm with no key can only ever *validate* an activation it
+    already holds, never create one. That is what sync-licence.sh is for.
+    """
+    local = ROOT / "License.key"
+    if local.is_file():
+        return str(local)
+    site = pathlib.Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    keys = sorted(site.glob("vlearn-*.dist-info/licenses/License.key"))
+    return str(keys[-1]) if keys else ""
+
+
 if os.environ.get(STAGE) != "2":
     env = dict(os.environ)
     env[STAGE] = "2"
     env["LD_LIBRARY_PATH"] = ":".join(_lib_dirs() + [env.get("LD_LIBRARY_PATH", "")]).rstrip(":")
     env["VL_WORKING_DIRECTORY"] = str(ROOT)
+    # Both halves of the licence check, each said out loud when absent — "License validation failed"
+    # names neither, and an Arm holding a perfectly good Licence fails identically without them.
+    if not (ROOT / "TurboActivate.dat").is_file():
+        print("ccc: WARNING no TurboActivate.dat in the project — re-run ./prepare.sh",
+              file=sys.stderr, flush=True)
+    # Only if the operator has not chosen one: an Arm may hold a key that is not the project's.
+    if not env.get("VL_LICENSE_KEY_PATH"):
+        key = _licence_key()
+        if key:
+            env["VL_LICENSE_KEY_PATH"] = key
     # create_gym fails at gym.cpp:174 ("Could not find the cache directory") if this is absent — before
     # it ever reaches the licence check, which makes it look like a licensing problem when it isn't.
     (ROOT / "cache" / "tmp").mkdir(parents=True, exist_ok=True)
@@ -62,6 +92,12 @@ if os.environ.get(STAGE) != "2":
 argv = sys.argv[1:] or ["ant_custom", "train", "--max_epochs", "50"]
 
 print(f"ccc: VL_WORKING_DIRECTORY={os.environ['VL_WORKING_DIRECTORY']}", flush=True)
+print(f"ccc: licence key    = {os.environ.get('VL_LICENSE_KEY_PATH', '(none)')}", flush=True)
+# getpwuid, NOT $HOME or Path.home(): that is the call TurboActivate itself makes to find its state
+# (probed on hardware 2026-08-03), so it is the only reading of "licence home" worth printing here.
+_home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+_state = "populated" if _home.is_dir() and any(_home.glob(".*")) else "EMPTY — activating"
+print(f"ccc: licence home   = {_home} ({_state})", flush=True)
 print(f"ccc: running rl_games_train.py {' '.join(argv)}", flush=True)
 
 import vlearn  # noqa: E402  -- import only now, once LD_LIBRARY_PATH is in effect

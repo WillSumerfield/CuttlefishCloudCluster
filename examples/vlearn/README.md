@@ -12,22 +12,26 @@ The Head must have the `vlearn` Feature in its catalog and a **Licence** directo
 prompted at `cuttle setup --head`. You name a directory that does not exist yet; setup creates it as
 the home of the `ccc-licence` account.
 
-Then activate vlearn **once** as that account:
+Then fill it, from the activation this box already holds:
 
 ```bash
-sudo -u ccc-licence env VL_WORKING_DIRECTORY=/path/to/vlearn-main <vlearn's activation>
+sudo ./sync-licence.sh
 ```
 
-That is the whole setup. The activation files land in the licence directory by themselves, because
-TurboActivate chooses where to write by calling `getpwuid(getuid())->pw_dir` — it ignores `$HOME`
-entirely, so the identity that activates is what decides the location. At Spawn time CCC binds that
-directory at the Guise's home inside the Pod, where the same call finds it.
+Re-run it after any vlearn upgrade — that is when the filenames change.
 
-**Why not just copy the files.** TurboActivate keeps its state in three small hidden files, one each
-under `~/.prof/`, `~/.local/` and `~/.config/`, named from an obfuscated per-release token. The token
-is in neither `TurboActivate.dat` nor the vlearn wheels, so it cannot be looked up or derived — and a
-version bump renames all three. A hand-made copy then goes stale silently, since the bind only checks
-that the directory exists. Activating as the account avoids all of it.
+**What it copies.** TurboActivate keeps its state in three small hidden files, one each under
+`~/.prof/`, `~/.local/` and `~/.config/`, named from an obfuscated per-release token. You are not
+expected to know that name: `.prof/` holds exactly one file and nothing else, so the script reads the
+token off it and uses the shared suffix to find the other two.
+
+**Why a copy, and not activating as the account.** The cleaner design is to run vlearn's activation
+*as* `ccc-licence` — TurboActivate picks its state directory with `getpwuid(getuid())->pw_dir` and
+ignores `$HOME`, so whoever activates decides where the state lands. That needs a product key, and
+vlearn's **Linux wheels ship none**: of the four 0.3.9 wheels, only the two `win_amd64` ones carry
+`dist-info/licenses/License.key`. So on Linux an already-activated box cannot re-activate itself
+without your own key from LimeLM. If you have that key, drop it in as `License.key` beside `run.py`
+and `run.py` will point vlearn at it — then a Spawn activates on its own and the sync is unnecessary.
 
 Never point the licence directory at a real home: the whole thing is mounted into every Spawn that
 asks for a Feature. Giving it to a CCC-owned account is what makes that structural rather than a rule

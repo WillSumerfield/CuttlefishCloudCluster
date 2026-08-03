@@ -1,6 +1,9 @@
 # Assembled by prepare.sh from a vlearn checkout — third-party and licence-restricted,
 # hundreds of MB. The recipe is committed; the payload is not.
 *.whl
+# A product key, if the operator drops one here for run.py to activate with. Never committed.
+License.key
+TurboActivate.dat
 train/
 assets/
 cache/

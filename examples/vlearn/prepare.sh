@@ -35,6 +35,13 @@ want=$(grep -o 'vlearn-[0-9.]*-cp311-cp311-linux_x86_64.whl' "$HERE/environment.
 
 echo "vlearn checkout : $SRC"
 cp -v "$WHEEL" "$HERE/"
+# TurboActivate.dat — the product definition the licence check reads. vlearn looks for it in
+# VL_WORKING_DIRECTORY, which is this directory at run time, so it has to travel with the upload.
+# Not a secret and not machine state: it is identical on every install, ships with the checkout, and
+# is useless without an activation. Without it the Spawn dies at `gym.cpp: License validation failed`
+# even on an Arm whose Licence is bound correctly.
+[ -f "$SRC/TurboActivate.dat" ] || { echo "no TurboActivate.dat in $SRC" >&2; exit 1; }
+cp -v "$SRC/TurboActivate.dat" "$HERE/"
 # train/ carries rl_games_train.py and rl_games_config/; assets/ carries ant.vsim. Both are resolved
 # against VL_WORKING_DIRECTORY (= the project root) at run time, so they keep their names here.
 rsync -a --delete "$SRC/train/" "$HERE/train/"
