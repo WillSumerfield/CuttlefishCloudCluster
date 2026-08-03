@@ -14,6 +14,7 @@ import hashlib
 import ipaddress
 import json
 import platform
+import re
 import secrets
 import subprocess
 import tarfile
@@ -220,7 +221,7 @@ def pin_apptainer_deb() -> Path:
     return config.HEAD_DEBS_DIR / rec["filename"]
 
 
-def write_slurm_config(mesh_ip: str) -> None:
+def write_slurm_config(mesh_ip: str, features: list[dict] | None = None) -> None:
     for d, owner in ((config.SLURM_STATE_DIR, "slurm"),
                      (config.SLURM_LOG_DIR, "slurm"),
                      (config.SLURMD_SPOOL_DIR, "root")):
@@ -230,7 +231,14 @@ def write_slurm_config(mesh_ip: str) -> None:
     reg = enroll.load_registry()
     # The Head's Weight goes in the file, not just `scontrol update`, or the next reconfigure wipes it.
     # Unknown on a first setup (the benchmark runs later, and re-renders this) -> node_weight's floor.
-    powers = (reg.get(system.hostname()) or {}).get("powers")
+    head_row = reg.get(system.hostname()) or {}
+    powers = head_row.get("powers")
+    # The Head's own Arm Features. `features` only when the caller has them and the registry does not
+    # yet — a first `setup --head`, where register_head_arm has not run. Otherwise the registry row is
+    # the source: `scontrol reconfigure` re-reads this file and resets any node attribute the file does
+    # not state, exactly as it does Weight above, so every later caller (arm authorize/admit/remove)
+    # must re-state them or silently drop the Head out of Eligibility for every Feature it offers.
+    head_features = sorted(f["name"] for f in (features or head_row.get("features") or []))
     # Guises (temp/spawn-isolation.md Phase 3c): `Prolog=` goes in only once every admitted Arm has
     # reported having the script. Named out loud, because the operator's next move is to go and re-run
     # `setup --arm` on those boxes — and a silently-absent Prolog would mean every Spawn quietly keeps
@@ -251,6 +259,7 @@ def write_slurm_config(mesh_ip: str) -> None:
     _write_root_file(
         config.SLURM_CONF,
         templates.render_slurm_conf(mesh_ip, config.node_weight(powers) if powers else 1,
+                                    features=head_features,
                                     missing_prolog=missing, missing_tmpfs=missing_tmpfs))
     nodes = [templates.head_gres_node()]
     nodes += [(n, e["gpu_devices"]) for n, e in sorted(reg.items())
@@ -686,6 +695,14 @@ def setup_head(address: str | None = None) -> None:
 def _setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
+    # Arm Features, also up front and for the same reason. The Head OWNS the catalog — an Arm picks
+    # FROM it and can never add to it — so this is the only place names come into existence, and it has
+    # to happen before write_slurm_config below, which bakes this box's own Features into its NodeName
+    # line. The Head's co-located Arm is an Arm like any other, so it declares against the catalog it
+    # just defined rather than being special-cased.
+    catalog = _prompt_feature_catalog(enroll.load_feature_catalog())
+    head_features = _prompt_arm_features(catalog, _head_arm_features())
+    head_licence = _prompt_licence_home(_head_licence_home()) if head_features else ""
     preflight("head")
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
@@ -703,15 +720,26 @@ def _setup_head(address: str | None = None) -> None:
         make_registry_dir()
         install_apptainer(pin_apptainer_deb())  # the Head runs exactly what it serves its Arms
         record_installed(before)
+    # Saved BEFORE write_slurm_config: it reads this box's Features back out of the registry to render
+    # its NodeName line, and the Enroll API validates a donor's declaration against the catalog file.
+    with ui.step("Recording the Arm Feature catalog"):
+        enroll.save_feature_catalog(catalog)
+        if head_features:
+            _write_root_file(config.ARM_FEATURES_ENV,
+                             enroll.render_features_env(head_features, head_licence))
     with ui.step("Configuring Slurm"):
-        write_slurm_config(mesh_ip)
+        # `features` explicitly, not left to the registry: on a FIRST setup this box has no registry row
+        # yet (register_head_arm runs below, after the admin exists), so there would be nothing to read
+        # and the Head would come up with no Feature= line until something re-rendered it.
+        write_slurm_config(mesh_ip, head_features)
         start_daemons()
     with ui.step("Installing the Enroll API"):
         headapi.install_enroll_sudoers(_write_root_file)   # one grant: read-only `headscale nodes list`
         headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: it serves munge.key
     with ui.step("Provisioning the Mantle and the auth store"):
         provision_head_auth()                    # ccc account + head.db + submission dirs (needs venv)
-        enroll.register_head_arm(mesh_ip)        # our co-located Arm is admin-owned (needs the admin)
+        # our co-located Arm is admin-owned (needs the admin), and carries the Features declared above
+        enroll.register_head_arm(mesh_ip, head_features)
     with ui.step("Provisioning Guises"):
         # Every User's Unix identity on this box, including the reserved cluster one the enrollment
         # benchmark runs as. Back-fills on an upgrade, and needs the auth store above to exist first.
@@ -808,23 +836,116 @@ def setup_client() -> None:
 setup_local = setup_head
 
 
-def _prompt_arm_features(catalog: list[str]) -> list[dict]:
+def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None) -> list[dict]:
     """Ask which of the Head's known Arm Features (`cuttle feature add`) this box has, and where each
     is installed — `[{"name", "path"}, ...]`, /enroll's shape. A y/n per catalog entry rather than a
     free-typed name: the catalog IS the only valid answer set (Head-side validation is the real gate,
     but there is no reason to let a typo reach it).
 
-    Empty when the catalog is empty (nothing to ask) or off-terminal (`--no-input`, a scripted setup) —
-    same as any other optional wizard field: declares none, an operator adds them later by re-running.
+    On a re-setup, what this box already declared is offered as-is first. A full teardown+setup is the
+    normal redeploy here, so re-walking an unchanged list is the common case, not the rare one — and a
+    mistyped path on the way past is a Feature that silently resolves to nothing.
+
+    Off-terminal (`--no-input`, a scripted setup) keeps `existing` rather than declaring none: a re-run
+    that silently dropped this box's Features would take it out of Eligibility for every Spawn that
+    needs them, which is not a safe default. A first setup still has nothing to keep.
     """
-    if not catalog or not ui.interactive():
+    existing = existing or []
+    if not catalog:
         return []
+    if not ui.interactive():
+        return existing
+    if existing:
+        shown = ", ".join(f"{f['name']} ({f['path']})" for f in existing)
+        ui.say(f"  [muted]already declared: {shown}[/muted]")
+        if ui.ask_confirm("Keep these Arm Features?", True):
+            return existing
+    prior = {f["name"]: f["path"] for f in existing}
     features = []
     for name in catalog:
-        if ui.ask_confirm(f"Does this Arm have the {name!r} feature?", False):
-            path = ui.ask_text(f"Install path for {name!r} on this box?")
+        if ui.ask_confirm(f"Does this Arm have the {name!r} feature?", name in prior):
+            path = ui.ask_text(f"Install path for {name!r} on this box?", prior.get(name, ""))
             features.append({"name": name, "path": path})
     return features
+
+
+def _head_arm_features() -> list[dict]:
+    """What the Head's own co-located Arm declared last time, for a re-setup to offer back.
+
+    From the registry rather than settings (where a donor Arm keeps its copy): the Head's box has a
+    registry row and no `arm` settings block — it never enrolls, so nothing ever wrote one.
+    """
+    return (enroll.load_registry().get(system.hostname()) or {}).get("features") or []
+
+
+def _head_licence_home() -> str:
+    """The Head's own Licence directory as last recorded, read back out of the rendered features.env.
+
+    That file is the only durable record on this box — a Licence path is Arm-local by design, so it is
+    deliberately not in the registry the Head serves to the rest of the cluster.
+    """
+    if not config.ARM_FEATURES_ENV.exists():
+        return ""
+    for line in config.ARM_FEATURES_ENV.read_text().splitlines():
+        prefix = f"export {config.LICENCE_HOME_VAR}="
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _prompt_feature_catalog(existing: list[str]) -> list[str]:
+    """Define the cluster's Arm Feature catalog at `setup --head` — the names an Arm may later declare.
+
+    Head-only, because the catalog is the Head's: an Arm picks FROM it and can never add to it. Free
+    text here (unlike the Arm prompt) precisely because this is where names come into existence; each
+    is validated against config.FEATURE_NAME_RE, which is what makes it safe as both a Slurm `Feature=`
+    token and an uppercased env var name.
+
+    Off-terminal keeps whatever is already recorded, same reasoning as _prompt_arm_features.
+    """
+    if not ui.interactive():
+        return existing
+    if existing:
+        ui.say(f"  [muted]catalog: {', '.join(existing)}[/muted]")
+        if ui.ask_confirm("Keep this Arm Feature catalog?", True):
+            return existing
+    ui.hint("Heavy or licence-gated software that isn't installed on every Arm, like vlearn or "
+            "isaacsim. Blank to finish.")
+    names: list[str] = []
+    while True:
+        name = ui.ask_text("Feature name?", "").strip()
+        if not name:
+            return names
+        if not re.match(config.FEATURE_NAME_RE, name):
+            ui.warn(f"  {name!r} is not a valid feature name — letters, digits, then . _ - only")
+        elif name in names:
+            ui.warn(f"  {name!r} already added")
+        else:
+            names.append(name)
+
+
+def _prompt_licence_home(existing: str = "") -> str:
+    """Where this box keeps the machine-locked **Licence** state for its Feature software.
+
+    ONE directory per Arm, not one per Feature: a licence is locked to hardware, and an Arm is one
+    machine. Bound at a Spawn's Guise home inside the Pod (ccc_head_api.spawns.JOB_SCRIPT) because that
+    is where a licence manager looks — verified on hardware 2026-08-03: TurboActivate resolves its state
+    directory through getpwuid()->pw_dir and cannot be redirected by any env var.
+
+    CCC only records the path. The owner populates it by hand and CCC never reads, copies or parses
+    what is in there: the formats are undocumented binaries from third-party SDKs whose filenames change
+    between releases, and a CCC that cannot touch a licence cannot break an activation.
+
+    Must NOT be the operator's real home — it is bound into a Pod wholesale, so anything else living
+    there is handed to the Spawn along with it.
+    """
+    if not ui.interactive():
+        return existing
+    if not ui.ask_confirm("Does this box hold a licence for any of that software?", bool(existing)):
+        return ""
+    ui.hint("A directory holding ONLY licence/activation state — never your home directory: it is "
+            "mounted into every Spawn that asks for a Feature.")
+    return ui.ask_text("Licence directory on this box?", existing).strip()
 
 
 def setup_arm(token: str, re_enroll: bool = False) -> None:
@@ -865,12 +986,15 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # apt has not created yet.
     # Arm Features (docs/TODO.md): ask which of the Head's catalog this box has, and where each is
     # installed, before /enroll — so the declaration rides the SAME POST as the hardware report rather
-    # than a second round trip. Only offered when the catalog isn't empty and there's someone to ask; a
-    # scripted/off-terminal setup declares none, exactly like any other optional wizard field (the
-    # operator adds them later by re-running `setup --arm` — never guessed).
+    # than a second round trip. Only offered when the catalog isn't empty and there's someone to ask.
+    # A re-setup offers what this box declared last time (settings) rather than re-walking the list.
+    prior = (settings.load().get("arm") or {})
     with ui.step("Checking the Head's Arm Feature catalog"):
         catalog = enroll.fetch_feature_catalog(t["mesh_ip"])
-    features = _prompt_arm_features(catalog)
+    features = _prompt_arm_features(catalog, prior.get("features"))
+    # Only asked when this box actually declared something to licence — a Licence with no Feature to
+    # unlock is a directory nothing would ever bind.
+    licence_home = _prompt_licence_home(prior.get("licence_home", "")) if features else ""
 
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)
@@ -899,7 +1023,7 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     data = settings.load()
     data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
                    "ctld_addr": info["ctld_addr"], "gpu_devices": system.gpu_devices(),
-                   "features": features}
+                   "features": features, "licence_home": licence_home}
     # Point the box at the Head over the MESH — an Arm's owner is a User too, and until now enrolling
     # left them with no Head URL at all, so `cuttle login` on their own Arm said "no Head URL set".
     #
@@ -927,8 +1051,11 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     if features:
         with ui.step("Recording Arm Features"):
             # World-readable like the other rendered configs here: install paths aren't secret, and a
-            # Spawn's payload (running as the home-less Mantle) needs to read this on every node.
-            _write_root_file(config.ARM_FEATURES_ENV, enroll.render_features_env(features))
+            # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The
+            # Licence PATH is likewise not secret — what is secret lives inside that directory, and is
+            # bound only into Spawns that asked for a Feature (ccc_head_api.spawns.JOB_SCRIPT).
+            _write_root_file(config.ARM_FEATURES_ENV,
+                             enroll.render_features_env(features, licence_home))
 
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     with ui.step("Starting slurmd"):
