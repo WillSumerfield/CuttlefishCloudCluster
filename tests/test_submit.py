@@ -924,3 +924,57 @@ class TestLogStreams:
         assert c.get("/api/spawns/77/logs").status_code == 200
         assert c.get("/api/spawns/77/stderr").status_code == 200
         assert c.get("/api/spawns/77/stderr").text == ""
+
+
+class TestLicenceBind:
+    """The Arm's **Licence**, bound at the Spawn's Guise home inside the Pod (temp/FEATURES_LICENCE.md).
+
+    Probed on hardware 2026-08-03: TurboActivate (vlearn) resolves its activation state through
+    getpwuid(getuid())->pw_dir and ignores $HOME entirely — a bogus HOME still validated, a redirected
+    one did not. So the mount point is not a convention we picked, it is the only path that works, and
+    no submitter-side code can substitute for it.
+    """
+
+    def render(self, **kw):
+        kw.setdefault("minutes", 60)
+        kw.setdefault("constraint", "vram24")
+        kw.setdefault("node", None)
+        kw.setdefault("outputs", ["outputs"])
+        return head_spawns._render(
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
+
+    def test_a_spawn_with_no_feature_can_never_reach_the_licence(self):
+        """The saved licence key is plaintext and world-readable, so the bind is gated on having asked
+        for a Feature at all — not merely on the Arm happening to have one."""
+        body = self.render(wants_licence=False)
+        assert 'licbind=""' in body                 # declared, so the bind expression stays valid
+        assert '[ -n "" ]' in body                  # the gate, rendered false: never assigned
+        assert "$CCC_LICENCE_HOME:$guise_home" in body   # only ever inside that dead branch
+
+    def test_a_feature_spawn_binds_it_at_the_guise_home(self):
+        body = self.render(wants_licence=True)
+        assert '[ -n "1" ]' in body
+        assert 'licbind=",$CCC_LICENCE_HOME:$guise_home"' in body
+
+    def test_the_home_comes_from_passwd_not_from_the_environment(self):
+        """`$HOME` is what the probe proved is NOT consulted — the Pod's own getpwuid is, and apptainer
+        injects this account's passwd entry. Reading passwd here is what makes the two agree."""
+        body = self.render(wants_licence=True)
+        assert 'guise_home=$(getent passwd "$(id -u)" | cut -d: -f6)' in body
+        assert "$HOME" not in body.split("licbind=")[0].split("guise_home=")[-1]
+
+    def test_an_arm_with_no_licence_declared_is_not_an_error(self):
+        """Most Arms offer a Feature that needs no licence, or no Feature at all. The Arm supplies
+        CCC_LICENCE_HOME from /etc/ccc/features.env; absent, the guard simply never fires."""
+        body = self.render(wants_licence=True)
+        assert '[ -d "${CCC_LICENCE_HOME:-}" ]' in body
+
+    @pytest.mark.parametrize("tp", [None, 41000])
+    def test_both_payloads_carry_the_bind(self, tp):
+        """A Tide Pool is a Spawn that happens to run a shell — a User debugging why their licensed
+        software will not start is exactly who needs the licence present."""
+        kw = {"tidepool_port": tp, "tidepool_pubkey": "ssh-ed25519 AAAA x"} if tp else {}
+        body = self.render(wants_licence=True, outputs=[] if tp else ["outputs"], **kw)
+        payload = body[body.index("apptainer exec"):]
+        assert "$envbind$licbind" in payload

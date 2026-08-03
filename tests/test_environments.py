@@ -204,7 +204,7 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     file-not-found the User cannot act on."""
     body = _script()
     assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$ccc_out$envbind"' in body
+    assert '--bind "$proj,$ccc_out$envbind$licbind"' in body
 
 
 def test_the_remote_stage_in_recurses():

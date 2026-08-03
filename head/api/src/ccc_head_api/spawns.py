@@ -91,6 +91,22 @@ JOB_SCRIPT = """\
 # harmless no-op on any Arm/Spawn that never touches a feature — and `export`ed there (not here) so
 # Apptainer's default env passthrough (no --cleanenv below) carries it straight into the Pod.
 [ -f /etc/ccc/features.env ] && . /etc/ccc/features.env
+# The Arm's **Licence** (temp/FEATURES_LICENCE.md): the directory its owner populated with the
+# machine-locked activation state for whatever Feature software it offers. Bound at the Guise's home
+# INSIDE the Pod, because that is the only place a licence manager looks: probed on hardware
+# 2026-08-03, TurboActivate (vlearn) resolves its state directory through getpwuid(getuid())->pw_dir
+# and ignores $HOME entirely, so no env var and no submitter-side code can redirect it.
+#
+# Read from passwd rather than $HOME for exactly that reason — this must be the path the Pod's own
+# getpwuid returns, and apptainer injects this account's passwd entry into the container.
+#
+# Bound ONLY for a Spawn that requested a Feature — the Head decides that and renders the answer into
+# the guard below, since only it knows what was asked for. The saved key is plaintext and world-
+# readable, so a Spawn with no use for it never gets to read it. Writable, not read-only: the
+# activation record is rewritten on periodic online re-validation.
+guise_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+licbind=""
+[ -n "%%WANTS_LICENCE%%" ] && [ -n "$guise_home" ] && [ -d "${CCC_LICENCE_HOME:-}" ] && licbind=",$CCC_LICENCE_HOME:$guise_home"
 # This Spawn's **Siphon** (temp/spawn-isolation.md Phase 2, ccc_head_api.siphons): the secret for the
 # two rsync modules that exist only for this job. In the script body rather than the job environment
 # because sudo scrubs the environment on the way to sbatch, and widening the sudoers `env_keep` for it
@@ -371,7 +387,7 @@ exit $rc
 # interpreter named here can never be one the bind did not provide.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
-  --bind "$proj,$ccc_out$envbind" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
+  --bind "$proj,$ccc_out$envbind$licbind" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
@@ -474,7 +490,7 @@ CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind" \\
+  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
@@ -482,7 +498,7 @@ apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
 def _render(staging: Path, gpu: int, script: str, args: list[str],
             files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
-            tidepool_pubkey: str | None = None) -> str:
+            tidepool_pubkey: str | None = None, wants_licence: bool = False) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
@@ -541,6 +557,10 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # appears — an ordinary Spawn's rendered script never even contains the literal string.
         "%%TIDEPOOL_PORT%%": str(tidepool_port) if tidepool_port is not None else "",
         "%%TIDEPOOL_PUBKEY%%": tidepool_pubkey or "",
+        # Whether this Spawn asked for any Arm **Feature**, and so may see the Arm's **Licence**. A
+        # bare flag, not the path: the path is Arm-local (every Arm's owner chose their own) and the
+        # Arm supplies it from /etc/ccc/features.env at run time, exactly as it does a Feature's path.
+        "%%WANTS_LICENCE%%": "1" if wants_licence else "",
     }
     for k, v in subs.items():
         body = body.replace(k, v)
@@ -587,7 +607,8 @@ def _lend_project(staging: Path, guise: str) -> None:
 def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
            tar_path: Path, minutes: int, constraint: str, outputs: list[str], node: str | None = None,
            vram_gb: int = 0, hold: float | None = None, exclude: str = "",
-           tidepool: bool = False, manifest: str | None = None) -> int:
+           tidepool: bool = False, manifest: str | None = None,
+           features: list[str] | None = None) -> int:
     """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
     Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
     Spawn to one Arm.
@@ -699,7 +720,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # a module named for the id could not exist in time. See ccc_head_api.siphons.
     token, secret = siphons.open(uuid)
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
-                   token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey)
+                   token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
+                   wants_licence=bool(features))
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -981,7 +1003,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool, manifest=manifest)
+                  tidepool=tidepool, manifest=manifest, features=features)
 
 
 # --- reads (anonymous in slice 2) -------------------------------------------

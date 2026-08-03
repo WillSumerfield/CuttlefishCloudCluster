@@ -254,6 +254,11 @@ FEATURE_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 # can find e.g. $VSIM_PATH without knowing whether this node has it — see
 # ccc_head_api.spawns.JOB_SCRIPT, which sources this unconditionally (a no-op where it's absent).
 ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
+# This Arm's **Licence** directory, exported into that same file. ONE per Arm regardless of how many
+# Features it offers: a licence is locked to the machine, and an Arm is one machine — so two Features
+# can never collide over it. ccc_head_api.spawns.JOB_SCRIPT binds it at the Guise's home inside the Pod
+# (the only place a licence manager looks), and only for a Spawn that requested a Feature.
+LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
 # The apptainer .deb the Head serves to every Arm, and the record that pins it:
 # {version, filename, sha256}. Under CCC_LIB rather than HEAD_STATE_DIR because the Enroll API is what
 # serves the file, and it runs as `munge` — HEAD_STATE_DIR is 0700 ccc and it could not even traverse

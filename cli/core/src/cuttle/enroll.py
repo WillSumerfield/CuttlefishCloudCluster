@@ -350,7 +350,7 @@ def list_features(as_json: bool = False) -> None:
         ui.say(f"  {n}")
 
 
-def render_features_env(features: list[dict]) -> str:
+def render_features_env(features: list[dict], licence_home: str = "") -> str:
     """One `export <NAME>_PATH=<path>` line per declared Arm Feature, written to config.ARM_FEATURES_ENV
     by `setup --arm`. `export`, not a bare assignment: ccc_head_api.spawns.JOB_SCRIPT sources this file
     with no `set -a`, and Apptainer's default (non `--cleanenv`) behaviour is to pass the WHOLE calling
@@ -358,9 +358,17 @@ def render_features_env(features: list[dict]) -> str:
 
     A feature name may contain `.`/`-` (config.FEATURE_NAME_RE) which a shell identifier cannot, hence
     the substitution — `vsim-pro` becomes `VSIM_PRO_PATH`, not a syntax error.
+
+    `licence_home` is this Arm's **Licence** directory (temp/FEATURES_LICENCE.md) — ONE per Arm, not one
+    per Feature, because a licence is locked to hardware and an Arm is one machine. It rides this same
+    file for the same reason a Feature's path does: the value is Arm-local, so the Head cannot bake it
+    into a job script it renders for the whole fleet. The Arm supplies it; JOB_SCRIPT decides whether
+    this Spawn may see it.
     """
     lines = [f"export {re.sub(r'[^A-Za-z0-9]', '_', f['name']).upper()}_PATH={f['path']}"
             for f in features]
+    if licence_home:
+        lines.append(f"export {config.LICENCE_HOME_VAR}={licence_home}")
     header = "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
     return header + "\n".join(lines) + ("\n" if lines else "")
 
@@ -686,7 +694,7 @@ def chown_arm(name: str, owner: str) -> None:
     print(f"cuttle: {name} owner {was} -> {owner}")
 
 
-def register_head_arm(mesh_ip: str) -> None:
+def register_head_arm(mesh_ip: str, features: list[dict] | None = None) -> None:
     """Give the Head's own co-located Arm a registry row, owned by the first admin.
 
     It never enrolls (it is a *static* Slurm node, and there is no donor), so without this it would be
@@ -696,9 +704,13 @@ def register_head_arm(mesh_ip: str) -> None:
     """
     reg = load_registry()
     name = system.hostname()
+    # `features` in the SAME shape a donor Arm reports at /enroll, so slurm.arms_with_features and the
+    # Dashboard read one row shape for every Arm — the Head's box is an Arm like any other, and its
+    # Features are what setup.write_slurm_config re-reads to keep its Feature= line across reconfigures.
     reg[name] = {"owner": config.FIRST_ADMIN_USER, "gpu_devices": system.gpu_devices(),
                  "mesh_ip": mesh_ip, "admitted": True, "head": True,
-                 "vram_mb": system.gpu_vram_mb(), "powers": None, "gpu": None}
+                 "vram_mb": system.gpu_vram_mb(), "powers": None, "gpu": None,
+                 "features": features or []}
     save_registry(reg)
 
 

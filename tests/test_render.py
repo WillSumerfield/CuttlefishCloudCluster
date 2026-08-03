@@ -676,3 +676,44 @@ class TestBenchmarkSbatch:
         assert "torch.cuda.device_count()" in body
         assert "for i in range(ndev)" in body
         assert '"powers": powers' in body
+
+
+class TestFeaturesEnv:
+    """`/etc/ccc/features.env` — what an Arm tells its own Spawns about the software it carries.
+
+    The Head cannot bake any of this into the job script it renders for the whole fleet: every value
+    here is Arm-local, chosen by that box's owner. So the Head renders the *decision* (may this Spawn
+    see a licence?) and the Arm supplies the *paths*.
+    """
+
+    def test_a_feature_becomes_an_exported_path(self):
+        out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/vlearn"}])
+        assert "export VLEARN_PATH=/opt/vlearn" in out
+
+    def test_a_dotted_or_hyphenated_name_becomes_a_legal_identifier(self):
+        """FEATURE_NAME_RE allows `.` and `-`; a shell identifier does not, so `vsim-pro` has to become
+        VSIM_PRO_PATH or sourcing this file is a syntax error that breaks every Spawn on the node."""
+        out = enroll.render_features_env([{"name": "vsim-pro.2", "path": "/opt/v"}])
+        assert "export VSIM_PRO_2_PATH=/opt/v" in out
+
+    def test_the_licence_home_is_one_per_arm_not_one_per_feature(self):
+        """A licence is locked to hardware and an Arm is one machine, so two Features can never collide
+        over it — there is exactly one exported name no matter how many Features are declared."""
+        out = enroll.render_features_env(
+            [{"name": "vlearn", "path": "/opt/v"}, {"name": "isaacsim", "path": "/opt/i"}],
+            licence_home="/opt/ccc/licence")
+        assert out.count(f"export {config.LICENCE_HOME_VAR}=") == 1
+        assert f"export {config.LICENCE_HOME_VAR}=/opt/ccc/licence" in out
+
+    def test_an_arm_with_no_licence_exports_none(self):
+        """Absent, not empty: spawns.JOB_SCRIPT guards on `[ -d "${CCC_LICENCE_HOME:-}" ]`, so an
+        exported empty string and an unset var behave alike — but only one of them says nothing."""
+        out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}])
+        assert config.LICENCE_HOME_VAR not in out
+
+    def test_everything_is_exported_not_merely_assigned(self):
+        """JOB_SCRIPT sources this with no `set -a`, and apptainer passes the calling environment in
+        (no --cleanenv) — so a bare assignment would reach the wrapper and stop at the Pod wall."""
+        out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}],
+                                         licence_home="/opt/ccc/licence")
+        assert all(ln.startswith("export ") for ln in out.splitlines() if ln and not ln.startswith("#"))
