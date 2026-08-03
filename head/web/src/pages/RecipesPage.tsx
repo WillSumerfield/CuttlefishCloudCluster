@@ -6,24 +6,23 @@ import { Storage } from "../recipes/Storage";
 import { RecipeCard } from "../recipes/RecipeCard";
 import { RecipeComposer, type RecipePayload } from "../recipes/RecipeComposer";
 import { NewRecipeTile } from "../recipes/NewRecipeTile";
-import { demoRecipes } from "../recipes/mock";
-import { isDemo } from "../queue/mock";
 import type { RecipeAction } from "../recipes/format";
 
 /**
  * Recipes — your shelf of frozen, re-runnable snapshots. Private, so there is no roster: the whole page is
  * yours. The storage wall sits on top (the signature), the Recipes below it, each linked to the slice it
- * fills on the wall. The first cell of the grid is the way ON: a ghost tile that hands the shelf over to the
- * composer, which replaces the grid while you freeze a folder (the wall stays, previewing the new bytes).
+ * fills on the wall. The first cell of the grid is the way ON: a ghost tile that, clicked, becomes the
+ * composer in its own cell — row-spanning 2 and pushing the rest of that column down, rather than replacing
+ * the whole shelf (the wall stays throughout, previewing the new bytes).
  *
- * Update code re-opens the composer rather than acting in place, because an update IS a fresh upload —
- * there is no copy of the folder on the Head to re-freeze, and none on your machine the Head can reach.
- * So it prefills the Recipe's settings, fixes its name, and hands the wall an allowance the Recipe's own
- * bytes have already come off: on the Head an update is delete-then-save, charged what it grows by.
+ * Update code turns THAT card into the same composer, in place — an update IS a fresh upload (there is no
+ * copy of the folder on the Head to re-freeze, and none on your machine the Head can reach), so it prefills
+ * the Recipe's settings, fixes its name, and hands the wall an allowance the Recipe's own bytes have already
+ * come off: on the Head an update is delete-then-save, charged what it grows by. Only one composer is ever
+ * open — another tile's trigger is ignored until it's saved or cancelled.
  *
- * Under ?demo everything plays out on the mock in place: Save appends a card that blooms while it
- * "uploads" then re-freezes; Delete drops it and frees its bytes; Update code blooms for a beat then
- * re-freezes. Live, they call out and a refetch confirms — except Run, which the Head answers 501 to.
+ * Every action is optimistic and then confirmed by a refetch — except Run, which the Head still answers
+ * 501 to (see docs/TODO.md, "Running a Recipe").
  */
 
 const API: Record<"run" | "delete", (name: string) => Promise<void>> = {
@@ -32,14 +31,13 @@ const API: Record<"run" | "delete", (name: string) => Promise<void>> = {
 
 export function RecipesPage() {
   const { logout } = useAuth();
-  const demo = isDemo();
-  const [recipes, setRecipes] = useState<Recipe[]>(() => (demo ? demoRecipes() : []));
-  const [loaded, setLoaded] = useState(demo);
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
-  const [composing, setComposing] = useState(false);
-  // The Recipe being re-captured, or null for a new one. Same composer either way — an update differs
-  // only in what it prefills and which endpoint takes the upload.
-  const [editing, setEditing] = useState<Recipe | null>(null);
+  // Which grid slot is showing the composer instead of its normal tile: "new" for the New-recipe slot, a
+  // Recipe's name for that card re-freezing in place, or null when nothing is open. Switching this swaps
+  // a tile/card for a fresh RecipeComposer mount at that same slot — never two representations at once.
+  const [active, setActive] = useState<"new" | string | null>(null);
   const [pending, setPending] = useState(0); // bytes of the folder being frozen right now → wall ghost
   // A failed action/save used to vanish silently — worst of all for Save, where a folder was picked and a
   // form filled. Name what failed until the next action.
@@ -56,9 +54,8 @@ export function RecipesPage() {
   }, [logout]);
 
   useEffect(() => {
-    if (demo) return; // design harness — hold the mock, don't fetch. Recipes are frozen; no polling needed.
-    refresh();
-  }, [demo, refresh]);
+    refresh(); // Recipes are frozen; no polling needed.
+  }, [refresh]);
 
   const onAct = useCallback(
     (name: string, action: RecipeAction) => {
@@ -67,10 +64,9 @@ export function RecipesPage() {
       if (action === "update") {
         // An update needs a folder, so it goes through the composer rather than firing an endpoint —
         // nothing moves here, and nothing is charged, until a folder is picked and Update code is hit.
-        const target = recipes.find((r) => r.name === name);
-        if (!target) return;
-        setEditing(target);
-        setComposing(true);
+        // Guarded like the New-recipe click below: only one composer open at a time.
+        if (active) return;
+        setActive(name);
         setActionError(null);
         return;
       }
@@ -81,24 +77,23 @@ export function RecipesPage() {
       // Run reshapes nothing here — it spawns a job that surfaces on the Queue, not on this page.
 
       setActionError(null);
-      if (demo) return;
       API[action as "run" | "delete"](name).catch((e) => {
         if (e instanceof Unauthorized) return logout();
         setActionError(`Couldn't ${action} recipe '${name}' — ${errMessage(e)} The shelf has been refreshed.`);
         refresh(); // an action that failed live: re-sync to the truth.
       });
     },
-    [demo, logout, recipes, refresh],
+    [active, logout, recipes, refresh],
   );
 
-  // Save a Recipe, new or re-captured: collapse to the grid at once, show a card that BLOOMS while its tree
-  // uploads, then settles to "frozen just now". Under ?demo the settle is a timer; live, the Head's answer
-  // replaces the optimistic card (and carries its true size_bytes).
+  // Save a Recipe, new or re-captured: collapse to a normal card at once, BLOOMING while its tree uploads,
+  // then settling to "frozen just now" when the Head's answer replaces the optimistic card (and carries
+  // its true size_bytes).
   //
   // A new save appends; an update replaces in place, so the shelf never briefly shows two of one Recipe.
   const onSave = useCallback(
     (r: RecipePayload) => {
-      const target = editing;
+      const target = active && active !== "new" ? recipes.find((x) => x.name === active) : undefined;
       const optimistic: Recipe = {
         name: r.name,
         script: r.script,
@@ -118,19 +113,10 @@ export function RecipesPage() {
       setRecipes((prev) =>
         target ? prev.map((x) => (x.name === target.name ? optimistic : x)) : [...prev, optimistic],
       );
-      setComposing(false);
-      setEditing(null);
+      setActive(null);
       setPending(0);
       setActionError(null);
 
-      if (demo) {
-        window.setTimeout(() => {
-          setRecipes((prev) =>
-            prev.map((x) => (x.name === r.name ? { ...x, updating: false, frozen_at: Date.now() } : x)),
-          );
-        }, 2600);
-        return;
-      }
       const sent = target ? updateRecipe(target.name, r) : createRecipe(r);
       sent
         .then((saved) => setRecipes((prev) => prev.map((x) => (x.name === r.name ? saved : x))))
@@ -143,11 +129,11 @@ export function RecipesPage() {
           refresh();
         });
     },
-    [demo, editing, logout, refresh],
+    [active, logout, recipes, refresh],
   );
 
   const used = recipes.reduce((n, r) => n + r.size_bytes, 0);
-  const empty = loaded && recipes.length === 0 && !composing;
+  const empty = loaded && recipes.length === 0 && active !== "new";
 
   return (
     <Page
@@ -160,15 +146,6 @@ export function RecipesPage() {
         ) : null
       }
     >
-      {demo && (
-        <p
-          className="mb-6 rounded-[10px] px-3 py-2 text-[13px]"
-          style={{ background: "color-mix(in oklab, var(--irid-low) 12%, transparent)", color: "var(--ink-soft)" }}
-        >
-          Demo data — not your real shelf. Drop the <span className="num">?demo</span> from the URL for your Recipes.
-        </p>
-      )}
-
       {actionError && (
         <p role="alert" className="mb-6 rounded-[10px] border px-3 py-2 text-[13px]"
            style={{ borderColor: "color-mix(in oklab, var(--alarm) 40%, transparent)", color: "var(--alarm)" }}>
@@ -179,44 +156,50 @@ export function RecipesPage() {
       <div className="space-y-8">
         <Storage recipes={recipes} hovered={hovered} pending={pending} />
 
-        {composing ? (
-          <RecipeComposer
-            // Delete-then-save: an update's own bytes come off before the new folder is weighed, so the
-            // wall previews exactly the arithmetic recipes.save does on the Head. Its name comes off the
-            // taken list for the same reason — a Recipe is not a duplicate of itself.
-            used={used - (editing?.size_bytes ?? 0)}
-            existingNames={recipes.map((r) => r.name).filter((n) => n !== editing?.name)}
-            editing={editing ?? undefined}
-            onPending={setPending}
-            onSave={onSave}
-            onCancel={() => {
-              setComposing(false);
-              setEditing(null);
-              setPending(0);
-            }}
-          />
-        ) : (
-          <section>
-            <h2 className="label mb-3 pl-1">My recipes</h2>
-            {empty && (
-              <p className="mb-3 px-1 text-[14px] text-ink-mute">
-                Nothing frozen yet. Freeze a project into a Recipe — then run it again from anywhere, with
-                nothing to hand.
-              </p>
-            )}
-            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <NewRecipeTile
-                onClick={() => {
-                  setEditing(null); // never inherit the last Update's prefill
-                  setComposing(true);
-                }}
+        <section>
+          <h2 className="label mb-3 pl-1">My recipes</h2>
+          {empty && (
+            <p className="mb-3 px-1 text-[14px] text-ink-mute">
+              Nothing frozen yet. Freeze a project into a Recipe — then run it again from anywhere, with
+              nothing to hand.
+            </p>
+          )}
+          {/* items-start: a spanning composer inflates its OWN row track (native grid sizing), but without
+              this every other card in that row (default align-items: stretch) would balloon to match —
+              dead space stretched into an otherwise normal card. Top-aligning instead lets them sit at
+              their natural height inside the tall row. */}
+          <ul className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {active === "new" ? (
+              <RecipeComposer
+                used={used}
+                existingNames={recipes.map((r) => r.name)}
+                onPending={setPending}
+                onSave={onSave}
+                onCancel={() => setActive(null)}
               />
-              {recipes.map((r) => (
+            ) : (
+              <NewRecipeTile onClick={() => !active && setActive("new")} />
+            )}
+            {recipes.map((r) =>
+              active === r.name ? (
+                <RecipeComposer
+                  key={r.name}
+                  // Delete-then-save: an update's own bytes come off before the new folder is weighed, so
+                  // the wall previews exactly the arithmetic recipes.save does on the Head. Its name comes
+                  // off the taken list for the same reason — a Recipe is not a duplicate of itself.
+                  used={used - r.size_bytes}
+                  existingNames={recipes.map((x) => x.name).filter((n) => n !== r.name)}
+                  editing={r}
+                  onPending={setPending}
+                  onSave={onSave}
+                  onCancel={() => setActive(null)}
+                />
+              ) : (
                 <RecipeCard key={r.name} recipe={r} onHover={setHovered} onAct={onAct} />
-              ))}
-            </ul>
-          </section>
-        )}
+              ),
+            )}
+          </ul>
+        </section>
       </div>
     </Page>
   );

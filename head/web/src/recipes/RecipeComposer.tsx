@@ -3,6 +3,7 @@ import { human, pick, type Picked } from "../project";
 import type { Recipe } from "../api";
 import { NumberField } from "../app/NumberField";
 import { Chip } from "../app/Chip";
+import { Tip } from "../app/Tip";
 import { ALLOWANCE, size } from "./format";
 
 /**
@@ -17,7 +18,10 @@ import { ALLOWANCE, size } from "./format";
  *     a save that wouldn't fit is blocked HERE, before the upload — the wall shows the breach in --alarm and
  *     this copy names how far over. You delete a Recipe to make room, never dismiss a warning.
  *
- * The composer is standalone (the Queue composer stays untouched); the drop strip is copied, not shared.
+ * IS a grid tile — its root is the `<li>` itself, row-spanning 2 so it grows in whichever cell it took over
+ * (the New-recipe tile, or the Recipe card being re-frozen) rather than replacing the whole shelf. That cell
+ * is narrow (one grid column wide), so the field grid below stacks single-column always, unlike the Spawn
+ * composer's roomy two-up layout.
  */
 
 const GB = 1024 ** 3;
@@ -173,7 +177,7 @@ export function RecipeComposer({
   };
 
   return (
-    <section className="surface [--sink:35%]" style={{ padding: "calc(var(--pad) + 50px) calc(var(--pad) + 50px)" }}>
+    <li className="shard [--sink:35%] row-span-2" style={{ padding: "1.9rem 1.9rem" }}>
       <h2 className="label mb-6">{editing ? `Update ${editing.name}` : "New recipe"}</h2>
 
       {/* An update replaces the snapshot, so say what is about to stop being true. Until Save lands, the
@@ -262,8 +266,8 @@ export function RecipeComposer({
           </p>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Labeled label="Name" className="sm:col-span-2">
+        <div className="grid gap-3">
+          <Labeled label="Name" help="What you'll call this Recipe when you run it later. It has to be unique among yours.">
             {/* Fixed while editing: an update replaces a snapshot in place, and letting the name move
                 through it would leave the old one behind holding bytes nobody meant to keep. */}
             <input
@@ -275,16 +279,16 @@ export function RecipeComposer({
             />
             {dup && <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>You already have a recipe named {trimmed}.</span>}
           </Labeled>
-          <Labeled label="Script" className="sm:col-span-2">
+          <Labeled label="Script" help="The file the cluster actually runs, relative to the folder you picked.">
             <input className="field" placeholder="train.py" value={script} onChange={(e) => setScript(e.target.value)} />
           </Labeled>
-          <Labeled label="Arguments" className="sm:col-span-2">
+          <Labeled label="Arguments" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
             <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
           </Labeled>
           {/* Declared outputs, frozen with the code — the same chips the Spawn composer uses, asked once
               here instead of on every run. Required: a Recipe with none is one the Head would refuse to
               run, and that is far better discovered now than the day you reach for it. */}
-          <Labeled label="Output folders" className="sm:col-span-2">
+          <Labeled label="Output folders" help="Folders your results are written into. Anything written outside them is recoverable for 30 minutes after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days.">
             <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
               {outputs.map((o) => (
                 <span
@@ -319,13 +323,8 @@ export function RecipeComposer({
                 onBlur={addOutput}
               />
             </div>
-            {outputError ? (
+            {outputError && (
               <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>{outputError}</span>
-            ) : (
-              <p className="mt-1.5 text-[12px] text-ink-mute">
-                Every run of this recipe writes here. Anything outside these folders is recoverable for
-                30 min after a Spawn ends, then gone; what lands in them is kept 7 days.
-              </p>
             )}
           </Labeled>
           {/* Experiment tracking, asked once and frozen with the code rather than on every run — see
@@ -336,16 +335,22 @@ export function RecipeComposer({
               that outlives it. Hiding these because the User has no key today would freeze a Recipe with
               no project for a reason that stops being true the moment they paste one. Off still hides
               project/entity — that is the User's own answer, not a fact about their account. */}
-          <div className="sm:col-span-2">
+          <div>
             <span className="label mb-1.5 block">Use W&amp;B?</span>
-            <div className="flex gap-1">
-              <Chip on={wandbLog} onClick={() => setWandbLog(true)}>Enabled</Chip>
-              <Chip on={!wandbLog} onClick={() => setWandbLog(false)}>Disabled</Chip>
-            </div>
+            <Tip
+              className="block"
+              focusable={false}
+              text="Whether this run logs to Weights &amp; Biases. Your stored key is used for every Spawn unless you turn it off here."
+            >
+              <div className="flex gap-1">
+                <Chip on={wandbLog} onClick={() => setWandbLog(true)}>Enabled</Chip>
+                <Chip on={!wandbLog} onClick={() => setWandbLog(false)}>Disabled</Chip>
+              </div>
+            </Tip>
           </div>
           {wandbLog && (
             <>
-              <Labeled label="W&B project">
+              <Labeled label="W&B project" help="Which W&B project this run logs into. Blank uses the cluster's default.">
                 <input
                   className="field"
                   placeholder="ccc"
@@ -353,7 +358,7 @@ export function RecipeComposer({
                   onChange={(e) => setWandbProject(e.target.value)}
                 />
               </Labeled>
-              <Labeled label="W&B entity">
+              <Labeled label="W&B entity" help="The W&B team or account the run logs under. Blank uses whatever your key's account defaults to.">
                 <input
                   className="field"
                   placeholder="account default"
@@ -363,13 +368,13 @@ export function RecipeComposer({
               </Labeled>
             </>
           )}
-          <Labeled label="Memory">
+          <Labeled label="Memory" help="How much GPU memory you need. Every card with at least this much becomes eligible, and the fastest free one takes the job — asking for more than you need narrows the pool and makes you wait longer.">
             <NumberField value={vram} onChange={setVram} min={1} placeholder="VRAM, GB" ariaLabel="Memory, VRAM in GB" />
           </Labeled>
-          <Labeled label="Time">
+          <Labeled label="Time" help="How long the run may take before it is killed. Karma is escrowed against it, so over-estimating costs you queue position and nothing else — the difference is refunded when the Spawn ends.">
             <NumberField value={minutes} onChange={setMinutes} min={1} placeholder="minutes" ariaLabel="Time in minutes" />
           </Labeled>
-          <Labeled label="GPUs">
+          <Labeled label="GPUs" help="How many separate cards this run holds at once. Each one is priced separately.">
             <NumberField value={gpu} onChange={(v) => setGpu(Number(v))} min={0} ariaLabel="GPUs" />
           </Labeled>
         </div>
@@ -385,15 +390,21 @@ export function RecipeComposer({
           </button>
         </div>
       </div>
-    </section>
+    </li>
   );
 }
 
-function Labeled({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+function Labeled({ label, help, className, children }: { label: string; help?: string; className?: string; children: React.ReactNode }) {
+  // The CONTROL is what you point at, not the label — same as the Spawn composer, and the strings are
+  // the same too: a Recipe asks the same questions, and the answers do not differ by being frozen.
   return (
     <label className={`block ${className ?? ""}`}>
       <span className="label mb-1.5 block">{label}</span>
-      {children}
+      {help ? (
+        <Tip text={help} className="block" focusable={false}>{children}</Tip>
+      ) : (
+        children
+      )}
     </label>
   );
 }

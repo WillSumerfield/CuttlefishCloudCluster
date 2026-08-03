@@ -24,7 +24,11 @@ const FADE_MASK = `${ramp("to right")}, ${ramp("to bottom")}`;
 
 export function NewRecipeTile({ onClick }: { onClick: () => void }) {
   return (
-    <li className="min-h-[150px]">
+    // self-stretch: the grid is items-start (RecipesPage.tsx's note, next to its <ul>) so a plain-content
+    // tile like this one no longer stretches to its row's height by default — without it, this reads
+    // shorter than the recipe cards beside it, which are tall enough on their own content to set that
+    // height.
+    <li className="min-h-[150px] self-stretch">
       <button
         onClick={onClick}
         className="group relative flex h-full w-full flex-col items-center justify-center gap-2"
