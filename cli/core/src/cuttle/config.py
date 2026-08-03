@@ -314,6 +314,22 @@ GUISE_GECOS = "CCC Guise"
 # The Head's one unattended sudo grant: sbatch/scancel/scontrol as a Guise. Not root — see templates.
 SUDOERS_CCC_SLURM = Path("/etc/sudoers.d/ccc-slurm")
 
+# --- the Licence account (temp/FEATURES_LICENCE.md) --------------------------------------------
+# An account that exists for ONE reason: its home directory is this Arm's **Licence** directory, so
+# that running a vendor's activation as it writes the activation state THERE instead of into a human's
+# home. Probed on hardware 2026-08-03: TurboActivate resolves its state directory through
+# getpwuid(getuid())->pw_dir and ignores $HOME, so the only way to choose where a licence lands is to
+# choose which uid activates it. Hand-copying the files instead does not work for long — they are named
+# from an obfuscated per-release token (absent from both TurboActivate.dat and the vlearn wheels, so
+# underivable), and every version bump renames all of them.
+#
+# NOT a pinned uid, unlike the Mantle above. That pin exists because Slurm setuid()s to the submitting
+# uid on every node, so the Mantle must be the same uid cluster-wide. This account never runs a Spawn,
+# never appears to Slurm and never leaves the box that holds the licence — a locally-allocated system
+# uid is correct, and staying out of the reserved 60000+ block means it can never shadow a Guise.
+LICENCE_USER = "ccc-licence"
+LICENCE_GECOS = "CCC Licence"   # matched as a prefix by teardown, exactly like GUISE_GECOS
+
 
 def guise_name(uid: int) -> str:
     """The Unix account a Spawn owned by this uid runs as. The ONLY place the name is formed."""

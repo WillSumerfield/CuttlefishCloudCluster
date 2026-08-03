@@ -282,6 +282,48 @@ def make_registry_dir() -> None:
          str(config.CCC_LIB)], sudo=True)
 
 
+def provision_licence_home(path: str) -> None:
+    """Create the **Licence** account (config.LICENCE_USER) with `path` as its home, so the vendor's
+    activation can be run AS it and land its state there.
+
+    This is the whole mechanism. TurboActivate picks its state directory with
+    getpwuid(getuid())->pw_dir and ignores $HOME (probed on hardware 2026-08-03), so the identity that
+    activates decides where the licence lives. Give an account this directory as its home, activate as
+    that account, and the files appear here at whatever names the installed release uses — nobody ever
+    has to find, name or copy them. `ccc_head_api.spawns.JOB_SCRIPT` then binds this directory at the
+    Guise's home inside the Pod, which is where the same getpwuid call looks from in there.
+
+    Group-owned by GUISE_GROUP and 2770, because a Spawn runs as a **Guise** — a different uid — and
+    still has to WRITE here: the activation record is rewritten on periodic online re-validation, and a
+    read-only licence would eventually go stale. setgid so files the re-validation creates inherit the
+    group rather than the Guise's own private one, which no other Guise could then read.
+
+    Idempotent. `--create-home` on an account that already exists is a no-op, and the mode is re-applied
+    every run — a re-setup that repaired nothing would be the surprising behaviour.
+    """
+    run(["groupadd", "--gid", str(config.GUISE_GROUP_GID), config.GUISE_GROUP], sudo=True, check=False)
+    # No --uid: locally allocated on purpose (see config.LICENCE_USER). --create-home makes `path`
+    # itself, including parents, which is why the operator is never asked to mkdir anything.
+    run(["useradd", "--system", "--home-dir", path, "--create-home", "--shell", "/usr/sbin/nologin",
+         "--comment", config.LICENCE_GECOS, config.LICENCE_USER], sudo=True, check=False)
+    # Re-pointed explicitly: useradd above is non-fatal, so an account left over from a setup that
+    # named a DIFFERENT directory would otherwise keep its old home and activate into the wrong place.
+    run(["usermod", "--home", path, config.LICENCE_USER], sudo=True, check=False)
+    run(["install", "-d", "-m", "2770", "-o", config.LICENCE_USER, "-g", config.GUISE_GROUP, path],
+        sudo=True)
+    # An empty Licence directory is a Feature this box advertises and cannot actually serve, and the
+    # Spawn-side symptom is a licensing error deep inside the vendor's library. So it goes in the
+    # end-of-run trouble summary (ui.warn), not past as a muted row — setup is not finished here.
+    # Listed through sudo: the directory is 2770 ccc-licence:ccc-guises and the operator is in neither,
+    # so a plain iterdir() here raises PermissionError on the box this is meant to help.
+    listing = run(["ls", "-A", path], sudo=True, capture_output=True, text=True, check=False)
+    if not (listing.stdout or "").strip():
+        ui.warn(f"{path} is empty — this box advertises a licensed Feature it cannot serve yet")
+        ui.hint(f"Activate the software ONCE as that account, e.g. "
+                f"`sudo -u {config.LICENCE_USER} <the vendor's activation>`. Same machine, so a "
+                f"node-locked licence should recognise its own hardware and not spend a second seat.")
+
+
 def provision_mantle() -> None:
     """Create the **Mantle** — the one identity every Spawn executes as — on THIS node, Head or Arm.
 
@@ -727,6 +769,8 @@ def _setup_head(address: str | None = None) -> None:
         if head_features:
             _write_root_file(config.ARM_FEATURES_ENV,
                              enroll.render_features_env(head_features, head_licence))
+        if head_licence:
+            provision_licence_home(head_licence)
     with ui.step("Configuring Slurm"):
         # `features` explicitly, not left to the registry: on a FIRST setup this box has no registry row
         # yet (register_head_arm runs below, after the admin exists), so there would be nothing to read
@@ -953,25 +997,33 @@ def _prompt_licence_home(existing: str = "") -> str:
     is where a licence manager looks — verified on hardware 2026-08-03: TurboActivate resolves its state
     directory through getpwuid()->pw_dir and cannot be redirected by any env var.
 
-    CCC only records the path. The owner populates it by hand and CCC never reads, copies or parses
-    what is in there: the formats are undocumented binaries from third-party SDKs whose filenames change
-    between releases, and a CCC that cannot touch a licence cannot break an activation.
+    The operator names a directory and CCC creates it, as the home of config.LICENCE_USER. They then
+    run the vendor's activation once as that account, which writes the state in. CCC still never reads,
+    copies or parses what lands there — it only owns the empty directory and the identity.
+
+    An earlier design had the operator hand-copy the files out of their own home. That is not viable:
+    they are named from an obfuscated per-release token that appears in neither TurboActivate.dat nor
+    the vlearn wheels, so it cannot be looked up, and a version bump renames every one of them — the
+    copy then goes stale silently, because the bind guard only tests that the directory exists.
 
     Must NOT be the operator's real home — it is bound into a Pod wholesale, so anything else living
-    there is handed to the Spawn along with it.
+    there is handed to the Spawn along with it. Giving it to a CCC-owned account makes that structural
+    rather than advisory.
     """
     if not ui.interactive():
         return existing
     ui.say("  [muted]Some of that software is licensed to the machine, and looks for its activation "
-           "files in the home directory of whoever runs it. CCC mounts one directory there so a "
-           "Spawn can find them.[/muted]")
+           "files in the home directory of whoever runs it — never at $HOME, always at the home in "
+           "/etc/passwd. So CCC gives the licence its own account, and mounts that account's home "
+           "into a Spawn.[/muted]")
     if not ui.ask_confirm("Does this box hold a machine licence for any of that software?",
                           bool(existing)):
         return ""
-    ui.hint("Make a directory holding ONLY activation state and copy the vendor's files in by hand "
-            "— CCC never touches them. NEVER your home directory: all of it is mounted into every "
-            "Spawn that asks for a Feature.")
-    return ui.ask_text("Licence directory on this box (absolute, e.g. /opt/ccc/licence)",
+    ui.hint(f"Name a directory that does not exist yet — CCC creates it as {config.LICENCE_USER}'s "
+            f"home. You then activate the software ONCE as that account and the files land there; you "
+            f"never have to find or copy them. Not your own home: all of it is mounted into every "
+            f"Spawn that asks for a Feature.")
+    return ui.ask_text("Licence directory for CCC to create (absolute, e.g. /opt/ccc/licence)",
                        existing).strip()
 
 
@@ -1083,6 +1135,8 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
             # bound only into Spawns that asked for a Feature (ccc_head_api.spawns.JOB_SCRIPT).
             _write_root_file(config.ARM_FEATURES_ENV,
                              enroll.render_features_env(features, licence_home))
+            if licence_home:
+                provision_licence_home(licence_home)
 
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     with ui.step("Starting slurmd"):

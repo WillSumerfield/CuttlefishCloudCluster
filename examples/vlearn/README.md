@@ -9,27 +9,29 @@ Design and the hardware probes behind it: `temp/FEATURES_LICENCE.md`.
 ## Prerequisites
 
 The Head must have the `vlearn` Feature in its catalog and a **Licence** directory recorded — both are
-prompted at `cuttle setup --head`.
+prompted at `cuttle setup --head`. You name a directory that does not exist yet; setup creates it as
+the home of the `ccc-licence` account.
 
-**What the licence actually is.** Not a `License.key`, and not `TurboActivate.dat` (that ships with the
-vlearn checkout — it is the product definition, part of the app, not machine state). TurboActivate
-scatters three small hidden files across the activated user's home, one per directory:
+Then activate vlearn **once** as that account:
 
-```
-~/.prof/.<token>      the saved product key, plaintext
-~/.local/.<token>     the activation record — rewritten on periodic online re-validation
-~/.config/.<token>
+```bash
+sudo -u ccc-licence env VL_WORKING_DIRECTORY=/path/to/vlearn-main <vlearn's activation>
 ```
 
-`<token>` is an obfuscated per-product string, the same in all three but permuted at the front, and not
-stable across vlearn releases. Find them with `ls -a ~/.prof ~/.local ~/.config`; `.prof/` holds
-nothing else, which is the easy one to start from.
+That is the whole setup. The activation files land in the licence directory by themselves, because
+TurboActivate chooses where to write by calling `getpwuid(getuid())->pw_dir` — it ignores `$HOME`
+entirely, so the identity that activates is what decides the location. At Spawn time CCC binds that
+directory at the Guise's home inside the Pod, where the same call finds it.
 
-The licence directory is a **copy**, keeping that layout — `<dir>/.prof/`, `<dir>/.local/`,
-`<dir>/.config/` — and holding **nothing else**: the whole directory is mounted into every Spawn that
-asks for a Feature, so anything else living there goes with it.
+**Why not just copy the files.** TurboActivate keeps its state in three small hidden files, one each
+under `~/.prof/`, `~/.local/` and `~/.config/`, named from an obfuscated per-release token. The token
+is in neither `TurboActivate.dat` nor the vlearn wheels, so it cannot be looked up or derived — and a
+version bump renames all three. A hand-made copy then goes stale silently, since the bind only checks
+that the directory exists. Activating as the account avoids all of it.
 
-Never point it at a real home directory.
+Never point the licence directory at a real home: the whole thing is mounted into every Spawn that
+asks for a Feature. Giving it to a CCC-owned account is what makes that structural rather than a rule
+to remember.
 
 ## Running it
 

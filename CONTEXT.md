@@ -185,7 +185,15 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm
   owner's licence and never carries its own — so a Feature that is licence-only still constrains
-  **Eligibility**, even though every eligible Arm could install the software.
+  **Eligibility**, even though every eligible Arm could install the software. It lives in one directory
+  per Arm, which is the home of the **Licence account**, and is bound at a **Guise**'s home inside the
+  **Pod**.
+- **Licence account** — `ccc-licence`, an account whose only purpose is its home directory. A licence
+  manager picks where to keep its state with `getpwuid(getuid())->pw_dir` and ignores `$HOME`, so the
+  only way to choose that location is to choose which identity activates the software. The Arm's owner
+  runs the vendor's activation once as this account; CCC creates the account and the directory, and
+  never reads what lands inside. `teardown` removes the account but never the directory — an
+  activation can be a finite resource, and teardown+setup is the routine redeploy here.
 
 ## Economy concepts
 

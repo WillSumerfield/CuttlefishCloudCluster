@@ -95,6 +95,7 @@ def remove_head_api() -> None:
     run(["rm", "-f", str(config.HEAD_API_UNIT), str(config.SUDOERS_CCC_SLURM)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
     remove_mantle()  # created by provision_head_auth -> provision_mantle
+    remove_licence_account()  # before remove_guises: it is in GUISE_GROUP
     remove_guises()  # one per User, created by provision_head_auth -> ensure_guise_accounts
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
@@ -292,6 +293,26 @@ def remove_guises() -> None:
     run(["groupdel", config.GUISE_GROUP], sudo=True, check=False)
 
 
+def remove_licence_account() -> None:
+    """Drop the **Licence** account, and deliberately NOT its home.
+
+    Called beside `remove_mantle`, which every teardown path already runs BEFORE `remove_guises` —
+    and that order is load-bearing here, because this account is a GUISE_GROUP member and the
+    `groupdel` at the end of `remove_guises` refuses a group that still has one.
+
+    `userdel` with no `--remove`, for a reason that does not apply to a Guise: this account's home is
+    the Licence directory, and what is in it is a machine activation the operator may only be able to
+    perform a limited number of times. Teardown is routine here — a full teardown+setup is the normal
+    redeploy — so destroying activation state on the way past would spend a real, finite resource on
+    a routine operation. The next setup re-creates the account pointing at the same directory and the
+    activation is simply still there.
+
+    The directory is left group-owned by GUISE_GROUP, whose gid is pinned (config.GUISE_GROUP_GID), so
+    it still resolves to the same group after the next setup re-creates it.
+    """
+    run(["userdel", config.LICENCE_USER], sudo=True, check=False)
+
+
 def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     """Reverse `setup --arm`. Leaves the mesh and wipes local state — but an Arm has no `headscale`
     binary, so it cannot delete its own node on the Head, which is left holding a live mesh address.
@@ -319,6 +340,7 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     with ui.step("Removing the cluster key and the CCC accounts"):
         remove_munge_key()
         remove_mantle()  # created by setup_arm.provision_mantle
+        remove_licence_account()  # before remove_guises: it is in GUISE_GROUP
         remove_guises()  # one per User whose Spawn ever landed here — created by the Slurm prolog
     if not keep_packages:
         with ui.step("Purging packages and repositories"):
@@ -408,6 +430,7 @@ def teardown_full(keep_packages: bool = False) -> None:
             remove_munge_key()
             remove_slurm_config()   # shared by both roles
             remove_mantle()
+            remove_licence_account()  # before remove_guises: it is in GUISE_GROUP
             remove_guises()
         if not keep_packages:
             with ui.step("Purging packages and repositories"):
