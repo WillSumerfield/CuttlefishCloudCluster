@@ -78,6 +78,13 @@ if out:
     os.chdir(out)
     print(f"ccc: writing runs/ under {out}", flush=True)
 
+# `train/` on sys.path, because the trainer does `from envs.ant_environment_gpu import ...` and
+# `envs` is a plain directory beside it. Running `python train/rl_games_train.py` would give this for
+# free — the interpreter puts a script's own directory at sys.path[0] — but runpy.run_path does NOT do
+# that for a script FILE (only for a directory or zipfile), so it has to be done by hand. Prepended,
+# matching where the interpreter would have put it.
+sys.path.insert(0, str(ROOT / "train"))
+
 # rl_games_train.py is a top-level script (no main()), so it runs on load and reads sys.argv itself.
 sys.argv = ["rl_games_train.py", *argv]
 runpy.run_path(str(ROOT / "train" / "rl_games_train.py"), run_name="__main__")
