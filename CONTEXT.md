@@ -173,11 +173,19 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Head knows who is billed for it, and only the Head can be asked about a Spawn that has ended.
 - **Shared storage** — the unified cluster-wide filesystem (home dirs, code, base envs) mounted
   identically on every node. Distinct from the `shared/` code context.
-- **Feature** — a named, admin-curated capability an Arm may report having (e.g. `vsim`, `isaacsim`) —
-  heavy or licence-gated software that isn't installed everywhere. Declared by the Arm owner at
-  `setup --arm` from the Head's catalog, never auto-probed. A Spawn requests one the same way it
-  declares VRAM: as a *need*, not a machine name — expanding **Eligibility** exactly like VRAM does.
-  The Head rejects a request no enrolled Arm can ever satisfy, same as an impossible VRAM ask.
+- **Feature** — a named, admin-curated capability an Arm may report having (e.g. `vlearn`, `isaacsim`).
+  Declared by the Arm owner at `setup --arm` from the Head's catalog, never auto-probed. A Spawn
+  requests one the same way it declares VRAM: as a *need*, not a machine name — expanding
+  **Eligibility** exactly like VRAM does. The Head rejects a request no enrolled Arm can ever satisfy,
+  same as an impossible VRAM ask.
+  A Feature is what the *Arm* supplies, which is not always the software: it may be a heavy install
+  that isn't everywhere, or only the **Licence** for software the submitter brings in their own
+  **Environment**, or both. `isaacsim` is the first shape, `vlearn` the second.
+- **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
+  software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
+  licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm
+  owner's licence and never carries its own — so a Feature that is licence-only still constrains
+  **Eligibility**, even though every eligible Arm could install the software.
 
 ## Economy concepts
 
