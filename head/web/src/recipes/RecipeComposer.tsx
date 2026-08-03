@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState } from "react";
-import { human, pick, type Picked } from "../project";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { human, pick, relPath, type Picked } from "../project";
 import type { Recipe } from "../api";
 import { NumberField } from "../app/NumberField";
 import { Chip } from "../app/Chip";
+import { Select } from "../app/Select";
 import { Tip } from "../app/Tip";
 import { ALLOWANCE, size } from "./format";
 
@@ -103,6 +104,19 @@ export function RecipeComposer({
     },
     [onPending],
   );
+
+  // The script picker's choices: every .py in the picked tree, so "script must exist" is true by
+  // construction — same as the Spawn composer. `editing`'s script prefills `script` before any folder is
+  // (re-)picked, so it survives here until a pick either confirms it (still present) or the effect below
+  // clears it (renamed/removed in the new folder).
+  const scriptOptions = useMemo(
+    () => (picked ? picked.files.filter((f) => f.name.endsWith(".py")).map(relPath).sort() : []),
+    [picked],
+  );
+
+  useEffect(() => {
+    if (script && !scriptOptions.includes(script) && picked) setScript("");
+  }, [scriptOptions, script, picked]);
 
   const rescan = useCallback(
     async (list: FileList | null, honorGitignore: boolean) => {
@@ -280,7 +294,27 @@ export function RecipeComposer({
             {dup && <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>You already have a recipe named {trimmed}.</span>}
           </Labeled>
           <Labeled label="Script" help="The file the cluster actually runs, relative to the folder you picked.">
-            <input className="field" placeholder="train.py" value={script} onChange={(e) => setScript(e.target.value)} />
+            {scriptOptions.length > 0 ? (
+              <Select
+                ariaLabel="Entry-point script"
+                value={script}
+                onChange={setScript}
+                options={[
+                  { value: "", label: "Choose a script…" },
+                  ...scriptOptions.map((p) => ({ value: p, label: p })),
+                ]}
+              />
+            ) : !picked && editing ? (
+              // Nothing picked yet, but there's a live snapshot's script to show — the dropdown has
+              // nothing to offer until a folder lands, so name what's still running instead of going blank.
+              <p className="field flex items-center text-[13px] text-ink-mute">
+                <span className="num text-ink-soft">{script}</span>&nbsp;— pick a folder to change it
+              </p>
+            ) : (
+              <p className="field flex items-center text-[13px] text-ink-mute">
+                no .py files in the picked folder
+              </p>
+            )}
           </Labeled>
           <Labeled label="Arguments" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
             <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
