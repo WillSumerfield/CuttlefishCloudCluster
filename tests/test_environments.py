@@ -240,7 +240,7 @@ def no_tools(monkeypatch, tmp_path):
 
 @pytest.fixture
 def with_tools(monkeypatch, tmp_path):
-    """A Head that has both build tools installed, and a cache it may write to."""
+    """A Head that has both build tools installed, and a cache + scratch it may write to."""
     d = tmp_path / "tools"
     d.mkdir(parents=True, exist_ok=True)
     for name in ("uv", "micromamba"):
@@ -249,6 +249,7 @@ def with_tools(monkeypatch, tmp_path):
     monkeypatch.setattr(env, "MICROMAMBA_BIN", d / "micromamba")
     monkeypatch.setattr(env, "TOOLS_DIR", d)
     monkeypatch.setattr(env, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(env, "TMP_DIR", tmp_path / "envtmp")
 
 
 def test_a_missing_tool_is_named_not_hidden(no_tools, tmp_path):
@@ -288,6 +289,70 @@ def test_the_build_can_reach_its_tools_inside_the_pod(with_tools, tmp_path, monk
     env.build(project, env.detect(project), "ccc-u60002")
     binds = [c[c.index("--bind") + 1] for c in seen if "--bind" in c]
     assert binds and all(f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in b for b in binds)
+
+
+class TestTheBuildScratchIsOnDisk:
+    """`--contain` gives the Pod a /tmp carved out of Apptainer's session directory — a RAM tmpfs
+    capped by `sessiondir max size` (64 MB on this fleet). pip, which is what an environment.yml's
+    `pip:` section runs, downloads into TMPDIR; a wheel larger than what is left of that 64 MB dies
+    with ENOSPC. Observed on hardware 2026-08-03 building vlearn's env: nvidia-cudnn-cu13 is 366 MB.
+
+    Worth pinning precisely because the symptom lies. pip reports the ENOSPC as "Download failed after
+    6 attempts ... This is an issue with network connectivity, not pip", so the failure reads as flaky
+    networking and the retries can never succeed."""
+
+    def _build(self, tmp_path, monkeypatch):
+        seen = []
+
+        class R:
+            returncode, stdout, stderr = 0, "", ""
+
+        monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
+        project = _project(tmp_path / "p", **{"environment.yml": ""})
+        env.build(project, env.detect(project), "ccc-u60002")
+        return seen
+
+    def test_tmpdir_is_moved_off_the_session_tmpfs(self, with_tools, tmp_path, monkeypatch):
+        seen = self._build(tmp_path, monkeypatch)
+        envs = [c[c.index("--env") + 1] for c in seen if "--env" in c]
+        assert envs and all("TMPDIR=/ccc-tmp" in e for e in envs)
+
+    def test_the_scratch_is_actually_bound(self, with_tools, tmp_path, monkeypatch):
+        """TMPDIR naming a path that is not bound would be worse than leaving it alone — the tools
+        would fail on a missing directory instead of a full one."""
+        seen = self._build(tmp_path, monkeypatch)
+        binds = [c[c.index("--bind") + 1] for c in seen if "--bind" in c]
+        assert binds and all(":/ccc-tmp" in b for b in binds)
+
+    def test_pips_download_cache_is_a_cache_not_scratch(self, with_tools, tmp_path, monkeypatch):
+        """Under /ccc-cache, which persists and is pruned — not /ccc-tmp, which is deleted after every
+        build. Otherwise pip re-downloads every wheel on every rebuild."""
+        seen = self._build(tmp_path, monkeypatch)
+        envs = [c[c.index("--env") + 1] for c in seen if "--env" in c]
+        assert envs and all("PIP_CACHE_DIR=/ccc-cache/pip" in e for e in envs)
+
+    def test_the_scratch_is_removed_when_the_build_ends(self, with_tools, tmp_path, monkeypatch):
+        """Per-build and deleted in a `finally`: a timed-out build leaves partial downloads behind, and
+        nothing ever looks in this tree again — prune_cache deliberately does not cover it."""
+        self._build(tmp_path, monkeypatch)
+        assert list(env.TMP_DIR.iterdir()) == []
+
+    def test_it_survives_a_failed_build(self, with_tools, tmp_path, monkeypatch):
+        """The failing build is exactly the one that leaves the biggest partial download behind."""
+        class R:
+            returncode, stdout, stderr = 1, "", "boom"
+
+        monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: R())
+        project = _project(tmp_path / "p", **{"environment.yml": ""})
+        with pytest.raises(env.BuildError):
+            env.build(project, env.detect(project), "ccc-u60002")
+        assert list(env.TMP_DIR.iterdir()) == []
+
+    def test_the_scratch_is_not_swept_by_the_cache_reaper(self, with_tools, tmp_path, monkeypatch):
+        """prune_cache empties the WHOLE cache when over the cap. With the scratch inside it, one
+        build finishing would delete another's half-downloaded wheel out from under it."""
+        assert env.TMP_DIR not in env.CACHE_DIR.parents
+        assert env.CACHE_DIR not in env.TMP_DIR.parents
 
 
 def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools, tmp_path, monkeypatch):

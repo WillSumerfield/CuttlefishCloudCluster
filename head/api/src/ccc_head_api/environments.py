@@ -52,6 +52,7 @@ repo is not an instruction to the cluster.
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,6 +79,20 @@ MICROMAMBA_BIN = TOOLS_DIR / "micromamba"
 # The package download cache — NOT an env cache. Mantle-owned, never staged to an Arm, never per-User.
 CACHE_DIR = Path(os.environ.get("CCC_ENV_CACHE", "/var/lib/ccc/head/envcache"))
 CACHE_MAX_BYTES = int(os.environ.get("CCC_ENV_CACHE_MAX", 20 * 1024**3))
+
+# Scratch for the build tools, on DISK. `--contain` gives the Pod a /tmp carved out of Apptainer's
+# session directory, which is a RAM tmpfs capped by `sessiondir max size` in apptainer.conf (64 MB on
+# this fleet). uv is already pointed at the cache below, but pip — which is what an environment.yml's
+# `pip:` section runs — writes its downloads to TMPDIR, so any wheel bigger than what is left of that
+# 64 MB dies. Observed 2026-08-03: nvidia-cudnn-cu13 is 366 MB, and pip reports the resulting ENOSPC
+# as "Download failed ... This is an issue with network connectivity, not pip", which sends anyone
+# reading it after the network instead of the disk.
+#
+# A sibling of CACHE_DIR rather than a directory inside it, because prune_cache below empties the
+# WHOLE cache when it is over the cap — with the scratch in there, one build finishing could delete
+# another's half-downloaded wheel out from under it. Nothing here is cache: it is per-build and
+# deleted when that build ends.
+TMP_DIR = Path(os.environ.get("CCC_ENV_TMP", "/var/lib/ccc/head/envtmp"))
 
 # Clears a hung solver without killing a legitimately slow one: uv resolves in seconds, a real conda
 # solve can take minutes.
@@ -249,23 +264,39 @@ def build(project: Path, m: Manifest, guise: str) -> str:
     start — apptainer binds it, it does not create it, and a root-owned mountpoint would leave the build
     unable to write into its own prefix.
     """
-    from .spawns import CCC_SIF  # local: spawns imports this module, and the constant lives there
-
     env_dir = project / ENV_DIRNAME
     if env_dir.exists():
         shutil.rmtree(env_dir, ignore_errors=True)
     env_dir.mkdir(parents=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    # 0777 on the two directories the Guise must write: the Mantle owns them, and a Guise is a separate
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(TMP_DIR, 0o777)
+    # Per-build, so two Spawns building at once cannot collide in each other's scratch, and so the
+    # `finally` below can delete this one's leftovers without touching a build still running.
+    build_tmp = Path(tempfile.mkdtemp(dir=TMP_DIR))
+    # 0777 on every directory the Guise must write: the Mantle owns them, and a Guise is a separate
     # uid in a shared group. Deliberately not a chown — the Mantle cannot give away what it owns without
     # privilege it does not have, and this whole module is built on the Head never needing root.
-    for d in (env_dir, CACHE_DIR):
+    for d in (env_dir, CACHE_DIR, build_tmp):
         os.chmod(d, 0o777)
+
+    try:
+        return _run_build(project, m, guise, env_dir, build_tmp)
+    finally:
+        # Always: a timed-out or failed build leaves partial downloads behind, and nothing else ever
+        # looks in here again. prune_cache does not cover this tree by design (see TMP_DIR).
+        shutil.rmtree(build_tmp, ignore_errors=True)
+
+
+def _run_build(project: Path, m: Manifest, guise: str, env_dir: Path, build_tmp: Path) -> str:
+    """The build itself. Split out of `build` only so the scratch it is given is cleaned up whatever
+    happens to it — every exit from here is inside that caller's `finally`."""
+    from .spawns import CCC_SIF  # local: spawns imports this module, and the constant lives there
 
     log = [f"$ ccc build {m.summary}"]
     for argv in render_build(m):
         # --contain: the build gets the same walls the payload gets, and nothing of the Head's
-        # filesystem beyond the four paths named here. TOOLS_DIR is bound read-only because uv and
+        # filesystem beyond the five paths named here. TOOLS_DIR is bound read-only because uv and
         # micromamba are the one thing in this command that lives on the HEAD rather than in the image
         # — without the bind, `--contain` means the binary named in argv does not exist inside the Pod.
         # No --nv: a build needs no GPU, and asking for one on a Head whose cards are all busy would
@@ -273,12 +304,20 @@ def build(project: Path, m: Manifest, guise: str) -> str:
         cmd = guises.as_owner([
             "apptainer", "exec", "--contain", "--pid", "--pwd", str(project),
             "--bind", f"{project},{env_dir}:{ENV_MOUNT},{CACHE_DIR}:/ccc-cache,"
-                      f"{TOOLS_DIR}:{TOOLS_DIR}:ro",
+                      f"{build_tmp}:/ccc-tmp,{TOOLS_DIR}:{TOOLS_DIR}:ro",
             # UV_PROJECT_ENVIRONMENT is what points `uv sync` at ENV_MOUNT instead of the `.venv` it
             # would otherwise create beside the manifest, in a project directory the Guise cannot write
             # (see render_build). Harmless on the other two paths, which never consult it.
+            #
+            # TMPDIR moves every tool's scratch off the Pod's 64 MB RAM /tmp and onto disk (see
+            # TMP_DIR) — set for all three build paths, not just pip's: uv stages large artifacts
+            # through TMPDIR too, and the failure mode is identical.
+            # PIP_CACHE_DIR is the download cache, so it belongs with the OTHER caches rather than in
+            # the scratch that is deleted after every build — without it pip re-fetches every wheel on
+            # every rebuild, and its HTTP cache would land back on the tmpfs this is fixing.
             "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PROJECT_ENVIRONMENT={ENV_MOUNT},"
-                     f"MAMBA_ROOT_PREFIX=/ccc-cache/mamba,LC_ALL=C.UTF-8,LANG=C.UTF-8",
+                     f"MAMBA_ROOT_PREFIX=/ccc-cache/mamba,TMPDIR=/ccc-tmp,"
+                     f"PIP_CACHE_DIR=/ccc-cache/pip,LC_ALL=C.UTF-8,LANG=C.UTF-8",
             str(CCC_SIF), *argv,
         ], guise)
         log.append(f"$ {' '.join(argv)}")
