@@ -840,7 +840,8 @@ def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None)
     """Ask which of the Head's known Arm Features (`cuttle feature add`) this box has, and where each
     is installed — `[{"name", "path"}, ...]`, /enroll's shape. A y/n per catalog entry rather than a
     free-typed name: the catalog IS the only valid answer set (Head-side validation is the real gate,
-    but there is no reason to let a typo reach it).
+    but there is no reason to let a typo reach it). The path is likewise re-asked until non-empty,
+    mirroring the rule /enroll already enforces, so the failure lands next to the question.
 
     On a re-setup, what this box already declared is offered as-is first. A full teardown+setup is the
     normal redeploy here, so re-walking an unchanged list is the common case, not the rare one — and a
@@ -860,12 +861,30 @@ def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None)
         ui.say(f"  [muted]already declared: {shown}[/muted]")
         if ui.ask_confirm("Keep these Arm Features?", True):
             return existing
+    ui.say(f"  [muted]Which of the cluster's Features does THIS box have? "
+           f"({', '.join(catalog)})[/muted]")
+    ui.hint("Yes only for what is really here — a Spawn asking for it can be sent nowhere else.")
     prior = {f["name"]: f["path"] for f in existing}
     features = []
     for name in catalog:
-        if ui.ask_confirm(f"Does this Arm have the {name!r} feature?", name in prior):
-            path = ui.ask_text(f"Install path for {name!r} on this box?", prior.get(name, ""))
-            features.append({"name": name, "path": path})
+        if not ui.ask_confirm(f"Does this Arm have {name!r}?", name in prior):
+            continue
+        # Absolute, because the answer is read back on an Arm from /etc/ccc/features.env by a job
+        # script whose working directory is the Spawn's staging dir — a relative path resolves
+        # against something the operator answering here cannot see.
+        var = re.sub(r"[^A-Za-z0-9]", "_", name).upper() + "_PATH"
+        ui.hint(f"Where {name} lives on this box — absolute, e.g. /opt/{name}. Spawns see it as "
+                f"${var}. Brought by the submitter instead? Point it at what this box does supply, "
+                f"such as the licence directory below; the Head will not take an empty path.")
+        # Re-asked here rather than left to the Head: /enroll rejects an empty path (enroll.py, "needs
+        # a non-empty install path"), and a donor discovering that as a 422 mid-enrollment has already
+        # sat through the whole wizard.
+        while True:
+            path = ui.ask_text(f"Install path for {name!r}:", prior.get(name, "")).strip()
+            if path:
+                break
+            ui.warn(f"  {name!r} needs an install path — the Head refuses a declaration without one")
+        features.append({"name": name, "path": path})
     return features
 
 
@@ -909,11 +928,13 @@ def _prompt_feature_catalog(existing: list[str]) -> list[str]:
         ui.say(f"  [muted]catalog: {', '.join(existing)}[/muted]")
         if ui.ask_confirm("Keep this Arm Feature catalog?", True):
             return existing
-    ui.hint("Heavy or licence-gated software that isn't installed on every Arm, like vlearn or "
-            "isaacsim. Blank to finish.")
+    ui.say("  [muted]Name the heavy or licence-gated software some boxes have and others don't — "
+           "vlearn, isaacsim. Each Arm later declares which it has; submitters ask with "
+           "`cuttle run --feature <name>`.[/muted]")
+    ui.hint("One name per line, blank line to finish. None? Blank line now — you can re-run this.")
     names: list[str] = []
     while True:
-        name = ui.ask_text("Feature name?", "").strip()
+        name = ui.ask_text("Feature name", "").strip()
         if not name:
             return names
         if not re.match(config.FEATURE_NAME_RE, name):
@@ -941,11 +962,17 @@ def _prompt_licence_home(existing: str = "") -> str:
     """
     if not ui.interactive():
         return existing
-    if not ui.ask_confirm("Does this box hold a licence for any of that software?", bool(existing)):
+    ui.say("  [muted]Some of that software is licensed to the machine, and looks for its activation "
+           "files in the home directory of whoever runs it. CCC mounts one directory there so a "
+           "Spawn can find them.[/muted]")
+    if not ui.ask_confirm("Does this box hold a machine licence for any of that software?",
+                          bool(existing)):
         return ""
-    ui.hint("A directory holding ONLY licence/activation state — never your home directory: it is "
-            "mounted into every Spawn that asks for a Feature.")
-    return ui.ask_text("Licence directory on this box?", existing).strip()
+    ui.hint("Make a directory holding ONLY activation state and copy the vendor's files in by hand "
+            "— CCC never touches them. NEVER your home directory: all of it is mounted into every "
+            "Spawn that asks for a Feature.")
+    return ui.ask_text("Licence directory on this box (absolute, e.g. /opt/ccc/licence)",
+                       existing).strip()
 
 
 def setup_arm(token: str, re_enroll: bool = False) -> None:

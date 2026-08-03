@@ -9,9 +9,25 @@ Design and the hardware probes behind it: `temp/FEATURES_LICENCE.md`.
 ## Prerequisites
 
 The Head must have the `vlearn` Feature in its catalog and a **Licence** directory recorded — both are
-prompted at `cuttle setup --head`. The licence directory holds a copy of the TurboActivate activation
-state (`.prof/`, `.local/`, `.config/` from an activated user's home) and **nothing else**: it is
-mounted into every Spawn that asks for a Feature, so anything else living there goes with it.
+prompted at `cuttle setup --head`.
+
+**What the licence actually is.** Not a `License.key`, and not `TurboActivate.dat` (that ships with the
+vlearn checkout — it is the product definition, part of the app, not machine state). TurboActivate
+scatters three small hidden files across the activated user's home, one per directory:
+
+```
+~/.prof/.<token>      the saved product key, plaintext
+~/.local/.<token>     the activation record — rewritten on periodic online re-validation
+~/.config/.<token>
+```
+
+`<token>` is an obfuscated per-product string, the same in all three but permuted at the front, and not
+stable across vlearn releases. Find them with `ls -a ~/.prof ~/.local ~/.config`; `.prof/` holds
+nothing else, which is the easy one to start from.
+
+The licence directory is a **copy**, keeping that layout — `<dir>/.prof/`, `<dir>/.local/`,
+`<dir>/.config/` — and holding **nothing else**: the whole directory is mounted into every Spawn that
+asks for a Feature, so anything else living there goes with it.
 
 Never point it at a real home directory.
 
