@@ -1,11 +1,11 @@
-"""Server-side Spawn submission + inspection (Phase 3a slice 2).
+"""Server-side Spawn submission + inspection.
 
-This is the render + stage machinery that used to live in the CLI's `cuttle/spawns.py`. It moved here
-when `cuttle run` stopped being Head-local: the CLI now tars its working dir and POSTs it, and the
-Head API (running as the **Mantle**, the `ccc` account) unpacks it, renders the sbatch script, submits
-it **as the submitter's Guise** over the munge socket (munged authenticates whichever local uid calls
-it, so becoming the Guise is enough — no munge.key is ever read), and records an Attribution row. Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back
-over the API — the submitter never touches the Head's disk.
+The render + stage machinery for `cuttle run`: the CLI tars its working dir and POSTs it, and the Head
+API (running as the **Mantle**, the `ccc` account) unpacks it, renders the sbatch script, submits it
+**as the submitter's Guise** over the munge socket (munged authenticates whichever local uid calls it,
+so becoming the Guise is enough — no munge.key is ever read), and records an Attribution row.
+Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back over the API —
+the submitter never touches the Head's disk.
 
 Every Spawn runs as its submitter's **Guise** on EVERY node, under one uid pinned cluster-wide (see
 guises.py). That is what makes a remote Arm work at all: slurmd setuid()s to the submitting uid, so
@@ -15,7 +15,7 @@ more, and a Spawn that does is a bug. A Guise is home-less by design, like the M
 nothing here is resolved against a home directory: the Pod image is at one absolute path on every node
 (CCC_SIF) and a remote Arm scratches in /tmp.
 
-Isolation (grill 2026-07-12c). A job NEVER runs in the tree the rsync daemon serves — that would
+Isolation: a job NEVER runs in the tree the rsync daemon serves — that would
 mutate the copy it serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
 branch is "are the files already on this node?":
   * Head's co-located Arm — the <uuid> upload is on this FS. COPY it into node-local scratch, run
@@ -64,9 +64,9 @@ SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 CCC_SIF = Path(os.environ.get("CCC_SIF", "/opt/ccc/images/base.sif"))
 MESH_IP = os.environ.get("CCC_MESH_IP", "")
 
-# Per-User concurrent-Spawn cap (Phase 8 loose end — see docs/TODO.md's "No rate-limiting anywhere").
-# Escrow already prices queue-flooding but never hard-stops it; this does. Admins are exempt — they are
-# already outside the Karma economy (see submit_checked, db.spawn_owners).
+# Per-User concurrent-Spawn cap. Escrow already prices queue-flooding but never hard-stops it; this
+# does. Admins are exempt — they are already outside the Karma economy (see submit_checked,
+# db.spawn_owners).
 MAX_CONCURRENT_SPAWNS = 10
 
 # %%NAME%% placeholders (not str.format) so bash's own ${...} needs no escaping. Wrapper stdout/stderr
@@ -367,26 +367,23 @@ exit $rc
 
 # The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
 # periodic $CCC_OUT pusher — is identical either way, which is the whole point of the slot: a Tide Pool
-# (docs/TODO.md) is a normal Spawn that happens to run a live shell instead of a script, not a second
-# pipeline.
+# is a normal Spawn that happens to run a live shell instead of a script, not a second pipeline.
 #
-# `--contain --pid --pwd "$proj"` is the containment set (verified on hardware 2026-07-31, apptainer
-# 1.5.3), and it is what makes a Pod a boundary rather than a packaging format. Apptainer's own model is
-# "the user inside is the user outside" — and outside used to be the Mantle, which owns head.db,
-# head.key, and every User's upload. Without these flags a payload reached all of it through
-# `/proc/<pid>/root` of any ccc-owned host process. A **Guise** now moves those valuables out of the
-# room entirely; these flags are still what locks the door, and neither alone is the whole answer:
+# `--contain --pid --pwd "$proj"` is the containment set (apptainer 1.5.3), and it is what makes a Pod a
+# boundary rather than a packaging format. Apptainer's own model is "the user inside is the user
+# outside", so without these flags a payload could reach whatever the outside account holds through
+# `/proc/<pid>/root` of any host process owned by that uid. A **Guise** is homeless and holds no
+# secrets; these flags are what actually locks the door around it:
 #
 # * `--contain` drops the automatic $HOME/tmp/cwd binds and gives the Pod a private, empty /tmp — so a
 #   Spawn on a shared Arm can no longer read every concurrent Spawn's scratch. It also blocks the host
-#   passwd/group bind on its own (measured: host 55 lines -> image 21), which is why `--no-mount` below
-#   is now belt-and-braces rather than the load-bearing thing it used to be.
+#   passwd/group bind by itself (host 55 lines -> image 21), which is why `--no-mount` below is
+#   belt-and-braces rather than load-bearing.
 # * `--pid` puts the payload in its own PID namespace with its own procfs — the single flag that closes
 #   `/proc/<pid>/root` and `/proc/<pid>/environ` (another Spawn's WANDB_API_KEY). Apptainer starts its
 #   own `appinit` shim as PID 1, so there is no zombie-reaping problem and no tini to ship.
-# * `--pwd "$proj"` is load-bearing, not cosmetic: `--contain` drops the cwd auto-bind this payload
-#   used to rely on to find %%SCRIPT%%, so $proj is now bound EXPLICITLY and named as the working dir.
-#   Without it cwd is $HOME and `python <script>` fails outright.
+# * `--pwd "$proj"` is load-bearing, not cosmetic: `--contain` drops the cwd auto-bind, so $proj must be
+#   bound EXPLICITLY and named as the working dir, or cwd is $HOME and `python <script>` fails outright.
 #
 # LC_ALL/LANG: the base PyTorch image never ran locale-gen, so any inherited locale makes the payload's
 # own shell/tooling write a "cannot change locale" warning into the Spawn's `err` before it has done
@@ -407,33 +404,31 @@ apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/gr
 # makes that reachable from a client that is not a Mesh member.
 #
 # `--contain --pid --pwd "$proj"` applies here for exactly the reasons it applies to PAYLOAD_SCRIPT
-# (see above) — and it matters MORE here, because this payload hands a User a live interactive shell
-# rather than running a script they wrote. Verified end to end on hardware (2026-07-31) against the full
-# boot path below: sshd, pubkey auth, `UsePAM=no` and an interactive pty all work under containment
-# (`--contain`'s minimal /dev still provides devpts), /tmp is private and empty, and the PID namespace
-# holds — `/proc/1/root` is the container root, not the host's.
+# above — and matters MORE here, since this payload hands a User a live interactive shell rather than
+# running a script they wrote. Confirmed end to end against the full boot path below: sshd, pubkey
+# auth, `UsePAM=no` and an interactive pty all work under containment (`--contain`'s minimal /dev still
+# provides devpts), /tmp is private and empty, and the PID namespace holds — `/proc/1/root` is the
+# container root, not the host's.
 #
 # sshd never setuid()s: the "login" is to the SAME uid already running the Pod (the submitter's
 # **Guise**, homeless-by-design on the host — see the module docstring), so there is no privilege drop
 # to fail. The Arm-side account it needs is provisioned by the Slurm prolog before the job step, not by
-# sshd. That still needs the connecting uid to resolve via getpwuid — and it does, but NOT under the
-# name this once assumed.
+# sshd — which still needs the connecting uid to resolve via getpwuid.
 #
-# Found on real hardware (2026-07-30/31), in two parts:
+# Two things have to be true together, or a Guise's shell isn't actually isolated:
 #
 # 1. The HOST's passwd/group must not land over the image's own, or every OTHER host account (not just
-#    the invoking one's) leaks into the Pod. `--contain` now does this by itself (measured: host 55 lines ->
-#    image 21); `--no-mount /etc/passwd,/etc/group` is kept below as an explicit statement of intent,
-#    not because anything depends on it any more.
-# 2. Neither flag is enough on its own: with --writable-tmpfs (needed below so sshd can write host keys
-#    + authorized_keys), apptainer still patches /etc/passwd for the INVOKING uid in place — a direct
-#    edit to the writable overlay, not a bind, so no mount-level flag touches it. It does not add a fake
-#    line; it overwrites templates.BASE_DEF_TMPL's baked `mantle:...:/home/mantle:...` entry, in place,
-#    with the invoking uid's REAL host identity — measured again under a Guise (Probe 1b, 2026-07-31):
-#    `ccc-u60002:x:60002:60002:CCC Guise:/home/ccc-u60002:/bin/bash`. So the home inside the Pod is the
-#    Guise's, not `/home/mantle` and no longer `/home/ccc`, and the boot script below reads it back out
-#    of getpwuid rather than naming it — it is per-User now, and the Head is the only side that knows
-#    the uid. The CLI connects as that same account (tidepool.py, from `GET /spawns/{id}/tidepool`).
+#    the invoking one's) leaks into the Pod. `--contain` does this by itself (host 55 lines -> image
+#    21); `--no-mount /etc/passwd,/etc/group` is kept below as an explicit statement of intent, not
+#    because anything depends on it.
+# 2. Neither flag is enough alone: with --writable-tmpfs (needed below so sshd can write host keys +
+#    authorized_keys), apptainer still patches /etc/passwd for the INVOKING uid in place — a direct
+#    edit to the writable overlay, not a bind, so no mount-level flag touches it. It overwrites
+#    templates.BASE_DEF_TMPL's baked `mantle:...:/home/mantle:...` entry with the invoking uid's REAL
+#    host identity — confirmed under a Guise: `ccc-u60002:x:60002:60002:CCC Guise:/home/ccc-u60002:
+#    /bin/bash`. So the home inside the Pod is the Guise's, and the boot script below reads it back out
+#    of getpwuid rather than naming it — it's per-User, and the Head is the only side that knows the
+#    uid. The CLI connects as that same account (tidepool.py, from `GET /spawns/{id}/tidepool`).
 PAYLOAD_TIDEPOOL = """\
 cat > "$scratch/tp_boot.sh" <<'CCC_TP_BOOT'
 #!/bin/bash
@@ -545,7 +540,7 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # is not a credential (`projects/<uuid>` is 0700 and its ACL names one Guise), so it needs no
         # separate nonce; 8 chars is far past enough to never collide inside one /tmp.
         "%%SINK_TAG%%": Path(staging).name[:8],
-        # Recovery Window (docs/TODO.md): the per-Spawn cap `recover_scratch` gates on, both branches.
+        # Recovery Window: the per-Spawn cap `recover_scratch` gates on, both branches.
         "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
         # The Spawn's **Environment** (environments.py). Every one of these is a constant, not a
@@ -568,8 +563,8 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
         # One `mkdir -p` per declared name, all under the same $ccc_out root — validated (OUTPUT_NAME_RE)
-        # before this is ever built, so quoting is enough. Empty only for a Tide Pool (docs/TODO.md): the
-        # "at least one --output" gate is skipped for it alone, so this line is simply blank there.
+        # before this is ever built, so quoting is enough. Empty only for a Tide Pool: the "at least
+        # one --output" gate is skipped for it alone, so this line is simply blank there.
         "%%MKDIR_OUTPUTS%%": "\n".join(f'mkdir -p "$ccc_out/{name}"' for name in outputs),
         # Only ever non-empty when `payload` is PAYLOAD_TIDEPOOL, which is the only place either token
         # appears — an ordinary Spawn's rendered script never even contains the literal string.
@@ -600,8 +595,8 @@ def _lend_project(staging: Path, guise: str) -> None:
     beside the manifest (always — there is no flag that resolves without recording it, and --frozen
     needs a lock that a `pyproject.toml`-only project has not got); micromamba writes the pip
     requirements it hands to `pip` beside `environment.yml`; a src-layout build backend writes its
-    egg-info. Each of those came back as "Permission denied (os error 13)" and took the Spawn with it
-    (hardware, 2026-08-02, Spawn 15). Nothing is given away by allowing it: the writer is the submitter
+    egg-info. Each of those came back as "Permission denied (os error 13)" and took the Spawn with it.
+    Nothing is given away by allowing it: the writer is the submitter
     of this upload, acting on their own files, one uuid that no other User can name — and what a build
     leaves behind (a lock naming exactly what got installed) is worth carrying to the Arm, which it is,
     since stage-in copies the project after the build.
@@ -639,13 +634,13 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
 
     `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
     never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally. A
-    Tide Pool (docs/TODO.md) still uploads one (an empty gzip-tar — every client sends the same wire
-    shape) since there is no project to run; `script` rides along as None and the tar's member list is
-    never checked against it.
+    Tide Pool still uploads one (an empty gzip-tar — every client sends the same wire shape) since
+    there is no project to run; `script` rides along as None and the tar's member list is never checked
+    against it.
 
-    `outputs` names the subdirs made under the one `$CCC_OUT` root before the payload runs (docs/TODO.md's
-    now-closed "Spawn Output Enforcement") — checked here, not just at the HTTP boundary, so the
-    Head-local pinned path (`cuttle run --node`) gets the identical guarantee. Both checks below (outputs
+    `outputs` names the subdirs made under the one `$CCC_OUT` root before the payload runs — checked
+    here, not just at the HTTP boundary, so the Head-local pinned path (`cuttle run --node`) gets the
+    identical guarantee. Both checks below (outputs
     non-empty, script present in the tar) are hard validation for an ORDINARY Spawn: a Spawn that failed
     either would either write nowhere retrievable or never start at all, so neither is worth a Spawn's
     Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no script to
@@ -751,15 +746,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # `env_keep` on the sudoers rule (cuttle.headapi) — without that every Spawn would silently log
     # nothing, which a User only discovers afterwards in an empty W&B project.
     env = {**os.environ, **wandb_env}
-    # The script goes in on STDIN, not as a path. It used to be a 0600 NamedTemporaryFile owned by the
-    # Mantle, which the Guise sbatch now runs as cannot read — and feeding it here is strictly better
-    # anyway: there is no temp file to leak the project's full file list, and the delete-after-return
-    # dance goes with it.
+    # The script goes in on STDIN, not as a path: a temp file would need to be readable by the Guise
+    # sbatch runs as, and feeding it here is strictly better anyway — there is no temp file to leak the
+    # project's full file list, and no delete-after-return dance needed.
     try:
         # --no-requeue: a Spawn runs ONCE (CONTEXT.md). `JobRequeue` is unset in the conf template so
         # Slurm's default (1) would otherwise apply, and a requeued job re-runs this script from the
-        # top — re-staging a project stage-in has already deleted (docs/TODO.md "Storage retention",
-        # ccc_head_api.projects). It also makes explicit what retraction already assumed: a Spawn whose
+        # top — re-staging a project stage-in has already deleted (see ccc_head_api.projects). It also
+        # makes explicit what retraction already assumed: a Spawn whose
         # node failed is a failed Spawn, not one that quietly restarts somewhere else hours later,
         # having been re-billed for and re-queued behind everyone who was waiting.
         # --hold when an Environment is being built: the Spawn gets its real id, Attribution and Escrow
@@ -929,10 +923,9 @@ def _fail_spawn(job_id: int, guise: str, message: str) -> None:
 def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True) -> dict[str, str]:
     """The Spawn's W&B environment: **the Head owns the key, the client owns the run.**
 
-    A client used to send the whole thing, which is why the Dashboard had no metrics at all — the
-    browser has no key to send, so it sent `WANDB_MODE=disabled` on every Spawn. The key is now the
-    submitting User's, held here (db.get_wandb_key), and only the run's *identity* still comes from the
-    client: WANDB_PROJECT and WANDB_ENTITY, which are `cuttle run --project/--entity`.
+    The key belongs to the Head, tied to the submitting User (db.get_wandb_key) — a browser has no
+    config file to hold one. Only the run's *identity* still comes from the client: WANDB_PROJECT and
+    WANDB_ENTITY, which are `cuttle run --project/--entity`.
 
     Anything else the client sent is dropped, `WANDB_API_KEY` and `WANDB_MODE` above all. Honouring a
     client-sent key would let a submitter log another User's Spawns into an account of their choosing,
@@ -969,11 +962,10 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    background_build: bool = True) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
-    Extracted in Phase 6, when pinning a Spawn to an Arm (`node`) stopped being reachable over HTTP and
-    became a Head-local command. Both callers come through here so a pinned Spawn is priced and
-    recorded **exactly** like any other. The alternative — letting the Head-local path shell out to
-    `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that consumes a
-    donated card while nobody pays for it, and that no ledger can explain.
+    Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
+    priced and recorded **exactly** like any other. The alternative — letting the Head-local path shell
+    out to `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that
+    consumes a donated card while nobody pays for it, and that no ledger can explain.
 
     `wandb_env` arrives as whatever the client asked for and is **recomposed here**, not taken as
     given — see compose_wandb_env. Here rather than in the route so the Head-local pinned path
@@ -981,12 +973,12 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     is the per-Spawn off-switch that rides alongside it, and defaults on: a caller that never sets it
     submits exactly the Spawn it always did.
 
-    `features` (docs/TODO.md "Arm Features") is optional and empty by default — most Spawns need none.
+    `features` is optional and empty by default — most Spawns need none.
     When given, every name must be carried by at least one currently-admitted Arm or the Spawn is
     refused outright before ever reaching sbatch (mirrors `slurm.vram_constraint`'s "no Arm has that
     much VRAM" — hard validation, no partial/best-effort placement).
 
-    `tidepool` (docs/TODO.md) rides straight through to `submit()`, which is the one place either the
+    `tidepool` rides straight through to `submit()`, which is the one place either the
     outputs-required gate or the script-in-tar check are actually skipped — placement, pricing and
     Attribution are otherwise completely unaffected, because a Tide Pool holds a Device exactly like any
     other Spawn.
@@ -1048,7 +1040,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                   background_build=background_build)
 
 
-# --- reads (anonymous in slice 2) -------------------------------------------
+# --- reads ---------------------------------------------------------------------
 
 def _spawn_dir(job_id: int) -> Path:
     return SPAWNS_DIR / str(job_id)

@@ -1,4 +1,4 @@
-"""The Karma economy (Phase 4 slice 1) — Balance, Decay, Share, and the nice a Share implies.
+"""The Karma economy — Balance, Decay, Share, and the nice a Share implies.
 
 **Karma ranks Users; it never gates them.** Nothing here can refuse, hold, or kill a Spawn. The entire
 output of this module is one integer per queued Spawn — its Slurm `nice` — so a User in poor standing
@@ -16,7 +16,7 @@ that silently disagrees with the ledger it came from. See db._SCHEMA_V3.
 
 **Escrow suppresses Share immediately**, which is what makes queue-flooding self-punishing: 500 queued
 Spawns move no Balance until they finish, so settle-at-end alone would let a burst hold the top of the
-queue for hours. The hold lands the moment the Spawn is queued (slice 2 writes it).
+queue for hours. The hold lands the moment the Spawn is queued.
 
 **KARMA_SHARE_SCALE cannot reorder anyone.** σ is monotonic, so for *any* scale the User order by nice
 is the User order by Balance. What it tunes is **resolution** — how hard Karma competes with age. Too
@@ -30,16 +30,14 @@ from datetime import datetime, timedelta, timezone
 
 from . import db
 
-# Decay: a Balance drifts back to 0 with a 1-month time constant. Debt is forgiven, hoards evaporate,
-# and standing reflects recent conduct rather than history. It is also what makes the economy
-# self-healing — Karma conjured by an Override or destroyed on a commons Arm is simply reabsorbed, so
-# Σ balances ≡ 0 is an attractor rather than an invariant anyone has to police.
+# Decay: a Balance drifts back to 0 with a 1-month time constant. Debt forgiven, hoards evaporate,
+# standing reflects recent conduct not history. Also makes the economy self-healing — Karma conjured by
+# an Override or destroyed on a commons Arm is simply reabsorbed, so Σ balances ≡ 0 is an attractor.
 KARMA_TAU_DAYS = 30.0
 
-# The Karma a User must be up (or down) to sit at Share ≈ 0.73 (or 0.27). 1 Karma = 1 TFLOP-hour, so
-# 10k ≈ 8 solid days of one 4090: a User taking a quarter of the cluster for a month and donating
-# nothing lands near Share 0.19. Re-tune when the fleet grows or the real spread is visible — a wrong
-# scale costs resolution, never correctness.
+# Karma a User must be up/down to sit at Share ≈0.73/0.27. 1 Karma = 1 TFLOP-hour, so 10k ≈ 8 days of
+# one 4090: taking a quarter of the cluster for a month while donating nothing lands near Share 0.19.
+# Re-tune as the fleet/spread changes — a wrong scale costs resolution, never correctness.
 KARMA_SHARE_SCALE = 10_000.0
 
 # The nice range Karma spends. MUST equal cuttle.config.NICE_MAX — the CLI writes PriorityWeightAge from
@@ -49,30 +47,25 @@ NICE_MAX = 2**16
 
 TICK_SECONDS = 30
 
-# The ceiling on Demand, and the reason it needs one. Demand is set by whoever is *queuing* but paid by
-# whoever is *running* — so a User can inflate everyone else's bill for free: queue 500 Spawns, let the
-# cluster be billed at the spike, then cancel. Escrow released, nothing settled, the flooder pays ZERO.
-# And because Balance drives `nice` for τ=30 days, an unbounded spike would let one User bench another
-# for a month — which is a **gate**, and this model has none. Past ~8x the signal is saturated anyway
-# (the card is plainly scarce; a larger number changes no scheduling decision) while the *billing*
-# consequence kept growing without bound. Accrual already dilutes a short spike across a long Spawn's
-# life; this bounds the rest.
+# Ceiling on Demand. Demand is set by whoever is *queuing* but paid by whoever is *running* — without a
+# cap, queuing 500 Spawns then cancelling inflates everyone's bill for free (Escrow released, nothing
+# settled). Also, Balance drives nice for τ=30 days, so an unbounded spike could bench a User for a
+# month — a **gate**, which this model must never have. Past ~8x the signal is saturated anyway (the
+# card is plainly scarce); this just bounds the runaway billing consequence.
 DEMAND_MAX = 8.0
 
-# The Tide's window (slice 3), and so how long a sample is worth keeping.
+# The Tide's window, and how long a sample is worth keeping.
 DEMAND_RETENTION_DAYS = 30
 
 
 def tides(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, dict[int, float]]:
-    """The **Tide**: each Arm's mean Demand by hour of the day, over the last DEMAND_RETENTION_DAYS.
+    """The **Tide**: each Arm's mean Demand by hour of day, over the last DEMAND_RETENTION_DAYS.
 
-    24 buckets per Arm, and no more. Hour-of-week (168) would be the "obvious" refinement and is the
-    wrong one: the window is ~4 weeks, so each bucket would forecast off ~4 observations. 24 buckets get
-    ~30 days × 120 samples/hour each.
+    24 buckets per Arm, not hour-of-week (168) — the ~4wk window would leave each hour-of-week bucket
+    only ~4 observations; 24 buckets get ~30 days × 120 samples/hour.
 
-    ⚠ Known and accepted: hour-of-day blends a dead Sunday into a busy Tuesday, so the forecast is a
-    little wrong on both. The fix, if it ever bites, is `hour × is_weekend` (48 buckets, still ~960
-    observations in the thinnest) — one `GROUP BY` away.
+    Known tradeoff: hour-of-day blends a dead Sunday into a busy Tuesday. Fix if it bites: `hour ×
+    is_weekend` (48 buckets, still ~960 obs in the thinnest) — one `GROUP BY` away.
     """
     t: dict[str, dict[int, float]] = defaultdict(dict)
     for r in db.demand_by_hour(conn, DEMAND_RETENTION_DAYS, now):
@@ -81,12 +74,10 @@ def tides(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, di
 
 
 def tide(tides: dict[str, dict[int, float]], node: str, hour: int) -> float:
-    """One Arm's forecast Demand at one hour. An unseen Arm or an empty bucket forecasts **1.0**.
-
-    1.0 is not a placeholder, it is the honest cold-start value: a cluster with no history has no basis
-    to forecast anything but "ordinary", and 1.0 is what a card running exactly one Spawn reads. It is
-    also what makes slice 2 a special case of this one rather than something to rewrite — with a flat
-    Tide, `hold_for` reduces EXACTLY to `minutes/60 × gpus × max(Power over eligible)`.
+    """One Arm's forecast Demand at one hour. An unseen Arm or empty bucket forecasts **1.0** — the
+    honest cold-start value (no history means no basis but "ordinary", and 1.0 is what a card running
+    exactly one Spawn reads). With a flat Tide, `hold_for` reduces exactly to `minutes/60 × gpus ×
+    max(Power over eligible)`.
     """
     return tides.get(node, {}).get(hour, 1.0)
 
@@ -101,11 +92,11 @@ def _up(arm: dict) -> bool:
 
 def eligible(arms: list[dict], need) -> list[dict]:
     """The Arms a Spawn could run on — recomputed from the LIVE registry every pass, never frozen at
-    submit. An Arm admitted after this Spawn queued joins its eligible set and takes a share of its
-    Demand; a drained one drops out.
+    submit, so an Arm admitted after this Spawn queued joins its eligible set (and a drained one drops
+    out).
 
-    An Admin-pinned Spawn (`--node`) is eligible for exactly one Arm, so it concentrates all of its
-    Demand there. That is the honest price of naming a machine instead of declaring a need.
+    An Admin-pinned Spawn (`--node`) is eligible for exactly one Arm, concentrating all of its Demand
+    there — the honest price of naming a machine instead of declaring a need.
     """
     if need["node"]:
         return [a for a in arms if a["name"] == need["node"]]
@@ -114,21 +105,18 @@ def eligible(arms: list[dict], need) -> list[dict]:
 
 
 def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, float]:
-    """How badly each Arm is wanted, right now: the device-claims on it over the devices it has — a
-    **per-card** figure, so it stays comparable across Arms with different card counts (`cost` relies
-    on this: Demand multiplies a Spawn's own Power sum once, never per Device it holds).
+    """How badly each Arm is wanted, right now: device-claims on it over the devices it has — a
+    **per-card** figure, comparable across Arms with different card counts (`cost` relies on this:
+    Demand multiplies a Spawn's Power sum once, never per Device held).
 
-    A **running** Spawn claims the card it holds — so a single-card Arm running anything reads ≥ 1.0,
-    and **a second is therefore never sold below its Power**. On a multi-card Arm the same claim only
-    pushes the *average* toward 1.0 — a card sitting idle beside a busy one still dilutes the price,
-    correctly, since Demand is shared by everything on the node. A **queued** Spawn spreads one claim
-    evenly across every Arm it is eligible for, so its total contribution to the fleet is 1.0 wherever
-    it eventually lands, and the scarce big-VRAM cards — wanted by big jobs *and* small ones —
-    accumulate the most. An idle Arm nobody wants reads 0, and is charged to nobody.
+    A **running** Spawn claims the card it holds, so a single-card Arm running anything reads ≥1.0 — a
+    second Spawn is never sold below its Power. On a multi-card Arm the same claim only pushes the
+    *average* toward 1.0. A **queued** Spawn spreads one claim evenly across every Arm it's eligible
+    for, so its total contribution to the fleet is 1.0 wherever it lands — scarce big-VRAM cards
+    accumulate the most. An idle Arm nobody wants reads 0, charged to nobody.
 
-    A queued Spawn with no `spawns` row (the enrollment benchmark) adds no queued Demand: we cannot know
-    what it is eligible for. It is pinned to one node and short-lived, so the undercount is negligible —
-    and once it *runs* it claims its card like anything else.
+    A queued Spawn with no `spawns` row (the enrollment benchmark) adds no queued Demand — we can't know
+    what it's eligible for. Pinned to one node and short-lived, so the undercount is negligible.
     """
     d = {a["name"]: 0.0 for a in arms}
     devices = {a["name"]: len(a["powers"]) if a["powers"] else 1 for a in arms}
@@ -148,43 +136,39 @@ def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, 
 
 
 def cost(seconds: float, powers: list[float], demand: float) -> float:
-    """What a slice of held device-time is worth. **1 Karma = 1 TFLOP-hour**, and Power is already
-    TFLOP/s, so there is no reference constant to choose — the unit falls out of the measurement.
+    """What a slice of held device-time is worth. **1 Karma = 1 TFLOP-hour**; Power is already TFLOP/s,
+    so no reference constant is needed — the unit falls out of the measurement.
 
-    Seconds **held**, not seconds busy: a Spawn buys exclusive access to a card, so squatting on one
-    idle is expensive and finishing early is cheap.
+    Seconds **held**, not busy: a Spawn buys exclusive access to a card, so idling is expensive and
+    finishing early is cheap.
 
-    `powers` is one entry per **Device** held, not a count and an average — "several Devices are
-    several separate purchases". Summing them is what makes a Spawn that landed on a box's slow card
-    cost less than one that landed on its fast card, on the same node, in the same second. An empty
-    list is a CPU-only Spawn, which holds no Device and costs nothing.
+    `powers` is one entry per Device **held**, summed (not averaged) — several Devices are several
+    separate purchases, so a Spawn on a slow card costs less than one on a fast card on the same node.
+    Empty list = CPU-only, costs nothing.
 
-    Demand is per *card* and shared by everything on the node, so it multiplies the sum once rather
-    than per Device — how a node is divided can never move its scarcity.
+    Demand is per-card and shared by the whole node, so it multiplies the sum once rather than per
+    Device — how a node is divided can never move its scarcity.
     """
     return seconds * sum(powers) * demand / 3600.0
 
 
 def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None = None,
              tides: dict[str, dict[int, float]] | None = None) -> float:
-    """The Escrow quoted at submit: what this Spawn would cost on the priciest Arm it could land on,
-    at the Demand its hours usually see.
+    """The Escrow quoted at submit: what this Spawn would cost on the priciest Arm it could land on, at
+    the Demand its hours usually see.
 
-    **Max**, not mean, over the eligible set — and that is not merely the conservative choice, it is the
-    *modal* one: node `Weight ∝ 1/Power`, so Slurm actively prefers the fastest free eligible card
-    (confirmed on hardware 2026-07-14: with both cards idle, a `--vram 8` Spawn took the 4090). Quoting
-    from the cheapest card would under-hold the common case, and under-holding is the gameable direction.
+    **Max**, not mean, over the eligible set: node `Weight ∝ 1/Power`, so Slurm actively prefers the
+    fastest free eligible card — quoting from the cheapest card would under-hold the common case, and
+    under-holding is the gameable direction.
 
     **Mean**, not max, over the *hours* the Spawn would span — otherwise a 24h Spawn touches every hour
-    and would be quoted at the daily peak purely for being long.
+    and gets quoted at the daily peak purely for being long. Over-holding costs a User nothing but queue
+    position; it's refunded in full at Settlement, since what actually moves is `accrued`, never this
+    number.
 
-    Over-holding costs a User nothing but queue position — it is refunded in full at Settlement, since
-    what actually moves is `accrued`, never this number.
-
-    **Max over an Arm's own Devices too**, for the same reason it is max over Arms: Weight prefers the
-    fastest free card, so a Spawn on a two-card box is more likely to land on its faster one, and the
-    hold is a floor that only ever ratchets up. This is the one reduction of a node's per-Device
-    Powers that cannot underquote — the mean could, and an underquoted hold is the gameable direction.
+    **Max over an Arm's own Devices too**, same reasoning: on a two-card box the Spawn is more likely to
+    land on the faster card, so the hold is a floor that only ratchets up — the one reduction of a
+    node's Powers that cannot underquote.
     """
     hours = hours or [0]
     tides = tides or {}
@@ -201,14 +185,13 @@ def span_hours(minutes: int, start_hour: int) -> list[int]:
 
 def quote_hold(conn: sqlite3.Connection, arms: list[dict], need: dict, minutes: int, gpus: int,
                is_admin: bool, now: datetime | None = None) -> float | None:
-    """The Escrow to place on a Spawn at submit — **the** pricing decision, in one place.
+    """The Escrow to place on a Spawn at submit — the pricing decision, in one place.
 
-    Extracted so the real `/submit` route and the Fake Cluster (slice 4) quote a Spawn through the SAME
-    code. If the simulation re-derived the hold in its own harness, a bug in the quote that actually runs
-    in production would be invisible to the test — the circularity we took care to avoid on the scheduler.
+    Extracted so `/submit` and the Fake Cluster quote a Spawn through the SAME code — a quote re-derived
+    independently in the simulation harness could hide a pricing bug that runs in production.
 
-    Returns **None** for an Admin: outside the economy, so never held. Otherwise the hold over the
-    eligible set, at the Tide of the hours the Spawn would span.
+    Returns **None** for an Admin: outside the economy, never held. Otherwise the hold over the eligible
+    set, at the Tide of the hours the Spawn would span.
     """
     if is_admin:
         return None
@@ -241,16 +224,15 @@ def balances(conn: sqlite3.Connection, now: datetime | None = None) -> dict[int,
 
 def ledger(conn: sqlite3.Connection, user_id: int, days: int = 30, points: int = 120,
            now: datetime | None = None) -> dict:
-    """One User's economic history: the **real rows**, and the Balance curve they imply.
+    """One User's economic history: the real rows, and the Balance curve they imply.
 
-    The rows are events that actually happened — a Settlement, an Override. **There is no Decay row, and
-    there never can be**: Decay is not a transaction, it is `exp(-Δt/τ)` applied continuously between the
-    rows. It is visible as the *sag of the curve*, and that is the only honest way to draw it. (A
-    `kind: "decay"` row would also imply a stored Balance to decay, which is exactly the table that does
-    not exist — see the module docstring.)
+    The rows are events that happened — a Settlement, an Override. **There is no Decay row, and never
+    can be**: Decay isn't a transaction, it's `exp(-Δt/τ)` applied continuously between rows, visible
+    only as the *sag of the curve*. (A `kind: "decay"` row would imply a stored Balance to decay —
+    exactly the table that doesn't exist.)
 
-    The curve costs no storage: `B(t) = Σ over rows with tᵢ ≤ t of ±amountᵢ · exp(-(t - tᵢ)/τ)` is a pure
-    function of the ledger, sampled at `points` instants.
+    The curve costs no storage: `B(t) = Σ over rows with tᵢ ≤ t of ±amountᵢ · exp(-(t-tᵢ)/τ)`, sampled
+    at `points` instants.
     """
     now = now or datetime.now(timezone.utc)
     rows = db.ledger_rows(conn, user_id)
@@ -284,18 +266,17 @@ def ledger(conn: sqlite3.Connection, user_id: int, days: int = 30, points: int =
 
 
 def usage(conn: sqlite3.Connection, days: int = 30, now: datetime | None = None) -> list[dict]:
-    """Who has been consuming the cluster: one daily spend series per User, heaviest first.
+    """Who's been consuming the cluster: one daily spend series per User, heaviest first.
 
-    The counter-tide to `demand_series`. That one is about *cards* — how badly each was wanted, hour by
-    hour. This one is about *people*, over the same window, and the two are read together: a month where
-    one User's band swallows the plot explains a month of high Demand better than the Demand chart can.
+    Counterpart to `demand_series` — that one is about *cards*, this one about *people*, over the same
+    window: a month where one User's band swallows the plot explains a month of high Demand better than
+    the Demand chart alone.
 
-    Everyone's, like the standings and the queue — and for the same reason. Usage is only legible in
-    proportion, so a User who could see only their own series would learn nothing from it.
+    Everyone's, like standings and the queue, for the same reason: usage is only legible in proportion.
 
-    A User who spent nothing in the window is omitted rather than sent as a row of zeroes: they are not
-    a thin band at the bottom of the stack, they are absent from it. `series` is `days` UTC-day totals,
-    oldest first, so every User's array is the same length and indexes to the same day.
+    A User who spent nothing in the window is omitted, not sent as a row of zeroes — absent, not a thin
+    band at the bottom. `series` is `days` UTC-day totals, oldest first, same length/index for every
+    User.
     """
     now = now or datetime.now(timezone.utc)
     # Day keys, oldest first — the x-axis, built here so a day nobody spent on is a 0 and not a gap.
@@ -318,14 +299,13 @@ def usage(conn: sqlite3.Connection, days: int = 30, now: datetime | None = None)
 
 
 def share(balance: float, escrow: float = 0.0) -> float:
-    """The effect a Balance actually has, bounded in [0, 1]. Saturating on purpose: hoarding Karma has
-    diminishing returns and debt has diminishing punishment, so neither end runs away.
+    """The effect a Balance actually has, bounded in [0, 1]. Saturates on purpose: hoarding has
+    diminishing returns, debt has diminishing punishment, neither end runs away.
 
-    Written as the two-branch logistic, not `1/(1+exp(-x))`, because that form OVERFLOWS: at a Balance
-    of -1e9 (one Override typo away) `exp(-x)` raises OverflowError rather than saturating — inside the
-    tick, on every pass, forever. Both branches keep the exponent negative, so an extreme Balance
-    underflows harmlessly to a Share of 0.0 or 1.0. Those are legal Shares: they mean nice NICE_MAX and
-    nice 0, both of which are ordinary values Slurm is happy to take.
+    Two-branch logistic, not `1/(1+exp(-x))` — that form OVERFLOWS at extreme Balance (e.g. -1e9, one
+    Override typo away): `exp(-x)` raises OverflowError instead of saturating, inside the tick, every
+    pass. Both branches keep the exponent negative, so extremes underflow harmlessly to Share 0.0 or
+    1.0 — legal values meaning nice NICE_MAX and nice 0, both ordinary to Slurm.
     """
     x = (balance - escrow) / KARMA_SHARE_SCALE
     if x < 0:
@@ -343,22 +323,21 @@ def nice_for(share_value: float) -> int:
 def standings(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict]:
     """Every User's standing, best first — the payload of `GET /karma` and the tick's input alike.
 
-    Public to any authed caller by design: a Balance is meaningless in isolation. Standing only exists
-    against everyone else's, so a User who cannot see the others cannot see their own.
+    Public to any authed caller: a Balance is meaningless in isolation, only legible against everyone
+    else's.
 
-    `now` decays every Balance to that instant; None is the wall clock. The Fake Cluster (slice 4) passes
-    simulated time so the queue it ranks is the queue the economy would rank at that simulated moment.
+    `now` decays every Balance to that instant; None is the wall clock. The Fake Cluster passes
+    simulated time so the queue it ranks is the queue the economy would rank at that moment.
     """
     bal = balances(conn, now)
     esc = db.escrow_totals(conn)
-    # The claims behind each total, so a User reading "−140 escrow" can see which two Spawns are
-    # holding it. Public on the same terms as the totals and as the queue itself: what is running on
-    # the shared cluster, and what it is costing, is not private here.
+    # The claims behind each total, so a User reading "−140 escrow" sees which Spawns hold it — public
+    # on the same terms as the queue: what's running and what it costs is not private here.
     esc_rows = db.escrow_breakdown(conn)
-    # Admins are not economic actors: a role for RUNNING the cluster, not using it. They earn no Karma
-    # (an Arm they own is a Commons Arm and its Karma is destroyed), pay none, and hold no Balance — so
-    # they have no standing to appear in. This is also what keeps `Σ balances ≡ 0` true: an Admin never
-    # reaches the ledger at all, which is why an Override aimed at one is refused below.
+    # Admins are not economic actors — a role for RUNNING the cluster, not using it. They earn no Karma
+    # (an Arm they own is a Commons Arm whose Karma is destroyed), pay none, hold no Balance, and never
+    # appear in standings. Also what keeps Σ balances ≡ 0 true — an Admin never reaches the ledger,
+    # which is why an Override aimed at one is refused below.
     rows = conn.execute("SELECT id, username FROM users WHERE is_admin = 0").fetchall()
     out = []
     for r in rows:
@@ -379,20 +358,20 @@ def nice_by_user(conn: sqlite3.Connection, now: datetime | None = None) -> dict[
 
 
 def override(conn: sqlite3.Connection, username: str, amount: float, note: str | None = None) -> float:
-    """Admin add/remove of a User's Balance — the only flow that is not a Transfer. It conjures Karma
-    (or destroys it), and Decay absorbs the imbalance, which is why it needs no counterparty to
-    balance against. Returns the User's new Balance.
+    """Admin add/remove of a User's Balance — the only flow that is not a Transfer. Conjures Karma (or
+    destroys it); Decay absorbs the imbalance, so it needs no counterparty. Returns the User's new
+    Balance.
 
-    Distinct from a **Queue bump**, which moves one Spawn once and touches no Balance. An Override
+    Distinct from a **Queue bump**, which moves one Spawn once and touches no Balance — an Override
     bought to win one race would go on winning every *other* race for a month.
     """
     user = conn.execute("SELECT id, is_admin FROM users WHERE username=?", (username,)).fetchone()
     if user is None:
         raise KeyError(username)
     if user["is_admin"]:
-        # Not tidiness — the invariant. An Admin is excluded from `standings()`, so Karma conjured into
-        # one would still count in `balances()` while contributing to no standing, and Σ balances ≡ 0
-        # would quietly stop holding. Admins never appear in the ledger, and that is what keeps it true.
+        # Not tidiness — the invariant. An Admin excluded from standings() means Karma conjured into one
+        # would still count in balances() while contributing to no standing, breaking Σ balances ≡ 0.
+        # Admins never appear in the ledger, and that's what keeps it true.
         raise ValueError(f"{username} is an Admin — the Admin is outside the economy and holds no "
                          f"Balance to override")
     to_user = user["id"] if amount > 0 else None      # NULL from = conjured

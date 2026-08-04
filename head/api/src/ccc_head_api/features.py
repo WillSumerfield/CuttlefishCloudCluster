@@ -1,25 +1,23 @@
 """Runtime **profiles** for Arm Features (temp/FEATURES_BUILTIN.md) — what CCC does for a Spawn that
 asked for one.
 
-A Feature is a name in `cuttle.config.FEATURE_NAMES`. Without a profile that name buys two things:
-placement (a Slurm `Feature=` token) and `$<NAME>_PATH` in the Spawn's environment. That is all
-`isaaclab` gets today, and it is a complete, useful Feature.
+A Feature is a name in `cuttle.config.FEATURE_NAMES`. Without a profile it buys two things: placement
+(a Slurm `Feature=` token) and `$<NAME>_PATH` in the Spawn's environment — all `isaaclab` gets, and a
+complete, useful Feature on its own.
 
-A profile adds the rest — the package, the binds, the working directory, the cache and the env vars —
-so that a submitter's script contains **none** of it. That is not a convenience: `LD_LIBRARY_PATH` is
-read by the dynamic loader once, at `exec`, so a payload physically cannot set it for itself. Anything
-that arranges it has to run *outside* the process, which means the job script, which means here.
+A profile adds the rest — package, binds, working directory, cache, env vars — so the submitter's
+script contains **none** of it. Not a convenience: `LD_LIBRARY_PATH` is read by the dynamic loader once,
+at `exec`, so a payload cannot set it for itself; whatever arranges it must run *outside* the process,
+i.e. the job script, i.e. here.
 
 **Everything a profile emits resolves on the Arm, not here.** The Head renders one script for the whole
-fleet and cannot know where any particular donor installed anything, so the snippets below name
-`$VLEARN_PATH` and friends — variables the Arm exports from `/etc/ccc/features.env`, written by
-`cuttle setup --arm` (see `cuttle.features`, which is the same split from the other side: what an Arm
-must have on disk, and how it prepares it, offline, before it can reach a Head at all).
+fleet and cannot know where any donor installed anything, so snippets name `$VLEARN_PATH` and friends —
+variables the Arm exports from `/etc/ccc/features.env`, written by `cuttle setup --arm` (see
+`cuttle.features` for the Arm-side half: what it must have on disk and how it prepares it, offline).
 
-**A profile's failures are the Spawn's, and they are loud.** Every check below ends in `feature_fail`,
-which writes a sentence naming the Arm and what was wrong into the Spawn's `err`, records exit 1 and
-stages out — so a mismatch reads as a mismatch, rather than as an `ImportError` a User would
-reasonably blame on their own code.
+**A profile's failures are the Spawn's, and loud.** Every check ends in `feature_fail`, which writes a
+sentence naming the Arm and what was wrong into the Spawn's `err`, records exit 1, and stages out — a
+mismatch reads as a mismatch, not an `ImportError` a User would blame on their own code.
 """
 
 import textwrap
@@ -42,14 +40,13 @@ class Profile:
     bind and env lists.
 
     `conda`/`pip` are the system libraries and wheels the Feature's shared objects need — the ONE
-    canonical copy. `cuttle feature show <name>` emits a starter `environment.yml` from them (which is
-    what the example ships), and Phase 3's activation Spawn builds its Environment from the same
-    lists. A library added for a new release of the software fixes both at once.
+    canonical copy. `cuttle feature show <name>` emits a starter `environment.yml` from them, and the
+    activation Spawn builds its Environment from the same lists, so a library added for a new release
+    fixes both.
 
-    Each `conda`/`pip` entry is `(spec, why)`. The reason travels with the requirement rather than
-    living in a comment above the list, because "why is assimp pinned to 5" is exactly the question
-    someone editing a generated `environment.yml` will have, and the generated file is the only place
-    they will be looking.
+    Each `conda`/`pip` entry is `(spec, why)` — the reason travels with the requirement, since "why is
+    assimp pinned to 5" is exactly what someone editing a generated `environment.yml` will ask, and
+    that file is the only place they'll be looking.
     """
 
     name: str
@@ -70,15 +67,13 @@ class Profile:
 
 
 # --- vlearn -------------------------------------------------------------------------------------
-# The package comes from the ARM, not from the submitter's Environment, and that is the whole shape of
-# this profile. vlearn is licensed per machine through TurboActivate, whose activation state is tied to
-# a specific release — so the copy that runs has to be the copy the Arm's owner activated. A submitter
-# who pip-installed their own vlearn would be running an unactivated build on someone else's licence.
+# The package comes from the ARM, not the submitter's Environment — vlearn is licensed per machine
+# through TurboActivate, whose activation state is tied to a specific release, so the copy that runs
+# has to be the copy the Arm's owner activated.
 #
-# `cuttle setup --arm` unzips the Arm's Linux wheel once, into an ABI-labelled directory under
-# $VLEARN_PKG_ROOT; this puts the matching one on PYTHONPATH. Unpacking it OURSELVES is what makes that
-# safe — pointing PYTHONPATH at a donor's own `.venv` would drag in every package they happen to have
-# installed, while a directory built from one wheel holds one project's artefacts and nothing else.
+# `cuttle setup --arm` unzips the Arm's Linux wheel once into an ABI-labelled directory under
+# $VLEARN_PKG_ROOT; unpacking it OURSELVES (rather than pointing PYTHONPATH at a donor's own .venv)
+# keeps the directory to one project's artefacts instead of dragging in everything else installed.
 VLEARN_SETUP = r"""
 # --- Arm Feature: vlearn ---------------------------------------------------
 [ -n "${VLEARN_PATH:-}" ] || feature_fail \
@@ -131,12 +126,12 @@ featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=$proj
 """
 
 # The extra an ACTIVATION Spawn gets, and nothing else does. An ordinary Spawn runs against activation
-# state that already exists in the Arm's **Licence** directory; the key that PRODUCED that state is the
-# credential, and it stays out of every Pod but this one.
+# state already in the Arm's **Licence** directory; the key that PRODUCED that state is the credential
+# and stays out of every Pod but this one.
 #
-# The key never leaves the Arm: `cuttle setup --arm` mirrors the owner's own file into that box's CCC
-# state at 0640 (cuttle.features.mirror_licence_key — a Pod cannot reach a file under someone's home),
-# and this binds that copy at its own host path, so there is one name for it inside the Pod and out.
+# The key never leaves the Arm: `cuttle setup --arm` mirrors the owner's file into that box's CCC state
+# at 0640 (cuttle.features.mirror_licence_key — a Pod can't reach a file under someone's home), and
+# this binds that copy at its own host path, so it has one name inside the Pod and out.
 VLEARN_ACTIVATION = r"""
 # --- Arm Feature: vlearn, ACTIVATION ---------------------------------------
 [ -n "${VLEARN_LICENCE_KEY:-}" ] || feature_fail \
@@ -171,11 +166,10 @@ VLEARN = Profile(
     python_why="the only versions vlearn ships a Linux wheel for, with 3.10 — and base.sif is 3.12, "
                "which is why this file has to be conda (its own interpreter) and not uv (which "
                "inherits the image's)",
-    # libgym.so links all of these dynamically. They resolve at LOAD time, so they are required even
-    # headless (`with_render=False`) — a missing one is an OSError on `import vlearn`, not a render
-    # error. conda-forge rather than apt because base.sif is a pinned, cluster-wide image with no
-    # per-Arm package hook: putting one Feature's dependencies in it would change the image for every
-    # Arm.
+    # libgym.so links all of these dynamically, resolving at LOAD time — required even headless
+    # (missing one is an OSError on import, not a render error). conda-forge not apt: base.sif is a
+    # pinned, cluster-wide image with no per-Arm hook, so baking one Feature's deps in would change
+    # the image for every Arm.
     conda=(
         ("sdl2", ""),
         ("assimp=5", "conda-forge defaults to 6 (libassimp.so.6); libgym.so wants libassimp.so.5"),
@@ -184,14 +178,12 @@ VLEARN = Profile(
         ("libglu", ""),
         ("mesalib", ""),
     ),
-    # Named explicitly rather than left to torch, and that matters twice over: a Spawn that does not
-    # need torch should not carry 3 GB to get one shared object, and CCC's own activation Spawn
-    # (Phase 3) needs libcudart and nothing else. libcuda.so.1 is the host driver's, injected by
-    # `apptainer --nv`.
-    # NOT `nvidia-cuda-runtime-cu13`: NVIDIA dropped the `-cuXX` suffix at CUDA 13, and that name is a
-    # reserved 0.0.1 placeholder on PyPI with no wheels at all — pip falls back to its sdist, which
-    # fails to build, and the whole Environment dies on a package that was never real (hardware,
-    # 2026-08-04). The unsuffixed name carries the CUDA major in its version instead, hence the pin.
+    # Named explicitly rather than left to torch: a Spawn that doesn't need torch shouldn't carry 3 GB
+    # for one shared object, and the activation Spawn needs only libcudart. (libcuda.so.1 is the host
+    # driver's, injected by `apptainer --nv`.)
+    # NOT `nvidia-cuda-runtime-cu13`: NVIDIA dropped the `-cuXX` suffix at CUDA 13; that name is a
+    # reserved 0.0.1 PyPI placeholder with no wheels, so pip falls back to its sdist and fails to build.
+    # The unsuffixed name carries the CUDA major in its version instead, hence the pin.
     pip=(("nvidia-cuda-runtime>=13,<14",
           "libcudart.so.13, which libvsimdynamics.so needs and a bare conda env has no other source "
           "for"),),
@@ -208,19 +200,18 @@ VLEARN = Profile(
 )
 
 # --- isaaclab -----------------------------------------------------------------------------------
-# No profile. An Arm declaring it gets placement and $ISAACLAB_PATH, which is what a Feature meant
-# before profiles existed and is still a complete answer for software a submitter drives directly.
+# No profile. An Arm declaring it gets placement and $ISAACLAB_PATH — a complete answer for software
+# a submitter drives directly.
 PROFILES: dict[str, Profile] = {VLEARN.name: VLEARN}
 
 
 # The preamble every profiled Spawn gets, once, before the individual blocks. Rendered only when at
-# least one requested Feature HAS a profile — an ordinary Spawn's script does not contain it at all.
+# least one requested Feature HAS a profile — an ordinary Spawn's script doesn't contain it at all.
 #
-# The probe is one Pod launch that asks this Spawn's own interpreter two questions rather than assuming
-# either answer: which ABI tag a Feature's binary package has to match, and where the nvidia wheels in
-# that Environment put their shared libraries. It runs on the ARM because that is where the Environment
-# has landed by now, and because a Feature's package is the Arm's — both halves of the comparison are
-# here and nowhere else.
+# The probe is one Pod launch asking this Spawn's own interpreter two questions rather than assuming
+# either: which ABI tag a Feature's binary package must match, and where the nvidia wheels in that
+# Environment put their shared libraries. Runs on the ARM, where the Environment has landed and where
+# the Feature's package lives — both halves of the comparison are here.
 PREAMBLE = r"""
 # Arm **Features** were requested, so CCC arranges each one's runtime here -- package, binds, working
 # directory, cache and env vars -- and the submitter's script contains none of it. See
@@ -249,17 +240,17 @@ feature_nvlibs=$(printf %s "$feature_probe" | sed -n 2p)
 def setup_snippet(features: list[str], activation: bool = False) -> str:
     """The bash CCC splices into the job script for this Spawn's requested Features, or `""`.
 
-    Empty for the overwhelming majority of Spawns, and empty too for a Spawn that asked only for
-    Features with no profile (`isaaclab`) — those need nothing beyond the `$<NAME>_PATH` the Arm
-    already exports and the placement Slurm already did.
+    Empty for most Spawns, and for one that asked only for Features with no profile (`isaaclab`) —
+    those need nothing beyond `$<NAME>_PATH`, which the Arm already exports, and the placement Slurm
+    already did.
 
-    Ordered rather than taken in the caller's order, so the same request renders the same script
-    however the User happened to type it.
+    Ordered rather than caller-order, so the same request renders the same script regardless of how
+    the User typed it.
 
-    `activation` appends each profile's activation block, which is where the Arm's licence *key* is
-    bound. It is set by exactly one caller (`cuttle.enroll.activate_arm`, through the Head-local pinned
-    submit) and reaches the render as an explicit argument, never as anything a submitted Spawn could
-    ask for — a User who could set this flag could read every Arm owner's key.
+    `activation` appends each profile's activation block, where the Arm's licence *key* is bound. Set
+    by exactly one caller (`cuttle.enroll.activate_arm`, via the Head-local pinned submit), never by
+    anything a submitted Spawn could request — a User able to set this flag could read every Arm
+    owner's key.
     """
     blocks = [PROFILES[n].setup + (PROFILES[n].activation if activation else "")
               for n in sorted(set(features)) if n in PROFILES]
@@ -271,15 +262,13 @@ def setup_snippet(features: list[str], activation: bool = False) -> str:
 def activation_project(name: str) -> dict[str, str]:
     """The whole project an activation Spawn uploads for `name`: `{filename: contents}`.
 
-    Two files and no repository. The Environment is generated from the same profile every submitter's
-    starter `environment.yml` comes from — so if a release adds a system library, the thing CCC runs to
-    activate a donated box picks it up at the same moment their own Spawns do. It deliberately does
-    NOT contain vlearn: the package a Spawn imports comes from the Arm's own unpacked wheel, which is
-    the copy the licence covers, and installing a second one from an index would activate the wrong
-    build.
+    Two files, no repository. The Environment comes from the same profile every submitter's starter
+    `environment.yml` does, so a release adding a system library reaches both at once. Deliberately
+    excludes vlearn itself: the package a Spawn imports comes from the Arm's own unpacked wheel (the
+    copy the licence covers), and installing a second from an index would activate the wrong build.
 
-    Raises KeyError for a Feature that has no activation — most do not, and an Arm declaring one is
-    simply admitted without this step.
+    Raises KeyError for a Feature with no activation — most don't; an Arm declaring one is simply
+    admitted without this step.
     """
     p = PROFILES[name]
     if not p.activation_script:

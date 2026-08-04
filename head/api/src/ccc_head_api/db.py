@@ -1,4 +1,4 @@
-"""CCC Head auth store (Phase 3a slice 1) — the User + Session tables behind login.
+"""CCC Head auth store — the User + Session tables behind login.
 
 Pure stdlib `sqlite3` + `argon2-cffi`, no ORM/framework (deliberate — see temp/ROADMAP.md Phase 3a).
 The Head API process (`main.py`) and the admin CLI (`admin.py`) both open the same `head.db`; setup
@@ -33,18 +33,17 @@ DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
 SCHEMA_VERSION = 14
 SESSION_TTL_DAYS = 30
-# head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
-# settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
-# *immediately* unless it is told to wait — a submit landing during a settle would simply fail. The
-# writes are milliseconds long, so any timeout that isn't zero is enough.
+# head.db has TWO writers (the API: submit→escrow, override→ledger; the Karma tick: settle→ledger).
+# WAL permits that, but a writer that collides with another gets SQLITE_BUSY back *immediately* unless
+# it is told to wait — a submit landing during a settle would simply fail. The writes are milliseconds
+# long, so any timeout that isn't zero is enough.
 BUSY_TIMEOUT_MS = 5000
 _TOKEN_BYTES = 32  # secrets.token_urlsafe → ~43 url-safe chars, 256 bits
 
 _ph = PasswordHasher()
 
 # Schema as a migration ladder keyed by PRAGMA user_version: each step takes the DB from version N-1
-# to N, so a fresh DB runs the whole ladder and a deployed one runs only what it's missing (slice 1
-# shipped v1; slice 2 adds the spawns ledger as v2).
+# to N, so a fresh DB runs the whole ladder and a deployed one runs only what it's missing.
 _SCHEMA_V1 = """
 CREATE TABLE users (
   id                   INTEGER PRIMARY KEY,
@@ -78,22 +77,19 @@ CREATE TABLE spawns (
 CREATE INDEX idx_spawns_user ON spawns(user_id);
 """
 
-# The Karma economy (Phase 4 slice 1). Two tables, and deliberately NOT a third holding balances:
+# The Karma economy. Two tables, deliberately NOT a third holding balances:
 #
-# `karma_ledger` is ONE ROW PER EVENT, with both parties nullable — a NULL `from_user` is Karma
-# conjured (an Override credit), a NULL `to_user` is Karma destroyed (a Spawn on a commons Arm, with no
-# owner to pay). Σ of every User's balance is then a single query, and a settlement reads as a sentence.
+# `karma_ledger` is ONE ROW PER EVENT, both parties nullable — a NULL `from_user` is Karma conjured (an
+# Override credit), a NULL `to_user` is Karma destroyed (a Spawn on a commons Arm, no owner to pay). Σ
+# of every User's balance is then a single query.
 #
-# There is no `karma_balance` table because a Balance is a *consequence* of this ledger, not a separate
-# truth: Decay is linear, so a decayed sum over the rows and a decay-on-touch running total are exactly
-# — not approximately — equal. A cached balance could only ever disagree with the ledger, and a User's
-# standing being quietly wrong forever, with the evidence sitting in a table nobody reads, is the worst
-# failure this economy has. See karma.py for the arithmetic.
+# No `karma_balance` table: Decay is linear, so a decayed sum over the rows and a decay-on-touch
+# running total are exactly — not approximately — equal. A cached balance could only ever disagree with
+# the ledger. See karma.py for the arithmetic.
 #
 # `karma_escrow` is a live hold, not a movement: it suppresses a submitter's Share while their Spawn is
-# outstanding (so flooding the queue instantly costs you your own queue position) and is released at
-# Settlement. Created here, WRITTEN in slice 2 — Share's `- Escrow` term is exercised from day one
-# rather than bolted on later. It does not decay: it is not history, it is an outstanding claim.
+# outstanding (so flooding the queue instantly costs your own queue position), released at Settlement.
+# Does not decay — it is not history, it is an outstanding claim.
 _SCHEMA_V3 = """
 CREATE TABLE karma_ledger (
   id        INTEGER PRIMARY KEY,
@@ -116,28 +112,26 @@ CREATE TABLE karma_escrow (
 CREATE INDEX idx_karma_escrow_user ON karma_escrow(user_id);
 """
 
-# The meter (Phase 4 slice 2). Two moves:
+# The meter. Two moves:
 #
-# 1. `spawns` learns what the User DECLARED. The meter needs a queued Spawn's needs to know which Arms
-#    it is eligible for (and so which Arms' Demand it adds to), and its `minutes` to quote a hold. All
-#    of it is known at submit and none of it is worth re-parsing out of Slurm's ~120-field job schema
-#    every 30s. Eligibility itself is NOT frozen here — only the need is. The tick re-derives the Arm
-#    set from the live registry each pass, so an Arm admitted after this Spawn queued joins its
-#    eligible set, and a drained one leaves it (making the rest scarcer, which is correct).
+# 1. `spawns` learns what the User DECLARED. The tick needs a queued Spawn's needs to know which Arms
+#    it is eligible for (and so which Arms' Demand it adds to), and its `minutes` to quote a hold — all
+#    known at submit, none worth re-parsing out of Slurm's ~120-field job schema every 30s. Eligibility
+#    itself is NOT frozen here, only the need is — the tick re-derives the Arm set from the live
+#    registry each pass, so an Arm admitted after this Spawn queued joins its eligible set, and a
+#    drained one leaves it (making the rest scarcer, which is correct).
 #
-# 2. `karma_escrow` becomes the Spawn's **outstanding claim** — and therefore the meter itself. It was
-#    created empty in v3 and never written, so it is simply rebuilt here. It holds both:
+# 2. `karma_escrow` becomes the Spawn's **outstanding claim** — and so the meter itself. It holds both:
 #      * `hold`    — the forecast, quoted once at submit. A FLOOR under the claim.
 #      * `accrued` — what the Spawn has really cost so far, ticked while it RUNS. A RATCHET on top.
 #    Share subtracts MAX(hold, accrued), so the claim only ever goes UP: an under-quoted hold cannot be
 #    exploited, and a Demand spike that overshoots the forecast is felt in the submitter's standing
-#    immediately rather than being a surprise at Settlement. At Settlement the row is DELETED and one
+#    immediately rather than as a surprise at Settlement. At Settlement the row is DELETED and one
 #    ledger row (= accrued) is written; the escrow is a live claim, never history.
 #
 # `karma_demand` is history ONLY — never a pricing path. The tick consumes each sample the instant it
-# takes it; these rows exist so slice 3's Tide can forecast Demand by hour-of-day and the Dashboard can
-# chart it. Raw (one row per Arm per tick), pruned at 30 days: ~10MB/month at 3 Arms, and the raw series
-# is what the per-machine chart wants.
+# takes it; these rows exist so the Tide can forecast Demand by hour-of-day and the Dashboard can chart
+# it. Raw (one row per Arm per tick), pruned at 30 days: ~10MB/month at 3 Arms.
 _SCHEMA_V4 = """
 ALTER TABLE spawns ADD COLUMN minutes INTEGER;
 ALTER TABLE spawns ADD COLUMN gpus    INTEGER;
@@ -174,8 +168,8 @@ ALTER TABLE spawns ADD COLUMN exit_code   INTEGER;
 ALTER TABLE spawns ADD COLUMN finished_at TEXT;
 """
 
-# Arm Retract/Return (Phase 2 loose end — an owner's self-service pause of their own machine). Two
-# tables because the two things they track have different lifetimes:
+# Arm Retract/Return — an owner's self-service pause of their own machine. Two tables because the two
+# things they track have different lifetimes:
 #
 # `arm_retractions` — presence of a row means "this node takes no NEW placement". submit_checked reads
 # it to build --exclude= and to refuse a pinned Spawn aimed at it. Return deletes the row; that is all
@@ -210,26 +204,26 @@ _SCHEMA_V7 = """
 ALTER TABLE users ADD COLUMN wandb_key BLOB;
 """
 
-# Tide Pool (docs/TODO.md, now built): a Spawn whose payload is a live shell instead of a script.
-# `spawns.tidepool` marks which ones (submit_checked skips the outputs/script requirements for them).
-# Two tables because the port has to be reserved BEFORE the job_id exists (it is baked into the job
-# script, rendered before sbatch ever runs — sshd inside the Pod and the Head's relay both bind it), and
-# `tidepools.job_id` cannot be a key nothing has yet:
-#   * `tidepool_ports` — the reservation itself, keyed by the port alone. Its own table so two
-#                  submissions racing the same "lowest free port" collide on ITS primary key (caught and
-#                  retried — see tidepool.reserve_port) instead of racing a job_id neither has yet.
-#   * `tidepools`  — everything else, written once the job_id is known (mirrors record_spawn, written
-#                  after sbatch returns). `port` is copied in here too, for reads that only care about one
-#                  Tide Pool's state and would otherwise need a second table just to find its port.
-#     - `pubkey`/`privkey` — a keypair minted once at submit and baked into the job script's
-#                  authorized_keys (pubkey) — never regenerated, so a reattach after a dropped connection
+# Tide Pool: a Spawn whose payload is a live shell instead of a script. `spawns.tidepool` marks which
+# ones (submit_checked skips the outputs/script requirements for them). Two tables because the port has
+# to be reserved BEFORE the job_id exists (baked into the job script, rendered before sbatch ever runs
+# — sshd inside the Pod and the Head's relay both bind it), and `tidepools.job_id` can't be a key
+# nothing has yet:
+#   * `tidepool_ports` — the reservation itself, keyed by the port alone, so two submissions racing the
+#                  same "lowest free port" collide on ITS primary key (caught and retried — see
+#                  tidepool.reserve_port) instead of racing a job_id neither has yet.
+#   * `tidepools`  — everything else, written once the job_id is known. `port` is copied in here too,
+#                  for reads that only care about one Tide Pool's state and would otherwise need a
+#                  second table just to find its port.
+#     - `pubkey`/`privkey` — a keypair minted once at submit, baked into the job script's
+#                  authorized_keys (pubkey), never regenerated, so a reattach after a dropped connection
 #                  or a Dashboard-requested Tide Pool gets the SAME key back. `privkey` is encrypted at
-#                  rest (atrest.py) exactly like a W&B key: a third-party-shaped secret that must come
-#                  back out in plaintext to be handed to the CLI, so it cannot be hashed.
+#                  rest (atrest.py), like a W&B key: must come back out in plaintext for the CLI, so it
+#                  cannot be hashed.
 #     - `relay_pid` — the Head-side TCP relay subprocess forwarding this port to the Arm, once started
 #                  (tidepool.ensure_relay). NULL until the Spawn is actually RUNNING somewhere.
-#     - `node`     — the Arm the relay is forwarding to, cached so a restarted relay's liveness check does
-#                  not have to re-derive it from squeue every poll.
+#     - `node`     — the Arm the relay is forwarding to, cached so a restarted relay's liveness check
+#                  doesn't have to re-derive it from squeue every poll.
 # Both rows are deleted (not decayed like the escrow, ended like retracted_jobs) the moment the Spawn
 # leaves the queue — tick.py's reap_dead is the one place that happens, and it kills relay_pid first.
 _SCHEMA_V8 = """
@@ -248,12 +242,11 @@ CREATE TABLE tidepools (
 );
 """
 
-# Recovery Window (docs/TODO.md, now built): one row per Spawn currently holding a copy of its
-# undeclared working dir on the Head (ccc_head_api.recovery). `bytes` feeds the 50GB pool cap (SUM
-# across every row); `created_at` is both the 30-minute expiry clock AND the oldest-first eviction
-# order — the same column does both jobs because they're the same question ("how long has this been
-# held?") asked two ways. A row here always has a matching `SPAWNS_DIR/<id>/recovery/` dir on disk;
-# recovery.py's `_evict` deletes both together, never one without the other.
+# Recovery Window: one row per Spawn currently holding a copy of its undeclared working dir on the Head
+# (ccc_head_api.recovery). `bytes` feeds the 50GB pool cap (SUM across every row); `created_at` is both
+# the 30-minute expiry clock AND the oldest-first eviction order — the same column does both jobs
+# because they're the same question ("how long has this been held?") asked two ways. A row here always
+# has a matching `SPAWNS_DIR/<id>/recovery/` dir on disk; recovery.py's `_evict` deletes both together.
 _SCHEMA_V9 = """
 CREATE TABLE recovery_copies (
   job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
@@ -262,8 +255,8 @@ CREATE TABLE recovery_copies (
 );
 """
 
-# **Guises** (temp/spawn-isolation.md Phase 3): the uid a User's Spawns run as, on every node. See
-# guises.py for what one is; this table is only the allocator, and it has exactly one job the obvious
+# **Guises** (temp/spawn-isolation.md): the uid a User's Spawns run as, on every node. See guises.py
+# for what one is; this table is only the allocator, and it has exactly one job the obvious
 # `MAX(users.uid)+1` cannot do — **never hand out a uid twice**.
 #
 # `remove_user` HARD-deletes, so an allocator keyed off the users table would give a deleted User's uid
@@ -286,12 +279,12 @@ INSERT INTO guises (uid, user_id)
   SELECT {guises.UID_BASE} + ROW_NUMBER() OVER (ORDER BY id) - 1, id FROM users;
 """
 
-# Output retention (docs/TODO.md "Storage retention", phase 2). Exactly `recovery_copies`' shape, one
-# row per Spawn whose declared $CCC_OUT results the Head is holding, and `created_at` again does both
-# jobs — the 7-day expiry clock AND the oldest-first eviction order. It is copied from the Spawn's
-# `finished_at`, not stamped at registration, so a Spawn registered late by a tick that was down still
-# expires 7 days after it RAN (see retention.py). A row here always has a matching
-# `SPAWNS_DIR/<id>/outputs/` dir on disk; `retention._evict` deletes both together.
+# Output retention. Exactly `recovery_copies`' shape, one row per Spawn whose declared $CCC_OUT results
+# the Head is holding, and `created_at` again does both jobs — the 7-day expiry clock AND the
+# oldest-first eviction order. It is copied from the Spawn's `finished_at`, not stamped at
+# registration, so a Spawn registered late by a tick that was down still expires 7 days after it RAN
+# (see retention.py). A row here always has a matching `SPAWNS_DIR/<id>/outputs/` dir on disk;
+# `retention._evict` deletes both together.
 #
 # No user_id column: the 8GB Allowance is per User, but `spawns.user_id` already says whose a Spawn is,
 # and duplicating it here would be a second answer that could disagree with the first — including after
@@ -304,11 +297,11 @@ CREATE TABLE output_copies (
 );
 """
 
-# Recipes (docs/TODO.md "Storage retention: the Recipe wall"). A User's frozen, re-runnable snapshots:
-# this row is *how* to run one, and `recipes/<user_id>/<name>/` on disk is the code itself. `bytes` is
-# what that tree costs against the 24GB per-User **Allowance**, measured UNCOMPRESSED — the composer
-# blocks a doomed save from `File.size` before spending the upload, and a Head that counted the gzip
-# instead would be answering a different question than the one the browser asked.
+# Recipes: a User's frozen, re-runnable snapshots. This row is *how* to run one, and
+# `recipes/<user_id>/<name>/` on disk is the code itself. `bytes` is what that tree costs against the
+# 24GB per-User **Allowance**, measured UNCOMPRESSED — the composer blocks a doomed save from
+# `File.size` before spending the upload, and a Head that counted the gzip instead would be answering a
+# different question than the one the browser asked.
 #
 # Unlike `output_copies` this table does carry `user_id`: there is no Spawn to ask whose it is. And it
 # CASCADEs rather than leaving a `guises`-style tombstone — a Recipe is private to its owner and outlives
@@ -338,7 +331,7 @@ CREATE TABLE recipes (
 );
 """
 
-# The ONE state CCC owns rather than reads off `squeue` (docs/TODO.md "Python Environments").
+# The ONE state CCC owns rather than reads off `squeue`.
 #
 # Everywhere else, a Spawn's state IS Slurm's: PENDING/RUNNING come from one poll (slurm.queue) and
 # absence from that poll is what triggers Settlement. A building Spawn breaks that, not by choice: it
@@ -401,10 +394,9 @@ def _restrict() -> None:
     """0600 on the store and its WAL sidecars, on every open.
 
     SQLite creates a missing database at a hardcoded 0644 (`SQLITE_DEFAULT_FILE_PERMISSIONS`), and only
-    a umask of 077 would trim that — so this mode has to be SET, never inherited. Measured on the
-    deployed Head 2026-08-01: head.db was world-readable, and since **Guises** landed that means every
-    User's Spawn could read the password hashes and session tokens in it. HEAD_STATE_DIR is 0711
-    (traverse, never list) precisely on the assumption that it could not.
+    a umask of 077 would trim that — so this mode has to be SET, never inherited. A world-readable
+    head.db means every User's Guise could read the password hashes and session tokens in it.
+    HEAD_STATE_DIR is 0711 (traverse, never list) precisely on the assumption that it could not.
 
     Here rather than in `cuttle setup` because the -wal/-shm sidecars are recreated at runtime by
     whichever process writes — the API service, the karma tick, and the admin CLI over sudo from an
@@ -480,9 +472,9 @@ def remove_user(conn: sqlite3.Connection, username: str) -> bool:
 
 
 def reset_password(conn: sqlite3.Connection, username: str) -> str | None:
-    """Admin-mediated recovery (Phase 8 loose end — see docs/TODO.md's "No password recovery exists"):
-    a fresh temp password + forced change, exactly like `add_user`, so a forgotten password no longer
-    means delete-and-recreate (which would wipe the User's Karma balance and orphan their Arms).
+    """Admin-mediated recovery: a fresh temp password + forced change, exactly like `add_user`, so a
+    forgotten password no longer means delete-and-recreate (which would wipe the User's Karma balance
+    and orphan their Arms).
 
     Every existing session for this User is killed — a reset is a security action, not just a password
     change. Returns the plaintext temp password, or None if there is no such user."""
@@ -520,7 +512,7 @@ def set_password(conn: sqlite3.Connection, username: str, new_password: str) -> 
 _DUMMY_HASH = _ph.hash("__ccc_dummy__")
 
 
-# --- Guises (temp/spawn-isolation.md Phase 3) -------------------------------
+# --- Guises (temp/spawn-isolation.md) ----------------------------------------
 # See _SCHEMA_V10 for the table and why it is its own. Allocating a uid needs no privilege whatsoever —
 # it is one row in head.db — which is what lets `cuttle user add` stay a Head-local command with an
 # operator at a tty, and keeps a root helper out of the Head API entirely. CREATING the Unix account
@@ -626,7 +618,7 @@ def purge_expired(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
-# --- spawn ledger (slice 2) -------------------------------------------------
+# --- spawn ledger -------------------------------------------------------------
 
 BUILDING = "building"
 
@@ -819,7 +811,7 @@ def spawn_detail(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute(f"{_SPAWN_ROW}\n WHERE s.job_id = ?", (job_id,)).fetchone()
 
 
-# --- Karma ledger (slice 1) -------------------------------------------------
+# --- Karma ledger --------------------------------------------------------------
 
 def record_karma(conn: sqlite3.Connection, kind: str, amount: float, from_user: int | None,
                  to_user: int | None, job_id: int | None = None, note: str | None = None,
@@ -829,8 +821,8 @@ def record_karma(conn: sqlite3.Connection, kind: str, amount: float, from_user: 
     only kind that leaves Σ balances at 0).
 
     `at` overrides the row's timestamp, and it is **not** cosmetic: Decay reads it, so the Fake Cluster
-    (slice 4) must be able to say a settlement happened in a simulated week rather than right now. In
-    production it is None and SQLite stamps the wall clock."""
+    must be able to say a settlement happened in a simulated week rather than right now. In production
+    it is None and SQLite stamps the wall clock."""
     if at is None:
         conn.execute(
             "INSERT INTO karma_ledger (kind, amount, from_user, to_user, job_id, note) "
@@ -953,7 +945,7 @@ def clear_escrow(conn: sqlite3.Connection, job_id: int) -> None:
     conn.commit()
 
 
-# --- Demand history (slice 2; read by slice 3's Tide) -----------------------
+# --- Demand history (read by the Tide) ---------------------------------------
 
 def record_demand(conn: sqlite3.Connection, at: str, demand: dict[str, float]) -> None:
     conn.executemany("INSERT INTO karma_demand (at, node, demand) VALUES (?,?,?)",
@@ -963,8 +955,8 @@ def record_demand(conn: sqlite3.Connection, at: str, demand: dict[str, float]) -
 
 def _window_start(days: int, now: datetime | None = None) -> str:
     """The cutoff of a rolling window, as an ISO string. Computed in Python rather than SQL `'now'` so
-    the Fake Cluster (slice 4) can slide the window through simulated time; `now=None` is the wall clock,
-    which is every production caller."""
+    the Fake Cluster can slide the window through simulated time; `now=None` is the wall clock, which
+    is every production caller."""
     return ((now or _now()) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -998,7 +990,7 @@ def demand_series(conn: sqlite3.Connection, days: int, now: datetime | None = No
     ).fetchall()
 
 
-# --- the Ledger, as one User sees it (slice 3) ------------------------------
+# --- the Ledger, as one User sees it -------------------------------------------
 
 def ledger_rows(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
     """Every real event this User was a party to. **Only real rows** — there is no Decay row to fetch,
@@ -1015,7 +1007,7 @@ def ledger_rows(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-# --- Arm Retract/Return (Phase 2 loose end) ---------------------------------
+# --- Arm Retract/Return ---------------------------------------------------------
 
 def mark_arm_retracted(conn: sqlite3.Connection, node: str) -> None:
     conn.execute("INSERT OR IGNORE INTO arm_retractions (node) VALUES (?)", (node,))
@@ -1052,7 +1044,7 @@ def clear_retracting_job(conn: sqlite3.Connection, job_id: int) -> None:
     conn.commit()
 
 
-# --- Tide Pool (docs/TODO.md, now built) -------------------------------------
+# --- Tide Pool -------------------------------------------------------------------
 # See _SCHEMA_V8's comment for the table shapes. `privkey` is always encrypted (atrest.encrypt) going in
 # and decrypted (atrest.decrypt) coming out — nothing outside this module ever sees the ciphertext.
 
@@ -1120,7 +1112,7 @@ def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
     conn.commit()
 
 
-# --- Recovery Window (docs/TODO.md, now built) -------------------------------
+# --- Recovery Window -------------------------------------------------------------
 # See _SCHEMA_V9's comment for the table shape. All of this is driven by ccc_head_api.recovery, from the
 # karma tick — nothing here decides policy (window length, size caps), it just reads/writes the ledger.
 
@@ -1183,7 +1175,7 @@ def oldest_recovery(conn: sqlite3.Connection) -> sqlite3.Row | None:
         "SELECT job_id, bytes FROM recovery_copies ORDER BY created_at LIMIT 1").fetchone()
 
 
-# --- Output retention (docs/TODO.md "Storage retention") ----------------------
+# --- Output retention -------------------------------------------------------------
 # See _SCHEMA_V11 for the table shape. Driven by ccc_head_api.retention from the karma tick; the TTL and
 # the per-User Allowance are that module's constants, never decided here.
 

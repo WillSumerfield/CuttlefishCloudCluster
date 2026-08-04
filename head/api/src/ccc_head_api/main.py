@@ -1,4 +1,4 @@
-"""CCC Head API app (Phase 1 ⑥ read board + SPA; Phase 3a auth + submission) — served on LAN + mesh.
+"""CCC Head API app — the read board + SPA + auth + submission — served on LAN + mesh.
 
 The LAN+mesh service backing both the web Dashboard and the CLI (glossary: *Head API*). Deliberately
 a **separate** service from the enroll app (`ccc_head_api.enroll`): they have opposite exposure needs
@@ -270,7 +270,7 @@ def feature_environment(name: str, user: dict = Depends(current_user)) -> str:
 def retract_arm(name: str, user: dict = Depends(current_user)) -> Response:
     """Pause YOUR OWN Arm: stop taking new Spawns on it and end whatever is running there right now.
 
-    App-layer (Phase 2 loose end), not real Slurm DRAIN — see retraction.py's module docstring for why
+    App-layer, not real Slurm DRAIN — see retraction.py's module docstring for why
     that needs no privilege the Head API doesn't already have. Every Spawn currently RUNNING on this
     Arm is sent TERM immediately and has retraction.GRACE_SECONDS to exit before the Karma tick
     force-kills it; either way it settles at ZERO.
@@ -353,8 +353,7 @@ def spawns_history(days: int = 30, limit: int | None = None,
     forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
     history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
     carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
-    finished_at). Also carries a Recovery Window countdown (docs/TODO.md), for the History row that
-    still has one open — `recovery_expires_at` is null for every row that never had a copy, already had
+    finished_at). Also carries a Recovery Window countdown, for the History row that still has one open — `recovery_expires_at` is null for every row that never had a copy, already had
     it evicted, or whose 30 minutes are up — and, on the same terms, `output_expires_at`: when the
     Spawn's declared results are deleted, 7 days after it ended (null once they are, or before the tick
     has registered them)."""
@@ -437,7 +436,7 @@ def spawn_build_log(job_id: int, user: dict = Depends(current_user)) -> str:
 def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back.
 
-    Results are not permanent any more (docs/TODO.md "Storage retention"): 7 days from the Spawn's end,
+    Results are not permanent: 7 days from the Spawn's end,
     or sooner if the submitter's 8GB Allowance evicted them to make room for newer ones. Both read as
     404 here, and the detail says which of the two applies where the ledger still knows — a Spawn that
     produced nothing and one whose results were deleted are very different things to be told."""
@@ -457,8 +456,8 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
 
 @api.get("/spawns/{job_id}/retention")
 def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """How much of Spawn `job_id`'s declared results the Head still holds, and when it deletes them
-    (docs/TODO.md "Storage retention"). 404 means nothing held: the Spawn produced nothing, the tick has
+    """How much of Spawn `job_id`'s declared results the Head still holds, and when it deletes them.
+    404 means nothing held: the Spawn produced nothing, the tick has
     not registered it yet, its 7 days are up, or the submitter's 8GB Allowance evicted it.
 
     Named for the policy rather than `/outputs/…` because `/spawns/{id}/outputs` is already the tar
@@ -473,8 +472,8 @@ def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
 
 @api.get("/spawns/{job_id}/recovery")
 def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """Whether Spawn `job_id` still has an open Recovery Window copy (docs/TODO.md), and if so how much
-    of it and when it closes. 404 means no copy: never made (skipped for the 16GB per-Spawn cap, or the
+    """Whether Spawn `job_id` still has an open Recovery Window copy, and if so how much of it and when
+    it closes. 404 means no copy: never made (skipped for the 16GB per-Spawn cap, or the
     Arm dropped before it landed), already evicted for the 50GB pool cap, or its 30 minutes are up —
     the CLI and Dashboard both read all three the same way, "nothing left to recover".
 
@@ -492,7 +491,7 @@ def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
 @api.get("/spawns/{job_id}/recovery/download")
 def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of Spawn `job_id`'s Recovery Window copy — everything it wrote OUTSIDE its declared
-    `$CCC_OUT` (docs/TODO.md), while the 30-minute window is still open. Distinct download from
+    `$CCC_OUT`, while the 30-minute window is still open. Distinct download from
     `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
     artifact whose contents would otherwise silently change once the window closes."""
     data = recovery_mod.tar_bytes(job_id)
@@ -511,9 +510,9 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     client, and under Karma a User was *paying* until `--time` expired. Settles for the seconds
     actually held, by the Karma tick, when the cancelled Spawn drops out of squeue — see slurm.cancel.
 
-    **Cancelling someone else's Spawn is an admin WRITE and is not reachable from here** (Phase 6):
-    it is `cuttle cancel <id> --any`, run on the Head. The ownership test below is unconditional —
-    an Admin gets no branch — so a stolen admin Session is worth exactly one User's Session.
+    **Cancelling someone else's Spawn is an admin WRITE and is not reachable from here**: it is
+    `cuttle cancel <id> --any`, run on the Head. The ownership test below is unconditional — an Admin
+    gets no branch — so a stolen admin Session is worth exactly one User's Session.
     """
     with db.connect() as conn:
         row = db.get_spawn(conn, job_id)
@@ -545,7 +544,7 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
     """Verify credentials → mint a session. Returns the bearer token (CLI) and sets the HttpOnly
     cookie (browser). A `must_change_password` user still gets a session so it can call /passwd.
 
-    Throttled (Phase 8 loose end — see ratelimit.py): blocked by source IP or by the attempted
+    Throttled (see ratelimit.py): blocked by source IP or by the attempted
     username, whichever trips first, so neither one attacker IP spraying usernames nor a distributed
     guess against one account slips through."""
     ip = request.client.host if request.client else "?"
@@ -557,7 +556,7 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
         user = db.verify_password(conn, req.username, req.password)
         if user is None:
             ratelimit.record_failure(f"ip:{ip}", f"user:{req.username}")
-            # The one security event most worth a log: it feeds the rate-limiting item (Phase 8) and is
+            # The one security event most worth a log: it feeds the rate-limiter and is
             # the signal a credential is being guessed. The attempted username and source, never the
             # password. WARNING, not ERROR — a fat-fingered password is not an incident.
             log.warning("login FAILED user=%s from %s", req.username, ip)
@@ -724,16 +723,16 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
         return karma.usage(conn, days=days)
 
 
-# `POST /karma/override` USED TO LIVE HERE and was removed in Phase 6.
+# `POST /karma/override` does not exist here — an admin write, and **the Head API exposes no
+# admin-write endpoints at all**.
 #
-# It was defensible on its own terms: an Override touches nothing but head.db, which this API owns, so
-# `is_admin` was the only privilege it needed. What it could not survive is the invariant the phase
-# settled on — **the Head API exposes no admin-write endpoints at all**. Minting Karma from a stolen
-# Session is the single most valuable thing an attacker could do with one, and no amount of
-# authorization checking makes a remote write as safe as one that cannot be requested remotely.
+# It would be defensible on its own terms: an Override touches nothing but head.db, which this API
+# owns, so `is_admin` would be the only privilege it needed. But minting Karma from a stolen Session is
+# the single most valuable thing an attacker could do with one, and no amount of authorization checking
+# makes a remote write as safe as one that cannot be requested remotely.
 #
-# It is now `cuttle karma override`, on the Head, writing head.db through the API venv — the same
-# shape as `cuttle user add` and `cuttle karma bump`. See ccc_head_api.admin.
+# It is `cuttle karma override`, on the Head, writing head.db through the API venv — the same shape as
+# `cuttle user add` and `cuttle karma bump`. See ccc_head_api.admin.
 
 
 # --- submission (authed) ----------------------------------------------------
@@ -741,18 +740,18 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 @api.post("/submit")
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
-    authed mutation in slice 2. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
+    authed mutation. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
     {script, gpu, args, node, wandb_env, outputs, features}. Runs the render/sbatch/Attribution as the
     Mantle; returns the Spawn id.
 
-    `features` (docs/TODO.md "Arm Features") is optional, and empty when absent — a Spawn that
-    requests none is placed exactly as it always was. Each name is checked against every currently
-    admitted Arm's declared features (`slurm.arms_with_features`); a request no Arm can satisfy is
-    refused with 422 before ever reaching sbatch, same hard-validation stance as `vram`.
+    `features` is optional, and empty when absent — a Spawn that requests none is placed exactly as it
+    always was. Each name is checked against every currently admitted Arm's declared features
+    (`slurm.arms_with_features`); a request no Arm can satisfy is refused with 422 before ever reaching
+    sbatch, same hard-validation stance as `vram`.
 
     `outputs` is a non-empty list of subdir names made under the one `$CCC_OUT` root before the payload
-    runs (docs/TODO.md's now-closed "Spawn Output Enforcement") — required, with no default: a Spawn
-    nobody named an output for would produce results with nowhere retrievable to land.
+    runs — required, with no default: a Spawn nobody named an output for would produce results with
+    nowhere retrievable to land.
 
     `wandb_env` no longer carries a key — it never could from the browser, which is why the Dashboard
     logged no metrics at all. The caller's W&B *project/entity* are honoured and everything else in it
@@ -766,15 +765,14 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     fleet's real cards (slurm.vram_constraint); the client can't do it, because only the Head knows
     what hardware exists.
 
-    Pinning a Spawn to a named Arm is **not possible over this route** (Phase 6). It was an
-    admin-only `node` field until the phase settled that the Head API exposes no admin writes at all;
-    a `node` in the metadata is now refused outright rather than honoured for an Admin, because a
-    field that is silently ignored is worse than one that says no. It lives on as
-    `cuttle run --node`, run on the Head. Users declare what they need (`--vram`) and let Slurm
-    choose — naming a machine sidesteps eligibility, and with it the Demand the Spawn would have
-    added to every card that could have run it.
+    Pinning a Spawn to a named Arm is **not possible over this route**: the Head API exposes no admin
+    writes at all, so a `node` in the metadata is refused outright rather than honoured for an Admin —
+    a field that is silently ignored is worse than one that says no. It lives on as `cuttle run --node`,
+    run on the Head. Users declare what they need (`--vram`) and let Slurm choose — naming a machine
+    sidesteps eligibility, and with it the Demand the Spawn would have added to every card that could
+    have run it.
 
-    `tidepool` (docs/TODO.md, "Tide Pool") is the one flag that changes what the other fields mean: a
+    `tidepool` is the one flag that changes what the other fields mean: a
     live shell instead of a script. It relaxes exactly two of the checks below — `script` and `outputs`
     — and nothing else; time/vram/gpu/features/pricing/placement/Attribution are all identical to any
     other Spawn. The Dashboard's Tide Pool mode sends an EMPTY body (no project — there is nothing to
@@ -789,11 +787,10 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     for field in ("minutes", "vram"):
         if not meta.get(field):
             raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
-    # At least one declared output subdir (docs/TODO.md's now-closed "Spawn Output Enforcement"): a
-    # Spawn nobody named an output for is one whose results have nowhere retrievable to land, which is
-    # worse discovered after the fact than refused up front. `outputs` also gets the shell-injection
-    # check (OUTPUT_NAME_RE) in spawns.submit — this is only the "did the client send any" gate. Skipped
-    # for a Tide Pool (docs/TODO.md) alone — see submit_checked's docstring.
+    # At least one declared output subdir: a Spawn nobody named an output for is one whose results have
+    # nowhere retrievable to land, which is worse discovered after the fact than refused up front.
+    # `outputs` also gets the shell-injection check (OUTPUT_NAME_RE) in spawns.submit — this is only the
+    # "did the client send any" gate. Skipped for a Tide Pool alone — see submit_checked's docstring.
     outputs = meta.get("outputs") or []
     if not isinstance(outputs, list):
         raise HTTPException(422, "'outputs' in X-CCC-Meta must be a list")
@@ -809,8 +806,8 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         # Placement, pricing and the Attribution row all live in submit_checked, shared with the
         # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
         # ValueError covers both the unknown-Arm case (Head-local only in practice — `node` can never
-        # reach here, see above), the per-User concurrent-Spawn cap (Phase 8 loose end), an invalid
-        # output name, and a `script` that isn't actually in the uploaded tar.
+        # reach here, see above), the per-User concurrent-Spawn cap, an invalid output name, and a
+        # `script` that isn't actually in the uploaded tar.
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
@@ -832,8 +829,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
 # A **Recipe** is a User's frozen, re-runnable snapshot, and these routes are the whole of its lifecycle
 # except one: `run` is deferred (see below). Every route is scoped to the caller — a Recipe is private to
 # its owner, so there is no roster read here and no `user_id` any client can name. See recipes.py for the
-# 24GB wall these hang off, and docs/TODO.md "Storage retention: the Recipe wall" for why it is a wall
-# rather than the eviction `retention.py` does.
+# 24GB wall these hang off, and why it is a wall rather than the eviction `retention.py` does.
 #
 # Uploads here are spooled against the Recipe **Allowance**, not `MAX_UPLOAD_BYTES`: the 4GB cap is a
 # Spawn's, and a Recipe is bounded by the wall it is about to be weighed against instead. Both are the
@@ -931,7 +927,7 @@ def _wall_message(e: "recipes_mod.WallExceeded") -> str:
 def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     """The one authenticated channel a Tide Pool's ephemeral SSH keypair ever travels over — the CLI
     polls this after submitting (or when reattaching to an existing one) until `ready` is true, per the
-    "no user ever manages an SSH key themselves" rule (docs/TODO.md, "Tide Pool").
+    "no user ever manages an SSH key themselves" rule.
 
     `ready` is false while the Spawn is not yet RUNNING, or RUNNING but nothing is yet accepting on its
     port — this call is what BRINGS the relay up (`tidepool.ensure_relay`, idempotent), so polling here
@@ -943,7 +939,7 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     connection or a Dashboard-requested Tide Pool both reattach with `cuttle run --tidepool <id>`, and
     both need the identical credential back, not a fresh one.
 
-    `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md Phase 3e). It
+    `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md). It
     is on the wire because the CLI cannot derive it: it is `ccc-u<uid>`, and a uid is a Head-side fact.
     The User never types it and never sees it; nobody is expected to know their own uid.
     """
