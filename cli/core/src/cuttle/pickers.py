@@ -1,9 +1,7 @@
-"""Pickers — the prompts that offer real choices instead of asking you to remember a name.
+"""Pickers — prompts that offer real choices instead of asking you to remember a name.
 
-Every one of these degrades to a free-text prompt when its list cannot be fetched: the Head may be
-unreachable, you may not be on the Head, the registry may be empty. A picker that hard-failed would
-make `cuttle arm remove` unusable in exactly the situations where you most need it, so an unreadable
-list costs you the convenience and nothing else.
+Each degrades to a free-text prompt if its list can't be fetched (Head unreachable, not on Head,
+empty registry), so a picker never hard-fails a command that needs it most.
 """
 
 from . import auth, backup, enroll, ui

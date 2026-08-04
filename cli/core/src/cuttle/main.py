@@ -24,11 +24,9 @@ from . import tidepool as tidepool_mod
 from . import ui
 from . import watch as watch_mod
 
-# pretty_exceptions_enable=False: Typer's traceback rendering is for a developer, and every escaping
-# exception is handled by ui.run_app instead — which prints one line, or the real traceback under
-# --debug. Two competing error renderers would mean neither is predictable.
-#
-# invoke_without_command: bare `cuttle` opens the menu on a terminal, and prints help everywhere else.
+# pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
+# --debug); two competing renderers would be unpredictable.
+# invoke_without_command: bare `cuttle` opens the menu on a terminal, prints help everywhere else.
 app = typer.Typer(invoke_without_command=True, add_completion=False, help="CCC front door.",
                   pretty_exceptions_enable=False)
 arm_app = typer.Typer(no_args_is_help=True, help="Manage Arms (run on the Head).")
@@ -81,10 +79,9 @@ def _root(
 ) -> None:
     """CCC front door."""
     ui.configure(debug=debug, verbose=verbose, no_input=no_input)
-    # Auto-download's re-arm hook, and the only reason it survives a reboot: the sweeper is a plain
-    # detached process with nothing keeping it alive, so *any* command is an opportunity to notice
-    # that results are still owed and start one. Costs one glob of an empty directory otherwise, and
-    # swallows everything — a client whose watch dir is unreadable must still be able to run `status`.
+    # Sweeper is a detached process with nothing keeping it alive across reboot, so every command
+    # is an opportunity to notice results are still owed and restart one. Swallows all errors — a
+    # client whose watch dir is unreadable must still be able to run `status`.
     watch_mod.ensure_sweeper()
     if ctx.invoked_subcommand is None:
         _no_command()
@@ -167,11 +164,9 @@ def setup(
                 ui.say("  [muted]Ask the cluster's admin for a token: "
                        "cuttle arm authorize <name> --user <you>[/muted]")
                 token = token or ui.ask_text("Enrollment token?")
-            # Prime sudo while THIS box is still open, so its password prompt is one more row of a box
-            # already on screen. Left to setup_head/arm, it would be the first row of the *next* box —
-            # and opening a section clears the alternate screen, so the prompt would arrive just as the
-            # wizard box you filled in was wiped. Client needs no sudo. (setup_head/arm still prime as a
-            # no-op backstop, which is the real prompt for the flagged, wizard-less path.)
+            # Prime sudo while this box is still open, so its prompt is a row of the box already on
+            # screen, not the first row of the next one (a section clears the alt screen). Client
+            # needs no sudo; setup_head/arm still prime as a no-op backstop for the flagless path.
             if role in ("head", "arm"):
                 system.prime_sudo()
         if role == "client":
@@ -584,10 +579,9 @@ def recipe_save(
     Extra args after the script are frozen as the Recipe's arguments
     (`cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints -- --epochs 5`).
     """
-    # Same shape as `cuttle run`: a bare invocation walks the wizard, a flag-driven one never prompts
-    # for anything it was not asked about. The hard gate is `recipes._validate`, unconditional — a
-    # flag-driven save never passes through the block below, so it must not be the only thing enforcing
-    # "at least one output".
+    # Same shape as `cuttle run`: bare invocation walks the wizard, flag-driven one prompts for
+    # nothing. `recipes._validate` is the unconditional hard gate — the block below alone can't
+    # enforce "at least one output" since a flag-driven save skips it.
     wizard = name is None or script is None
     with ui.section("Save a Recipe", lambda: f"{name}  {script}"):
         name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Name for this recipe?"))
@@ -815,7 +809,7 @@ def run(
     that may need 2 GB.
 
     --output/-o has no default either, and none is offered anywhere: a Spawn nobody named an output
-    for is one whose results (docs/TODO.md's now-closed "Spawn Output Enforcement") have nowhere
+    for is one whose results (docs/TODO.md's "Spawn Output Enforcement") have nowhere
     retrievable to land — `mkdir -p "$CCC_OUT/<name>"` runs before your script does, once per name.
 
     A wrong or incomplete --output isn't fatal the instant the Spawn ends: docs/TODO.md's "Recovery
@@ -845,10 +839,9 @@ def run(
         # No file picker: you pass the path. Prompting through a directory listing is slower than
         # typing a name you already know, and wrong the moment the script lives in a subdirectory.
         script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
-        # --time and --vram are asked with NO pre-filled value, deliberately. A default here would
-        # reintroduce exactly what the flags refuse: nothing can price a Spawn whose length nobody
-        # declared, and a default --vram of the biggest card makes every untouched field eligible
-        # for that card alone — queued at the highest Demand for work that may need 2 GB.
+        # --time and --vram get no pre-filled default, deliberately: a default --vram of the
+        # biggest card would make every untouched field eligible for it alone — queued at the
+        # highest Demand for work that may need 2 GB.
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
         vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
         if wizard:
@@ -870,11 +863,9 @@ def run(
                 name = ui.ask_text("Output folder name")
                 if name:
                     output.append(name)
-            # Optional, and never gates submission — most Spawns need no Arm Feature at all. Offered
-            # from the built-in catalog (config.FEATURE_NAMES), which is why this needs no call to the
-            # Head and cannot fail: the names are a constant every copy of CCC already has. Whether any
-            # Arm actually CARRIES one is a different question, answered at submit — a request nothing
-            # can satisfy is refused there with the list of what is available, not guessed at here.
+            # Optional, never gates submission. Offered from the built-in catalog
+            # (config.FEATURE_NAMES) — a constant, so no Head call and no failure mode here. Whether
+            # an Arm actually carries a Feature is checked at submit, not here.
             if not feature and ui.ask_confirm("Require any Arm Features?", False):
                 for name in config.FEATURE_NAMES:
                     if ui.ask_confirm(f"Require {name!r}?", False):

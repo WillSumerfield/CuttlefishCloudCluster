@@ -298,8 +298,7 @@ def step(label: str):
         ok(label)
         return
     # Inside a box the spinner is a *row of the frame*, not a line Rich owns beside it. The Spinner
-    # renderable animates off the frame's own refresh clock, so it stays within the borders — the
-    # previous version could only fake a left bar and drew its glyph outside the box.
+    # renderable animates off the frame's own refresh clock, so it stays within the borders.
     i = _FRAME.add(Spinner("dots", text=Text(f"{label}…")))
     try:
         yield
@@ -322,12 +321,11 @@ def step(label: str):
 # **It is the test seam.** Prompts block on a real keyboard, so tests install a scripted `Answers`
 # here and never reach the terminal at all. One pty smoke test covers the wiring the seam bypasses.
 #
-# **The prompts are ours.** They were questionary/prompt_toolkit, which owns its own region of the
-# screen and repaints it — so a prompt could never be drawn *inside* a box, only beside one. That is
-# what left every box open at the bottom with the live question spilling past its walls. Rendering
-# the prompt as rows of the frame (see `_Frame`) is the only arrangement where the border closes,
-# and it costs us a key reader and four prompt types. There is no widget tree and no event loop
-# here: a prompt is a function that reads keys and returns a value, exactly as before.
+# **The prompts are ours.** A library that owns its own screen region (questionary/prompt_toolkit)
+# can only draw beside a box, never inside it, leaving the border open at the bottom. Rendering the
+# prompt as rows of the frame (see `_Frame`) is the only arrangement where the border closes — hence
+# a hand-rolled key reader and four prompt types instead. No widget tree, no event loop: a prompt is
+# a function that reads keys and returns a value.
 
 _ANSWERS = None   # set by tests, via install_answers()
 
@@ -581,8 +579,7 @@ def _prompt_confirm(surface, message: str, default: bool = True) -> bool:
 def _ask(kind: str, message: str, **kw):
     """One prompt, through the seam. The scripted human and the real one must agree on *every*
     rule, including that a None answer means ^C — a fake that is merely permissive lets a caller
-    ship a None-valued menu entry that dies the moment a human touches it (which is exactly how
-    "← back" shipped broken while the suite stayed green)."""
+    ship a None-valued menu entry that dies the moment a human touches it."""
     if _ANSWERS is not None:
         answer = _ANSWERS.take(message)
         if answer is None:        # ^C / ^D inside a prompt
@@ -632,9 +629,8 @@ def ask_text(message: str, default: str = "") -> str:
 
 
 def ask_int(message: str, default: str = "") -> int:
-    """Prompt for a whole number, re-asking on anything that isn't one. The wizard used to wrap a raw
-    `ask_text` in `int()`, so a typo ('sixty') or a bare Enter raised `invalid literal for int()` — a
-    Python error — straight at the user. Re-asking is what they'd do anyway."""
+    """Prompt for a whole number, re-asking on anything that isn't one — wrapping raw `ask_text` in
+    `int()` would surface a Python `invalid literal for int()` error straight at the user."""
     while True:
         raw = ask_text(message, default=default).strip()
         try:
@@ -746,9 +742,8 @@ def fullscreen():
     The alternate screen buffer (`?1049h`), which is what a pager or an editor uses: on exit the
     shell's scrollback is restored untouched, with none of the flow's own drawing left behind.
 
-    **This is not the reverted full-screen app.** There are no widgets, no navigable screens and no
-    event loop — it is the same boxes and prompts, on a scratch buffer. What it buys is that "remove
-    the old box" becomes a screen clear rather than anything we have to compute.
+    No widgets, no navigable screens, no event loop — just the same boxes and prompts on a scratch
+    buffer. What it buys is that removing a box becomes a screen clear rather than anything to compute.
 
     **Anything worth keeping must outlive the buffer.** On exit the screen is discarded, so results
     are deferred and printed to the real terminal afterwards, and stdout is captured and replayed —
@@ -903,8 +898,7 @@ def _copy_to_clipboard(text: str) -> bool:
     An X11/Wayland selection is owned by a live process, so xclip/wl-copy fork a background copy that
     holds the clipboard and keeps whatever fds it inherited. Given pipes, that copy holds the read
     ends open for as long as the clipboard holds the text, `communicate()` waits for an EOF that
-    never comes, and the command hangs forever. Cost us a whole enrollment: pressing `c` to copy the
-    token froze `arm authorize` inside its poll loop, so the Arm enrolled and the Head never noticed.
+    never comes, and the command hangs forever — e.g. freezing `arm authorize` inside its poll loop.
 
     Their output is not worth a pipe anyway — the exit code says whether the copy landed.
     """
@@ -1007,10 +1001,10 @@ class _Frame:
     the live prompt — is a row inside that Panel. Rich repaints the whole thing in place and knows
     exactly how tall it drew, so there is no counting of rows and no cursor arithmetic anywhere.
 
-    This is what closes the bottom border. The previous design printed the box line by line, which
-    meant the closing border could only be written once the content was finished, and anything that
-    painted its own region (the prompt library, Rich's own spinner) necessarily drew *outside* the
-    walls. A frame has no such gap: content and border are rendered together, every refresh.
+    This is what closes the bottom border: printing the box line by line would mean the closing
+    border can only be written once content is finished, and anything painting its own region (a
+    prompt library, a spinner) would draw *outside* the walls. A frame has no such gap: content and
+    border render together, every refresh.
     """
 
     def __init__(self, title: str):
@@ -1018,13 +1012,13 @@ class _Frame:
         self.rows: list[tuple[object, int]] = []
         # Normally the frame is painted onto the shared canvas (absolute redraw, no per-frame Live).
         # Without a canvas — a streaming command like `run --follow`, where `fullscreen` is a no-op,
-        # or a section opened in a test — fall back to a private transient `Live`, the old in-place
-        # box that erases itself on close.
-        # redirect_stdout/stderr=False: Live otherwise swaps `sys.stdout` for a proxy of its own and
-        # restores it on stop. `section` already holds stdout aside, and the two redirects do not
-        # nest — Live restored the *capture buffer* as stdout after the capture had been released,
-        # so every `ui.data` after any box (a temp password, an enrolment token) went to a dead
-        # StringIO and was never seen. One owner of stdout, and it is `section`.
+        # or a section opened in a test — fall back to a private transient `Live`, an in-place box
+        # that erases itself on close.
+        # redirect_stdout/stderr=False: Live otherwise swaps `sys.stdout` for a proxy and restores it
+        # on stop, which doesn't nest with `section`'s own stdout capture — Live would restore the
+        # *capture buffer* as stdout after the capture had been released, so every `ui.data` after a
+        # box (a temp password, an enrolment token) would go to a dead StringIO. One owner of
+        # stdout: `section`.
         self.live = None if _SCREEN is not None else Live(
             self._render(), console=err, transient=True, refresh_per_second=12,
             auto_refresh=True, redirect_stdout=False, redirect_stderr=False)
@@ -1045,10 +1039,9 @@ class _Frame:
             kept, used = [], 0
             for renderable, height in reversed(rows):
                 # The newest row is kept even when it alone overflows: the Panel has a fixed height
-                # and crops it, which shows the top of an oversized prompt. Dropping it instead
-                # renders an *empty box* — no rows, no reason, nothing to act on. That was the bug
-                # a logged-in menu hit (19 entries, 18 rows of budget), so the trim now degrades
-                # rather than blanks, whatever mis-sizes a row next.
+                # and crops it, showing the top of an oversized prompt. Dropping it instead renders
+                # an *empty box* — no rows, no reason, nothing to act on (a 19-entry menu with 18
+                # rows of budget hits exactly this) — so the trim degrades rather than blanks.
                 if used + height > budget and kept:
                     break
                 kept.append((renderable, height))
@@ -1201,14 +1194,13 @@ def abort(message: str, code: int = 1, next_step: str | None = None):
     ✗ line, then the hint), which a caller emitting `fail` + `hint` by hand can get wrong.
 
     Printed here and exited via `typer.Exit`, rather than raised as a `ClickException` for the
-    framework to render. Two reasons, both learned the hard way:
+    framework to render:
 
     * **Typer vendors its own click.** `typer._click.exceptions.ClickException` is a different class
       from `click.exceptions.ClickException`, so a subclass of the latter sails straight through
       Typer's handler and is never shown — an error that vanishes entirely.
-    * **`typer.BadParameter` is the wrong shape**, which is what these used to be. It is a *usage*
-      error, so an unreachable Head printed `Usage: cuttle status ...` and "Try --help" — advice that
-      could not possibly help.
+    * **`typer.BadParameter` is the wrong shape** — it is a *usage* error, so an unreachable Head
+      would print `Usage: cuttle status ...` and "Try --help", advice that could not possibly help.
 
     Printing before raising also means the message survives `CliRunner`, which invokes commands
     directly and never reaches `run_app`. The error layer is only worth trusting if the tests see
@@ -1240,14 +1232,12 @@ def report(exc: BaseException) -> int:
 def run_app(app) -> None:
     """The CLI's outermost frame: whatever escapes a command becomes a message, not a stack trace.
 
-    Typer's pretty-traceback rendering is turned off where the app is built, and we drive the parser
-    with `standalone_mode=False` so *usage* errors come back here too. That last part is not
-    cosmetic: `app()` in standalone mode lets Click print a bad-flag/unknown-command error itself and
-    call `sys.exit` — but it prints to stderr, and `fullscreen` is holding the alternate screen, so
-    that buffer (error and all) is torn down on exit and the user sees a bare non-zero exit with no
-    message. Catching the error and rendering it *after* `fullscreen` restores the real screen is the
-    fix. This also catches the rest — mostly `ApiError` (an unreachable Head, a refused call) plus
-    real bugs.
+    Typer's pretty-traceback rendering is off, and the parser runs `standalone_mode=False` so *usage*
+    errors come back here too — not cosmetic: standalone mode lets Click print its own error and
+    `sys.exit`, but that write lands inside `fullscreen`'s alternate screen and is torn down with it,
+    leaving a bare non-zero exit with no message. Catching the error and rendering it after
+    `fullscreen` restores the real screen fixes that. This also catches the rest — mostly `ApiError`
+    (an unreachable Head, a refused call) plus real bugs.
     """
     global STREAMING
     STREAMING = _detect_streaming()

@@ -124,9 +124,9 @@ def _apt_install(pkgs: list[str]) -> None:
     """`apt-get install`, with a *rotted pin* turned into something the operator can act on.
 
     apt reports an unavailable pin as `E: Version '23.11.4-1.2ubuntu5' for 'slurm-wlm' was not found` —
-    accurate, and useless unless you already know CCC pinned it and where. That is exactly the raw tool
-    error Phase 6 says must not reach the user, so the one failure we can name precisely gets named:
-    which package, which pin, that the repo dropped it, and the single file to edit.
+    accurate, and useless unless you already know CCC pinned it and where. Raw tool errors must not
+    reach the user, so the one failure we can name precisely gets named: which package, which pin,
+    that the repo dropped it, and the single file to edit.
 
     Anything else re-raises untouched — `run` has already printed apt's own output.
     """
@@ -156,7 +156,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     plus its deps must be in it.
 
     `head` adds `acl`, which only the Head can use: it is what lets the Mantle hand ONE Guise read
-    access to ONE uploaded project (temp/spawn-isolation.md Phase 3d), and the uploads only ever exist
+    access to ONE uploaded project (see temp/spawn-isolation.md), and the uploads only ever exist
     here. A donor's box gains nothing it cannot use.
     """
     run(["apt-get", "update"], sudo=True)
@@ -240,19 +240,17 @@ def write_slurm_config(mesh_ip: str, features: list[dict] | None = None) -> None
     # not state, exactly as it does Weight above, so every later caller (arm authorize/admit/remove)
     # must re-state them or silently drop the Head out of Eligibility for every Feature it offers.
     head_features = sorted(f["name"] for f in (features or head_row.get("features") or []))
-    # Guises (temp/spawn-isolation.md Phase 3c): `Prolog=` goes in only once every admitted Arm has
-    # reported having the script. Named out loud, because the operator's next move is to go and re-run
-    # `setup --arm` on those boxes — and a silently-absent Prolog would mean every Spawn quietly keeps
-    # running as the Mantle.
+    # Guises (temp/spawn-isolation.md): `Prolog=` goes in only once every admitted Arm has reported
+    # having the script, named out loud since the fix is re-running `setup --arm` on those boxes — a
+    # silently-absent Prolog would mean every Spawn quietly keeps running as the Mantle.
     missing = enroll.arms_missing(config.ARM_CAP_PROLOG)
     if missing:
-        # ui.warn, not ui.say: this lands in the end-of-run trouble summary, and an operator who
-        # misses it believes Guises are live when every Spawn is still running as the Mantle.
+        # ui.warn, not ui.say: lands in the end-of-run trouble summary, or an operator misses it and
+        # believes Guises are live when every Spawn still runs as the Mantle.
         ui.warn(f"Guises are held back — these Arms have no prolog yet: {', '.join(missing)}. "
                 f"Re-run `cuttle setup --arm` on each, then re-run this.")
-    # The same gate for job_container/tmpfs (temp/spawn-isolation.md Phase 4), asked separately: an Arm
-    # set up during the Guises rollout reported only the prolog, and holding BOTH lines back over that
-    # would take working Guises away from a box that has them.
+    # Same gate for job_container/tmpfs, asked separately: an Arm may report only the prolog, and
+    # holding both lines back over that would take working Guises from a box that has them.
     missing_tmpfs = enroll.arms_missing(config.ARM_CAP_TMPFS)
     if missing_tmpfs:
         ui.warn(f"Private per-Spawn /tmp is held back — these Arms have no job_container.conf yet: "
@@ -301,12 +299,12 @@ def provision_licence_home(path: str) -> None:
     """Create the **Licence** account (config.LICENCE_USER) with `path` as its home, so the vendor's
     activation can be run AS it and land its state there.
 
-    This is the whole mechanism. TurboActivate picks its state directory with
-    getpwuid(getuid())->pw_dir and ignores $HOME (probed on hardware 2026-08-03), so the identity that
-    activates decides where the licence lives. Give an account this directory as its home, activate as
-    that account, and the files appear here at whatever names the installed release uses — nobody ever
-    has to find, name or copy them. `ccc_head_api.spawns.JOB_SCRIPT` then binds this directory at the
-    Guise's home inside the Pod, which is where the same getpwuid call looks from in there.
+    This is the whole mechanism. TurboActivate picks its state directory with getpwuid(getuid())->pw_dir
+    and ignores $HOME, so the identity that activates decides where the licence lives. Give an account
+    this directory as its home, activate as that account, and the files appear here at whatever names
+    the installed release uses — nobody ever has to find, name or copy them.
+    `ccc_head_api.spawns.JOB_SCRIPT` then binds this directory at the Guise's home inside the Pod, which
+    is where the same getpwuid call looks from in there.
 
     Group-owned by GUISE_GROUP and 2770, because a Spawn runs as a **Guise** — a different uid — and
     still has to WRITE here: the activation record is rewritten on periodic online re-validation, and a
@@ -326,12 +324,9 @@ def provision_licence_home(path: str) -> None:
     run(["usermod", "--home", path, config.LICENCE_USER], sudo=True, check=False)
     run(["install", "-d", "-m", "2770", "-o", config.LICENCE_USER, "-g", config.GUISE_GROUP, path],
         sudo=True)
-    # Empty is the NORMAL state here now, and no longer worth a warning: CCC fills this directory
-    # itself, with an activation Spawn run as this Arm is admitted (cuttle.enroll.activate_arm), which
-    # is minutes away and has not happened yet at this point in setup. It used to be the operator's job
-    # to run the vendor's activation by hand as `ccc-licence`, and an empty directory then meant a
-    # Feature this box could not serve — so it was warned about. The account's job has shrunk to owning
-    # the directory: a **Guise** does the activating, inside a Pod, with this bound at its home.
+    # Empty is normal here: CCC fills this directory itself via an activation Spawn run as this Arm
+    # is admitted (cuttle.enroll.activate_arm, minutes away at this point in setup) — a **Guise**
+    # does the activating, inside a Pod, with this bound at its home.
 
 
 def provision_mantle() -> None:
@@ -369,7 +364,7 @@ def provision_head_auth() -> None:
     scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
     API unit and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
     provision_mantle()
-    # 0711 — traverse, never list (temp/spawn-isolation.md Phase 3d). A **Guise** has to reach its own
+    # 0711 — traverse, never list (see temp/spawn-isolation.md). A **Guise** has to reach its own
     # `spawns/<jid>`, `scratch/<jid>` and `projects/<uuid>`, and a 0700 parent stops it at the door. It
     # is `--x` on purpose: reaching a directory whose exact name you already have is all a Spawn needs,
     # and it is the whole difference from `r-x`, which would let any Spawn enumerate every other User's
@@ -386,12 +381,10 @@ def ensure_munge_key() -> None:
     """Mint the cluster's munge key if this Head has none. **Head only** — an Arm is *given* this key
     over /enroll (enroll.write_munge_key); a second one would be a second cluster.
 
-    Setup used to leave this entirely to the munge package's postinst, which creates a key on a FRESH
-    install and never again. That assumption survives exactly one lifecycle: `cuttle teardown` deletes
-    the key (correctly — a departed node must not keep the cluster secret) but leaves munge installed
-    whenever the package predates CCC, since the apt manifest only records what setup itself added. The
-    next `apt-get install munge` is then a no-op, no postinst runs, and munge dies on a missing keyfile,
-    taking slurmctld and slurmd with it — three failed units for one absent file.
+    Can't rely on the munge package's postinst (mints a key on a FRESH install only): `cuttle teardown`
+    deletes the key but leaves munge installed if the package predates CCC, since the apt manifest only
+    records what setup itself added — so the next `apt-get install munge` is a no-op, no postinst runs,
+    and munge dies on a missing keyfile, taking slurmctld and slurmd with it.
 
     `test -s` under sudo rather than Path.exists(): /etc/munge is `drwx------ munge munge`, and pathlib
     raises PermissionError instead of answering False when it cannot traverse (see monitor.py).
@@ -429,7 +422,7 @@ def ensure_bench_secret() -> None:
     """Mint the [bench] module's rsync secret if this Head has none.
 
     Cluster-lifetime rather than per-run: the enrollment benchmark never goes through the Head API, so
-    there is no **Siphon** to hand it (temp/spawn-isolation.md Phase 2). Root-owned 0600 — `enroll`
+    there is no **Siphon** to hand it (see temp/spawn-isolation.md). Root-owned 0600 — `enroll`
     reads it with sudo when it renders the benchmark's sbatch, and rsyncd (running as root) reads it to
     check the login, which is what lets [bench] keep `strict modes = true` where a Siphon cannot.
 
@@ -446,7 +439,7 @@ def install_rsyncd(mesh_ip: str) -> None:
     privileged) but serves each module as `ccc`, so files stay ccc-owned.
 
     The conf itself defines no per-Spawn module — it `&include`s RSYNCD_DIR, which the Head API mints
-    **Siphon**s into as `ccc` (Phase 2). That directory is 0700 ccc: rsyncd reads it as root, and
+    **Siphon**s into as `ccc`. That directory is 0700 ccc: rsyncd reads it as root, and
     nothing else on the box has any business seeing one Spawn's stage-out credential. The module roots
     a Siphon points at (projects, spawns) are created ccc-owned by provision_head_auth, which must run
     first."""
@@ -575,10 +568,9 @@ def _secure_tls() -> None:
     so a routine teardown does not clear it either. That makes anything which widens the key afterwards
     permanent, with no path back short of throwing away every pin.
 
-    Found exactly that way on the deployed Head 2026-08-01: `head.key` was 0644. openssl writes the key
-    0600 itself and the chmod below has been here since the cert landed, so something outside setup
-    widened it — unattributable after the fact, which is the point. A **Guise** could read the private
-    half of the cert its own Head authenticates with.
+    openssl writes the key 0600 itself, so a widened key means something outside setup touched it —
+    unattributable after the fact, which is the point of re-asserting rather than just checking. A
+    **Guise** could otherwise read the private half of the cert its own Head authenticates with.
     """
     run(["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(config.HEAD_KEY)], sudo=True)
     run(["chmod", "0600", str(config.HEAD_KEY)], sudo=True)  # the private half: Mantle-only
@@ -683,7 +675,6 @@ def resolve_coordinator_address(address: str | None) -> str:
     The stored address outranks `primary_ip()`: this is a durable property of the Head, not a per-run
     argument. Without that fallback a bare `cuttle setup --head` — a routine re-run — silently reverts
     the coordinator to the LAN IP, invalidating every enrollment token and stranding every remote Arm.
-    Observed 2026-07-28; that is the whole reason this function exists.
     """
     stored = settings.load().get("mesh", {})
     addr = address or stored.get("head_address") or _pick_coordinator_address()
@@ -715,7 +706,7 @@ def mesh_up_head(addr: str) -> str:
     Two addresses, two jobs: `addr` is where Arms reach the coordinator *before* they're on the
     mesh (public/DDNS); the returned mesh IP is where they reach slurmctld *after*.
 
-    HTTPS (Phase 9 #3): node keys and preauth keys cross this address before the mesh exists to
+    HTTPS: node keys and preauth keys cross this address before the mesh exists to
     protect them, so it carries a self-signed cert like the Head API's dashboard does — except
     `tailscaled`, not cuttle's own client, is what verifies it (see mesh.trust_own_headscale_cert /
     mesh.ensure_headscale_trusted).
@@ -1022,17 +1013,17 @@ def _prompt_licence_home(existing: str = "") -> str:
 
     ONE directory per Arm, not one per Feature: a licence is locked to hardware, and an Arm is one
     machine. Bound at a Spawn's Guise home inside the Pod (ccc_head_api.spawns.JOB_SCRIPT) because that
-    is where a licence manager looks — verified on hardware 2026-08-03: TurboActivate resolves its state
-    directory through getpwuid()->pw_dir and cannot be redirected by any env var.
+    is where a licence manager looks: TurboActivate resolves its state directory through
+    getpwuid()->pw_dir and cannot be redirected by any env var.
 
     The operator names a directory and CCC creates it, as the home of config.LICENCE_USER. They then
     run the vendor's activation once as that account, which writes the state in. CCC still never reads,
     copies or parses what lands there — it only owns the empty directory and the identity.
 
-    An earlier design had the operator hand-copy the files out of their own home. That is not viable:
-    they are named from an obfuscated per-release token that appears in neither TurboActivate.dat nor
-    the vlearn wheels, so it cannot be looked up, and a version bump renames every one of them — the
-    copy then goes stale silently, because the bind guard only tests that the directory exists.
+    Hand-copying the files out of the operator's own home isn't viable: they're named from an
+    obfuscated per-release token absent from both TurboActivate.dat and the vlearn wheels, so it can't
+    be looked up, and a version bump renames every one of them — a stale copy would go unnoticed
+    because the bind guard only tests that the directory exists.
 
     Must NOT be the operator's real home — it is bound into a Pod wholesale, so anything else living
     there is handed to the Spawn along with it. Giving it to a CCC-owned account makes that structural
@@ -1082,20 +1073,15 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
         system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
     ui.say(f"  [muted]on the mesh as {node_name} — {mesh_ip}[/muted]")
 
-    # Enroll IMMEDIATELY, before the long apt run. Two reasons, both about timing:
-    #   1. `cuttle arm authorize` is blocked on the Head waiting for exactly this POST. Doing it after
-    #      apt would hold the Admin's terminal hostage for our entire package install.
-    #   2. If the Head is unroutable over the mesh, we learn now — not five minutes into an apt we
-    #      would then have to throw away.
-    # The POST needs nothing but the mesh (gpu_devices() is a path check). It reports our GPU devices —
-    # one /dev/nvidiaN per card natively, a single /dev/dxg under WSL2 — which the Head needs to author
-    # our gres.conf lines, and returns the munge key. We hold that key in memory: writing it needs the `munge` user, which
-    # apt has not created yet.
-    # Arm Features (docs/TODO.md): ask which built-in Features this box has, and where each is
-    # installed, before /enroll — so the declaration rides the SAME POST as the hardware report rather
-    # than a second round trip. The catalog is config.FEATURE_NAMES, so this needs nothing from the Head
-    # (it used to fetch one over the mesh) and works before this box can reach it at all.
-    # A re-setup offers what this box declared last time (settings) rather than re-walking the list.
+    # Enroll IMMEDIATELY, before the long apt run: `cuttle arm authorize` is blocked on the Head
+    # waiting for exactly this POST, and an unroutable Head is better learned now than after apt.
+    # It reports our GPU devices (one /dev/nvidiaN per card natively, a single /dev/dxg under WSL2)
+    # for the Head to author gres.conf, and returns the munge key — held in memory, since writing it
+    # needs the `munge` user, which apt has not created yet.
+    # Arm Features (docs/TODO.md): asked before /enroll so the declaration rides the same POST as the
+    # hardware report. The catalog is config.FEATURE_NAMES, a local constant, so this needs nothing
+    # from the Head. A re-setup offers what this box declared last time (settings) rather than
+    # re-walking the list.
     prior = (settings.load().get("arm") or {})
     features = _prompt_arm_features(prior.get("features"))
     # Only asked when this box actually declared something to licence — a Licence with no Feature to
@@ -1198,10 +1184,9 @@ def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | Non
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     # Configless serves the conf (which names Epilog=/Prolog=/JobContainerType=) but NOT the per-node
     # files it points at — those must be on the node, written before slurmd starts, or the first Spawn's
-    # hook fails and drains this Arm. The prolog is what creates a **Guise** here (Phase 3c) and
-    # job_container.conf is what the private-/tmp plugin refuses to start without (Phase 4). All three
-    # are written unconditionally, ahead of the Head ever naming them, which is the ordering the rollout
-    # needs: harmless on a node whose slurm.conf still says nothing about them.
+    # hook fails and drains this Arm. The prolog creates a **Guise** here; job_container.conf is what
+    # the private-/tmp plugin refuses to start without. Both written unconditionally, ahead of the Head
+    # ever naming them — harmless on a node whose slurm.conf still says nothing about them.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
     _write_root_file(config.SLURM_PROLOG, templates.render_prolog(), mode="755")
     _write_root_file(config.JOB_CONTAINER_CONF, templates.render_job_container_conf())
