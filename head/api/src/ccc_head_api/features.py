@@ -340,8 +340,3 @@ def environment_yml(name: str) -> str:
     out.append("")
     out.append("  # Your own dependencies go below, in whichever of the two lists they belong to.")
     return "\n".join(out) + "\n"
-
-
-def mount_for(name: str) -> str:
-    """Where a profiled Feature's Arm-supplied package is bound inside the Pod."""
-    return f"{FEATURE_MOUNT}/{name}"

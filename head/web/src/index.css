@@ -254,13 +254,6 @@
   padding: 2rem 2rem;
 }
 
-/* Any edge that meets other content should bleed, never cut. */
-@utility bleed-y {
-  mask-image: linear-gradient(180deg, transparent 0%, black 8%, black 92%, transparent 100%);
-}
-@utility bleed-b {
-  mask-image: linear-gradient(180deg, black 0%, black 82%, transparent 100%);
-}
 @utility label {
   font-family: var(--font-sans);
   font-size: 11px;

@@ -196,13 +196,6 @@ class TestArmFeatureDeclaration:
         reg = json.loads(enroll_api.REGISTRY.read_text())
         assert reg["donor-box"]["features"] == []
 
-    def test_the_catalog_is_a_constant_not_state(self, head_pin):
-        """There is no catalog file to be missing, empty or stale: a fresh Head serves the same list as
-        one that has been running for a year, and `GET /features` needs nothing on disk to answer."""
-        r = TestClient(enroll_api.app, client=(DONOR_IP, 9)).get("/features")
-        assert r.status_code == 200
-        assert r.json() == sorted(enroll_api.FEATURE_NAMES)
-
     def test_the_three_copies_of_the_catalog_agree(self):
         """cuttle.config, ccc_head_api.enroll and ccc_head_api.slurm each carry the list because the
         three packages cannot import each other. Nothing but this test keeps them honest."""

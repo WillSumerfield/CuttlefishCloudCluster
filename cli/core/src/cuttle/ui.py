@@ -132,10 +132,6 @@ def _log(markup: str) -> None:
         f.flush()   # a run that dies mid-step must still have its log
 
 
-def log_path():
-    return _LOG_PATH
-
-
 # --- saying things ----------------------------------------------------------
 
 def say(message: str) -> None:

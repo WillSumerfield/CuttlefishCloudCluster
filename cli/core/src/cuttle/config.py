@@ -309,7 +309,6 @@ GUISE_PREFIX = "ccc-u"
 # Reserved for the cluster itself — the enrollment benchmark, the one Spawn no User submits. It is a
 # Guise like any other, so that "a Spawn owned by `ccc` is a bug" has no exceptions.
 GUISE_CLUSTER_UID = 60001
-GUISE_UID_BASE = 60002   # Users allocate from here: monotonic, never reused (see db.allocate_guise)
 GUISE_UID_MAX = 61182    # same reserved block as CCC_UID, below systemd's DynamicUser (61184+)
 # The shared SECONDARY group every Guise joins, and the only thing the Head's sudoers rule names: `ccc`
 # may run Slurm's client commands as any member of it (never as root). Each Guise's PRIMARY group is

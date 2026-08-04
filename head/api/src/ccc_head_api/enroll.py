@@ -133,14 +133,6 @@ def healthz() -> dict:
     return {"ok": True}
 
 
-@app.get("/features")
-def features_catalog() -> list[str]:
-    """The Arm Features CCC supports. Kept as an endpoint although the answer is now a constant every
-    caller already has: it is how a client learns what the HEAD supports, which matters the moment a
-    donor's CCC is a different version from the Head's."""
-    return sorted(FEATURE_NAMES)
-
-
 @app.get("/probe")
 def probe(request: Request) -> dict:
     """Can the Head open a connection back to the caller's slurmd? Only the Head can answer this,

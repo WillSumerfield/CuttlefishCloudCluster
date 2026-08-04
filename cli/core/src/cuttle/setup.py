@@ -890,10 +890,6 @@ def setup_client() -> None:
     ui.ok("Client ready. `cuttle run <script> --time <min> --vram <GB>` to submit.")
 
 
-# `--local` is just the single-box Head (Head + its co-located Arm).
-setup_local = setup_head
-
-
 def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
     """Ask which of CCC's built-in Arm Features (config.FEATURE_NAMES) this box has, and where each is
     installed — `[{"name", "path"}, ...]`, /enroll's shape. A y/n per Feature rather than a typed name:
