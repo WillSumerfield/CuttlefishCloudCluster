@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "CCC read-only dashboard SPA — live Arms + Spawns, served by the Head dashboard service.",
+  "description": "CCC dashboard SPA — the primary job-management surface: live Arms + Spawns, submission, and account/admin pages, served by the Head dashboard service.",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

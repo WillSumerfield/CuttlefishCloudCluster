@@ -5,8 +5,6 @@ end: Eligibility narrowing to the one licensed Arm, an Environment built on the 
 vlearn package and assets arranged by CCC, its **Licence** bound at the Spawn's Guise home, and
 declared outputs staged back.
 
-Design: `temp/FEATURES_BUILTIN.md`.
-
 ## Prerequisites
 
 Somebody's box has to *have* vlearn, and say so at `cuttle setup --arm` (or `--head`, for the Head's
@@ -62,8 +60,8 @@ flag to move it — an rl_games quirk, not a vlearn one, which is why it lives h
 Feature profile.
 
 **Nothing here arranges the licence.** TurboActivate finds its activation state through
-`getpwuid(getuid())->pw_dir` and ignores `$HOME` — verified on hardware, a redirected `HOME` fails and
-a bogus one still passes. So the mount point is not something a submitter can influence; CCC binds it.
+`getpwuid(getuid())->pw_dir` and ignores `$HOME` — a redirected `HOME` fails and a bogus one still
+passes. So the mount point is not something a submitter can influence; CCC binds it.
 
 ## Expected output
 

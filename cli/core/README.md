@@ -1,7 +1,7 @@
 # cli/core — `cuttle` (Python)
 
 The Python (`typer`) core of the `cuttle` front door: provisions nodes, enrolls remote Arms, submits
-Spawns. (A host-native Go launcher is in the design — see `docs/DesignDoc.md` — but not yet built.)
+Spawns. `cuttle` is Python-only — no separate host-native launcher.
 
 ## Dev
 
@@ -115,4 +115,4 @@ doesn't happen on every redeploy.
   Mantle) and are read back over the API — a submitter never touches the Head's disk.
 - The Pod image is at `/opt/ccc/images/base.sif`, the same path on every node, so it is readable by the
   home-less Mantle.
-- Pinned versions live in `src/cuttle/config.py` (mirrored in `docs/TODO.md`).
+- Pinned versions live in `src/cuttle/config.py`.

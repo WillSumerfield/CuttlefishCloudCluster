@@ -1,37 +1,40 @@
 # Cuttlefish Cloud Cluster (CCC) Design Specification
 
 ## 1. System Architecture & Node Taxonomy
-The CCC is a distributed GPU/CPU computing network serving both on-campus and remote lab members at Imperial College London.
+The CCC is a distributed GPU/CPU computing network: donate spare compute, run sandboxed experiments on
+it, and settle the exchange through a Karma token economy.
 
-> **Cross-platform strategy — Linux substrate everywhere.** Arms may be started on any OS, but the
-> execution environment is always Linux. `cuttle setup` provisions that Linux layer under the hood:
-> native on Linux, **WSL2** on Windows, a lightweight **Linux VM** (e.g. Lima/UTM) on macOS. `slurmd`
-> and the container runtime always run inside that Linux layer, so there is a single Linux code path
-> everywhere. Consequence: macOS Arms have **no NVIDIA/CUDA** access (no GPU passthrough to the VM;
-> Apple Silicon is Metal-only) → Mac Arms are effectively CPU-only.
+Arms run **Ubuntu 24.04** — natively, or under **WSL2** on Windows. `slurmd` and the container runtime
+always run in that Linux layer, so there is a single Linux code path everywhere. GPU support is
+**NVIDIA-only**.
 
 ### The Head (Control Plane)
 *   **Purpose:** Central control plane running the cluster scheduler orchestrating resource allocations, tracking active jobs, and maintaining queue fairness.
-*   **Tech Stack:** Slurm Workload Manager (`slurmctld`), plus **`slurmdbd` + MariaDB** for accounting
-    and FairShare (required by the Karma↔FairShare sync). Head-side only, Linux.
+*   **Tech Stack:** Slurm Workload Manager (`slurmctld`). No `slurmdbd`/MariaDB — Karma sets Slurm
+    priority itself and needs no accounting database (§5). Head-side only, Linux.
 
 ### Permanent Arms (Dedicated Server Nodes)
 *   **Purpose:** High-availability, permanently attached multi-GPU servers for heavy, non-volatile compute workloads.
-*   **Tech Stack:** Enterprise Ubuntu Server LTS, NVIDIA Data Center GPU Manager (DCGM).
+*   **Tech Stack:** Ubuntu 24.04, NVIDIA driver + `nvidia-container-toolkit`.
 
 ### Volatile Arms (Edge Nodes)
 *   **Purpose:** Desktop computers or physical robot controllers used locally that donate spare compute to the cluster but can instantly reclaim 100% of their resources.
-*   **Tech Stack:** Slurm Preemption Daemon configured with `PreemptMode=REQUEUE` or `SUSPEND`.
+*   **Volatility is not yet built.** Every enrolled Arm is a permanent one: the `--volatile` flag and
+    Slurm preemption (`PreemptMode=REQUEUE`/`SUSPEND`) are design only, waiting on the hardening
+    phase. **Retract/Return (§5) is built and applies to every Arm**, so an owner can already reclaim
+    their machine without the volatility flag existing.
 
 ### The Gateway (Secure Access)
-*   **Purpose:** Zero-trust, authenticated network entryway protecting the cluster from hackers and enforcing **built-in Head authentication** (admin-provisioned username/password; MFA possible later). Required for all human usage.
+*   **Purpose:** Zero-trust, authenticated network entryway protecting the cluster and enforcing **built-in Head authentication** (admin-provisioned username/password). Required for all human usage.
 *   **Tech Stack (locked):** **WireGuard mesh** (Tailscale, or self-hosted **Headscale**) as the
-    cluster fabric: every node — Head and all Arms, including remote/NAT'd volatile desktops — joins
-    one flat encrypted network with automatic NAT traversal, so `slurmd`↔`slurmctld` and storage
-    mounts behave like a LAN. **Node enrolment** is authorized by an Admin-minted one-time token (which
-    also names the Arm's owner); **human access + job submission** are gated by **built-in auth on the
-    Head** (own user table, argon2 + sessions) — *not* Imperial SSO. TLS for the human surface is
-    terminated by a tunnel (Cloudflare Tunnel / `tailscale funnel`) — a real cert without managed DNS.
+    cluster fabric: every node — Head and all Arms — joins one flat encrypted network with automatic
+    NAT traversal, so `slurmd`↔`slurmctld` and staging behave like a LAN. **Node enrolment** is
+    authorized by an Admin-minted one-time token (which also names the Arm's owner); **human access +
+    job submission** are gated by **built-in auth on the Head** (own user table, argon2 + sessions) —
+    no external IdP. TLS for the human surface: no CA will sign a cert for a box with no public domain
+    name, so the Head signs its own, and the CLI/browser trust-on-first-use pin it (SSH-`known_hosts`
+    style). Public reachability (a tunnel or DDNS + a real cert) is deferred — the Head is assumed
+    reachable over the LAN or the CCC mesh.
 
 ---
 
@@ -41,32 +44,38 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
 *   **Purpose:** Separates CPU and GPU resources so they can be requested independently, bundled, or combined across multiple distinct node types. Handles overallocation gracefully.
 *   **Tech Stack:** Slurm Generic Resource (GRES) scheduling configured via `slurm.conf`. GPU
     support is **NVIDIA-only** (native Linux driver, or Windows via WSL2 CUDA passthrough, both wired
-    through `nvidia-container-toolkit` + Apptainer `--nv`). AMD/Apple machines may join as CPU-only
-    Arms.
+    through `nvidia-container-toolkit` + Apptainer `--nv`). A non-NVIDIA machine may still join as a
+    CPU-only Arm.
 
 ### Pods (Isolated Environments)
 *   **Purpose:** Sandboxes jobs to prevent overallocation crashes, stops users from erasing external host memory, and preserves node-locked software profiles.
 *   **Tech Stack (locked):** **Apptainer** (formerly Singularity). Rootless and daemonless, so the job
-    runs as a plain Slurm-launched process with a clean kill on Retract; maps host IDs easily and
-    inherits host node-locked licence profiles; single-file `.sif` images; GPU via `--nv`. Requires
-    unprivileged user namespaces on the Arm's Linux layer (native/WSL2/VM). Resource caps enforced
+    runs as a plain Slurm-launched process with a clean kill; maps host IDs easily and inherits host
+    node-locked licence profiles; single-file `.sif` images; GPU via `--nv`. Requires
+    unprivileged user namespaces on the Arm's Linux layer (native/WSL2). Resource caps enforced
     via Slurm `cgroups` on the Linux layer, not a Docker daemon.
 
-### Hardware Licence Management
-*   **Purpose:** Routes jobs requiring node-locked software licences to the exact physical hardware they are registered to, preventing code compilation crashes.
-*   **Tech Stack:** Slurm Node Features (`Features=matlab_lic` inside `slurm.conf`). Jobs query via `--constraint="matlab_lic"`. For containers, Apptainer automatically passes the true host hardware ID/MAC address to bypass network isolation blocks.
+### Arm Features & Hardware Licence Management
+*   **Purpose:** Routes a Spawn that needs a heavy install or node-locked software licence to the
+    exact Arm(s) that carry it.
+*   **Tech Stack:** A **Feature** is a name in a catalog built into CCC (`config.FEATURE_NAMES`, e.g.
+    `vlearn`, `isaaclab`) — not an admin-defined string, because CCC has to know what the name means:
+    at minimum placement + `$<NAME>_PATH`, and for some names the runtime wiring (env vars, binds,
+    cache) a Spawn needs as well. Declared by an Arm's owner at `setup --arm`, it becomes a Slurm Node
+    Feature; a Spawn requests one with `--feature`, which the Head turns into a `--constraint` AND-clause
+    the same way it turns `--vram` into one. A **Licence** (permission to run the software) is bound to
+    the machine, not the User: it lives in one directory per Arm, owned by a dedicated `ccc-licence`
+    account, and is bound at the Spawn's **Guise** home inside the Pod — so the copy that runs is
+    always the Arm's own activated copy. See root `CONTEXT.md` — Feature, Licence, Licence account,
+    Activation Spawn.
 
-### Shared Storage (Unified Storage)
-*   **Purpose:** Ensures all user directories, code files, and base environment snapshots are identical across every Arm on the network.
-*   **Tech Stack (locked — tiered):** A central store (NFS or CephFS) is the single source of truth.
-    *   **Permanent / LAN Arms:** mount it directly at `/mnt/ccc_share/` (uniform live view, classic HPC).
-    *   **Remote / volatile Arms:** **no live mount.** `cuttle` **stages in** the job's inputs to local
-        disk at start and **stages out** results/checkpoints at end (rsync / object pull over the mesh).
-        Robust to disconnects and WAN latency; Retract checkpoints to local disk then best-effort pushes.
-*   **Resolved (Phase 1 ④):** the gitignore-aware project dir is staged in over an rsync daemon bound
-    to the Head's mesh address, into node-local scratch, then a designated `$CCC_OUT`/`outputs` dir is
-    staged back at the end. Per-Spawn, fresh copy (no persistent cache yet). Still open: dedup/caching
-    for sweeps, live log streaming, and partial-result handling on Retract.
+### Shared Storage (Stage-in / Stage-out)
+*   **Purpose:** Gets a Spawn's project onto the Arm that runs it, and its results back, without a
+    live shared filesystem.
+*   **Tech Stack:** No NFS/CephFS, no live mount — every Arm stages. The gitignore-aware project dir
+    is staged in over an rsync daemon bound to the Head's mesh address, into node-local scratch, then
+    a designated `$CCC_OUT`/`outputs` dir is staged back at the end. Per-Spawn, a fresh copy (no
+    persistent cache yet). Still open: dedup/caching for sweeps and live log streaming for remote Arms.
 *   **The last hop is automatic** (`cuttle.watch`): results do not stop at the Head. `cuttle run` records
     what this box is owed and a single detached sweeper brings each Spawn's `$CCC_OUT` down into
     `./spawn-<id>-outputs/` as it finishes — no daemon, nothing installed, and nothing lost to a reboot,
@@ -84,19 +93,21 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
 ### Spawns (Active Experiments)
 *   **Purpose:** A single, traceable execution of a Recipe passing unique hyperparameters (`config.yaml`) into the container.
 
-### `cuttle` Auto-Detection Layer
-*   **Purpose:** A lightweight, user-facing TUI/GUI and Python CLI that abstracts all Slurm syntax, allowing users to save full configuration "Recipes".
-*   *Static Code Analysis:* Automatically reads the target script. If strings like `cuda` or `.to('cuda')` are found, it auto-allocates 1 GPU. If `DistributedDataParallel` is found, it enforces a single-node Multi-GPU safety cap to block slow inter-network routing across individual Arms. Users can specify fixed max memory limits or leave it dynamic under a safety cap.
-*   *Environments:* A project declares its dependencies in the file its own tooling already writes (`uv.lock`/`pyproject.toml`, `requirements.txt`, or `environment.yml`); the Head builds that environment before the Spawn is placed and keeps none of it. Design: `docs/TODO.md`, "Python Environments".
-*   **Tech Stack (locked — split):** The `cuttle` tool is two layers matching where code runs:
-    *   **Host-native launcher** — a single static **Go** binary installed on
-        the raw OS with no prereqs. Bootstraps the Linux layer (WSL2/VM), joins the mesh, registers the
-        Retract hotkey, and drives stage-in/stage-out.
-    *   **Python core** — recipes, job submit, static-analysis auto-detect, and W&B injection (`typer`),
-        running inside the Linux layer where Python is trivial.
-    *   Web dashboard — a read-only React/Vite SPA over a FastAPI Head API (live node + Spawn state),
-        served on the CCC mesh + LAN; grows submission/management in later phases. (Open OnDemand was
-        considered and dropped in favour of a purpose-built SPA.)
+### `cuttle` and the Dashboard
+*   **Purpose:** Two clients over one Head API, at operation parity: submit, follow, and manage
+    Spawns without hand-writing Slurm syntax.
+*   *`--time` and `--vram` are required, with no default* — a Spawn's cost can't be priced without a
+    declared length, and a defaulted `--vram` would make every untouched submission eligible for the
+    fleet's biggest card alone. There is no static analysis of the submitted script; a User states
+    what they need.
+*   *Environments:* A project declares its dependencies in the file its own tooling already writes
+    (`uv.lock`/`pyproject.toml`, `requirements.txt`, or `environment.yml`); the Head builds that
+    environment before the Spawn is placed and keeps none of it.
+*   **Tech Stack:** `cuttle` is a single **Python** CLI (`typer`) — recipes, job submit, and W&B
+    injection — with an interactive wizard over the same flags for `setup`; no separate host-native
+    launcher. The **Dashboard** is a React/Vite SPA over the FastAPI Head API (live node + Spawn state,
+    submission, account and admin pages), served on the CCC mesh + LAN, and is the **primary** surface
+    for everyday use.
 
 ### Interactive / Testing Mode (Tide Pool)
 *   **Purpose:** Lets a user drop directly into a live Pod on an allocated Arm to run code interactively, debug, and probe hardware behaviour before committing a full Spawn. Motivated by heterogeneous hardware not behaving identically (differing GPU archs, driver versions, node-locked licences) — a run that works on one node may fail on another.
@@ -112,21 +123,21 @@ The CCC is a distributed GPU/CPU computing network serving both on-campus and re
     sandboxed container at runtime — `WANDB_API_KEY` from config, plus per-Spawn `WANDB_PROJECT`,
     `WANDB_ENTITY`, and `WANDB_NAME` (`cuttle run --project/--entity`).
 
-### Configurable Warnings & Webhooks
-*   **Purpose:** Pings the user immediately via email, Slack, or Discord if code throws a `NaN` error, freezes, or if a volatile Arm is forcefully retracted.
-*   **Tech Stack:** W&B Native Alerts combined with Slurm `Prolog`/`Epilog` hooks running automated `curl` webhook payloads.
-
-### Rogue Actor & Bad Use Detection
-*   **Purpose:** Tracks and monitors hardware utilization occurring *outside* of Slurm's scheduler to detect background hackers, un-logged local processes, or crypto-miners.
-*   **Tech Stack:** Prometheus Node Exporter + Custom Python Cron Daemon. If physical CPU/GPU activity exceeds 10% while Slurm records 0 active jobs on that specific node, an immediate intrusion alert is fired to the lab administrators.
+### Head-box Monitor & Rogue-Actor Detection
+*   **Purpose:** Watches the Head's own box for trouble — disk space, process liveness, and hardware
+    utilization happening *outside* Slurm's scheduler (an un-logged local process, a stray job) — and
+    pings the operator.
+*   **Tech Stack:** A standalone script (`ccc-monitor`), installed by `cuttle setup --head` and run by
+    a systemd timer, checking `nvidia-smi`/`squeue` for GPU or CPU activity above 10% sustained over
+    several checks while nothing is scheduled, and emailing the operator over SMTP when a check fires.
+    Scoped to the Head's own co-located Arm today; per-Arm fleet-wide monitoring (Prometheus/Grafana,
+    per-user alerting, W&B-triggered NaN/freeze pings) is not yet built.
 
 ---
 
 ## 5. The Karma Economy
-*Rewritten 2026-07-14 (grill). Karma exists to make **donating hardware rational** — FairShare cannot
-pay people for supply, so it cannot grow a cluster — and to give the operator price/payout/admin levers
-FairShare doesn't have. The previous design (a closed token market with minting, bankruptcy, and three
-separate demand multipliers) is superseded; see "What was deleted" at the end.*
+Karma exists to make **donating hardware rational** — FairShare cannot pay people for supply, so it
+cannot grow a cluster — and to give the operator price/payout/admin levers FairShare doesn't have.
 
 ### Karma ranks; it never gates
 There is **no floor, no bankruptcy, and no balance at which work is refused.** Karma is *purely
@@ -197,7 +208,7 @@ scarcity, measured separately. Several devices allocated = several separate purc
         **nothing**. Because Balance drives `nice` for a month, that would let one user bench another for
         a month — a **gate**, which this model does not have. Past ~8× the signal is saturated anyway (the
         card is plainly scarce), while the *billing* consequence kept growing without bound.
-*   **Eligibility** — users declare *needs* (`--vram`; hardware licences later), never a machine; only
+*   **Eligibility** — users declare *needs* (`--vram`, Arm **Feature**s), never a machine; only
     the **admin** may name one. A queued Spawn adds demand to **every device it could run on**, spread
     evenly — so scarce big-VRAM cards, wanted by big jobs *and* small ones, price highest.
 *   **The Tide** — the *forecast* of demand by hour of day, over a rolling month. It does **not** set
@@ -239,7 +250,7 @@ Karma is **reserved** when a Spawn queues and only **moves** when it ends.
     one `PriorityMaxAge` of *apparent queue age*. Slurm treats it as though it arrived later than it did.
     This is **not** a starvation bound (Age saturates at `PriorityMaxAge`, and a rival can max its own Age
     out too). Starvation is bounded **economically**: spending Karma is what makes you poor, so no User can
-    both hog the cluster and stay ahead of the queue. See `temp/KARMA.md` — "the priority floor".
+    both hog the cluster and stay ahead of the queue.
 *   **Admin Override:** admin-only add/remove/**set** of a user's balance. The only flow that isn't a
     transfer (it creates or destroys Karma); Decay absorbs the imbalance.
 *   **Queue bump:** admin-only shove of one queued Spawn up the queue, via Slurm priority directly.
@@ -260,24 +271,19 @@ Slurm also picks the *fastest free eligible* card on its own, via node `Weight �
 not hold a job back waiting for a better card if a slower eligible one is idle.
 
 ### Retract (Panic Switch)
-*   **Purpose:** A physical macro or desktop terminal script allowing a volatile Arm's true owner to claim back their machine instantly.
-*   **Tech Stack Execution:** Triggers `scontrol update NodeName=Arm-X State=DRAIN Reason="Retract Engagement"`. Slurm halts incoming jobs and fires a `SIGUSR1` termination signal to any active remote runner, giving the container a configurable 60 seconds to save weights to Shared Storage and exit gracefully.
+*   **Purpose:** Lets an Arm's owner claim back their own machine instantly, and hand it back with
+    **Return**. Owner-scoped over the Head API from any box; the Admin has an `--any` escape hatch,
+    Head-local.
+*   **Mechanism: app-layer, not Slurm DRAIN.** Draining a *node* needs Slurm-operator privilege;
+    Retract needs none, because every Spawn already runs as the **Mantle**, so ending one is the
+    owner's own right. Retract SIGTERMs every Spawn running on the node — Slurm's proctrack cgroup
+    delivers it to the whole job cgroup, so the containerized process sees it and the job's exit trap
+    still reclaims scratch and stages out what it can. A 180-second grace follows; the Karma tick
+    force-kills anything still alive. New placement is steered away with an ordinary `--exclude=` at
+    submit time. **Return** only reopens the node for new placement — it does not reprieve a Spawn
+    already caught.
 *   **Billing: a Retracted Spawn settles at ZERO.** The submitter pays nothing for work someone else
     destroyed, and the owner earns nothing for destroying it. This closes a **Karma farm**: otherwise an
     owner could let Spawns run 55 minutes, Retract, and bank the Karma for work that returned nothing —
     with the victims paying for the privilege, and a merely *careless* owner farming it by accident
-    every evening. Volatility is now paid for by whoever chose it.
-
-### What was deleted (and why)
-*   **Minting / `K_total` / `K_base` / "normalize to avoid market deflation"** — solves a problem that
-    cannot occur. Transfers + a zero start pin the mean at 0 by construction; there is no supply.
-*   **Bankruptcy and the bankrupt-sweep `HOLD`** — the one mechanism that implied an absolute zero, in a
-    system where Karma is purely relative. Karma never gates.
-*   **The Congestion Penalty**, and **the Tide as a price multiplier** — both were measuring the same
-    thing as demand. Keeping all three would have multiplied one congestion event into a bill three
-    times, through three separately-tuned knobs.
-*   **FairShare sync (`sacctmgr ... RawUsage`), slurmdbd, MariaDB** — laundering a priority we already
-    know through an accounting DB, with RawUsage's own decay fighting ours.
-*   **Passive/idle host income** — owners earn only when their machine is *used*, so Karma is minted
-    against real work and an idle cluster mints nothing. (Trade accepted: donate a GPU nobody schedules
-    and you earn nothing from it.)
+    every evening. Reclaiming is paid for by whoever chose to reclaim.

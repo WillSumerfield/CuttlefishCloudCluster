@@ -46,4 +46,4 @@ happily against a line that has been commented out — which is exactly how that
 ## Branching
 
 - Work on a branch; never commit directly to `main`.
-- Open a PR on GitHub; rebase (not merge) to integrate.
+- No PRs — rebase the branch onto `main` and integrate directly.

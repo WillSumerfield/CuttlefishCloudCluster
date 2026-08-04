@@ -72,6 +72,6 @@ Two examples from this repo, both of which passed while the code was broken:
 
 ## Scale
 
-If a file's test count approaches that of `test_karma.py` (the economy, ~60), that is a signal to
-re-read this document, not a sign of thoroughness. `test_interactive.py` reached 40 before being cut
-to 17. The interactive layer is not two-thirds as risky as the economy.
+If a file's test count approaches that of `test_karma.py` (the economy, ~70), that is a signal to
+re-read this document, not a sign of thoroughness. The interactive layer is not as risky as the
+economy, and its test count should say so.

@@ -14,18 +14,17 @@ Monorepo, split by **deployment context**. Each top-level dir is one bounded con
 | Context | Role |
 |---|---|
 | [`cli/`](cli/) | The `cuttle` tool — a single Python CLI (setup/teardown, submit, follow, admin). |
-| [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out; `slurmdbd`+MariaDB (economy phase). |
-| [`arm/`](arm/) | Compute node: Linux-layer bring-up (WSL2/VM), `slurmd`, Apptainer, Retract, staging. |
-| [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, FairShare sync, override (SQLite). |
-| [`telemetry/`](telemetry/) | Exporters, rogue-actor detection, W&B injection, alerts/webhooks, Grafana. |
-| [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). |
-| [`shared/`](shared/) | Cross-context code: CLI↔Head protocol, common types, metric schemas. |
+| [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out, auth + Karma (SQLite `head.db`). |
+| [`arm/`](arm/) | Compute node: Linux-layer bring-up (native/WSL2), `slurmd`, Apptainer, staging. |
+| [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, override. Ships inside `head/api` — see `karma/setup/README.md`. |
+| [`telemetry/`](telemetry/) | W&B injection, Head-box rogue-actor detection + email alerting. |
+| [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). Lives in `cli/core` + `head/api` — see `gateway/setup/README.md`. |
+| [`shared/`](shared/) | The CLI↔Head contract as a concept (no dedicated package yet — see `shared/CONTEXT.md`). |
 | [`docs/`](docs/) | Design spec and documentation. |
 
 ## Cross-platform reality
 
-Arms run on any OS via a **Linux substrate** (`cuttle setup` provisions native / WSL2 / VM). GPU is
-**NVIDIA-only**; macOS Arms are **CPU-only** (no CUDA passthrough).
+Arms run **Ubuntu 24.04** — natively or under **WSL2** on Windows. GPU is **NVIDIA-only**.
 
 ## Installation
 
@@ -99,5 +98,5 @@ that takes cuttle's Python deps with it.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) — Conventional Commits (scope = context), rebase not merge,
-branch + PR.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — Conventional Commits (scope = context), branch + rebase onto
+`main` directly (no PRs).

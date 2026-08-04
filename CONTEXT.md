@@ -1,21 +1,20 @@
 # CCC — Root Glossary
 
 > **Cuttlefish Cloud Cluster (CCC).** Themed cuttlefish names are the *canonical* terminology
-> (CLI, code, docs). Names still being locked in — those below marked *(candidate)* are not final.
-> This file defines the *concepts* and the repo's bounded contexts.
+> (CLI, code, docs). This file defines the *concepts* and the repo's bounded contexts.
 > `CONTEXT.md` is a glossary only — no implementation details, decisions, or specs.
 > Per-context glossaries live in each top-level context dir (e.g. `karma/CONTEXT.md`).
 
 ## Deployment roles (things that run on a machine)
 
 - **Head** — the cluster control plane. One logical role. Runs the scheduler/control plane and
-  hosts the head-side of other domains (Karma, telemetry aggregation).
+  hosts the head-side of other domains (Karma, telemetry).
 - **Arm** — a compute node that donates resources to the cluster. Single role with a
   **volatility** flag (`--volatile`):
   - *permanent* (default) — always-on, never reclaims.
-  - *volatile* — reclaimable at any time by its owner; adds preemption + the reclaim panic-switch.
-  Arms run on **Ubuntu 24.04** — natively or under **WSL2** on Windows. (Cross-platform beyond that —
-  macOS, other distros — was discarded 2026-07-19.)
+  - *volatile* — reclaimable at any time by its owner; adds preemption. (**Retract**, the reclaim
+    panic-switch, is available on every Arm regardless of volatility.)
+  Arms run on **Ubuntu 24.04** — natively or under **WSL2** on Windows.
 - **Gateway** — the authenticated network entryway that fronts all access to the cluster.
   Distinct from the **Mesh**: the Gateway fronts human/CLI access, the Mesh is node-to-node.
 
@@ -34,7 +33,7 @@
   authorize one machine's enrollment. It also names the Arm's **owner** (a User, chosen by the Admin at
   mint), so the donor redeems it and declares nothing while the Head **auto-accepts** (no manual
   approval). It is the only thing that admits a new Arm; the Admin's own password never leaves the
-  Head. (Supersedes the earlier public-invite + two-gate-approval model.)
+  Head.
 
 ## Clients (how humans reach the cluster)
 
@@ -75,11 +74,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 ## Domains (bounded contexts that may deploy across roles)
 
 - **Karma** — the token economy. Deploys on the Head. Covers wallets/balances, dynamic
-  pricing, congestion effects, fair-share synchronisation, and the admin **override** (privileged
-  add/remove of Karma).
-- **Telemetry** — monitoring & alerting. Spans Head + Arm: node-side exporters and
-  rogue-actor/out-of-scheduler detection, head-side aggregation, experiment logging injection, and
-  user-facing alerts/webhooks.
+  pricing, congestion effects, and the admin **override** (privileged add/remove of Karma). Sets
+  Slurm priority directly — no FairShare, no accounting database.
+- **Telemetry** — monitoring & alerting. Spans Head + Arm: experiment-tracking injection (W&B) into
+  every Spawn, and rogue-actor/out-of-scheduler detection with operator email alerting.
 
 ## Job/experiment concepts
 
@@ -308,10 +306,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   are several separate purchases.
   Over-reserving therefore costs a User nothing but queue position; under-reserving costs them
   nothing at all.
-- **Retract** — a volatile Arm owner's instant reclaim of their machine (the panic-switch);
-  drains the node and gives running work a short grace period to checkpoint and exit. A Spawn a
-  Retract destroys **settles at zero** — its submitter pays nothing for work someone else killed, and
-  the owner earns nothing for having killed it. Volatility is paid for by whoever chose it.
+- **Retract** — an Arm owner's instant reclaim of their own machine (the panic-switch): the Arm stops
+  accepting new work and running work is signalled, with a short grace period to exit. Available on
+  every Arm, not only a **volatile** one. A Spawn a Retract destroys **settles at zero** — its
+  submitter pays nothing for work someone else killed, and the owner earns nothing for having killed
+  it. Reclaiming is paid for by whoever chose to reclaim.
 - **Return** — the counterpart of **Retract**: the owner giving a retracted Arm back to the cluster.
   A retracted Arm never leaves — it stays **enrolled** and on the **Mesh**, it simply stops accepting
   work — so returning it is the owner's to do, needs no **Admin**, and costs no new **enrollment token**.

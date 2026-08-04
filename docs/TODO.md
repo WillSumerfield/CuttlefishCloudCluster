@@ -2,7 +2,7 @@
 
 ## Feature: Automatic GPU partitioning — the Beak — [effort: high]
 
-**Designed 2026-07-29, not built. Blocked on hardware, not on decisions.** Today a Spawn holds a
+**Not built — blocked on hardware, not on decisions.** Today a Spawn holds a
 *whole* card; a job needing 2 GB parks on a 24 GB GPU alone. The **Beak** carves a card into
 **Slice**s so several Spawns hold it at once. Glossary terms (Device, Slice, Carvable, Beak) are in
 `CONTEXT.md`; this section is the implementation design.
@@ -13,7 +13,7 @@ the RTX 5080 and every WSL Arm (`/dev/dxg` is one node for all GPUs) are permane
 Blackwell 6000 Pros live on the **Head**, so all carvable hardware is Commons — Karma spent on a Slice
 is destroyed, not transferred.
 
-**The Head holds Spawns; `gres.conf` never lies.** Probed on 23.11.4 (2026-07-29, disposable
+**The Head holds Spawns; `gres.conf` never lies.** Probed on Slurm 23.11.4 (disposable
 slurmctld, live cluster untouched): a GRES type declared with `Count=0` is rejected at submit
 *identically* to an undeclared type — Slurm validates against configured **counts**, not type names.
 Declaring maximum counts instead is worse: slurmctld would believe `gpu:big:1,gpu:small:4` are

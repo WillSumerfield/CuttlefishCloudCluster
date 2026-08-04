@@ -38,6 +38,4 @@ two kinds of **duty**.
   never mutate admin state. Parity is also what makes the CLI the project's end-to-end **test**
   surface, driven in place of browser testing.
 
-Layout: `core/` — the Python tool. *(A `launcher/` Go layer was once planned but never built, and was
-dropped 2026-07-20: cross-platform bootstrap was discarded, and its other duties are either Python
-already or moved to the Dashboard. `cuttle` is Python-only.)*
+Layout: `core/` — the Python tool. `cuttle` is Python-only; there is no separate host-native launcher.
