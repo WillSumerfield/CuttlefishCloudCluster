@@ -23,7 +23,7 @@ reasonably blame on their own code.
 """
 
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Where a profile's Arm-side package is bound inside the Pod. Under /ccc rather than into the
 # Environment's own tree: the Environment is bound read-only at one fixed path and belongs to the

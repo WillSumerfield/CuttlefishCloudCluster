@@ -209,7 +209,6 @@ export function Standings({ members, youId }: { members: Member[]; youId: number
     const dots = field.dots;
     const jitter = new Float32Array(dots.length);
     const colors = new Float32Array(dots.length * 3);
-    const ownerIdx = new Int16Array(dots.length);
     const gaussBoost = new Float32Array(dots.length);
     const rand = seededRand(4242);
 
@@ -243,10 +242,9 @@ export function Standings({ members, youId }: { members: Member[]; youId: number
         b = pb * k + 0.03 * (1 - k);
       }
       colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
-      ownerIdx[i] = bestI;
       gaussBoost[i] = bestW; // 0..1
     }
-    return { jitter, colors, ownerIdx, gaussBoost };
+    return { jitter, colors, gaussBoost };
   }, [field]);
 
 
@@ -284,7 +282,7 @@ export function Standings({ members, youId }: { members: Member[]; youId: number
     const { reach: REACH, swell: SWELL, falloff: FALLOFF, off: OFF, on: ON } = SKIN;
 
     const dots = field.dots;
-    const { jitter, colors, gaussBoost, ownerIdx } = baked;
+    const { jitter, colors, gaussBoost } = baked;
 
     // A dot is "live" if it sits in a member's gaussian (same 0.08 cut the colour bake uses to decide
     // black speck vs pigment). Only the live dots — a couple thousand, not ~ten — animate every frame;

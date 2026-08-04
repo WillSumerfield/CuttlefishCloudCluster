@@ -1,4 +1,4 @@
-import { RECIPE_ALLOWANCE_BYTES, type Recipe } from "../api";
+import { RECIPE_ALLOWANCE_BYTES } from "../api";
 
 // The 24 GB wall, re-exported so the page and meter read one number. See api.ts for why it's a hard wall.
 export const ALLOWANCE = RECIPE_ALLOWANCE_BYTES;
