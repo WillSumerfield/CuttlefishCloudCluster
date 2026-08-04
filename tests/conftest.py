@@ -151,13 +151,11 @@ def _siphon_dir(monkeypatch, tmp_path_factory):
 def _head_state(monkeypatch, tmp_path_factory):
     """No test touches the live Head state dir, for the same reason as `_siphon_dir` above.
 
-    Autouse and unconditional: `tick.once` walks the Spawn tree on its own (the Recovery Window's
+    Autouse and unconditional: `tick.once` walks the Spawn tree on its own (Recovery Window's
     register/reap pass), so a test that never mentions a directory can still reach one — and
-    `recovery._evict` *unlinks*. On a box that is also a real Head, a simulated Spawn whose id happens
-    to match a real one then reads, and deletes, that Spawn's recovery copy. Found exactly that way
-    (2026-08-01): the Fake Cluster counts from 1, the Head had a real Spawn 10, and the suite failed
-    on a PermissionError that was the live /var/lib/ccc/head refusing — which on a Head running its
-    tests as `ccc` would not have refused at all.
+    `recovery._evict` *unlinks*. On a box that is also a real Head, a simulated Spawn whose id
+    collides with a real one reads, and deletes, that real Spawn's recovery copy (the Fake Cluster
+    counts ids from 1, so this is not hypothetical).
 
     `fake_slurm` sets the same four attributes to its own tmp dir; a test using it simply overrides
     this, and both are undone at teardown."""

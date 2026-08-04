@@ -5,9 +5,9 @@ reads, the `run` upload. One layer, so the `/api` prefix, the bearer, the pinned
 and the error shapes are decided in exactly one place.
 
 **Why it is an object and not a module of functions.** The CLI is this project's end-to-end test
-surface (ROADMAP Phase 6): CCC's Dashboard gets no automated browser testing, so a test drives real
-`cuttle` commands against the Head API running *in-process* — no socket, no server. That only works
-if the transport can be swapped, so a test points `for_head` at a client bound to the live app:
+surface — the Dashboard gets no automated browser testing, so tests drive real `cuttle` commands
+against the Head API running *in-process* (no socket, no server). That needs a swappable transport,
+so a test points `for_head` at a client bound to the live app:
 
     Api(TestClient(head_main.app, base_url="http://head/api"), per_request_timeout=False)
 
@@ -38,12 +38,10 @@ CERT_MISMATCH = (
     "Either the Head was rebuilt with a new certificate, or something is impersonating it.\n"
     "If you rebuilt it: delete the pin and log in again.")
 
-# The Head's cert is genuine but does not *list* the address we dialled. A different fault entirely
-# from a swap, and it must not borrow the swap's alarm: nothing is impersonating anything, the
-# operator simply pointed this box at an address `setup` never put in the SANs (it covers the LAN IP,
-# the mesh IP, the hostname and localhost — see setup.install_tls). Told apart by verify_code, which
-# OpenSSL sets to HOSTNAME_MISMATCH/IP_ADDRESS_MISMATCH here and to a signature/issuer error on a real
-# swap. Getting this wrong costs an hour: it reads as a security incident.
+# The Head's cert is genuine but doesn't *list* the address we dialled — a different fault from a
+# swap, must not borrow its alarm. setup.install_tls's SANs cover LAN IP, mesh IP, hostname, localhost;
+# anything else trips this. Told apart via verify_code: HOSTNAME/IP_ADDRESS_MISMATCH here vs a
+# signature/issuer error on a real swap.
 CERT_WRONG_ADDRESS = (
     "{url} is not an address the Head's certificate covers.\n"
     "The certificate is the right one — it just does not list this address, so TLS refuses it.\n"

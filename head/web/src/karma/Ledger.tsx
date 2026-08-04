@@ -7,14 +7,12 @@ import type { Ledger as LedgerData, LedgerRow } from "../api";
 /**
  * Your economic history: the events that happened, and the Balance they imply.
  *
- * **The curve is where Decay lives, and it is the only honest place for it.** Decay is not a
- * transaction — it is `exp(-Δt/τ)` applied continuously *between* the rows — so it can never appear as
- * one. A "Karma drifted toward zero" row would also imply a stored Balance for it to have drifted, and
- * there is no such table: a Balance is a consequence of this ledger, summed on read. So the curve draws
- * the sag, the rows sit on it as marks, and the two together say what a list of rows alone cannot.
+ * The curve is where Decay lives — the only honest place for it. Decay is `exp(-Δt/τ)` applied
+ * continuously BETWEEN rows, not a transaction; a "drifted toward zero" row would imply a stored Balance
+ * to drift, and there is none (Balance is summed on read). Curve draws the sag, rows sit on it as marks.
  *
- * There is no Arm column. The ledger records who paid whom for which Spawn, not which card it ran on —
- * that fact belongs to the Spawn, which each row links to.
+ * No Arm column: the ledger records who paid whom for which Spawn, not which card it ran on — that
+ * belongs to the Spawn, which each row links to.
  */
 
 const VB_W = 640, VB_H = 96, PAD = 8;

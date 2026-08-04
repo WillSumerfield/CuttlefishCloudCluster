@@ -52,10 +52,10 @@ def _leave_ccc_mesh() -> None:
     run(["systemctl", "disable", "--now", config.CCC_TS_SERVICE], sudo=True, check=False)
     run(["rm", "-f", str(config.CCC_TS_UNIT)], sudo=True, check=False)
     run(["rm", "-rf", str(config.CCC_TS_STATEDIR)], sudo=True, check=False)
-    # The coordinator's cert this box trusted into its OS CA store (Phase 9 #3,
-    # mesh.trust_own_headscale_cert / mesh.ensure_headscale_trusted) — a host-wide trust decision,
-    # not a cuttle-local file, so it needs the same undo `update-ca-certificates` gave it on the way
-    # in. Runs on both roles: `_leave_ccc_mesh` is shared by the Head (remove_mesh) and every Arm.
+    # The coordinator's cert this box trusted into its OS CA store (mesh.trust_own_headscale_cert /
+    # mesh.ensure_headscale_trusted) — a host-wide trust decision, not a cuttle-local file, so it
+    # needs the same undo `update-ca-certificates` gave it on the way in. Runs on both roles:
+    # `_leave_ccc_mesh` is shared by the Head (remove_mesh) and every Arm.
     run(["rm", "-f", str(config.HEADSCALE_CA_PATH)], sudo=True, check=False)
     run(["update-ca-certificates"], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
@@ -88,9 +88,8 @@ def remove_head_api() -> None:
     remove_enroll_api."""
     system.deny_tcp_port(config.HEAD_API_PORT)
     system.deny_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE)
-    # The range Tide Pools used before 2026-08-02, when it moved out of the ephemeral port range (see
-    # config.TIDEPOOL_PORT_BASE). A Head set up before that has the old rule and nothing else would ever
-    # name it again. Drop when no such Head is left.
+    # Legacy range Tide Pools used before moving out of the ephemeral port range (config.
+    # TIDEPOOL_PORT_BASE) — drop once no Head set up before that move remains.
     system.deny_tcp_port_range(41000, 200)
     run(["rm", "-f", str(config.HEAD_API_UNIT), str(config.SUDOERS_CCC_SLURM)], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR.parent)], sudo=True, check=False)  # /opt/ccc/head-api
@@ -273,7 +272,7 @@ def remove_mantle() -> None:
 
 def remove_guises() -> None:
     """Every **Guise** this node accumulated — one per User whose Spawn ever landed here, created by
-    the Slurm prolog as they arrived (temp/spawn-isolation.md Phase 3f).
+    the Slurm prolog as they arrived.
 
     Found by their GECOS tag, which is the only reason it exists: the accounts are named after uids,
     not people, so nothing else on a donor's box distinguishes them from the box's own users. That

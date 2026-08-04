@@ -1,5 +1,5 @@
-"""`cuttle run --tidepool`: request-or-attach to a Tide Pool (docs/TODO.md) — an interactive Spawn that
-drops the User into a live shell instead of running a script.
+"""`cuttle run --tidepool`: request-or-attach to a Tide Pool — an interactive Spawn that drops the
+User into a live shell instead of running a script.
 
 A Tide Pool is a normal Spawn end to end (same queue, Eligibility, Escrow/Karma billing — see
 ccc_head_api.spawns.submit_checked); this module is the CLI-only half nothing else needed: submit (or
@@ -101,10 +101,9 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
     vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
     outputs = list(outputs) if outputs else []
     if not outputs:
-        # Not permanently lost — the 30-minute recovery window (docs/TODO.md, "Hold onto spawns for
-        # 30 minutes") rsyncs the whole scratch dir home regardless of what was declared. But that
-        # window closes, and nothing here is retrievable through the normal $CCC_OUT/outputs path
-        # afterward, so it is still worth a warning, just not a "lost forever" one.
+        # Not permanently lost — the 30-minute recovery window rsyncs the whole scratch dir home
+        # regardless of what was declared. But once that window closes nothing here is retrievable
+        # through the normal $CCC_OUT/outputs path, so still worth a warning, just not "lost forever".
         warning = ("no --output declared — anything this Tide Pool writes OUTSIDE a declared output "
                    "dir is only recoverable for 30 minutes after it ends, then gone (only $CCC_OUT is "
                    "staged back to the Head as a normal output)")
@@ -217,11 +216,10 @@ def _wait_and_attach(spawn_id: int) -> None:
             # a fresh host key every Tide Pool, so there is nothing to pin, and the actual security
             # boundary is the ephemeral client keypair handed over the CLI's own authenticated session.
             #
-            # The login account is the submitter's own **Guise**, never `mantle@` and no longer `ccc@`:
-            # apptainer's --writable-tmpfs patches the invoking uid's /etc/passwd entry in place to match
-            # its REAL host identity — it does not leave the image's baked `mantle` entry alone — and the
-            # invoking uid is now the Guise that owns this Spawn. The User never types it: nobody is
-            # expected to know their own uid. See spawns.PAYLOAD_TIDEPOOL for the story.
+            # Login account is the submitter's own **Guise**, never `mantle@` or `ccc@`: apptainer's
+            # --writable-tmpfs patches the invoking uid's /etc/passwd entry to its real host identity,
+            # so the invoking uid is the Guise owning this Spawn. User never types it (nobody knows
+            # their own uid) — see spawns.PAYLOAD_TIDEPOOL.
             subprocess.run([
                 "ssh", "-i", keypath, "-p", str(port),
                 "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",

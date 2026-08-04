@@ -9,20 +9,18 @@ import { NewRecipeTile } from "../recipes/NewRecipeTile";
 import type { RecipeAction } from "../recipes/format";
 
 /**
- * Recipes — your shelf of frozen, re-runnable snapshots. Private, so there is no roster: the whole page is
- * yours. The storage wall sits on top (the signature), the Recipes below it, each linked to the slice it
- * fills on the wall. The first cell of the grid is the way ON: a ghost tile that, clicked, becomes the
- * composer in its own cell — row-spanning 2 and pushing the rest of that column down, rather than replacing
- * the whole shelf (the wall stays throughout, previewing the new bytes).
+ * Recipes — your shelf of frozen, re-runnable snapshots. Private, no roster. Storage wall on top, Recipes
+ * below, each linked to the slice it fills. First grid cell is the way ON: a ghost tile that, clicked,
+ * becomes the composer in its own cell — row-spanning 2, pushing the column down rather than replacing
+ * the shelf (wall previews the new bytes throughout).
  *
- * Update code turns THAT card into the same composer, in place — an update IS a fresh upload (there is no
- * copy of the folder on the Head to re-freeze, and none on your machine the Head can reach), so it prefills
- * the Recipe's settings, fixes its name, and hands the wall an allowance the Recipe's own bytes have already
- * come off: on the Head an update is delete-then-save, charged what it grows by. Only one composer is ever
- * open — another tile's trigger is ignored until it's saved or cancelled.
+ * Update code turns THAT card into the same composer in place: an update IS a fresh upload (no copy of
+ * the folder exists on the Head or your machine to re-freeze), so it prefills settings, fixes the name,
+ * and hands the wall an allowance with the Recipe's own bytes already off (Head does delete-then-save,
+ * charged what it grows by). Only one composer open at a time.
  *
- * Every action is optimistic and then confirmed by a refetch — except Run, which the Head still answers
- * 501 to (see docs/TODO.md, "Running a Recipe").
+ * Every action is optimistic, confirmed by a refetch — except Run, which the Head still answers 501 to
+ * (docs/TODO.md "Running a Recipe").
  */
 
 const API: Record<"run" | "delete", (name: string) => Promise<void>> = {
@@ -39,8 +37,8 @@ export function RecipesPage() {
   // a tile/card for a fresh RecipeComposer mount at that same slot — never two representations at once.
   const [active, setActive] = useState<"new" | string | null>(null);
   const [pending, setPending] = useState(0); // bytes of the folder being frozen right now → wall ghost
-  // A failed action/save used to vanish silently — worst of all for Save, where a folder was picked and a
-  // form filled. Name what failed until the next action.
+  // Failed actions are named rather than silent — worst case is Save, where a folder was picked and a
+  // form filled. Cleared on the next action.
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {

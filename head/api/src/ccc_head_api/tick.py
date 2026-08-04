@@ -2,37 +2,34 @@
 
 Every 30s, one pass, in this order:
 
-1. **Sample Demand** on every Arm (running claims + queued claims spread over eligible cards).
-2. **Accrue** onto every RUNNING Spawn: the seconds it held each of its cards, at *that card's* Power
-   (Slurm reports which of the node's GPUs it holds) and the Demand it held them under.
-3. **Force-kill** any Spawn a Retract caught whose grace period has expired and is still running (see
-   ccc_head_api.retraction) — Retract itself only sends TERM; this is the deadline behind it.
-4. **Settle** every Spawn that has vanished from the queue: one ledger row, and the claim is released.
-   One caught by a Retract settles at ZERO regardless of what it accrued.
-5. **Reap** any Tide Pool (docs/TODO.md) whose Spawn just vanished: kill its Head-side relay and forget
-   its port/keypair (ccc_head_api.tidepool.reap_dead) — a live Tide Pool holds a Device exactly like any
-   other RUNNING Spawn, so steps 1-4 above already meter/settle it with no branch of their own.
-6. **Register** any Recovery Window copy (docs/TODO.md) that has fully landed since the last pass, and
-   **expire** any whose 30 minutes are up (ccc_head_api.recovery) — see that module's docstring for why
-   registration is polled here rather than pushed by the job script that made the copy.
+1. **Sample Demand** on every Arm (running + queued claims spread over eligible cards).
+2. **Accrue** onto every RUNNING Spawn: seconds held per card, at that card's Power (Slurm reports which
+   GPU it holds) and the Demand it held them under.
+3. **Force-kill** any Spawn a Retract caught whose grace period expired and is still running — Retract
+   itself only sends TERM (ccc_head_api.retraction); this is the deadline behind it.
+4. **Settle** every Spawn that has vanished from the queue: one ledger row, claim released. One caught by
+   a Retract settles at ZERO regardless of what it accrued.
+5. **Reap** any Tide Pool whose Spawn just vanished: kill its relay, forget its port/keypair
+   (tidepool.reap_dead) — a live Tide Pool holds a Device like any RUNNING Spawn, so steps 1-4 already
+   meter/settle it with no branch of their own.
+6. **Register** any Recovery Window copy that's fully landed since the last pass, and **expire** any
+   whose 30 minutes are up (recovery.py) — registration is polled here, not pushed by the job script.
 7. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
 
-It runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
-privilege whatsoever — no sudo, no root helper, no SlurmUser. Its own service, not a task inside the
-Head API: the economy must not be able to wedge the API, nor the API the economy.
+Runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
+privilege — no sudo, no root helper. Its own service, not a task inside the Head API: the economy must
+not be able to wedge the API, nor the API the economy.
 
-Settlement is **poll-based** because there is no alternative. A Spawn that ends — completed, failed,
-timed out, cancelled — writes us no end-time; Slurm forgets it after `MinJobAge`; and `sacct` would need
-the slurmdbd we deliberately don't run. So *absence from a successful poll* is the end-of-life signal.
-If slurmctld is down the poll raises and the pass is skipped, and nothing settles — which is why
-"successful" is load-bearing.
+Settlement is **poll-based** — there's no alternative. A Spawn that ends writes us no end-time; Slurm
+forgets it after `MinJobAge`; `sacct` would need the slurmdbd we deliberately don't run. So *absence
+from a successful poll* is the end-of-life signal — if slurmctld is down the poll raises and the pass is
+skipped, and nothing settles, which is why "successful" is load-bearing.
 
-Three kinds of pending Spawn are skipped by the re-rank, each for a reason:
-- **nice < 0** — an admin has Queue-bumped it. Slurm refuses a negative nice from a job's owner, so
-  only an operator could have set one; its presence is the flag, and needs no state of our own.
+Three kinds of pending Spawn are skipped by re-rank:
+- **nice < 0** — an admin has Queue-bumped it (Slurm refuses a negative nice from a job's own owner).
 - **no attribution row** — the enrollment benchmark, sbatched outside the API.
-- **submitted by an Admin** — the Admin is outside the economy and has no standing to rank by.
-The last two are the same skip: `db.spawn_owners` omits both, and the tick skips whatever it omits.
+- **submitted by an Admin** — outside the economy, no standing to rank by.
+The last two are the same skip: `db.spawn_owners` omits both.
 """
 
 import logging
@@ -58,15 +55,13 @@ def _parse(ts: str) -> datetime:
 def _held_powers(job: dict, arm: dict | None) -> list[float] | None:
     """The Power of every **Device** this RUNNING Spawn holds — the prices Settlement multiplies out.
 
-    Slurm reports the GRES indices a running job was allocated (slurm._gpu_indices), and those index
-    straight into the Arm's registry `powers`, because gres.conf's `File=` lines were written in the
-    same order (templates.render_gres_conf). So a Spawn that landed on the throttled second 4090 of a
-    two-card box is billed at *that* card's number.
+    Slurm reports the GRES indices a job holds (slurm._gpu_indices), which index straight into the Arm's
+    registry `powers` since gres.conf's `File=` lines were written in the same order — so a Spawn on a
+    throttled second card is billed at that card's number, not an average.
 
-    Returns **None** — not a guess — when the answer cannot be had: an unpriced Arm, a card count that
-    disagrees with the priced list, or a GPU Spawn Slurm reports no indices for. Averaging the node's
-    Powers would settle every one of those silently and plausibly, at a price nobody could ever check.
-    A CPU-only Spawn is not that case: it holds no Device and legitimately costs [] → 0.
+    Returns **None** — not a guess — when the answer can't be had: an unpriced Arm, a card count that
+    disagrees with the priced list, or a GPU Spawn with no reported indices. Averaging Powers would
+    settle those silently at a price nobody could check. A CPU-only Spawn isn't that case: [] -> 0.
     """
     powers = (arm or {}).get("powers")
     if not powers:
@@ -83,9 +78,8 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
            now: datetime) -> None:
     """Bill every RUNNING Spawn for the time it has held its cards since we last looked.
 
-    Elapsed *time*, not tick count: if the service was down for an hour, the User still held the card
-    for that hour and still owes for it. The first accrual bills from Slurm's `start_time`, so the gap
-    between a Spawn starting and the tick noticing is not free either.
+    Elapsed *time*, not tick count: an hour of service downtime is still an hour owed. First accrual
+    bills from Slurm's `start_time`, so the gap before the tick notices isn't free either.
 
     **Several Devices are several separate purchases** (glossary, Settlement): a Spawn on two cards is
     billed each card's own Power, summed — never a count times an average.
@@ -94,10 +88,9 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
     for job in jobs:
         if job["state"] != "RUNNING":
             continue
-        # WHERE it ran, recorded before anything about WHAT it costs — placement is a fact about the
-        # Spawn, not about the billing, and the two have different populations. An Admin's Spawn has no
-        # Escrow at all (they are outside the economy), so hanging this off the meter meant an Admin's
-        # History said "arm unrecorded" for every Spawn they had ever run. Write-once, in db.record_placement.
+        # WHERE it ran, recorded before WHAT it costs — placement is a fact about the Spawn, not the
+        # billing. An Admin's Spawn has no Escrow, so tying this to the meter left their History always
+        # saying "arm unrecorded". Write-once, in db.record_placement.
         db.record_placement(conn, job["id"], job["node"])
         esc = live.get(job["id"])
         if esc is None:
@@ -105,12 +98,10 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
         node = job["node"]
         powers = _held_powers(job, arms.get(node))
         if powers is None:
-            # A Device we cannot price cannot be sold. The intended path always has one (setup
-            # benchmarks the Head's own Arm; _admit benchmarks each donor, and Slurm always reports the
-            # indices of a running GPU job), so this means a benchmark FLAKED or the Arm's hardware
-            # changed under us — and no invented fallback would be more honest than a loud zero. It is
-            # a free GPU until someone reads this line. `last_at` still advances, so the free seconds
-            # are not billed retroactively once the Arm is priced again.
+            # A Device we cannot price cannot be sold. Every Arm should already have one (setup/`_admit`
+            # benchmark it), so this means a benchmark flaked or the hardware changed under us — a free
+            # GPU until someone reads this line. `last_at` still advances, so free seconds aren't billed
+            # retroactively once the Arm is priced again.
             log.error("cannot price spawn %s on arm %s (devices=%s, gpus=%s) — it runs FREE. "
                       "Fix: cuttle arm benchmark %s",
                       job["id"], node, job["devices"], job["gpus"], node)
@@ -126,9 +117,8 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
 def _force_expired_retractions(conn, live_ids: set[int], now: datetime) -> None:
     """Force-kill any Spawn a Retract caught whose grace period has passed and is still running.
 
-    Retract itself only sends TERM (retraction.retract), so the job's own EXIT trap gets a chance to
-    stage out first. A job absent from `live_ids` has already ended on its own — nothing to force here,
-    and `_settle` below is what zero-bills it."""
+    Retract only sends TERM (retraction.retract), so the EXIT trap gets a chance to stage out first. A
+    job already absent from `live_ids` has ended on its own — `_settle` below zero-bills it."""
     for row in db.retracting_jobs(conn):
         if row["job_id"] not in live_ids:
             continue
@@ -178,12 +168,10 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> i
 def _record_endings(conn, live_ids: set[int], now: datetime) -> None:
     """Stamp the durable outcome of every Spawn that has left the queue but has no ending recorded yet.
 
-    Its own step, not folded into `_settle`, because settlement only walks ESCROWED Spawns — an Admin's
-    Spawn carries no hold, so it would never be stamped and `GET /spawns/history` would show it open
-    forever. The exit file is read here, the one moment we know the job has just ended and its stage-out
-    has landed; a Spawn absent from a *successful* poll is the end-of-life signal (see the module
-    docstring). A missing file is a Spawn that ended recording no code — killed, OOM, or its Arm dropped
-    before stage-out — and is stamped with a NULL exit_code, which history reads as failed."""
+    Its own step, not folded into `_settle`: settlement only walks ESCROWED Spawns, so an Admin's Spawn
+    (no hold) would never be stamped and `GET /spawns/history` would show it open forever. Exit file is
+    read here, the moment we know the job ended and stage-out landed. A missing file means it ended
+    recording no code (killed, OOM, Arm dropped) and is stamped NULL, which history reads as failed."""
     for job_id in db.unfinished_spawns(conn):
         if job_id in live_ids:
             continue
@@ -197,10 +185,9 @@ def _record_endings(conn, live_ids: set[int], now: datetime) -> None:
 def once(now: datetime | None = None) -> tuple[int, int]:
     """One pass. Returns (Spawns re-niced, Spawns settled).
 
-    `now` is the pass's clock — injected by the Fake Cluster (slice 4) to run this exact function across
-    simulated weeks, None on the real service. It flows into every timestamp this pass writes (the Demand
-    sample, an accrual, a settlement) and every Balance it decays, so a whole simulated run is internally
-    consistent about when it happened."""
+    `now` is the pass's clock — injected by the Fake Cluster to run this function across simulated weeks,
+    None on the real service. Flows into every timestamp this pass writes and every Balance it decays,
+    so a simulated run stays internally consistent about when it happened."""
     jobs = slurm.queue()
     arms = {a["name"]: a for a in slurm.arms()}
     now = now or _now()
@@ -212,46 +199,37 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         db.record_demand(conn, now.strftime(_TS), demand)
         db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS, now)
 
-        # `needs` is the queue's *declared* GPU count, and feeds Demand only. The meter no longer reads
-        # it: what a Spawn is billed for is the Devices Slurm actually gave it, not what it asked for.
+        # `needs` is the queue's *declared* GPU count, feeds Demand only — the meter bills the Devices
+        # Slurm actually gave a Spawn, not what it asked for.
         _meter(conn, jobs, arms, demand, now)
         _force_expired_retractions(conn, set(ids), now)
         settled = _settle(conn, set(ids), arms, now)
         _record_endings(conn, set(ids), now)
-        # Tide Pool (docs/TODO.md): kill the Head-side relay and drop its port/keypair the moment its
-        # Spawn leaves the queue. `ensure_relay` (main.spawn_tidepool) is what brings a relay UP — this
-        # is the one place a relay ever goes back down, belt-and-suspenders alongside it.
+        # Kill the Head-side relay and drop its port/keypair the moment a Tide Pool's Spawn leaves the
+        # queue — the one place a relay ever goes back down.
         tidepool.reap_dead(conn, set(ids))
-        # Recovery Window (docs/TODO.md): pick up any copy that finished landing since the last pass
-        # (register_new), then drop anything whose 30 minutes are up (reap_expired). Order doesn't
-        # matter between the two — a copy just registered is never also expired in the same pass.
-        # sweep_orphans then deletes what neither will ever touch: a copy that landed but whose marker
-        # never followed it home. Its order here is presentation, not correctness — it skips everything
-        # still inside register_new's window by construction (db.claimable_recovery_ids is that window's
-        # complement), so it cannot delete a copy this pass was about to claim whichever runs first.
+        # Recovery Window: pick up any copy that finished landing since the last pass, drop anything
+        # whose 30 minutes are up, then sweep_orphans deletes what neither will ever touch (a copy that
+        # landed but whose marker never followed). Order here is presentation, not correctness —
+        # sweep_orphans skips everything still inside register_new's window by construction.
         recovery.register_new(conn, now)
         recovery.reap_expired(conn, now)
         recovery.sweep_orphans(conn, now)
-        # Storage retention (docs/TODO.md): delete the Head's copy of every upload whose Spawn has
-        # staged it in, and revoke the `[proj-…]` half of its Siphon. BEFORE siphons.sweep below, which
-        # may close that Siphon outright in this same pass — close_proj on a conf that is already gone
-        # is a no-op, so the order only decides which of the two logs the revocation, but doing the
-        # narrower one first keeps "revoked at stage-in" true even for a Spawn that ended this tick.
+        # Storage retention: delete the Head's copy of every staged-in upload and revoke the `[proj-…]`
+        # half of its Siphon. BEFORE siphons.sweep, so "revoked at stage-in" stays true even for a Spawn
+        # that ended this same tick (close_proj on an already-gone conf is a no-op either way).
         projects.sweep(conn, now)
-        # ...and the other half of the same item: register every finished Spawn's declared results
-        # against its submitter's 8GB Allowance, then drop whatever is past its 7 days. Registration
-        # needs no marker of its own — `stage_out` sends `exit` LAST, so `_record_endings` above has
-        # already established the outputs landed before this pass can see the Spawn as finished.
+        # Register every finished Spawn's declared results against its submitter's 8GB Allowance, then
+        # drop whatever is past its 7 days. Needs no marker of its own — `stage_out` sends `exit` LAST,
+        # so `_record_endings` above already established the outputs landed.
         retention.register_new(conn, now)
         retention.reap_expired(conn, now)
-        # ...and the third consumer. Recipes have no TTL and are never evicted — a User deletes their
-        # own, or nothing does (docs/TODO.md "the Recipe wall") — so the only collecting left is after a
-        # deleted account: the rows CASCADE, but nothing in SQLite can reach the files they name.
+        # Recipes have no TTL and are never evicted — only collecting left is after a deleted account:
+        # the rows CASCADE, but nothing in SQLite can reach the files they name.
         recipes.sweep_orphans(conn)
-        # Siphons (temp/spawn-isolation.md Phase 2): close the rsync grant of every Spawn whose copy
-        # home has landed, or whose window for one has passed. AFTER register_new deliberately — that
-        # call is what consumes the `recovery.size` marker this one closes on, and closing first would
-        # revoke a Siphon in the same pass as the copy it was still carrying.
+        # Close the rsync grant of every Spawn whose copy home has landed, or whose window has passed.
+        # AFTER register_new deliberately: that call consumes the `recovery.size` marker this one closes
+        # on, and closing first would revoke a Siphon still carrying its copy.
         siphons.sweep(conn, now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,
@@ -269,8 +247,8 @@ def once(now: datetime | None = None) -> tuple[int, int]:
             continue
         want = nice[user_id]
         if want != job["nice"]:
-            # The Guise the job runs as, straight off this pass's own poll — the account the tick has
-            # to become to re-nice it (temp/spawn-isolation.md Phase 3b).
+            # The Guise the job runs as, off this pass's own poll — the account the tick becomes to
+            # re-nice it.
             slurm.set_nice(job["id"], want, job.get("user"))
             changed += 1
     return changed, settled

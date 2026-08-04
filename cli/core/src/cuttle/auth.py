@@ -18,10 +18,10 @@ from .system import run
 # --- HTTP to the Head API ---------------------------------------------------
 # The transport lives in api.py; this is the CLI's thin shim over it.
 #
-# `ApiError` is deliberately NOT translated into `typer.BadParameter` here. It was until Phase 6
-# slice 3, and the result was that "cannot reach the Head" printed as a click *usage* error — a
-# `Usage: cuttle status ...` box telling you to try `--help`, for a failure that has nothing to do
-# with how you typed the command. It now propagates to `ui.run_app`, which prints one clear line.
+# `ApiError` is deliberately NOT translated into `typer.BadParameter` here — that renders as a click
+# *usage* error (a "Usage: cuttle status ..." box telling you to try `--help`), which is wrong for a
+# failure that has nothing to do with how the command was typed. It propagates to `ui.run_app` instead,
+# which prints one clear line.
 
 _CLIENT: api.Api | None = None
 
@@ -38,8 +38,7 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
          auth: bool = True) -> dict:
     """A JSON call to the Head API, verified against the Head's pinned certificate (see tls.py).
 
-    `auth=True` (the default) attaches the stored session bearer. Every route but /healthz needs one:
-    reads used to be anonymous, and the browser-login slice put them behind the session.
+    `auth=True` (the default) attaches the stored session bearer. Every route but /healthz needs one.
     """
     # Loaded here, not in api.py: reading the credentials file is what makes "not logged in" a
     # *command* error, and `auth=False` callers (login) must never trigger it.
@@ -179,9 +178,7 @@ def account(as_json: bool = False) -> None:
 
 # --- your stored W&B key (on the Head) --------------------------------------
 # The CLI-parity counterpart of the Dashboard's Account page: one key per User, held encrypted on the
-# Head, injected into every Spawn you submit from either client. It used to sit in this box's
-# ~/.ccc/config/config.yaml, which meant the Dashboard — with no config file to read — logged no
-# metrics at all, and that a submitter with two machines pasted it twice.
+# Head, injected into every Spawn you submit from either client.
 
 def wandb_set(key: str) -> None:
     _api("POST", "/account/wandb", token=_load_token(), body={"key": key})
@@ -232,12 +229,10 @@ def _admin_argv(args: list[str], env: dict[str, str] | None = None) -> list[str]
     """The auth store's admin CLI, as the `ccc` user through the API venv, with the db path set.
 
     **Returned without the leading `sudo`** — every caller passes `sudo=True` to `system.run`, which
-    prepends it *and* primes the credential first (`prime_sudo`). A literal "sudo" here bypassed that
-    priming, and since these calls capture output, sudo's password prompt went into the pipe: the
-    command sat waiting on a question nobody could see. `cuttle user add` went blank at exactly the
-    point it shelled out, and `arm authorize` stopped after the name (its `--user` picker calls
-    `user_names`). Anything that runs sudo must go through `system.run`, so one prompt is drawn once,
-    as a Rich row, and fed over stdin.
+    prepends it *and* primes the credential first (`prime_sudo`). A literal "sudo" here would skip that
+    priming, and since these calls capture output, sudo's password prompt would go straight into the
+    captured pipe with nothing visible to answer it. Anything that runs sudo must go through
+    `system.run`, so one prompt is drawn once, as a Rich row, and fed over stdin.
 
     `env` is anything the *service* gets from its systemd unit that this subprocess also needs. Only
     `CCC_HEAD_DB` is unconditional: the other unit variables (`CCC_HEAD_STATE`, `CCC_SIF`) have
@@ -254,10 +249,8 @@ def _admin(args: list[str], check: bool = True):
 
     These are the commands whose stdout is the whole point: `add` prints a one-time temp password
     that exists nowhere else once the process exits, `list` prints the users. `system.run` captures
-    by default (so `setup`'s command stream stays out of the way), which means inheriting stdout
-    would make the temp password visible only under `--verbose` — it was silently swallowed exactly
-    that way until this was written. Capture explicitly and re-emit, so what the operator sees does
-    not depend on a global verbosity flag.
+    by default (so `setup`'s command stream stays out of the way), so this captures explicitly and
+    re-emits rather than letting output depend on a global verbosity flag.
 
     stdout is re-emitted as data: `pw=$(cuttle user add bob)` has to keep working.
     """
@@ -274,12 +267,11 @@ def user_add(username: str, admin: bool = False) -> None:
     ensure_guise_accounts()
 
 
-# --- Guises (temp/spawn-isolation.md Phase 3) -------------------------------
+# --- Guises -------------------------------------------------------------------
 # The uid is allocated in head.db by the command above, which needs no privilege at all. The Unix
-# account it names does need root — and gets it the only way Phase 3 allows: from the operator who is
-# standing at the Head running this command, at a tty, through the same sudo every other `cuttle`
-# command uses. There is no helper, no NOPASSWD root grant, and no HTTP route that creates a User (so
-# nothing unattended ever needs to do this).
+# account it names does need root, and gets it only from the operator standing at the Head running
+# this command, at a tty, through the same sudo every other `cuttle` command uses. There is no helper,
+# no NOPASSWD root grant, and no HTTP route that creates a User (nothing unattended needs this).
 
 def guise_accounts() -> list[tuple[int, str]]:
     """[(uid, username), ...] for every allocated Guise. Empty on any failure — the caller is a
@@ -299,12 +291,12 @@ def ensure_guise_accounts() -> None:
     """Create the Head-local Unix account for every Guise that doesn't have one yet.
 
     Idempotent and backfilling by construction: it asks head.db for the whole list every time, so the
-    same call provisions a User created seconds ago and every User who predates Guises entirely. That
-    is the upgrade path — a `setup --head` re-run, which the rollout already requires for the Prolog.
+    same call provisions a User created seconds ago and any older User with no account yet. A
+    `setup --head` re-run is the upgrade path.
 
     Head-only. On an Arm the accounts are created lazily by the Prolog, as root, at the moment a Spawn
     lands there — the only mechanism that can reach a donor's box that is powered off today and
-    enrolled tomorrow (temp/spawn-isolation.md, Probe 1b).
+    enrolled tomorrow.
     """
     for uid, _username in guise_accounts():
         provision_guise(uid)
@@ -324,13 +316,11 @@ def provision_guise(uid: int) -> None:
     account and no directory. `nologin` because nothing should ever log into a Guise on a host, and
     nothing can: no password, no authorized_keys, and slurmd execs a batch script by its shebang.
 
-    That shell does NOT stay behind on the host, though — apptainer patches the Pod's /etc/passwd with
+    That shell does NOT stay behind in the Pod, though — apptainer patches the Pod's /etc/passwd with
     this entry verbatim, shell field included, so a Tide Pool's sshd would exec nologin and refuse the
-    session ("This account is currently not available"). The Pod repairs its own copy before sshd
-    starts; see PAYLOAD_TIDEPOOL in ccc_head_api.spawns. Measured 2026-08-01 — an earlier version of
-    this note claimed the Pod used the image's own passwd, and that is simply not what apptainer does.
-    Its private group (gid == uid) is what keeps the shared group from ever owning a file — that group
-    exists only to be the Runas list on the Head's sudoers rule.
+    session ("This account is currently not available") unless repaired; see PAYLOAD_TIDEPOOL in
+    ccc_head_api.spawns. Its private group (gid == uid) keeps the shared group from ever owning a
+    file — that group exists only to be the Runas list on the Head's sudoers rule.
     """
     name = config.guise_name(uid)
     run(["groupadd", "--gid", str(config.GUISE_GROUP_GID), config.GUISE_GROUP], sudo=True, check=False)

@@ -6,8 +6,7 @@ pre-pointed and pre-pinned — `cuttle login` with nothing to type or confirm. B
 generic, and the client points itself with `cuttle setup --client`.
 
 Deliberately NOT a Head-served `curl … | sh`: the bundle is built here and hand-carried (or the
-target box installs cuttle straight from the repo with `uv tool install ./cli/core`). See
-CONTEXT.md / the Phase-6 installer notes.
+target box installs cuttle straight from the repo with `uv tool install ./cli/core`).
 
 Intended path only — no fallbacks (test box; failures decided live).
 """
@@ -84,7 +83,7 @@ def build_installer(out: Path | None = None, head_url: str | None = None,
                 with tarfile.open(out, "w:gz") as tar:
                     tar.add(stage, arcname="cuttle-installer")
         # Inside the box: `section` flushes its results panel on exit, so facts appended after it
-        # closes are dropped (the reason build-installer wasn't reporting its output path).
+        # closes are dropped.
         ui.result("installer", str(out))
         ui.result("mode", f"pre-pointed at {baked} (for boxes on that LAN)" if baked
                   else "generic — the box points itself: `cuttle setup --client`, "

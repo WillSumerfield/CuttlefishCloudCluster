@@ -1,9 +1,7 @@
-"""Arm enrollment (Phase 1 ③; reversed in Phase 3a slice 5).
+"""Arm enrollment (③).
 
 **The Admin decides first, and the donor redeems.** One admin command mints an **enrollment token**
-(glossary) naming the Arm and its owning **User**; the donor redeems it and declares nothing. This
-replaces the old model, in which the donor asked to join and the operator approved out-of-band by
-relaying an auth-id back and forth.
+(glossary) naming the Arm and its owning **User**; the donor redeems it and declares nothing.
 
 Two gates guard the cluster, and both now fall out of that *single* admin decision:
 
@@ -16,9 +14,9 @@ Two gates guard the cluster, and both now fall out of that *single* admin decisi
    its GPU devices, and `authorize` — still blocked, waiting — renders gres.conf and reconfigures Slurm.
    Nothing from the network reaches root unvalidated.
 
-Unlike the invite it replaces, **the token is a secret**: it admits one machine to the mesh. It
-crosses the LAN to reach the donor, which is acceptable only because CCC is LAN-scoped (item #8 is
-deferred) and its donors are never strangers.
+**The token is a secret**: it admits one machine to the mesh. It crosses the LAN to reach the donor,
+which is acceptable only because CCC is LAN-scoped (item #8 is deferred) and its donors are never
+strangers.
 
 Intended path only — no fallbacks (test box; failures decided live).
 """
@@ -97,11 +95,11 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     Reports every **Device** this box has (system.gpu_devices), because the Head authors gres.conf
     for the whole fleet and a card it was never told about is a card no Spawn can ever be placed on.
 
-    `features` = the Arm Features (docs/TODO.md) this box's owner picked at `setup --arm`, as
+    `features` = the Arm Features this box's owner picked at `setup --arm`, as
     `[{"name", "path"}, ...]` — the Head validates each name against its catalog and re-sends this on
     every call, so a re-enrollment (mesh IP moved, `arm sync-key`) never silently drops a declaration.
 
-    `provides` = Arm-side files this box has ALREADY WRITTEN (temp/spawn-isolation.md, Rollout), which
+    `provides` = Arm-side files this box has ALREADY WRITTEN, which
     is why the first POST of a `setup --arm` sends none: at that point in the run the prolog is not on
     disk yet, and claiming otherwise is exactly the lie that drains a node. `report_capabilities`
     re-POSTs once it is.
@@ -242,7 +240,7 @@ def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
     node's config is re-sent from `--conf` at *every* registration, so a feature set any other way
     (`scontrol update`) would silently vanish the next time this slurmd restarted — and a Spawn's
     `--vram`/Arm-Feature constraint would then match nothing. `feature_names` are this Arm's declared
-    Arm Features (docs/TODO.md — VSim, IsaacSim, ...), comma-joined onto the one vram bucket exactly
+    Arm Features, comma-joined onto the one vram bucket exactly
     like it: Slurm Features are a flat per-node set, so there is no structural difference between the
     two once rendered. Weight (∝ 1/Power) is deliberately NOT here, and can't be: Power is only
     measurable once the node is live. Losing Weight costs nothing worse than the fastest-free-card
@@ -271,7 +269,7 @@ def load_registry() -> dict:
 
 def arms_missing(capability: str) -> list[str]:
     """Every ADMITTED Arm that has not reported `capability` in its /enroll POST — the Arms holding up
-    a fleet-wide Slurm change (temp/spawn-isolation.md, Rollout).
+    a fleet-wide Slurm change.
 
     Configless Slurm serves slurm.conf but NOT the scripts it names, so turning on `Prolog=` before
     every node has the file fails those nodes' jobs and drains them — and a drained node stays drained
@@ -368,7 +366,7 @@ def reapply_weights(reg: dict) -> None:
     """Re-push every benchmarked Arm's Weight after a reconfigure — which resets each node to what the
     config files say, and donor Arms are dynamic, so no file says anything about them.
 
-    Verified 2026-07-14: `scontrol update NodeName=X Weight=276` lands, and the very next `scontrol
+    Verified: `scontrol update NodeName=X Weight=<n>` lands, and the very next `scontrol
     reconfigure` puts it back to 1. Since a reconfigure happens on every authorize/admit/remove, a
     Weight pushed once does not survive the next Arm joining. The Head's own Weight is in slurm.conf
     and needs none of this; it is re-pushed anyway, because one loop is simpler than an exception.
@@ -458,7 +456,7 @@ def _bench_secret() -> str:
 
     A benchmark stages its Power file home over rsync like any remote Spawn, but it never goes through
     the Head API, so there is no **Siphon** for it — it uses the one cluster-lifetime credential
-    instead (temp/spawn-isolation.md Phase 2). Read at render time rather than held anywhere: this runs
+    instead. Read at render time rather than held anywhere: this runs
     on the Head, with an operator at a tty who has already primed sudo."""
     r = run(["cat", str(config.RSYNCD_BENCH_SECRETS)], sudo=True, capture_output=True, text=True)
     return r.stdout.strip().split(":", 1)[1]
@@ -485,7 +483,7 @@ def _benchmark_arm(name: str) -> dict:
         # Unlinked the moment sbatch has read it — it holds no state past submission, and left behind
         # it is one /tmp/tmp*.sbatch per benchmark, forever.
         #
-        # As the **cluster's own Guise** (temp/spawn-isolation.md Phase 3g), not as the Mantle. This is
+        # As the **cluster's own Guise**, not as the Mantle. This is
         # the one Spawn no User submits, and it was the last thing still running as `ccc` — which would
         # have made "a Spawn owned by the Mantle is a bug" a rule with an exception, and an exception is
         # not a rule you can test. Its uid is reserved, so it collides with no User's.
@@ -808,9 +806,8 @@ def remove_arm(name: str, write_root_file) -> None:
         render_gres(reg, write_root_file)
     print(f"cuttle: {name} removed from Slurm, the registry, and evicted from the mesh")
     # What removal does NOT do: this box's copy of the munge key is not invalidated by any of the
-    # above (munge has no per-holder revocation — see docs/TODO.md's Phase 9 items). Said every time,
-    # not just when it might matter, because "might matter" is a judgment this command has no way to
-    # make about a donor it just evicted.
+    # above (munge has no per-holder revocation). Said every time, not just when it might matter,
+    # because "might matter" is a judgment this command has no way to make about a donor it just evicted.
     print(f"cuttle: {name}'s copy of the munge key is still technically valid — "
           f"if you don't trust it to be gone, `cuttle munge rotate`")
 
@@ -819,9 +816,8 @@ def remove_arm(name: str, write_root_file) -> None:
 
 def rotate_munge_key() -> None:
     """Mint a fresh cluster-wide munge key and push it live on the Head. The one lever against "an
-    Arm's copy never expires on its own" (docs/TODO.md, Phase 9 #1): rotating invalidates every
-    existing copy AT ONCE, cluster-wide — which is the thing missing before this (`setup.
-    ensure_munge_key` only ever mints a FIRST key; nothing rekeyed a live one).
+    Arm's copy never expires on its own": rotating invalidates every existing copy AT ONCE,
+    cluster-wide (`setup.ensure_munge_key` only ever mints a FIRST key; nothing rekeys a live one).
 
     Same generation `setup.ensure_munge_key` uses for the very first key, just unconditional: that one
     refuses to touch a key that already exists (a fresh cluster's one chance to mint one at all), and
@@ -854,7 +850,7 @@ def rotate_munge_key() -> None:
         ui.say("  [muted]no admitted Arms yet — nothing to re-sync[/muted]")
 
 
-# --- Retract / Return (Phase 2 loose end) -----------------------------------
+# --- Retract / Return --------------------------------------------------------
 # Unlike everything else in this file, these are NOT Head-local: retracting/returning your own Arm is
 # an owner action reachable over the network (any box, session-authed), exactly like `cuttle cancel`.
 # `--any` is the operator's escape hatch — Head-only, and writes head.db directly through the API venv

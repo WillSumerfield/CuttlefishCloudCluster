@@ -1,4 +1,4 @@
-"""`cuttle`'s Head-box health monitor (Phase 8 loose end: see docs/TODO.md).
+"""`cuttle`'s Head-box health monitor.
 
 Disk space, process-liveness, and rogue GPU/CPU usage — compute happening outside Slurm, the
 telemetry/CONTEXT.md "rogue-actor" concept, applied here to the Head's own co-located Arm rather than

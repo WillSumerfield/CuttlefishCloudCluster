@@ -1,39 +1,19 @@
-"""Recovery Window (docs/TODO.md) — a 30-minute safety net for a Spawn's UNDECLARED writes.
+"""Recovery Window: a 30-minute, size-capped safety net for a Spawn's UNDECLARED writes (anything outside
+`$CCC_OUT`). `recover_scratch` (spawns' JOB_SCRIPT) copies `$proj` to `SPAWNS_DIR/<id>/recovery/` before
+the EXIT trap deletes it; this module registers, caps, and expires that copy.
 
-A Spawn's declared `$CCC_OUT` outputs already survive forever on the Head (nothing deletes
-`SPAWNS_DIR/<id>/outputs/`). The gap this closes: everything ELSE a Spawn wrote — a script that
-mis-declared `--output`, or wrote to a relative path it never named — used to be destroyed the instant
-the Spawn ended, by the JOB_SCRIPT's `cleanup()` EXIT trap. `recover_scratch` (ccc_head_api.spawns'
-JOB_SCRIPT) now copies `$proj` (the payload's whole working dir) home to `SPAWNS_DIR/<id>/recovery/`
-before that trap deletes it — this module is what happens to that copy afterward: registering it,
-capping it, and expiring it.
+"Hold" is avoided as a name — it already means Escrow in this codebase.
 
-"Hold" is avoided as a name on purpose — it already means Escrow in this codebase.
+Registration is polled: bash writes a `recovery.size` marker only once the copy has FULLY landed, and
+`register_new` polls recently-finished Spawns for it each tick. A Spawn skipped for the size cap never
+gets a marker, so it's silently never registered.
 
-Registration is polled, not pushed, and that is load-bearing, not incidental. The EXIT trap's copy-home
-happens AFTER `stage_out()` has already sent the Head the `exit` file (bash EXIT traps fire once the
-whole script body, including that explicit call, has finished) — so by the time the karma tick notices
-`exit_code()` is set and stamps `finished_at`, `recover_scratch` may still be mid-rsync on a remote Arm.
-The bash side writes a marker (`SPAWNS_DIR/<id>/recovery.size`, a plain byte count) only once the copy
-has FULLY landed — the same "presence means done" convention the `exit` file itself already uses — and
-`register_new` below polls recently-finished Spawns for that marker each tick pass, registering the DB
-row the pass it appears. A Spawn skipped for size (the per-Spawn cap) never gets a marker at all — "no
-copy attempted", per docs/TODO.md — so it is silently never registered, which is the correct outcome.
+Polling means a copy can land without a marker ever following (Arm dropped mid-copy) — `sweep_orphans`
+deletes those, since no ledger row will ever claim them.
 
-The cost of polling is that a copy can land WITHOUT its marker ever following it (see `sweep_orphans`),
-leaving a dir no row will ever claim. So the three passes below divide the whole space between them:
-`register_new` claims what landed, `reap_expired` expires what was claimed, and `sweep_orphans` deletes
-what never will be. Everything on disk is exactly one of those three, which is what keeps the pool cap
-honest — a dir outside the ledger is a dir outside the SUM that cap is computed from.
-
-Two caps, both enforced here (never in the bash — a shell script can gate its OWN copy on its OWN size,
-but it cannot know what else the Head is already holding for every other Spawn):
-  * `MAX_SPAWN_BYTES` — baked into the rendered JOB_SCRIPT (spawns._render) as the size `recover_scratch`
-    itself gates on. Read here too so `register_new` and this module's constant stay the one source.
-  * `MAX_POOL_BYTES` — enforced at REGISTRATION time, not just by the periodic sweep: a new copy that
-    would push the pool over it evicts the oldest currently-held copy first, repeated until it fits.
-    Waiting for the next sweep (up to TICK_SECONDS later) would let the pool briefly overshoot by
-    whatever just landed, which is fine for a scanty amount but not the whole point of having a ceiling.
+Two caps, enforced here rather than in bash (a script can't see what the Head holds for other Spawns):
+`MAX_SPAWN_BYTES` is baked into the rendered JOB_SCRIPT; `MAX_POOL_BYTES` is enforced at registration by
+evicting the oldest copy first, so the pool never even briefly overshoots.
 """
 
 import os
@@ -43,15 +23,11 @@ from datetime import datetime, timedelta, timezone
 from . import db
 
 WINDOW_MINUTES = int(os.environ.get("CCC_RECOVERY_MINUTES", 30))
-# Mirrors ccc_head_api.main.MAX_UPLOAD_BYTES's shape exactly: an env-overridable int, not a magic number
-# buried in the render call.
 MAX_SPAWN_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_SPAWN", 16 * 1024**3))
 MAX_POOL_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_POOL", 50 * 1024**3))
 
-# How far back `register_new` looks for a Spawn whose recovery copy might still be landing. Comfortably
-# longer than any transfer of up to MAX_SPAWN_BYTES over a mesh link; a Spawn whose marker still hasn't
-# appeared after this long is treated as never sending one (dropped Arm, or the copy legitimately failed)
-# — matching how a failed stage_out is already reported as "the Head will report it as lost".
+# How far back `register_new` looks for a still-landing copy. Comfortably longer than any transfer up to
+# MAX_SPAWN_BYTES; a marker that still hasn't shown by then is treated as never coming (dropped Arm).
 _REGISTRATION_WINDOW_MINUTES = 10
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
@@ -66,8 +42,7 @@ def _parse(ts: str) -> datetime:
 
 
 def _spawn_dir(job_id: int):
-    # Imported lazily to avoid a spawns<->recovery import cycle (spawns.py imports this module for
-    # MAX_SPAWN_BYTES, at render time).
+    # Lazy import: avoids a spawns<->recovery import cycle (spawns.py imports this module too).
     from . import spawns
     return spawns.SPAWNS_DIR / str(job_id)
 
@@ -122,19 +97,12 @@ def register_new(conn, now: datetime | None = None) -> int:
 
 
 def sweep_orphans(conn, now: datetime | None = None) -> int:
-    """Delete every `recovery/` dir on disk that no ledger row will ever claim. Returns how many.
+    """Delete every `recovery/` dir on disk that no ledger row will ever claim (copy landed but its
+    marker never did, or arrived after `_REGISTRATION_WINDOW_MINUTES`). Returns how many.
 
-    The copy home and its registration are two separate events (see this module's header), so a copy can
-    land — wholly or partly — and then never be registered: the remote `rsync` of the marker failed after
-    the payload's own rsync succeeded, the Arm dropped between the two, or the marker simply arrived
-    later than `_REGISTRATION_WINDOW_MINUTES`. Such a dir is in NO ledger row, which means `reap_expired`
-    cannot see it and `recovery_pool_bytes` does not count it — it would otherwise sit on the Head
-    forever, unbounded, under precisely the failure mode the pool cap exists to bound. This is the only
-    thing that sweeps `SPAWNS_DIR` at all.
-
-    Disk-first, not ledger-first, because the whole point is finding what the ledger does not know
-    about. `claimable_recovery_ids` is what keeps this from racing the registrar: a Spawn still running,
-    or finished recently enough that `register_new` is still watching for its marker, is never swept."""
+    Disk-first, not ledger-first: the point is finding what the ledger doesn't know about.
+    `claimable_recovery_ids` keeps this from racing the registrar — a Spawn still running, or recent
+    enough that `register_new` is still watching for its marker, is never swept."""
     from . import spawns
     now = now or _now()
     since = (now - timedelta(minutes=_REGISTRATION_WINDOW_MINUTES)).strftime(_TS)

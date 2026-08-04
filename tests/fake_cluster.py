@@ -1,8 +1,8 @@
-"""An in-memory Slurm, for driving the real Karma economy across simulated weeks (Phase 4 slice 4).
+"""An in-memory Slurm, for driving the real Karma economy across simulated weeks.
 
 This is **not a mock of the calls the tick makes** — it is a model of the scheduler *behaviour* the
-economy depends on, and only that behaviour. The short list it encodes was each verified against real
-Slurm on hardware 2026-07-14 (see temp/KARMA.md, "Verified on real hardware"):
+economy depends on, and only that behaviour. The short list it encodes matches real Slurm behaviour
+(see temp/KARMA.md):
 
   * an owner may not set a negative nice (the tick only ever lowers to >= 0; a negative nice is the
     operator-only Bump flag, which the tick must never touch and never forge);

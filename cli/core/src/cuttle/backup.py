@@ -1,11 +1,11 @@
 """`cuttle backup` — head.db + arms.json + Headscale's own db.sqlite, the Head's entire durable
-state, bundled into one timestamped tarball (Phase 8 loose end: see docs/TODO.md).
+state, bundled into one timestamped tarball.
 
 The actual work — SQLite's online-backup API for the two live WAL dbs (safe against the Head API and
 Karma tick writing concurrently; no downtime), the tarball, and the retention prune — lives in one
 standalone script (`_SCRIPT`, installed at `config.BACKUP_SCRIPT`) shared by `create()` and the
-nightly systemd timer, so there is exactly one implementation of "how to snapshot these three files."
-It takes no cuttle import so the timer's oneshot service runs it with nothing but a system python3.
+nightly systemd timer: one implementation of "how to snapshot these three files," no cuttle import
+so the timer's oneshot service runs it with nothing but a system python3.
 
 Restore is the disruptive half: every service that can write one of the three files (the Enroll API
 writes arms.json; the Head API + Karma tick write head.db; Headscale writes its own db) is stopped,
@@ -123,8 +123,7 @@ _WRITERS = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SER
 
 
 def _ensure_script(write_unit) -> None:
-    """(Re)install the standalone script if missing or stale — lets `cuttle backup` self-heal on a
-    Head that was set up before this feature existed, with no re-run of `setup` required."""
+    """(Re)install the standalone script if missing or stale — self-heals without a `setup` re-run."""
     write_unit(config.BACKUP_SCRIPT, _SCRIPT, "755")
 
 

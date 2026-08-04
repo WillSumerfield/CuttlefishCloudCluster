@@ -108,14 +108,12 @@ def sh(script: str, sudo: bool = False) -> subprocess.CompletedProcess:
 def install_file(content: str | bytes, dest: Path, mode: str = "644",
                  owner: str | None = None, group: str | None = None) -> None:
     """Write `content` to a root-owned `dest` via a temp file + sudo install, and ALWAYS remove the
-    temp — which is the entire reason this exists rather than four hand-rolled copies of it.
+    temp — which is the entire reason this exists rather than hand-rolled copies of it.
 
-    `install` COPIES, so the source survives every call. All four sites used to leave it behind, and
-    two of them write secrets: the [bench] rsync credential (setup.ensure_bench_secret) and, on an Arm,
-    the cluster munge key (enroll.write_munge_key). Both land 0600 root at their destination and were
-    then left in /tmp indefinitely, operator-owned — no Guise could read them (0600), but it defeated
-    the mode each destination was carefully given. Found 2026-08-01 with 855 of these on the Head, the
-    oldest 11 days old and the newest from that morning's `setup --head`.
+    `install` COPIES, so the source survives every call and must be cleaned up explicitly. Two callers
+    write secrets this way (setup.ensure_bench_secret's rsync credential, enroll.write_munge_key's
+    munge key on an Arm) that land 0600 root at their destination but would otherwise sit
+    operator-readable in /tmp forever, defeating the mode the destination was given.
 
     `finally`, not a trailing unlink: a failed `install` (bad path, full disk, sudo timeout) is exactly
     when the temp file is most likely to hold something worth not leaving lying around.
@@ -325,7 +323,7 @@ def allow_mesh_iface(iface: str) -> None:
 
     Interface-scoped, not port-scoped: srun allocates ephemeral ports for task I/O, and multi-node
     jobs need Arm<->Arm traffic. Grants the mesh nothing it didn't have — mesh membership already
-    means full cluster trust (docs/TODO.md).
+    means full cluster trust.
 
     Only if ufw is already enforcing. *Enabling* a default-deny firewall on a donor's box is exactly
     the host-global mutation the isolated tailscaled exists to avoid.
@@ -359,9 +357,9 @@ def allow_tcp_port(port: int, comment: str) -> None:
 
 
 def allow_tcp_port_range(base: int, count: int, comment: str) -> None:
-    """Like `allow_tcp_port`, for a whole range at once — Tide Pool's relay ports (docs/TODO.md), opened
-    ONCE at `setup --head` rather than per-Spawn: a ufw rule added and removed on every submit/end would
-    be firewall churn for no benefit, since the range itself is a fixed, harmless-when-idle constant."""
+    """Like `allow_tcp_port`, for a whole range at once — Tide Pool's relay ports, opened ONCE at
+    `setup --head` rather than per-Spawn: a ufw rule added and removed on every submit/end would be
+    firewall churn for no benefit, since the range itself is a fixed, harmless-when-idle constant."""
     if not ufw_active():
         print(f"ufw inactive or absent — leaving the host firewall alone (nothing blocks "
              f":{base}-{base + count - 1})")

@@ -1,27 +1,18 @@
 """What an Arm must have on disk for a **Feature** it declares, and what CCC prepares from it.
 
-The Arm's half of temp/FEATURES_BUILTIN.md. `ccc_head_api.features` holds the other half — the bash a
-Spawn's job script runs — and the two never overlap, because they answer different questions about the
-same name: the Head knows what a Feature's runtime *needs*, this knows what this box *has*.
+The Arm's half of temp/FEATURES_BUILTIN.md; `ccc_head_api.features` holds the Head half (the bash a
+Spawn's job script runs). Head knows what a Feature's runtime *needs*, this knows what the box *has*.
 
-The split is forced rather than stylistic. `cuttle setup --arm` asks these questions BEFORE the box has
-enrolled, which is before it can reach a Head at all (see setup.setup_arm — the declaration rides the
-same POST as the hardware report). So everything below has to be answerable offline, and everything the
-Head contributes has to arrive later, in the rendered job script.
+Split is forced: `cuttle setup --arm` asks these questions before the box has enrolled, i.e. before
+it can reach a Head — so everything here must be answerable offline.
 
-**Validation happens at the prompt, not at the Spawn.** An install path that is missing what the Feature
-needs is re-asked immediately, naming what was absent. Left to run time it would surface hours later as
-a Spawn dying in someone else's payload, on a box its owner is not watching, with an error that reads
-like a CCC bug.
+Validation happens at the prompt, not at the Spawn — a missing path is re-asked immediately, naming
+what's absent, rather than surfacing hours later as a mystery failure in someone else's payload.
 
-**Preparation happens once, at setup, not per Spawn.** Binary wheels are unpacked into a CCC-owned
-directory, and the data the Feature's runtime opens is mirrored into one beside it. A Spawn's Pod binds
-those read-only; the copy that runs is unambiguously the one this machine's licence covers.
-
-**Everything a Spawn touches is CCC's copy, not the owner's directory.** A Pod runs as a **Guise**,
-which has no relationship to the donor and cannot traverse a 0750 home — so wherever the owner keeps
-their install, what a Spawn is handed is `/var/lib/ccc/features/<name>/`. That makes every Arm's bind
-paths identical and keeps CCC out of anyone's home directory permissions. See `mirror_install`.
+Preparation happens once at setup, not per Spawn: wheels + runtime data are copied into CCC-owned
+state (`/var/lib/ccc/features/<name>/`), and a Spawn's Pod binds those read-only — never the owner's
+directory, since a Pod runs as a **Guise** with no relationship to the donor and can't traverse a
+0750 home. See `mirror_install`.
 """
 
 import json
@@ -38,18 +29,11 @@ from .system import run
 class ArmProfile:
     """What one Feature needs from the box that declares it.
 
-    `requires` is checked against the install path the owner gives; each entry is a relative path and
-    a sentence saying what it is, so a re-ask can name the missing thing in the vendor's own words
-    rather than as a bare path.
-
-    `wheels` is a glob for binary wheels to unpack (empty for a Feature that ships none). `env` names
-    the extra `export` lines this Feature contributes to /etc/ccc/features.env beyond the standard
-    `<NAME>_PATH` — the channel by which everything Arm-local reaches a Spawn.
-
-    `licence_key` is the default filename of the product key this Feature's software was activated
-    with, if it has one. `setup --arm` asks where it is; CCC mirrors it into this box's own state
-    (mirror_licence_key) and the activation Spawn binds that copy read-only. It never leaves the Arm
-    and no other Spawn ever sees it.
+    `requires`: relative path -> sentence describing it, so a re-ask names the missing thing in the
+    vendor's own words. `wheels`: glob for binary wheels to unpack (empty if none). `env`: extra
+    `export` lines this Feature contributes to /etc/ccc/features.env beyond the standard `<NAME>_PATH`.
+    `licence_key`: default filename of the product key this Feature was activated with, if any —
+    mirrored into CCC's own state (mirror_licence_key), never leaves the Arm, no other Spawn sees it.
     """
 
     name: str
@@ -135,18 +119,11 @@ def unpack_packages(features: list[dict]) -> dict[str, list[str]]:
     """Unzip every declared Feature's binary wheels into `FEATURE_PKG_DIR/<name>/<abi>`, and report
     what landed as `{feature: [abi, ...]}`.
 
-    **The whole wheel, not its importable subdirectory.** A wheel unpacks to several top-level entries
-    — for vlearn that is `vlearn/`, its `.dist-info` and a sibling `vlearn_bindings.<abi>.so` — and the
-    extension module beside the package is the one `import vlearn` fails without. So the unpack
-    directory as a whole is what goes on a Spawn's PYTHONPATH.
-
-    **Unpacked by CCC rather than pointed at whatever the owner installed.** PYTHONPATH aimed at a
-    donor's own `.venv` would put every package they happen to have in front of the submitter's
-    Environment; a directory built from one wheel holds one project's artefacts.
-
-    Rebuilt from scratch each setup: a donor who upgraded the software in place would otherwise leave
-    the previous release's files sitting under the same ABI tag, mixed with the new one's, and every
-    Spawn would import the result.
+    Unpacks the whole wheel, not just the importable subdirectory — e.g. vlearn's `vlearn_bindings
+    .<abi>.so` sits beside `vlearn/`, and `import vlearn` needs both on PYTHONPATH. Unpacked by CCC
+    rather than pointed at the owner's own `.venv`, so PYTHONPATH holds only this project's artefacts,
+    not everything else the donor has installed. Rebuilt from scratch each setup so an in-place
+    software upgrade can't leave old-release files mixed in under the same ABI tag.
     """
     landed: dict[str, list[str]] = {}
     for f in features:
@@ -193,19 +170,12 @@ def prepare(features: list[dict]) -> dict[str, list[str]]:
 def mirror_install(f: dict) -> None:
     """Copy the paths a Feature's runtime opens out of the owner's install and into CCC's own state.
 
-    **Because a Spawn cannot read the owner's home.** The Pod runs as a **Guise**, an account with no
-    relationship to the donor, and a home directory is 0750 on every distro that ships one. Everything
-    inside the checkout is usually world-readable; the home above it is not, and one un-traversable
-    ancestor is enough — apptainer fails the whole container as "permission denied" on the bind, which
-    reads as a CCC bug and is really a fact about where someone keeps their files.
-
-    The alternatives were worse. ACLing the ancestors would make the owner's entire home traversable by
-    every Guise on the cluster — on the Head, that is the box holding the Mantle's key and every User's
-    work. Refusing an install path under a home would make a donor move a gigabyte before they can join.
-
-    So: ~1 GB copied once per `setup --arm`, and every Arm's bind paths become the same paths. Rebuilt
-    each setup rather than synced, for the same reason the wheels are (see unpack_packages) — a donor
-    who upgraded in place must not leave the old release's assets mixed into the new one's.
+    A Pod runs as a **Guise** with no relationship to the donor, and a home dir is 0750 on every distro
+    — one un-traversable ancestor makes apptainer fail the whole bind as "permission denied", reading
+    as a CCC bug. ACLing the ancestors was rejected (would make the owner's whole home traversable by
+    every Guise on the cluster); refusing installs under a home was rejected too (donor would have to
+    move a gigabyte first). So: ~1 GB copied once per `setup --arm`, rebuilt each time (not synced) so
+    an in-place upgrade can't leave old release files mixed into the new one's (see unpack_packages).
     """
     p = ARM_PROFILES.get(f["name"])
     if not p or not p.requires:
@@ -222,14 +192,11 @@ def mirror_install(f: dict) -> None:
 def mirror_licence_key(f: dict) -> None:
     """Copy this Feature's **Licence** key into CCC's state, readable by the cluster's accounts only.
 
-    Same reason as `mirror_install` — the activation Spawn is a Pod, and it cannot reach a key sitting
-    under the owner's home. Mode 0640 root:ccc-guises rather than the a+rX everything else here gets:
-    the key is a credential, and while `--contain` means the real gate is that no ordinary Spawn ever
-    BINDS it, a file mode costs nothing and is the one protection that survives a mistake in the bind.
-
-    Not in the Licence directory, which would have been the obvious home for it: JOB_SCRIPT binds that
-    as `$HOME` into every Spawn that asked for the Feature, so the key would be visible to exactly the
-    Spawns it must never be visible to.
+    Same reason as `mirror_install`: the activation Spawn is a Pod, can't reach a key under the owner's
+    home. Mode 0640 root:ccc-guises, not the a+rX everything else here gets — real gate is that no
+    ordinary Spawn ever binds it, but the mode is cheap insurance against a bind mistake. Not stored in
+    the Licence directory (JOB_SCRIPT binds that as `$HOME` into every Spawn that asked for the
+    Feature, which would expose the key to exactly the Spawns that must never see it).
     """
     p = ARM_PROFILES.get(f["name"])
     if not p or not p.licence_key or not f.get("key"):
@@ -271,11 +238,9 @@ def features_env_extras(features: list[dict]) -> list[str]:
         # and it is bound read-only into the activation Spawn and nothing else.
         if p.licence_key and f.get("key"):
             lines.append(f"export {stem}_LICENCE_KEY={FEATURE_PKG_DIR / p.name / LICENCE_KEY_NAME}")
-            # Where the copy CAME from, which no Spawn reads. It is here because features.env is this
-            # box's only durable record of anything Arm-local, and the Head's own Arm recovers its
-            # answers from it on a re-setup (setup._head_arm_features). Without it, a re-setup would
-            # offer CCC's own copy back as the source and re-copy the mirror onto itself — pinning a
-            # key the owner may since have rotated, and never seeing the new one.
+            # Source path (no Spawn reads it) — features.env is the only durable record of Arm-local
+            # state, so a re-setup (setup._head_arm_features) recovers it from here rather than
+            # offering CCC's own mirror back as the source and pinning a since-rotated key forever.
             lines.append(f"export {stem}_LICENCE_KEY_SRC={f['key']}")
     return lines
 
@@ -302,13 +267,11 @@ def environment_yml(name: str) -> str:
 def activation_project(name: str) -> dict[str, str]:
     """The project CCC submits to activate `name` on an Arm, `{file: body}`.
 
-    Read out of the Head's own API venv rather than over HTTP, because both callers stand on the Head
-    (`cuttle arm admit`, and `cuttle setup --head` for its own co-located Arm) and the second of them
-    runs before any account has ever logged in — there is no session to authenticate with, and being
-    the operator on this box is already the stronger claim.
+    Read out of the Head's own API venv rather than over HTTP: both callers stand on the Head
+    (`cuttle arm admit`, `cuttle setup --head` for its co-located Arm), and the second runs before any
+    account has logged in — no session to authenticate with, being the operator is the stronger claim.
 
-    Raises LookupError for a Feature that needs no activation. Most do not, and an Arm declaring one is
-    simply admitted without the step (see cuttle.enroll.activate_arm).
+    Raises LookupError for a Feature that needs no activation (most don't — see cuttle.enroll.activate_arm).
     """
     from . import auth
     r = run(auth._admin_argv(["feature-activation", name]), sudo=True,

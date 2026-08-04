@@ -21,12 +21,10 @@ import { human } from "../project";
 import { duration, armLabel, placedLabel } from "../queue/format";
 
 /**
- * Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever this Spawn wrote
- * OUTSIDE its declared $CCC_OUT. Self-contained, and it stays that way: it fetches its own status and
- * owns its own countdown, so it neither waits on nor is delayed by the page's main read.
- *
- * Renders nothing while loading, and nothing once there's nothing to show (no copy was ever made, or
- * the window has closed) — there is no "expired" state worth a User's attention after the fact.
+ * Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever this Spawn wrote OUTSIDE
+ * its declared $CCC_OUT. Self-contained: fetches its own status and owns its own countdown, so it neither
+ * waits on nor delays the page's main read. Renders nothing while loading or once there's nothing to show
+ * — no "expired" state worth a User's attention after the fact.
  */
 function RecoveryPanel({ id }: { id: string }) {
   const jobId = Number(id);
@@ -81,13 +79,10 @@ function RecoveryPanel({ id }: { id: string }) {
  * The declared results, and how long the Head keeps them (docs/TODO.md "Storage retention"): 7 days
  * from the Spawn's end, or until the submitter's 8GB Allowance needs the room for newer ones.
  *
- * Deliberately the same panel as RecoveryPanel above, down to the countdown and the button — the two
- * are different artifacts with different deadlines, and a User who has learned to read one has learned
- * to read both. What differs is the tone: this one is not a safety net, it is the thing the Spawn was
- * submitted to produce, so it is stated plainly rather than as a rescue.
- *
- * Renders nothing when nothing is held. There is no "expired" state here either — a panel announcing
- * an absence would be the loudest thing on a page about a Spawn that ran fine.
+ * Deliberately the same panel shape as RecoveryPanel above (countdown, button) — different artifacts,
+ * different deadlines, but one learned reading pattern. What differs is tone: this is what the Spawn was
+ * submitted to produce, stated plainly rather than as a rescue. Renders nothing when nothing is held, and
+ * no "expired" state — that would be the loudest thing on a page about a Spawn that ran fine.
  */
 function OutputsPanel({ id }: { id: string }) {
   const jobId = Number(id);
@@ -183,15 +178,13 @@ const LOG_PANE = {
 };
 
 /**
- * One output stream.
+ * One output stream. stdout and stderr get their own panes rather than being interleaved the way
+ * `cuttle logs -f` does: the CLI interleaves because a terminal has one column, but the two files carry
+ * no shared timestamps, so a merge here would be a guess presented as fact. Build log joins as a third
+ * pane when a Spawn built an Environment (the Head's work, not the Spawn's).
  *
- * stdout and stderr get their own panes rather than being interleaved the way `cuttle logs -f` does.
- * The CLI interleaves because a terminal has one column; a browser does not, and the two files carry no
- * shared timestamps, so any merge here would be a guess at ordering presented as fact. The build log
- * joins them as a third pane when a Spawn built an Environment — the Head's work, not the Spawn's.
- *
- * Empty is stated, not blank: "nothing on stderr" is the good news on a Spawn that ran fine, and an
- * empty black box says nothing at all.
+ * Empty is stated, not blank: "nothing on stderr" is good news on a Spawn that ran fine; an empty black
+ * box says nothing at all.
  */
 function LogPane({ title, text, note }: { title: string; text: string | null; note?: string }) {
   return (
@@ -209,12 +202,10 @@ function LogPane({ title, text, note }: { title: string; text: string | null; no
         </Tip>
         {note && <span className="text-[12px] text-ink-mute">{note}</span>}
       </div>
-      {/* `field` — the same recess the composer's inputs sit in, rather than a darker rectangle of its
-          own. It feathers at every edge, so a long log ends by dissolving instead of on a hard rim.
-          The vars below are set INLINE on purpose: an inline custom property beats `.field`'s own
-          `&:hover { --fill: … }`, which is what holds the colour still. A log is not a control — there
-          is nothing to click and nothing to type, so lighting up under the pointer promises an
-          interaction that does not exist. */}
+      {/* `field` — the same recess the composer's inputs sit in, feathering at every edge so a long log
+          dissolves instead of ending on a hard rim. Vars set INLINE so they beat `.field`'s own
+          `&:hover { --fill: … }` and hold the colour still: a log is not a control, so lighting up under
+          the pointer would promise an interaction that doesn't exist. */}
       <pre
         className="field num overflow-auto text-[12px] whitespace-pre"
         style={{
@@ -237,9 +228,9 @@ function LogPane({ title, text, note }: { title: string; text: string | null; no
  * One Spawn, reached from Queue, History, Karma or the Ledger. Not a rail destination.
  *
  * One fetch answers the whole page — `GET /spawns/{id}` carries the live verdict AND the archive row —
- * so the page never has to know whether its subject is queued, running or a year old. It polls only
- * while the Spawn is unfinished: an archive page that kept hitting the Head every few seconds would be
- * asking a question whose answer cannot change.
+ * so it never has to know whether its subject is queued, running or a year old. Polls only while
+ * unfinished: an archive page hitting the Head every few seconds would be asking a question whose answer
+ * cannot change.
  */
 export function SpawnPage({ id }: { id: string }) {
   const jobId = Number(id);

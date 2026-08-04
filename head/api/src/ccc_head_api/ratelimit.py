@@ -1,7 +1,6 @@
-"""In-memory failed-login throttle (Phase 8 loose end — see docs/TODO.md's "No rate-limiting
-anywhere"). Dual-keyed: a caller is blocked if EITHER its source IP or its attempted username has
-racked up too many recent failures, so neither a single attacker IP spraying many usernames nor a
-distributed guess against one account from many IPs slips through.
+"""In-memory failed-login throttle. Dual-keyed: a caller is blocked if EITHER its source IP or its
+attempted username has racked up too many recent failures, so neither a single attacker IP spraying
+many usernames nor a distributed guess against one account from many IPs slips through.
 
 State lives only in this process's memory — no schema, no migration. It resets on a Head API
 restart, which is a deliberate admin action, not something a remote attacker can trigger.

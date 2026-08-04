@@ -1,10 +1,10 @@
 """Spawn submission + inspection: `cuttle run` / `status` / `logs` / `outputs`.
 
 A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif python <script>`. The Slurm job id
-IS the spawn id. As of Phase 3a slice 2 `cuttle run` is no longer Head-local: it tars the working dir
-and POSTs it to the Head API (authenticated), which unpacks, renders, and submits it as the `ccc`
-service account, recording who submitted it. So this module is now a thin API client — the render +
-stage machinery lives server-side in `ccc_head_api.spawns`.
+IS the spawn id. `cuttle run` is not Head-local: it tars the working dir and POSTs it to the Head
+API (authenticated), which unpacks, renders, and submits it as the `ccc` service account, recording
+who submitted it. So this module is a thin API client — the render + stage machinery lives
+server-side in `ccc_head_api.spawns`.
 
   * upload    — a gzip-tar of the working dir. Gitignore-aware by default (skip .git, venvs, data,
                 checkpoints); `--no-gitignore` uploads the whole tree.
@@ -13,8 +13,8 @@ stage machinery lives server-side in `ccc_head_api.spawns`.
                 setup gets results the same way — `cuttle outputs <id>` downloads the $CCC_OUT tar.
 
 Auth: every call carries the bearer token from `~/.ccc/credentials`; the Head URL comes from
-~/.ccc/config. Every route needs it — reads were anonymous only while the SPA had no way to log in.
-Transport is HTTPS, verified against the Head's certificate pinned on this machine (see tls.py).
+~/.ccc/config. Every route needs it. Transport is HTTPS, verified against the Head's certificate
+pinned on this machine (see tls.py).
 """
 
 import io
@@ -61,8 +61,7 @@ def _make_tar(root: Path, files: list[str] | None) -> bytes:
 
 
 def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
-    """Authed GET of a raw body (logs text / outputs tar). Reads used to be anonymous; the
-    browser-login slice put them behind the session, so these carry the bearer like everything else.
+    """Authed GET of a raw body (logs text / outputs tar) — carries the bearer like every other call.
 
     `missing_ok` returns None on a 404 instead of raising: a Spawn that wrote nothing to $CCC_OUT is a
     normal outcome, not a malformed command.
@@ -131,16 +130,15 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
                    user: str | None = None) -> tuple[int, str | None]:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
-    Pinning is an admin write, and since Phase 6 the Head API has none — so this does not travel over
-    HTTP at all. Authorization is *being the operator on this box*; attribution is whoever is logged
-    in here. It shells into the API venv rather than reimplementing submission, so the Escrow and the
-    Attribution row are written by the same code that serves `/submit` (see spawns.submit_checked).
+    Pinning is an admin write, and the Head API has none — so this does not travel over HTTP at all.
+    Authorization is *being the operator on this box*; attribution is whoever is logged in here. It
+    shells into the API venv rather than reimplementing submission, so the Escrow and the Attribution
+    row are written by the same code that serves `/submit` (see spawns.submit_checked).
 
     `wandb_env` rides across as JSON — the same dict the HTTP path puts in its meta, so `--project`
-    and `--entity` mean the same thing on both roads. It used to be dropped here entirely, which made
-    both flags silently no-ops the moment a Spawn was pinned.
+    and `--entity` mean the same thing on both roads.
 
-    `tidepool` (docs/TODO.md) lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
+    `tidepool` lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
     node-pinning, threaded through for completeness (the common Tide Pool path is unpinned).
     """
     # Named explicitly only by CCC's own Spawns (cuttle.enroll.activate_arm), which run during
@@ -232,11 +230,10 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     # works if someone OR-expands it (`--constraint=vram24|vram48`). That someone is the Head.
     #
     # Composed once, for both roads: which W&B run this Spawn is (project/entity, and nothing else —
-    # the Head owns the key). A pinned Spawn used to skip this, so `--project/--entity` did nothing
-    # whenever `--node` was given.
+    # the Head owns the key).
     wandb_env = settings.wandb_env(project, entity)
-    # `node` pins the Spawn to one Arm. Since Phase 6 it does not travel over HTTP at all — the Head
-    # API refuses it for everyone — so a pinned Spawn takes the Head-local path below instead.
+    # `node` pins the Spawn to one Arm. It does not travel over HTTP at all — the Head API refuses it
+    # for everyone — so a pinned Spawn takes the Head-local path below instead.
     env_note = None
     if node:
         spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
@@ -306,7 +303,7 @@ def _download_now(spawn_id: int) -> None:
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
                     features: list[str] | None = None) -> int:
-    """Request a Tide Pool (docs/TODO.md) — no project upload, no script: only declared needs travel.
+    """Request a Tide Pool — no project upload, no script: only declared needs travel.
     Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in tidepool.py, owns the UI
     from here, since it still has to poll for placement and attach).
 
@@ -339,8 +336,8 @@ def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:
 
     Two roads on purpose. Cancelling your own Spawn is a [U] write and stays remote — it is the escape
     hatch from paying for a job you no longer want, and it has to work from the box you submitted
-    from. Cancelling *someone else's* is an admin write, and since Phase 6 the Head API has none: an
-    operator standing at the Head can stop a runaway, a stolen Session cannot.
+    from. Cancelling *someone else's* is an admin write, and the Head API has none: an operator
+    standing at the Head can stop a runaway, a stolen Session cannot.
 
     Either way the Karma tick settles the Spawn for the seconds it actually held when it drops out of
     squeue, so a cancel costs its submitter what it used and no more.
@@ -528,7 +525,7 @@ def logs(spawn_id: int, follow: bool) -> None:
 
 
 def _recovery_status(spawn_id: int) -> dict | None:
-    """The Recovery Window's live state (docs/TODO.md) for `spawn_id`, or None if it has none —
+    """The Recovery Window's live state for `spawn_id`, or None if it has none —
     never made (skipped for size, or the Arm dropped before it landed), evicted, or already expired.
     A courtesy lookup, not a load-bearing one: any failure here (not just a 404) is swallowed rather
     than aborting whatever command called it, since the caller has already succeeded or failed on its
@@ -547,7 +544,7 @@ def _minutes_left(expires_at: str) -> int:
 
 
 def _hint_recovery(spawn_id: int) -> None:
-    """Reactive Recovery Window messaging (docs/TODO.md): the moment a User discovers `--output` was
+    """Reactive Recovery Window messaging: the moment a User discovers `--output` was
     wrong or incomplete — right here, at the "no outputs" miss — is exactly when they need to know the
     rest of the Spawn's working dir might still be recoverable. Silent when it isn't (closed, skipped
     for size, or none was ever made): there's nothing more honest to say than what `outputs()` already
@@ -568,8 +565,8 @@ def outputs(spawn_id: int) -> None:
     Two different misses, and the Head is the one that can tell them apart (see main.spawn_outputs), so
     its 404 detail is printed verbatim rather than replaced by a guess here: a Spawn that WROTE nothing,
     versus one whose results were held and are now gone — 7 days elapsed, or evicted for the submitter's
-    8GB Allowance (docs/TODO.md "Storage retention"). Telling a User their Spawn produced nothing when it
-    produced 3GB they simply came back too late for is the one answer worse than saying neither."""
+    8GB Allowance. Telling a User their Spawn produced nothing when it produced 3GB they simply came
+    back too late for is the one answer worse than saying neither."""
     client = auth._client()
     client.token = auth._load_token()
     try:
@@ -588,7 +585,7 @@ def outputs(spawn_id: int) -> None:
 
 
 def recover(spawn_id: int) -> None:
-    """Download a Spawn's Recovery Window copy (docs/TODO.md) — its whole working dir as it stood when
+    """Download a Spawn's Recovery Window copy — its whole working dir as it stood when
     the Spawn ended, not just what it wrote to $CCC_OUT — for as long as the 30-minute window is open.
 
     A separate artifact from `outputs()` on purpose: the declared $CCC_OUT tar is permanent and never

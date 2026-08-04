@@ -1,31 +1,26 @@
-"""Tide Pool (docs/TODO.md, now built): connection plumbing for an interactive Spawn — a live shell in
-a Pod instead of a script. Three jobs live here:
+"""Tide Pool: connection plumbing for an interactive Spawn — a live shell in a Pod instead of a script.
+Three jobs live here:
 
-1. **Mint the keypair** a Tide Pool authenticates with (`grant`) — a fresh ed25519 pair per Spawn, never
-   reused, never seen by the User themselves. The public half is baked into the job script's
-   authorized_keys (spawns.JOB_SCRIPT's tidepool payload); the private half is handed to the CLI, once
-   authenticated, over `GET /spawns/{id}/tidepool` (see db.tidepool_private_key) — the CLI never manages
-   a key of its own, mirroring the built-in (no SSO/IdP) auth model everywhere else in CCC.
+1. **Mint the keypair** (`grant`) — a fresh ed25519 pair per Spawn, never reused, never seen by the User.
+   Public half goes into the job script's authorized_keys; private half is handed to the CLI over
+   `GET /spawns/{id}/tidepool` — the CLI never manages a key of its own, matching CCC's built-in (no
+   SSO/IdP) auth model everywhere else.
 
 2. **Reserve the port** (`reserve_port`) — one number, reused as BOTH the sshd port inside the Pod on the
    Arm and the Head-side relay's listen port, so nothing has to reconcile the two. Reserved before the
-   job_id exists (it has to be baked into the job script, rendered before sbatch ever runs).
+   job_id exists — it must be baked into the job script before sbatch runs.
 
-3. **Run the relay** (`ensure_relay`) — Users are not Mesh members and have no route to an Arm's mesh
-   address (only Head + Arm are on the Mesh — see CONTEXT.md), so the Head, which every client already
-   reaches for the Dashboard/API, forwards raw bytes from its own reachable address to the Arm's mesh
-   address for the life of one Spawn. **Except on the Head's own co-located Arm**, where the Pod is
-   already on the address the client is dialling and a relay would fight its sshd for the single shared
-   port and then forward to itself — see `ensure_relay`. A narrow purpose-built TCP proxy (relay.py),
-   not a jump-host sshd on the Head itself (a new attack surface plus a host-key/user story of its own) and not a websocket
-   tunnel (a new dependency this project does not otherwise need, and real SSH end to end — not a
-   bespoke shell-over-websocket protocol — is the explicit ask).
+3. **Run the relay** (`ensure_relay`) — Users aren't Mesh members and have no route to an Arm's mesh
+   address, so the Head forwards raw bytes from its own reachable address to the Arm for the life of one
+   Spawn. **Except on the Head's own co-located Arm**, where the Pod is already on the address the client
+   dials — see `ensure_relay` for why starting one there is actively harmful. A narrow purpose-built TCP
+   proxy (relay.py), not a jump-host sshd (new attack surface, own host-key story) and not a websocket
+   tunnel (new dependency; the ask is real SSH end to end).
 
 The relay is a SEPARATE PROCESS (relay.py, its own asyncio loop), not a task inside the sync Head API or
-the karma tick — so a relay carrying live bytes is never blocked behind a slurmctld poll, and a wedged
-relay can never wedge either of them. `ensure_relay` is idempotent (checks the tracked pid is actually
-alive before starting a new one) and is called from the polled `GET .../tidepool` route, so attach does
-not wait on the tick's 30s cadence; `reap_dead` below is the one place a relay ever goes back down.
+the karma tick — so it's never blocked behind a slurmctld poll, and a wedged relay can't wedge either of
+them. `ensure_relay` is idempotent and polled from `GET .../tidepool`, so attach doesn't wait on the
+tick's cadence; `reap_dead` is the one place a relay ever goes back down.
 """
 
 import logging
@@ -43,10 +38,8 @@ from . import db
 
 log = logging.getLogger("ccc.api")
 
-# One port range, reserved once at `cuttle setup --head` (cuttle.system.allow_tcp_port_range — CLI-side,
-# must stay numerically in step with these two constants). 200 concurrent Tide Pools is far past
-# anything this project's single-cluster scale will ever hold open at once.
-#
+# One port range, reserved once at `cuttle setup --head` (cuttle.system.allow_tcp_port_range — must stay
+# numerically in step with these two constants). 200 concurrent Tide Pools is far past this project's scale.
 # BELOW Linux's default ephemeral range (net.ipv4.ip_local_port_range = 32768-60999) — see
 # cuttle.config.TIDEPOOL_PORT_BASE for why a listen port must never sit inside it.
 PORT_BASE = 31000
@@ -115,21 +108,18 @@ def ensure_relay(conn, job_id: int, node_mesh_ip: str, node: str, head_arm: bool
     address cannot change under a running Spawn, but re-deriving it costs nothing and one fewer thing to
     keep in sync is one fewer way for this to drift from the source of truth.
 
-    **No relay for the Head's own co-located Arm** (`head_arm`, off the registry's `head` flag — see
-    enroll.register_head_arm). The relay exists for exactly one reason: a User is not a Mesh member and
-    cannot reach an Arm's mesh address. For this one Arm they demonstrably can — it is the same box they
-    already reach for the Dashboard and this very API — so the Pod's sshd is already on a reachable
-    address and the CLI's `ssh <head>:<port>` lands on it directly.
+    **No relay for the Head's own co-located Arm** (`head_arm`, off the registry's `head` flag). The
+    relay exists because a User can't reach an Arm's mesh address directly; for this one Arm they
+    demonstrably can — same box they already reach for the Dashboard/API — so the Pod's sshd is already
+    reachable and `ssh <head>:<port>` lands on it directly.
 
-    Starting one anyway is not merely redundant, it is fatal, and it cost a hardware session to find
-    (Spawn 7, 2026-08-02). Relay and Pod sshd deliberately share ONE port number, which on this Arm is
-    one port on ONE box, and the relay gets there first: this route fires the moment Slurm says RUNNING,
-    seconds before apptainer has booted the Pod. sshd then finds 0.0.0.0 taken and — because OpenSSH
-    sets IPV6_V6ONLY on its v6 listener — still binds `::` and reports itself up, while being unable to
-    accept IPv4 at all. Mesh addresses are IPv4, so every connection reaches the relay instead, whose
-    forward target is this same Arm's mesh IP: **the relay forwards to itself**, one self-connection
-    chained onto the next, and no ssh session ever reaches the Pod. `_accepting` cannot see any of it —
-    it connects to the relay and is satisfied.
+    Starting one anyway is fatal, not just redundant: relay and Pod sshd share ONE port number on this
+    Arm, and the relay wins the race — it fires the moment Slurm says RUNNING, before apptainer has
+    booted the Pod. sshd then finds 0.0.0.0 taken and — because OpenSSH sets IPV6_V6ONLY on its v6
+    listener — still binds `::` and reports itself up while unable to accept IPv4 at all. Mesh addresses
+    are IPv4, so every connection reaches the relay instead, which forwards to this same Arm's mesh IP:
+    **the relay forwards to itself**, and no ssh session ever reaches the Pod. `_accepting` can't see any
+    of it — it connects to the relay and is satisfied.
     """
     row = db.get_tidepool(conn, job_id)
     if row is None:

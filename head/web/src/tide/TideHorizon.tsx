@@ -122,8 +122,8 @@ export function TideHorizon({ fold }: { fold: Fold }) {
     if (!ctx) return;
 
     const { W, padL, padT, innerW, yBottom, xForHour, yForDemand, sampleAt } = geom;
-    // Canvas ends exactly at the body's foot (yFoot) — the old padB gap below it held only the tick row,
-    // which is now HTML. So the edgeFade mask's zero-point lands on the foot and the dissolve matches.
+    // Canvas ends exactly at the body's foot (yFoot): the tick row is HTML, not canvas, so the edgeFade
+    // mask's zero-point lands on the foot and the dissolve matches.
     const canvasH = yBottom + TIDE.footDrop;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = W * dpr; canvas.height = canvasH * dpr;
@@ -306,7 +306,7 @@ export function TideHorizon({ fold }: { fold: Fold }) {
   };
 
   // Overlay geometry — the tick row and "now" label ride as HTML above the masked canvas, so the
-  // edge-fade dissolves the water without touching the text. Positions mirror the old canvas coords.
+  // edge-fade dissolves the water without touching the text.
   const yFoot = geom.yBottom + TIDE.footDrop;
   const nowX = geom.xForHour(fold.nowHour);
   const nowRight = Math.abs(nowX - (geom.padL + geom.innerW)) < 40;

@@ -9,20 +9,18 @@ import { ALLOWANCE, size } from "./format";
 
 /**
  * Freeze a project into a Recipe. Structurally the Spawn composer's twin — same drop-strip recess, same
- * pick/preview gate, bytes move only on Save — but it ends in "Save recipe", not "Submit spawn", and it
- * answers to the storage wall above it instead of the queue. Three things differ from a Spawn:
+ * pick/preview gate, bytes move only on Save — but ends in "Save recipe" and answers to the storage wall,
+ * not the queue. Three things differ from a Spawn:
  *
- *   · Name is REQUIRED and unique — it is the Recipe's identity, the key you Run it by later.
+ *   · Name is REQUIRED and unique — the Recipe's identity, the key you Run it by later.
  *   · No "Target an Arm" — a Recipe runs from ANY machine with nothing to hand; pinning a node contradicts
- *     the whole point.
- *   · The 24 GB wall is a hard gate. We know the folder's size from File.size at pick time (no upload), so
- *     a save that wouldn't fit is blocked HERE, before the upload — the wall shows the breach in --alarm and
- *     this copy names how far over. You delete a Recipe to make room, never dismiss a warning.
+ *     the point.
+ *   · The 24 GB wall is a hard gate, checked from File.size at pick time (no upload): a save that wouldn't
+ *     fit is blocked HERE. You delete a Recipe to make room, never dismiss a warning.
  *
- * IS a grid tile — its root is the `<li>` itself, row-spanning 2 so it grows in whichever cell it took over
- * (the New-recipe tile, or the Recipe card being re-frozen) rather than replacing the whole shelf. That cell
- * is narrow (one grid column wide), so the field grid below stacks single-column always, unlike the Spawn
- * composer's roomy two-up layout.
+ * IS a grid tile: root is the `<li>` itself, row-spanning 2 so it grows in whichever cell it took over
+ * rather than replacing the whole shelf. That cell is one column wide, so fields below stack single-column
+ * always, unlike the Spawn composer's two-up layout.
  */
 
 const GB = 1024 ** 3;

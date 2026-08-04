@@ -1,10 +1,10 @@
 """Local admin for the Head: users, Karma Overrides, pinned Spawns, and Arm Retract/Return on someone
-else's behalf (Phase 3a slice 1; widened in Phase 6 and Phase 2's retract/return `--any`).
+else's behalf.
 
 Runs *on the Head as the `ccc` service account* (`python -m ccc_head_api.admin ...`), writing head.db
-directly — being the operator on the Head is the authorization, no HTTP/session (mirrors the way
-`cuttle arm authorize` mutates the registry). `cuttle user add|list|remove|reset` are thin wrappers that
-shell into this via the API venv; `setup --head` uses `add --admin` to seed the first admin.
+directly — being the operator on the Head is the authorization, no HTTP/session. `cuttle user
+add|list|remove|reset` are thin wrappers that shell into this via the API venv; `setup --head` uses `add
+--admin` to seed the first admin.
 
 Prints the one-time temp password to stdout — the operator hands it to the user, who must rotate it on
 first login. Nothing here ever prints or stores a reusable password.
@@ -36,11 +36,9 @@ def _add(username: str, is_admin: bool) -> int:
 def _guises() -> int:
     """`<uid> <username>` per line — every allocated Guise with a User still behind it.
 
-    The Unix half of `cuttle user add` reads this: allocating a uid is a row in head.db and needs no
-    privilege (so it happens here, as `ccc`), while creating the account it names needs root (so it
-    happens in the CLI, with the operator's sudo — cuttle.auth.ensure_guise_accounts). Listing rather
-    than returning the one just added is deliberate: the same call provisions a brand-new User and
-    back-fills every User who predates Guises, so an upgrade is just a `setup --head` re-run.
+    The Unix half of `cuttle user add` reads this: allocating a uid is a head.db row needing no privilege
+    (here, as `ccc`), while creating the account it names needs root (in the CLI, with sudo). Listing
+    rather than returning just the one added lets the same call back-fill every existing User too.
     """
     with db.connect() as conn:
         db.init_schema(conn)
@@ -97,10 +95,9 @@ def _reset(username: str) -> int:
 def _override(username: str, amount: float, note: str | None) -> int:
     """Add or remove Karma from a User's Balance.
 
-    Head-local since Phase 6. It needs no privilege beyond writing head.db — which is exactly why it
-    was an API route until the phase settled that the Head API exposes **no admin writes at all**.
-    Minting Karma is the most valuable thing a stolen Session could do, and the only way to make that
-    impossible is for the capability not to be requestable over the network.
+    Head-local: it needs no privilege beyond writing head.db, but minting Karma is the most valuable
+    thing a stolen Session could do — the Head API exposes **no admin writes at all**, so the capability
+    is simply not requestable over the network.
     """
     from . import karma
     with db.connect() as conn:
@@ -149,25 +146,21 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
             node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
             features: list[str] | None = None, tidepool: bool = False,
             manifest: str | None = None, activation: bool = False) -> int:
-    """Submit a Spawn pinned to a named Arm, attributed to `username`.
+    """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
-    Head-local since Phase 6 (`cuttle run --node`). Authorization is being the operator on the Head;
-    attribution is the account named here. Goes through `spawns.submit_checked`, so the Escrow, the
-    Attribution row and the W&B environment are all produced exactly as they are for a Spawn that
-    arrived over HTTP.
+    Authorization is being the operator on the Head; attribution is the account named here. Goes through
+    `spawns.submit_checked`, so the Escrow, the Attribution row and the W&B environment are all produced
+    exactly as they are for a Spawn that arrived over HTTP.
 
     `wandb_env` is the caller's project/entity hint and only that — never a key, which comes from
-    whichever User this is attributed to (spawns.compose_wandb_env). It was hardcoded `{}` here, so
-    `cuttle run --node --project X` quietly logged into `ccc` instead of X.
+    whichever User this is attributed to (spawns.compose_wandb_env).
 
-    `tidepool` (docs/TODO.md) lets an Admin pin a Tide Pool the same way they pin any other Spawn —
-    orthogonal to node-pinning, and threaded through for completeness rather than because it is the
-    common path (the common path is unpinned, over `/submit`).
+    `tidepool` lets an Admin pin a Tide Pool the same way they pin any other Spawn — orthogonal to
+    node-pinning (the common path is unpinned, over `/submit`).
 
     `activation` is CCC activating a Feature's licence on an Arm being admitted (cuttle.enroll). It
-    exists on THIS path and not on `/submit`, and that is the whole point: it binds the Arm owner's
-    licence key into the Pod, so the only thing allowed to ask for it is an operator standing on the
-    Head.
+    exists on THIS path and not on `/submit` because it binds the Arm owner's licence key into the Pod,
+    so only an operator standing on the Head can ask for it.
     """
     from . import spawns
     with db.connect() as conn:
@@ -181,18 +174,14 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
                                        activation=activation,
-                                       # This process exits the moment it has printed the id, and the
-                                       # Environment build runs in a DAEMON thread — so backgrounding
-                                       # it here would kill the build at exit and strand a Spawn that
-                                       # `sbatch --hold` has already made unrunnable without it. The
-                                       # API service has a future to build in; a CLI does not.
+                                       # This process exits right after printing the id, and the
+                                       # Environment build runs in a DAEMON thread — backgrounding it
+                                       # here would kill the build at exit and strand a `--hold`ed Spawn.
                                        background_build=False)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
-    # The Environment echo goes to STDERR, deliberately. stdout is a contract: the caller
-    # (cuttle.spawns._submit_pinned) reads the Spawn id off its last line, so a second line there
-    # would be parsed as the id. stderr is already where this tool's prose goes.
+    # STDERR, deliberately: stdout is a contract, the caller reads the Spawn id off its last line.
     note = spawns.environment_note(job_id)
     if note:
         print(note, file=sys.stderr)
@@ -204,10 +193,8 @@ def _feature_activation(name: str) -> int:
     """Print the project CCC submits to activate `name`'s licence on an Arm, as JSON `{file: body}`.
 
     Head-local rather than an HTTP route, and that is the authorization: `cuttle arm admit` runs on the
-    Head, as the operator, and `cuttle setup --head` runs it before any account has ever logged in.
-    Generated here rather than in the CLI so the library list an activation builds against is the same
-    one `cuttle feature show` hands a submitter — two copies would drift, and the symptom would be a
-    donated box activated against a library set no Spawn actually runs.
+    Head, as the operator. Generated here rather than in the CLI so the library list an activation builds
+    against is the same one `cuttle feature show` hands a submitter — two copies would drift.
 
     Exit 1 for a Feature that needs no activation, which is how the caller knows to skip the step.
     """

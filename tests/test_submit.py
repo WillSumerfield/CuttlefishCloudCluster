@@ -1,11 +1,7 @@
-"""Phase 4 slice 0 — what a Spawn must declare, and what only an Admin may.
+"""What a Spawn must declare, and what only an Admin may.
 
-Two things changed at submit: `--time` and `--vram` became required (nothing can price a Spawn whose
-length nobody declared, and nothing can place one whose needs nobody declared), and `--node` became
-admin-only.
-
-*(Phase 6 went further: `--node` is now refused over the API for everyone — pinning is a Head-local
-command. The tests below were updated to pin that invariant instead.)*
+`--time` and `--vram` are required (nothing can price a Spawn whose length nobody declared, or place one
+whose needs nobody declared). `--node` is refused over the API for everyone — pinning is Head-local only.
 """
 
 import io
@@ -63,9 +59,8 @@ class TestTheSbatchSinkOutlivesItsJobId:
     "_fork_all_tasks: IO setup failed", rc 0xfb5, which slurmctld prints as the meaningless "WTERMSIG
     53"). The Head then has a Spawn with no out, no err, no exit code and nothing to say about it.
 
-    Found on hardware 2026-08-02: Spawns 9, 10, 12 and 14 each drew an id a cluster from two days
-    earlier had already used and died instantly; 8 and 13 drew fresh ids and ran. So the sink's name
-    must be unique per SUBMISSION, not per job id.
+    A new cluster's Spawn can draw an id a previous cluster already used and die instantly on this if
+    the sink name is keyed on job id alone — it must be unique per SUBMISSION instead.
     """
 
     def render(self, staging="/var/lib/ccc/head/projects/deadbeef-1234-5678"):

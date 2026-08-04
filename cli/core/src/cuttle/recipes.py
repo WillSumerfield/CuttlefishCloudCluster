@@ -4,11 +4,10 @@ A **Recipe** is a frozen, re-runnable snapshot — the project code plus how to 
 against a 24GB per-User **Allowance**. This module is the CLI half of the Dashboard's Recipes page, at
 the operation **parity** CONTEXT.md asks of the two clients.
 
-The upload is `cuttle run`'s, exactly: the same gitignore-aware file set, the same gzip-tar, the same
-`X-CCC-Meta` header (see `spawns._make_tar`, reused rather than reimplemented — a Recipe that packed
-differently from a Spawn would run differently too). What is NOT the same is the consequence: saving a
-Recipe **runs nothing**. No Spawn, no Escrow, no queue place. That is why there is no `--follow` here and
-no id to capture — a save answers with a name, not a job.
+The upload reuses `cuttle run`'s exactly (same gitignore-aware file set, gzip-tar, `X-CCC-Meta`
+header — see `spawns._make_tar`), so a Recipe packs identically to a Spawn. Saving a Recipe **runs
+nothing** though: no Spawn, no Escrow, no queue place — so no `--follow` and no id, a save answers
+with a name.
 
 **The wall is the Head's, not ours.** Nothing here pre-checks the 24GB: only the Head knows what the
 User already holds, and a client that guessed would refuse saves the Head would take. The Head answers

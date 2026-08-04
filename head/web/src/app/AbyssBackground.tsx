@@ -6,20 +6,17 @@ import noiseGlsl from "../shaders/noise.glsl?raw";
 import abyssFrag from "../shaders/abyss.frag?raw";
 
 /**
- * Fullscreen WebGL fragment shader. Slow-swirling deep water — blue-green ink,
- * layered fbm domain-warped noise. No text, no ui — just ground.
- * Fixed behind the page; pointer-events: none.
+ * Fullscreen WebGL fragment shader: slow-swirling deep water, layered fbm domain-warped noise. No text,
+ * no UI, just ground. Fixed behind the page, pointer-events: none.
  *
- * THE GROUND IS NOT INTERFACE. It signals nothing, which is the only reason it is allowed to be
- * coloured and to move at all (colour is otherwise signal, never decoration). It earns that exemption
- * by staying slow, dark and low-contrast — out of focus, behind the surfaces — so it can never be
- * mistaken for a signal and never competes with the motion that IS one (the cloud, the bloom). If it
- * ever starts reading as meaningful, turn the ground DOWN; do not turn the signal up.
+ * THE GROUND IS NOT INTERFACE. It signals nothing, which is the only reason it's allowed to be coloured
+ * and move at all (colour is otherwise signal, never decoration) — earned by staying slow, dark,
+ * low-contrast, so it never competes with motion that IS signal (the cloud, the bloom). If it ever reads
+ * as meaningful, turn the ground DOWN, not the signal up.
  *
- * Mounted once, above the router: the water is continuous as you move between pages.
- *
- * The GLSL lives in `../shaders/abyss.frag` (+ the shared `noise.glsl`); these dials are pushed to it as
- * uniforms, so editing one hot-reloads without recompiling the shader.
+ * Mounted once, above the router, so the water is continuous across pages. GLSL lives in
+ * `../shaders/abyss.frag` (+ shared `noise.glsl`); dials here are pushed as uniforms, hot-reloading
+ * without a recompile.
  */
 
 /**

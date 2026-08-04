@@ -20,31 +20,23 @@ def save(data: dict) -> None:
 def prompt_wandb() -> None:
     """Prompt (up front) for the default W&B project/entity, persist to config.yaml.
 
-    **No key prompt.** The W&B key is per-User and lives on the Head now, encrypted (`cuttle wandb
-    set`, or the Dashboard's Account page), because the Dashboard is the primary submission surface
-    and a browser has no config file to keep one in. Project + entity belong to the *run*, not the
-    box, and are not secrets — these are only the per-run defaults; `cuttle run --project/--entity`
+    No key prompt: the W&B key is per-User, lives encrypted on the Head (`cuttle wandb set` or
+    Dashboard Account page) since the Dashboard is the primary submission surface and a browser has
+    no config file. Project/entity are per-run defaults, not secrets; `cuttle run --project/--entity`
     overrides either.
 
-    Asked through `ui`, like every other prompt. These were `typer.prompt`, which is click's own —
-    it writes straight to the terminal and reads a line in cooked mode, so inside a box it drew
-    outside the borders, echoed wherever the cursor happened to be, and was overpainted on the
-    frame's next refresh. Nothing may write to the screen behind the frame's back.
+    Uses `ui.ask_text`, not `typer.prompt` — click's prompt writes/reads the terminal directly in
+    cooked mode, breaking out of the drawn frame.
     """
     data = load()
     wandb = data.get("wandb", {})
-    # A key left behind by an older setup is now dead weight — nothing reads it — so it is REMOVED
-    # rather than ignored. An unused secret sitting in a file is strictly worse than no secret at all.
+    # Drop any leftover api_key — nothing reads it, an unused secret on disk is worse than none.
     moved = wandb.pop("api_key", None)
-    # Plain assignment, not setdefault: the prompt is what the operator just answered, and setdefault
-    # evaluated it and then threw it away whenever a project was already configured — so re-running
-    # `cuttle setup` could never change the default. The old value is the prompt's *default*, which is
-    # where "keep what I have" already lives (bare Enter).
+    # Plain assignment not setdefault: setdefault would discard the operator's new answer whenever
+    # a project was already configured, so re-running `cuttle setup` could never change it.
     wandb["project"] = ui.ask_text("Default W&B project", default=wandb.get("project", "ccc"))
-    # Entity is the URL slug (wandb.ai/<slug>/<project>), NOT the display name. Blank = the account's
-    # own default entity — leave WANDB_ENTITY unset rather than storing an empty one. A blank answer
-    # therefore has to REMOVE a configured entity, or clearing one would be impossible for the same
-    # reason above: the answer would be read and discarded.
+    # Entity is the URL slug, not display name. Blank = account default -> unset WANDB_ENTITY
+    # rather than store empty; must actively pop() or a blank answer could never clear it.
     entity = ui.ask_text("Default W&B entity/slug (blank = account default)",
                          default=wandb.get("entity", ""))
     if entity:
@@ -61,15 +53,13 @@ def prompt_wandb() -> None:
 
 
 def wandb_env(project: str | None = None, entity: str | None = None) -> dict[str, str]:
-    """Which W&B *run* this Spawn is — project and entity, and deliberately nothing else.
+    """Which W&B run this Spawn is: project + entity only.
 
-    No key, and no WANDB_MODE. Both used to come from here; both are now the Head's, which holds one
-    key per User and composes the Spawn's whole W&B environment itself (ccc_head_api.spawns
-    compose_wandb_env). A key sent from here would be ignored, so it is not sent.
+    No key, no WANDB_MODE — the Head composes those (ccc_head_api.spawns.compose_wandb_env) from its
+    per-User key; a key sent from here would be ignored.
 
-    `project`/`entity` are the `cuttle run` overrides; each falls back to the config default, then
-    project to 'ccc' and entity to the account default (WANDB_ENTITY left unset — an empty one breaks
-    wandb.init).
+    project/entity are `cuttle run` overrides, falling back to config default then 'ccc' / account
+    default (WANDB_ENTITY left unset since empty breaks wandb.init).
     """
     wandb = load().get("wandb", {})
     env = {"WANDB_PROJECT": project or wandb.get("project", "ccc")}

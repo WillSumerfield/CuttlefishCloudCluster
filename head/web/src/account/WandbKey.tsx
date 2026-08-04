@@ -27,8 +27,8 @@ export function WandbKey({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  // Reveal/Save/Remove used to swallow every non-401 failure: the spinner stopped and nothing changed,
-  // so you couldn't tell whether your key was stored. Say what failed instead.
+  // Reveal/Save/Remove name what failed rather than swallow it — otherwise you can't tell whether your
+  // key is actually stored.
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {

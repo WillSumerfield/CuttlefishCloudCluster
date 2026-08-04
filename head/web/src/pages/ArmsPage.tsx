@@ -30,8 +30,8 @@ export function ArmsPage() {
   const { logout } = useAuth();
   const [arms, setArms] = useState<Arm[]>([]);
   const [loaded, setLoaded] = useState(false);
-  // A failed action used to revert silently on the next poll — the operator saw the row snap back with
-  // no reason. Name what failed, and why, until they act again.
+  // A failed action names what failed, and why, until the operator acts again — rather than the row
+  // silently snapping back on the next poll.
   const [actionError, setActionError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
 

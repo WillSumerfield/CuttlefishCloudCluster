@@ -1,33 +1,23 @@
-"""Recipes (docs/TODO.md "Storage retention: the Recipe wall") — a User's shelf of frozen, re-runnable
-snapshots, and the **24GB** per-User wall that bounds it.
+"""Recipes: a User's shelf of frozen, re-runnable snapshots, bounded by a **24GB** per-User wall.
 
-This is the third and last of the Head's permanent consumers of disk. `projects.py` deletes an uploaded
-project at stage-in and `retention.py` expires results at 7 days against an 8GB Allowance; a Recipe is
-neither — it is kept because its owner deliberately asked for it to be, and nothing but that owner ever
-takes one away. So this module has no tick, no TTL and no eviction: only a wall.
+A Recipe is kept because its owner deliberately asked for it — unlike an upload (deleted at stage-in) or
+an output (TTL'd against an Allowance), nothing here has a tick, a TTL, or eviction. Only a wall.
 
-**A hard wall, never an eviction** (CONTEXT.md, **Allowance**). `retention.py` always accepts an output
-and silently drops the oldest to fit, because the Karma is already spent and the work is already done —
-refusing at the last moment would lose the one thing the User paid for. A Recipe is the mirror image:
-saving one is a deliberate act with a person waiting on the answer, so the save is what fails, loudly,
-and they delete a Recipe to make room. Nothing here is ever silent.
+**A hard wall, never a silent eviction** (CONTEXT.md, **Allowance**): a save that doesn't fit fails
+loudly and the User deletes something to make room — the opposite of `retention.py`'s "always accept,
+evict silently" (there the Karma's already spent; here the save itself is the deliberate act).
 
-**Saving runs nothing.** A Recipe is uploaded to, not submitted — no Spawn, no Escrow, no queue. That is
-what keeps the wall out of the submit path entirely, so a full shelf can never stop a User from working
-(CONTEXT.md, **Allowance**: an Allowance is not part of the economy). There is also no promoting a Spawn
-into a Recipe afterwards, because by then there is nothing to promote: `projects.sweep` deletes an ad-hoc
-upload seconds after it stages in, so the code behind a finished run is long gone.
+**Saving runs nothing** — a Recipe is uploaded to, not submitted, so a full shelf can never block a User
+from working. No promoting a finished Spawn into a Recipe either: `projects.sweep` deletes the ad-hoc
+upload seconds after stage-in, so there's nothing left to promote.
 
-**Update is delete-then-save.** The old snapshot is released before the new one is charged, so growing a
-Recipe costs only what it grows BY, and there is no staging copy held outside the Allowance. The wall is
-weighed before a byte is written, though, so a *refused* update leaves the old version untouched and
-still runnable — the "neither version" case is a crash mid-extract, not a save the Head said no to.
+**Update is delete-then-save**: the old snapshot is released before the new one is charged, so growing a
+Recipe costs only the delta. The wall is weighed before a byte is written, so a refused update leaves the
+old version untouched.
 
-**Bytes are counted uncompressed**, from the tar's own member sizes rather than by measuring the tree
-afterwards. Two reasons, and the second is the load-bearing one: it means the wall is weighed before
-anything is extracted, and it means the Head is answering the same question the composer already asked
-locally from `File.size` (`RecipeComposer.tsx`) — a Head that counted the gzip instead would refuse saves
-the browser had promised would fit, and accept ones it had blocked.
+**Bytes are counted uncompressed**, from the tar's own member sizes, not the extracted tree — the same
+number the browser's `File.size` check already used, so the Head never refuses a save the composer
+promised would fit, or accepts one it had blocked.
 """
 
 import json
@@ -39,9 +29,8 @@ from pathlib import Path
 
 from . import db
 
-# Per-User, env-overridable in the same shape retention.py's and recovery.py's caps are. Stated as 24GB
-# in the frontend too (`api.ts` RECIPE_ALLOWANCE_BYTES) — the number lives in both places because the
-# composer blocks a doomed save before spending the upload, and only the Head can be trusted for it.
+# Per-User. Also stated in the frontend (`api.ts` RECIPE_ALLOWANCE_BYTES) so the composer can block a
+# doomed save before spending the upload — but only the Head's number is trusted.
 MAX_USER_BYTES = int(os.environ.get("CCC_RECIPE_MAX_USER", 24 * 1024**3))
 
 # A Recipe's name is a directory component and an URL path segment, so it is checked rather than escaped.
@@ -59,9 +48,8 @@ class WallExceeded(Exception):
 
 
 def _root() -> Path:
-    # Lazily, like retention._outputs_dir: the state root lives in spawns.py, and importing it at module
-    # scope would drag the whole submit path (slurm, siphons, tidepool) into a module that only writes
-    # files. `run` is deferred, so this module needs none of it.
+    # Lazy import, like retention._outputs_dir: avoids dragging the whole submit path (slurm, siphons,
+    # tidepool) into a module that only writes files.
     from . import spawns
     return spawns.HEAD_STATE_DIR / "recipes"
 
@@ -104,11 +92,8 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
         if not meta.get(field):
             raise ValueError(f"missing '{field}' in X-CCC-Meta — a Recipe carries the same declared "
                              f"need and length a Spawn does, frozen with the code")
-    # Declared outputs, frozen like everything else. Required and validated HERE rather than left to the
-    # Spawn a run will one day build, because a Recipe with no outputs is one that can never be run at
-    # all (`/submit` refuses it) — and finding that out is worse the day you need the Recipe than the day
-    # you saved it. Same rule as spawns.submit_checked, and the same regex, so what freezes here is
-    # exactly what will pass there.
+    # Declared outputs, required and validated HERE: a Recipe with none could never be run (`/submit`
+    # refuses it), better caught at save time than the day it's needed. Same regex as spawns.submit_checked.
     from .spawns import OUTPUT_NAME_RE
     outputs = meta.get("outputs") or []
     if not isinstance(outputs, list) or not outputs:
@@ -189,11 +174,9 @@ def sweep_orphans(conn) -> int:
 def to_json(row) -> dict:
     """The wire shape `api.ts`'s `Recipe` type already describes.
 
-    `frozen_at` is epoch **ms**, because that is what the browser renders staleness from. `updating` and
-    `running` are always false from here and that is not a stub: a save is synchronous, so a Recipe is
-    never mid-upload by the time anyone can GET it (the bloom is the composer's own optimistic beat), and
-    `running` needs `POST /recipes/{name}/run`, which is deferred — nothing can yet spawn from a Recipe,
-    so nothing can yet be running one."""
+    `frozen_at` is epoch **ms**, what the browser renders staleness from. `updating`/`running` are always
+    false here, not a stub: a save is synchronous (never mid-upload by GET time), and nothing can yet
+    spawn from a Recipe (no `POST /recipes/{name}/run` yet), so nothing can yet be running one."""
     from datetime import datetime, timezone
     frozen = datetime.strptime(row["frozen_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return {
@@ -208,9 +191,8 @@ def to_json(row) -> dict:
         "frozen_at": int(frozen.timestamp() * 1000),
         "updating": False,
         "running": False,
-        # Sent back, not just stored: the update form prefills from this, and a Recipe that quietly
-        # returned to the W&B defaults every time its code was re-captured would lose config its owner
-        # set once and had no reason to expect to re-answer (CONTEXT.md — a Recipe holds it).
+        # Sent back, not just stored: the update form prefills from this, so re-saving never silently
+        # resets W&B config to defaults (CONTEXT.md — a Recipe holds it).
         "wandb": bool(row["wandb"]),
         "wandb_project": row["wandb_project"],
         "wandb_entity": row["wandb_entity"],

@@ -24,10 +24,9 @@ log = logging.getLogger("ccc.api")
 
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 PARTITION = os.environ.get("CCC_PARTITION", "ccc")
-# The catalog of Arm Features (docs/TODO.md, temp/FEATURES_BUILTIN.md) — mirrors the same constant in
-# ccc_head_api.enroll and cuttle.config (neither app can import the others; see enroll.py's docstring on
-# why the two LAN/mesh apps stay split). All three must agree. Built into CCC rather than curated,
-# because CCC ships the runtime for each Feature — there is nothing here for an operator to mutate.
+# The catalog of Arm Features — mirrors the same constant in ccc_head_api.enroll and cuttle.config
+# (neither app can import the others). All three must agree. Built into CCC rather than curated, since
+# CCC ships the runtime for each Feature — there is nothing here for an operator to mutate.
 FEATURE_NAMES = ("vlearn", "isaaclab")
 
 # squeue keeps a finished job around (in a terminal state: COMPLETED, FAILED, CANCELLED, TIMEOUT, ...)
@@ -89,21 +88,17 @@ def _gpu_count(gres: str) -> int:
 def _gpu_indices(gres_detail: list[str] | None) -> list[int]:
     """Which of the node's GPUs a RUNNING Spawn actually holds — the **Devices** Settlement prices.
 
-    Slurm's `gres_detail` is one string per allocated node, `gpu:2(IDX:0-1)`, built by slurmctld at
-    ALLOCATION time (gres_ctld_job_build_details). `IDX` is a bitmap of the node's GRES indices, and a
-    node's GRES are indexed in the order its gres.conf `File=` records were read — which
-    templates.render_gres_conf writes in system.gpu_devices() order. So index i here is the i'th entry
-    of that Arm's registry `gpu_devices`, and therefore of its `powers`. That correspondence is the
-    whole mechanism by which a Spawn is billed for the card it held rather than a node average.
+    Slurm's `gres_detail` is one string per allocated node, `gpu:2(IDX:0-1)`. `IDX` is a bitmap of the
+    node's GRES indices, and a node's GRES are indexed in the order its gres.conf `File=` records were
+    read — the same order templates.render_gres_conf writes them in. So index i here is the i'th entry
+    of that Arm's registry `gpu_devices`, and therefore its `powers`: the whole mechanism by which a
+    Spawn is billed for the card it held rather than a node average.
 
-    `squeue --json` sets `detail_flag`, hence SHOW_DETAIL, which is what makes slurmctld pack this at
-    all (job_mgr.c `_pack_job`); without it the field is packed as empty and every Spawn would look
-    device-less. It is also empty by construction for a job that is not started, or that requested no
-    GRES — so this returns [] for a PENDING Spawn and for a CPU-only one, and the caller distinguishes
-    those from the pathological case by the Spawn's GPU count.
+    `squeue --json` must set `detail_flag` (SHOW_DETAIL) or slurmctld packs this empty and every Spawn
+    looks device-less. Also empty by construction for a job not yet started or requesting no GRES — []
+    for both a PENDING Spawn and a CPU-only one; the caller tells those apart by the Spawn's GPU count.
 
-    CCC Spawns are single-node (`--gres` is per-node and the batch step takes one node), so the list is
-    flattened rather than kept per-node — the whole allocation is on `job["node"]`.
+    CCC Spawns are single-node, so the list is flattened rather than kept per-node.
     """
     out = []
     for span in re.findall(r"IDX:([\d,\-]+)", ",".join(gres_detail or [])):
@@ -149,7 +144,7 @@ def arms() -> list[dict]:
                 "vram_mb": e.get("vram_mb"),
                 "gpu_devices": e.get("gpu_devices"),
                 "powers": e.get("powers"),
-                # Arm Features (docs/TODO.md) this Arm declared at enroll — [{"name","path"}, ...].
+                # Arm Features this Arm declared at enroll — [{"name","path"}, ...].
                 "features": e.get("features") or [],
                 # Node-level summaries, DERIVED here and stored nowhere — a summary saved beside the
                 # list it came from is a second number that can silently disagree with it. Both are
@@ -200,7 +195,7 @@ def feature_constraint(features: list[str]) -> str:
 def arms_with_features(features: list[str]) -> list[str]:
     """Every ADMITTED Arm whose declared Feature set is a superset of `features` — the feasibility
     check `submit_checked` runs before ever calling sbatch, mirroring `vram_constraint`'s "no Arm has
-    that much VRAM" refusal (docs/TODO.md "Arm Features")."""
+    that much VRAM" refusal."""
     need = set(features)
     return [name for name, e in load_registry().items()
             if e.get("admitted") and need <= {f["name"] for f in (e.get("features") or [])}]
@@ -226,19 +221,18 @@ def queue() -> list[dict]:
       is where the very first accrual bills *from* (a Spawn that started between two ticks still owes
       for the seconds before the tick noticed).
 
-    Absence from a *successful* poll is the only signal a Spawn has **ended** — it is what triggers
-    Settlement. There is no other: a killed Spawn writes no end-time, Slurm forgets jobs after
-    `MinJobAge`, and `sacct` would need the slurmdbd we deliberately don't run. If slurmctld is down
-    `_slurm_json` raises, the tick logs and skips, and nothing settles — which is the point.
+    Absence from a *successful* poll is the only signal a Spawn has **ended** — it triggers Settlement.
+    There is no other: a killed Spawn writes no end-time, Slurm forgets jobs after `MinJobAge`, and
+    `sacct` would need the slurmdbd we deliberately don't run. If slurmctld is down `_slurm_json` raises,
+    the tick logs and skips, and nothing settles — which is the point.
 
-    `nice` is read back rather than remembered: it is the one piece of state the tick shares with an
-    operator, and Slurm is where they meet. A **negative** nice is a Queue bump — only an operator can
-    set one (Slurm refuses a negative nice from a job's own owner, and CCC only ever acts AS the owner,
-    never as root), so its mere presence is the bump flag. No bump table, no coordination state.
+    `nice` is read back rather than remembered: the one piece of state the tick shares with an operator.
+    A **negative** nice is a Queue bump — only an operator can set one (Slurm refuses a negative nice
+    from a job's own owner), so its mere presence is the flag. No bump table, no coordination state.
 
-    `user` is the Spawn's **Guise**, and it rides along for one reason: it is who the tick has to
-    become to re-nice the job. Taken from the same poll rather than looked up per job, because the
-    alternative is one `squeue` subprocess per pending Spawn per 30-second pass.
+    `user` is the Spawn's **Guise**, riding along because it's who the tick has to become to re-nice the
+    job — taken from this same poll rather than looked up per job, to avoid a `squeue` subprocess per
+    pending Spawn per pass.
     """
     # The one thing this poll cannot see. A Spawn `sbatch --hold`ed while its **Environment** builds is
     # reported by squeue as plain PENDING, indistinguishable from one waiting for a card — and the
@@ -277,15 +271,12 @@ def queue() -> list[dict]:
 def owner_of(job_id: int) -> str | None:
     """Which account Slurm says owns this Spawn, or None if it no longer knows the job.
 
-    Ground truth for `guises.as_owner`, and deliberately squeue rather than the Attribution row: it is
-    what `sudo -u` has to MATCH, so asking anything else can only ever disagree. It also answers three
-    cases the ledger gets wrong — a Spawn queued before Guises deployed (row present, owned by the
-    Mantle), the enrollment benchmark (no row at all), and a job that has already ended (None, and the
-    command below is a no-op anyway).
+    Ground truth for `guises.as_owner`, deliberately squeue rather than the Attribution row: it's what
+    `sudo -u` has to MATCH. Also naturally covers the enrollment benchmark (no row at all) and an
+    already-ended job (None, and the command below is a no-op anyway).
 
     One extra squeue per call, which is why the tick does NOT use it: `queue()` already carries `user`
-    for every live Spawn, and re-asking per pending job every 30s would be a subprocess per Spawn per
-    pass. This is for the one-shot paths (cancel, signal) where the caller has only an id.
+    for every live Spawn. This is for one-shot paths (cancel, signal) where the caller has only an id.
     """
     r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%u"],
                        capture_output=True, text=True, timeout=15)
@@ -319,10 +310,9 @@ def spawns() -> list[dict]:
             continue
         if not LIVE_JOB_STATES.intersection(j.get("job_state") or []):
             continue  # squeue hasn't aged it out yet, but it's already done — history's job now
-        # gres_detail when the Spawn is running (it names the exact cards); tres_per_node
-        # ('gres/gpu:1') otherwise. The *allocated* TRES is no use for either — it omits gpu entirely,
-        # since we run no gres accounting. slurmctld packs gres_detail only for a STARTED job that
-        # requested GRES, so a pending Spawn falls through to what it asked for. See _gpu_indices.
+        # gres_detail when running (names the exact cards); tres_per_node ('gres/gpu:1') otherwise —
+        # slurmctld only packs gres_detail for a started job, so a pending Spawn falls through to what
+        # it asked for. See _gpu_indices.
         gres = ",".join(j.get("gres_detail") or []) or j.get("tres_per_node", "")
         # "building" REPLACES "pending" rather than joining onto it: both clients read this string
         # straight through to a User, and "pending+building" describes the mechanism (a held job) where

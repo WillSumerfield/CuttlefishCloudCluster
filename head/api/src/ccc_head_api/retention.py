@@ -1,39 +1,21 @@
-"""Output retention (docs/TODO.md "Storage retention", phase 2) — a Spawn's declared `$CCC_OUT` results
-live **7 days**, and a User holds at most **8GB** of them at once.
+"""Output retention: a Spawn's declared `$CCC_OUT` results live **7 days**, and a User holds at most
+**8GB** of them at once.
 
-Until this, `SPAWNS_DIR/<id>/outputs/` was permanent: the Recovery Window bounded a Spawn's UNDECLARED
-writes to 30 minutes and up to 50GB, while the declared results beside them — the ones every Spawn is
-submitted to produce — grew forever. This module is the mirror image of `recovery.py`, and deliberately
-so: register / make-room / reap, the same three moves in the same tick pass. What differs is only what
-the two are for, and every difference below follows from that one.
+TTL runs from the Spawn's END, not registration: `created_at` is copied from `finished_at`, so a Spawn
+registered late (tick was down) still expires 7 days after it ran, not 7 days after registration. No
+pinning, no reset-on-download.
 
-**The TTL runs from the Spawn's END, not from registration.** `created_at` is copied from `finished_at`,
-so a Spawn registered late (a tick that was down, a Head that was rebooting) still expires exactly 7
-days after it ran, rather than being quietly granted extra time for the Head's own outage. There is no
-pinning and no reset-on-download: fetch them or lose them, the same bargain the Recovery Window makes at
-a shorter scale.
+An output is always accepted — Karma's already spent, the work's already done — so eviction falls on the
+User's OTHER, older outputs instead, oldest-first and silent. A single result bigger than the whole
+Allowance still lands; there's no per-Spawn cap.
 
-**An output is always accepted.** The Karma is already spent and the Arm has already done the work, so
-refusing a result at the last moment loses the one thing the User paid for — the eviction happens on the
-User's OTHER, older outputs instead, oldest-first and **silent**. That is also why a single result
-larger than the whole Allowance still lands: `_make_room` empties what it can and registers it anyway,
-exactly as `recovery._make_room` does when a single copy exceeds the pool. There is no per-Spawn cap and
-no protection for a never-downloaded result — "oldest first" is the whole policy, and a User who wants
-one kept fetches it.
+The Allowance is per User, not global (see CONTEXT.md, **Allowance**): filling your 8GB can't evict
+anyone else's results. An Attribution row whose User was deleted has no Allowance to charge and is
+registered anyway; TTL still reaps it.
 
-**The Allowance is per User, not global** (see CONTEXT.md, **Allowance**). One User filling their 8GB
-can never evict another's results, which a shared pool like the Recovery Window's would allow — the
-Recovery Window can afford that because a copy there is a 30-minute accident, while these are results.
-An Attribution row whose User was since deleted has no Allowance to count against and is simply
-registered; its TTL still reaps it on schedule.
-
-**Registration needs no new marker.** `stage_out` sends `exit` LAST (see spawns.JOB_SCRIPT), so the tick
-pass that stamps `finished_at` is already downstream of the outputs having landed. Disk-first, like
-`recovery.sweep_orphans` and `projects.sweep`, and here that shape removes a whole category rather than
-adding one: a directory is registered, or its Spawn is still running, and there is no third state to
-sweep. Nothing in this module ever deletes an UNregistered outputs dir — a Head that missed a week of
-ticks registers late and expires late, where a window-bounded registrar would instead treat those
-results as orphans and destroy them.
+Registration needs no new marker: `stage_out` sends `exit` LAST (see spawns.JOB_SCRIPT), so the tick pass
+that stamps `finished_at` is already downstream of outputs having landed. Nothing here ever deletes an
+UNregistered outputs dir — a Head that missed a week of ticks registers late and expires late.
 """
 
 import os
@@ -43,13 +25,11 @@ from datetime import datetime, timedelta, timezone
 from . import db
 
 TTL_DAYS = int(os.environ.get("CCC_OUTPUT_TTL_DAYS", 7))
-# Per-User, and env-overridable in the same shape recovery.py's caps are. Independent of every other
-# Allowance: filling this can never cost a User any of their Recipe space, and vice versa.
+# Per-User, independent of every other Allowance (e.g. Recipe space).
 MAX_USER_BYTES = int(os.environ.get("CCC_OUTPUT_MAX_USER", 8 * 1024**3))
 
-# A `spawns/<id>/` dir that no Attribution row names — the submission raised between sbatch returning
-# and `db.record_spawn`. Same reasoning and same length as `projects._ORPHAN_MINUTES`: the young ones
-# are indistinguishable from a Spawn whose row is milliseconds from being written.
+# A `spawns/<id>/` dir with no Attribution row yet — submission raised between sbatch returning and
+# `db.record_spawn`. Young ones look identical to that in-flight race, so don't touch them.
 _ORPHAN_MINUTES = 60
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"

@@ -1,11 +1,11 @@
-"""Install + run the head-side API services (Phase 1).
+"""Install + run the head-side API services.
 
 Two FastAPI apps from one package (`ccc_head_api`), one shared venv under /opt/ccc (kept out of the
 CLI's own venv):
 - **Enroll API** (`ccc_head_api.enroll`) — mesh-only, runs as `munge` (the only user that can read
   0400 munge:munge /etc/munge/munge.key), serves the munge key to admitted Arms.
-- **Head API** (`ccc_head_api.main`) — LAN+mesh, backs the web Dashboard + CLI (read board now; auth +
-  submission from Phase 3a).
+- **Head API** (`ccc_head_api.main`) — LAN+mesh, backs the web Dashboard + CLI (read board, auth,
+  submission).
 
 Intended path only — no fallbacks (test box; failures decided live).
 """
@@ -68,13 +68,11 @@ def enroll_url(mesh_ip: str) -> str:
     return f"http://{mesh_ip}:{config.ENROLL_API_PORT}"
 
 
-# --- the Enroll API's one sudo grant (Phase 9 #2) ----------------------------
-# `POST /enroll` used to trust the caller's claimed `mesh_ip` outright. Now it checks who Headscale
-# actually thinks is calling — but `munge` can't reach Headscale's unix socket to ask (it's
-# `750 headscale:headscale`, and `munge` is in neither), so it needs exactly enough privilege to run
-# the one read-only lookup that answers that question, and nothing headscale's CLI can otherwise do
-# (nodes delete, preauthkeys create, ...). NOPASSWD: this fires inside a request handler with no tty
-# to prompt.
+# --- the Enroll API's one sudo grant ------------------------------------------
+# `POST /enroll` verifies who Headscale actually thinks is calling rather than trusting a claimed
+# `mesh_ip`. `munge` can't reach Headscale's unix socket itself (`750 headscale:headscale`, munge is
+# in neither), so it gets exactly this one read-only lookup, nothing else headscale's CLI can do
+# (nodes delete, preauthkeys create, ...). NOPASSWD: fires inside a request handler, no tty to prompt.
 _SUDOERS_MUNGE_HEADSCALE = f"""\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
 # The Enroll API (User={config.ENROLL_API_USER}; see ccc_head_api.enroll) verifies an /enroll
@@ -88,25 +86,19 @@ def install_enroll_sudoers(write_unit) -> None:
     write_unit(config.SUDOERS_MUNGE_HEADSCALE, _SUDOERS_MUNGE_HEADSCALE, "440")
 
 
-# --- the Mantle's one sudo grant (temp/spawn-isolation.md Phase 3b) ----------
-# Every Slurm operation CCC performs on a Spawn — submit it, re-nice it for Karma, cancel it, signal it
-# on a Retract — is one the job's OWNER may perform with no privilege at all. That was free while every
-# Spawn ran as the Mantle and the Head *was* the owner of every job in the queue. Now a Spawn belongs
-# to a **Guise**, so the Head has to become one to touch its own cluster's queue.
+# --- the Mantle's one sudo grant ---------------------------------------------
+# A Spawn belongs to a **Guise**, not the Head/Mantle, so submit/re-nice/cancel/signal (each normally
+# free to the job's owner) need the Head to act as that Guise to touch its own cluster's queue.
 #
-# **`(%ccc-guises)`, never `(root)`** — and that distinction is the whole of Phase 3's privilege story.
-# This grant lets `ccc` act as an account that owns nothing but one Spawn's working files; it cannot
-# read head.db, head.key, or another User's upload, because a Guise cannot. Escalating it to root would
-# hand back everything the phase just took away. It is the ONE unattended grant Phase 3 adds; `cuttle
-# user add`'s useradd runs under the operator's own sudo, at a tty, and is not here.
+# `(%ccc-guises)`, never `(root)`: lets `ccc` act as an account owning nothing but one Spawn's working
+# files — it can't read head.db, head.key, or another User's upload, same as any Guise. Root would
+# undo that isolation. This is the only unattended sudo grant here; `cuttle user add`'s useradd runs
+# under the operator's own sudo at a tty.
 #
-# `env_keep` is load-bearing, not hygiene. sbatch propagates ITS OWN environment to the job, which is
-# how the submitting User's W&B key reaches the Pod (ccc_head_api.spawns.compose_wandb_env writes it
-# into the child env). sudo scrubs the environment by default, so without this every Spawn would run
-# with no key and silently log nothing — a failure a User only discovers afterwards, in an empty W&B
-# project. Four named variables, scoped to this user: not `SETENV:`+`--preserve-env` (a far wider grant
-# than needed) and never `sbatch --export=...WANDB_API_KEY=`, which would put a User's secret in argv
-# where `ps` can read it.
+# `env_keep` is load-bearing: sbatch propagates its own env to the job (how a submitting User's W&B
+# key reaches the Pod, ccc_head_api.spawns.compose_wandb_env), and sudo scrubs env by default — without
+# this every Spawn silently runs with no key. Four named vars, scoped to this user — not
+# `SETENV:`+`--preserve-env` (too wide) and never `sbatch --export=...WANDB_API_KEY=` (leaks via `ps`).
 _SUDOERS_CCC_SLURM = f"""\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
 # The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Spawns as the Guise that owns
@@ -126,9 +118,8 @@ def install_slurm_sudoers(write_unit) -> None:
 
 
 # --- Head API (⑥): read API + SPA, bound to LAN + mesh ----------------------
-# A second unit off the SAME venv (enroll app = munge key; main app = read board + SPA). Phase 1 runs
-# as `nobody` (holds no secrets; only read-only squeue/sinfo + static files). Binds 0.0.0.0 so a LAN
-# box reaches it too (the Enroll API stays mesh-only). See config.HEAD_API_*.
+# A second unit off the SAME venv (enroll app = munge key; main app = read board + auth + submit +
+# SPA). Binds 0.0.0.0 so a LAN box reaches it too (the Enroll API stays mesh-only). See config.HEAD_API_*.
 
 def _head_unit(mesh_ip: str) -> str:
     return f"""\
@@ -179,7 +170,7 @@ def head_url(host: str) -> str:
     return f"https://{host}:{config.HEAD_API_PORT}"
 
 
-# --- Karma tick (Phase 4 slice 1): the queue's ranking loop -----------------
+# --- Karma tick: the queue's ranking loop ------------------------------------
 # A third unit off the SAME venv and the same head.db. Its own service, not a task inside the Head API:
 # the economy must not be able to wedge the API, nor the API the economy. Runs as the Mantle — which
 # owns every job in the queue, and so re-ranks them all with no privilege at all.

@@ -1,48 +1,38 @@
-"""Per-Spawn Python **Environment**s (docs/TODO.md "Python Environments") — declared by the User,
-built by the Head, kept by nobody.
+"""Per-Spawn Python **Environment**s — declared by the User, built by the Head, kept by nobody.
 
-Until this, every Spawn ran against one image: `apptainer exec ... base.sif python <script>`, pinned
-`pytorch/pytorch` + `wandb` and nothing else. A User needing one extra package had no supported way to
-get it. Now a project declares its dependencies in the file its own tooling already writes, and the
-Head builds that before the Spawn is placed.
+A project declares its dependencies in the file its own tooling already writes, and the Head builds that
+before the Spawn is placed.
 
-**Built on the Head, before placement, and that is an economy decision.** Building inside the
-allocation would make a User pay Karma to hold a GPU while pip downloads — Settlement bills the seconds
-a Device is *held*, not the seconds it is busy. Building here costs no Karma and no Device, and needs no
-per-Arm cache to start cold on every donated box.
+**Built on the Head, before placement — an economy decision.** Building inside the allocation would make
+a User pay Karma to hold a GPU while pip downloads — Settlement bills seconds *held*, not seconds busy.
+Building here costs no Karma, no Device, and needs no per-Arm cache.
 
 **Built while the Spawn queues, not while the User waits.** `spawns.submit` `sbatch --hold`s the Spawn
 first, so it has its real id, Attribution and Escrow immediately, and runs the build behind the request.
-The hold is a dispatch interlock and nothing more: Slurm cannot place the Spawn before the env exists,
-but the build overlaps the queue wait instead of being added to it. A Spawn that would have waited 40
-minutes for a card spends the first 3 of them building, not 43.
+The hold is a dispatch interlock only — Slurm can't place the Spawn before the env exists, but the build
+overlaps the queue wait instead of adding to it.
 
 **In a Pod, as the submitter's Guise.** A manifest is code: build backends, sdist `setup.py`, conda
-post-link scripts all execute. The Head is the one machine holding the Mantle's key and every User's
-work, so the build gets the same walls a Spawn gets — `base.sif`, entered as that User's Guise — rather
-than a second, weaker kind of isolation invented for it. `render_build` returns argv the caller runs
-through `guises.as_owner`; nothing here runs as the Mantle.
+post-link scripts all execute. So the build gets the same walls a Spawn gets — `base.sif`, entered as
+that User's Guise — rather than a second, weaker isolation invented for it. `render_build` returns argv
+the caller runs through `guises.as_owner`; nothing here runs as the Mantle.
 
 **One fixed path, so nothing needs relocating.** A venv bakes its own prefix into `pyvenv.cfg` and every
 console-script shebang; a conda prefix bakes it into hundreds of files and is famously not relocatable.
-Both are built AND run at `ENV_MOUNT`, bound there on the Head at build time and on the Arm at run time.
-The directory underneath differs on the two machines; the path inside the Pod never does. That is
-strictly cheaper than `uv venv --relocatable` plus conda-pack-style prefix rewriting — two fixup
-mechanisms and one well-known source of subtle breakage.
+Both are built AND run at `ENV_MOUNT`, bound there on the Head at build time and on the Arm at run time —
+the directory underneath differs, the path inside the Pod never does.
 
-**uv layers, conda replaces.** The uv paths build a venv with `--system-site-packages`, so the image's
-torch/cuDNN/wandb are inherited and only the *delta* is built — the usual env is megabytes. A conda
-env is its own prefix with its own interpreter and inherits nothing, so `wandb` is injected into it
-explicitly: without that, the Head's promise that "a Spawn logs to its submitter's own account"
-(CONTEXT.md) quietly stops holding for exactly the Users who declared the most. A manifest that names a
-package the image already ships wins, silently — it is what the User declared.
+**uv layers, conda replaces.** uv builds a venv with `--system-site-packages`, so the image's
+torch/cuDNN/wandb are inherited and only the *delta* is built. A conda env is its own prefix with its
+own interpreter and inherits nothing, so `wandb` is injected into it explicitly — without that, "a Spawn
+logs to its submitter's own account" (CONTEXT.md) quietly stops holding for exactly the Users who
+declared the most. A manifest naming a package the image already ships wins, silently.
 
 **Nothing is cached except downloads.** The built env is destroyed with the Spawn's staging, like the
-uploaded project (`projects.py`). That keeps the Head from growing a fourth permanent consumer of disk
-beside projects, outputs and Recipes, and keeps **Allowance** meaning what CONTEXT.md says it means — a
-ceiling on things a User would *lose*, which a rebuildable env is not. What persists is the package
-*download* cache (`CACHE_DIR`): Mantle-owned, size-capped, never staged, and the only reason "rebuild
-every time" is affordable — a 50-Spawn sweep costs 50 local relinks, not 50 re-downloads.
+uploaded project (`projects.py`) — keeps the Head from growing a fourth permanent disk consumer, and
+keeps **Allowance** meaning a ceiling on things a User would *lose*, which a rebuildable env is not. The
+package *download* cache (`CACHE_DIR`) persists: Mantle-owned, size-capped, never staged — the only
+reason "rebuild every time" is affordable.
 
 **Detection is a guess, so it is never insisted on.** `detect` reads the project root; `manifest=NONE`
 declines a build outright and an explicit name overrides the guess. A `pyproject.toml` in a vendored
@@ -80,18 +70,16 @@ MICROMAMBA_BIN = TOOLS_DIR / "micromamba"
 CACHE_DIR = Path(os.environ.get("CCC_ENV_CACHE", "/var/lib/ccc/head/envcache"))
 CACHE_MAX_BYTES = int(os.environ.get("CCC_ENV_CACHE_MAX", 20 * 1024**3))
 
-# Scratch for the build tools, on DISK. `--contain` gives the Pod a /tmp carved out of Apptainer's
-# session directory, which is a RAM tmpfs capped by `sessiondir max size` in apptainer.conf (64 MB on
-# this fleet). uv is already pointed at the cache below, but pip — which is what an environment.yml's
-# `pip:` section runs — writes its downloads to TMPDIR, so any wheel bigger than what is left of that
-# 64 MB dies. Observed 2026-08-03: nvidia-cudnn-cu13 is 366 MB, and pip reports the resulting ENOSPC
-# as "Download failed ... This is an issue with network connectivity, not pip", which sends anyone
-# reading it after the network instead of the disk.
+# Scratch for the build tools, on DISK. `--contain` gives the Pod a /tmp carved from Apptainer's session
+# directory, a RAM tmpfs capped by `sessiondir max size` in apptainer.conf (64 MB on this fleet). uv is
+# pointed at the cache below, but pip (what an environment.yml's `pip:` section runs) writes downloads
+# to TMPDIR, so any wheel bigger than what's left of that 64 MB dies — nvidia-cudnn-cu13 alone is 366 MB,
+# and pip reports the resulting ENOSPC as "This is an issue with network connectivity, not pip", which
+# misdirects debugging toward the network instead of the disk.
 #
-# A sibling of CACHE_DIR rather than a directory inside it, because prune_cache below empties the
-# WHOLE cache when it is over the cap — with the scratch in there, one build finishing could delete
-# another's half-downloaded wheel out from under it. Nothing here is cache: it is per-build and
-# deleted when that build ends.
+# A sibling of CACHE_DIR rather than a directory inside it: prune_cache below empties the WHOLE cache
+# when over the cap, and one build finishing could otherwise delete another's half-downloaded wheel.
+# Nothing here is cache — it's per-build and deleted when that build ends.
 TMP_DIR = Path(os.environ.get("CCC_ENV_TMP", "/var/lib/ccc/head/envtmp"))
 
 # Clears a hung solver without killing a legitimately slow one: uv resolves in seconds, a real conda
@@ -118,12 +106,11 @@ NONE = "none"
 class BuildError(ValueError):
     """The declared environment could not be built.
 
-    Raised at two quite different moments, and the difference is the whole reason this class carries a
-    log. From `detect` it is a *rejection* — a manifest that does not exist or cannot be classified is
-    bad input, decided in microseconds, and `main.submit` turns it into a 4xx before any Spawn exists.
-    From `build` it is a failed **Spawn**: by then the Spawn has been accepted, Escrowed and held, so
-    the failure is recorded as its `err` and a non-zero `exit`, and Settlement bills it nothing (it
-    never held a Device). `.log` is what the User reads to find out why.
+    Raised at two different moments, which is why this class carries a log. From `detect` it's a
+    *rejection* — bad input, decided in microseconds, turned into a 4xx before any Spawn exists. From
+    `build` it's a failed **Spawn**: already accepted, Escrowed and held, so the failure is recorded as
+    its `err` and a non-zero `exit`, and Settlement bills it nothing (never held a Device). `.log` is
+    what the User reads to find out why.
     """
 
     def __init__(self, message: str, log: str = "") -> None:
@@ -139,7 +126,7 @@ class Manifest:
 
     @property
     def summary(self) -> str:
-        """The one line both clients echo at submit (docs/TODO.md) — see `describe` for the no-env case."""
+        """The one line both clients echo at submit — see `describe` for the no-env case."""
         if self.kind == "conda":
             return f"{self.path} (conda — replaces the cluster base)"
         return f"{self.path} (on top of the cluster base)"
@@ -204,11 +191,9 @@ def _classify(rel: str) -> str:
 def missing_tool(m: Manifest) -> str | None:
     """The build binary `m` needs and this Head has not got, or None.
 
-    A Head set up before the Environment feature existed has an empty TOOLS_DIR, and every project
-    with a `pyproject.toml` — which is most of them — would otherwise have its build fail and take the
-    Spawn with it. A Head that cannot build must not turn a submission that used to work into a
-    failure: it runs on the cluster base, exactly as it did before, and `describe` says so out loud.
-    Re-running `cuttle setup --head` installs the tools (cuttle.setup.install_env_tools).
+    A Head with an empty TOOLS_DIR would otherwise fail the build (and take the Spawn with it) for most
+    projects, since most have a `pyproject.toml`. A Head that cannot build instead runs the cluster base,
+    and `describe` says so out loud. Re-running `cuttle setup --head` installs the tools.
     """
     need = MICROMAMBA_BIN if m.kind == "conda" else UV_BIN
     return None if need.exists() else str(need)
@@ -243,16 +228,14 @@ def render_build(m: Manifest) -> list[list[str]]:
     if m.kind == "uv-requirements":
         return [venv, [uv, "pip", "install", "--python", ENV_INTERPRETER, "-r", m.path]]
     # Plain `uv sync` — NOT --no-install-project. uv already treats a project with no [build-system]
-    # (or `package = false`, as this repo's own root pyproject does) as *virtual* and installs only its
-    # dependencies, while a real src-layout package gets installed, which is the only way its imports
-    # resolve. Suppressing that would break the packages and help nobody.
-    # NOT --active: that only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it, so uv fell
-    # back to its default `.venv` beside the manifest — inside the Mantle-owned project the Guise
-    # cannot write — and every pyproject.toml/uv.lock Spawn died on "Permission denied" (hardware,
-    # 2026-08-02, Spawns 14/15). UV_PROJECT_ENVIRONMENT (set in `build`'s --env) names the path
-    # outright, which is the same thing the `uv pip` branch does with --python. `uv sync` still writes
-    # `uv.lock` into the project itself, unavoidably — see spawns._lend_project for why the Guise may.
-    # --inexact leaves the inherited system packages alone instead of pruning to the lock.
+    # (or `package = false`) as *virtual* and installs only its dependencies, while a real src-layout
+    # package gets installed, which is the only way its imports resolve.
+    # NOT --active: that only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it, so uv falls
+    # back to its default `.venv` beside the manifest — inside the Mantle-owned project the Guise cannot
+    # write, which fails every pyproject.toml/uv.lock Spawn with "Permission denied". UV_PROJECT_ENVIRONMENT
+    # (set in `build`'s --env) names the path outright instead, same as the `uv pip` branch's --python.
+    # `uv sync` still writes `uv.lock` into the project itself, unavoidably — see spawns._lend_project
+    # for why the Guise may. --inexact leaves inherited system packages alone instead of pruning to the lock.
     return [venv, [uv, "sync", "--inexact", "--no-dev"]]
 
 
@@ -261,7 +244,7 @@ def build(project: Path, m: Manifest, guise: str) -> str:
     BuildError, whose text is what the Spawn shows as its `err`, with the log so far as `.log`.
 
     The env dir is created HERE rather than inside the Pod so its ownership is the Guise's from the
-    start — apptainer binds it, it does not create it, and a root-owned mountpoint would leave the build
+    start — apptainer binds it, doesn't create it, and a root-owned mountpoint would leave the build
     unable to write into its own prefix.
     """
     env_dir = project / ENV_DIRNAME
@@ -295,26 +278,23 @@ def _run_build(project: Path, m: Manifest, guise: str, env_dir: Path, build_tmp:
 
     log = [f"$ ccc build {m.summary}"]
     for argv in render_build(m):
-        # --contain: the build gets the same walls the payload gets, and nothing of the Head's
-        # filesystem beyond the five paths named here. TOOLS_DIR is bound read-only because uv and
-        # micromamba are the one thing in this command that lives on the HEAD rather than in the image
-        # — without the bind, `--contain` means the binary named in argv does not exist inside the Pod.
+        # --contain: the build gets the same walls the payload gets, nothing of the Head's filesystem
+        # beyond the five paths named here. TOOLS_DIR is bound read-only since uv/micromamba live on the
+        # HEAD, not the image — without the bind the binary named in argv wouldn't exist in the Pod.
         # No --nv: a build needs no GPU, and asking for one on a Head whose cards are all busy would
         # fail for no reason.
         cmd = guises.as_owner([
             "apptainer", "exec", "--contain", "--pid", "--pwd", str(project),
             "--bind", f"{project},{env_dir}:{ENV_MOUNT},{CACHE_DIR}:/ccc-cache,"
                       f"{build_tmp}:/ccc-tmp,{TOOLS_DIR}:{TOOLS_DIR}:ro",
-            # UV_PROJECT_ENVIRONMENT is what points `uv sync` at ENV_MOUNT instead of the `.venv` it
-            # would otherwise create beside the manifest, in a project directory the Guise cannot write
-            # (see render_build). Harmless on the other two paths, which never consult it.
+            # UV_PROJECT_ENVIRONMENT points `uv sync` at ENV_MOUNT instead of the `.venv` it'd otherwise
+            # create beside the manifest, in a project directory the Guise cannot write (render_build).
+            # Harmless on the other two paths, which never consult it.
             #
-            # TMPDIR moves every tool's scratch off the Pod's 64 MB RAM /tmp and onto disk (see
-            # TMP_DIR) — set for all three build paths, not just pip's: uv stages large artifacts
-            # through TMPDIR too, and the failure mode is identical.
-            # PIP_CACHE_DIR is the download cache, so it belongs with the OTHER caches rather than in
-            # the scratch that is deleted after every build — without it pip re-fetches every wheel on
-            # every rebuild, and its HTTP cache would land back on the tmpfs this is fixing.
+            # TMPDIR moves every tool's scratch off the Pod's 64 MB RAM /tmp and onto disk (TMP_DIR) —
+            # set for all three build paths since uv stages large artifacts through TMPDIR too.
+            # PIP_CACHE_DIR belongs with the OTHER caches, not the scratch deleted after every build —
+            # without it pip re-fetches every wheel on every rebuild.
             "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PROJECT_ENVIRONMENT={ENV_MOUNT},"
                      f"MAMBA_ROOT_PREFIX=/ccc-cache/mamba,TMPDIR=/ccc-tmp,"
                      f"PIP_CACHE_DIR=/ccc-cache/pip,LC_ALL=C.UTF-8,LANG=C.UTF-8",
@@ -322,14 +302,12 @@ def _run_build(project: Path, m: Manifest, guise: str, env_dir: Path, build_tmp:
         ], guise)
         log.append(f"$ {' '.join(argv)}")
         try:
-            # cwd="/" — a build has no relationship to the directory its caller happened to be
-            # standing in, and apptainer's starter chdirs to the inherited cwd on the HOST before
-            # `--pwd` ever applies (which is inside). Run as the Guise, that chdir fails on anything
-            # the Guise cannot traverse, and "container creation failed: can't change directory to
-            # /home/<operator>/..." is what a Spawn's build reports instead of anything about itself.
-            # Never bit the API service, whose cwd is systemd's; bites every Head-local caller, which
-            # is now every pinned Spawn's build (hardware, 2026-08-04, `setup --head` run from a
-            # project directory).
+            # cwd="/" — a build has no relationship to the directory its caller happened to be standing
+            # in, and apptainer's starter chdirs to the inherited cwd on the HOST before `--pwd` ever
+            # applies (which is inside). Run as the Guise, that chdir fails on anything the Guise cannot
+            # traverse, and "container creation failed: can't change directory to /home/<operator>/..."
+            # is what a Spawn's build reports instead of anything about itself. Bites every Head-local
+            # caller (every pinned Spawn's build), never the API service, whose cwd is systemd's.
             r = subprocess.run(cmd, cwd="/", capture_output=True, text=True,
                                timeout=BUILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:

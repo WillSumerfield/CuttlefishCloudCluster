@@ -1,16 +1,10 @@
 """Ant PPO on VSim — the entry point CCC runs for the `vlearn` Arm Feature test.
 
-This used to be 120 lines that arranged vlearn's whole runtime: LD_LIBRARY_PATH (via a re-exec, since
-the loader reads it once at exec), VL_WORKING_DIRECTORY, the cache directory, the licence key search,
-and warnings for each way those could be wrong. All of it is CCC's now — `--feature vlearn` is the
-whole request, and the job script does the rest (ccc_head_api.features).
-
-What is left is one thing CCC has no opinion about: **rl_games decides where to write from the current
-working directory**, and offers no flag to move it. A Spawn's CWD is its project directory, which is
-scratch — only `$CCC_OUT` is staged home. So this moves the CWD and hands over.
-
-Not a vlearn concern, which is why it did not go into the Feature profile: an rl_games project run
-outside CCC has exactly the same problem, and a different trainer would not have it at all.
+vlearn runtime setup (LD_LIBRARY_PATH, VL_WORKING_DIRECTORY, cache dir, licence key) is handled by
+`--feature vlearn` (ccc_head_api.features). What's left: rl_games writes from the current working
+directory with no flag to move it, and a Spawn's CWD is scratch — only $CCC_OUT is staged home. So
+this moves the CWD and hands over. Not a vlearn concern (any rl_games project has the same problem),
+so it stays here rather than in the Feature profile.
 """
 import os
 import pathlib
@@ -31,10 +25,8 @@ if out:
     os.chdir(out)
     print(f"ccc: writing runs/ under {out}", flush=True)
 
-# `train/` on sys.path, because the trainer does `from envs.ant_environment_gpu import ...` and `envs`
-# is a plain directory beside it. `python train/rl_games_train.py` would give this for free — the
-# interpreter puts a script's own directory at sys.path[0] — but runpy.run_path does not do it for a
-# script FILE. Prepended, matching where the interpreter would have put it.
+# train/ on sys.path: trainer does `from envs...` and envs is a plain dir beside it. `python train/x.py`
+# puts this on sys.path[0] automatically; runpy.run_path doesn't, so it's prepended manually.
 sys.path.insert(0, str(ROOT / "train"))
 
 # rl_games_train.py is a top-level script (no main()), so it runs on load and reads sys.argv itself.

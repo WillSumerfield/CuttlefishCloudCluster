@@ -1,20 +1,16 @@
-"""Encryption at rest for the one secret head.db has to hold in recoverable form: a User's W&B key.
+"""Encryption at rest for the one secret head.db holds in recoverable form: a User's W&B key.
 
-Everything else in head.db is one-way — passwords are argon2id, session tokens are sha256 — because
-nothing ever needs them back. A W&B key is different: it is a *third-party* credential the Head keeps
-on the User's behalf and must hand to `wandb` verbatim inside every Spawn, so it cannot be hashed.
-AES-256-GCM, with a 32-byte keyfile beside the database.
+Everything else in head.db is one-way (argon2id passwords, sha256 session tokens) — nothing else ever
+needs to come back. A W&B key is a third-party credential the Head must hand to `wandb` verbatim inside
+every Spawn, so it can't be hashed. AES-256-GCM, with a 32-byte keyfile beside the database.
 
-**Be clear about what this buys.** The Head has to decrypt unattended — no operator types a passphrase
-when the API restarts — so the keyfile necessarily sits next to head.db and any process that can read
-one can read the other. This protects a head.db that leaks *on its own*: a copied database, a backup
-archive (`cuttle backup` deliberately excludes the keyfile — see cuttle/backup.py), a disk pulled out
-of the box. It does **not** protect a compromised Head. Nothing that runs on the Head can.
+**Be clear about what this buys.** The Head decrypts unattended, so the keyfile sits next to head.db and
+anything that can read one can read the other. This protects a head.db that leaks *on its own* — a
+copied database, a backup (`cuttle backup` deliberately excludes the keyfile), a pulled disk — not a
+compromised Head.
 
-Failure degrades to "no key", never to an error: a restored backup arrives with every blob unreadable
-(its keyfile is gone by design), and a Head that answered 500 on the Account page — or refused to
-submit — because of that would be a Head that a restore had broken. An unreadable key reads as unset,
-which is exactly what it is from the User's point of view: they re-paste it.
+Failure degrades to "no key", never to an error: a restored backup (keyfile gone by design) must not 500
+the Account page or block submission over it. An unreadable key reads as unset — the User re-pastes it.
 """
 
 import logging

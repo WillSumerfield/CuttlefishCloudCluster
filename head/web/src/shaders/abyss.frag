@@ -1,6 +1,5 @@
 // THE GROUND — slow deep water, blue-green ink. Domain-warped fbm, viewed directly against black (not
-// screen-blended), so it may stay dark. Behaviour is unchanged from when this lived inline; it only moved
-// out to a file and its dials became uniforms. `noise.glsl` (precision + hash/noise/fbm) is prepended.
+// screen-blended), so it may stay dark. `noise.glsl` (precision + hash/noise/fbm) is prepended.
 
 uniform vec2 uRes;
 uniform float uTime;

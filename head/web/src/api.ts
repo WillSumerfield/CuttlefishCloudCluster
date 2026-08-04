@@ -1,12 +1,11 @@
 // The Head API, from the browser.
 //
 // Auth rides on the HttpOnly session cookie the Head sets at /login — the SPA never sees or stores the
-// token (that's the point of HttpOnly: script can't read it, so an XSS can't steal it). Same origin as
-// the API, so the cookie goes out automatically and we need no CORS and no Authorization header.
+// token (script can't read HttpOnly, so XSS can't steal it). Same origin as the API, so the cookie goes
+// out automatically: no CORS, no Authorization header.
 //
-// Every route but /healthz is behind that session now, so ANY call can come back 401 — not just at
-// login, but whenever a session expires mid-session. `unauthorized` is how the app notices and drops
-// back to the login screen instead of rendering an empty board.
+// Every route but /healthz is behind that session, so ANY call can come back 401, not just at login.
+// `Unauthorized` is how the app notices and drops back to the login screen.
 
 import { gzip, makeTar, type TarEntry } from './tar'
 import { relPath, type Picked } from './project'
@@ -73,10 +72,10 @@ export type ArchivedSpawn = Spawn & {
   // the same reason it does on RecoveryStatus: a size worth showing, not just a countdown.
   recovery_bytes?: number | null
   recovery_expires_at?: string | null
-  // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are
-  // deleted — 7 days after it ended, or sooner if the submitter's 8GB Allowance needed the room. The
-  // longer, quieter sibling of the pair above, and the more consequential one: it is the results the
-  // Spawn was submitted to produce. Null once they are gone, or before the tick has registered them.
+  // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are deleted
+  // — 7 days after it ended, or sooner if the submitter's 8GB Allowance needed the room. The more
+  // consequential sibling of the pair above (these are the results the Spawn was submitted to produce).
+  // Null once gone, or before the tick has registered them.
   output_bytes?: number | null
   output_expires_at?: string | null
 }
@@ -128,14 +127,13 @@ export type RetentionStatus = { bytes: number; expires_at: string }
 
 export class Unauthorized extends Error {}
 
-// Every endpoint lives under /api so no API path collides with a client-side route the SPA owns (a hard
-// reload on /karma used to hit the API and render raw JSON). Paths below stay bare; this prepends it.
+// Every endpoint lives under /api so no API path collides with a client-side route the SPA owns.
+// Paths below stay bare; this prepends it.
 const API = '/api'
 
-// The message the whole SPA falls back to when the Head has no human reason to give: a 5xx (the crash
-// detail is deliberately generic server-side), a non-JSON body (a proxy/gateway error page), or fetch
-// rejecting outright (offline, DNS, TLS). Surfacing a bare "500" or the browser's "Failed to fetch"
-// is what every catch below used to do; this reads as a sentence and says what to try.
+// Fallback message when the Head has no human reason to give: a 5xx (detail deliberately generic
+// server-side), a non-JSON body (proxy/gateway error page), or fetch rejecting outright (offline/DNS/TLS).
+// Reads as a sentence and says what to try, rather than a bare "500" or "Failed to fetch".
 const HEAD_UNREACHABLE = "Couldn't reach the Head — check your connection and try again."
 const HEAD_ERROR = "The Head hit an error handling that request — try again in a moment."
 
@@ -279,10 +277,9 @@ export const retractArm = (name: string) => armPost(name, 'retract')
 export const returnArm = (name: string) => armPost(name, 'return')
 
 // A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its
-// owner (the Head only ever serves you your own). It runs exactly what it captured until the owner hits
-// Update code, so `frozen_at` is how stale that snapshot is. `size_bytes` is what it costs against the
-// 24 GB per-User allowance. `updating` is true only while a fresh snapshot is uploading — the one moment
-// a Recipe moves (the bloom); at rest it is still, because a frozen thing does not move.
+// owner. Runs exactly what it captured until Update code; `frozen_at` is how stale that snapshot is.
+// `size_bytes` counts against the 24 GB allowance. `updating` is true only while a fresh snapshot
+// uploads (the bloom) — at rest a frozen thing does not move.
 export type Recipe = {
   name: string
   script: string          // entry point the snapshot runs
@@ -302,11 +299,9 @@ export type Recipe = {
   wandb_entity: string
 }
 
-// Per-User storage allowance: 24 GB, a hard wall. Saving past it means deleting a Recipe first, never a
-// warning. Mirrored in recipes/format.ts, where the meter reads from it — and on the Head, in
-// recipes.py's MAX_USER_BYTES, which is the one that actually decides. The number lives in both places
-// because the composer blocks a doomed save from File.size before spending the upload; the Head is still
-// the authority, and answers 413 to anything that gets past.
+// Per-User storage allowance: 24 GB, a hard wall — saving past it means deleting a Recipe first, never a
+// warning. Mirrored in recipes/format.ts (meter) and the Head's recipes.py MAX_USER_BYTES, the actual
+// authority; the composer just blocks a doomed save early, from File.size, before spending the upload.
 export const RECIPE_ALLOWANCE_BYTES = 24 * 1024 ** 3
 
 export const getRecipes = () => json<Recipe[]>('/recipes')
@@ -358,10 +353,9 @@ export const createRecipe = (r: NewRecipe) => recipeUpload(r, '/recipes')
 /**
  * Re-capture the project into an existing Recipe — the one moment a frozen thing moves.
  *
- * Carries a body, unlike every other action here, because an update IS a fresh upload: there is no copy
- * of the old folder on your machine for the Head to diff against, and the Head deliberately keeps none
- * of a Spawn's code either. Explicit: until it lands, the Recipe keeps running the old snapshot, and a
- * save the 24 GB wall refuses leaves that old snapshot untouched.
+ * Carries a body (unlike other actions here): an update IS a fresh upload, since there's no local copy of
+ * the old folder to diff against and the Head keeps no Spawn code either. Until it lands, the Recipe keeps
+ * running the old snapshot; a save the 24 GB wall refuses leaves that old snapshot untouched.
  */
 export const updateRecipe = (name: string, r: NewRecipe) =>
   recipeUpload(r, `/recipes/${encodeURIComponent(name)}/update`)
@@ -420,13 +414,12 @@ export type Standing = {
 }
 export const getStandings = () => json<Standing[]>('/karma')
 
-// A real event in your ledger — a Settlement, or an Admin's Override. `amount` is signed from YOUR point
-// of view: + earned, − paid. A null `counterparty` is not a missing name, it is the point: Karma with no
-// source was conjured (an Override), with no destination was destroyed (a burn on a commons Arm).
+// A real event in your ledger — a Settlement or an Admin's Override. `amount` is signed from YOUR point
+// of view: + earned, − paid. A null `counterparty` is the point, not a missing name: no source means
+// Karma was conjured (an Override), no destination means it was destroyed (a burn on a commons Arm).
 //
-// There is no `kind: 'decay'` and there never will be. Decay is not an event — it is the sag of `curve`
-// BETWEEN the events, which is why the curve ships alongside the rows rather than being derivable from
-// them. Drawing decay as a row would also imply a stored Balance to decay, and no such table exists.
+// No `kind: 'decay'`: decay is the sag of `curve` BETWEEN events, not an event itself — the curve ships
+// alongside the rows rather than being derived from them, and there is no stored Balance to decay.
 export type LedgerRow = {
   id: number
   at: string
@@ -546,17 +539,14 @@ export async function submit({
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
   }
   const body = await gzip(makeTar(entries))
-  // The Head owns the key, the client owns the run: we send WANDB_PROJECT/WANDB_ENTITY and nothing else
-  // — never a key (the browser has none), never WANDB_MODE (this used to hardcode `disabled`, which
-  // silently cost every Dashboard Spawn its metrics). The Head fills in the key it holds for you.
+  // Head owns the key, client owns the run: send WANDB_PROJECT/WANDB_ENTITY only — never a key (browser
+  // has none), never WANDB_MODE. Head fills in the key it holds for you.
   //
-  // A blank field is OMITTED rather than sent empty. WANDB_ENTITY="" breaks wandb.init() outright
-  // instead of falling back to the account default, and a blank project is the Head's `ccc` default —
-  // which lives there alone, so the placeholder in the composer only ever displays it.
+  // Blank fields are OMITTED, not sent empty: WANDB_ENTITY="" breaks wandb.init() instead of falling back
+  // to the account default, and a blank project already maps to the Head's `ccc` default.
   //
-  // `wandb` is the off-switch and travels OUTSIDE wandb_env for that reason: inside it, it would have
-  // to be a WANDB_MODE, and a client-sent mode is exactly what the Head stopped honouring. The Head
-  // reads an absent flag as true, so sending it always is a statement, never a requirement.
+  // `wandb` is the off-switch, travels OUTSIDE wandb_env: inside it, it'd have to be a WANDB_MODE, which
+  // the Head no longer honours from a client. Head reads an absent flag as true, so it's always sent.
   const wandb_env: Record<string, string> = {}
   if (wandbProject.trim()) wandb_env.WANDB_PROJECT = wandbProject.trim()
   if (wandbEntity.trim()) wandb_env.WANDB_ENTITY = wandbEntity.trim()
@@ -578,12 +568,10 @@ export async function submit({
   return { id: body_.id, environment: body_.environment ?? null }
 }
 
-// A Tide Pool (docs/TODO.md): request one from the Dashboard, same queue/Eligibility/Escrow as any
-// Spawn — but there is no script to name, so this is deliberately NOT `submit` with a few fields
-// blanked out. A project folder is optional (unlike Script mode, where it's required): picking one just
-// lands it at $proj on the Arm so the live shell has it to hand — nothing in it is ever run
-// automatically. Actual shell access is CLI-only; the Dashboard's part ends the moment the Spawn appears
-// (it shows up in the queue like anything else — see QueuePage).
+// A Tide Pool (docs/TODO.md): request one from the Dashboard, same queue/Eligibility/Escrow as any Spawn
+// — but no script to name, so deliberately NOT `submit` with fields blanked out. Project folder is
+// optional (unlike Script mode): picking one just lands it at $proj on the Arm for the live shell, nothing
+// runs automatically. Shell access is CLI-only; Dashboard's part ends once the Spawn appears in the queue.
 export type SubmitTidepoolOpts = {
   minutes: number
   vram: number
@@ -597,10 +585,9 @@ export type SubmitTidepoolOpts = {
 export async function submitTidepool({
   minutes, vram, gpu, node, features, picked, name,
 }: SubmitTidepoolOpts): Promise<number> {
-  // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens
-  // the upload as a tar archive (ccc_head_api.spawns.submit), whether or not there is a project behind
-  // it. `makeTar([])` writes the two all-zero end-of-archive blocks tar readers expect, the same bytes
-  // Python's tarfile writes for no members.
+  // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens the
+  // upload as a tar archive (ccc_head_api.spawns.submit). `makeTar([])` writes the two all-zero
+  // end-of-archive blocks tar readers expect, same as Python's tarfile for no members.
   const entries: TarEntry[] = []
   for (const f of picked?.files ?? []) {
     entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })

@@ -1,29 +1,23 @@
 """Auto-download: a **Spawn**'s results arrive on the submitter's disk without anyone asking.
 
-`cuttle run` returns the moment the Head accepts a Spawn — hours before that Spawn ends. So the one
-thing a User always wants (`cuttle outputs <id>`) is the one thing they have to remember to do, on a
-day they have moved on, against a Head that deletes the copy after 7 days and evicts it sooner if
-their 8GB **Allowance** fills (`ccc_head_api.retention`). Results are lost to forgetting, not to any
-failure. This module removes the step.
+`cuttle run` returns the moment the Head accepts a Spawn, hours before it ends, so `cuttle outputs
+<id>` is easy to forget — against a Head that deletes results after 7 days or sooner if the 8GB
+**Allowance** fills (`ccc_head_api.retention`). This module removes the step.
 
-**The file is the intent; the process is only the current attempt.** Every armed Spawn gets
-`~/.ccc/watch/<id>.json`, written before anything is forked. A sweeper polls the Head and drains
-them — but it is disposable: kill it, reboot, close the laptop, and the entries survive, so the
-`ensure_sweeper()` call in `cuttle`'s root callback re-arms on the next invocation of *any* command.
-There is no daemon, nothing installed, and nothing to leak: the sweeper exits on its own once the
-directory drains.
+The file is the intent, the process only the current attempt: every armed Spawn gets
+`~/.ccc/watch/<id>.json` before anything forks. The sweeper draining it is disposable — kill it,
+reboot, whatever — the entries survive and `ensure_sweeper()` (in `cuttle`'s root callback) re-arms
+on the next invocation of any command. No daemon, nothing installed; the sweeper exits once drained.
 
-**One sweeper, not one per Spawn.** A 20-Spawn shell loop would otherwise leave 20 Python processes
-each holding an HTTP client and polling independently. An `flock` on `~/.ccc/watch/.lock` makes the
-liveness question a single yes/no that both `arm()` and the re-arm hook ask the same way.
+One sweeper, not one per Spawn: an `flock` on `~/.ccc/watch/.lock` gives `arm()` and the re-arm hook
+one shared liveness check instead of N independent polling processes.
 
-**The Head learns nothing.** No route, no column, no migration — retention stays a pure function of
-time and Allowance, the same result can still be fetched again from a second machine, and this cannot
-break a Head that has not been redeployed. The cost is that a fetched output still occupies Allowance;
-that is deliberate (a Head whose storage depended on client honesty would punish the honest client).
+The Head learns nothing — no route, column, or migration; retention stays a pure function of time and
+Allowance, and a fetched output still occupies Allowance (a Head trusting client honesty for storage
+would punish the honest client).
 
-This is the one place the two clients are not at operation **parity** (`CONTEXT.md`): a browser cannot
-write to a folder unattended, so the Dashboard has no equivalent and is not getting one.
+The one place the two clients are not at operation **parity** (`CONTEXT.md`): a browser can't write
+to a folder unattended, so the Dashboard has no equivalent.
 """
 
 import fcntl

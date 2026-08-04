@@ -57,14 +57,13 @@ function buildBlobMask(w: number, h: number): HTMLCanvasElement {
 }
 
 /**
- * You, as the cluster sees you — one bloom of the Standings skin, singular and large. The same flesh and
- * the same pigment ramp (./karma/skin): a single chromatophore bloom at the centre, coloured by your
- * Balance (gold creditor → umber debtor), sitting in the pale white-mottled leucophore flesh. It breathes,
- * dissolves at its rim into an organic blob, and carries the Standings cursor swell — the dots bulge toward
- * the pointer that passes them.
+ * You, as the cluster sees you — one bloom of the Standings skin, singular and large. Same flesh and
+ * pigment ramp (./karma/skin): a chromatophore bloom at centre, coloured by Balance (gold creditor →
+ * umber debtor), in pale white-mottled leucophore flesh. Breathes, dissolves at its rim into an organic
+ * blob, carries the Standings cursor swell.
  *
- * The bloom is kept tight so the mottled flesh frames it rather than being swallowed. `balance` null means
- * the economy isn't wired yet (live, pre-Ph4): the bloom sits at neutral bronze.
+ * Bloom kept tight so the mottled flesh frames it. `balance` null (pre-Ph4, economy unwired) sits at
+ * neutral bronze.
  */
 const REACH = 50, SWELL = 0.8, FALLOFF = 1.5, OFF = 0.5, ON = 2.7;
 

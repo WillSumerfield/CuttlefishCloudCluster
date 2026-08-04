@@ -1,6 +1,5 @@
-"""A raw TCP forwarder, one per live Tide Pool (docs/TODO.md) — `python -m ccc_head_api.relay
-<listen_port> <target_host> <target_port>`. Started and killed by ccc_head_api.tidepool, never run
-standalone.
+"""A raw TCP forwarder, one per live Tide Pool — `python -m ccc_head_api.relay <listen_port>
+<target_host> <target_port>`. Started and killed by ccc_head_api.tidepool, never run standalone.
 
 This is the whole answer to "Users are not Mesh members and cannot reach an Arm's mesh address": it
 listens on the Head (which every client already reaches, for the Dashboard/API) and forwards bytes,

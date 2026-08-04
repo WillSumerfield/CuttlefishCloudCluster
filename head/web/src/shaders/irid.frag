@@ -1,14 +1,11 @@
-// THE CHROMATIC BLOOM — a waiting Spawn, no known end. Rendered per-card (own center, own seed) and
+// THE CHROMATIC BLOOM — a waiting Spawn, no known end. Rendered per-card (own center, own seed),
 // screen-blended on the card's black plate, so only lit currents glow through and troughs add nothing.
-// `noise.glsl` (precision + hash/noise/fbm) is prepended.
+// `noise.glsl` is prepended.
 //
-// The look is MASSES: each colour is one or more soft blooms that orbit the card's center, all turning
-// the SAME way (a coherent swirl) at their own speeds. A mass blooms up from near-black and fades back
-// on its own out-of-phase clock; its radius wanders freely (decoupled from the fade), so a card is
-// sometimes mostly teal, later mostly violet, sometimes near-dark. Each mass is sampled THROUGH the
-// domain-warp fbm rather than drawn as a clean gaussian, so its edges are inky and its path wanders —
-// never a tidy circle. Space is aspect-corrected to a square first, so the swirl reads round on a wide
-// short row instead of a flat pancake.
+// MASSES: soft blooms orbiting the card's center, all turning the same way, each blooming up and fading
+// on its own out-of-phase clock with radius wandering freely (decoupled from the fade). Sampled THROUGH
+// the domain-warp fbm rather than a clean gaussian, so edges are inky and paths wander, never a tidy
+// circle. Space is aspect-corrected to a square first so the swirl reads round on a wide short row.
 
 #define MASSES 6 // total blooms; colours cycle teal/cyan/violet, so this is 2 per colour.
 

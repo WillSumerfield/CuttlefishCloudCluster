@@ -1,22 +1,12 @@
 """Trust-on-first-use pinning of the Head's TLS certificate.
 
-Why this exists. The Head API carries passwords and session tokens, so its LAN path must be encrypted
-— but no Certificate Authority will sign a cert for a box with no public domain name (that is the
-deferred item #8). So the Head signs its own. A self-signed cert gives *encryption* but proves nothing
-about *identity*: anyone on the LAN can self-sign a cert claiming to be the Head, and an encrypted
-connection to an impostor is exactly as bad as an unencrypted one — you hand them your password.
+No public domain -> no CA-signed cert, so the Head self-signs. Self-signed gives encryption but not
+identity, so we do it SSH-`known_hosts` style: first connection, operator confirms the fingerprint;
+every later connection must present that exact cert or is refused. Weak point same as SSH's: an
+attacker present at the very first connection gets pinned instead. Acceptable on a trusted LAN only.
 
-Identity comes back the way SSH does it. The first time we talk to a Head we have nothing to compare
-against, so we show the operator the certificate's fingerprint and ask. Then we remember that exact
-certificate, and every later connection must present it again. A swapped certificate is refused. This
-is `known_hosts`, and its one weak point is the same as SSH's: an attacker present at the *very first*
-connection would be pinned instead of the Head. Acceptable on a trusted LAN (see the roadmap's
-donors-never-strangers / LAN-only scoping); it is not acceptable on the open internet, which is why a
-real cert is still on the roadmap.
-
-We pin the PEM and hand it to `ssl` as the CA, rather than disabling verification and comparing
-fingerprints by hand. Same trust model, but stdlib does the signature *and* hostname checks — and a bug
-in a hand-rolled check fails **open** (no verification at all), which is the worst possible failure.
+Pin the PEM and hand it to `ssl` as the CA rather than hand-rolling a fingerprint compare: stdlib then
+does signature + hostname checks, and a bug in a hand-rolled check would fail open instead of closed.
 """
 
 import hashlib

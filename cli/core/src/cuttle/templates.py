@@ -18,9 +18,9 @@ TreeWidth={tree_width}
 
 AuthType=auth/munge
 # Both cgroup plugins, together, are what makes a GRES allocation REAL. Without them Slurm counts
-# `--gres=gpu:1` for scheduling and then hands the step a machine with every card visible: measured on
-# the first remote job, `SLURM_JOB_GPUS` came back EMPTY (docs/TODO.md). task/cgroup is what puts the
-# step in a device cgroup and tells it which GPU it holds; proctrack/cgroup is its prerequisite
+# `--gres=gpu:1` for scheduling and then hands the step a machine with every card visible: measured,
+# `SLURM_JOB_GPUS` comes back EMPTY without both. task/cgroup is what puts the step in a device
+# cgroup and tells it which GPU it holds; proctrack/cgroup is its prerequisite
 # (task/cgroup needs cgroup-based process tracking, not linuxproc's pid-scanning). See cgroup.conf.
 ProctrackType=proctrack/cgroup
 TaskPlugin=task/cgroup
@@ -47,7 +47,7 @@ SchedulerType=sched/backfill
 SelectType=select/cons_tres
 SelectTypeParameters=CR_Core
 
-# --- priority (Phase 4 slice 0) ---
+# --- priority ---
 # Karma ranks Spawns by lowering the *nice* of the queued jobs of Users in poor standing, and only the
 # job's OWNER may do that — which the Head is, for every Spawn in the queue (they all run as the
 # Mantle). But nice is only *read* by priority/multifactor: the default priority/basic is pure FIFO and
@@ -86,7 +86,8 @@ GresTypes=gpu
 # OR-expands a request into `--constraint=vram24|vram48`).
 # Weight (∝ 1/Power) IS here, and has to be: `scontrol reconfigure` re-reads this file and resets any
 # node attribute the file does not state, so a Weight set only by `scontrol update` is silently wiped
-# by the next `arm authorize`/`admit`/`remove` (verified 2026-07-14: update -> 276, reconfigure -> 1).
+# by the next `arm authorize`/`admit`/`remove` (verified: `scontrol update` sets it, `reconfigure`
+# resets it to 1).
 # On a first setup Power is unknown here — it is benchmarked after the node is live — so this renders
 # 1 and `scontrol update` carries it until the next render. Donor Arms are dynamic, so they are not in
 # this file and cannot be fixed this way; enroll.reapply_weights() re-pushes them after a reconfigure.
@@ -129,8 +130,8 @@ GRES_CONF_LINE = "NodeName={node} Name=gpu File={device}\n"
 # for hitting a number they never asked for.
 #
 # WSL Arms: unverified. WSL2 presents a fake cgroup-v1 `tmpfs`, and what slurmd does with it here is
-# not known — this file ships cluster-wide anyway and the WSL box is a live test (docs/TODO.md). A WSL
-# Arm cannot be GPU-isolated regardless: /dev/dxg is ONE device node for all its GPUs.
+# not known — this file ships cluster-wide anyway and the WSL box is a live test. A WSL Arm cannot be
+# GPU-isolated regardless: /dev/dxg is ONE device node for all its GPUs.
 CGROUP_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 # Detect cgroup v1 vs v2 rather than pinning either — the fleet is mixed (native Ubuntu is v2).
@@ -139,7 +140,7 @@ CgroupPlugin=autodetect
 ConstrainDevices=yes
 """
 
-# --- the Power benchmark (Phase 4 slice 0) ----------------------------------
+# --- the Power benchmark ------------------------------------------------------
 # What a device can *do*, measured — never a spec sheet. It runs **inside the Pod**, submitted by the
 # Head down the ordinary Slurm path and pinned to the node, so the number reflects the machine as
 # Spawns will really meet it: a WSL GPU reached through /dev/dxg, a laptop card that thermally
@@ -254,7 +255,7 @@ def render_ubuntu_snapshot_list() -> str:
 
 
 # Base Pod image: official PyTorch + pinned wandb (so Spawns can log W&B out of the box), plus what a
-# Tide Pool (docs/TODO.md) needs to run a live shell:
+# Tide Pool needs to run a live shell:
 #
 # * `openssh-server` — sshd runs INSIDE the Pod, unprivileged, as the Mantle (see
 #   ccc_head_api.spawns.PAYLOAD_TIDEPOOL). It never setuid()s: the "login" is to the SAME uid already
@@ -285,7 +286,7 @@ From: {image}
 # root chroot (simpler; a module's own root is the boundary now).
 #
 # This file defines NO per-Spawn module. It sets the globals every module inherits and `&include`s the
-# directory the Head API mints **Siphon**s into (temp/spawn-isolation.md Phase 2) — an &include'd file
+# directory the Head API mints **Siphon**s into — an &include'd file
 # starts parsing with the parent's defaults, so `hosts allow`, the drop to `ccc`, and read-only-by-
 # default all apply to a Siphon without the Head API having to know any of them. rsyncd re-reads this
 # file, and re-scans that directory, on EVERY connection, so a Siphon opens and closes with no reload.
@@ -396,7 +397,7 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
     not been benchmarked yet; thereafter the caller passes it from the registry so a reconfigure
     cannot wipe it. See the NodeName comment in the template.
 
-    `features` = Arm Features (docs/TODO.md) the Head's own co-located Arm has, comma-joined onto its
+    `features` = Arm Features the Head's own co-located Arm has, comma-joined onto its
     one vram bucket exactly like a donor Arm's `enroll.slurmd_dropin` — a Slurm Feature is a flat
     per-node set either way. Defaults to none: the Head's own box declares no catalog features today.
 
@@ -404,7 +405,7 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
     those that have not reported job_container.conf (enroll.arms_missing, one call per capability).
     Non-empty holds that line back for the WHOLE fleet, including the Arms that are ready — a line here
     is one setting for every node, so it is on for all of them or none. The two are tracked separately
-    because they arrived in different phases: an Arm can legitimately have the prolog and not the other.
+    because an Arm can legitimately have the prolog and not the other.
     """
     sockets, cores, threads = system.cpu_topology()
     feature = ",".join([config.vram_feature(system.gpu_vram_mb()), *sorted(features or [])])
@@ -448,7 +449,7 @@ EPILOG_TMPL = """\
 # the Head's co-located Arm under its state dir); the absent one is a harmless no-op on the other node.
 # ALWAYS exit 0: a non-zero epilog drains the node, and a stale/missing dir must never do that.
 rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
-# sbatch's own stdout/stderr sinks (docs/TODO.md, "sbatch wrapper litters /tmp"). The wrapper's own
+# sbatch's own stdout/stderr sinks. The wrapper's own
 # `trap ... EXIT` already reaps these when it runs — but that's the same trap that misses SIGKILL, so a
 # hard-killed job leaves one behind forever without this. Same "keep only if non-empty" rule as the
 # trap: a sink that caught real stderr (the shell died before out/err existed) is worth keeping.
@@ -459,7 +460,7 @@ for s in "/tmp/ccc-$SLURM_JOB_ID.slurm" "/tmp/ccc-$SLURM_JOB_ID-"*.slurm; do
     [ -s "$s" ] || rm -f "$s"
 done
 [ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"
-# Take the Spawn dir back off the **Guise** the prolog lent it to (temp/spawn-isolation.md Phase 3c).
+# Take the Spawn dir back off the **Guise** the prolog lent it to.
 # The prolog takes, the epilog returns, so the loan lasts exactly the job's lifetime — and unlike the
 # job script's own EXIT trap, this still runs after a SIGKILL. Without it a User's LATER Spawn could
 # rewrite an earlier one's recorded `exit` code and outputs, since both run as the same Guise.
@@ -475,12 +476,12 @@ def render_epilog() -> str:
                               mantle=config.HEAD_API_USER)
 
 
-# --- the Prolog (temp/spawn-isolation.md Phase 3c) ---------------------------
+# --- the Prolog ----------------------------------------------------------------
 # Where a **Guise** comes into existence on a machine, and the only place it can be: it runs as root
 # (SlurmdUser=root), before the job step, on whatever node Slurm picked, with no network and no head.db.
 # `SLURM_JOB_UID` is its ONLY input — which is why a Guise is named `ccc-u<uid>` after its uid and
-# nothing else. Measured on hardware (Probe 1/1b, 2026-07-31): a Slurm job LAUNCHES fine as a uid with
-# no local account, but `apptainer exec` refuses one outright ("Couldn't determine user account
+# nothing else. Measured on hardware: a Slurm job LAUNCHES fine as a uid with no local account, but
+# `apptainer exec` refuses one outright ("Couldn't determine user account
 # information"), and every Spawn is an apptainer exec. So this is mandatory, not an optimisation — and
 # it lands in time, because the job step is where apptainer is invoked and this runs before it.
 #
@@ -496,8 +497,8 @@ PROLOG_TMPL = """\
 uid="$SLURM_JOB_UID"
 jid="$SLURM_JOB_ID"
 guise="{prefix}$uid"
-# Anything outside the reserved Guise block is not ours to touch: the Mantle at {mantle_uid} (a Spawn
-# queued before this phase deployed), root, slurm, a donor's own accounts. They already exist, and
+# Anything outside the reserved Guise block is not ours to touch: the Mantle at {mantle_uid},
+# root, slurm, a donor's own accounts. They already exist, and
 # creating an account for one would be a bug. Nothing to do — and NEVER a non-zero exit, which would
 # drain the node over a job we simply have no opinion about.
 if [ "$uid" -lt {uid_min} ] || [ "$uid" -gt {uid_max} ]; then exit 0; fi
@@ -538,7 +539,7 @@ exit 0
 """
 
 
-# --- job_container/tmpfs (temp/spawn-isolation.md Phase 4) -------------------
+# --- job_container/tmpfs -------------------------------------------------------
 # Written on every node by `cuttle setup`, exactly as the two hook scripts are: the plugin reads it from
 # beside slurm.conf, and configless serves slurm.conf but NOT its siblings that are per-node. A
 # `JobContainerType=` naming a plugin whose conf is absent drains the node, which is what the rollout

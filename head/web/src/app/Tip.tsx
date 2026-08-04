@@ -4,22 +4,18 @@ import { createPortal } from "react-dom";
 /**
  * A hover explanation.
  *
- * **Nothing marks a target at rest** — no glyph, no underline, not even a cursor change. That is the
- * design, and it only works because coverage is wide enough that pointing at something and getting an
- * explanation is the expected behaviour rather than a discovery. A marker on forty labels would be forty
- * pieces of furniture added to a deliberately spare interface, to announce something the interface can
- * simply do. The cost is accepted and real: text that a User must read to avoid a mistake belongs on the
- * page, not in here.
+ * Nothing marks a target at rest — no glyph, underline, or cursor change. Coverage is wide enough that
+ * pointing at something and getting an explanation is expected, not a discovery; a marker on forty labels
+ * would be forty pieces of furniture on a spare interface. Cost: text a User must read to avoid a mistake
+ * belongs on the page, not here.
  *
- * **The panel is portalled and fixed-positioned**, because half the targets sit inside a `.surface` —
- * which carries a fade mask — or inside the Tide Pool modal, and an in-flow absolute panel is clipped by
- * both. Positioned from the trigger's rect each time it opens, and flipped to the other side when it
- * would leave the viewport.
+ * Panel is portalled and fixed-positioned: half the targets sit inside a `.surface` (fade mask) or the
+ * Tide Pool modal, and an in-flow absolute panel gets clipped by both. Positioned from the trigger's rect
+ * on open, flipped to the other side when it would leave the viewport.
  *
- * **The pointer can travel into the panel** without it closing (a short close delay the panel cancels),
- * so the text is selectable. Keyboard focus opens it too; Escape and blur close it. Touch gets nothing —
- * there is no hover and no marker to tap, which is a stated gap rather than an oversight: this is a LAN
- * tool for staging project folders, and nobody does that from a phone.
+ * Pointer can travel into the panel without closing (a short delay the panel cancels) so text stays
+ * selectable. Keyboard focus opens it too; Escape/blur close it. Touch gets nothing — a stated gap, not
+ * an oversight: this is a LAN tool for staging project folders, nobody does that from a phone.
  */
 
 /** The knobs worth tuning on a tooltip. Edit, save, watch. */
@@ -34,15 +30,10 @@ const TIP = {
   /** Gap between the trigger and the panel, px. */
   gap: 10,
 
-  /**
-   * The gold edge. This panel is the ONE bordered thing in the Dashboard — everything else dissolves
-   * at its rim by an alpha mask — because a tooltip is the only element that floats over content it
-   * has nothing to do with, and a melt would blend it into whatever it happens to be covering.
-   *
-   * Any CSS colour. `var(--gold)` is the full-strength token the primary buttons wear; the default
-   * below is that, held back so the edge states the boundary without becoming the loudest thing on
-   * screen. `var(--gold-hi)` is the brighter one, `var(--bronze)` the dimmer.
-   */
+  /** The gold edge — the ONE bordered thing in the Dashboard (everything else dissolves at its rim by an
+   *  alpha mask), because a tooltip floats over content it has nothing to do with and a melt would blend
+   *  it into whatever it's covering. Any CSS colour; `--gold` is full strength, `--gold-hi` brighter,
+   *  `--bronze` dimmer. */
   borderColor: "color-mix(in oklab, var(--gold) 60%, transparent)",
   borderWidth: 1,
 
@@ -63,19 +54,12 @@ const TIP = {
   sink: "25%",
 
   /**
-   * The plate's COLOUR — and it is three colours, because a surface is a vertical gradient, not a fill:
-   * lit with `shoal` along its top edge, `body` through the middle, sinking toward `deep` at the bottom
-   * (how far it actually gets is `sink` above).
+   * Plate colour — three of them, since a surface is a vertical gradient not a fill: `shoal` at the top
+   * edge, `body` through the middle, sinking toward `deep` at the bottom (how far set by `sink`).
    *
-   * `null` means "whatever the page uses" — the global tokens in index.css:45-49, which every card in
-   * the app shares. Set any of the three here and it recolours THIS PANEL ONLY, since the gradient is
-   * painted from these values directly. Editing index.css instead would recolour every surface in the
-   * Dashboard.
-   *
-   * Any CSS colour works. To warm it toward the gold the rest of the economy wears, try
-   *   shoal: "oklch(0.34 0.045 90)", body: "oklch(0.29 0.038 88)"
-   * — keep the lightness (the first number) roughly as-is and move the hue (the third), or the panel
-   * stops sitting at the same depth as everything else.
+   * `null` = the page's global tokens (index.css:45-49); setting any value here recolours THIS PANEL ONLY.
+   * To warm toward economy gold, try shoal: "oklch(0.34 0.045 90)", body: "oklch(0.29 0.038 88)" — keep
+   * lightness (1st number) roughly as-is, move hue (3rd), or the panel stops matching depth.
    */
   tint: {
     // The page's own plate, one step down in lightness (0.34 → 0.28, 0.29 → 0.23) — hue and chroma
@@ -115,14 +99,9 @@ export function Tip({
   text: string;
   children: ReactNode;
   className?: string;
-  /**
-   * False when the child is already focusable — an input, a select, a button.
-   *
-   * The wrapper would otherwise take a tab stop of its own directly before the control's, so every
-   * field in a composer would need Tab pressed twice to get through. Focus still opens the panel
-   * either way: React's onFocus is focusin, so it fires as the child inside receives focus, which is
-   * exactly the moment a keyboard user has arrived at the thing being explained.
-   */
+  /** False when the child is already focusable (input/select/button) — otherwise the wrapper takes its
+   *  own tab stop before the control's, so Tab would need pressing twice. Focus still opens the panel
+   *  either way: React's onFocus is focusin, firing as the child receives focus. */
   focusable?: boolean;
 }) {
   const id = useId();
@@ -213,14 +192,10 @@ export function Tip({
             role="tooltip"
             onPointerEnter={clear}
             onPointerLeave={() => close(TIP.closeDelay)}
-            // NOT `.surface`, and that is the whole difference: a surface dissolves at its rim by an
-            // alpha mask, and this panel is drawn with a hard gold edge instead. It is the one bordered
-            // thing in the Dashboard, deliberately — a tooltip is the only element that floats over
-            // content it has nothing to do with, so it needs a stated boundary rather than a melt that
-            // would blend it into whatever it happens to be covering.
-            //
-            // The plate gradient is the same one `.surface` paints (index.css:189-208), reproduced here
-            // because it can no longer be inherited from a utility this panel does not wear.
+            // NOT `.surface`: a surface dissolves at its rim by an alpha mask, this panel has a hard gold
+            // edge instead, deliberately — the one element floating over content it has nothing to do
+            // with needs a stated boundary, not a melt. Plate gradient reproduces `.surface`'s
+            // (index.css:189-208) since this panel doesn't wear that utility.
             style={{
               position: "fixed",
               left: pos.left,

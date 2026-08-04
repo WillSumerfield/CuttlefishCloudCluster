@@ -6,16 +6,15 @@ import noiseGlsl from "../shaders/noise.glsl?raw";
 import iridFrag from "../shaders/irid.frag?raw";
 
 /**
- * THE CHROMATIC BLOOM — waiting, with no known end. Cool masses (teal/cyan/violet) that bloom in and
- * fade out while swirling one way around each card's center; distinct from the cloud, which is dark,
- * directional, "working". The GLSL and the full look are documented in `../shaders/irid.frag`.
+ * THE CHROMATIC BLOOM — waiting, with no known end. Cool masses (teal/cyan/violet) blooming and fading
+ * while swirling one way around each card's center; distinct from the cloud (dark, directional, working).
+ * GLSL and full look documented in `../shaders/irid.frag`.
  *
- * DRAWN PER CARD, but not one WebGL context per card — browsers cap live contexts (~16) and drop the
- * oldest, so a deep queue would cascade into CONTEXT_LOST. Instead ONE shared context owns a scratch
- * canvas; every frame each waiting row re-renders the shader into that scratch at its own size with its
- * own seed uniform, then blits the result into its own cheap 2D <canvas> (`drawImage`). Cost is O(1)
- * contexts for any queue depth, and each card's `seed` gives it independent water — neighbouring rows
- * never line up. The whole thing is screen-blended on the card's black plate, so troughs stay invisible.
+ * DRAWN PER CARD but not one WebGL context per card — browsers cap live contexts (~16) and drop the
+ * oldest, so a deep queue would cascade into CONTEXT_LOST. ONE shared context owns a scratch canvas;
+ * each frame every waiting row re-renders the shader into it at its own size/seed, then blits into its
+ * own cheap 2D <canvas>. O(1) contexts for any queue depth; each card's `seed` keeps its water
+ * independent. Screen-blended on the card's black plate so troughs stay invisible.
  */
 
 /**
@@ -131,8 +130,8 @@ function frame() {
   raf = requestAnimationFrame(frame);
 }
 
-// Reduced motion holds clockT at 0, so content is static and position-independent — no scroll re-blit is
-// needed (unlike the old shared field). Only a resize can change a card's size, so re-blit all on resize.
+// Reduced motion holds clockT at 0, so content is static and position-independent — no scroll re-blit
+// needed. Only a resize can change a card's size, so re-blit all on resize.
 const onResize = () => cards.forEach((c) => c.blit());
 
 function teardownIfIdle() {

@@ -1,4 +1,4 @@
-"""Mesh layer (Phase 1 substrate).
+"""Mesh layer.
 
 Self-hosted **Headscale** coordinator on the Head + **Tailscale** client on every node. The Head
 runs its own control server; all nodes (including the co-located Arm) join that tailnet. Arms
@@ -166,10 +166,10 @@ def lan_only(host: str) -> bool:
 _POLICY = """\
 {
   // Enrolled CCC nodes reach each other on every port. `cuttle arm authorize` is the trust gate;
-  // this file must not pretend to be a second one. See docs/TODO.md — mesh membership already
-  // means full cluster trust (an Arm can fetch the munge key), so a port list here would buy no
-  // security while breaking srun's ephemeral task-I/O ports and Arm<->Arm traffic in multi-node
-  // jobs. Scoped to the `ccc` user, so it grants nothing to nodes outside this mesh.
+  // this file must not pretend to be a second one — mesh membership already means full cluster
+  // trust (an Arm can fetch the munge key), so a port list here would buy no security while
+  // breaking srun's ephemeral task-I/O ports and Arm<->Arm traffic in multi-node jobs. Scoped to
+  // the `ccc` user, so it grants nothing to nodes outside this mesh.
   // The trailing `@` marks these as usernames. A bare name is parsed as a *host* alias, and
   // headscale refuses to start: `host not defined in policy: "ccc"`.
   "acls": [
@@ -181,8 +181,8 @@ _POLICY = """\
 
 def _san_entry(addr: str) -> str:
     """`IP:<addr>` or `DNS:<addr>` — whichever the coordinator's advertised host actually is.
-    `--address` may be a literal IP (the ordinary case) or a public/DDNS name (docs/TODO.md's
-    reachability item), and a cert's SAN has to say which kind each entry is or the check fails."""
+    `--address` may be a literal IP (the ordinary case) or a public/DDNS name, and a cert's SAN has
+    to say which kind each entry is or the check fails."""
     try:
         ipaddress.ip_address(addr)
         return f"IP:{addr}"
@@ -191,7 +191,7 @@ def _san_entry(addr: str) -> str:
 
 
 def install_headscale_tls(addr: str) -> tuple[Path, Path]:
-    """Generate the coordinator's own self-signed cert (Phase 9 #3) — separate from the Head API's
+    """Generate the coordinator's own self-signed cert — separate from the Head API's
     (setup.install_tls): different service, different reader, different trust story. That one is
     pinned by cuttle's own HTTP client (cuttle/tls.py); this one has to be trusted by `tailscaled` —
     a separate binary with no pinning option of its own — on every box that ever dials this
@@ -266,7 +266,7 @@ def start_headscale() -> None:
     run(["systemctl", "restart", "headscale"], sudo=True)
 
 
-# --- trusting the coordinator's cert (Phase 9 #3) ----------------------------
+# --- trusting the coordinator's cert -----------------------------------------
 # `tailscaled` makes the actual TLS connection when it dials `--login-server https://...` — a
 # separate Go binary, not cuttle's own Python HTTP client, and it has no pinning flag of its own
 # (`tailscale up --help` carries no --insecure-skip-verify, no custom-CA option, nothing). The ONLY
@@ -323,7 +323,7 @@ def ensure_headscale_trusted(coordinator: str) -> None:
     pem = ssl.get_server_certificate((host, port))
     ui.warn(f"{host} presented a certificate this machine has never seen — it's the CCC mesh "
            f"coordinator, self-signed (no public CA will sign a cert for a box with no public "
-           f"domain; docs/TODO.md Phase 9 #3).")
+           f"domain).")
     ui.hint("Trusting it installs it into this box's OS certificate store, not just a cuttle-side "
             "pin — tailscaled has no lighter-weight option. A DIFFERENT certificate presented later "
             "at this address is still refused normally; what is not protected is a swap at this "
@@ -498,11 +498,9 @@ def up_head(server_url: str, addr: str, write_unit) -> tuple[str, str]:
     - **Already joined to this coordinator** — nothing to do. Skip the join entirely rather than
       `up --reset`-ing a working daemon, and leave the (single-use) preauth key unminted.
     - **Holding stale state** (a rebuilt Head, a re-pointed coordinator, or a join that half-failed) —
-      `forget_state()` first. Without it `tailscale up` inherits a dialer that has latched onto the
-      control URL it last spoke to, so a re-point to a genuinely different coordinator fails against
-      one that is demonstrably up. Observed on a same-address re-run, 2026-07-14 (back when the
-      coordinator was plain HTTP) — the old guard only forgot state when the *address* changed, which
-      is the one case that failure did not need; kept unconditional since.
+      `forget_state()` first, unconditionally. Without it `tailscale up` inherits a dialer that has
+      latched onto the control URL it last spoke to, so even a same-address re-run can fail against a
+      coordinator that is demonstrably up — gating the wipe on the address alone misses that case.
     - **Fresh box** — no state; `forget_state()` is a no-op beyond an "already gone" print. It must run
       here and not in the caller, because it shells out to `headscale`, which only exists after
       `install_headscale()` above.
@@ -545,12 +543,12 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
     **A token is good for exactly one attempt.** The wipe has to precede the join (see above), and the
     preauth key inside the token is single-use — so a `setup --arm` that dies *after* the join has both
     spent the key and reset this box's identity, and re-running it with the same token cannot work. The
-    bare `backend error: authkey already used` gives no hint of that, so we say it (observed
-    2026-07-14: a first run joined the mesh, failed later against an unreachable Head, and the retry
-    looked like a mesh bug when the mesh was fine).
+    bare `backend error: authkey already used` gives no hint of that, so we say it — otherwise a join
+    that succeeded followed by a later failure against an unreachable Head reads as a mesh bug when
+    the mesh was fine.
     """
     # Before ANYTHING else: this is the donor's first-ever contact with this coordinator, and
-    # tailscaled will refuse the join outright if it doesn't trust the cert (Phase 9 #3) — no point
+    # tailscaled will refuse the join outright if it doesn't trust the cert — no point
     # installing/starting a daemon first only to fail at the one step that needed this.
     ensure_headscale_trusted(coordinator)
     install_tailscale()

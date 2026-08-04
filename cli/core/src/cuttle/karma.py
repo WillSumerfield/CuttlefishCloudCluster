@@ -2,17 +2,15 @@
 
 Three commands, and they deliberately do NOT all travel the same road:
 
-- `karma` (standings) is an **API client** — it runs from any box, against the Head API, with a
-  session. A read, so it stays remote.
-- `karma override` **was** an API client and became a Head-box command in **Phase 6**: the Head API
-  now exposes no admin writes at all, so that a stolen Session cannot mint Karma. It needs no
-  privilege beyond writing head.db — the gate is *where you must be*, not what you may do.
-- `karma bump` is a **Head-box operator command**, like `arm authorize` / `arm remove`. It must be:
-  a bump is a *negative* nice, and Slurm grants a negative nice only to an operator. Slurm has never
-  heard of CCC's Admin — every Spawn, and every scontrol call the API makes, is the one `ccc` uid — so
-  routing it through the API would mean handing operator rights to the whole LAN-facing web process.
-  The stack's only operator is the CLI on the Head, via sudo. (The **privileged admin sidecar** in
-  ROADMAP Phase 2 is what eventually makes this family reachable from the Dashboard.)
+- `karma` (standings) is an **API client** — runs from any box, against the Head API, with a session.
+  A read, so it stays remote.
+- `karma override` is a **Head-box command**: the Head API exposes no admin writes at all, so a
+  stolen Session can't mint Karma. Gate is *where you must be*, not what you may do.
+- `karma bump` is a **Head-box operator command**, like `arm authorize`/`arm remove`. A bump is a
+  *negative* nice, which Slurm only grants to an operator — every Spawn and API scontrol call runs
+  as the one `ccc` uid, so routing through the API would hand operator rights to the LAN-facing web
+  process. Only the CLI on the Head, via sudo, has that. (ROADMAP Phase 2's privileged admin sidecar
+  will make this family reachable from the Dashboard.)
 """
 
 import subprocess
@@ -81,11 +79,9 @@ def tide(days: int = 7, as_json: bool = False) -> None:
 def override(username: str, amount: float, note: str | None = None) -> None:
     """Add (or remove) Karma from a User's Balance. **Head-local** — run it on the Head.
 
-    It was an API route until Phase 6, and on its own terms it could have stayed: an Override touches
-    nothing but head.db, which the API owns, so `is_admin` was all the privilege it needed. What it
-    could not survive is the phase's invariant — the Head API exposes no admin writes at all. Minting
-    Karma is the most valuable thing a stolen Session could do, and no authorization check makes a
-    remote write as safe as one that cannot be requested remotely.
+    The Head API exposes no admin writes at all: minting Karma is the most valuable thing a stolen
+    Session could do, and no authorization check makes a remote write as safe as one that can't be
+    requested remotely.
     """
     auth._admin(["override", username, str(amount), *(["--note", note] if note else [])])
 

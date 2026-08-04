@@ -58,13 +58,9 @@
   --gold: oklch(0.8 0.145 82);
   --gold-hi: oklch(0.9 0.16 88);
 
-  /*
-   * Iridescence — machines. Never people.
-   *
-   * CHROMA IS THE AXIS: the hue says "a machine", the saturation says "how much". That is what lets
-   * one family carry both a barely-there live-state chip and the Tide's loudest hour without either
-   * blunting the other. `--irid-dim` is a member of this ramp, not a separate idea.
-   */
+  /* Iridescence — machines, never people. CHROMA IS THE AXIS: hue = "a machine", saturation = "how much" —
+   * lets one family carry both a barely-there chip and the Tide's loudest hour. --irid-dim is part of this
+   * ramp, not separate. */
   --irid-dim: oklch(0.66 0.035 195); /* a machine is doing something. State, not Demand. */
   --irid-low: oklch(0.68 0.1 180); /* teal   — Demand: quiet, Low Tide */
   --irid-mid: oklch(0.78 0.12 210); /* cyan   — Demand: contended */
@@ -73,33 +69,21 @@
   /* Failed Spawns, Retract, rogue-actor flag. NOTHING else may ever be red. */
   --alarm: oklch(0.62 0.2 28);
 
-  /*
-   * The colour an input takes when it's ACTIVE — focused, or (for a Select) open. Deliberately NOT the
-   * card colour: a resting field is a dark recess, but on focus it must LIFT above the surface, not melt
-   * into it. The open Select control and its menu both take this exact colour, so the two read as one
-   * continuous raised surface instead of two disconnected shapes.
-   */
+  /* Colour an input takes when ACTIVE (focused, or Select open). Not the card colour: focus must LIFT
+   * above the surface, not melt into it. Select control + menu share this colour so they read as one
+   * raised surface. */
   --field-open: oklch(0.41 0.05 198);
 }
 
-/* No `* { border: 0 }` reset yet — the legacy App.tsx still draws its cards with borders. */
 @layer base {
-  /*
-   * The ground colour goes on `html` ONLY, never on `body`.
-   *
-   * The abyss shader is a `fixed; z-index: -10` canvas. Negative-z-index descendants paint BEFORE
-   * the backgrounds of in-flow block descendants, so an opaque background on `body` covers the
-   * shader completely and the page just looks flat black. On `html` it propagates to the viewport
-   * and is painted behind everything, which is what we want it for.
-   */
+  /* Ground colour on `html` only, never `body`: the abyss shader is a `fixed; z-index:-10` canvas, and
+   * negative-z-index descendants paint BEFORE in-flow backgrounds — an opaque `body` bg would cover it
+   * completely. `html` propagates to the viewport and paints behind everything instead. */
   html {
     background-color: var(--abyss);
-    /*
-     * The Shoal's canvas deliberately overhangs its layout box so its edge can dissolve outside it.
-     * That overhang runs past the viewport, which would otherwise open a horizontal scrollbar over
-     * empty transparent pixels. `clip` (not `hidden`) discards it without creating a scroll
-     * container, so the fixed shader behind is unaffected.
-     */
+    /* Shoal canvas overhangs its box so its edge dissolves outside it; that overhang would open a
+     * horizontal scrollbar over empty pixels. `clip` (not `hidden`) discards it without creating a
+     * scroll container, so the fixed shader behind is unaffected. */
     overflow-x: clip;
   }
   body {
@@ -116,44 +100,27 @@
   }
 }
 
-/*
- * Surfaces have no edge at all — not a border, not even a crisp rounded silhouette.
- *
- * The plate is a separate layer *behind* the content (`::before`), so it can dissolve into the abyss
- * over the outer ~15% while the text on top stays fully opaque. Masking the section itself would eat
- * the text with it. `isolation: isolate` keeps the z-index:-1 plate inside the card instead of
- * sinking behind the page and under the shader.
- *
- * No drop shadow: a plate with no edge can't cast one. Depth is carried by luminance alone.
- */
+/* Surfaces have no edge — no border, no crisp silhouette. Plate is a separate `::before` layer behind
+ * the content so it can dissolve at the rim while text stays opaque (masking the section itself would
+ * eat the text too). `isolation: isolate` keeps the z-index:-1 plate in the card, not under the shader.
+ * No drop shadow: a plate with no edge can't cast one — depth is luminance alone. */
 @utility surface {
   position: relative;
   isolation: isolate;
 
   /*
-   * The edge fade — two crossed ramps, one per axis, intersected so all four edges AND the corners
-   * dissolve. The ramp runs a full 2×(--fx) deep, so a generous margin of the card melts into the abyss
-   * rather than stopping at a crisp line. The stops follow a smoothstep (0.156 / 0.5 / 0.844 at the
-   * quarter marks), NOT a straight line: a linear ramp meeting the flat interior is a slope discontinuity,
-   * and a bright overlay (the bloom) turns that knee into a visible Mach-band crease, worst in the corners
-   * where two knees cross. Easing the slope to zero at the knee removes the crease. NOT a radial gradient:
-   * a radial mask is an ellipse scaled to the
-   * element, so on a wide card its vertical radius overshoots and the top/bottom never fade. (Recipe "d"
-   * from the fade-toggle experiment — the softest of the four; the others and the toggle went once it won.)
+   * Edge fade: two crossed ramps, intersected, so all edges and corners dissolve; ramp runs 2×(--fx) deep.
+   * Stops follow a smoothstep (0.156/0.5/0.844), not linear — linear meeting the flat interior creates a
+   * slope discontinuity that a bright overlay turns into a Mach-band crease, worst at corners. Not radial:
+   * a radial mask's ellipse overshoots on a wide card, so top/bottom never fade.
    *
-   * Declared HERE, on the surface itself, NOT on the ::before plate — so the plate and any overlay that
-   * fills the card can share ONE mask and dissolve together. When it lived on ::before, a sibling overlay
-   * (the waiting-row bloom canvas) couldn't see it and ended as a hard rounded rect over a faded plate:
-   * that mismatch was the black rim. `.edge-fade` (below) opts a real element into this same mask.
+   * Declared on the surface itself, not ::before, so the plate and any overlay filling the card share one
+   * mask and dissolve together (on ::before a sibling overlay can't see it and ends hard-edged). --fx/--fy
+   * sit beside --fade-mask so var()s resolve per-card in this scope, not baked in from :root.
    *
-   * --fx/--fy sit beside --fade-mask on the same element so their var()s resolve in THIS scope, per card;
-   * the resolved token then inherits to ::before and to `.edge-fade` descendants. (On :root instead, --fx
-   * would resolve against :root — where no card's --fade-x has reached — baking 50px into every card.)
-   *
-   * TUNING — override per-card with e.g. `[--fade-x:120px]` or `[--fade-y:22%]`:
-   *   --fade-x  left/right depth. Default 50px. The visible ramp is 2× this.
-   *   --fade-y  top/bottom depth. Default 50px. A wide short card usually wants this smaller than --fade-x:
-   *             the same px depth is a much bigger FRACTION of a short edge.
+   * TUNING — override per-card, e.g. `[--fade-x:120px]`:
+   *   --fade-x  left/right depth, default 50px (visible ramp is 2× this).
+   *   --fade-y  top/bottom depth, default 50px. Short wide cards usually want this smaller than --fade-x.
    */
   --fx: var(--fade-x, 50px);
   --fy: var(--fade-y, 50px);
@@ -188,16 +155,12 @@
     z-index: -1;
     border-radius: var(--radius-surface);
     /*
-     * Lit along the top edge, sinking toward --deep at the bottom: the surface descends into dark.
+     * Lit at the top edge, sinking toward --deep at the bottom. `--sink` sets how far: 100% reaches full
+     * --deep, 40% only partway — tall cards (the ledger) can sink further, short ones go murky too fast
+     * at the same setting.
      *
-     * `--sink` is how far down the ramp a given card actually travels: 100% reaches full --deep,
-     * 40% only gets partway there. Set it per card — a tall card (the ledger) can afford to sink
-     * the whole way; a short one goes murky too fast at the same setting.
-     *
-     * Read via `var(--sink, 100%)`, NOT declared here: a bare `--sink: 100%` on this rule would be a
-     * direct declaration on the ::before itself, which always wins over whatever a card's own
-     * `[--sink:30%]` sets on the PARENT — inheritance only kicks in when nothing here claims the
-     * property at all.
+     * Read via `var(--sink, 100%)`, not declared directly: a bare `--sink: 100%` here would win over a
+     * card's own `[--sink:30%]` on the parent (direct declaration beats inheritance).
      */
     background:
       radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--shoal) 55%, transparent) 0%, transparent 60%),
@@ -207,11 +170,9 @@
         var(--body) 25%,
         color-mix(in oklab, var(--deep) var(--sink, 100%), var(--body)) 100%
       );
-    /*
-     * A hair of translucency so the abyss behind reads through every surface — depth, not a flat plate.
-     * Multiplies onto the edge-fade mask, so the interior loses this much and the already-faded rim a
-     * touch more. Tunable per card with `[--surface-alpha:…]`; 1 restores a fully opaque plate.
-     */
+    /* Hair of translucency so the abyss reads through every surface (depth, not a flat plate); multiplies
+     * onto the edge-fade mask so the rim loses a touch more than the interior. `[--surface-alpha:…]` tunes
+     * per card; 1 = fully opaque. */
     opacity: var(--surface-alpha, 0.8);
     -webkit-mask-image: var(--fade-mask);
     mask-image: var(--fade-mask);
@@ -220,11 +181,9 @@
   }
 }
 
-/*
- * Opt a real element (not the ::before plate) into its surface's edge fade — for an overlay that FILLS the
- * card and must dissolve at the rim with the plate instead of ending in a hard rect. Consumes the inherited
- * --fade-mask, so it only does anything inside a `.surface`. Used by the waiting-row bloom canvas.
- */
+/* Opts a real element (not the ::before plate) into its surface's edge fade, for an overlay filling the
+ * card that must dissolve at the rim instead of ending hard-edged. Needs the inherited --fade-mask, so
+ * only works inside `.surface`. Used by the waiting-row bloom canvas. */
 @utility edge-fade {
   -webkit-mask-image: var(--fade-mask);
   mask-image: var(--fade-mask);
@@ -233,17 +192,14 @@
 }
 
 /*
- * A shard — the standard list-row card. `surface` is the raw plate primitive; a shard is that plate with
- * the row conventions baked in, so every page that lists things (the queue, arms, history, users…) gets
- * one identical card from a single class instead of re-picking sink/fade/radius/padding each time.
+ * A shard — the standard list-row card. `surface` is the raw plate primitive; a shard bakes in the row
+ * conventions (sink/fade/radius/padding) so every list page (queue, arms, history, users) gets one
+ * identical card from a class instead of re-picking values each time. Defaults match the queue row: short
+ * and wide, so fade-y is a PERCENTAGE (proportional, not a hard px sliver) while fade-x stays px. Override
+ * per-card with an inline style when a row genuinely differs.
  *
- * The defaults below (sink, fade-x/y, radius) are the values the queue row arrived at: a short WIDE card,
- * so fade-y is a PERCENTAGE (dissolves proportionally, not as a hard px sliver) while fade-x stays px.
- * Override per-card with an inline style (wins on specificity) when a row genuinely differs.
- *
- * Padding lives on the shard itself; content must be lifted above it with `relative z-10` (the motion
- * layers — cloud ::after, the bloom canvas — fill the whole card behind the content). CSS-only by
- * choice: the z-lift stays a one-liner in each page rather than a component wrapper.
+ * Content must be lifted above the padding with `relative z-10` (motion layers — cloud ::after, bloom
+ * canvas — fill the card behind it). CSS-only by choice: the z-lift stays a one-liner per page.
  */
 @utility shard {
   @apply surface;
@@ -264,13 +220,12 @@
 }
 
 /*
- * `log` — DM Mono, and the ONLY place mono survives. Mono used to own every "data" string (spawn ids,
- * mesh addresses, exit codes) and it was cut: a mono face on anything a PERSON reads makes it a
- * terminal readout, which is the exact thing we are not building. Log output is the one exception —
- * whitespace and column alignment carry real meaning there, and a proportional face breaks them.
+ * `log` — DM Mono, the only place mono survives: a mono face on anything a PERSON reads looks like a
+ * terminal readout, which this app avoids. Log output is the exception — whitespace/column alignment
+ * carry real meaning there and a proportional face breaks them.
  *
- * `num` — Figtree with tabular figures. Everything else numeric: karma, escrow, ids, VRAM, exit codes.
- * Columns still align (tabular-nums), but the shapes stay soft and humanist.
+ * `num` — Figtree with tabular figures, for everything else numeric (karma, escrow, ids, VRAM, exit
+ * codes). Columns align (tabular-nums) but shapes stay soft and humanist.
  */
 @utility log {
   font-family: var(--font-mono);
@@ -288,51 +243,37 @@
   letter-spacing: -0.01em;
 }
 
-/*
- * Controls. New to the design system with the Queue's composer; Account and the rest will reuse them.
- * No borders (there are none anywhere) — a field is a RECESS, a shape of lower luminance you type into,
- * the inverse of a surface. Focus lifts it and lights a soft pigment ring; it never draws an outline.
- */
+/* Controls. No borders anywhere — a field is a RECESS (lower luminance, inverse of a surface), not an
+ * outlined box. Focus lifts it and lights a soft pigment ring; it never draws an outline. */
 @utility field {
   width: 100%;
-  /* No border — there is no global reset (the legacy App still draws bordered cards), so native inputs
-     and selects would otherwise ship their OS border. A field is a RECESS, not an outlined box. */
+  /* No border: there's no global `* { border: 0 }` reset, so native inputs/selects would otherwise ship
+     their OS border. A field is a RECESS, not an outlined box. */
   border: 0;
   border-radius: var(--radius-control);
-  /*
-   * A solid pool whose EDGES are feathered to transparent by a mask (below), not a flat rounded rect —
-   * a hard luminance edge reads as a machine-drawn box, the one thing this interface never has. `--fill`
-   * is the pool colour, recoloured (and eased) on hover/focus.
-   */
+  /* A solid pool with EDGES feathered to transparent by a mask (below), not a flat rounded rect — a hard
+   * luminance edge reads as a machine-drawn box. `--fill` is the pool colour, recoloured on hover/focus. */
   --fill: color-mix(in oklab, var(--well) 78%, black);
   background-color: var(--fill);
   /*
-   * A feathered ROUNDED rectangle: the fill has soft-melting edges AND visibly round corners, like the
-   * project drop. Built as a 9-SLICE — four corner quadrants, four edge strips, one solid centre — that
-   * ABUT with zero overlap and are unioned (mask-composite: add). Because nothing overlaps, `add`
-   * (source-over) never sums two feathers into a denser patch, so the fade is a single clean ~ff ramp
-   * EVERYWHERE, corners included, at any feather width.
-   *
-   * The earlier version unioned CENTRED corner disks (2·frad boxes) that overlapped the edge bands at
-   * every corner; source-over summed the two feathers there, pushing the opaque region further out at the
-   * corners only — so the rounded ends read TALLER than the straight edges, worse the wider the feather.
-   * The 9-slice removes the overlap instead of shrinking the feather, so the melt can stay generous.
+   * A feathered ROUNDED rectangle: fill has soft-melting edges AND round corners. Built as a 9-SLICE (4
+   * corner quadrants, 4 edge strips, 1 solid centre) that ABUT with zero overlap and union via
+   * mask-composite: add — overlapping pieces would double-sum feathers at the corners (source-over),
+   * pushing the opaque region out unevenly and making rounded ends read taller than straight edges.
    *
    * Only the FILL is masked; text sits in the solid centre (alpha 1) so glyphs stay crisp. Tune with
    * `--frad` (corner radius) and `--ff` (edge feather).
    */
   --frad: 12px;
   --ff: 7px;
-  /* Overlap: tiles OVERLAP by this much inside each other's opaque plateau rather than abutting. An exact
-     abutment at y=frad / x=frad shows a subpixel seam (a hairline where the mask alpha dips <1) when the
-     field's px size is odd and the centred tiles land on a half-pixel. Overlapping #000-over-#000 closes
-     the gap with no alpha compounding — so no seam, and no return of the corner bulge. */
+  /* Tiles OVERLAP inside each other's opaque plateau rather than abutting: an exact abutment shows a
+     subpixel seam when the field's px size is odd (tiles land on a half-pixel, mask alpha dips <1).
+     Overlapping #000-over-#000 closes the gap with no alpha compounding — no seam, no corner bulge. */
   --fo: 1.5px;
   --fmid: calc(100% - var(--frad) * 2);
-  /* Centre grown by the overlap on every side so it underlaps the four edge strips inside their opaque
-     plateau. Only the CENTRE overlaps — the edge strips abut the corner tiles at their exact length. If
-     edges also grew lengthwise they'd reach into the corner tiles' FEATHER, where source-over sums two
-     ramps (0.5 over 0.5 → 0.75) into a brighter sliver along each corner. Plateau-only overlap stays #000. */
+  /* Centre grows by the overlap so it underlaps the edge strips' opaque plateau; only the centre overlaps.
+     If edges also grew lengthwise they'd reach into the corner tiles' feather, where source-over sums two
+     ramps (0.5+0.5→0.75) into a brighter sliver at each corner. */
   --fmid-o: calc(var(--fmid) + var(--fo) * 2);
   /* Corner quadrant = one quarter of a feathered disk whose centre sits at the quadrant's INNER corner. */
   --fc-tl: radial-gradient(circle var(--frad) at bottom right, #000 calc(var(--frad) - var(--ff)), transparent var(--frad));
@@ -391,10 +332,9 @@
     padding-right: 24px;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
-    /* Bottom edge SOLID (only the top still fades), so the control butts flat against the menu below and
-       the two read as one shape. Its own full-size crossed-linear INTERSECT mask — the squared bottom
-       can't be a rounded-rect union like the base field, so this state carries its whole mask, composite
-       included, and doesn't lean on the base's tiled `add`. Sides feather (--fex), continuous with the menu. */
+    /* Bottom edge SOLID (only top fades) so control butts flat against the menu, forming one shape. Needs
+       its own full crossed-linear INTERSECT mask — a squared bottom can't reuse the base field's tiled
+       rounded-rect union. Sides feather (--fex), continuous with the menu. */
     -webkit-mask:
       linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--fex)*.5), rgba(0,0,0,.5) var(--fex), rgba(0,0,0,.844) calc(var(--fex)*1.5), #000 calc(var(--fex)*2), #000 calc(100% - var(--fex)*2), rgba(0,0,0,.844) calc(100% - var(--fex)*1.5), rgba(0,0,0,.5) calc(100% - var(--fex)), rgba(0,0,0,.156) calc(100% - var(--fex)*.5), transparent 100%) center / 100% 100% no-repeat,
       linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--fey)*.5), rgba(0,0,0,.5) var(--fey), rgba(0,0,0,.844) calc(var(--fey)*1.5), #000 calc(var(--fey)*2), #000 100%) center / 100% 100% no-repeat;
@@ -421,12 +361,9 @@ input[type="number"].field::-webkit-inner-spin-button {
   margin: 0;
 }
 
-/*
- * The themed stepper: two stacked chevrons (the Select's own arrow, split up/down) pinned at the field's
- * right, thin ink that warms to gold on hover. The input gets extra right padding so its digits clear
- * them. The arrows sit on their own layer above the field's feathered fill, so they stay crisp at the
- * rim where the pool has dissolved.
- */
+/* Themed stepper: two stacked chevrons pinned at the field's right, thin ink warming gold on hover. Input
+ * gets extra right padding to clear them. Arrows sit above the field's feathered fill so they stay crisp
+ * at the rim where the pool has dissolved. */
 .stepper {
   position: relative;
 }
@@ -460,23 +397,18 @@ input[type="number"].field::-webkit-inner-spin-button {
   height: 11px;
 }
 
-/*
- * A Select control is sized like its OPEN state by default, so opening the menu doesn't resize the bar:
- * the menu's side fade (--fex 12) and the 24px value indent apply even while closed. Only the open state
- * then adds the solid bottom + square bottom corners. Double class so it beats the base `.field`.
- */
+/* Select control sized like its OPEN state by default so opening the menu doesn't resize the bar: the
+ * menu's side fade and 24px indent apply even while closed. Open state adds solid bottom + square
+ * corners. Double class to beat the base `.field`. */
 .field.select-field {
   --fex: 12px;
   padding-left: 24px;
   padding-right: 24px;
 }
 
-/*
- * The open menu of our custom `Select` (app/Select.tsx) — never a native <select>'s OS popup, which is a
- * square system panel we can't touch. Raised out of the abyss by LUMINANCE, not a drop shadow (depth is
- * luminance alone here), and its edges feather to transparent like a field — no border, no hard edge. The
- * item padding keeps text inset past the feather.
- */
+/* Open menu of the custom `Select` (never native <select>'s OS popup, unstyleable). Raised by LUMINANCE not
+ * a drop shadow; edges feather to transparent like a field, no border. Item padding insets text past the
+ * feather. */
 @utility menu {
   position: absolute;
   z-index: 30;
@@ -537,12 +469,9 @@ input[type="number"].field::-webkit-inner-spin-button {
   }
 }
 
-/*
- * A row in the History archive. NOT a shard (no per-row plate, no gaps): the whole archive is one
- * surface and the rows are soft pools of light inside it, like the Karma ledger. `--band` is the pool's
- * strength and `--dim` the row's opacity — both fall off with depth, so the list darkens as it descends
- * and recedes into the abyss rather than ending on a hard bottom edge. Hovering (it's a link) lifts it.
- */
+/* History row: NOT a shard (no per-row plate/gaps) — the archive is one surface, rows are soft pools of
+ * light in it. `--band` is pool strength, `--dim` row opacity; both fall off with depth so the list
+ * darkens and recedes rather than ending on a hard edge. Hover (it's a link) lifts it. */
 @utility history-row {
   display: block;
   border-radius: 10px;
@@ -553,26 +482,21 @@ input[type="number"].field::-webkit-inner-spin-button {
   &:hover { opacity: 1; filter: brightness(1.14); }
 }
 
-/*
- * A roster row — the Arms table's flush line. Not a card (no plate of its own): it lives inside the
- * roster's single surface and only lifts on hover, a faint shoal wash so the row you're reading rises
- * without a rule or a box. The passing cloud, on an allocated row, rides above this.
- */
+/* Roster row — Arms table's flush line, not a card (no own plate): lives inside the roster's single
+ * surface, lifting on hover via a faint shoal wash — no rule, no box. Passing cloud (on an allocated
+ * row) rides above this. */
 @utility arm-row {
   position: relative;
   border-radius: 10px;
   transition: filter 150ms var(--ease-swim);
 
   /*
-   * Hover highlight — a flat shoal wash that is SOLID through the middle and only feathers to transparent
-   * at its edges, so the lit row has no hard rectangle (the same form-from-light law as every surface).
-   * NOT a centre-bright radial: that dims the whole row toward its edges. This stays full strength across
-   * the interior and only the rim dissolves.
+   * Hover highlight: flat shoal wash SOLID through the middle, feathering only at the edges — no hard
+   * rectangle. NOT a centre-bright radial (that dims the whole row toward its edges).
    *
-   * It lives on ::before (behind the z-10 content, so masking it never touches the text) and reuses the
-   * inherited `--fade-mask`, giving it its OWN --fade-x/--fade-y here: a generous horizontal feather, a
-   * light vertical one, so the long left/right edges melt while the interior stays solid. Only its alpha
-   * animates, so the highlight fades in and out rather than snapping.
+   * Lives on ::before (behind z-10 content, so masking never touches text), with its OWN --fade-x/--fade-y
+   * (generous horizontal, light vertical) so long edges melt while the interior stays solid. Only alpha
+   * animates, so it fades rather than snaps.
    */
   &::before {
     content: "";
@@ -583,13 +507,9 @@ input[type="number"].field::-webkit-inner-spin-button {
     background: color-mix(in oklab, var(--shoal) 24%, transparent);
     opacity: 0;
     transition: opacity 150ms var(--ease-swim);
-    /*
-     * Its OWN feather — NOT the inherited `--fade-mask`, whose --fx/--fy resolved back on the roster
-     * .surface (30px), a vertical ramp deeper than half this short row, which swallowed the whole
-     * highlight into a top-to-bottom fade. Declared and used here so the var()s resolve in THIS scope:
-     * a generous horizontal feather, a SMALL vertical one, so all four edges melt into the row while the
-     * interior stays solid. Crossed + intersected, the same law the surfaces use.
-     */
+    /* OWN feather, not the inherited --fade-mask: that resolves at the roster .surface's --fy (30px),
+     * deeper than half this row, swallowing the highlight into a top-to-bottom fade. Declared here so
+     * var()s resolve in this scope: generous horizontal, small vertical, crossed + intersected. */
     --hx: 72px;
     --hy: 10px;
     -webkit-mask-image:
@@ -606,13 +526,9 @@ input[type="number"].field::-webkit-inner-spin-button {
   &:hover::before { opacity: 1; }
   &:hover { filter: brightness(1.04); }
 
-  /*
-   * The passing cloud on an allocated row. Its `.cloud-layer` would otherwise inherit the roster
-   * .surface's `--fade-mask` (resolved there at fade-y 30px) — a vertical ramp deeper than half this
-   * short row, which masked the bands down to a thin middle sliver that read as "cut off at the bottom".
-   * Give the layer its OWN feather, resolved in this scope: a light rim so bands fill the row height and
-   * only melt at the very edges.
-   */
+  /* Passing cloud on an allocated row: `.cloud-layer` would otherwise inherit the roster surface's
+   * --fade-mask (fade-y 30px), masking bands down to a thin sliver that reads as cut off. Gets its own
+   * feather here instead: a light rim so bands fill the row and only melt at the very edges. */
   & .cloud-layer {
     --cx: 50px;
     --cy: 6px;
@@ -627,12 +543,10 @@ input[type="number"].field::-webkit-inner-spin-button {
   }
 }
 
-/*
- * The rail's ground — an ALPHA GRADIENT, not a flat panel. The old flat `abyss 72%` ended on a crisp
- * edge (a vertical band down the page on desktop, a hard top line on mobile); the gradient holds the
- * ground at the rail's outer edge and dissolves it toward the content, so the rail blends into the
- * abyss the way every surface does — by light falling off, never by a rule.
- */
+/* Rail's ground is an ALPHA GRADIENT, not a flat panel: a flat fill would end on a crisp edge (a vertical
+ * band on desktop, a hard line on mobile). The gradient holds at the rail's outer edge and dissolves
+ * toward the content, so the rail blends into the abyss the way every surface does — light falling off,
+ * never a rule. */
 @utility rail-ground {
   /* Mobile bottom bar: ground swells from the bottom edge and fades up into the content it floats over. */
   background: linear-gradient(
@@ -654,14 +568,12 @@ input[type="number"].field::-webkit-inner-spin-button {
 }
 
 /*
- * A rail destination. The SAME feathered-wash hover as an arm row: a fill that is solid through the
- * middle and melts at its edges (its own --hx/--hy mask, crossed + intersected), fading in on hover so
- * a nav label lights the way a roster row does — no pill, no underline, no box.
+ * Rail destination: same feathered-wash hover as an arm row (solid middle, feathered edges via own
+ * --hx/--hy mask), fading in on hover — no pill, no underline, no box.
  *
- * The wash is a neutral shoal on the pages you're NOT on. On the current page (`data-active`) it switches
- * to GOLD instead, so hovering where you already are just DEEPENS the pigment you're lit with rather than
- * laying a second colour over it. Either way it rides ABOVE the active gold pool (the ::before sits in the
- * same negative-z group but paints before the gold child span).
+ * Wash is neutral shoal off the current page; on it (`data-active`) it switches to GOLD, so hovering
+ * where you already are deepens the pigment instead of layering a second colour. Rides above the active
+ * gold pool (::before paints before the gold child span, same negative-z group).
  */
 @utility rail-link {
   position: relative;
@@ -695,11 +607,8 @@ input[type="number"].field::-webkit-inner-spin-button {
   &:hover::before { opacity: 1; }
 }
 
-/*
- * The one loud control per view: the primary verb (Submit spawn). Warm, because it acts on the
- * cluster — but it is NOT pigment's meaning (that's karma); it's the same gold used as "the live,
- * pressable thing", the way the rail lights the current page.
- */
+/* The one loud control per view (Submit spawn). Warm because it acts on the cluster, but not pigment's
+ * meaning (that's karma) — it's the "live, pressable thing" gold, same as the rail's current-page light. */
 @utility btn-primary {
   display: inline-flex;
   align-items: center;
@@ -739,12 +648,9 @@ input[type="number"].field::-webkit-inner-spin-button {
   &:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 
-/*
- * A row of ghost controls that belong to ONE thing (the actions on a stored secret, say). Same recess as
- * btn-ghost — the background is the point, so they read as pressable rather than as bare text on a
- * surface — but they light GOLD on hover, the way FactRow does. Gold is this app's "the live, pressable
- * thing" everywhere else; a row of actions that stayed grey was the odd one out.
- */
+/* Row of ghost controls belonging to ONE thing (e.g. actions on a stored secret). Same recess as btn-ghost
+ * so they read as pressable, but light GOLD on hover — this app's "live, pressable thing" colour, so a
+ * grey action row wouldn't match. */
 @utility btn-ghost-gold {
   &:hover { color: var(--gold); text-shadow: 0 0 10px color-mix(in oklab, var(--gold) 55%, transparent); }
 }
@@ -756,20 +662,16 @@ input[type="number"].field::-webkit-inner-spin-button {
 }
 
 /*
- * THE PASSING CLOUD — the signature motion of a WORKING machine, a real cuttlefish behaviour: dark bands
- * that travel across the skin. These two utilities are the STATIC half; the emission timer and the
- * left→right travel live in `queue/CloudDrift.tsx`, which appends `.cloud-band` elements to a `.cloud-layer`
- * and animates each with the Web Animations API.
+ * THE PASSING CLOUD — dark bands travelling across the skin, signalling a WORKING machine (real cuttlefish
+ * behaviour). These two utilities are the STATIC half; emission timer + left→right travel live in
+ * `queue/CloudDrift.tsx`, which appends `.cloud-band` elements to `.cloud-layer` and animates each via WAAPI.
  *
- * The long history: it was a CSS `::after` gradient (finite tiles → hard edges, fighting animations → frozen
- * patches, identical on every card), then an FBM WebGL field (a texture can't represent an individual band
- * you emit and track). It is now what it always described itself as — DISCRETE bands: each is one element,
- * emitted on a random timer, that drifts the full width once and is removed on exit. A reaction against the
- * skeleton-loader shimmer: DARK not bright, a few crossing bands not one diagonal sweep. If it ever reads as
- * "loading", it has failed.
+ * DISCRETE bands: each is one element, emitted on a random timer, drifts the full width once, removed on
+ * exit. Deliberately unlike a skeleton-loader shimmer: DARK not bright, a few crossing bands not one
+ * diagonal sweep. If it ever reads as "loading", it has failed.
  *
- * `.cloud-layer` — the per-card frame the bands live in. Reuses the surface's shared `--fade-mask` so bands
- * dissolve at the rim exactly as the plate does, and clips (overflow) so a band never spills past the card.
+ * `.cloud-layer` — the per-card frame the bands live in. Reuses the surface's `--fade-mask` so bands
+ * dissolve at the rim like the plate does, and clips (overflow) so a band never spills past the card.
  */
 @utility cloud-layer {
   position: absolute;
@@ -791,11 +693,10 @@ input[type="number"].field::-webkit-inner-spin-button {
 }
 
 /*
- * `.cloud-band` — one dark streak. Full height (overshot top & bottom so the tilt never exposes a corner),
- * a soft gradient core so the LEFT/RIGHT edges melt rather than cut, a vertical mask so the ends melt too,
- * and a blur over all of it for a semi-organic, cloud-soft silhouette. Fixed width/darkness/tilt; only the
- * per-band seed (--edge-l/--edge-r, set in JS) nudges where the soft edges sit, so bands aren't identical
- * without becoming a jumble. `transform` is owned by the WAAPI travel animation (tilt is baked into it).
+ * `.cloud-band` — one dark streak: overshot top/bottom (tilt never exposes a corner), soft gradient core so
+ * left/right edges melt, vertical mask so ends melt too, blur for a cloud-soft silhouette. Per-band seed
+ * (--edge-l/--edge-r, set in JS) varies edges so bands aren't identical. `transform` is owned by the WAAPI
+ * travel animation (tilt baked in).
  */
 @utility cloud-band {
   position: absolute;
@@ -817,10 +718,9 @@ input[type="number"].field::-webkit-inner-spin-button {
 }
 
 /*
- * THE CHROMATIC BLOOM — waiting, with no known end — is NOT here. CSS gradients could only fake the organic
- * current as sliding shapes (three tries proved it), so it lives in `queue/IridBloom.tsx` as a
- * screen-blended <canvas>. See that file. (The cloud and the bloom are no longer the same method: the cloud
- * is discrete bands you can count, the bloom is a continuous field — different phenomena, different tools.)
+ * THE CHROMATIC BLOOM (waiting, no known end) is NOT here — CSS gradients can only fake the organic current
+ * as sliding shapes, so it lives in `queue/IridBloom.tsx` as a screen-blended <canvas>. See that file. Cloud
+ * and bloom are different phenomena needing different tools: discrete countable bands vs. a continuous field.
  */
 
 /*
@@ -853,11 +753,9 @@ input[type="number"].field::-webkit-inner-spin-button {
 }
 
 /*
- * Reduced motion. Meaning is NEVER carried by motion alone, so nothing is lost by stopping: every
- * state that moves also says what it is in words.
- *
- * Canvas-drawn motion (the ground shader, the chromatophore field) can't be reached from CSS — those
- * read the same media query in JS and freeze themselves on a single frame. This block handles the
+ * Reduced motion: meaning is never carried by motion alone, so nothing is lost by stopping — every moving
+ * state also says what it is in words. Canvas-drawn motion (ground shader, chromatophore field) can't be
+ * reached from CSS; those read the same media query in JS and freeze on a single frame. This block is the
  * declarative half.
  */
 @media (prefers-reduced-motion: reduce) {

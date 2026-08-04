@@ -28,9 +28,7 @@ from . import watch as watch_mod
 # exception is handled by ui.run_app instead — which prints one line, or the real traceback under
 # --debug. Two competing error renderers would mean neither is predictable.
 #
-# invoke_without_command: bare `cuttle` opens the menu on a terminal, and prints help everywhere
-# else. (This supersedes the earlier "bare cuttle prints help" decision, settled during the Textual
-# revert — see temp/PHASE6_BUILD.md slice 5.)
+# invoke_without_command: bare `cuttle` opens the menu on a terminal, and prints help everywhere else.
 app = typer.Typer(invoke_without_command=True, add_completion=False, help="CCC front door.",
                   pretty_exceptions_enable=False)
 arm_app = typer.Typer(no_args_is_help=True, help="Manage Arms (run on the Head).")
@@ -455,8 +453,7 @@ def wandb_set(
     """Store your W&B API key on the Head. It is injected into every Spawn you submit, from the CLI
     or the Dashboard, and is held encrypted — no other User can read it, and it never touches this
     box's disk."""
-    # Visible, not a password prompt: a pasted key has to be verifiable by eye (the same call the
-    # setup wizard used to make when the key lived in config.yaml).
+    # Visible, not a password prompt: a pasted key has to be verifiable by eye.
     key = ui.need(key, "the key", lambda: ui.ask_text("Paste your W&B API key"))
     auth_mod.wandb_set(key)
 

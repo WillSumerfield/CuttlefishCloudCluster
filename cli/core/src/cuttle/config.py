@@ -1,7 +1,4 @@
-"""Single source of truth for MVP constants: pinned versions, paths, cluster identity.
-
-Pins mirrored in docs/TODO.md — bump both together at full release.
-"""
+"""Single source of truth for MVP constants: pinned versions, paths, cluster identity."""
 
 import os
 from pathlib import Path
@@ -30,7 +27,7 @@ UBUNTU_ARCHIVE_KEYRING = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 UBUNTU_SNAPSHOT_LIST = Path("/etc/apt/sources.list.d/ccc-ubuntu-snapshot.list")
 
 # apptainer is NOT a version pin, because there is nothing durable to pin to: it comes from a Launchpad
-# PPA, which keeps only its newest build (measured 2026-07-29: 1.5.3-1~noble, and nothing else). So the
+# PPA, which keeps only its newest build (e.g. 1.5.3-1~noble, and nothing else). So the
 # reproducibility on offer is fleet-internal — the HEAD downloads the .deb once and serves that exact
 # file to every Arm forever (setup.pin_apptainer_deb). We cannot resurrect a build Launchpad pruned;
 # we can guarantee every node in the cluster runs the same one. The Arm side gains a second win: a
@@ -41,7 +38,7 @@ APPTAINER_PPA = "ppa:apptainer/ppa"  # added on the HEAD only
 # --- pinned base Pod image (built from a def: pytorch image + pip wandb) ---
 # By DIGEST, not by tag: `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` is mutable and upstream
 # re-pushes it, so a tag would silently hand two nodes different CUDA/torch builds of "the same" image.
-# The digest below is that tag as of 2026-07-29 (linux/amd64). `docker://` accepts a digest reference.
+# The digest below is that tag's current digest (linux/amd64). `docker://` accepts a digest reference.
 BASE_IMAGE_DOCKER = ("pytorch/pytorch@sha256:"
                      "db80a41f8428644cebcb3d75b0b62df334ab6c0e75785951eb25f48bfbd42407")
 WANDB_PKG = "wandb==0.28.1"  # PyPI is immutable per version — this pin cannot rot
@@ -83,7 +80,7 @@ PARTITION = "ccc"
 # `AutoDetect=nvml` would have done — so rebuilding slurm-wlm against NVML would buy a Slurm fork and
 # an `apt-mark hold` blocking security updates, to autodetect what we already detect ourselves.
 
-# --- Karma substrate: priority, Power, VRAM features (Phase 4 slice 0) ---
+# --- Karma substrate: priority, Power, VRAM features ---
 # Nice is how Karma reaches the queue: the Head lowers the priority of a poor-standing User's pending
 # Spawns. It can do that with ZERO privilege, because every Spawn runs as the Mantle — so the Head is
 # the *owner* of every job in the queue, and lowering your own job's priority is an owner's right.
@@ -185,9 +182,9 @@ JOB_CONTAINER_BASE = f"{JOB_CONTAINER_ROOT}/%h"
 # What an Arm reports having written, in its /enroll POST, so the Head can refuse to name a file the
 # fleet does not have yet (see enroll.arms_missing and the Rollout section of temp/spawn-isolation.md).
 #
-# Two names, not one, and they are gated independently: an Arm enrolled during the Phase 3 rollout
-# reports only "prolog", so folding tmpfs into that name would either hold `Prolog=` back on an Arm
-# that has it, or claim tmpfs of a node with no job_container.conf — which drains it.
+# Two names, not one, and they are gated independently: an Arm enrolled before job_container/tmpfs
+# shipped reports only "prolog", so folding tmpfs into that name would either hold `Prolog=` back on
+# an Arm that has it, or claim tmpfs of a node with no job_container.conf — which drains it.
 ARM_CAP_PROLOG = "prolog"
 ARM_CAP_TMPFS = "tmpfs"
 SLURM_STATE_DIR = Path("/var/spool/slurmctld")
@@ -200,8 +197,8 @@ SLURMD_PORT = 6818
 # `/etc/default/slurmd`, because that hook cannot carry them. Ubuntu's unit is
 # `ExecStart=/usr/sbin/slurmd --systemd $SLURMD_OPTIONS`, and systemd splits a variable's value at
 # whitespace **without honouring quotes inside it** — so `--conf "Gres=gpu:1 Feature=vram24"` would
-# reach slurmd as three mangled arguments the moment `--conf` grew a second key (which Phase 4 needs:
-# Feature=vramN is what a Spawn's --vram matches). Quotes written literally in a unit file ARE honoured,
+# reach slurmd as three mangled arguments the moment `--conf` grew a second key (Feature=vramN is what
+# a Spawn's --vram matches). Quotes written literally in a unit file ARE honoured,
 # so the drop-in states the whole command and keeps the space-separated --conf intact.
 SLURMD_DROPIN = Path("/etc/systemd/system/slurmd.service.d/ccc.conf")
 MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, never expires
@@ -209,12 +206,12 @@ MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, n
 # `mungekey`; the older `create-munge-key` is gone, and we are pinned to 24.04.
 MUNGEKEY_BIN = "/usr/sbin/mungekey"
 
-# --- Shared API package venv (Phase 1) ---
+# --- Shared API package venv ---
 # Both head-side FastAPI apps live in one package (`ccc_head_api`) and run from this one venv, kept
 # out of the CLI's own venv. The Enroll API app and the Head API app are two ASGI targets off it.
 API_VENV = Path("/opt/ccc/api/.venv")
 
-# --- Enroll API (Phase 1 ③: /enroll; mesh-only, serves the munge key) ---
+# --- Enroll API (③: /enroll; mesh-only, serves the munge key) ---
 # Bound to the Head's MESH address only: being on the mesh is the entire authorization. Glossary
 # (head/CONTEXT.md): the *Enroll API* is the durable, mesh-only trust boundary (holds the munge key).
 ENROLL_API_PORT = 8081
@@ -222,8 +219,8 @@ ENROLL_API_SERVICE = "ccc-enroll-api"
 ENROLL_API_UNIT = Path("/etc/systemd/system/ccc-enroll-api.service")
 # Runs as munge: the only user that can read munge.key without chmod'ing it or running as root.
 # It is otherwise UNPRIVILEGED — it fills in the hardware fields of a registry row an operator already
-# created, and the operator admits the Arm with `cuttle arm admit`. Its one sudo grant (Phase 9 #2,
-# SUDOERS_MUNGE_HEADSCALE below) is a single parameterless command with nothing a POST body can steer —
+# created, and the operator admits the Arm with `cuttle arm admit`. Its one sudo grant
+# (SUDOERS_MUNGE_HEADSCALE below) is a single parameterless command with nothing a POST body can steer —
 # no wildcard, no argument taken from the request, nothing else headscale's CLI can do.
 SUDOERS_MUNGE_HEADSCALE = Path("/etc/sudoers.d/ccc-munge-headscale")
 ENROLL_API_USER = "munge"
@@ -239,7 +236,7 @@ CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only wri
 # number that can silently disagree with it. Where one is needed it is derived at the point of use.
 ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_devices, powers, mesh_ip, admitted, ...}}
 
-# --- Arm Features (docs/TODO.md "Arm Features", temp/FEATURES_BUILTIN.md) ---
+# --- Arm Features (temp/FEATURES_BUILTIN.md) ---
 # Named capabilities an Arm may report having: heavy, hardware- or licence-gated software that is not
 # installed everywhere. BUILT IN rather than admin-curated, because CCC knows what each name MEANS.
 # At minimum that is placement plus `$<NAME>_PATH`; a name may also carry a runtime profile (see
@@ -280,7 +277,7 @@ APPTAINER_RECORD = CCC_LIB / "apptainer.json"
 # shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
 GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
 
-# --- Head API (Phase 1 ⑥: read board + SPA; Phase 3a: auth + submission): LAN+mesh ---
+# --- Head API (⑥: read board + SPA + auth + submission): LAN+mesh ---
 # The LAN+mesh service backing both the web Dashboard and the CLI (glossary: *Head API*). Split from
 # the Enroll API on purpose: /enroll hands out the munge key and MUST stay mesh-only, but the Head
 # API must reach the LAN too. Bound 0.0.0.0. Reuses API_VENV (same package, different app object). A
@@ -290,7 +287,7 @@ HEAD_API_SERVICE = "ccc-head-api"
 HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
 # The **Mantle** (glossary): the single service identity every Spawn executes as, on every node. On the
 # Head it also runs the Head API, owns the auth DB (head.db), and submits via the munge socket — never
-# reading the munge key. Phase 1 ran the read-only board as `nobody`.
+# reading the munge key.
 HEAD_API_USER = "ccc"
 # Slurm runs a job as the *submitting uid*: slurmctld records the Head API's uid at sbatch, and every
 # slurmd setuid()s to it before launching. So that uid MUST resolve to the same account on every node —
@@ -299,9 +296,9 @@ HEAD_API_USER = "ccc"
 # can have taken it. Collision ⇒ useradd fails and setup halts (no fallback; decide live).
 CCC_UID = 60000
 CCC_GID = 60000
-# --- Guises (temp/spawn-isolation.md Phase 3): a per-User Unix identity on every node ---
-# A **Guise** is what a Spawn runs as. The Mantle above is what the *cluster* is — after Phase 3 no
-# Spawn runs as it, and one that does is a bug. Every Guise is `ccc-u<uid>`, named after its uid and
+# --- Guises: a per-User Unix identity on every node ---
+# A **Guise** is what a Spawn runs as. The Mantle above is what the *cluster* is — no Spawn runs as
+# it, and one that does is a bug. Every Guise is `ccc-u<uid>`, named after its uid and
 # nothing else: the Prolog that creates the account on a donor's Arm has `SLURM_JOB_UID` and no other
 # input at all (no network, no head.db), so the name must be derivable from the uid alone. It also
 # cannot collide with a donor's own accounts, and needs no CCC-username regex.
@@ -325,9 +322,9 @@ SUDOERS_CCC_SLURM = Path("/etc/sudoers.d/ccc-slurm")
 # --- the Licence account (temp/FEATURES_LICENCE.md) --------------------------------------------
 # An account that exists for ONE reason: its home directory is this Arm's **Licence** directory, so
 # that running a vendor's activation as it writes the activation state THERE instead of into a human's
-# home. Probed on hardware 2026-08-03: TurboActivate resolves its state directory through
-# getpwuid(getuid())->pw_dir and ignores $HOME, so the only way to choose where a licence lands is to
-# choose which uid activates it. Hand-copying the files instead does not work for long — they are named
+# home. TurboActivate resolves its state directory through getpwuid(getuid())->pw_dir and ignores
+# $HOME, so the only way to choose where a licence lands is to choose which uid activates it.
+# Hand-copying the files instead does not work for long — they are named
 # from an obfuscated per-release token (absent from both TurboActivate.dat and the vlearn wheels, so
 # underivable), and every version bump renames all of them.
 #
@@ -361,12 +358,12 @@ CERT_DAYS = 3650                       # effectively never expires; a pin outliv
 # Cap an upload rather than buffering whatever arrives: the Head API streams the body to disk, and the
 # Head is the one box that must stay up. A browser folder-picker makes a huge accidental selection easy.
 MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB
-# Auth store (Phase 3a): the User + Session tables behind login. Its own ccc-owned subdir (0700) —
+# Auth store: the User + Session tables behind login. Its own ccc-owned subdir (0700) —
 # NOT loose in the munge-owned CCC_LIB, since SQLite writes WAL/journal sidecars beside the db and
 # `ccc` can't create files in a munge-owned dir. 0600 db, seeded at `setup --head`.
 HEAD_STATE_DIR = CCC_LIB / "head"
 HEAD_DB = HEAD_STATE_DIR / "head.db"
-# Slice 2 submission (all ccc-owned, 0700, under HEAD_STATE_DIR so `ccc` can create/traverse them):
+# Submission state (all ccc-owned, 0700, under HEAD_STATE_DIR so `ccc` can create/traverse them):
 #   projects/<uuid>/  — an uploaded project tree, unpacked by the Head API from a `cuttle run` tar.
 #                       Also the rsync [project] module root (a remote Arm pulls <uuid>/... from here).
 #   spawns/<id>/      — a Spawn's out/err/exit/outputs (the rsync [spawns] stage-out target). The CLI
@@ -384,15 +381,15 @@ HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 CCC_IMAGES_DIR = Path("/opt/ccc/images")
 CCC_SIF = CCC_IMAGES_DIR / "base.sif"
 
-# --- Karma tick (Phase 4 slice 1): the service that ranks the queue by standing ---
+# --- Karma tick: the service that ranks the queue by standing ---
 # A THIRD unit off the same venv and the same head.db (`ccc_head_api.tick`). Deliberately not a task
 # inside the Head API: the economy must not be able to wedge the API, nor the API the economy — and
-# slice 2's meter (sample Demand, settle ended Spawns) is this same tick. Runs as the Mantle, which
+# the meter (sample Demand, settle ended Spawns) is this same tick. Runs as the Mantle, which
 # owns every job in the queue and so may re-nice any of them with no privilege at all.
 KARMA_SERVICE = "ccc-karma"
 KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 
-# --- Tide Pool (docs/TODO.md, now built): interactive Spawn relay ---
+# --- Tide Pool: interactive Spawn relay ---
 # The Head-side TCP relay's listen-port range (ccc_head_api.tidepool.PORT_BASE/PORT_RANGE) — MUST match
 # those constants exactly; duplicated here rather than shared because the CLI and the head-side API
 # package do not import each other (same reason FEATURE_NAMES is duplicated between
@@ -402,7 +399,7 @@ KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 # BELOW Linux's default ephemeral range (net.ipv4.ip_local_port_range = 32768-60999): these ports are
 # LISTENED on, by the relay on the Head and by the Pod's sshd on an Arm, so a range inside the ephemeral
 # one is racing the kernel's own allocator on every box — any outbound connection can be handed the port
-# a Tide Pool is about to want, and the bind then fails with EADDRINUSE. Was 41000; moved 2026-08-02.
+# a Tide Pool is about to want, and the bind then fails with EADDRINUSE.
 TIDEPOOL_PORT_BASE = 31000
 TIDEPOOL_PORT_RANGE = 200
 
@@ -433,7 +430,7 @@ WSL_EXTRA_NVLIB = "libdxcore.so"
 WSL_NVIDIA_SMI = f"{WSL_LIB_ROOT}/lib/nvidia-smi"
 NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 
-# --- mesh (Phase 1 substrate: self-hosted Headscale coordinator + Tailscale client) ---
+# --- mesh (self-hosted Headscale coordinator + Tailscale client) ---
 # Headscale isn't in apt — install the newest GitHub-release .deb (version recorded, pinned later).
 HEADSCALE_RELEASES = "https://api.github.com/repos/juanfont/headscale/releases/latest"
 # Deterministic asset URL for a known tag — no API call, so no unauthenticated rate limit.
@@ -445,7 +442,7 @@ HEADSCALE_PORT = 8080
 HEADSCALE_CONF = Path("/etc/headscale/config.yaml")
 HEADSCALE_LIB = Path("/var/lib/headscale")
 HEADSCALE_POLICY = Path("/etc/headscale/policy.hujson")  # empty policy == deny-all; see mesh._POLICY
-# The coordinator's own TLS identity (Phase 9 #3) — distinct from the Head API's (setup.install_tls /
+# The coordinator's own TLS identity — distinct from the Head API's (setup.install_tls /
 # CCC_TLS_DIR): different service, different reader. This one lives INSIDE HEADSCALE_LIB (0750
 # headscale:headscale, set by the package — cuttle never loosens it) so the `headscale` unix account
 # can read it with no ownership dance; anything else that needs these bytes goes through `sudo cat`
@@ -490,14 +487,14 @@ CCC_TS_PORT = 41642  # default tailscaled uses 41641 — keep them distinct
 #
 # Avoids 100.100.0.0/16, which would contain Tailscale's MagicDNS resolver at 100.100.100.100.
 # Cosmetic only: measured, tailscaled routes quad100 into its tun whatever the prefix, so both
-# daemons fight over it either way (see docs/TODO.md).
+# daemons fight over it either way.
 MESH_V4_PREFIX = "100.99.0.0/16"
 MESH_V6_PREFIX = "fd7a:115c:a1e0:cc::/64"
 HEADSCALE_DB = HEADSCALE_LIB / "db.sqlite"  # node keys, preauth keys — never touched directly except
                                             # by cuttle backup (see backup.py); everywhere else goes
                                             # through the `headscale` binary.
 
-# --- backup/restore (Phase 8 loose end) ---
+# --- backup/restore ---
 # head.db + arms.json + Headscale's db.sqlite are the Head's ENTIRE durable state. Losing all three to
 # a Head-disk failure evicts the whole fleet (every Arm must physically re-enroll). Bundled into one
 # timestamped tarball; getting it off this box (scp/rsync over the personal Tailscale) is a manual
@@ -511,18 +508,17 @@ BACKUP_SERVICE = "ccc-backup"
 BACKUP_SERVICE_UNIT = Path("/etc/systemd/system/ccc-backup.service")
 BACKUP_TIMER_UNIT = Path("/etc/systemd/system/ccc-backup.timer")
 
-# --- stage-in/out (Phase 1 ④): rsync daemon on the Head, bound to the mesh ---
+# --- stage-in/out (④): rsync daemon on the Head, bound to the mesh ---
 # A Spawn on a remote Arm has none of the submitter's files. The Head runs an rsync daemon on its
 # mesh address ONLY (never 0.0.0.0 / the personal tailnet); the job pulls the project in and pushes
 # results back. rsync 873 is privileged, so the daemon runs as root and each module drops to the Head
 # user via uid=/gid=.
 #
-# Mesh membership is NO LONGER the authz (temp/spawn-isolation.md Phase 2). The two shared modules it
-# used to serve — [project] over every upload, [spawns] over every Spawn's results — are gone: a
-# payload on any Arm could name either URL and read every other User's code or overwrite any Spawn's
-# `exit` marker, and nothing about a uid or a namespace closes a network service. What the daemon
-# serves now is one pair of modules per Spawn, rooted at that Spawn's own upload and its own results
-# dir, minted at submit and revoked when its transfers end — a **Siphon** (ccc_head_api.siphons).
+# Mesh membership is NOT the authz: nothing about a uid or a namespace closes a network service, so a
+# shared module reachable by every Arm would let any payload name it and read another User's code or
+# overwrite any Spawn's `exit` marker. What the daemon serves is one pair of modules per Spawn, rooted
+# at that Spawn's own upload and its own results dir, minted at submit and revoked when its transfers
+# end — a **Siphon** (ccc_head_api.siphons).
 # Those live in RSYNCD_DIR, which the Head API writes and rsyncd `&include`s; this file's job is the
 # globals they inherit (mesh-only `hosts allow`, the drop to `ccc`) plus [bench], below.
 RSYNCD_CONF = Path("/etc/ccc-rsyncd.conf")
@@ -560,7 +556,7 @@ PINS_DIR = CCC_HOME / "pins"
 # and is gone when it closes — so the log is the only place the detail survives. One file per run,
 # named for when it started, so a failure days later still has its own.
 LOG_DIR = CCC_HOME / "logs"
-# CLI session bearer (Phase 3a): the token `cuttle login` stores, 0600, kept out of config.yaml so a
+# CLI session bearer: the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 CREDENTIALS_FILE = CCC_HOME / "credentials"
 # Auto-download bookkeeping (cuttle.watch): one `<id>.json` per Spawn whose results this box is still
@@ -573,10 +569,10 @@ OUTPUTS_DIR = CCC_HOME / "outputs"
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
 
-# --- Head-box health monitoring (Phase 8 loose end) ---
+# --- Head-box health monitoring ---
 # Disk/process-liveness/rogue-GPU-CPU checks on the Head itself, scoped Head-only (an Arm is a donor's
-# machine, not ours to watch the same way — see docs/TODO.md). One standalone script (no cuttle
-# import) on a systemd timer, run as `ccc` — nothing here needs root.
+# machine, not ours to watch the same way). One standalone script (no cuttle import) on a systemd
+# timer, run as `ccc` — nothing here needs root.
 MONITOR_SCRIPT = Path("/opt/ccc/bin/ccc-monitor.py")
 MONITOR_SERVICE = "ccc-monitor"
 MONITOR_SERVICE_UNIT = Path("/etc/systemd/system/ccc-monitor.service")

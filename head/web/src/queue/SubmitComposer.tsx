@@ -15,32 +15,24 @@ const OUTPUT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 /**
  * Submit a Spawn. The affordance IS the form: an empty strip that says "drop a project or choose a
- * folder", and picking one expands the composer inline. That expansion is also the PREVIEW GATE —
- * name, file count, total size — and nothing uploads until Submit. Bytes move on one click, never on
- * the pick.
+ * folder", and picking one expands the composer inline — the expansion is also the PREVIEW GATE (name,
+ * file count, total size). Nothing uploads until Submit; bytes move on one click, never on the pick.
  *
- * Source is folder today; a Recipe is the other way in (Ph5) and will drop into the same composer.
- * That's why the picked project is held behind `source`, not assumed to be a folder everywhere.
+ * Source is folder today; a Recipe is another way in (Ph5) into the same composer, so the picked
+ * project is held behind `source` rather than assumed to be a folder everywhere.
  *
- * Two MODES (docs/TODO.md, "Tide Pool"): "Script" is everything above — a project, an entry point,
- * declared outputs. "Tide Pool" is a live interactive shell instead: it hides the project/folder-upload
- * story entirely (nothing to pick, nothing to preview, nothing to upload) and submits only the declared
- * needs (time/vram/gpu/features) any Spawn declares. The Dashboard's part ends there — actual shell
- * access is CLI-only (`cuttle run --tidepool <id>`); this just requests one and shows it in the queue
- * like any other Spawn once placed.
+ * Two MODES (docs/TODO.md "Tide Pool"): "Script" is everything above. "Tide Pool" is a live interactive
+ * shell instead — hides the project/upload story entirely and submits only the declared resource needs.
+ * Shell access is CLI-only (`cuttle run --tidepool <id>`); the Dashboard just requests one and shows it
+ * in the queue once placed.
  */
 
 const GB = 1024 ** 3;
 
-/*
- * The drop strip's soft-edged pool. A ROUNDED RECT (border-radius) feathered by a blur, on a layer BEHIND
- * the label text so the fill melts at the rim while the copy stays crisp.
- *
- * NOT the surfaces' crossed-linear-ramp mask here: that mask feathers SQUARE corners, and its ~2·fade px
- * dead-zone at every edge swallowed the rounded corner whole until the radius grew past it — so raising
- * `radius` did nothing visible. A blur feathers the true rounded-rect perimeter, so `radius` controls the
- * roundness at every value. Edit, save, watch.
- */
+/* Drop strip's soft-edged pool: a ROUNDED RECT feathered by a blur, on a layer behind the label text so
+ * the fill melts at the rim while copy stays crisp. NOT the surfaces' crossed-linear-ramp mask: that
+ * feathers SQUARE corners and its dead-zone swallows a rounded corner until the radius outgrows it, so
+ * `radius` did nothing visible there. A blur feathers the true perimeter instead. Edit, save, watch. */
 const DROP_FADE = {
   /** Corner radius of the recess, px. */
   radius: 16,
@@ -420,14 +412,11 @@ export function SubmitComposer({
                     onChange={(e) => setManifest(e.target.value)}
                   />
                 </Labeled>
-                {/* Which W&B run this is — the client's half of the environment; the key is the Head's.
-                    Grouped with Name/Script/Arguments (what the run IS) rather than with the resource asks
-                    below. Nothing renders until the status lands, so the fields never flicker in for a User
-                    whose Spawns log nowhere.
-                    The toggle is per-Spawn and only ever shown to a User who HAS a key — without one the
-                    line below already says W&B is off, and a switch that turns nothing off is noise.
-                    Switching it off HIDES project/entity rather than dimming them: a keyless User sees no
-                    fields either, so "off" looks the same however you got there. */}
+                {/* Client's half of the W&B environment (the key is the Head's); grouped with Name/Script/
+                    Arguments, not the resource asks below. Nothing renders until status lands, so fields
+                    never flicker in for a User who logs nowhere. Toggle only shows for a User who HAS a
+                    key — a switch that turns nothing off is noise. Off HIDES project/entity rather than
+                    dimming them, so "off" looks the same whether from no key or the toggle. */}
                 {wandbOn === false ? (
                   <p className="text-[13px] text-ink-mute sm:col-span-2">
                     <Link to="/account" className="text-[var(--gold)] underline-offset-4 hover:underline">
@@ -542,10 +531,9 @@ export function SubmitComposer({
 }
 
 /**
- * Shown once, right after a Tide Pool is placed in the queue — this is the one moment the attach command
- * actually matters, so it carries the real id rather than living in compose-time text nobody reads twice.
- * The Dashboard's part in a Tide Pool ends here: it can request one and show it in the queue, but the
- * shell itself is CLI-only (docs/TODO.md "Tide Pool") — there is no browser terminal to open instead.
+ * Shown once, right after a Tide Pool is placed in the queue — the one moment the attach command actually
+ * matters, so it carries the real id instead of living in compose-time text nobody reads twice. The
+ * Dashboard's part ends here: the shell itself is CLI-only (docs/TODO.md "Tide Pool"), no browser terminal.
  */
 function TidepoolPopup({ id, onClose }: { id: number; onClose: () => void }) {
   return (
@@ -581,16 +569,12 @@ function TidepoolPopup({ id, onClose }: { id: number; onClose: () => void }) {
 }
 
 function Labeled({ label, help, className, children }: { label: string; help?: string; className?: string; children: React.ReactNode }) {
-  // A plain div, not a <label> — a <label> wrapping a non-native widget (Select below) forwards a
-  // SECOND click onto the labeled control (the toggle button) whenever you click one of its menu items,
-  // since the <li> is the label's descendant but not the button's. That reopens the menu the pick just
-  // closed. A native <input>/<NumberField> loses nothing here; clicking the text above them never
-  // focused them either way once this stopped being a real <label>.
-  // The CONTROL is what you point at, not the label above it — you are already there with the pointer,
-  // about to type into it, and that is the moment the explanation is wanted. Nothing marks it as
-  // pointable (see app/Tip.tsx); coverage is the affordance, so a field WITHOUT a `help` is the
-  // exception rather than the unmarked norm. `focusable={false}`: the input inside brings its own tab
-  // stop, and focusing it opens the panel anyway.
+  // Plain div, not a <label>: a <label> wrapping a non-native widget (Select) forwards a SECOND click
+  // onto the toggle button whenever a menu item is clicked (the <li> is the label's descendant but not
+  // the button's), reopening the menu the pick just closed.
+  // Tip wraps the CONTROL, not the label above it — the pointer is already there, about to type, which
+  // is when the explanation is wanted (see app/Tip.tsx: coverage is the affordance). `focusable={false}`:
+  // the input inside brings its own tab stop; focusing it opens the panel anyway.
   return (
     <div className={`block ${className ?? ""}`}>
       <span className="label mb-1.5 block">{label}</span>

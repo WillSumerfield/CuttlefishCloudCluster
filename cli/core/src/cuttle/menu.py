@@ -21,12 +21,9 @@ Head or Arm), whether it is **pointed** (cuttle here knows which Head to talk to
 admin commands are Head-local operator commands, gated by being on the Head, never by a session's
 `is_admin`.
 
-Provisioned and pointed are deliberately separate (glossary: `cli/CONTEXT.md`). They were once one
-"set up" flag, and conflating them broke the installer: a **baked** bundle's `install.sh` points the
-box (config + cert pin) without provisioning it, which read as "already set up" and hid `setup` — so
-a freshly-installed box could not be turned into an Arm from the menu. The flag was also testing the
-wrong thing outright: it keyed off `~/.ccc` existing, and `ui._open_log` mkdirs `~/.ccc/logs` on any
-command that prints, so it went true after roughly the first `cuttle` command ever run.
+Provisioned and pointed are deliberately separate (glossary: `cli/CONTEXT.md`): a **baked** bundle's
+`install.sh` points a box (config + cert pin) without provisioning it, so conflating the two would
+hide `setup` on a freshly-installed box and block turning it into an Arm from the menu.
 """
 
 from dataclasses import dataclass
@@ -36,10 +33,10 @@ import typer
 from . import api, config, settings, ui
 
 # Commands that only work on the Head, because they write head.db or reconfigure Slurm directly (or,
-# for build-installer, bake in this Head's address + cert). This is the Phase 6 invariant showing
-# through: the Head API exposes zero admin-write endpoints, so admin work happens on the Head as the
-# operator, never over a session. `teardown` is NOT here — it is gated by "is this box set up",
-# because a client tears down its own `~/.ccc` too (`teardown --client`).
+# for build-installer, bake in this Head's address + cert). The Head API exposes zero admin-write
+# endpoints, so admin work happens on the Head as the operator, never over a session. `teardown` is
+# NOT here — it is gated by "is this box set up", because a client tears down its own `~/.ccc` too
+# (`teardown --client`).
 HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "backup", "munge"}
 
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
@@ -210,8 +207,7 @@ def _is_group(cmd) -> bool:
     """Duck-typed on purpose. `TyperGroup` does NOT subclass `click.Group` — Typer vendors its own
     click, so its MRO is `typer._click.core.Command` and `isinstance(cmd, click.Group)` is **False**
     for `arm`, `user` and `karma`. A walker using isinstance renders those three as leaves and
-    silently loses all eleven subcommands under them. (Same vendored-click trap that made `ui.abort`
-    print nothing in slice 3.)"""
+    silently loses all eleven subcommands under them."""
     return hasattr(cmd, "commands") and bool(cmd.commands)
 
 

@@ -7,30 +7,21 @@ import { seededRand, buildEdgeMask, paintFlesh, pigment } from "./skin";
 export type Member = { id: number; name: string; balance: number };
 
 /**
- * The signature surface.
+ * The signature surface: a dense field of small block-dot chromatophores. Each member occupies a
+ * gaussian-radius patch; nearby dots grow and pick up that person's pigment (warm yellow-brown, umber
+ * ↔ gold, no red). The cursor leaves a ripple wake — recent samples radially displace and lift dots,
+ * decaying over ~1s. No hairlines, no borders, everything fades softly at the edges. No numbers: colour
+ * does all the work.
  *
- * A dense field of small block-dot chromatophores. Each member occupies a
- * gaussian-radius patch of the field; nearby dots grow, and pick up that
- * person's pigment (warm yellow-brown, umber ↔ gold, no red).
- *
- * The cursor leaves a ripple wake — recent cursor samples radially displace
- * and lift dots, decaying over ~1s. No hairlines, no borders, everything
- * fades softly at the edges.
- *
- * There are no numbers on this surface. Colour does all the work.
- *
- * The flesh (fleshy skin + organic dissolving edge) and the pigment ramp both live in ./skin now, shared
- * with the Account hero; this file owns the dot FIELD — placement, breathing, the cursor wake.
+ * Flesh (skin + dissolving edge) and the pigment ramp live in ./skin, shared with the Account hero; this
+ * file owns the dot FIELD — placement, breathing, the cursor wake.
  */
 
 type Dot = { x: number; y: number; r: number; owner: number };
 
-/**
- * The canvas is BLEED px larger than its layout box on every side, and is positioned absolutely so
- * that overhang doesn't push the ledger or the standing card around. The organic fade then happens
- * OUTSIDE the box, which means the solid, fully-dense part of the field fills the whole slot instead
- * of dissolving well before it reaches the edges.
- */
+/** Canvas is BLEED px larger than its layout box on every side, positioned absolutely so the overhang
+ *  doesn't push surrounding layout around. The organic fade happens OUTSIDE the box, so the dense part
+ *  of the field fills the whole slot instead of dissolving before reaching the edges. */
 const BLEED = 170;
 
 /** The knobs worth tuning on the skin itself. Edit, save, watch. */
@@ -54,33 +45,22 @@ const SKIN = {
   offMax: 0.8,
 };
 
-/**
- * Where the members sit in the field.
- *
- * A jittered grid, then relaxation. The grid guarantees the field is COVERED (rejection sampling
- * doesn't — it only guarantees nobody overlaps, so it clumps); the jitter and the relaxation
- * together stop it from looking like a grid.
- */
+/** Where the members sit: a jittered grid, then relaxation. The grid guarantees the field is COVERED
+ *  (rejection sampling only guarantees nobody overlaps, so it clumps); jitter + relaxation then stop it
+ *  from looking like a grid. */
 const PLACEMENT = {
   /** Keep-out band at the edges of the box, in px. Nobody is placed inside these. */
   marginX: 250,
   marginY: 10,
 
-  /**
-   * The closest two members may end up, in px. This is enforced AFTER jittering, by pushing
-   * offenders apart. It is the strongest dial here.
-   *
-   * If you set it larger than the box can accommodate for this many members, everyone gets shoved
-   * outward until they jam against the margins — i.e. they pile up at the edges. That is the signal
-   * that this number is too big, not that something is broken.
-   */
+  /** Closest two members may end up, in px — enforced AFTER jittering by pushing offenders apart. The
+   *  strongest dial here. Too large for the box + member count: everyone jams against the margins and
+   *  piles up at the edges — that's this number being too big, not a bug. */
   minSpacing: 200,
 
-  /**
-   * How far a member may wander from its cell centre, as a fraction of the cell. 0 = a rigid grid,
-   * 1 = anywhere in its cell. Note this fights `minSpacing`: high jitter creates collisions that
-   * relaxation then undoes, so if jitter seems to do nothing, `minSpacing` is what's eating it.
-   */
+  /** How far a member may wander from its cell centre, as a fraction of the cell (0 = rigid grid, 1 =
+   *  anywhere in cell). Fights `minSpacing`: high jitter creates collisions relaxation then undoes, so
+   *  if jitter seems to do nothing, minSpacing is eating it. */
   jitter: 0.6,
 
   /** How hard the relaxation pushes. More passes = closer to a perfectly even spread. */
@@ -126,16 +106,10 @@ export function Standings({ members, youId }: { members: Member[]; youId: number
       }
     }
 
-    /*
-     * Members are placed across the VISIBLE box only — never out in the bleed, where they'd be
-     * half-dissolved.
-     *
-     * A JITTERED GRID, not rejection sampling. Rejection sampling only guarantees that no two
-     * members are too close; it says nothing about covering the space, so it reliably produces
-     * clumps in one corner and a dead void in another. A grid guarantees coverage by construction:
-     * one member per cell, placed at a random point inside it. The cells are then relaxed apart so
-     * the result never reads as a grid.
-     */
+    // Members are placed across the VISIBLE box only, never in the bleed (they'd be half-dissolved). A
+    // JITTERED GRID, not rejection sampling: rejection only guarantees no two are too close, not that
+    // space is covered, so it clumps. A grid covers by construction (one member per cell), then cells
+    // relax apart so the result doesn't read as a grid.
     const { marginX, marginY, minSpacing, jitter: JITTER, passes, seed } = PLACEMENT;
     const rand2 = seededRand(seed);
     const fieldW = boxW - marginX * 2;

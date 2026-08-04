@@ -2,18 +2,15 @@ import { useEffect, useRef } from "react";
 import { useReducedMotion } from "../app/useReducedMotion";
 
 /**
- * THE PASSING CLOUD — a working Spawn. Dark bands that drift across the skin, meaning one thing only: THIS
- * MACHINE IS WORKING. Distinct from the bloom, which is cool and waiting.
+ * THE PASSING CLOUD — a working Spawn. Dark bands drifting across the skin, meaning only THIS MACHINE IS
+ * WORKING. Distinct from the bloom (cool, waiting).
  *
- * DISCRETE bands, not a texture. Each band is one `.cloud-band` element (styled in index.css): a JS timer
- * appends one, the Web Animations API drifts it the full width once, left→right at a constant speed, and it
- * is removed when it exits. Emissions are STEADY — one cloud every `gap` ms, a fixed metronome, no bursts and
- * no followup roll. Every card runs its own emitter with a random first delay (a phase offset spread across
- * a full cloud cycle), so the pace is identical everywhere but cards don't all cross in lockstep.
+ * DISCRETE bands, not a texture: each is one `.cloud-band` element, appended by a JS timer, drifted the
+ * full width once by WAAPI at constant speed, removed on exit. Emissions are STEADY (one every `gap` ms,
+ * no bursts); each card's emitter gets a random first-delay phase offset so cards don't cross in lockstep.
  *
- * No canvas, no shader, no rAF: the travel is a compositor transform, so an idle-but-clear card costs
- * nothing per frame. Under reduced motion the emitter never starts — a still band carries no meaning, and
- * "working" is already said by the live tick, the Running column, and the Arm.
+ * No canvas, no shader, no rAF: travel is a compositor transform, so an idle-but-clear card costs nothing
+ * per frame. Reduced motion: emitter never starts — "working" is already said by the tick/column/Arm.
  */
 
 // Defaults tuned for the queue's tall-ish shard. A caller on a differently-shaped card (the roster's
@@ -21,7 +18,7 @@ import { useReducedMotion } from "../app/useReducedMotion";
 const CLOUD_DEFAULTS = {
   /** Band width, as a fraction of the card. Fixed (variation is minimal — only the soft edges are seeded). */
   width: 0.6,
-  /** Tilt of a band, degrees. Baked into the travel transform. Echoes the old 105° bands. */
+  /** Tilt of a band, degrees. Baked into the travel transform. */
   tilt: -10,
   /** Crossing time, ms. Brisk and uniform — every band the same. */
   cross: 1000,
@@ -40,13 +37,10 @@ const CLOUD_DEFAULTS = {
 export type CloudConfig = Partial<typeof CLOUD_DEFAULTS>;
 
 /**
- * Named presets for cards whose SHAPE breaks the defaults (which target the queue's tall-ish shard).
- *
- * The Arms page is the case in point: its roster is a column of wide, short rows. The default half-width
- * band tilted -10° becomes a steep slash clipped to a ~58px strip, and the tall-shard tempo (cross 1000,
- * gap 200) puts a whole procession of them on-screen at once on a wide row. The `roster` preset instead
- * draws a narrow, near-upright streak that drifts the long way across, slower and more spaced-out, so a
- * wide row reads as the odd cloud passing rather than a barcode.
+ * Named presets for cards whose SHAPE breaks the defaults (tuned for the queue's tall-ish shard). Arms
+ * roster is wide, short rows: default half-width band tilted -10° becomes a steep slash clipped to a
+ * ~58px strip, and the tall-shard tempo stacks a whole procession on-screen. `roster` draws a narrow,
+ * near-upright streak, slower and more spaced-out, so a wide row reads as one cloud passing, not a barcode.
  */
 export const CLOUD_PRESETS = {
   roster: {

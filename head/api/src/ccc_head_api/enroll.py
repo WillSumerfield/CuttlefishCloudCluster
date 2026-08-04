@@ -1,41 +1,32 @@
 """CCC Head enrollment API.
 
-Phase 1 ③ ships enrollment. This app stays **enrollment-only**: the read/Spawn views the SPA consumes
-live in a *separate* Head API app (`ccc_head_api.main`), because they have opposite exposure needs —
-enrollment hands out the munge key and must stay mesh-only, while the Head API must reach the LAN.
-Splitting them keeps the secret physically off every non-mesh interface.
+Stays **enrollment-only**: the read/Spawn views the SPA consumes live in a separate Head API app
+(`ccc_head_api.main`), because they have opposite exposure needs — enrollment hands out the munge key
+and must stay mesh-only, while the Head API must reach the LAN. Splitting them keeps the secret
+physically off every non-mesh interface.
 
-**The first half of the security model is the bind address.** uvicorn listens on the Head's *mesh*
-address only, an address that exists solely on the `ccc0` interface. Nothing on the LAN, on the
-operator's personal tailnet, or on the internet has a route to it. There is no password and no TLS —
+**First gate: the bind address.** uvicorn listens on the Head's *mesh* address only (`ccc0`) — nothing
+on the LAN, the operator's personal tailnet, or the internet has a route to it. No password, no TLS:
 routability is the first gate, and only an enrollment token gets a machine onto the mesh at all.
 
-**The second half is the pre-declared name** (Phase 3a slice 5). `cuttle arm authorize` writes the
-Arm's row — name and owning User — into the registry *before* its token is handed out, and `/enroll`
-refuses a name that isn't there. So mesh membership alone no longer buys the munge key: an
-unauthorized machine that somehow reached the mesh still gets nothing. Both gates fall out of the
-same single admin decision.
+**Second gate: the pre-declared name.** `cuttle arm authorize` writes the Arm's row (name + owning User)
+into the registry *before* its token is handed out, and `/enroll` refuses a name that isn't there —
+mesh membership alone no longer buys the munge key.
 
-**The two gates are now tied together** (Phase 9 #2). Until this, they never actually met: the bind
-address proved the caller was ON the mesh, and the registry check proved the CLAIMED name was
-declared, but nothing checked that the two were the same machine — `req.mesh_ip` was trusted
-straight from the request body. Any admitted Arm's owner could claim a different, already-admitted
-node_name and be handed that node's key. `/enroll` now asks Headscale who is actually registered at
-`request.client.host` (the one field in this request a caller cannot forge) and refuses a mismatch —
-see `_node_named_at`.
+**The two gates are tied together.** `/enroll` asks Headscale who is actually registered at
+`request.client.host` (the one field a caller cannot forge) and refuses a mismatch — see
+`_node_named_at`. Without this, an admitted Arm's owner could claim a different, already-admitted
+node_name and be handed that node's key.
 
-**The service is unprivileged, with one narrow exception.** It runs as `User=munge` — the identity
-that can read 0400 munge:munge /etc/munge/munge.key without loosening the file or running a network
-listener as root. It cannot write /etc/slurm or run scontrol, and `POST /enroll` only updates a
-munge-owned registry row an operator already created — the operator turns that into a live Slurm node
-with `cuttle arm admit`. Its one sudo grant (`headscale nodes list`, nothing else headscale's CLI can
-do — see `cuttle.headapi.install_enroll_sudoers`) takes no argument from the request, so no request
-body has a path to root even through it.
+**Unprivileged, with one narrow exception.** Runs as `User=munge` — able to read 0400 munge:munge
+/etc/munge/munge.key without loosening the file or running a network listener as root. It cannot write
+/etc/slurm or run scontrol; `POST /enroll` only updates a munge-owned registry row an operator already
+created. Its one sudo grant (`headscale nodes list`, nothing else) takes no argument from the request,
+so no request body has a path to root even through it.
 
-Accepted Phase-1 consequence, narrowed but not closed by the above: an Arm, once legitimately
-admitted, still holds the munge key on disk forever, and munge is cluster-wide and authenticates as
-any node or any user. Only the *join token* is short-lived. See `docs/TODO.md` Phase 9 #1 — per-Arm
-revocable credentials, still open; `cuttle munge rotate` + `cuttle arm sync-key` are the coarser,
+Accepted consequence: an Arm, once admitted, holds the munge key on disk forever, and munge is
+cluster-wide and authenticates as any node or user. Only the *join token* is short-lived; per-Arm
+revocable credentials are still open. `cuttle munge rotate` + `cuttle arm sync-key` are the coarser,
 cluster-wide lever that exists today.
 """
 
@@ -53,9 +44,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-# stdlib logging -> stdout -> journald, same shape as the Head API and the Karma tick. This service is
-# small and mesh-only, so it gets targeted event logs (who was handed the munge key, who was refused)
-# rather than the Head API's per-request middleware — the munge-key grant is the one event that matters.
+# stdlib logging -> stdout -> journald, same shape as the Head API and the Karma tick. Targeted event
+# logs (who was handed the munge key, who was refused) rather than per-request middleware.
 log = logging.getLogger("ccc.enroll")
 if not log.handlers:
     _h = logging.StreamHandler(sys.stdout)
@@ -72,13 +62,12 @@ REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 DEBS_DIR = Path(os.environ.get("CCC_DEBS_DIR", "/var/lib/ccc/debs"))
 APPTAINER_RECORD = Path(os.environ.get("CCC_APPTAINER_RECORD", "/var/lib/ccc/apptainer.json"))
 SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
-# The catalog of Arm Features (docs/TODO.md "Arm Features", temp/FEATURES_BUILTIN.md). Built into CCC,
-# not curated and not state — CCC ships the runtime for each one, so this is the set it knows how to
-# arrange for a Spawn, and a name outside it could only ever be a Slurm token with nothing behind it.
-# A donor's declared features are validated against it below.
+# The catalog of Arm Features. Built into CCC, not curated and not state — CCC ships the runtime for
+# each one, so a name outside it could only ever be a Slurm token with nothing behind it. A donor's
+# declared features are validated against it below.
 #
 # Mirrors cuttle.config.FEATURE_NAMES and ccc_head_api.slurm.FEATURE_NAMES (neither app can import the
-# others; see the note in slurm.py). All three must agree.
+# others). All three must agree.
 FEATURE_NAMES = ("vlearn", "isaaclab")
 
 # Mirrors cuttle.config; re-validated root-side by `cuttle arm admit` before reaching gres.conf.
@@ -108,15 +97,14 @@ class EnrollRequest(BaseModel):
     # machine whose GPUs are not all the same — a Slurm Feature is per-node, so a mixed box could not
     # advertise both sizes honestly (cuttle.system.gpu_profile).
     vram_mb: int
-    # Arm Features (docs/TODO.md) this box declares, each validated against FEATURE_NAMES below.
-    # Optional and defaults empty — most Arms have none, and older CLIs never sent the field at all.
+    # Arm Features this box declares, each validated against FEATURE_NAMES below. Optional and defaults
+    # empty — most Arms have none, and older CLIs never sent the field at all.
     features: list[FeatureDecl] = []
-    # What Arm-side files this box has WRITTEN (temp/spawn-isolation.md, Rollout). Configless Slurm
-    # serves slurm.conf but not the scripts it names, so a `Prolog=` naming a file an Arm does not have
-    # fails that Arm's jobs and DRAINS it — and a drained node stays drained across a slurmd restart,
-    # so fixing the file afterwards does not heal it. The Head therefore refuses to render `Prolog=`
-    # until every admitted Arm has reported it here. Defaults empty: an Arm running an older CLI has
-    # not written the prolog, and saying so is exactly right.
+    # What Arm-side files this box has WRITTEN. Configless Slurm serves slurm.conf but not the scripts
+    # it names, so a `Prolog=` naming a file an Arm doesn't have fails that Arm's jobs and DRAINS it —
+    # and a drained node stays drained across a slurmd restart, so fixing the file after doesn't heal
+    # it. The Head refuses to render `Prolog=` until every admitted Arm has reported it here. Defaults
+    # empty: an older CLI hasn't written the prolog, and saying so is exactly right.
     provides: list[str] = []
 
 
@@ -154,16 +142,13 @@ def probe(request: Request) -> dict:
 
 
 def _node_named_at(peer: str) -> str | None:
-    """Whichever node Headscale has registered at mesh address `peer`, by its Headscale name — or
-    None if no node holds it. Phase 9 #2: `POST /enroll` used to take the caller's word for both
-    its address (`req.mesh_ip`) and its name (`req.node_name`); this is what lets it check the
-    first against a source neither a spoofed field nor a spoofed source IP can move (a forged
-    source gets no TCP handshake, same reasoning as `probe` above).
+    """Whichever node Headscale has registered at mesh address `peer`, by its Headscale name — or None
+    if no node holds it. Lets `/enroll` check the claimed name against a source neither a spoofed field
+    nor a spoofed source IP can move (a forged source gets no TCP handshake, same reasoning as `probe`).
 
-    Shells to `sudo -n headscale nodes list` — the ONE privilege this service has (see
-    `cuttle.headapi.install_enroll_sudoers`); `munge` cannot reach Headscale's own unix socket
-    (0750 headscale:headscale) to ask any other way. `-n`: this runs inside a request handler with
-    no tty to prompt, so a broken sudoers rule must fail fast, not hang the request.
+    Shells to `sudo -n headscale nodes list` — the ONE privilege this service has; `munge` cannot reach
+    Headscale's own unix socket (0750 headscale:headscale) any other way. `-n`: this runs inside a
+    request handler with no tty to prompt, so a broken sudoers rule must fail fast, not hang the request.
     """
     try:
         r = subprocess.run(["sudo", "-n", "headscale", "nodes", "list", "--output", "json"],
@@ -212,26 +197,22 @@ def arm_status(name: str) -> dict:
 def enroll(req: EnrollRequest, request: Request) -> dict:
     """Record an Arm's hardware and hand back everything it needs — none of which it could get before
     joining the mesh. Recording is all this does: the Arm is inert until `cuttle arm admit` runs on the
-    Head (or the `cuttle arm authorize` that is still blocked, waiting for exactly this POST).
+    Head.
 
-    **An Arm must have been authorized by name.** `cuttle arm authorize` pre-declares the row before
-    the enrollment token is ever handed out, so a machine on the mesh that no Admin ever named is
-    refused here — and the munge key is what it is being refused. This is the second of enrollment's
-    two gates, and like the first it traces back to one admin decision. Mesh membership alone is no
-    longer enough to obtain the cluster's shared secret.
+    **An Arm must have been authorized by name.** `cuttle arm authorize` pre-declares the row before the
+    enrollment token is ever handed out, so a machine on the mesh that no Admin ever named is refused
+    here — the munge key is what it's being refused. Mesh membership alone is not enough to obtain the
+    cluster's shared secret.
 
-    **The claimed name must match who Headscale says is actually calling** (Phase 9 #2). Before this,
-    `req.node_name` was checked against the registry but `req.mesh_ip` was trusted outright — so any
-    admitted Arm's owner (or a machine that had ever redeemed ANY still-valid preauth key) could POST
-    a DIFFERENT node_name it knew was already admitted and be handed that node's munge key, gres
-    identity be damned; the mesh gate and the pre-declaration gate never actually met each other.
-    `request.client.host` is the one thing in this request a caller cannot forge (a forged source
-    gets no TCP handshake — same reasoning `probe` above already relies on), so it — not the body —
-    is what gets checked against Headscale.
+    **The claimed name must match who Headscale says is actually calling.** `request.client.host` is the
+    one thing in this request a caller cannot forge (a forged source gets no TCP handshake — same
+    reasoning `probe` relies on), so it — not the request body's `req.mesh_ip` — is what gets checked
+    against Headscale. Without this, any admitted Arm's owner could POST a different, already-admitted
+    node_name and be handed that node's munge key.
 
-    An UPDATE, never a create. The pre-declared fields (owner, above all) must survive the donor's
-    POST: this endpoint is the one thing a donor's machine gets to write, and it does not get to say
-    who owns it.
+    An UPDATE, never a create. The pre-declared fields (owner, above all) must survive the donor's POST:
+    this endpoint is the one thing a donor's machine gets to write, and it does not get to say who owns
+    it.
 
     The response also carries the apptainer pin, so the Arm knows what `/apptainer.deb` should hand it
     before it downloads it.
@@ -245,10 +226,9 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         if not GPU_DEVICE_RE.match(device):
             raise HTTPException(422, f"unsupported GPU device {device!r} — expected /dev/nvidiaN "
                                      f"(native Linux) or /dev/dxg (WSL2)")
-    # Hard-validate every declared Arm Feature against the catalog — no free typing, on the same
-    # philosophy as the output-name / GPU-device checks above: a name outside it is refused outright,
-    # not warned about. An unknown name now means the donor's CCC is NEWER than this Head's, since both
-    # ends carry the same constant — so the remedy names that, not an operator command.
+    # Hard-validate every declared Arm Feature against the catalog — no free typing. An unknown name
+    # means the donor's CCC is NEWER than this Head's (both ends carry the same constant), so the
+    # remedy names that, not an operator command.
     if req.features:
         for f in req.features:
             if not FEATURE_NAME_RE.match(f.name):
@@ -268,9 +248,8 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
 
     reg = _load()
     if req.node_name not in reg:
-        # A machine on the mesh reaching for the munge key under a name no Admin ever declared. Refused,
-        # and worth a WARNING: it is the enrollment gate doing its job, and the signal if it ever fires
-        # for a name the operator didn't expect.
+        # A machine on the mesh reaching for the munge key under a name no Admin ever declared. Worth a
+        # WARNING: this firing at all is the signal to watch for.
         log.warning("enroll REFUSED undeclared node=%r from %s", req.node_name, request.client.host)
         raise HTTPException(403, f"{req.node_name!r} was not authorized to join this cluster — "
                                  f"ask the Head's operator to run `cuttle arm authorize`")
@@ -278,31 +257,26 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     peer = request.client.host
     actual_name = _node_named_at(peer)
     if actual_name != req.node_name:
-        # Declared (it's in the registry) but not WHO IT SAYS IT IS — the gate the mesh-membership
-        # check and the pre-declaration check never actually shared until now. Worth a WARNING for the
-        # same reason the undeclared case is: this firing at all is the signal, whether it's a stale
-        # Headscale re-registration racing this request or someone actually trying it.
+        # Declared (it's in the registry) but not WHO IT SAYS IT IS. Worth a WARNING for the same reason
+        # as the undeclared case: this firing at all is the signal, whether it's a stale Headscale
+        # re-registration racing this request or someone actually trying it.
         log.warning("enroll REFUSED node=%r claimed by %s, which Headscale calls %r",
                    req.node_name, peer, actual_name)
         raise HTTPException(403, f"{peer} is not registered to {req.node_name!r} on the mesh")
 
     entry = reg[req.node_name]
     entry["gpu_devices"] = req.gpu_devices
-    # The VERIFIED address, never the request body's: `req.mesh_ip` is only still on the wire because
-    # dropping it would be a breaking change to EnrollRequest, but nothing below this line reads it.
+    # The VERIFIED address, never the request body's: `req.mesh_ip` stays on the wire only because
+    # dropping it would break EnrollRequest, but nothing below this line reads it.
     entry["mesh_ip"] = peer
-    # Hardware profile (Phase 4 slice 0). VRAM is *declared* here; Power is *measured* later, by a
-    # benchmark the Head submits once the node is live — a donor could inflate either, and the trust
-    # story is unchanged (an Arm can already fabricate results outright, and donors are never
-    # strangers), but only one of the two can be taken on the donor's word without it also being wrong.
+    # VRAM is *declared* here; Power is *measured* later by a benchmark. A donor could inflate either,
+    # but only VRAM can be taken on the donor's word without also being wrong.
     entry["vram_mb"] = req.vram_mb
-    # An UPDATE like every other declared field above: a re-enroll (mesh IP moved, `sync-key`) resends
-    # whatever this Arm currently has, so a genuine removal (the owner un-picks a feature and re-runs
-    # setup) actually takes — a setdefault here would let a stale declaration outlive its removal.
+    # An UPDATE, not a setdefault: a re-enroll resends whatever this Arm currently has, so a genuine
+    # removal (owner un-picks a feature, re-runs setup) actually takes.
     entry["features"] = [f.model_dump() for f in req.features]
-    # An UPDATE for the same reason, and a load-bearing one: this is what the Head gates `Prolog=` on
-    # (temp/spawn-isolation.md, Rollout). A stale "yes, I have the prolog" surviving a downgrade is
-    # precisely the claim that would drain a node, so the answer is always this run's.
+    # An UPDATE for the same reason, and load-bearing: this is what the Head gates `Prolog=` on. A stale
+    # "yes, I have the prolog" surviving a downgrade is precisely the claim that would drain a node.
     entry["provides"] = list(req.provides)
     # Re-enrolling an already-admitted Arm (e.g. after the Head's mesh IP moved) stays admitted.
     entry.setdefault("admitted", False)
