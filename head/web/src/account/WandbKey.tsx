@@ -8,6 +8,7 @@ import {
   errMessage,
   type WandbKeyStatus,
 } from "../api";
+import { Tip } from "../app/Tip";
 
 /**
  * The W&B key module — a stored secret, masked by default. Reveal fetches the plaintext (so you can check
@@ -15,24 +16,12 @@ import {
  * one, with a line on what it does.
  *
  * The key is stored on the Head, per User, and injected into every spawn you submit from either client.
- * Under ?demo it runs on a local copy seeded from the mock persona instead — `demoKey` is that seed
- * (undefined once cleared).
+ * The plaintext never enters the SPA except for the one deliberate Reveal.
  */
 
 type State = { kind: "loading" } | { kind: "status"; status: WandbKeyStatus };
 
-export function WandbKey({
-  demo,
-  demoKey,
-  onUnauthorized,
-}: {
-  demo: boolean;
-  demoKey?: string;
-  onUnauthorized: () => void;
-}) {
-  // The demo secret lives here, mutable across replace/remove. Live, the real secret never enters the SPA
-  // except for the one deliberate Reveal.
-  const [localKey, setLocalKey] = useState<string | undefined>(demoKey);
+export function WandbKey({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [revealed, setRevealed] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -42,24 +31,19 @@ export function WandbKey({
   // so you couldn't tell whether your key was stored. Say what failed instead.
   const [error, setError] = useState<string | null>(null);
 
-  const maskFrom = (key?: string): State =>
-    key ? { kind: "status", status: { set: true, last4: key.slice(-4) } } : { kind: "status", status: { set: false, last4: null } };
-
   const load = useCallback(() => {
-    if (demo) { setState(maskFrom(localKey)); return; }
     getWandbKey()
       .then((status) => setState({ kind: "status", status }))
       .catch((e) => {
         if (e instanceof Unauthorized) return onUnauthorized();
         setError(`Couldn't read your W&B key — ${errMessage(e)}`);
       });
-  }, [demo, localKey, onUnauthorized]);
+  }, [onUnauthorized]);
 
   useEffect(() => { load(); }, [load]);
 
   const reveal = async () => {
     setError(null);
-    if (demo) { setRevealed(localKey ?? ""); return; }
     try {
       setRevealed(await revealWandbKey());
     } catch (e) {
@@ -73,15 +57,6 @@ export function WandbKey({
     if (!key) return;
     setBusy(true);
     setError(null);
-    if (demo) {
-      setLocalKey(key);
-      setState(maskFrom(key));
-      setEditing(false);
-      setDraft("");
-      setRevealed(null);
-      setBusy(false);
-      return;
-    }
     try {
       await setWandbKey(key);
       setEditing(false);
@@ -99,7 +74,6 @@ export function WandbKey({
   const remove = async () => {
     setRevealed(null);
     setError(null);
-    if (demo) { setLocalKey(undefined); setState(maskFrom(undefined)); return; }
     try {
       await deleteWandbKey();
       load();
@@ -115,7 +89,7 @@ export function WandbKey({
           to the thing named beside them, not to the value below. They light gold on hover like FactRow,
           so this module stops being the one place on the page where a control reads as bare text. */}
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="label">W&amp;B key</span>
+        <Tip className="label" text="Held encrypted on the Head and injected into every Spawn you submit, from either client — so your runs log to your own account whichever machine you launched them from.">W&amp;B key</Tip>
         {state.kind === "status" && state.status.set && !editing && (
           <div className="flex items-center gap-2">
             <button

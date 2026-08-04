@@ -6,11 +6,8 @@ import { changePassword, Unauthorized } from "../api";
  * the auth gate; this is change-by-choice). Collapsed to a single control until you ask for it, then a
  * current / new / confirm form. Needs the current password because you're authenticated by cookie, not
  * re-proving identity — /passwd 403s a wrong current, and that message reaches you intact.
- *
- * Under ?demo it doesn't touch the real endpoint (design review has no business changing a password); it
- * just plays the success beat.
  */
-export function PasswordForm({ demo, onUnauthorized }: { demo: boolean; onUnauthorized: () => void }) {
+export function PasswordForm({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -32,7 +29,7 @@ export function PasswordForm({ demo, onUnauthorized }: { demo: boolean; onUnauth
     setBusy(true);
     setError(null);
     try {
-      if (!demo) await changePassword(current, next);
+      await changePassword(current, next);
       reset();
       setOpen(false);
       setDone(true);

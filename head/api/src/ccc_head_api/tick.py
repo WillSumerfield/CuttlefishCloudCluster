@@ -94,6 +94,11 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
     for job in jobs:
         if job["state"] != "RUNNING":
             continue
+        # WHERE it ran, recorded before anything about WHAT it costs — placement is a fact about the
+        # Spawn, not about the billing, and the two have different populations. An Admin's Spawn has no
+        # Escrow at all (they are outside the economy), so hanging this off the meter meant an Admin's
+        # History said "arm unrecorded" for every Spawn they had ever run. Write-once, in db.record_placement.
+        db.record_placement(conn, job["id"], job["node"])
         esc = live.get(job["id"])
         if esc is None:
             continue  # the benchmark, or an Admin's Spawn: nobody is charged for it

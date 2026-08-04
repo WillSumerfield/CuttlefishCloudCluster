@@ -1,5 +1,6 @@
 import type { Fold } from "./fold";
 import { levelOf, LEVEL_LABEL, tideOklch } from "./fold";
+import { Tip } from "../app/Tip";
 
 /**
  * The now-reading — the Tide page's StandingCard. One number: what a Spawn costs THIS hour against a
@@ -15,22 +16,34 @@ export function NowCard({ fold }: { fold: Fold }) {
   return (
     <section className="surface [--sink:40%] px-12 py-8 pb-10 md:px-22 md:py-22 md:pb-12 w-full md:w-1/5 h-64">
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
-        <span
-          className="num mx-auto"
-          style={{
-            fontSize: 88,
-            lineHeight: 0.7,
-            fontWeight: 300,
-            letterSpacing: "-0.03em",
-            color: tint,
-            textShadow: `0 0 40px color-mix(in oklab, ${tint} 34%, transparent)`,
-          }}
+        {/* The multiplier IS a Demand ratio, and the level word IS the Tide — so the two terms land on
+            the two marks that actually mean them, rather than both on the card. */}
+        <Tip
+          className="mx-auto"
+          text="How badly a card is wanted: the time being asked for, running and queued, against the time that exists. A card busy for an hour with someone waiting behind it the whole time was wanted for two."
         >
-          {multiplier.toFixed(1)}×
-        </span>
-        <span className="label pl-3.5" style={{ color: tint, letterSpacing: "0.28em", fontSize: 14}}>
-          {LEVEL_LABEL[level]}
-        </span>
+          <span
+            className="num"
+            style={{
+              fontSize: 88,
+              lineHeight: 0.7,
+              fontWeight: 300,
+              letterSpacing: "-0.03em",
+              color: tint,
+              textShadow: `0 0 40px color-mix(in oklab, ${tint} 34%, transparent)`,
+            }}
+          >
+            {multiplier.toFixed(1)}×
+          </span>
+        </Tip>
+        <Tip
+          className="label pl-3.5"
+          text="What an hour on the cluster has typically cost, by hour of day. It's a shape to plan around, not a quote — nothing here will warn you or ask you to confirm before you submit."
+        >
+          <span style={{ color: tint, letterSpacing: "0.28em", fontSize: 14 }}>
+            {LEVEL_LABEL[level]}
+          </span>
+        </Tip>
       </div>
     </section>
   );

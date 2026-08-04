@@ -14,6 +14,14 @@ export function armLabel(node: string | null): string {
   return node ?? "unplaced";
 }
 
+/** The same, for a Spawn that has already ENDED — where "unplaced" would be a lie. A finished Spawn
+ *  was placed; we simply may not have caught it. The meter records the placement, and a Spawn that
+ *  started and ended between two 30s passes was never metered, so nothing wrote it down. Say that,
+ *  rather than claiming it never ran anywhere. */
+export function placedLabel(node: string | null): string {
+  return node ?? "arm unrecorded";
+}
+
 /** "recoverable 12m" for a History row whose Recovery Window (docs/TODO.md) is still open, else null.
  *  NOT live-ticking — History is a static archive, fetched once and never polled (see HistoryPage), so
  *  this is computed at render time and simply goes stale like every other cell until the next visit. */

@@ -283,6 +283,40 @@ def ledger(conn: sqlite3.Connection, user_id: int, days: int = 30, points: int =
     return {"rows": out, "curve": curve}
 
 
+def usage(conn: sqlite3.Connection, days: int = 30, now: datetime | None = None) -> list[dict]:
+    """Who has been consuming the cluster: one daily spend series per User, heaviest first.
+
+    The counter-tide to `demand_series`. That one is about *cards* — how badly each was wanted, hour by
+    hour. This one is about *people*, over the same window, and the two are read together: a month where
+    one User's band swallows the plot explains a month of high Demand better than the Demand chart can.
+
+    Everyone's, like the standings and the queue — and for the same reason. Usage is only legible in
+    proportion, so a User who could see only their own series would learn nothing from it.
+
+    A User who spent nothing in the window is omitted rather than sent as a row of zeroes: they are not
+    a thin band at the bottom of the stack, they are absent from it. `series` is `days` UTC-day totals,
+    oldest first, so every User's array is the same length and indexes to the same day.
+    """
+    now = now or datetime.now(timezone.utc)
+    # Day keys, oldest first — the x-axis, built here so a day nobody spent on is a 0 and not a gap.
+    start = (now - timedelta(days=days - 1)).date()
+    keys = [(start + timedelta(days=k)).strftime("%Y-%m-%d") for k in range(days)]
+    index = {d: k for k, d in enumerate(keys)}
+
+    spend: dict[int, list[float]] = defaultdict(lambda: [0.0] * days)
+    for r in db.usage_series(conn, keys[0]):
+        k = index.get(r["day"])
+        if k is not None:
+            spend[r["user_id"]][k] = round(r["spent"], 2)
+
+    bal = balances(conn, now)
+    names = {u["id"]: u["username"] for u in conn.execute("SELECT id, username FROM users").fetchall()}
+    out = [{"user_id": uid, "username": names.get(uid), "balance": round(bal.get(uid, 0.0), 2),
+            "total": round(sum(series), 2), "series": series}
+           for uid, series in spend.items() if names.get(uid) is not None]
+    return sorted(out, key=lambda u: -u["total"])
+
+
 def share(balance: float, escrow: float = 0.0) -> float:
     """The effect a Balance actually has, bounded in [0, 1]. Saturating on purpose: hoarding Karma has
     diminishing returns and debt has diminishing punishment, so neither end runs away.
@@ -317,6 +351,10 @@ def standings(conn: sqlite3.Connection, now: datetime | None = None) -> list[dic
     """
     bal = balances(conn, now)
     esc = db.escrow_totals(conn)
+    # The claims behind each total, so a User reading "−140 escrow" can see which two Spawns are
+    # holding it. Public on the same terms as the totals and as the queue itself: what is running on
+    # the shared cluster, and what it is costing, is not private here.
+    esc_rows = db.escrow_breakdown(conn)
     # Admins are not economic actors: a role for RUNNING the cluster, not using it. They earn no Karma
     # (an Arm they own is a Commons Arm and its Karma is destroyed), pay none, and hold no Balance — so
     # they have no standing to appear in. This is also what keeps `Σ balances ≡ 0` true: an Admin never
@@ -327,7 +365,12 @@ def standings(conn: sqlite3.Connection, now: datetime | None = None) -> list[dic
         b, e = bal.get(r["id"], 0.0), esc.get(r["id"], 0.0)
         s = share(b, e)
         out.append({"user_id": r["id"], "username": r["username"], "balance": round(b, 2),
-                    "escrow": round(e, 2), "share": round(s, 4), "nice": nice_for(s)})
+                    "escrow": round(e, 2), "share": round(s, 4), "nice": nice_for(s),
+                    "escrow_spawns": [
+                        {"job_id": x["job_id"], "script": x["script"], "node": x["node"],
+                         "amount": round(x["amount"], 2)}
+                        for x in esc_rows.get(r["id"], [])
+                    ]})
     return sorted(out, key=lambda u: -u["share"])
 
 

@@ -1,7 +1,7 @@
-import { useState } from "react";
 import type { Arm } from "../api";
 import { CloudDrift, CLOUD_PRESETS } from "../queue/CloudDrift";
-import { armState, toneColor, vram, power, mesh, ROSTER_COLS, type ArmAction } from "./format";
+import { Tip } from "../app/Tip";
+import { armState, toneColor, vram, power, mesh, ROSTER_COLS } from "./format";
 
 /**
  * One machine in the roster. NOT a card — a flush row inside the roster's single surface, its cells
@@ -9,21 +9,15 @@ import { armState, toneColor, vram, power, mesh, ROSTER_COLS, type ArmAction } f
  * the passing cloud on an ALLOCATED row — a machine that is working. Everything else is still, because a
  * roster is a table you scan, and twenty moving rows would fight that.
  *
- * Owner is plain ink, never pigment: pigment means Karma. Admin actions live in an overlay that surfaces
- * on hover/focus, so they never widen the row or disturb the columns for the Users who can't use them.
+ * Owner is plain ink, never pigment: pigment means Karma.
+ *
+ * There are no Admin controls on this row, and nothing is missing behind that. Admitting, benchmarking
+ * and removing an Arm are Head-CLI-only, permanently — the Head API exposes no admin-write endpoints at
+ * all — so the row offers no button rather than one that always fails.
  */
-export function ArmRow({
-  arm,
-  isAdmin,
-  onAct,
-}: {
-  arm: Arm;
-  isAdmin: boolean;
-  onAct: (name: string, action: ArmAction) => void;
-}) {
+export function ArmRow({ arm }: { arm: Arm }) {
   const { word, tone, working } = armState(arm);
   const retracted = word === "retracted";
-  const [confirmRemove, setConfirmRemove] = useState(false);
 
   return (
     <li
@@ -74,9 +68,13 @@ export function ArmRow({
               opacity: tone === "wait" ? 0.5 : 1,
             }}
           />
-          <span className="truncate text-[13px]" style={{ color: tone === "alarm" ? "var(--alarm)" : "var(--ink-soft)" }}>
-            {word}
-          </span>
+          {retracted ? (
+            <Tip className="truncate text-[13px] text-ink-soft" text="The owner has paused this machine. It's still enrolled and still on the mesh; it just isn't accepting work.">{word}</Tip>
+          ) : (
+            <span className="truncate text-[13px]" style={{ color: tone === "alarm" ? "var(--alarm)" : "var(--ink-soft)" }}>
+              {word}
+            </span>
+          )}
         </div>
 
         {/* GPUS · VRAM · POWER — the machine's measure. Right-aligned, tabular, so a column reads as a column. */}
@@ -88,42 +86,6 @@ export function ArmRow({
         <div className="num truncate text-[13px] text-ink-mute">{mesh(arm.mesh_ip)}</div>
       </div>
 
-      {/* Admin — an overlay, revealed on hover or keyboard focus, floated over the mesh column's slack. */}
-      {isAdmin && (
-        <div className="pointer-events-none absolute inset-y-0 right-5 z-20 flex items-center opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
-          {confirmRemove ? (
-            <div className="flex items-center gap-1.5">
-              <button className="btn-ghost" onClick={() => setConfirmRemove(false)}>
-                Keep
-              </button>
-              <button
-                className="btn-ghost"
-                style={{ color: "var(--alarm)" }}
-                onClick={() => {
-                  setConfirmRemove(false);
-                  onAct(arm.name, "remove");
-                }}
-              >
-                Remove
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              {!arm.admitted && (
-                <button className="btn-ghost" onClick={() => onAct(arm.name, "admit")}>
-                  Admit
-                </button>
-              )}
-              <button className="btn-ghost" onClick={() => onAct(arm.name, "benchmark")}>
-                Benchmark
-              </button>
-              <button className="btn-ghost" onClick={() => setConfirmRemove(true)}>
-                Remove
-              </button>
-            </div>
-          )}
-        </div>
-      )}
     </li>
   );
 }

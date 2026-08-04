@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "../app/useReducedMotion";
-import { members, you, type Member } from "./mock";
 import { seededRand, buildEdgeMask, paintFlesh, pigment } from "./skin";
+
+/** One person in the field. Adapted from api.ts's `Standing` by KarmaPage — this surface needs only
+ *  who someone is and where they stand, and takes no interest in Share, nice, or their Escrow. */
+export type Member = { id: number; name: string; balance: number };
 
 /**
  * The signature surface.
@@ -87,7 +90,9 @@ const PLACEMENT = {
   seed: 90213,
 };
 
-export function Standings() {
+/** `youId` is null for an Admin, who is outside the economy and so appears in nobody's field — the
+ *  "you" marker simply never matches, which is the honest rendering of having no standing. */
+export function Standings({ members, youId }: { members: Member[]; youId: number | null }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const mouseRef = useRef<{ x: number; y: number; inside: boolean }>({ x: -9999, y: -9999, inside: false });
@@ -195,7 +200,9 @@ export function Standings() {
     }));
 
     return { dots, memberPositions, w, h };
-  }, [size.w, size.h]);
+    // `members` is a dependency now that it arrives from the Head: a User joining, or anyone's Balance
+    // moving, re-places the field. The placement is seeded, so the same roster always lands the same way.
+  }, [size.w, size.h, members]);
 
   // Precompute per-dot owner + base colour once field/members set
   const baked = useMemo(() => {
@@ -464,7 +471,7 @@ export function Standings() {
        * appears or disappears. Never a number.
        */}
       {field.memberPositions.map((p, i) => {
-        const isYou = p.m.id === you.id;
+        const isYou = p.m.id === youId;
         const isHovered = hover?.i === i;
         return (
           <div

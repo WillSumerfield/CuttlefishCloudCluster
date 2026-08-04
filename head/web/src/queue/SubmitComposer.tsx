@@ -5,6 +5,7 @@ import { human, pick, relPath, type Picked } from "../project";
 import { Select } from "../app/Select";
 import { NumberField } from "../app/NumberField";
 import { Chip } from "../app/Chip";
+import { Tip } from "../app/Tip";
 import { Link } from "../app/router";
 
 // Mirrors the Head's OUTPUT_NAME_RE (ccc_head_api.spawns) — an output name becomes a shell-interpolated
@@ -76,9 +77,9 @@ export function SubmitComposer({
   // no pre-fill, and gates `ready` below just like `picked`/`script` already do.
   const [outputs, setOutputs] = useState<string[]>([]);
   const [outputDraft, setOutputDraft] = useState("");
-  // Arm Features (docs/TODO.md) this Spawn requires — a picker over the Head's catalog, never
-  // free-typed (unlike outputs above): a name the Admin never curated can't be a real requirement.
-  // Starts empty and stays optional; the Head 422s only an UNSATISFIABLE request, never an empty one.
+  // Arm Features (docs/TODO.md) this Spawn requires — a picker over what the Head supports, never
+  // free-typed (unlike outputs above): the catalog is built into CCC, so a name outside it is one no
+  // Arm could carry. Starts empty and stays optional; the Head 422s only an UNSATISFIABLE request.
   const [featureCatalog, setFeatureCatalog] = useState<string[]>([]);
   const [features, setFeatures] = useState<string[]>([]);
   // Which dependency file builds this Spawn's Python environment (docs/TODO.md "Python Environments").
@@ -115,7 +116,7 @@ export function SubmitComposer({
   useEffect(() => {
     getWandbKey()
       .then((s) => setWandbOn(s.set))
-      .catch(() => setWandbOn(true)); // includes ?demo, where the route is behind a session we don't have
+      .catch(() => setWandbOn(true)); // unreadable → assume on; the Head decides for real at submit
   }, []);
 
   // The catalog is fetched once, not tied to any picked project — it's what the Head knows exists,
@@ -265,7 +266,9 @@ export function SubmitComposer({
           take here, and Tide Pool hides everything below that only means something for a project. */}
       <div className="mb-5 flex gap-1">
         <Chip on={mode === "script"} onClick={() => setMode("script")}>Script</Chip>
-        <Chip on={mode === "tidepool"} onClick={() => setMode("tidepool")}>Tide Pool</Chip>
+        <Tip text="A live shell on a real GPU, for debugging against the hardware instead of guessing. It queues and costs Karma exactly like a Spawn, and it keeps holding the card until you cancel it or its time runs out — disconnecting does not end it.">
+          <Chip on={mode === "tidepool"} onClick={() => setMode("tidepool")}>Tide Pool</Chip>
+        </Tip>
       </div>
 
       {(
@@ -344,12 +347,12 @@ export function SubmitComposer({
           )}
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Labeled label="Name" className="sm:col-span-2">
+            <Labeled label="Name" help="An optional label so you can recognise this run in the queue later. Leave it blank and the script's name is used." className="sm:col-span-2">
               <input className="field" placeholder="optional" value={name} onChange={(e) => setName(e.target.value)} />
             </Labeled>
             {mode === "script" && (
               <>
-                <Labeled label="Script" className="sm:col-span-2">
+                <Labeled label="Script" help="The file the cluster actually runs, relative to the folder you picked." className="sm:col-span-2">
                   {scriptOptions.length > 0 ? (
                     <Select
                       ariaLabel="Entry-point script"
@@ -366,7 +369,7 @@ export function SubmitComposer({
                     </p>
                   )}
                 </Labeled>
-                <Labeled label="Output folders" className="sm:col-span-2">
+                <Labeled label="Output folders" help="Folders your results are written into. Anything written outside them is recoverable for 30 minutes after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days." className="sm:col-span-2">
                   <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
                     {outputs.map((o) => (
                       <span
@@ -401,26 +404,15 @@ export function SubmitComposer({
                       onBlur={addOutput}
                     />
                   </div>
-                  {/* The Recovery Window (docs/TODO.md), said BEFORE the mistake rather than after it —
-                      parity with the CLI, where the same sentence is `cuttle run --output`'s help. Stated
-                      as a safety net that expires, never as a reason to skip this field: a User who reads
-                      it as "outputs are optional" gets 30 minutes and then loses the work anyway. Always
-                      shown, including once folders are named — a declared-but-WRONG name is the exact
-                      case this catches, and that one looks complete from here. */}
-                  <p className="mt-1.5 text-[12px] text-ink-mute">
-                    Anything written outside these folders is recoverable for 30 min after the Spawn
-                    ends, then gone — name the right folders rather than relying on it. What lands in
-                    them is kept 7 days.
-                  </p>
                 </Labeled>
-                <Labeled label="Arguments" className={isAdmin ? "sm:col-span-2" : "sm:col-span-2"}>
+                <Labeled label="Arguments" help="Passed to your script exactly as typed, the same as if you had run it yourself." className="sm:col-span-2">
                   <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
                 </Labeled>
                 {/* Blank is the normal answer — the Head looks in the project root for uv.lock,
                     pyproject.toml, requirements.txt or environment.yml. This field is for the two cases
                     it can't guess: a manifest that isn't the obvious one, and "don't build anything".
                     Grouped with Script/Arguments because it describes what the code IS, not what it needs. */}
-                <Labeled label="Dependencies" className="sm:col-span-2">
+                <Labeled label="Dependencies" help="Which file builds your Python environment. Blank means the Head looks in your project root for uv.lock, pyproject.toml, requirements.txt or environment.yml; 'none' means build nothing and run against the base environment." className="sm:col-span-2">
                   <input
                     className="field"
                     placeholder="auto-detect (or a path, or 'none')"
@@ -446,14 +438,20 @@ export function SubmitComposer({
                   <>
                     <div className="sm:col-span-2">
                       <span className="label mb-1.5 block">Use W&amp;B?</span>
-                      <div className="flex gap-1">
-                        <Chip on={wandbLog} onClick={() => setWandbLog(true)}>Enabled</Chip>
-                        <Chip on={!wandbLog} onClick={() => setWandbLog(false)}>Disabled</Chip>
-                      </div>
+                      <Tip
+                        className="block"
+                        focusable={false}
+                        text="Whether this run logs to Weights &amp; Biases. Your stored key is used for every Spawn unless you turn it off here."
+                      >
+                        <div className="flex gap-1">
+                          <Chip on={wandbLog} onClick={() => setWandbLog(true)}>Enabled</Chip>
+                          <Chip on={!wandbLog} onClick={() => setWandbLog(false)}>Disabled</Chip>
+                        </div>
+                      </Tip>
                     </div>
                     {wandbLog && (
                       <>
-                        <Labeled label="W&B project">
+                        <Labeled label="W&B project" help="Which W&B project this run logs into. Blank uses the cluster's default.">
                           <input
                             className="field"
                             placeholder="ccc"
@@ -461,7 +459,7 @@ export function SubmitComposer({
                             onChange={(e) => setWandbProject(e.target.value)}
                           />
                         </Labeled>
-                        <Labeled label="W&B entity">
+                        <Labeled label="W&B entity" help="The W&B team or account the run logs under. Blank uses whatever your key's account defaults to.">
                           <input
                             className="field"
                             placeholder="account default"
@@ -475,14 +473,14 @@ export function SubmitComposer({
                 ) : null}
               </>
             )}
-            <Labeled label="Memory">
+            <Labeled label="Memory" help="How much GPU memory you need. Every card with at least this much becomes eligible, and the fastest free one takes the job — asking for more than you need narrows the pool and makes you wait longer.">
               <NumberField value={vram} onChange={setVram} min={1} placeholder="VRAM, GB" ariaLabel="Memory, VRAM in GB" />
             </Labeled>
-            {/* A picker over the Head's catalog, not free-text like Output folders above — a required
-                Feature has to be a name the Admin actually curated (`cuttle feature add`), or it can
-                never be satisfied. Omitted entirely when the catalog is empty: nothing to require yet. */}
+            {/* A picker over what the Head supports, not free-text like Output folders above — the
+                catalog is built into CCC, so anything outside it can never be satisfied. The guard is
+                for a Head that failed to answer, not an empty catalog: there is no longer such a thing. */}
             {featureCatalog.length > 0 && (
-              <Labeled label="Required features" className="sm:col-span-2">
+              <Labeled label="Required features" help="Heavy or licence-gated software that isn't installed everywhere, like IsaacSim or VSim. Most runs need none. If no Arm in the fleet has what you ask for, the Head refuses the Spawn rather than queueing it forever." className="sm:col-span-2">
                 <div className="flex flex-wrap gap-1.5">
                   {featureCatalog.map((f) => (
                     <Chip key={f} on={features.includes(f)} onClick={() => toggleFeature(f)}>
@@ -492,16 +490,16 @@ export function SubmitComposer({
                 </div>
               </Labeled>
             )}
-            <Labeled label="Time">
+            <Labeled label="Time" help="How long the run may take before it is killed. Karma is escrowed against it, so over-estimating costs you queue position and nothing else — the difference is refunded when the Spawn ends.">
               <NumberField value={minutes} onChange={setMinutes} min={1} placeholder="minutes" ariaLabel="Time in minutes" />
             </Labeled>
-            <Labeled label="GPUs">
+            <Labeled label="GPUs" help="How many separate cards this run holds at once. Each one is priced separately.">
               <NumberField value={gpu} onChange={(v) => setGpu(Number(v))} min={0} ariaLabel="GPUs" />
             </Labeled>
             {/* Naming a machine is an Admin power — a User says what they NEED and the scheduler places
                 it. Non-admins never see this (and the Head 403s it). */}
             {isAdmin && (
-              <Labeled label="Arm">
+              <Labeled label="Arm" help="Admin only. Everyone else declares what they need and the cluster places the work — naming a machine is how a queue stops being fair.">
                 <Select
                   ariaLabel="Target an arm"
                   value={node}
@@ -582,16 +580,25 @@ function TidepoolPopup({ id, onClose }: { id: number; onClose: () => void }) {
   );
 }
 
-function Labeled({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+function Labeled({ label, help, className, children }: { label: string; help?: string; className?: string; children: React.ReactNode }) {
   // A plain div, not a <label> — a <label> wrapping a non-native widget (Select below) forwards a
   // SECOND click onto the labeled control (the toggle button) whenever you click one of its menu items,
   // since the <li> is the label's descendant but not the button's. That reopens the menu the pick just
   // closed. A native <input>/<NumberField> loses nothing here; clicking the text above them never
   // focused them either way once this stopped being a real <label>.
+  // The CONTROL is what you point at, not the label above it — you are already there with the pointer,
+  // about to type into it, and that is the moment the explanation is wanted. Nothing marks it as
+  // pointable (see app/Tip.tsx); coverage is the affordance, so a field WITHOUT a `help` is the
+  // exception rather than the unmarked norm. `focusable={false}`: the input inside brings its own tab
+  // stop, and focusing it opens the panel anyway.
   return (
     <div className={`block ${className ?? ""}`}>
       <span className="label mb-1.5 block">{label}</span>
-      {children}
+      {help ? (
+        <Tip text={help} className="block" focusable={false}>{children}</Tip>
+      ) : (
+        children
+      )}
     </div>
   );
 }

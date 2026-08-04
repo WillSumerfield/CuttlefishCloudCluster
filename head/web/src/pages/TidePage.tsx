@@ -1,30 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { Page } from "../app/Page";
-import { getDemand, type DemandSample } from "../api";
-import { isDemo } from "../queue/mock";
+import { getDemand, getUsage, type DemandSample, type UsageUser } from "../api";
 import { fold } from "../tide/fold";
 import { NowCard } from "../tide/NowCard";
 import { TideHorizon } from "../tide/TideHorizon";
 import { Usage } from "../tide/Usage";
-import { demoDemand, demoUsage } from "../tide/mock";
 
 /**
  * The Tide — when to run. The now-card states this hour's cost against a typical one; the horizon draws
- * the day it's read from; the usage band (demo-only) is who's been spending. Tool density, like Karma:
- * the page recedes so the water is what you see.
+ * the day it's read from; the usage band is who's been spending. Tool density, like Karma: the page
+ * recedes so the water is what you see.
  *
- * Live data is one call, /karma/demand. A cluster with no history returns nothing, which folds to a flat
- * 1.0 Tide — honest, not broken. ?demo wears a month of mock so the whole shape can be reviewed.
+ * Two calls over the same 30 days, and they are counterparts: /karma/demand is card-shaped (how badly
+ * each was wanted, hour by hour) and /karma/usage is people-shaped (who spent it). A month of high water
+ * up top is explained by whoever's band swallows the plot below. A cluster with no history returns
+ * nothing from both, which folds to a flat 1.0 Tide and an absent band — honest, not broken.
  */
 export function TidePage() {
-  const demo = isDemo();
-  const [samples, setSamples] = useState<DemandSample[] | null>(demo ? demoDemand() : null);
+  const [samples, setSamples] = useState<DemandSample[] | null>(null);
+  const [usage, setUsage] = useState<UsageUser[]>([]);
 
   useEffect(() => {
-    if (demo) return;
     // An empty series is the correct cold-start read, so a failed/empty fetch degrades to a flat Tide.
     getDemand(30).then(setSamples).catch(() => setSamples([]));
-  }, [demo]);
+    getUsage(30).then(setUsage).catch(() => setUsage([]));
+  }, []);
 
   const folded = useMemo(() => fold(samples ?? []), [samples]);
 
@@ -45,9 +45,12 @@ export function TidePage() {
         <TideHorizon fold={folded} />
       </section>
 
-      {demo && (
+      {/* Absent, not empty, on a cluster nobody has spent on yet: a stacked area with no bands is a
+          labelled blank rectangle, which says less than saying nothing. The top five carry the shape —
+          past that the bands are too thin to read and the legend stops fitting. */}
+      {usage.length > 0 && (
         <section className="mt-34 md:-mb-24 relative z-0">
-          <Usage data={demoUsage()} />
+          <Usage data={usage.slice(0, 5)} />
         </section>
       )}
     </Page>

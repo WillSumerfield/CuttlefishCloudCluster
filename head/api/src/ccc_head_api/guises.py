@@ -11,7 +11,7 @@ no network, no head.db, no lookup of any kind. See config.guise_name (the CLI's 
 templates.PROLOG_TMPL.
 
 Constants are duplicated from cuttle.config rather than imported: this package never imports the CLI
-(same split as FEATURES_CATALOG between enroll.py and slurm.py). They must agree.
+(same split as FEATURE_NAMES between enroll.py and slurm.py). They must agree.
 """
 
 import os

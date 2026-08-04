@@ -1,12 +1,22 @@
-import { yourStanding, escrowSpawns } from "./mock";
+import { Link } from "../app/router";
+import { Tip } from "../app/Tip";
+import type { Standing } from "../api";
 
 function formatSigned(n: number) {
   const s = n >= 0 ? "+" : "−";
   return `${s}${Math.abs(n).toFixed(0)}`;
 }
 
-export function StandingCard() {
-  const { balance, escrow, escrowSpawns: n } = yourStanding;
+/**
+ * Your own two numbers: what you hold, and what your live Spawns are holding of it.
+ *
+ * The Escrow list is the whole reason the total is worth showing — "−140" is a fact you can do nothing
+ * with, and "the sweep on arm-mantle-01 is holding 90 of it" is one you can. Each claim links to its
+ * Spawn, since cancelling it is the action the number implies.
+ */
+export function StandingCard({ standing }: { standing: Standing }) {
+  const { balance, escrow, escrow_spawns: escrowSpawns } = standing;
+  const n = escrowSpawns.length;
 
   return (
     <section className="surface [--sink:40%] px-12 py-8 pb-10 md:px-20 md:py-10 md:pb-20">
@@ -27,7 +37,7 @@ export function StandingCard() {
             >
               {formatSigned(balance)}
             </span>
-            <span className="label">Karma</span>
+            <Tip className="label" text="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all.">Karma</Tip>
           </div>
         </div>
 
@@ -46,16 +56,17 @@ export function StandingCard() {
             >
               −{escrow.toFixed(0)}
             </span>
-            <span className="text-sm text-ink-mute">
-            ESCROW, {n} Spawn{n === 1 ? "" : "s"}
-            </span>
+            <Tip className="text-sm text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Spawn ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">
+              ESCROW, {n} Spawn{n === 1 ? "" : "s"}
+            </Tip>
 
           </div>
 
           <ul className="mt-2.5 space-y-2.5">
             {escrowSpawns.map((s) => (
-              <li
-                key={s.id}
+              <Link
+                key={s.job_id}
+                to={`/spawn/${s.job_id}`}
                 className="relative flex items-center justify-between rounded-[10px] px-3 py-2.5"
               >
                 {/*
@@ -89,14 +100,16 @@ export function StandingCard() {
                     }}
                   />
                   <span className="num truncate text-ink" style={{ fontSize: 13, letterSpacing: "0.02em" }}>
-                    {s.id}
+                    {s.job_id}
                   </span>
-                  <span className="truncate text-[12px] text-ink-mute">{s.note}</span>
+                  <span className="truncate text-[12px] text-ink-mute">
+                    {[s.script, s.node].filter(Boolean).join(" · ")}
+                  </span>
                 </div>
                 <span className="num relative text-ink-soft" style={{ fontSize: 13 }}>
                   −{s.amount.toFixed(0)}
                 </span>
-              </li>
+              </Link>
             ))}
           </ul>
         </div>

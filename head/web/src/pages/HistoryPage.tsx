@@ -5,8 +5,6 @@ import { session } from "../app/session";
 import { getHistory, Unauthorized, type ArchivedSpawn } from "../api";
 import { ArchiveList } from "../history/ArchiveList";
 import { Filters, EMPTY_FILTER, type Filter } from "../history/Filters";
-import { demoArchive } from "../history/mock";
-import { isDemo } from "../queue/mock";
 
 /**
  * The searchable archive of finished work. One flat, newest-first stream, filtered from a sidebar — the
@@ -16,13 +14,11 @@ import { isDemo } from "../queue/mock";
  */
 export function HistoryPage() {
   const { logout } = useAuth();
-  const demo = isDemo();
-  const [rows, setRows] = useState<ArchivedSpawn[]>(() => (demo ? demoArchive() : []));
-  const [loaded, setLoaded] = useState(demo);
+  const [rows, setRows] = useState<ArchivedSpawn[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<Filter>(EMPTY_FILTER);
 
   useEffect(() => {
-    if (demo) return; // design harness — hold the mock, don't fetch.
     getHistory()
       .then(setRows)
       .catch((e) => {
@@ -31,7 +27,7 @@ export function HistoryPage() {
         // Any other error (Head unreachable, a 5xx) leaves rows empty → the empty state.
       })
       .finally(() => setLoaded(true));
-  }, [demo, logout]);
+  }, [logout]);
 
   // The arms worth offering are the ones that actually appear in the archive.
   const arms = useMemo(
@@ -73,12 +69,6 @@ export function HistoryPage() {
         ) : null
       }
     >
-      {demo && (
-        <p className="mb-6 rounded-[10px] px-3 py-2 text-[13px]" style={{ background: "color-mix(in oklab, var(--irid-low) 12%, transparent)", color: "var(--ink-soft)" }}>
-          Demo data — not the live cluster. Drop the <span className="num">?demo</span> from the URL for the real archive.
-        </p>
-      )}
-
       {/* Filters left, archive right — the same two-column shape as the Queue (composer left, list right),
           so the format reads as one family. Below lg they stack, filters first; filters stick on scroll. */}
       <div className="grid gap-8 lg:grid-cols-[minmax(300px,380px)_1fr] lg:items-start">

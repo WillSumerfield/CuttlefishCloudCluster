@@ -70,8 +70,7 @@ export type ArchivedSpawn = Spawn & {
   finished_at: number
   // Recovery Window (docs/TODO.md): null/absent once it's closed (or was never made) — everything else
   // the Spawn wrote outside its declared outputs, held on the Head for 30 min. bytes rides alongside for
-  // the same reason it does on RecoveryStatus: a size worth showing, not just a countdown. Optional (not
-  // just nullable) so history/mock.ts's demo rows — predating this field — still typecheck as "none".
+  // the same reason it does on RecoveryStatus: a size worth showing, not just a countdown.
   recovery_bytes?: number | null
   recovery_expires_at?: string | null
   // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are
@@ -84,11 +83,35 @@ export type ArchivedSpawn = Spawn & {
 
 export type Me = { username: string; is_admin: boolean; must_change_password: boolean }
 
-export type SpawnStatus = {
+// One Spawn, whole — GET /spawns/{id}. `state`/`done`/`exit` are the live verdict (read from squeue and
+// the exit file); everything below them is the archive row that rides along, and is absent only for a
+// Spawn the API never submitted (the enrollment benchmark). Deliberately indifferent to whether its
+// subject is queued, running or a year old: the Spawn page renders from this one fetch either way.
+export type SpawnDetail = {
   id: number
   done: boolean
   state: string
   exit?: number
+  submitted_at?: string
+  finished_at?: string | null
+  exit_code?: number | null
+  script?: string
+  gpus?: number | null
+  vram_gb?: number | null
+  minutes?: number | null
+  /** Demanded (Admin `--node`), not where it ran — see `placed_node`. */
+  node?: string | null
+  /** Where the cluster actually put it, recorded by the meter. Null while it is still queued, and for
+   *  a Spawn that ended before a single meter pass caught it running. */
+  placed_node?: string | null
+  submitted_by?: string | null
+  // What it settled at. Null while it still holds an Escrow, and for a Spawn that never settled at all
+  // (Admin-owned, or ended before the meter reached it).
+  cost?: number | null
+  recovery_bytes?: number | null
+  recovery_expires_at?: string | null
+  output_bytes?: number | null
+  output_expires_at?: string | null
 }
 
 // Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever a Spawn wrote OUTSIDE
@@ -149,8 +172,9 @@ export const errMessage = (e: unknown): string => (e instanceof Error ? e.messag
 const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
 
 export const getArms = () => json<Arm[]>('/arms')
-// The admin-curated catalog of Arm Features (`cuttle feature add`) — what the submit composer offers
-// to require. Read-only from the Dashboard; mutating it is CLI+sudo only, like every other admin write.
+// The Arm Features CCC supports — what the submit composer offers to require. Built into CCC, not
+// curated, so there is nothing to mutate from anywhere: it reports what this HEAD's version knows.
+// What the cluster can currently PLACE is narrower (an Arm has to carry it); that is checked at submit.
 export const getFeatureCatalog = () => json<string[]>('/features')
 export const getSpawns = () => json<Spawn[]>('/spawns')
 
@@ -164,7 +188,11 @@ type HistoryRow = {
   exit_code: number | null
   cancelled: boolean
   script: string
+  // What the submitter DEMANDED (Admin-only `--node`), which is null for almost every Spawn — never
+  // where it ran. `placed_node` is that, recorded by the meter; null when the Spawn ended too fast to
+  // be metered at all, or predates the column.
   node: string | null
+  placed_node: string | null
   gpus: number
   minutes: number | null
   submitted_by: string | null
@@ -180,7 +208,7 @@ function outcomeOf(r: HistoryRow): Outcome {
   return r.exit_code === 0 ? 'done' : 'failed'
 }
 
-// Finished Spawns, newest first. Design review runs on ?demo (see history/mock.ts).
+// Finished Spawns, newest first.
 export const getHistory = () =>
   json<HistoryRow[]>('/spawns/history').then((rows) =>
     rows.map(
@@ -188,7 +216,9 @@ export const getHistory = () =>
         id: r.job_id,
         name: r.script,
         state: r.cancelled ? 'cancelled' : 'finished',
-        node: r.node,
+        // For a FINISHED Spawn "the arm" means the one it ran on. The declared node is the fallback
+        // only because when it is set at all, an Admin named it and the Spawn went there.
+        node: r.placed_node ?? r.node,
         gpus: r.gpus,
         submitted_by: r.submitted_by,
         time_limit: r.minutes,
@@ -205,7 +235,12 @@ export const getHistory = () =>
     ),
   )
 export const getMe = () => json<Me>('/me')
-export const getStatus = (id: number) => json<SpawnStatus>(`/spawns/${id}`)
+export const getSpawn = (id: number) => json<SpawnDetail>(`/spawns/${id}`)
+/** A Spawn's stderr — where a crash's traceback lands. `getLogs` serves stdout, which is empty on one. */
+export const getStderr = (id: number) => req(`/spawns/${id}/stderr`).then((r) => r.text())
+/** The Environment build's output — empty string for a Spawn that declared none. The Head's work, not
+ *  the Spawn's, which is why it is its own stream rather than the head of stdout. */
+export const getBuildLog = (id: number) => req(`/spawns/${id}/build`).then((r) => r.text())
 // null = no open Recovery Window (never made, over the 16GB cap, evicted for the 50GB pool cap, or its
 // 30 min are up) — a normal outcome for a finished Spawn, not surfaced as an error to the caller.
 export async function getRecovery(id: number): Promise<RecoveryStatus | null> {
@@ -231,10 +266,10 @@ export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.t
 /** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
 export const cancelSpawn = (id: number) => req(`/spawns/${id}`, { method: 'DELETE' }).then(() => {})
 
-// Arm lifecycle. `retract`/`return` are real, owner-scoped routes on the Head (app-layer — see
-// retraction.py, no real Slurm DRAIN). `admit`/`benchmark`/`remove` are NOT and never will be: those
-// stay Head-CLI-only forever (the Privileged Sidecar that would have exposed them here was killed as a
-// roadmap goal), so their buttons on the roster only ever run under ?demo's mock.
+// Arm lifecycle, in full. `retract`/`return` are real, owner-scoped routes on the Head (app-layer — see
+// retraction.py, no real Slurm DRAIN). There is no admit/benchmark/remove here and never will be: those
+// stay Head-CLI-only forever (the Privileged Sidecar that would have exposed them was killed as a
+// roadmap goal), so the roster offers no button for them rather than one that always fails.
 const armPost = (name: string, verb: string) =>
   req(`/arms/${encodeURIComponent(name)}/${verb}`, { method: 'POST' }).then(() => {})
 
@@ -242,12 +277,6 @@ const armPost = (name: string, verb: string) =>
 export const retractArm = (name: string) => armPost(name, 'retract')
 /** Owner-only: give a retracted Arm back — it never left the cluster, so no Admin, no new token. */
 export const returnArm = (name: string) => armPost(name, 'return')
-/** Admin, Head-CLI-only — this button only works under ?demo. */
-export const admitArm = (name: string) => armPost(name, 'admit')
-/** Admin, Head-CLI-only — this button only works under ?demo. */
-export const benchmarkArm = (name: string) => armPost(name, 'benchmark')
-/** Admin, Head-CLI-only — this button only works under ?demo. */
-export const removeArm = (name: string) => req(`/arms/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
 // A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its
 // owner (the Head only ever serves you your own). It runs exactly what it captured until the owner hits
@@ -348,7 +377,7 @@ export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent
 
 // The W&B key the Head injects into every Spawn you submit (from either client). Held ENCRYPTED at rest —
 // a third-party secret the Head keeps on your behalf, and unlike a password it must be recoverable in
-// plaintext to be used, so it can't be hashed. ?demo runs these on local state (account/mock.ts).
+// plaintext to be used, so it can't be hashed.
 export type WandbKeyStatus = { set: boolean; last4: string | null }
 
 /** Masked status only — whether a key is stored, and its last 4 chars. Never the plaintext. */
@@ -368,9 +397,54 @@ export const deleteWandbKey = () => req('/account/wandb', { method: 'DELETE' }).
 // The Tide, as the Head serves it: Demand per Arm over CLOCK time — how badly each card has been wanted,
 // hour by hour, over the last `days`. This is the ONLY surface the Tide is seen through: not a forecast,
 // not a quote. The frontend folds this into the hour-of-day shape itself (tide/fold.ts). A cold or
-// history-less cluster returns [], which reads as a flat, honest 1.0 Tide; ?demo runs the mock series.
+// history-less cluster returns [], which reads as a flat, honest 1.0 Tide.
 export type DemandSample = { node: string; at: string; demand: number }
 export const getDemand = (days = 30) => json<DemandSample[]>(`/karma/demand?days=${days}`)
+
+// One claim holding part of a User's Escrow — a Spawn that has not settled yet. `amount` is the ratchet
+// (the greater of the hold quoted at submit and what the meter has accrued since), so it only ever
+// climbs while the Spawn runs. The claims sum to the `escrow` on the same Standing.
+export type EscrowClaim = { job_id: number; script: string | null; node: string | null; amount: number }
+
+// One User's standing, as GET /karma serves it — everyone's, always, because a Balance is meaningless in
+// isolation: Karma ranks Users against each other. Admins never appear (they are outside the economy).
+// `share` is the saturating [0,1] effect the Balance actually has; `nice` is what Slurm is told.
+export type Standing = {
+  user_id: number
+  username: string
+  balance: number
+  escrow: number
+  share: number
+  nice: number
+  escrow_spawns: EscrowClaim[]
+}
+export const getStandings = () => json<Standing[]>('/karma')
+
+// A real event in your ledger — a Settlement, or an Admin's Override. `amount` is signed from YOUR point
+// of view: + earned, − paid. A null `counterparty` is not a missing name, it is the point: Karma with no
+// source was conjured (an Override), with no destination was destroyed (a burn on a commons Arm).
+//
+// There is no `kind: 'decay'` and there never will be. Decay is not an event — it is the sag of `curve`
+// BETWEEN the events, which is why the curve ships alongside the rows rather than being derivable from
+// them. Drawing decay as a row would also imply a stored Balance to decay, and no such table exists.
+export type LedgerRow = {
+  id: number
+  at: string
+  kind: 'settle' | 'override'
+  amount: number
+  job_id: number | null
+  note: string | null
+  counterparty: string | null
+}
+export type Ledger = { rows: LedgerRow[]; curve: { at: string; balance: number }[] }
+export const getLedger = (days = 30) => json<Ledger>(`/karma/ledger?days=${days}`)
+
+// Who spent the cluster: daily Karma spend per User, heaviest first. `series` is `days` UTC-day totals,
+// oldest first — every User's array is the same length and indexes to the same day, so they stack. A User
+// who spent nothing in the window is absent rather than a row of zeroes. `balance` rides along because
+// the bands wear pigment, and pigment means standing.
+export type UsageUser = { user_id: number; username: string; balance: number; total: number; series: number[] }
+export const getUsage = (days = 30) => json<UsageUser[]>(`/karma/usage?days=${days}`)
 
 export async function login(username: string, password: string): Promise<Me> {
   let r: Response

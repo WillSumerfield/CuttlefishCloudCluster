@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Arm } from "../api";
+import { Tip } from "../app/Tip";
 import { CloudDrift } from "../queue/CloudDrift";
 import { IridBloom } from "../queue/IridBloom";
 import { armState, toneColor, vram, power, type ArmAction } from "./format";
@@ -60,9 +61,11 @@ function MyArmCard({ arm, onAct }: { arm: Arm; onAct: (name: string, action: Arm
 
         <div className="mt-4">
           {retracted ? (
-            <button className="btn-ghost" onClick={() => onAct(arm.name, "return")}>
-              Return
-            </button>
+            <Tip text="Give a retracted machine back. It never actually left the cluster, so this needs no Admin and no new token.">
+              <button className="btn-ghost" onClick={() => onAct(arm.name, "return")}>
+                Return
+              </button>
+            </Tip>
           ) : confirm ? (
             <div className="flex items-center gap-2">
               <span className="text-[12px] text-ink-mute">Stops work now, 3-min grace.</span>
@@ -81,9 +84,11 @@ function MyArmCard({ arm, onAct }: { arm: Arm; onAct: (name: string, action: Arm
               </button>
             </div>
           ) : (
-            <button className="btn-ghost" onClick={() => setConfirm(true)}>
-              Retract
-            </button>
+            <Tip text="Take your machine back right now. Work on it gets a short grace period and then dies — and it settles at zero, so whoever was running pays nothing for a run you ended.">
+              <button className="btn-ghost" onClick={() => setConfirm(true)}>
+                Retract
+              </button>
+            </Tip>
           )}
         </div>
       </div>

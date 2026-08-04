@@ -1,16 +1,17 @@
 import { useMemo, useState } from "react";
 import { edgeFade } from "../app/edgeFade";
+import { Tip } from "../app/Tip";
 import { pigment } from "../karma/skin";
-import type { UsageUser } from "./mock";
+import type { UsageUser } from "../api";
 
 /**
  * Who spent the cluster, over the last month. The warm counter-tide to the horizon above: this is PEOPLE,
  * so it wears pigment (umber debtor → gold creditor), never iridescence. A stacked area — total load and
  * each User's share of it at once. Hover a band to solo it.
  *
- * Demo-only: the Head serves no per-User usage series (it would be an aggregate across every User, which
- * no endpoint gives), so this section renders only under ?demo and is absent live — the same honesty the
- * Account page keeps for its Ph4 figures.
+ * Measured in Karma spent, not GPU-hours: a settle row already weights an hour by the card's Power and
+ * the Demand it ran against, and raw hours would call an hour on the quiet little card equal to an hour
+ * on the coveted one — the exact distinction the page above exists to draw.
  */
 
 // FOOT — the bottom band runs this far past the plot so edgeFade dissolves filled area, not a hard
@@ -57,7 +58,7 @@ export function Usage({ data }: { data: UsageUser[] }) {
       const bot = lower.map((v, d) => ({ x: x(d), y: i === 0 ? VB_H + FOOT : y(v) })).reverse();
       const path = `M${top[0].x},${top[0].y}${smooth(top)}L${bot[0].x},${bot[0].y}${smooth(bot)}Z`;
       for (let d = 0; d < days; d++) lower[d] = upper[d];
-      return { name: u.name, color: rgb(pigment(u.balance, 0.5)), path };
+      return { name: u.username, color: rgb(pigment(u.balance, 0.5)), path };
     });
 
     const totals = data.map((u) => u.series.reduce((n, v) => n + v, 0));
@@ -100,7 +101,7 @@ export function Usage({ data }: { data: UsageUser[] }) {
               </li>
             ))}
           </ul>    
-          <span className="label shrink-0 text-right">Usage · last 30 days</span>
+          <Tip className="label shrink-0 text-right" text="Karma spent per person over the last 30 days. Measured in Karma rather than hours because an hour on the coveted card is not an hour on the quiet one.">Usage · last 30 days</Tip>
         </div>
     </div>
   );

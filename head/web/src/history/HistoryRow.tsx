@@ -1,6 +1,7 @@
 import type { ArchivedSpawn, Outcome } from "../api";
+import { Tip } from "../app/Tip";
 import { Link } from "../app/router";
-import { duration, armLabel, recoveryLabel, outputsLabel } from "../queue/format";
+import { duration, placedLabel, recoveryLabel, outputsLabel } from "../queue/format";
 
 /**
  * One finished Spawn in the archive. NOT a shard: the archive is a single surface and rows are soft pools
@@ -16,10 +17,21 @@ import { duration, armLabel, recoveryLabel, outputsLabel } from "../queue/format
 
 const LOUD: Record<Outcome, boolean> = { done: false, cancelled: false, failed: true, retracted: true };
 
+// What each ending actually means for what you were charged — the part the word alone never says.
+const WHY: Record<Outcome, string> = {
+  done: "The run reached the end of your script and exited cleanly.",
+  cancelled:
+    "Somebody ended this run early. It still settles for the seconds it actually held — choosing to stop doesn't make it free.",
+  failed:
+    "The run ended without a clean exit — a crash, or the machine going away underneath it. It's settled for what it used and is never silently retried.",
+  retracted:
+    "The machine's owner took it back mid-run. This is the one ending that costs the submitter nothing.",
+};
+
 function Verdict({ outcome, exit }: { outcome: Outcome; exit: number | null }) {
   const loud = LOUD[outcome];
   return (
-    <span style={loud ? { color: "var(--alarm)" } : undefined}>
+    <Tip text={WHY[outcome]} className={loud ? "text-[color:var(--alarm)]" : undefined}>
       {outcome}
       {/* Exit code rides along only where one exists — failed carries it; cancelled/retracted never ran
           to an exit. done is exit 0 and says so quietly. */}
@@ -29,7 +41,7 @@ function Verdict({ outcome, exit }: { outcome: Outcome; exit: number | null }) {
           <span className="num">exit {exit}</span>
         </>
       )}
-    </span>
+    </Tip>
   );
 }
 
@@ -64,7 +76,7 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
               <span aria-hidden>·</span>
               <Verdict outcome={spawn.outcome} exit={spawn.exit} />
               <span aria-hidden>·</span>
-              <span className="num">{armLabel(spawn.node)}</span>
+              <span className="num">{placedLabel(spawn.node)}</span>
               {spawn.held !== null && (
                 <>
                   <span aria-hidden>·</span>
@@ -86,10 +98,20 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
             </div>
           </div>
 
-          {/* Settled Karma — quiet, right-aligned, tabular so costs compare down the column. Plain ink,
-              never pigment (pigment is standing, not cost). A dash before it was priced. */}
-          <span className="num shrink-0 text-[13px] text-ink-mute" style={{ minWidth: "3ch", textAlign: "right" }}>
-            {spawn.cost === null ? "—" : spawn.cost}
+          {/* Settled Karma — right-aligned and tabular so costs compare down the column, and GOLD,
+              because Karma is gold everywhere else in this interface and a cost is still Karma. (This
+              was plain ink on the rule "pigment is standing, not cost" — but pigment is the umber→gold
+              RAMP that encodes a balance, and a flat gold is not on it. Nothing here reads as standing.)
+              Named, because a bare number in a column of prose is a quantity of nothing. Rounded: the
+              settled amount is a float, and 1.3339583333333335 is not a price anyone reads. */}
+          <span className="num shrink-0 text-[13px]" style={{ minWidth: "3ch", textAlign: "right", color: "var(--gold)" }}>
+            {spawn.cost === null ? (
+              "—"
+            ) : (
+              <>
+                {Math.round(spawn.cost)} <span className="label !text-[10px]">karma</span>
+              </>
+            )}
           </span>
         </div>
       </Link>

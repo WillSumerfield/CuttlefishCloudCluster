@@ -300,6 +300,30 @@ def spawns(limit: int | None = None, user: dict = Depends(current_user)) -> list
     return rows
 
 
+def _archive_row(r: dict) -> dict:
+    """Finish an archive row from db.py — the two countdowns, and whether an exit-less end was asked for.
+
+    Shared by `/spawns/history` and `/spawns/{job_id}` so a Spawn cannot read `failed` in the list and
+    `cancelled` on its own page, or show two different expiry times for the same copy on disk. The
+    created_at → expires_at conversion lives here rather than in the SQL because the window lengths are
+    this module's constants (recovery_mod.WINDOW_MINUTES, retention_mod.TTL_DAYS), not db.py's business.
+    """
+    # The ledger cannot answer cancelled-vs-failed — it records the absent exit code, not the reason —
+    # so the marker is consulted, and only for the rows that lack one.
+    r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
+                      and spawns_mod.was_cancelled(r["job_id"]))
+    for src, dst, delta in (("recovery_created_at", "recovery_expires_at",
+                             timedelta(minutes=recovery_mod.WINDOW_MINUTES)),
+                            ("output_created_at", "output_expires_at",
+                             timedelta(days=retention_mod.TTL_DAYS))):
+        created = r.pop(src)
+        r[dst] = None
+        if created is not None:
+            expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            r[dst] = (expires + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return r
+
+
 # Declared BEFORE `/spawns/{job_id}`: FastAPI matches in order, and `history` would otherwise be parsed
 # as an int job_id and 422.
 @api.get("/spawns/history")
@@ -317,36 +341,12 @@ def spawns_history(days: int = 30, limit: int | None = None,
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.connect() as conn:
-        rows = [dict(r) for r in db.spawn_history(conn, since, live, limit)]
-    # The same distinction GET /spawns/{id} draws, so a Spawn does not read "failed" here and
-    # "cancelled" there. The ledger cannot answer it — it records the absent exit code, not the
-    # reason — so the marker is consulted, and only for the rows that lack one.
-    for r in rows:
-        r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
-                          and spawns_mod.was_cancelled(r["job_id"]))
-        # recovery_created_at came straight off the SQL join (db.spawn_history) — turned into the
-        # wire-facing expires_at here, not there, since the window length is this module's constant
-        # (recovery_mod.WINDOW_MINUTES), not db.py's business.
-        created = r.pop("recovery_created_at")
-        r["recovery_expires_at"] = None
-        if created is not None:
-            expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) \
-                + timedelta(minutes=recovery_mod.WINDOW_MINUTES)
-            r["recovery_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
-        # The outputs' own countdown, on identical terms — the TTL is retention.py's constant, so the
-        # conversion happens here for the same reason the one above does.
-        out_created = r.pop("output_created_at")
-        r["output_expires_at"] = None
-        if out_created is not None:
-            expires = datetime.strptime(out_created, "%Y-%m-%dT%H:%M:%SZ") \
-                .replace(tzinfo=timezone.utc) + timedelta(days=retention_mod.TTL_DAYS)
-            r["output_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return rows
+        return [_archive_row(dict(r)) for r in db.spawn_history(conn, since, live, limit)]
 
 
 @api.get("/spawns/{job_id}")
 def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """A single Spawn's state: still queued/running, or done with an exit code.
+    """A single Spawn, whole: its state, and everything the archive knows about it.
 
     The Attribution ledger is what distinguishes "this Spawn died" from "no such Spawn". A Spawn that
     is gone from squeue with no `exit` file never recorded one — it was scancel'd, OOM-killed, or its
@@ -357,21 +357,38 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     A Spawn somebody *cancelled* lands in that same exit-code-less state, and reporting it as died-on-
     us is a lie the submitter can see through. It is told apart by the marker `DELETE /spawns/{id}`
     leaves — see spawns.mark_cancelled.
+
+    The archive fields (cost, node, script, the shape it asked for, both expiry countdowns) ride along
+    when there is a `spawns` row, which is every Spawn the API submitted. They are what let the Spawn
+    page render from ONE fetch without caring whether its subject is queued, running or a year old —
+    the alternative was pulling the whole cluster archive to show a single Spawn. The CLI polls this
+    route and ignores them; the keys it reads (`done`, `state`, `exit`) are unchanged.
+
+    A Spawn with no `spawns` row is not an error here: the enrollment benchmark is sbatched outside the
+    API, so it is live in Slurm and absent from the ledger. It answers with state alone.
     """
     state = spawns_mod.active_state(job_id)
-    if state is not None:
-        return {"id": job_id, "done": False, "state": state}
-    rc = spawns_mod.exit_code(job_id)
-    if rc is not None:
-        return {"id": job_id, "done": True, "state": "done", "exit": rc}
+    rc = None if state is not None else spawns_mod.exit_code(job_id)
     with db.connect() as conn:
-        known = db.get_spawn(conn, job_id) is not None
-    if known:
+        row = db.spawn_detail(conn, job_id)
+
+    if state is not None:
+        out = {"id": job_id, "done": False, "state": state}
+    elif rc is not None:
+        out = {"id": job_id, "done": True, "state": "done", "exit": rc}
+    elif row is not None:
         # `cancelled` before `failed`: both lack an exit code, but one of them somebody asked for.
-        if spawns_mod.was_cancelled(job_id):
-            return {"id": job_id, "done": True, "state": "cancelled"}
-        return {"id": job_id, "done": True, "state": "failed"}
-    raise HTTPException(404, f"unknown Spawn {job_id}")
+        out = {"id": job_id, "done": True,
+               "state": "cancelled" if spawns_mod.was_cancelled(job_id) else "failed"}
+    else:
+        raise HTTPException(404, f"unknown Spawn {job_id}")
+
+    if row is not None:
+        archive = _archive_row(dict(row))
+        archive.pop("job_id")
+        archive.pop("cancelled")  # `state` already says it, and says it for the live cases too
+        out |= archive
+    return out
 
 
 @api.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
@@ -635,6 +652,10 @@ def karma_standings(user: dict = Depends(current_user)) -> list[dict]:
 
     Everyone's, not just your own: a Balance is meaningless in isolation. Karma ranks Users *against
     each other*, so a User who cannot see the others cannot see their own standing either.
+
+    `escrow_spawns` breaks the Escrow total into the individual claims holding it, dearest first — the
+    only form of that number a User can act on, since one of them is usually the sweep they forgot to
+    cancel. It sums to `escrow` by construction (same ratchet, un-aggregated).
     """
     with db.connect() as conn:
         return karma.standings(conn)
@@ -665,6 +686,22 @@ def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict
     """
     with db.connect() as conn:
         return [dict(r) for r in db.demand_series(conn, days)]
+
+
+@api.get("/karma/usage")
+def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict]:
+    """Who spent the cluster: one daily Karma-spend series per User over `days`, heaviest first.
+
+    The people-shaped counterpart to `/karma/demand`, which is card-shaped, and read against it — a
+    month of high Demand is explained by whoever's band swallows this plot. Everyone's, on exactly the
+    terms the standings are: usage is only legible in proportion, so a User shown their own series
+    alone would learn nothing from it.
+
+    Spend, not GPU-hours: a settle row already weights an hour by the card's Power and the Demand it ran
+    against, and raw hours would call the quiet little card's hour equal to the coveted one's.
+    """
+    with db.connect() as conn:
+        return karma.usage(conn, days=days)
 
 
 # `POST /karma/override` USED TO LIVE HERE and was removed in Phase 6.

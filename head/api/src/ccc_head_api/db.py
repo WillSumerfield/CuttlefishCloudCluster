@@ -17,6 +17,7 @@ import json
 import os
 import secrets
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers from slice 1 on (the API: submit→escrow, override→ledger; the Karma tick:
 # settle→ledger). WAL permits that, but a writer that collides with another gets SQLITE_BUSY back
@@ -361,9 +362,26 @@ ALTER TABLE spawns ADD COLUMN build_state TEXT;
 CREATE INDEX idx_spawns_build ON spawns(build_state) WHERE build_state IS NOT NULL;
 """
 
+# `placed_node` — where the cluster actually PUT a Spawn, which is not `node` and must never be folded
+# into it. `node` is what the submitter *demanded* (`--node`, Admin-only, NULL for everyone else), and
+# the distinction is the economy's: Users declare needs, only an Admin names a machine. `spawn_needs`
+# reads `node` as that declaration to compute Eligibility and Demand, so overwriting it with the real
+# placement would quietly change what a queued Spawn is thought to be eligible for.
+#
+# The fact was always known and always thrown away: the meter writes the live node to `karma_escrow`
+# every pass, and `clear_escrow` deletes that row at Settlement — precisely when History starts wanting
+# it. So it is copied here on the way past instead, and outlives the claim that carried it.
+#
+# NULL for every Spawn that ended before this migration (their placement is genuinely gone), and for any
+# that never ran long enough to be metered. Readers must treat NULL as "not known", never as "unplaced".
+_SCHEMA_V14 = """
+ALTER TABLE spawns ADD COLUMN placed_node TEXT;
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
-              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13]
+              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
+              _SCHEMA_V14]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -748,36 +766,57 @@ def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, 
     conn.commit()
 
 
+# The archive row, shared by the many-row read (`spawn_history`) and the one-row read
+# (`spawn_detail`). One string rather than two, because the Spawn page and the History row show the
+# same facts about the same thing and drifting them apart is how a Spawn comes to cost one number in
+# the list and another on its own page. The settled cost joins in from the ledger's `settle` row (a
+# Spawn that never settled — Admin-owned, or ended before its escrow was metered — has NULL cost,
+# which reads as `—`).
+#
+# recovery_copies joins in NULL for the (common) case of no open Recovery Window — main.py turns
+# `recovery_created_at` into the wire-facing `recovery_expires_at`, since the window length
+# (recovery.WINDOW_MINUTES) is that module's constant, not this one's business. output_copies rides
+# alongside it on exactly the same terms (retention.TTL_DAYS), so a row carries both countdowns or
+# neither, and the Dashboard renders the pair the same way.
+_SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
+                       s.gpus, s.vram_gb, s.minutes, s.node, s.placed_node,
+                       u.username AS submitted_by,
+                       l.amount AS cost, r.bytes AS recovery_bytes, r.created_at AS recovery_created_at,
+                       o.bytes AS output_bytes, o.created_at AS output_created_at
+                FROM spawns s
+                LEFT JOIN users u ON u.id = s.user_id
+                LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
+                LEFT JOIN recovery_copies r ON r.job_id = s.job_id
+                LEFT JOIN output_copies o ON o.job_id = s.job_id"""
+
+
 def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int],
                   limit: int | None = None) -> list[sqlite3.Row]:
     """Every Spawn submitted since `since`, minus the ids in `exclude` (the live queue) — the durable
-    archive, newest first. The settled cost joins in from the ledger's `settle` row (a Spawn that never
-    settled — Admin-owned, or ended before its escrow was metered — has NULL cost, which reads as `—`).
-    Everyone's, like the live queue: what ran on the shared cluster is not private. `limit` caps the
-    result to the newest N (None = every row, the Dashboard's read); the CLI passes it for readability."""
+    archive, newest first. Everyone's, like the live queue: what ran on the shared cluster is not
+    private. `limit` caps the result to the newest N (None = every row, the Dashboard's read); the CLI
+    passes it for readability."""
     # `NOT IN ()` has no valid SQL spelling — `NOT IN (NULL)` is UNKNOWN for every row and drops the
     # whole table — so the exclusion is a clause only when there is something live to exclude.
     clause = f" AND s.job_id NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
     limit_clause = " LIMIT ?" if limit else ""
-    # recovery_copies joins in NULL for the (common) case of no open Recovery Window — main.py's
-    # spawns_history route turns `recovery_created_at` into the wire-facing `recovery_expires_at`, since
-    # the window length (recovery.WINDOW_MINUTES) is that module's constant, not this one's business.
-    # output_copies rides alongside it on exactly the same terms (retention.TTL_DAYS), so a row carries
-    # both countdowns or neither, and the Dashboard renders the pair the same way.
     return conn.execute(
-        f"""SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
-                   s.gpus, s.vram_gb, s.minutes, s.node, u.username AS submitted_by,
-                   l.amount AS cost, r.bytes AS recovery_bytes, r.created_at AS recovery_created_at,
-                   o.bytes AS output_bytes, o.created_at AS output_created_at
-            FROM spawns s
-            LEFT JOIN users u ON u.id = s.user_id
-            LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
-            LEFT JOIN recovery_copies r ON r.job_id = s.job_id
-            LEFT JOIN output_copies o ON o.job_id = s.job_id
+        f"""{_SPAWN_ROW}
             WHERE s.submitted_at >= ?{clause}
             ORDER BY s.submitted_at DESC{limit_clause}""",
         (since, *exclude, *((limit,) if limit else ())),
     ).fetchall()
+
+
+def spawn_detail(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    """One Spawn's archive row — the same shape `spawn_history` serves, for a Spawn the caller names.
+
+    Deliberately indifferent to whether the Spawn is still running: `submitted_at`, `script`, `node` and
+    the shape it asked for are all recorded at submit, and the rest fill in as they become true. That is
+    what lets `GET /spawns/{job_id}` answer with one payload whether the Spawn is queued, running or a
+    year old — the alternative was a Dashboard that fetched the whole cluster archive to render one page.
+    """
+    return conn.execute(f"{_SPAWN_ROW}\n WHERE s.job_id = ?", (job_id,)).fetchone()
 
 
 # --- Karma ledger (slice 1) -------------------------------------------------
@@ -829,6 +868,47 @@ def escrow_totals(conn: sqlite3.Connection) -> dict[int, float]:
     return {r["user_id"]: r["total"] for r in rows}
 
 
+def escrow_breakdown(conn: sqlite3.Connection) -> dict[int, list[sqlite3.Row]]:
+    """user_id -> the individual claims that sum to `escrow_totals`, dearest first.
+
+    The same `MAX(hold, accrued)` ratchet, left un-summed — the aggregate says a User is holding 140
+    Karma, this says *which Spawns are holding it*, which is the only form of the number a User can act
+    on (one of them is the sweep they forgot to cancel). Carries the Spawn's script and node so the
+    Dashboard can name each claim without a second fetch; both are NULL-safe (a claim always has a
+    spawns row, since the escrow is opened by the same submit that writes it).
+    """
+    rows = conn.execute(
+        """SELECT e.user_id, e.job_id, MAX(e.hold, e.accrued) AS amount, e.node, s.script
+           FROM karma_escrow e
+           LEFT JOIN spawns s ON s.job_id = e.job_id
+           ORDER BY amount DESC"""
+    ).fetchall()
+    out: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    for r in rows:
+        out[r["user_id"]].append(r)
+    return dict(out)
+
+
+def usage_series(conn: sqlite3.Connection, since: str) -> list[sqlite3.Row]:
+    """Karma spent per User per UTC day since `since` — who has been consuming the cluster.
+
+    Settlements only, and *spend* only (`from_user`): a settle row is the one place the economy states
+    what a finished Spawn actually cost, already weighted by the card's Power and the Demand it ran
+    against. Raw GPU-hours would have called an hour on a quiet little card the same as an hour on the
+    coveted one, which is exactly the distinction the Tide exists to draw.
+
+    Undecayed on purpose — this is what a User spent at the time, not what that spending is worth to
+    their standing now. Decay belongs to the Balance; usage is history and history does not fade.
+    """
+    return conn.execute(
+        """SELECT from_user AS user_id, substr(at, 1, 10) AS day, SUM(amount) AS spent
+           FROM karma_ledger
+           WHERE kind = 'settle' AND from_user IS NOT NULL AND at >= ?
+           GROUP BY user_id, day""",
+        (since,),
+    ).fetchall()
+
+
 def live_escrows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Every outstanding claim — the meter's working set. A row here means "this Spawn has not settled
     yet", whatever Slurm currently thinks."""
@@ -839,9 +919,31 @@ def live_escrows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def accrue(conn: sqlite3.Connection, job_id: int, node: str, accrued: float, last_at: str) -> None:
     """Advance one running Spawn's meter. `last_at` is stored so the NEXT pass bills from real elapsed
     time rather than assuming a tick fired — a restarted karma service must not lose money, and the
-    User held the card across the gap regardless."""
+    User held the card across the gap regardless.
+
+    Placement is recorded separately, by record_placement — it is not the meter's business and does not
+    share its population.
+    """
     conn.execute("UPDATE karma_escrow SET accrued=?, node=?, last_at=? WHERE job_id=?",
                  (accrued, node, last_at, job_id))
+    conn.commit()
+
+
+def record_placement(conn: sqlite3.Connection, job_id: int, node: str) -> None:
+    """Write down which Arm a Spawn actually landed on, the first time we see it running.
+
+    The escrow row already carries the live node, but `clear_escrow` deletes it at Settlement —
+    precisely when History starts wanting it — so it is copied somewhere durable on the way past (see
+    _SCHEMA_V14). Kept OFF the meter deliberately: an Admin's Spawn and the enrollment benchmark have
+    no Escrow at all, and both still ran somewhere worth naming.
+
+    Write-once (`WHERE placed_node IS NULL`): one write per Spawn rather than one per 30s pass, and a
+    Spawn's placement cannot be rewritten by a later, confused reading. Commits, like every other writer
+    here — the tick keeps no transaction of its own, and the Admin-Spawn path returns from the meter
+    before anything else would commit for it.
+    """
+    conn.execute("UPDATE spawns SET placed_node=? WHERE job_id=? AND placed_node IS NULL",
+                 (node, job_id))
     conn.commit()
 
 
