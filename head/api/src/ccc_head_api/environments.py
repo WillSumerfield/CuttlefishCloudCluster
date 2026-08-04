@@ -322,7 +322,16 @@ def _run_build(project: Path, m: Manifest, guise: str, env_dir: Path, build_tmp:
         ], guise)
         log.append(f"$ {' '.join(argv)}")
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=BUILD_TIMEOUT_SECONDS)
+            # cwd="/" — a build has no relationship to the directory its caller happened to be
+            # standing in, and apptainer's starter chdirs to the inherited cwd on the HOST before
+            # `--pwd` ever applies (which is inside). Run as the Guise, that chdir fails on anything
+            # the Guise cannot traverse, and "container creation failed: can't change directory to
+            # /home/<operator>/..." is what a Spawn's build reports instead of anything about itself.
+            # Never bit the API service, whose cwd is systemd's; bites every Head-local caller, which
+            # is now every pinned Spawn's build (hardware, 2026-08-04, `setup --head` run from a
+            # project directory).
+            r = subprocess.run(cmd, cwd="/", capture_output=True, text=True,
+                               timeout=BUILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             shutil.rmtree(env_dir, ignore_errors=True)
             raise BuildError(

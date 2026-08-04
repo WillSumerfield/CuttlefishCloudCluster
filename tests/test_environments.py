@@ -204,7 +204,7 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     file-not-found the User cannot act on."""
     body = _script()
     assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$ccc_out$envbind$licbind"' in body
+    assert '--bind "$proj,$ccc_out$envbind$licbind$featbind"' in body
 
 
 def test_the_remote_stage_in_recurses():
@@ -497,6 +497,60 @@ def test_none_declines_the_build_end_to_end(head, tmp_path):
     jid = _submit(tmp_path, "requirements.txt", manifest="none")
     assert "--hold" not in _sbatch(head)
     assert "no dependency file found" in spawns.environment_note(jid)
+
+
+def test_a_caller_that_is_about_to_exit_builds_before_it_returns(head, tmp_path, monkeypatch):
+    """`background_build=False` — for a caller with no future to build in.
+
+    The build thread is a daemon, so a short-lived process (the `ccc_head_api.admin` CLI, which is how
+    every Head-local pinned Spawn is submitted) takes it down at exit. And by then the Spawn is
+    `--hold`ed: not merely unbuilt, but unrunnable, with nothing left alive that would ever release
+    it. It pends as JobHeldUser until someone notices, which is the shape of a hang, not a failure.
+    """
+    monkeypatch.setattr(env, "build", lambda *a, **kw: "solved 3 packages")
+    monkeypatch.setattr(env, "prune_cache", lambda: None)
+    jid = _submit(tmp_path, "requirements.txt", background_build=False)
+    assert "--hold" in _sbatch(head), "the interlock still applies — it is just resolved inline"
+    assert ["sudo", "-n", "-u", "ccc-u60002", "scontrol", "release", str(jid)] in head
+    with db.connect() as conn:
+        assert db.get_spawn(conn, jid)["build_state"] is None
+
+
+def test_neither_the_build_nor_sbatch_inherits_the_operators_directory(head, tmp_path, monkeypatch):
+    """Both run as a **Guise**, and neither has any business in the directory `cuttle` was invoked
+    from — which on the Head-local path is the operator's own project, unreadable to a Guise.
+
+    apptainer's starter chdirs to the inherited cwd on the HOST before `--pwd` applies inside, so the
+    build dies as "container creation failed: can't change directory to /home/<operator>/..." — a
+    message about the caller, attached to a Spawn, saying nothing about either. Slurm meanwhile takes
+    the job's WorkDir from the submitting process, which strands the job the same way one step later.
+    """
+    seen = {}
+    real = spawns.subprocess.run
+
+    def watch(argv, **kw):
+        # Only these two care: everything else here (setfacl, scontrol) names absolute paths or is an
+        # RPC, and pinning their cwd would assert nothing.
+        for exe in ("apptainer", "sbatch"):
+            if exe in argv:
+                seen[exe] = kw.get("cwd")
+        return real(argv, **kw)
+
+    monkeypatch.setattr(spawns.subprocess, "run", watch)
+    monkeypatch.setattr(env, "prune_cache", lambda: None)
+    _submit(tmp_path, "requirements.txt", background_build=False)
+    assert seen == {"sbatch": "/", "apptainer": "/"}, f"inherited the caller's cwd: {seen}"
+
+
+def test_backgrounding_is_the_default_and_releases_nothing_by_itself(head, tmp_path):
+    """The other half of the same contract: the API service DOES background its build, so `submit`
+    returns with the Spawn still held and the release owed by a thread. Asserted so the fix above
+    cannot quietly become "build synchronously for everyone" — that would put a cold conda solve
+    inside the HTTP request every submitter waits on."""
+    jid = _submit(tmp_path, "requirements.txt")
+    assert not [c for c in head if "release" in c]
+    with db.connect() as conn:
+        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
 
 
 def test_a_built_spawn_is_released_as_its_guise(head, tmp_path, monkeypatch):

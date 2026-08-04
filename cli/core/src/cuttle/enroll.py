@@ -34,6 +34,7 @@ import urllib.request
 from pathlib import Path
 
 from . import auth, config, headapi, mesh, settings, system, templates, ui
+from . import features as features_mod   # `features` is a parameter name throughout this module
 from .system import run
 
 
@@ -105,19 +106,16 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     disk yet, and claiming otherwise is exactly the lie that drains a node. `report_capabilities`
     re-POSTs once it is.
     """
+    # Name and path only. A Feature entry may also carry the local path of a **Licence** key
+    # (cuttle.features), which is this box's business and nobody else's — it stays in
+    # /etc/ccc/features.env, on the Arm, and the Head has no field for it and no use for it.
+    reported = [{"name": f["name"], "path": f["path"]} for f in (features or [])]
     body = json.dumps({"node_name": node_name, "gpu_devices": system.gpu_devices(),
                        "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb(),
-                       "features": features or [], "provides": provides or []}).encode()
+                       "features": reported, "provides": provides or []}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=15) as r:
-        return json.load(r)
-
-
-def fetch_feature_catalog(head_mesh_ip: str) -> list[str]:
-    """The Head's admin-curated catalog of Arm Features, over the mesh — so a donor's setup wizard can
-    offer real names before this box has any other way to reach the Head (no login yet)."""
-    with urllib.request.urlopen(f"{headapi.enroll_url(head_mesh_ip)}/features", timeout=15) as r:
         return json.load(r)
 
 
@@ -297,57 +295,20 @@ def save_registry(reg: dict) -> None:
                         mode="0644", owner=config.ENROLL_API_USER, group=config.ENROLL_API_USER)
 
 
-# --- Arm Feature catalog (Head only, operator + sudo) -----------------------
-# The admin-curated list of names an Arm may claim to have (docs/TODO.md "Arm Features"). Lives beside
-# the registry — munge-owned JSON under CCC_LIB, not head.db — for the same reason arms.json does: the
-# mesh-only Enroll API validates a donor's declared features against it, and that API runs as `munge`,
-# which cannot read the ccc-owned, 0600 head.db (see config.FEATURES_CATALOG).
-
-def load_feature_catalog() -> list[str]:
-    return sorted(json.loads(config.FEATURES_CATALOG.read_text())) \
-        if config.FEATURES_CATALOG.exists() else []
-
-
-def save_feature_catalog(names: list[str]) -> None:
-    system.install_file(json.dumps(sorted(set(names)), indent=2) + "\n", config.FEATURES_CATALOG,
-                        mode="0644", owner=config.ENROLL_API_USER, group=config.ENROLL_API_USER)
-
-
-def add_feature(name: str) -> None:
-    if not re.match(config.FEATURE_NAME_RE, name):
-        raise ui.abort(f"invalid feature name {name!r} — letters/digits/'.'/'_'/'-' only, must start "
-                       f"with a letter or digit (it becomes a Slurm Feature= token and an env var name)")
-    names = load_feature_catalog()
-    if name in names:
-        raise ui.abort(f"feature {name!r} already exists")
-    save_feature_catalog(names + [name])
-    print(f"cuttle: feature {name!r} added")
-
-
-def remove_feature(name: str) -> None:
-    """Removes it from the catalog only — it does NOT touch any Arm that already declared it (their
-    registry rows, and the Feature= a running slurmd advertises, are left exactly as they are). A
-    dangling declaration is inert: nothing new can request a feature no longer in the catalog, and
-    nothing here evicts an Arm for having reported one honestly."""
-    names = load_feature_catalog()
-    if name not in names:
-        raise ui.abort(f"no such feature {name!r}",
-                       next_step="run `cuttle feature list` to see the catalog")
-    save_feature_catalog([n for n in names if n != name])
-    print(f"cuttle: feature {name!r} removed from the catalog")
-
+# --- Arm Features -----------------------------------------------------------
+# The catalog is config.FEATURE_NAMES, a constant — there is nothing to load, save or curate. See that
+# constant for why: CCC ships the runtime for each Feature, so a name it does not know is not a Feature
+# CCC can place a Spawn on. What remains Arm-local is which of them THIS box has, and where.
 
 def list_features(as_json: bool = False) -> None:
-    names = load_feature_catalog()
+    names = list(config.FEATURE_NAMES)
     if as_json:
         ui.emit(names, True, lambda: None)
         return
-    if not names:
-        ui.say("no Arm Features defined")
-        ui.hint("add one with `cuttle feature add <name>`")
-        return
     for n in names:
         ui.say(f"  {n}")
+    ui.hint("Declare which of these this box has with `cuttle setup --arm` (or `--head` for the "
+            "Head's own Arm); ask for one with `cuttle run --feature <name>`.")
 
 
 def render_features_env(features: list[dict], licence_home: str = "") -> str:
@@ -365,8 +326,14 @@ def render_features_env(features: list[dict], licence_home: str = "") -> str:
     into a job script it renders for the whole fleet. The Arm supplies it; JOB_SCRIPT decides whether
     this Spawn may see it.
     """
-    lines = [f"export {re.sub(r'[^A-Za-z0-9]', '_', f['name']).upper()}_PATH={f['path']}"
-            for f in features]
+    # `install_path`, not `f['path']`: for a Feature CCC mirrors, the owner's own directory is not
+    # reachable from a Pod (cuttle.features.mirror_install), so what a Spawn is told is CCC's copy.
+    lines = [f"export {re.sub(r'[^A-Za-z0-9]', '_', f['name']).upper()}_PATH="
+             f"{features_mod.install_path(f)}" for f in features]
+    # Whatever else a Feature's runtime needs from THIS box — for one that ships binary wheels, where
+    # `cuttle setup --arm` unpacked them (cuttle.features). Emitted from the profile rather than passed
+    # in, so this file and the unpacking can never describe different directories.
+    lines += features_mod.features_env_extras(features)
     if licence_home:
         lines.append(f"export {config.LICENCE_HOME_VAR}={licence_home}")
     header = "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
@@ -676,6 +643,82 @@ def _admit(name: str, reg: dict, write_root_file) -> None:
     # An Arm with no Power cannot be priced, so it is benchmarked as part of joining — not as an
     # optional follow-up an operator might forget.
     benchmark_arm(name)
+    # Same stance, for the same reason: a declared **Feature** that has never been proved to work is a
+    # Slurm constraint that sends Spawns somewhere they will fail. An Arm joins with its declarations
+    # true, or it does not join.
+    activate_arm(name, [f["name"] for f in (reg[name].get("features") or [])])
+
+
+# The activation Spawn's shape. One card — activation is a licence handshake, not a benchmark, but
+# creating a gym needs a real device — and a short wall clock, which is plenty for a gym and a network
+# round trip.
+ACTIVATION_MINUTES = 20
+
+# How long CCC waits, which is a DIFFERENT budget: Slurm's clock starts when the Spawn is placed, and
+# everything before that is ours to wait through — the Environment build (a cold conda solve of the
+# profile's libraries, the first time this box ever sees them) and then the queue. Conflating the two
+# made a slow first build look exactly like a hung activation.
+ACTIVATION_WAIT_S = 45 * 60
+
+
+def activate_arm(name: str, features: list[str]) -> None:
+    """Activate every declared **Feature** on `name` that needs it, as part of admitting the Arm.
+
+    **CCC drives this, not the Arm's owner, and not by hand.** The software is licensed to the machine
+    through a vendor library, and the only supported way to activate it is to import the library and
+    create a gym — which needs the exact runtime a Spawn gets: the Arm's own wheel, a Python it has a
+    build for, the system libraries, and `libcuda.so.1`. CCC already assembles all of that for a Spawn,
+    including on WSL, where an out-of-Pod activation would have had to solve the driver stack by hand.
+    So the activation IS a Spawn, pinned to the Arm being admitted.
+
+    **The Environment comes from the Feature's own profile** (`GET /features/<name>/environment.yml`),
+    which is the same file a submitter is handed by `cuttle feature show`. It carries no vlearn: the
+    package comes from the Arm's unpacked wheel on PYTHONPATH, which is the build the licence covers.
+
+    **The key never leaves the Arm.** `--activation` is a Head-local flag with no HTTP equivalent; all
+    it does is bind the path the Arm recorded in its own `/etc/ccc/features.env`. No ordinary Spawn
+    ever sees it, and nothing here reads it.
+
+    Aborts the admit if an activation fails, which is deliberate — see `_admit`.
+    """
+    from . import features as feature_profiles
+    from . import spawns as spawn_client
+
+    for feat in features:
+        try:
+            project = feature_profiles.activation_project(feat)
+        except LookupError:
+            continue    # placement-only Feature: nothing to activate, nothing to prove
+        with ui.section(f"Activating {feat} on {name}", lambda: "activated"):
+            _activate_one(name, feat, project, spawn_client)
+
+
+def _activate_one(name: str, feat: str, project: dict[str, str], spawn_client) -> None:
+    with ui.step(f"Building {feat}'s environment and activating it on {name} "
+                 f"(first run on this box — a few minutes)"):
+        tar = spawn_client.tar_from_files(project)
+        spawn_id, _ = spawn_client._submit_pinned(
+            tar, "activate.py", [], minutes=ACTIVATION_MINUTES, vram=0, gpu=1, node=name,
+            wandb_env={}, outputs=[config.ACTIVATION_OUTPUT_DIR], features=[feat],
+            manifest="environment.yml", activation=True,
+            # The first admin, who owns the Head's own Arm. Not "whoever is logged in": this Spawn is
+            # CCC's, it runs during `setup --head` when nobody is, and an Admin is outside the Karma
+            # economy — so activating a donated box charges no one for the card it briefly holds.
+            user=config.FIRST_ADMIN_USER)
+        rc, err = spawn_client.wait_for_exit(spawn_id, timeout_s=ACTIVATION_WAIT_S)
+    if rc == 0:
+        ui.result(feat, f"activated on {name} (Spawn {spawn_id})")
+        return
+    # The vendor's own message is the useful part and is almost always self-explanatory ("no more
+    # activations left on this key", "could not reach the activation server"). Surfaced verbatim rather
+    # than summarised, because CCC cannot improve on it and paraphrasing it would only hide it.
+    detail = (err or "").strip().splitlines()
+    raise ui.abort(
+        f"{name} declared the {feat!r} Feature but CCC could not activate it"
+        + (f":\n  " + "\n  ".join(detail[-8:]) if detail else " (the Spawn produced no output)"),
+        next_step=f"fix it on {name} (its owner's `cuttle setup --arm` recorded the install and the "
+                  f"licence key), then re-run `cuttle arm admit {name}`. See `cuttle logs {spawn_id}` "
+                  f"for the whole run.")
 
 
 def chown_arm(name: str, owner: str) -> None:
@@ -710,7 +753,9 @@ def register_head_arm(mesh_ip: str, features: list[dict] | None = None) -> None:
     reg[name] = {"owner": config.FIRST_ADMIN_USER, "gpu_devices": system.gpu_devices(),
                  "mesh_ip": mesh_ip, "admitted": True, "head": True,
                  "vram_mb": system.gpu_vram_mb(), "powers": None, "gpu": None,
-                 "features": features or []}
+                 # Name and path only, as /enroll receives them — a **Licence** key path a Feature
+                 # entry may carry locally is Arm business, and the registry is served to the cluster.
+                 "features": [{"name": f["name"], "path": f["path"]} for f in (features or [])]}
     save_registry(reg)
 
 

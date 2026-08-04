@@ -1,126 +1,42 @@
 """Ant PPO on VSim — the entry point CCC runs for the `vlearn` Arm Feature test.
 
-A wrapper rather than submitting `train/rl_games_train.py` directly, because two things have to happen
-before vlearn is importable at all, and neither can be done from inside a running Python process:
+This used to be 120 lines that arranged vlearn's whole runtime: LD_LIBRARY_PATH (via a re-exec, since
+the loader reads it once at exec), VL_WORKING_DIRECTORY, the cache directory, the licence key search,
+and warnings for each way those could be wrong. All of it is CCC's now — `--feature vlearn` is the
+whole request, and the job script does the rest (ccc_head_api.features).
 
-  * **LD_LIBRARY_PATH.** vlearn/__init__.py `ctypes.CDLL`s libvsimdynamics.so and libgym.so, which link
-    SDL2/assimp/zeromq/czmq/GLU (from the conda prefix) and libcudart (from torch's nvidia wheels).
-    The dynamic loader reads LD_LIBRARY_PATH once, at exec — so setting os.environ here is already too
-    late for those loads. Hence the re-exec below.
-  * **VL_WORKING_DIRECTORY.** vlearn resolves assets, shaders, cache and its licence files against it,
-    and rl_games_train.py resolves `train/rl_games_config/` against it too.
+What is left is one thing CCC has no opinion about: **rl_games decides where to write from the current
+working directory**, and offers no flag to move it. A Spawn's CWD is its project directory, which is
+scratch — only `$CCC_OUT` is staged home. So this moves the CWD and hands over.
 
-CCC runs `$py run.py <args>` with no shell (ccc_head_api.spawns.PAYLOAD_SCRIPT), so `LD_LIBRARY_PATH=…
-python …` is not available — this file is the only place the environment can be fixed.
-
-The Arm's **Licence** arrives separately: CCC binds it at this Spawn's Guise home, which is where
-TurboActivate looks and the one thing this script must NOT try to arrange itself.
+Not a vlearn concern, which is why it did not go into the Feature profile: an rl_games project run
+outside CCC has exactly the same problem, and a different trainer would not have it at all.
 """
 import os
 import pathlib
-import pwd
 import runpy
 import sys
 
-STAGE = "CCC_VLEARN_STAGE"
 ROOT = pathlib.Path(__file__).resolve().parent
+TRAINER = ROOT / "train" / "rl_games_train.py"
 
-
-def _lib_dirs() -> list[str]:
-    """Every directory holding a .so that libgym.so needs, in load order.
-
-    Globbed rather than hardcoded: the conda prefix, the vlearn package and torch's bundled CUDA
-    runtime all move with the Environment CCC built, which is not this file's to predict.
-    """
-    site = pathlib.Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-    dirs = [pathlib.Path(sys.prefix) / "lib", site / "vlearn" / "lib"]
-    # torch's nvidia-* wheels: libcudart.so.13 and friends, one lib/ per component.
-    dirs += sorted(p for p in site.glob("nvidia/*/lib") if p.is_dir())
-    found = [str(d) for d in dirs if d.is_dir()]
-    # Said out loud, because the failure it prevents is unhelpful: without these, `import vlearn` dies
-    # on "libcudart.so.13: cannot open shared object file", which names a CUDA problem when the real
-    # fault is an Environment that resolved no torch.
-    if not any(p for d in found for p in pathlib.Path(d).glob("libcudart.so*")):
-        print("ccc: WARNING no libcudart in the Environment — is torch (cu130) in environment.yml?",
-              file=sys.stderr, flush=True)
-    return found
-
-
-def _licence_key() -> str:
-    """A product key for vlearn to activate WITH, if one travelled with the project.
-
-    Checked in two places, project first: `License.key` beside this file (put there by prepare.sh from
-    a checkout that has one), then the wheel's own bundled copy.
-
-    **The Linux wheels ship no key** — verified against all four of the 0.3.9 wheels, where only the
-    two `win_amd64` ones carry `<dist-info>/licenses/License.key`. So on this platform a key normally
-    has to come from the operator, and an Arm with no key can only ever *validate* an activation it
-    already holds, never create one. That is what sync-licence.sh is for.
-    """
-    local = ROOT / "License.key"
-    if local.is_file():
-        return str(local)
-    site = pathlib.Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-    keys = sorted(site.glob("vlearn-*.dist-info/licenses/License.key"))
-    return str(keys[-1]) if keys else ""
-
-
-if os.environ.get(STAGE) != "2":
-    env = dict(os.environ)
-    env[STAGE] = "2"
-    env["LD_LIBRARY_PATH"] = ":".join(_lib_dirs() + [env.get("LD_LIBRARY_PATH", "")]).rstrip(":")
-    env["VL_WORKING_DIRECTORY"] = str(ROOT)
-    # Both halves of the licence check, each said out loud when absent — "License validation failed"
-    # names neither, and an Arm holding a perfectly good Licence fails identically without them.
-    if not (ROOT / "TurboActivate.dat").is_file():
-        print("ccc: WARNING no TurboActivate.dat in the project — re-run ./prepare.sh",
-              file=sys.stderr, flush=True)
-    # Only if the operator has not chosen one: an Arm may hold a key that is not the project's.
-    if not env.get("VL_LICENSE_KEY_PATH"):
-        key = _licence_key()
-        if key:
-            env["VL_LICENSE_KEY_PATH"] = key
-    # create_gym fails at gym.cpp:174 ("Could not find the cache directory") if this is absent — before
-    # it ever reaches the licence check, which makes it look like a licensing problem when it isn't.
-    (ROOT / "cache" / "tmp").mkdir(parents=True, exist_ok=True)
-    os.execve(sys.executable, [sys.executable, __file__, *sys.argv[1:]], env)
-
-# ---- stage 2: the environment is right, so vlearn is importable ----------------------------------
-
-# A short run by default: this is a hardware test, not a policy anyone will use. Overridable by
-# passing args to the Spawn, which CCC forwards here verbatim.
+# A short run by default: this is a hardware test, not a policy anyone will use. Overridable by passing
+# args to the Spawn, which CCC forwards here verbatim.
 argv = sys.argv[1:] or ["ant_custom", "train", "--max_epochs", "50"]
 
-print(f"ccc: VL_WORKING_DIRECTORY={os.environ['VL_WORKING_DIRECTORY']}", flush=True)
-print(f"ccc: licence key    = {os.environ.get('VL_LICENSE_KEY_PATH', '(none)')}", flush=True)
-# getpwuid, NOT $HOME or Path.home(): that is the call TurboActivate itself makes to find its state
-# (probed on hardware 2026-08-03), so it is the only reading of "licence home" worth printing here.
-_home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-_state = "populated" if _home.is_dir() and any(_home.glob(".*")) else "EMPTY — activating"
-print(f"ccc: licence home   = {_home} ({_state})", flush=True)
-print(f"ccc: running rl_games_train.py {' '.join(argv)}", flush=True)
-
-import vlearn  # noqa: E402  -- import only now, once LD_LIBRARY_PATH is in effect
-
-print(f"ccc: vlearn {getattr(vlearn, '__version__', '?')} loaded from {vlearn.__file__}", flush=True)
-
-# Only what a Spawn writes under $CCC_OUT is staged home; the project dir is scratch and is thrown away.
-# rl_games resolves its `train_dir` ("runs") against the CWD, and offers no flag to move it — so the CWD
-# is what has to move. Safe because everything the trainer reads is resolved against
-# VL_WORKING_DIRECTORY instead, which stays pointed at the project: the config at
-# `train/rl_games_config/`, and the .vsim assets.
+# Everything the trainer READS is resolved against VL_WORKING_DIRECTORY (the project dir), which CCC
+# sets and which stays put — so moving the CWD only moves the output.
 out = os.environ.get("CCC_OUT")
 if out:
     os.chdir(out)
     print(f"ccc: writing runs/ under {out}", flush=True)
 
-# `train/` on sys.path, because the trainer does `from envs.ant_environment_gpu import ...` and
-# `envs` is a plain directory beside it. Running `python train/rl_games_train.py` would give this for
-# free — the interpreter puts a script's own directory at sys.path[0] — but runpy.run_path does NOT do
-# that for a script FILE (only for a directory or zipfile), so it has to be done by hand. Prepended,
-# matching where the interpreter would have put it.
+# `train/` on sys.path, because the trainer does `from envs.ant_environment_gpu import ...` and `envs`
+# is a plain directory beside it. `python train/rl_games_train.py` would give this for free — the
+# interpreter puts a script's own directory at sys.path[0] — but runpy.run_path does not do it for a
+# script FILE. Prepended, matching where the interpreter would have put it.
 sys.path.insert(0, str(ROOT / "train"))
 
 # rl_games_train.py is a top-level script (no main()), so it runs on load and reads sys.argv itself.
 sys.argv = ["rl_games_train.py", *argv]
-runpy.run_path(str(ROOT / "train" / "rl_games_train.py"), run_name="__main__")
+runpy.run_path(str(TRAINER), run_name="__main__")

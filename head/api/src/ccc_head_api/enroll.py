@@ -72,10 +72,14 @@ REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 DEBS_DIR = Path(os.environ.get("CCC_DEBS_DIR", "/var/lib/ccc/debs"))
 APPTAINER_RECORD = Path(os.environ.get("CCC_APPTAINER_RECORD", "/var/lib/ccc/apptainer.json"))
 SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
-# The admin-curated catalog of Arm Features (docs/TODO.md "Arm Features") — `cuttle feature add/remove`
-# writes this, munge-owned like arms.json (and for the same reason: this app runs as `munge` and cannot
-# read the ccc-owned, 0600 head.db). A donor's declared features are validated against it below.
-FEATURES_CATALOG = Path(os.environ.get("CCC_FEATURES_CATALOG", "/var/lib/ccc/features.json"))
+# The catalog of Arm Features (docs/TODO.md "Arm Features", temp/FEATURES_BUILTIN.md). Built into CCC,
+# not curated and not state — CCC ships the runtime for each one, so this is the set it knows how to
+# arrange for a Spawn, and a name outside it could only ever be a Slurm token with nothing behind it.
+# A donor's declared features are validated against it below.
+#
+# Mirrors cuttle.config.FEATURE_NAMES and ccc_head_api.slurm.FEATURE_NAMES (neither app can import the
+# others; see the note in slurm.py). All three must agree.
+FEATURE_NAMES = ("vlearn", "isaaclab")
 
 # Mirrors cuttle.config; re-validated root-side by `cuttle arm admit` before reaching gres.conf.
 NODE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$")
@@ -104,7 +108,7 @@ class EnrollRequest(BaseModel):
     # machine whose GPUs are not all the same — a Slurm Feature is per-node, so a mixed box could not
     # advertise both sizes honestly (cuttle.system.gpu_profile).
     vram_mb: int
-    # Arm Features (docs/TODO.md) this box declares, each validated against FEATURES_CATALOG below.
+    # Arm Features (docs/TODO.md) this box declares, each validated against FEATURE_NAMES below.
     # Optional and defaults empty — most Arms have none, and older CLIs never sent the field at all.
     features: list[FeatureDecl] = []
     # What Arm-side files this box has WRITTEN (temp/spawn-isolation.md, Rollout). Configless Slurm
@@ -124,10 +128,6 @@ def _save(reg: dict) -> None:
     REGISTRY.write_text(json.dumps(reg, indent=2, sort_keys=True) + "\n")
 
 
-def _load_feature_catalog() -> set[str]:
-    return set(json.loads(FEATURES_CATALOG.read_text())) if FEATURES_CATALOG.exists() else set()
-
-
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}
@@ -135,9 +135,10 @@ def healthz() -> dict:
 
 @app.get("/features")
 def features_catalog() -> list[str]:
-    """The admin-curated catalog of Arm Features (`cuttle feature add`), so an enrolling donor's wizard
-    can offer real names to pick from rather than free-typing one that doesn't exist."""
-    return sorted(_load_feature_catalog())
+    """The Arm Features CCC supports. Kept as an endpoint although the answer is now a constant every
+    caller already has: it is how a client learns what the HEAD supports, which matters the moment a
+    donor's CCC is a different version from the Head's."""
+    return sorted(FEATURE_NAMES)
 
 
 @app.get("/probe")
@@ -253,19 +254,19 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
             raise HTTPException(422, f"unsupported GPU device {device!r} — expected /dev/nvidiaN "
                                      f"(native Linux) or /dev/dxg (WSL2)")
     # Hard-validate every declared Arm Feature against the catalog — no free typing, on the same
-    # philosophy as the output-name / GPU-device checks above: a name the Admin never curated is
-    # refused outright, not warned about.
+    # philosophy as the output-name / GPU-device checks above: a name outside it is refused outright,
+    # not warned about. An unknown name now means the donor's CCC is NEWER than this Head's, since both
+    # ends carry the same constant — so the remedy names that, not an operator command.
     if req.features:
-        catalog = _load_feature_catalog()
         for f in req.features:
             if not FEATURE_NAME_RE.match(f.name):
                 raise HTTPException(422, f"invalid feature name {f.name!r} — letters/digits/'.'/'_'/"
                                          f"'-' only, starting with a letter or digit")
-            if f.name not in catalog:
+            if f.name not in FEATURE_NAMES:
                 raise HTTPException(
-                    422, f"unknown feature {f.name!r} — ask the Head's operator to run "
-                        f"`cuttle feature add {f.name}` first, or pick from: "
-                        f"{', '.join(sorted(catalog)) or '(none)'}")
+                    422, f"unknown feature {f.name!r} — this Head's CCC supports: "
+                        f"{', '.join(sorted(FEATURE_NAMES))}. A newer feature means this Head needs "
+                        f"upgrading, not that your box is wrong.")
             if not f.path.strip():
                 raise HTTPException(422, f"feature {f.name!r} needs a non-empty install path")
 

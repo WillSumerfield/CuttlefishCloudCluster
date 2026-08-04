@@ -148,7 +148,7 @@ def _return(node: str) -> int:
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
             node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
             features: list[str] | None = None, tidepool: bool = False,
-            manifest: str | None = None) -> int:
+            manifest: str | None = None, activation: bool = False) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username`.
 
     Head-local since Phase 6 (`cuttle run --node`). Authorization is being the operator on the Head;
@@ -163,6 +163,11 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     `tidepool` (docs/TODO.md) lets an Admin pin a Tide Pool the same way they pin any other Spawn —
     orthogonal to node-pinning, and threaded through for completeness rather than because it is the
     common path (the common path is unpinned, over `/submit`).
+
+    `activation` is CCC activating a Feature's licence on an Arm being admitted (cuttle.enroll). It
+    exists on THIS path and not on `/submit`, and that is the whole point: it binds the Arm owner's
+    licence key into the Pod, so the only thing allowed to ask for it is an operator standing on the
+    Head.
     """
     from . import spawns
     with db.connect() as conn:
@@ -174,7 +179,14 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     try:
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
-                                       features=features, tidepool=tidepool, manifest=manifest)
+                                       features=features, tidepool=tidepool, manifest=manifest,
+                                       activation=activation,
+                                       # This process exits the moment it has printed the id, and the
+                                       # Environment build runs in a DAEMON thread — so backgrounding
+                                       # it here would kill the build at exit and strand a Spawn that
+                                       # `sbatch --hold` has already made unrunnable without it. The
+                                       # API service has a future to build in; a CLI does not.
+                                       background_build=False)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -185,6 +197,26 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     if note:
         print(note, file=sys.stderr)
     print(job_id)
+    return 0
+
+
+def _feature_activation(name: str) -> int:
+    """Print the project CCC submits to activate `name`'s licence on an Arm, as JSON `{file: body}`.
+
+    Head-local rather than an HTTP route, and that is the authorization: `cuttle arm admit` runs on the
+    Head, as the operator, and `cuttle setup --head` runs it before any account has ever logged in.
+    Generated here rather than in the CLI so the library list an activation builds against is the same
+    one `cuttle feature show` hands a submitter — two copies would drift, and the symptom would be a
+    donated box activated against a library set no Spawn actually runs.
+
+    Exit 1 for a Feature that needs no activation, which is how the caller knows to skip the step.
+    """
+    from . import features as features_mod
+    try:
+        print(json.dumps(features_mod.activation_project(name)))
+    except KeyError:
+        print(f"{name!r} needs no activation", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -212,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     rn = sub.add_parser("return", help="return an Arm on its owner's behalf (--any escape hatch).")
     rn.add_argument("node")
     s = sub.add_parser("submit", help="submit a Spawn pinned to an Arm (prints the Spawn id).")
+    fa = sub.add_parser("feature-activation",
+                        help="the project that activates a Feature's licence on an Arm (JSON).")
+    fa.add_argument("name")
     s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
     s.add_argument("--script", default=None, help="omit only for --tidepool.")
     s.add_argument("--tar", required=True, help="gzip-tar of the project tree (empty for --tidepool).")
@@ -223,6 +258,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="declared output subdir name (repeatable; required unless --tidepool).")
     s.add_argument("--feature", action="append", default=[], dest="features",
                    help="required Arm Feature (repeatable; optional — default none).")
+    s.add_argument("--activation", action="store_true",
+                   help="CCC activating a Feature's licence on an Arm being admitted. Binds that "
+                        "Arm's licence key into the Pod — Head-local only, never over HTTP.")
     s.add_argument("--tidepool", action="store_true",
                    help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
     s.add_argument("--manifest", help="dependency file to build this Spawn's environment from, "
@@ -256,7 +294,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
                        args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features,
-                       tidepool=args.tidepool, manifest=args.manifest)
+                       tidepool=args.tidepool, manifest=args.manifest,
+                       activation=args.activation)
+    if args.cmd == "feature-activation":
+        return _feature_activation(args.name)
     return 2
 
 

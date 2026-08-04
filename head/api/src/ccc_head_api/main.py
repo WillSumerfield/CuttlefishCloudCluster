@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, guises, karma, ratelimit, retraction, slurm
+from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import recipes as recipes_mod
 from . import recovery as recovery_mod
 from . import retention as retention_mod
@@ -241,9 +242,28 @@ def _arm_owner(name: str) -> str | None:
 
 @api.get("/features")
 def features(user: dict = Depends(current_user)) -> list[str]:
-    """The admin-curated catalog of Arm Features (`cuttle feature add`) — what the submit composer
-    offers to require. Read-only: mutating the catalog is CLI+sudo only, like every other admin write."""
+    """The Arm Features THIS HEAD'S VERSION supports (`cuttle.config.FEATURE_NAMES`) — what the submit
+    composer offers to require.
+
+    A constant, not state: there is nothing to mutate and no endpoint that could. It is still served
+    rather than compiled into the Dashboard because a browser talking to an older Head should offer
+    what that Head can actually place, which is the one thing a client cannot compute for itself."""
     return slurm.feature_catalog()
+
+
+@api.get("/features/{name}/environment.yml", response_class=PlainTextResponse)
+def feature_environment(name: str, user: dict = Depends(current_user)) -> str:
+    """A starter `environment.yml` for a Feature that has a runtime profile (`cuttle feature show`).
+
+    Served rather than shipped in the CLI so the library list a Feature's software links against has
+    exactly one copy — this one, which is also what CCC builds its own activation Environment from.
+
+    404 for a Feature with no profile: `isaaclab` is a real, catalogued Feature that simply has no
+    Environment to describe, and that is an answer rather than a failure."""
+    if name not in features_mod.PROFILES:
+        raise HTTPException(404, f"'{name}' has no runtime profile — nothing to describe. CCC supports "
+                                 f"profiles for: {', '.join(sorted(features_mod.PROFILES))}.")
+    return features_mod.environment_yml(name)
 
 
 @api.post("/arms/{name}/retract", status_code=204)

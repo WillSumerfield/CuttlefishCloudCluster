@@ -14,7 +14,7 @@ import io
 
 import pytest
 
-from ccc_head_api import admin, db, karma
+from ccc_head_api import admin, db, karma, spawns
 
 
 @pytest.fixture
@@ -148,6 +148,19 @@ class TestPinnedSubmit:
         job_id = int(capsys.readouterr().out.strip())
         with db.connect() as conn:
             assert job_id in {e["job_id"] for e in db.live_escrows(conn)}
+
+    def test_it_never_backgrounds_an_environment_build(self, rig, monkeypatch):
+        """This process prints the Spawn id and exits, and the build runs in a DAEMON thread — so
+        backgrounding it here kills it at exit, leaving a Spawn that `sbatch --hold` has already made
+        unrunnable and nothing alive to release it. It pends forever as JobHeldUser.
+
+        Asserted at this boundary rather than through a real build, because the bug is invisible in
+        anything that outlives the call: it is a property of the CALLER, not of the build."""
+        seen = {}
+        monkeypatch.setattr(spawns, "submit", lambda *a, **kw: seen.update(kw) or 4242)
+        admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
+                    "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out"])
+        assert seen["background_build"] is False
 
     def test_an_unknown_arm_is_refused(self, rig, capsys):
         assert admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),

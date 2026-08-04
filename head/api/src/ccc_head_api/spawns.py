@@ -41,6 +41,7 @@ from uuid import uuid4
 
 from . import db
 from . import environments
+from . import features as features_mod
 from . import guises
 from . import recovery
 from . import siphons
@@ -330,11 +331,20 @@ cd "$proj"
 # a venv bakes its prefix into pyvenv.cfg and every console-script shebang, and a conda prefix bakes it
 # into hundreds of files. The directory underneath differs on the Head and on an Arm; the path the env
 # sees never does.
-py="%%BASE_INTERPRETER%%"; envbind=""
+#
+# `envmount` carries the Pod-side path as a VARIABLE, empty when this Spawn declared no Environment,
+# because an Arm **Feature**'s setup block below has to name it (its LD_LIBRARY_PATH includes the
+# Environment's own lib dir) and those blocks arrive already substituted — see _render.
+py="%%BASE_INTERPRETER%%"; envbind=""; envmount=""
 if [ -d "$proj/%%ENV_DIRNAME%%" ]; then
     mv "$proj/%%ENV_DIRNAME%%" "$scratch/env"
-    py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"
+    py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"; envmount="%%ENV_MOUNT%%"
 fi
+# The Arm **Feature** runtimes this Spawn asked for (ccc_head_api.features). Empty for almost every
+# Spawn: only a Feature with a runtime *profile* renders anything here, and what it renders contributes
+# to these two accumulators, which the payload appends to its bind and env lists.
+featbind=""; featenv=""
+%%FEATURE_SETUP%%
 # Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
 # fail rather than fall back to the account default.
 wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MODE=${WANDB_MODE:-},WANDB_NAME=spawn-$jid"
@@ -387,7 +397,8 @@ exit $rc
 # interpreter named here can never be one the bind did not provide.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
-  --bind "$proj,$ccc_out$envbind$licbind" --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out" \\
+  --bind "$proj,$ccc_out$envbind$licbind$featbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out$featenv" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
@@ -490,21 +501,28 @@ CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj" \\
+  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
 def _render(staging: Path, gpu: int, script: str, args: list[str],
             files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
-            tidepool_pubkey: str | None = None, wants_licence: bool = False) -> str:
+            tidepool_pubkey: str | None = None, wants_licence: bool = False,
+            features: list[str] | None = None, activation: bool = False) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
     # depending which payload this is), and every token below is a plain single-pass `.replace()`.
     # Doing it here rather than relying on dict order keeps that dependency from being invisible.
     body = JOB_SCRIPT.replace("%%PAYLOAD%%", payload)
+    # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
+    # tokens, deliberately. A Feature profile (ccc_head_api.features) is bash the Head splices in
+    # verbatim, so it reads as bash rather than as a second template — everything it needs from this
+    # script, including the Environment's mount point, it takes from a shell variable set above.
+    body = body.replace("%%FEATURE_SETUP%%",
+                        features_mod.setup_snippet(features or [], activation=activation))
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -608,7 +626,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
            tar_path: Path, minutes: int, constraint: str, outputs: list[str], node: str | None = None,
            vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None,
-           features: list[str] | None = None) -> int:
+           features: list[str] | None = None, activation: bool = False,
+           background_build: bool = True) -> int:
     """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
     Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
     Spawn to one Arm.
@@ -632,6 +651,10 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no script to
     find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can enforce ahead
     of time (the CLI still warns, see cuttle/tidepool.py).
+
+    `background_build` is whether this process will still exist when the Environment build finishes.
+    True for the API service, which is the case the whole `--hold`-then-release dance was designed
+    around. False for a caller that returns and dies — see `start_build`.
     """
     # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
@@ -721,7 +744,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     token, secret = siphons.open(uuid)
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
-                   wants_licence=bool(features))
+                   wants_licence=bool(features), features=features, activation=activation)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -744,7 +767,11 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # hold is a dispatch interlock, NOT a queue position — the build overlaps the wait for a card
         # rather than being added to it, and a held job holds no Device, so the tick meters nothing.
         argv = ["sbatch", "--parsable", "--no-requeue"] + (["--hold"] if declared else [])
-        r = subprocess.run(guises.as_owner(argv, guise), input=body,
+        # cwd="/" for the same reason the build sets it: Slurm takes the job's WorkDir from the
+        # SUBMITTING process's cwd, and a Head-local submit inherits whatever directory the operator
+        # ran `cuttle` from — which the Guise that will run the job cannot necessarily enter. "/" is
+        # traversable by everyone and the job script uses absolute paths throughout.
+        r = subprocess.run(guises.as_owner(argv, guise), input=body, cwd="/",
                            capture_output=True, text=True, check=True, env=env)
     except Exception:
         siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it
@@ -774,7 +801,10 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # `build_state` away again, and a build that outran its own Attribution would have nothing to clear
     # and no Escrow to settle.
     if declared is not None:
-        start_build(job_id, staging, declared, guise)
+        if background_build:
+            start_build(job_id, staging, declared, guise)
+        else:
+            _build_then_release(job_id, staging, declared, guise)
     return job_id
 
 
@@ -786,6 +816,11 @@ def start_build(job_id: int, staging: Path, declared, guise: str) -> None:
     none of it), and a build needs nothing that outlives the process. What a thread costs is
     durability — a Head restarted mid-build leaves a Spawn held forever, with no thread left to
     release it. That is what `build_state` and `sweep_orphaned_builds` are for.
+
+    **Only a long-lived process may call this** (`background_build=False` is for everyone else). The
+    thread is a daemon, so an interpreter that exits takes it with it — and the Spawn is already
+    `--hold`ed by then, so it is not merely unbuilt, it is unrunnable, forever. The Head API survives
+    its own requests and is fine; a CLI does not.
     """
     threading.Thread(target=_build_then_release, args=(job_id, staging, declared, guise),
                      name=f"ccc-build-{job_id}", daemon=True).start()
@@ -930,7 +965,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    wandb_env: dict[str, str], tar_path: Path, minutes: int, vram_gb: int,
                    outputs: list[str], node: str | None = None, wandb: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
-                   manifest: str | None = None) -> int:
+                   manifest: str | None = None, activation: bool = False,
+                   background_build: bool = True) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Extracted in Phase 6, when pinning a Spawn to an Arm (`node`) stopped being reachable over HTTP and
@@ -954,6 +990,11 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     outputs-required gate or the script-in-tar check are actually skipped — placement, pricing and
     Attribution are otherwise completely unaffected, because a Tide Pool holds a Device exactly like any
     other Spawn.
+
+    `activation` is CCC activating a Feature's licence on a newly-admitted Arm (cuttle.enroll), and it
+    is the one thing here that no HTTP client can ask for: `/submit` does not accept it and never
+    should, because it is what binds an Arm owner's licence key into a Pod. It arrives only from the
+    Head-local admin path, where authorization is being the operator on the Head.
 
     Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
     already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
@@ -1003,7 +1044,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool, manifest=manifest, features=features)
+                  tidepool=tidepool, manifest=manifest, features=features, activation=activation,
+                  background_build=background_build)
 
 
 # --- reads (anonymous in slice 2) -------------------------------------------

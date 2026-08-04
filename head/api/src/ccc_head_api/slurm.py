@@ -24,11 +24,11 @@ log = logging.getLogger("ccc.api")
 
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 PARTITION = os.environ.get("CCC_PARTITION", "ccc")
-# The admin-curated catalog of Arm Features (docs/TODO.md) — mirrors ccc_head_api.enroll's own
-# FEATURES_CATALOG constant (that app can't import this one's module; see its docstring on why the two
-# LAN/mesh apps stay split). Read-only here: mutation is `cuttle feature add/remove`, CLI+sudo only —
-# this (authed, LAN-facing) API exposes no admin writes, same as everywhere else in it.
-FEATURES_CATALOG = Path(os.environ.get("CCC_FEATURES_CATALOG", "/var/lib/ccc/features.json"))
+# The catalog of Arm Features (docs/TODO.md, temp/FEATURES_BUILTIN.md) — mirrors the same constant in
+# ccc_head_api.enroll and cuttle.config (neither app can import the others; see enroll.py's docstring on
+# why the two LAN/mesh apps stay split). All three must agree. Built into CCC rather than curated,
+# because CCC ships the runtime for each Feature — there is nothing here for an operator to mutate.
+FEATURE_NAMES = ("vlearn", "isaaclab")
 
 # squeue keeps a finished job around (in a terminal state: COMPLETED, FAILED, CANCELLED, TIMEOUT, ...)
 # for MinJobAge (slurm.conf, default 300s) after it ends — spawns() must not hand those back, or a Spawn
@@ -179,9 +179,11 @@ def vram_constraint(vram_gb: int) -> str:
 
 
 def feature_catalog() -> list[str]:
-    """The admin-curated catalog of Arm Features, for the Dashboard's submit composer (`GET
-    /features`) and the CLI's `--feature` picker."""
-    return sorted(json.loads(FEATURES_CATALOG.read_text())) if FEATURES_CATALOG.exists() else []
+    """The Arm Features CCC supports, for the Dashboard's submit composer (`GET /features`).
+
+    What the cluster can actually PLACE is narrower — see `all_feature_names`, which reports only what
+    an admitted Arm carries. This is the vocabulary; that is the availability."""
+    return sorted(FEATURE_NAMES)
 
 
 def feature_constraint(features: list[str]) -> str:

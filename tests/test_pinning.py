@@ -14,6 +14,7 @@ import typer
 from fastapi.testclient import TestClient
 
 from ccc_head_api import enroll as enroll_api
+from ccc_head_api import slurm
 from cuttle import config, enroll, setup, templates
 
 
@@ -155,58 +156,58 @@ class TestHeadServesApptainer:
 
 
 class TestArmFeatureDeclaration:
-    """Arm Features (docs/TODO.md): a donor's `POST /enroll` may declare `[{"name","path"}, ...]`,
-    hard-validated against the admin-curated catalog — no free typing reaches the registry, on the
-    same "refuse, don't warn" stance as every other check in this endpoint."""
+    """Arm Features (docs/TODO.md, temp/FEATURES_BUILTIN.md): a donor's `POST /enroll` may declare
+    `[{"name","path"}, ...]`, hard-validated against CCC's BUILT-IN catalog — no free typing reaches
+    the registry, on the same "refuse, don't warn" stance as every other check in this endpoint."""
 
     def _post(self, features):
         return TestClient(enroll_api.app, client=(DONOR_IP, 9)).post(
             "/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],
                              "mesh_ip": "9.9.9.9", "vram_mb": 24564, "features": features})
 
-    def test_a_catalogued_feature_is_recorded(self, head_pin, monkeypatch, tmp_path):
-        catalog = tmp_path / "features.json"
-        catalog.write_text(json.dumps(["vsim"]))
-        monkeypatch.setattr(enroll_api, "FEATURES_CATALOG", catalog)
-        r = self._post([{"name": "vsim", "path": "/opt/vsim"}])
+    def test_a_catalogued_feature_is_recorded(self, head_pin):
+        r = self._post([{"name": "vlearn", "path": "/opt/vlearn"}])
         assert r.status_code == 200
         reg = json.loads(enroll_api.REGISTRY.read_text())
-        assert reg["donor-box"]["features"] == [{"name": "vsim", "path": "/opt/vsim"}]
+        assert reg["donor-box"]["features"] == [{"name": "vlearn", "path": "/opt/vlearn"}]
 
-    def test_an_uncatalogued_name_is_refused(self, head_pin, monkeypatch, tmp_path):
-        """No free typing: a name the Admin never ran `cuttle feature add` for is refused outright,
-        naming the fix — the exact stance `POST /enroll` already takes on an unauthorized node name."""
-        catalog = tmp_path / "features.json"
-        catalog.write_text(json.dumps(["vsim"]))
-        monkeypatch.setattr(enroll_api, "FEATURES_CATALOG", catalog)
+    def test_an_uncatalogued_name_is_refused(self, head_pin):
+        """No free typing: a name outside the built-in catalog is refused outright — the exact stance
+        `POST /enroll` already takes on an unauthorized node name.
+
+        The remedy named is now an upgrade, not an operator command: both ends carry the same constant,
+        so a name this Head does not know means the DONOR's CCC is newer than the Head's."""
         r = self._post([{"name": "ghost", "path": "/opt/ghost"}])
         assert r.status_code == 422
-        assert "ghost" in r.json()["detail"]
-        assert "cuttle feature add ghost" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "ghost" in detail
+        assert "upgrading" in detail
+        assert "vlearn" in detail   # and it says what this Head does support
 
-    def test_an_empty_path_is_refused(self, head_pin, monkeypatch, tmp_path):
-        catalog = tmp_path / "features.json"
-        catalog.write_text(json.dumps(["vsim"]))
-        monkeypatch.setattr(enroll_api, "FEATURES_CATALOG", catalog)
-        r = self._post([{"name": "vsim", "path": "  "}])
+    def test_an_empty_path_is_refused(self, head_pin):
+        r = self._post([{"name": "vlearn", "path": "  "}])
         assert r.status_code == 422
 
-    def test_a_re_enroll_that_declares_none_clears_a_stale_declaration(self, head_pin, monkeypatch, tmp_path):
+    def test_a_re_enroll_that_declares_none_clears_a_stale_declaration(self, head_pin):
         """/enroll is an UPDATE: a re-run of `setup --arm` after the owner un-picked a feature must
         actually remove it, not leave the registry claiming a card the Arm no longer reports."""
-        catalog = tmp_path / "features.json"
-        catalog.write_text(json.dumps(["vsim"]))
-        monkeypatch.setattr(enroll_api, "FEATURES_CATALOG", catalog)
-        assert self._post([{"name": "vsim", "path": "/opt/vsim"}]).status_code == 200
+        assert self._post([{"name": "vlearn", "path": "/opt/vlearn"}]).status_code == 200
         assert self._post([]).status_code == 200
         reg = json.loads(enroll_api.REGISTRY.read_text())
         assert reg["donor-box"]["features"] == []
 
-    def test_no_catalog_yet_refuses_any_declared_feature(self, head_pin):
-        """A Head that has never run `cuttle feature add` has an empty (missing) catalog — every name
-        is "uncatalogued" by definition, not a crash on a missing file."""
-        r = self._post([{"name": "vsim", "path": "/opt/vsim"}])
-        assert r.status_code == 422
+    def test_the_catalog_is_a_constant_not_state(self, head_pin):
+        """There is no catalog file to be missing, empty or stale: a fresh Head serves the same list as
+        one that has been running for a year, and `GET /features` needs nothing on disk to answer."""
+        r = TestClient(enroll_api.app, client=(DONOR_IP, 9)).get("/features")
+        assert r.status_code == 200
+        assert r.json() == sorted(enroll_api.FEATURE_NAMES)
+
+    def test_the_three_copies_of_the_catalog_agree(self):
+        """cuttle.config, ccc_head_api.enroll and ccc_head_api.slurm each carry the list because the
+        three packages cannot import each other. Nothing but this test keeps them honest."""
+        assert tuple(enroll_api.FEATURE_NAMES) == tuple(config.FEATURE_NAMES)
+        assert tuple(slurm.FEATURE_NAMES) == tuple(config.FEATURE_NAMES)
 
     def test_features_are_optional(self, head_pin):
         """The common case: a donor with no Arm Features omits the field entirely (older CLIs never

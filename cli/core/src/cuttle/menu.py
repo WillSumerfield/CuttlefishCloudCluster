@@ -117,9 +117,8 @@ LABELS = {
     "backup create": "Snapshot the Head's state",
     "backup restore": "Restore the Head from a snapshot",
     "feature": "Arm Features",
-    "feature add": "Add a Feature to the catalog",
-    "feature list": "List the Feature catalog",
-    "feature remove": "Remove a Feature from the catalog",
+    "feature list": "List the Features CCC supports",
+    "feature show": "Print a starter environment.yml for a Feature",
 }
 
 # Sentinels for the navigation entries. Deliberately NOT None: `ui._ask` reads a None answer as

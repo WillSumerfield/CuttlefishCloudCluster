@@ -239,16 +239,20 @@ CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only wri
 # number that can silently disagree with it. Where one is needed it is derived at the point of use.
 ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_devices, powers, mesh_ip, admitted, ...}}
 
-# --- Arm Features (docs/TODO.md "Arm Features") ---
-# Named, admin-curated capabilities an Arm may report having: heavy/hardware-licence-gated software
-# (VSim, IsaacSim) that is not installed everywhere. The catalog lives beside the registry it enriches
-# — munge-owned JSON under CCC_LIB, not head.db — because /enroll (which validates a donor's declared
-# features against it) runs as `munge` and cannot read head.db (0600, ccc-owned). Mutated only by
-# `cuttle feature add/remove` (Head-local, operator + sudo, same `install` pattern as save_registry);
-# read by both the Enroll API (validation) and the Head API (GET /features, for the Dashboard/wizard).
-FEATURES_CATALOG = CCC_LIB / "features.json"   # [name, ...]
-# Also becomes a Slurm Feature= token and (uppercased) an env var name, so it is validated with the
-# same shape the codebase already uses for a shell-safe identifier (config.py's OUTPUT_NAME_RE analog).
+# --- Arm Features (docs/TODO.md "Arm Features", temp/FEATURES_BUILTIN.md) ---
+# Named capabilities an Arm may report having: heavy, hardware- or licence-gated software that is not
+# installed everywhere. BUILT IN rather than admin-curated, because CCC knows what each name MEANS.
+# At minimum that is placement plus `$<NAME>_PATH`; a name may also carry a runtime profile (see
+# ccc_head_api.features), in which case CCC arranges the env vars, binds, cache and licence a Spawn
+# needs. A name CCC has never heard of would be a Slurm `Feature=` token with neither: an Arm could
+# advertise it and nothing on the other end would know what to do with it. So the catalog is a
+# constant, and an Arm picks FROM it at `cuttle setup`.
+#
+# Mirrored in ccc_head_api.enroll and .slurm, which cannot import this module (see the note at the
+# bottom of this file on why the CLI and API packages stay separate). They must agree.
+FEATURE_NAMES = ("vlearn", "isaaclab")
+# Each name also becomes a Slurm Feature= token and (uppercased) an env var name. Kept as a check on
+# what arrives over the wire at /enroll — the CLI no longer takes a typed feature name anywhere.
 FEATURE_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 # Where `cuttle setup --arm` records this box's declared features + install paths, so a Spawn's payload
 # can find e.g. $VSIM_PATH without knowing whether this node has it — see
@@ -259,6 +263,11 @@ ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
 # can never collide over it. ccc_head_api.spawns.JOB_SCRIPT binds it at the Guise's home inside the Pod
 # (the only place a licence manager looks), and only for a Spawn that requested a Feature.
 LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
+# The `--output` an activation Spawn declares (cuttle.enroll.activate_arm). Every Spawn but a Tide Pool
+# must name at least one, and this one has nothing to bring home — what it produces is the activation
+# state, written into the Arm's own Licence directory and left there. So the directory is real, empty,
+# and named once here rather than as a string in the middle of the admit path.
+ACTIVATION_OUTPUT_DIR = "activation"
 # The apptainer .deb the Head serves to every Arm, and the record that pins it:
 # {version, filename, sha256}. Under CCC_LIB rather than HEAD_STATE_DIR because the Enroll API is what
 # serves the file, and it runs as `munge` — HEAD_STATE_DIR is 0700 ccc and it could not even traverse
@@ -387,7 +396,7 @@ KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 # --- Tide Pool (docs/TODO.md, now built): interactive Spawn relay ---
 # The Head-side TCP relay's listen-port range (ccc_head_api.tidepool.PORT_BASE/PORT_RANGE) — MUST match
 # those constants exactly; duplicated here rather than shared because the CLI and the head-side API
-# package do not import each other (same reason FEATURES_CATALOG's path is duplicated between
+# package do not import each other (same reason FEATURE_NAMES is duplicated between
 # ccc_head_api.enroll and ccc_head_api.slurm). Opened once, as a whole range, at `setup --head`
 # (system.allow_tcp_port_range) — a per-Tide-Pool ufw rule would mean firewall churn on every submit.
 #

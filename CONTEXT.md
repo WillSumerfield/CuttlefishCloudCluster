@@ -173,14 +173,24 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Head knows who is billed for it, and only the Head can be asked about a Spawn that has ended.
 - **Shared storage** — the unified cluster-wide filesystem (home dirs, code, base envs) mounted
   identically on every node. Distinct from the `shared/` code context.
-- **Feature** — a named, admin-curated capability an Arm may report having (e.g. `vlearn`, `isaacsim`).
-  Declared by the Arm owner at `setup --arm` from the Head's catalog, never auto-probed. A Spawn
-  requests one the same way it declares VRAM: as a *need*, not a machine name — expanding
+- **Feature** — a named capability an Arm may report having. The catalog is **built into CCC**
+  (`config.FEATURE_NAMES`: `vlearn`, `isaaclab`), not curated by an operator, because CCC knows what
+  each name *means* — at minimum placement and `$<NAME>_PATH`, and where a name carries a runtime
+  profile, the env vars, binds, cache and **Licence** wiring a Spawn needs as well. A name CCC did not
+  know would be a Slurm constraint with nothing behind it. Declared by the Arm owner at
+  `setup --arm` (and by the Head's operator for its own co-located Arm), never auto-probed.
+  A Spawn requests one the same way it declares VRAM: as a *need*, not a machine name — expanding
   **Eligibility** exactly like VRAM does. The Head rejects a request no enrolled Arm can ever satisfy,
   same as an impossible VRAM ask.
   A Feature is what the *Arm* supplies, which is not always the software: it may be a heavy install
-  that isn't everywhere, or only the **Licence** for software the submitter brings in their own
-  **Environment**, or both. `isaacsim` is the first shape, `vlearn` the second.
+  that isn't everywhere, or the software plus its **Licence** where the copy that runs has to be the
+  Arm's own. `isaaclab` is the first shape, `vlearn` the second.
+  A Feature may carry a **runtime profile** (`ccc_head_api.features`), and `vlearn` does: CCC then
+  arranges the package, binds, working directory, cache and env vars a Spawn needs, so the submitter's
+  script contains none of it. It has to be CCC's job rather than a script's — `LD_LIBRARY_PATH` is read
+  by the loader at `exec`, so nothing running inside the **Pod** can set it for itself. Without a
+  profile a Feature is placement plus `$<NAME>_PATH`, which is a complete answer for software a
+  submitter drives directly.
 - **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm
@@ -188,12 +198,20 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   **Eligibility**, even though every eligible Arm could install the software. It lives in one directory
   per Arm, which is the home of the **Licence account**, and is bound at a **Guise**'s home inside the
   **Pod**.
-- **Licence account** — `ccc-licence`, an account whose only purpose is its home directory. A licence
-  manager picks where to keep its state with `getpwuid(getuid())->pw_dir` and ignores `$HOME`, so the
-  only way to choose that location is to choose which identity activates the software. The Arm's owner
-  runs the vendor's activation once as this account; CCC creates the account and the directory, and
-  never reads what lands inside. `teardown` removes the account but never the directory — an
+- **Licence account** — `ccc-licence`, an account whose only purpose is *owning* the Licence directory,
+  which it does at `2770 ccc-licence:ccc-guises`. That ownership is what keeps a Licence out of a
+  human's home, which matters because the whole directory is bound into every Spawn that asks for a
+  Feature. It does not perform the activation — a **Guise** does, inside the activation Spawn, which is
+  why the directory is group-writable. `teardown` removes the account but never the directory — an
   activation can be a finite resource, and teardown+setup is the routine redeploy here.
+- **Activation Spawn** — how a **Licence** comes to exist. A licence manager picks where to keep its
+  state with `getpwuid(getuid())->pw_dir` and ignores `$HOME`, so the only way to choose that location
+  is to choose which identity activates the software. CCC runs the vendor's activation as a **Guise**,
+  in a **Pod**, with the Licence directory bound at that Guise's home — so the state lands there by
+  construction, and nobody has to find or copy anything. Submitted as the Arm is admitted, beside the
+  Power benchmark, and for the same reason: **an Arm joins with its declarations true or it does not
+  join**. It is the one Spawn permitted to see the Arm's product *key*, and the flag that says so
+  exists only on the Head-local admin path — `/submit` has no equivalent and never should.
 
 ## Economy concepts
 

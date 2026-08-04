@@ -687,8 +687,11 @@ class TestFeaturesEnv:
     """
 
     def test_a_feature_becomes_an_exported_path(self):
-        out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/vlearn"}])
-        assert "export VLEARN_PATH=/opt/vlearn" in out
+        """`isaacsim` has no profile, so nothing is mirrored and the owner's own path is what a Spawn
+        is told. A Feature CCC does mirror gets CCC's copy instead — see tests/test_features.py, which
+        is where that half lives."""
+        out = enroll.render_features_env([{"name": "isaacsim", "path": "/opt/isaacsim"}])
+        assert "export ISAACSIM_PATH=/opt/isaacsim" in out
 
     def test_a_dotted_or_hyphenated_name_becomes_a_legal_identifier(self):
         """FEATURE_NAME_RE allows `.` and `-`; a shell identifier does not, so `vsim-pro` has to become

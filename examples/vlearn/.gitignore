@@ -1,10 +1,5 @@
-# Assembled by prepare.sh from a vlearn checkout — third-party and licence-restricted,
-# hundreds of MB. The recipe is committed; the payload is not.
-*.whl
-# A product key, if the operator drops one here for run.py to activate with. Never committed.
-License.key
-TurboActivate.dat
+# Copied by prepare.sh from a vlearn checkout — third-party material. The recipe is committed; the
+# payload is not. The wheel, assets/, TurboActivate.dat and a licence key used to be listed here too;
+# the Arm supplies all four now, so they never appear in this directory at all.
 train/
-assets/
-cache/
 runs/

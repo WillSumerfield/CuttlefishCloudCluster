@@ -77,10 +77,58 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
         raise ui.abort(e.user_message()) from None
 
 
+def tar_from_files(files: dict[str, str]) -> bytes:
+    """A project built in memory from `{name: contents}`, for a Spawn CCC submits on its own behalf.
+
+    There is no directory to upload for one of those (see cuttle.enroll.activate_arm — the whole
+    project is two generated files), and writing them to a temp tree first would only add a place for
+    them to be left behind.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, body in sorted(files.items()):
+            data = body.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o644
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
+    """Block until `spawn_id` ends, then return `(exit code, stderr)`.
+
+    For a Spawn CCC submitted itself and must judge — not for a User's, who gets `cuttle logs -f`. The
+    exit code is None for a Spawn that ended without recording one (cancelled, or its Arm dropped),
+    which is a failure here like any other; the caller reports it with whatever stderr survived.
+
+    A timeout returns the same shape rather than raising, so one caller handles "it failed" and "it
+    never finished" identically — from the operator's seat those are the same outcome.
+
+    Read off the Head's own disk with sudo, not over HTTP, for the same reason `_submit_pinned` shells
+    out instead of calling the API: the caller stands on the Head, and one of them (`setup --head`)
+    runs before any account exists to log in as. The spawn dir is 0700 `ccc`, so `sudo cat` is what
+    reaches it — the same way `_benchmark_arm` reads a Power file.
+    """
+    d = config.HEAD_SPAWNS_DIR / str(spawn_id)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        # `exit` is written by the job script only after the payload returns, and its presence is this
+        # pipeline's "done" convention everywhere else (see ccc_head_api.spawns.JOB_SCRIPT).
+        r = run(["cat", str(d / "exit")], sudo=True, capture_output=True, text=True, check=False)
+        if r.returncode == 0 and r.stdout.strip():
+            err = run(["cat", str(d / "err")], sudo=True, capture_output=True, text=True, check=False)
+            return int(r.stdout.strip()), err.stdout or ""
+        time.sleep(5)
+    err = run(["cat", str(d / "err")], sudo=True, capture_output=True, text=True, check=False)
+    return None, (err.stdout or "") + f"\nccc: the Spawn did not finish within {timeout_s}s"
+
+
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
                    features: list[str] | None = None, tidepool: bool = False,
-                   manifest: str | None = None) -> tuple[int, str | None]:
+                   manifest: str | None = None, activation: bool = False,
+                   user: str | None = None) -> tuple[int, str | None]:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and since Phase 6 the Head API has none — so this does not travel over
@@ -95,7 +143,10 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
     `tidepool` (docs/TODO.md) lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
     node-pinning, threaded through for completeness (the common Tide Pool path is unpinned).
     """
-    me = auth._api("GET", "/me")["username"]
+    # Named explicitly only by CCC's own Spawns (cuttle.enroll.activate_arm), which run during
+    # `setup --head` — before any account has logged in, so there is no `/me` to ask. Every human path
+    # leaves it None and is attributed to whoever is logged in on this box.
+    me = user or auth._api("GET", "/me")["username"]
     # The tar has to be readable by the `ccc` account the admin module runs as, so it goes to a
     # world-readable temp file rather than anywhere under the operator's 0700 home.
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as f:
@@ -112,6 +163,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
             # script argument for another output/feature name.
             *[f for name in outputs for f in ("--output", name)],
             *[f for name in (features or []) for f in ("--feature", name)],
+            *(["--activation"] if activation else []),
             *(["--tidepool"] if tidepool else []),
             *(["--manifest", manifest] if manifest else []),
             *args],

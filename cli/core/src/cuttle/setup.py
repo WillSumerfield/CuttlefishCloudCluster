@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 from . import auth, backup, config, enroll, headapi, mesh, monitor, settings, system, templates, ui
+from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
 
@@ -282,6 +283,20 @@ def make_registry_dir() -> None:
          str(config.CCC_LIB)], sudo=True)
 
 
+def ensure_guise_group() -> None:
+    """Create the group every **Guise** shares, if it is not there yet.
+
+    Called from more than one place because more than one thing needs it before `ensure_guise_accounts`
+    (which is where a Guise, and therefore this group, is normally born) runs: the Licence directory is
+    group-owned by it, and so is the mirrored Feature licence key. Both happen several steps earlier —
+    `setup --head` records this box's Features long before it provisions anyone's Unix identity.
+
+    The gid is pinned (config.GUISE_GROUP_GID) so the Head and every Arm agree about it; `check=False`
+    because "it already exists" is the normal case on every run after the first.
+    """
+    run(["groupadd", "--gid", str(config.GUISE_GROUP_GID), config.GUISE_GROUP], sudo=True, check=False)
+
+
 def provision_licence_home(path: str) -> None:
     """Create the **Licence** account (config.LICENCE_USER) with `path` as its home, so the vendor's
     activation can be run AS it and land its state there.
@@ -301,7 +316,7 @@ def provision_licence_home(path: str) -> None:
     Idempotent. `--create-home` on an account that already exists is a no-op, and the mode is re-applied
     every run — a re-setup that repaired nothing would be the surprising behaviour.
     """
-    run(["groupadd", "--gid", str(config.GUISE_GROUP_GID), config.GUISE_GROUP], sudo=True, check=False)
+    ensure_guise_group()
     # No --uid: locally allocated on purpose (see config.LICENCE_USER). --create-home makes `path`
     # itself, including parents, which is why the operator is never asked to mkdir anything.
     run(["useradd", "--system", "--home-dir", path, "--create-home", "--shell", "/usr/sbin/nologin",
@@ -311,17 +326,12 @@ def provision_licence_home(path: str) -> None:
     run(["usermod", "--home", path, config.LICENCE_USER], sudo=True, check=False)
     run(["install", "-d", "-m", "2770", "-o", config.LICENCE_USER, "-g", config.GUISE_GROUP, path],
         sudo=True)
-    # An empty Licence directory is a Feature this box advertises and cannot actually serve, and the
-    # Spawn-side symptom is a licensing error deep inside the vendor's library. So it goes in the
-    # end-of-run trouble summary (ui.warn), not past as a muted row — setup is not finished here.
-    # Listed through sudo: the directory is 2770 ccc-licence:ccc-guises and the operator is in neither,
-    # so a plain iterdir() here raises PermissionError on the box this is meant to help.
-    listing = run(["ls", "-A", path], sudo=True, capture_output=True, text=True, check=False)
-    if not (listing.stdout or "").strip():
-        ui.warn(f"{path} is empty — this box advertises a licensed Feature it cannot serve yet")
-        ui.hint(f"Activate the software ONCE as that account, e.g. "
-                f"`sudo -u {config.LICENCE_USER} <the vendor's activation>`. Same machine, so a "
-                f"node-locked licence should recognise its own hardware and not spend a second seat.")
+    # Empty is the NORMAL state here now, and no longer worth a warning: CCC fills this directory
+    # itself, with an activation Spawn run as this Arm is admitted (cuttle.enroll.activate_arm), which
+    # is minutes away and has not happened yet at this point in setup. It used to be the operator's job
+    # to run the vendor's activation by hand as `ccc-licence`, and an empty directory then meant a
+    # Feature this box could not serve — so it was warned about. The account's job has shrunk to owning
+    # the directory: a **Guise** does the activating, inside a Pod, with this bound at its home.
 
 
 def provision_mantle() -> None:
@@ -737,13 +747,11 @@ def setup_head(address: str | None = None) -> None:
 def _setup_head(address: str | None = None) -> None:
     make_user_dirs()
     settings.prompt_wandb()  # up front, so the rest runs unattended
-    # Arm Features, also up front and for the same reason. The Head OWNS the catalog — an Arm picks
-    # FROM it and can never add to it — so this is the only place names come into existence, and it has
-    # to happen before write_slurm_config below, which bakes this box's own Features into its NodeName
-    # line. The Head's co-located Arm is an Arm like any other, so it declares against the catalog it
-    # just defined rather than being special-cased.
-    catalog = _prompt_feature_catalog(enroll.load_feature_catalog())
-    head_features = _prompt_arm_features(catalog, _head_arm_features())
+    # Arm Features, also up front and for the same reason. Nothing is defined here — the catalog is
+    # config.FEATURE_NAMES, built in — so the Head answers exactly the question a donor's box answers:
+    # which of them does THIS box have. Its co-located Arm is an Arm like any other. Asked before
+    # write_slurm_config below, which bakes this box's own Features into its NodeName line.
+    head_features = _prompt_arm_features(_head_arm_features())
     head_licence = _prompt_licence_home(_head_licence_home()) if head_features else ""
     preflight("head")
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
@@ -762,11 +770,15 @@ def _setup_head(address: str | None = None) -> None:
         make_registry_dir()
         install_apptainer(pin_apptainer_deb())  # the Head runs exactly what it serves its Arms
         record_installed(before)
-    # Saved BEFORE write_slurm_config: it reads this box's Features back out of the registry to render
-    # its NodeName line, and the Enroll API validates a donor's declaration against the catalog file.
-    with ui.step("Recording the Arm Feature catalog"):
-        enroll.save_feature_catalog(catalog)
+    # Before write_slurm_config, which reads this box's Features back out of the registry to render its
+    # NodeName line.
+    with ui.step("Recording Arm Features"):
         if head_features:
+            # Prepared BEFORE the env file is rendered: render_features_env exports where the packages
+            # and the mirrored install landed, and a file promising a directory that does not exist yet
+            # is a Spawn that fails on an Arm whose setup said it succeeded.
+            ensure_guise_group()   # the mirrored licence key is group-owned by it, and this is early
+            feature_profiles.prepare(head_features)
             _write_root_file(config.ARM_FEATURES_ENV,
                              enroll.render_features_env(head_features, head_licence))
         if head_licence:
@@ -807,9 +819,11 @@ def _setup_head(address: str | None = None) -> None:
         build_base_sif()                         # Mantle-readable, at the cluster-wide path
     with ui.step("Installing the Environment build tools"):
         install_env_tools()                      # uv + micromamba, Head-only (environments.py)
-    # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because the
-    # benchmark is a real Spawn: it needs slurmd up, the Pod image built, and rsyncd listening.
+    # The Head's own Arm is an Arm like any other, so it is priced like one — and its declared Arm
+    # Features are proved like any other's. Last, because both are real Spawns: they need slurmd up,
+    # the Pod image built, and rsyncd listening.
     enroll.benchmark_arm(system.hostname())
+    enroll.activate_arm(system.hostname(), [f["name"] for f in head_features])
     verify()
     lan = system.primary_ip()
     # Results, not `ui.kv` — kv writes straight to stdout, which inside a box is both uncounted (so
@@ -880,12 +894,15 @@ def setup_client() -> None:
 setup_local = setup_head
 
 
-def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None) -> list[dict]:
-    """Ask which of the Head's known Arm Features (`cuttle feature add`) this box has, and where each
-    is installed — `[{"name", "path"}, ...]`, /enroll's shape. A y/n per catalog entry rather than a
-    free-typed name: the catalog IS the only valid answer set (Head-side validation is the real gate,
-    but there is no reason to let a typo reach it). The path is likewise re-asked until non-empty,
-    mirroring the rule /enroll already enforces, so the failure lands next to the question.
+def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
+    """Ask which of CCC's built-in Arm Features (config.FEATURE_NAMES) this box has, and where each is
+    installed — `[{"name", "path"}, ...]`, /enroll's shape. A y/n per Feature rather than a typed name:
+    the catalog IS the only valid answer set (Head-side validation is the real gate, but there is no
+    reason to let a typo reach it). The path is likewise re-asked until non-empty, mirroring the rule
+    /enroll already enforces, so the failure lands next to the question.
+
+    The same prompt on the Head and on a donor's box. Nothing here is Head-only any more: the Head does
+    not own a catalog to define, it just has an Arm with Features like everyone else.
 
     On a re-setup, what this box already declared is offered as-is first. A full teardown+setup is the
     normal redeploy here, so re-walking an unchanged list is the common case, not the rare one — and a
@@ -896,8 +913,6 @@ def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None)
     needs them, which is not a safe default. A first setup still has nothing to keep.
     """
     existing = existing or []
-    if not catalog:
-        return []
     if not ui.interactive():
         return existing
     if existing:
@@ -905,12 +920,13 @@ def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None)
         ui.say(f"  [muted]already declared: {shown}[/muted]")
         if ui.ask_confirm("Keep these Arm Features?", True):
             return existing
-    ui.say(f"  [muted]Which of the cluster's Features does THIS box have? "
-           f"({', '.join(catalog)})[/muted]")
+    ui.say(f"  [muted]Which of these does THIS box have installed? "
+           f"({', '.join(config.FEATURE_NAMES)})[/muted]")
     ui.hint("Yes only for what is really here — a Spawn asking for it can be sent nowhere else.")
     prior = {f["name"]: f["path"] for f in existing}
+    prior_keys = {f["name"]: f.get("key") for f in existing}
     features = []
-    for name in catalog:
+    for name in config.FEATURE_NAMES:
         if not ui.ask_confirm(f"Does this Arm have {name!r}?", name in prior):
             continue
         # Absolute, because the answer is read back on an Arm from /etc/ccc/features.env by a job
@@ -925,10 +941,38 @@ def _prompt_arm_features(catalog: list[str], existing: list[dict] | None = None)
         # sat through the whole wizard.
         while True:
             path = ui.ask_text(f"Install path for {name!r}:", prior.get(name, "")).strip()
-            if path:
+            if not path:
+                ui.warn(f"  {name!r} needs an install path — the Head refuses a declaration without one")
+                continue
+            # Checked against what the Feature's runtime actually opens (cuttle.features), not just for
+            # non-emptiness. A path missing the vendor's assets or wheels is a Feature this box
+            # advertises and cannot serve, and left to run time it surfaces as a stranger's Spawn dying
+            # inside libgym.so — hours later, on a box its owner is not watching.
+            missing = feature_profiles.check_install(name, path)
+            if not missing:
                 break
-            ui.warn(f"  {name!r} needs an install path — the Head refuses a declaration without one")
-        features.append({"name": name, "path": path})
+            ui.warn(f"  {path} does not look like a {name} install — nothing there for:")
+            for m in missing:
+                ui.say(f"    [muted]{m}[/muted]")
+        feature_profiles.report(name, path)
+        entry = {"name": name, "path": path}
+        # The Feature's product key, for Features that have one. Asked here rather than assumed at the
+        # default location: a box with this software installed was activated by whoever installed it,
+        # so the key is already somewhere on it, and CCC is not going to guess. Never sent to the Head
+        # — it is mirrored into this box's own CCC state, at 0640, and only this box ever reads it.
+        p = feature_profiles.ARM_PROFILES.get(name)
+        if p and p.licence_key:
+            ui.hint(p.licence_key_help)
+            while True:
+                key = ui.ask_text(f"Path to {name}'s {p.licence_key}:",
+                                  prior_keys.get(name) or str(Path(path) / p.licence_key)).strip()
+                if key and Path(key).is_file():
+                    break
+                # Re-asked rather than accepted: a wrong path here fails the ACTIVATION, minutes later,
+                # after a whole Environment build — and reads like a CCC fault rather than a typo.
+                ui.warn(f"  no file at {key or '(nothing)'} — CCC cannot activate {name} without it")
+            entry["key"] = key
+        features.append(entry)
     return features
 
 
@@ -937,8 +981,35 @@ def _head_arm_features() -> list[dict]:
 
     From the registry rather than settings (where a donor Arm keeps its copy): the Head's box has a
     registry row and no `arm` settings block — it never enrolls, so nothing ever wrote one.
+
+    The **Licence** key paths come back from the rendered features.env instead, because the registry
+    deliberately does not carry them (it is served to the whole cluster, and where a box keeps its key
+    is that box's business). Same reason `_head_licence_home` reads that file.
     """
-    return (enroll.load_registry().get(system.hostname()) or {}).get("features") or []
+    features = (enroll.load_registry().get(system.hostname()) or {}).get("features") or []
+    for f in features:
+        # _SRC: where the OWNER's key is, not CCC's mirror of it — the prompt below re-copies from
+        # whatever comes back, and a mirror offered as its own source would freeze at that copy.
+        key = _features_env_value(
+            f"{re.sub(r'[^A-Za-z0-9]', '_', f['name']).upper()}_LICENCE_KEY_SRC")
+        if key:
+            f["key"] = key
+    return features
+
+
+def _features_env_value(var: str) -> str:
+    """One `export <var>=...` line's value out of the rendered features.env, or `""`.
+
+    That file is the only durable record of anything Arm-local on this box — see
+    `enroll.render_features_env`.
+    """
+    if not config.ARM_FEATURES_ENV.exists():
+        return ""
+    prefix = f"export {var}="
+    for line in config.ARM_FEATURES_ENV.read_text().splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
 
 
 def _head_licence_home() -> str:
@@ -947,46 +1018,7 @@ def _head_licence_home() -> str:
     That file is the only durable record on this box — a Licence path is Arm-local by design, so it is
     deliberately not in the registry the Head serves to the rest of the cluster.
     """
-    if not config.ARM_FEATURES_ENV.exists():
-        return ""
-    for line in config.ARM_FEATURES_ENV.read_text().splitlines():
-        prefix = f"export {config.LICENCE_HOME_VAR}="
-        if line.startswith(prefix):
-            return line[len(prefix):].strip()
-    return ""
-
-
-def _prompt_feature_catalog(existing: list[str]) -> list[str]:
-    """Define the cluster's Arm Feature catalog at `setup --head` — the names an Arm may later declare.
-
-    Head-only, because the catalog is the Head's: an Arm picks FROM it and can never add to it. Free
-    text here (unlike the Arm prompt) precisely because this is where names come into existence; each
-    is validated against config.FEATURE_NAME_RE, which is what makes it safe as both a Slurm `Feature=`
-    token and an uppercased env var name.
-
-    Off-terminal keeps whatever is already recorded, same reasoning as _prompt_arm_features.
-    """
-    if not ui.interactive():
-        return existing
-    if existing:
-        ui.say(f"  [muted]catalog: {', '.join(existing)}[/muted]")
-        if ui.ask_confirm("Keep this Arm Feature catalog?", True):
-            return existing
-    ui.say("  [muted]Name the heavy or licence-gated software some boxes have and others don't — "
-           "vlearn, isaacsim. Each Arm later declares which it has; submitters ask with "
-           "`cuttle run --feature <name>`.[/muted]")
-    ui.hint("One name per line, blank line to finish. None? Blank line now — you can re-run this.")
-    names: list[str] = []
-    while True:
-        name = ui.ask_text("Feature name", "").strip()
-        if not name:
-            return names
-        if not re.match(config.FEATURE_NAME_RE, name):
-            ui.warn(f"  {name!r} is not a valid feature name — letters, digits, then . _ - only")
-        elif name in names:
-            ui.warn(f"  {name!r} already added")
-        else:
-            names.append(name)
+    return _features_env_value(config.LICENCE_HOME_VAR)
 
 
 def _prompt_licence_home(existing: str = "") -> str:
@@ -1063,14 +1095,13 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     # one /dev/nvidiaN per card natively, a single /dev/dxg under WSL2 — which the Head needs to author
     # our gres.conf lines, and returns the munge key. We hold that key in memory: writing it needs the `munge` user, which
     # apt has not created yet.
-    # Arm Features (docs/TODO.md): ask which of the Head's catalog this box has, and where each is
+    # Arm Features (docs/TODO.md): ask which built-in Features this box has, and where each is
     # installed, before /enroll — so the declaration rides the SAME POST as the hardware report rather
-    # than a second round trip. Only offered when the catalog isn't empty and there's someone to ask.
+    # than a second round trip. The catalog is config.FEATURE_NAMES, so this needs nothing from the Head
+    # (it used to fetch one over the mesh) and works before this box can reach it at all.
     # A re-setup offers what this box declared last time (settings) rather than re-walking the list.
     prior = (settings.load().get("arm") or {})
-    with ui.step("Checking the Head's Arm Feature catalog"):
-        catalog = enroll.fetch_feature_catalog(t["mesh_ip"])
-    features = _prompt_arm_features(catalog, prior.get("features"))
+    features = _prompt_arm_features(prior.get("features"))
     # Only asked when this box actually declared something to licence — a Licence with no Feature to
     # unlock is a directory nothing would ever bind.
     licence_home = _prompt_licence_home(prior.get("licence_home", "")) if features else ""
@@ -1133,6 +1164,11 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
             # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The
             # Licence PATH is likewise not secret — what is secret lives inside that directory, and is
             # bound only into Spawns that asked for a Feature (ccc_head_api.spawns.JOB_SCRIPT).
+            #
+            # Prepared first, for the same reason as on the Head: the file about to be written names
+            # where the packages and the mirrored install went.
+            ensure_guise_group()   # as on the Head — the mirrored licence key is group-owned by it
+            feature_profiles.prepare(features)
             _write_root_file(config.ARM_FEATURES_ENV,
                              enroll.render_features_env(features, licence_home))
             if licence_home:

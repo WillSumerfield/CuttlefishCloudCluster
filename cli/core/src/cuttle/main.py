@@ -6,7 +6,9 @@ import typer
 
 from . import auth as auth_mod
 from . import backup as backup_mod
+from . import config
 from . import enroll as enroll_mod
+from . import features as feature_profiles
 from . import headapi as headapi_mod
 from . import installer as installer_mod
 from . import karma as karma_mod
@@ -48,7 +50,7 @@ munge_app = typer.Typer(no_args_is_help=True,
                         help="The cluster's shared munge key (rotate on the Head, sync from an Arm).")
 app.add_typer(munge_app, name="munge")
 feature_app = typer.Typer(no_args_is_help=True,
-                          help="Arm Features: heavy/hardware-licence-gated software (run on the Head).")
+                          help="Arm Features: heavy/hardware-licence-gated software CCC knows how to run.")
 app.add_typer(feature_app, name="feature")
 recipe_app = typer.Typer(no_args_is_help=True,
                          help="Recipes: frozen, re-runnable snapshots of a project (24GB allowance).")
@@ -523,27 +525,24 @@ def munge_rotate(yes: bool = typer.Option(False, "--yes", "-y", help="Skip the c
     enroll_mod.rotate_munge_key()
 
 
-@feature_app.command("add")
-def feature_add(name: str = typer.Argument(None, help="New Arm Feature's name (e.g. vsim, isaacsim).")):
-    """ON THE HEAD: add a name to the Arm Feature catalog, so a donor's `setup --arm` can offer it and
-    a Spawn can require it. Letters/digits/'.'/'_'/'-' only — it also becomes a Slurm Feature= token
-    and (uppercased) an env var name."""
-    name = ui.need(name, "the feature's name", lambda: ui.ask_text("Name for the new Arm Feature?"))
-    enroll_mod.add_feature(name)
-
-
 @feature_app.command("list")
 def feature_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
-    """List the Arm Feature catalog."""
+    """List the Arm Features CCC supports. Built in, not configurable — the catalog is the set of names
+    CCC knows the meaning of, not a list anyone curates. Run anywhere."""
     enroll_mod.list_features(as_json=as_json)
 
 
-@feature_app.command("remove")
-def feature_remove(name: str = typer.Argument(None, help="Arm Feature to remove from the catalog.")):
-    """ON THE HEAD: remove a name from the catalog. Does not touch any Arm that already declared it —
-    only what a NEW enrollment or Spawn may reference."""
-    name = ui.need(name, "the feature's name", lambda: pickers.pick_feature("Which feature to remove?"))
-    enroll_mod.remove_feature(name)
+@feature_app.command("show")
+def feature_show(name: str = typer.Argument(..., help="A Feature from `cuttle feature list`.")):
+    """Print a starter `environment.yml` for a Feature — the system libraries its software links
+    against, ready to add your own dependencies to.
+
+    Fetched from the Head rather than built here, so there is one copy of that list in the codebase and
+    it is the same one CCC itself builds against. Not every Feature has one: a Feature can be nothing
+    but placement plus an install path, which needs no Environment to describe."""
+    # Plain `print`, not ui.say: this is a file body meant to be redirected into environment.yml, and
+    # Rich would both style it and read `[...]` in it as markup.
+    print(feature_profiles.environment_yml(name), end="")
 
 
 # --- recipes ------------------------------------------------------------------
@@ -875,16 +874,12 @@ def run(
                 if name:
                     output.append(name)
             # Optional, and never gates submission — most Spawns need no Arm Feature at all. Offered
-            # only when asked for, and only from the real catalog (no free typing): a name that can't
-            # be satisfied is refused later, at submit, not guessed at here.
+            # from the built-in catalog (config.FEATURE_NAMES), which is why this needs no call to the
+            # Head and cannot fail: the names are a constant every copy of CCC already has. Whether any
+            # Arm actually CARRIES one is a different question, answered at submit — a request nothing
+            # can satisfy is refused there with the list of what is available, not guessed at here.
             if not feature and ui.ask_confirm("Require any Arm Features?", False):
-                try:
-                    catalog = auth_mod._api("GET", "/features")
-                except Exception:
-                    catalog = []
-                if not catalog:
-                    ui.warn("no Arm Features exist yet on this Head — nothing to require")
-                for name in catalog:
+                for name in config.FEATURE_NAMES:
                     if ui.ask_confirm(f"Require {name!r}?", False):
                         feature.append(name)
     # Hard validation, unconditional — NOT gated on `wizard`. A flag-driven `cuttle run` never passes

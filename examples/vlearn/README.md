@@ -1,70 +1,69 @@
 # vlearn on CCC — the Arm Feature hardware test
 
 Ant PPO on VSim, submitted as an ordinary Spawn. Exercises the whole `vlearn` **Feature** path end to
-end: Eligibility narrowing to the one licensed Arm, an Environment built on the Head, the Arm's
-**Licence** bound at the Spawn's Guise home, and declared outputs staged back.
+end: Eligibility narrowing to the one licensed Arm, an Environment built on the Head, the Arm's own
+vlearn package and assets arranged by CCC, its **Licence** bound at the Spawn's Guise home, and
+declared outputs staged back.
 
-Design and the hardware probes behind it: `temp/FEATURES_LICENCE.md`.
+Design: `temp/FEATURES_BUILTIN.md`.
 
 ## Prerequisites
 
-The Head must have the `vlearn` Feature in its catalog and a **Licence** directory recorded — both are
-prompted at `cuttle setup --head`. You name a directory that does not exist yet; setup creates it as
-the home of the `ccc-licence` account.
+Somebody's box has to *have* vlearn, and say so at `cuttle setup --arm` (or `--head`, for the Head's
+own co-located Arm). Setup asks three things: whether this box has it, where the checkout is, and
+where the product key is. It then unpacks the checkout's Linux wheels, creates the **Licence**
+directory, and — as the Arm is admitted — runs an activation Spawn on it. An Arm whose activation
+fails is not admitted, so a Feature that appears in `cuttle arm list` is one that works.
 
-Then fill it, from the activation this box already holds:
-
-```bash
-sudo ./sync-licence.sh
-```
-
-Re-run it after any vlearn upgrade — that is when the filenames change.
-
-**What it copies.** TurboActivate keeps its state in three small hidden files, one each under
-`~/.prof/`, `~/.local/` and `~/.config/`, named from an obfuscated per-release token. You are not
-expected to know that name: `.prof/` holds exactly one file and nothing else, so the script reads the
-token off it and uses the shared suffix to find the other two.
-
-**Why a copy, and not activating as the account.** The cleaner design is to run vlearn's activation
-*as* `ccc-licence` — TurboActivate picks its state directory with `getpwuid(getuid())->pw_dir` and
-ignores `$HOME`, so whoever activates decides where the state lands. That needs a product key, and
-vlearn's **Linux wheels ship none**: of the four 0.3.9 wheels, only the two `win_amd64` ones carry
-`dist-info/licenses/License.key`. So on Linux an already-activated box cannot re-activate itself
-without your own key from LimeLM. If you have that key, drop it in as `License.key` beside `run.py`
-and `run.py` will point vlearn at it — then a Spawn activates on its own and the sync is unnecessary.
-
-Never point the licence directory at a real home: the whole thing is mounted into every Spawn that
-asks for a Feature. Giving it to a CCC-owned account is what makes that structural rather than a rule
-to remember.
+Nothing to sync, copy or hand-place. The licence directory is created as the home of the `ccc-licence`
+account, which is what keeps it out of a real human's home — the whole directory is mounted into every
+Spawn that asks for a Feature.
 
 ## Running it
 
 ```bash
-./prepare.sh                  # copies the wheel, train/ and assets/ out of a vlearn checkout
+./prepare.sh                  # copies train/ out of a vlearn checkout — that is the whole project
 cuttle run run.py --feature vlearn --output runs --vram 16 --gpu 1 --time 30 --follow
 ```
 
-`--feature vlearn` is what restricts placement to an Arm that actually holds the licence, and what
-tells CCC this Spawn may see it. Without it the Spawn will land anywhere and fail at `create_gym`.
+`--feature vlearn` is the entire request. It restricts placement to an Arm that holds the licence, and
+it is what tells CCC to arrange the runtime. Without it the Spawn lands anywhere and fails at
+`import vlearn`.
 
-The first submission builds a ~6 GB conda Environment on the Head and takes a while; the download cache
-is shared, so later ones are much faster.
+The first submission builds the conda Environment on the Head and takes a while; the download cache is
+shared, so later ones are much faster.
+
+## What the upload does *not* contain
+
+The wheel, `assets/`, `shaders/`, `cache/` and `TurboActivate.dat`. All five come from the Arm:
+
+- **The wheel**, because vlearn's activation state is per-release and the Arm is the machine that was
+  activated — so the copy that runs has to be the copy its owner licensed. `setup --arm` unpacks it
+  once; the job script puts it on `PYTHONPATH` ahead of the Environment.
+- **`assets/`** (~970 MB) and **`shaders/`**, symlinked into the Spawn's working directory. Symlinks
+  and not copies because `$proj` is what the **Recovery Window** measures and rsyncs — a real gigabyte
+  in there would silently disable recovery for every vlearn Spawn.
+- **`cache/`** is the one of the four vlearn writes, so it is copied per Spawn (~1 MB) rather than
+  symlinked into a read-only bind.
+
+So `prepare.sh` copies `train/` and nothing else, and a submission is a few hundred KB.
 
 ## Why the pieces are shaped this way
 
 **`environment.yml`, not `pyproject.toml`.** vlearn ships cp310/cp311 wheels and `base.sif` is Python
-3.12. The uv path inherits the image interpreter, so it can never install vlearn; micromamba brings its
-own Python. The conda system libraries (`sdl2`, `assimp=5`, `zeromq`, `czmq`, `libglu`, `mesalib`) are
-there because `libgym.so` links them at load time — they are needed even headless, and `base.sif` is a
-pinned cluster-wide image with no per-Arm package hook.
+3.12. The uv path inherits the image interpreter; micromamba brings its own. The system libraries at
+the top of the file are the generated starter — `cuttle feature show vlearn` prints exactly that, and
+everything below the divider is this example's own.
 
-**`run.py`, not `train/rl_games_train.py` directly.** `LD_LIBRARY_PATH` has to be set before the process
-starts — the loader reads it once at exec, so `os.environ` is already too late for the `ctypes.CDLL`
-calls in `vlearn/__init__.py`. CCC runs `$py script.py` with no shell, so the script re-execs itself.
+**`run.py` is four lines of work.** It used to arrange `LD_LIBRARY_PATH` (through a re-exec, since the
+loader reads it once at `exec`), `VL_WORKING_DIRECTORY`, the cache directory and the licence key. CCC
+does all of that now. What is left is that rl_games writes to the current working directory and has no
+flag to move it — an rl_games quirk, not a vlearn one, which is why it lives here and not in the
+Feature profile.
 
 **Nothing here arranges the licence.** TurboActivate finds its activation state through
-`getpwuid(getuid())->pw_dir` and ignores `$HOME` — verified on hardware, a redirected `HOME` fails and a
-bogus one still passes. So the mount point is not something a submitter can influence; CCC binds it.
+`getpwuid(getuid())->pw_dir` and ignores `$HOME` — verified on hardware, a redirected `HOME` fails and
+a bogus one still passes. So the mount point is not something a submitter can influence; CCC binds it.
 
 ## Expected output
 
@@ -73,11 +72,11 @@ event files, downloaded to your machine when the Spawn finishes.
 
 ## If it fails
 
-- `License validation failed` — the Arm's licence directory is unset, empty, or not readable by the
-  Guise. Check `/etc/ccc/features.env` on the Arm.
-- `Could not find the cache directory` — `cache/` is missing from the upload. `prepare.sh` creates it;
-  it fails *before* the licence check, so it looks like a licensing problem and isn't.
+- `this Spawn's Environment is Python cp312, and this Arm's vlearn is built for: cp310 cp311` — the
+  `python=3.11` pin is missing from `environment.yml`, or the Spawn declared no Environment at all.
+- `License validation failed` — the Arm's licence directory is empty or unreadable by the Guise. It
+  should have been filled by the activation Spawn at admit; check `/etc/ccc/features.env` on the Arm.
 - `libassimp.so.5: cannot open shared object file` — conda-forge resolved assimp 6. The `assimp=5` pin
-  in `environment.yml` is load-bearing.
+  is load-bearing.
 - `no Arm has every requested feature (vlearn)` — no admitted Arm declares it. Re-run
-  `cuttle setup --head` (or `--arm`) and declare it there.
+  `cuttle setup --arm` on the box that has it.
