@@ -1,0 +1,11 @@
+# A project with no lock file: detection falls through uv.lock to this, and `uv sync` resolves it
+# fresh at build time. `package = false` makes it a *virtual* project — dependencies get installed,
+# the directory itself does not, which is what a project with no build backend wants.
+[project]
+name = "ccc-env-uv-project"
+version = "0"
+requires-python = ">=3.11"
+dependencies = ["pyfiglet==1.0.4"]
+
+[tool.uv]
+package = false

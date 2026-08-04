@@ -43,6 +43,9 @@ cuttle-installer.tar.gz
 # --- W&B run output ---
 wandb/
 
+# --- What `cuttle outputs` brings home; an example's inputs are the interesting part ---
+spawn-*-outputs/
+
 # --- Runtime / data ---
 *.sqlite
 *.sqlite-wal

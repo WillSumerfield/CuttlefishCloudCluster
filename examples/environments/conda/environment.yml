@@ -1,0 +1,15 @@
+# A conda env REPLACES the image's Python rather than layering on it, so this is the one case where
+# `torch` comes back MISSING — it was the image's, and this prefix inherits nothing. `wandb` is the
+# exception: CCC injects it after the solve, or a Spawn that declared a conda env would silently stop
+# logging to its submitter's W&B account.
+#
+# python is pinned because the prefix brings its own interpreter. pyfiglet is the marker package and is
+# the same 1.0.4 the uv examples ask PyPI for, so the three cases are comparable line for line — the
+# only difference between them is how it gets built. (It is deliberately a conda-forge package rather
+# than a `pip:` section: this example exists to exercise the solve.)
+name: ccc-env-conda
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pyfiglet=1.0.4

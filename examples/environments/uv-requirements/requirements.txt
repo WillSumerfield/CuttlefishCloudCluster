@@ -1,0 +1,4 @@
+# Pure-python and not in the base image — so its presence in the Spawn's output proves the Environment
+# was built rather than inherited. Pinned so the check is the same every run, and at a version
+# conda-forge ships too, so ../conda declares the same package and only the build differs.
+pyfiglet==1.0.4
