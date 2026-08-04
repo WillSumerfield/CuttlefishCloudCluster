@@ -1,9 +1,8 @@
-"""Phase 8 loose end — `system.nvidia_smi()` resolves the binary regardless of who invoked it.
+"""`system.nvidia_smi()` resolves the binary regardless of who invoked it.
 
-On WSL, nvidia-smi lives in /usr/lib/wsl/lib, which is on PATH only in an interactive login shell. The
-old code called `nvidia-smi` by name, so `preflight()`/`gpu_vram_mb()` passed during `setup --arm` only
-because a human ran them from a login shell, and would fail from any non-interactive context (an srun
-step). The resolver falls back to the absolute WSL path so the check actually verifies the GPU.
+On WSL, nvidia-smi lives in /usr/lib/wsl/lib, on PATH only in an interactive login shell — an
+srun step wouldn't find it by bare name. Falls back to the absolute WSL path so the check
+actually verifies the GPU.
 """
 
 from cuttle import config, system

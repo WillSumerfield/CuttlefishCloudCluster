@@ -1,7 +1,7 @@
-"""Phase 8 loose end — the `/login` throttle's core algorithm, tested directly against `ratelimit.py`
-rather than through the HTTP layer: a single TestClient can't present two different source IPs, and the
-IP-vs-username independence is exactly what needs proving. `/login`'s wiring to this module (429 +
-Retry-After, success clears the counters) is covered separately in test_logging.py.
+"""The `/login` throttle's core algorithm, tested directly against `ratelimit.py` rather than
+through the HTTP layer: a single TestClient can't present two different source IPs, and
+IP-vs-username independence is exactly what needs proving. `/login`'s wiring to this module
+(429 + Retry-After, success clears counters) is covered in test_logging.py.
 """
 
 import pytest

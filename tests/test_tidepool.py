@@ -196,9 +196,9 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         assert "%%TIDEPOOL_PUBKEY%%" not in body
 
     def test_the_pod_repairs_its_own_passwd_before_sshd_starts(self, tmp_path):
-        """A **Guise** is `nologin` on the host, and apptainer patches the Pod's /etc/passwd with that
-        host entry verbatim — shell field included (measured 2026-08-01). sshd then execs nologin and
-        the User gets "This account is currently not available" instead of a shell, with the Spawn
+        """A **Guise** is `nologin` on the host, and apptainer patches the Pod's /etc/passwd with
+        that host entry verbatim — shell field included. sshd then execs nologin and the User
+        gets "This account is currently not available" instead of a shell, with the Spawn
         running and billing Karma the whole time.
 
         Ordering is the test: repaired before `exec sshd`, or the first login is the broken one."""
@@ -392,12 +392,11 @@ class TestTidepoolRoute:
 
 
 class TestReadyMeansConnectable:
-    """`ready: true` is the CLI's cue to run `ssh` — there is no second check between the two. So the
-    route may only say it once the relay is accepting, and `Popen` returning is not that: the child
-    still has to start a Python interpreter and bind. The gap is ~200ms, which is precisely long
-    enough to lose to the CLI every time and be gone by the time anyone investigates — a "Connection
-    refused" on the FIRST attach to every Tide Pool, working on the retry (found on hardware
-    2026-08-01, twice, on Tide Pools 14 and 16).
+    """`ready: true` is the CLI's cue to run `ssh` — there's no second check between the two. So
+    the route may only say it once the relay is accepting, and `Popen` returning is not that: the
+    child still has to start a Python interpreter and bind. The gap is ~200ms — long enough to
+    lose to the CLI reliably, producing "Connection refused" on the FIRST attach and working on
+    retry.
     """
 
     def _seed(self, port):
@@ -462,9 +461,8 @@ class TestReadyMeansConnectable:
 
 
 class TestTheHeadsOwnArmNeedsNoRelay:
-    """Found on hardware (Tide Pool 7, 2026-08-02): a Tide Pool placed on the Head's co-located Arm
-    came up dead, with the Pod's sshd reporting `Bind to port 41000 on 0.0.0.0 failed: Address already
-    in use`.
+    """A Tide Pool placed on the Head's co-located Arm can come up dead, with the Pod's sshd
+    reporting `Bind to port 41000 on 0.0.0.0 failed: Address already in use`.
 
     Relay and Pod sshd share ONE port number by design — which on this Arm is one port on one box, and
     the relay gets there first (the route fires the moment Slurm says RUNNING, seconds before apptainer

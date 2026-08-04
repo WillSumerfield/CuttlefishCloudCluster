@@ -2,10 +2,10 @@ import { useState } from "react";
 import { changePassword, Unauthorized } from "../api";
 
 /**
- * Voluntary password rotation — the one the app was missing (forced first-login rotation already exists in
- * the auth gate; this is change-by-choice). Collapsed to a single control until you ask for it, then a
- * current / new / confirm form. Needs the current password because you're authenticated by cookie, not
- * re-proving identity — /passwd 403s a wrong current, and that message reaches you intact.
+ * Voluntary password rotation — change-by-choice, distinct from the forced first-login rotation in
+ * the auth gate. Collapsed to a single control until you ask for it, then a current / new / confirm
+ * form. Needs the current password because you're authenticated by cookie, not re-proving identity —
+ * /passwd 403s a wrong current, and that message reaches you intact.
  */
 export function PasswordForm({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [open, setOpen] = useState(false);

@@ -1,4 +1,4 @@
-"""Phase 4 slice 0 — what setup and enrollment actually WRITE to disk.
+"""What setup and enrollment actually WRITE to disk.
 
 Every failure guarded here is silent at write time and only surfaces on a donor's box, minutes later,
 as a node that registered but can't be scheduled. That is exactly the class of bug worth a unit test:
@@ -112,11 +112,10 @@ class TestSlurmConf:
         assert "Feature=vram24" in directives(templates.render_slurm_conf("100.99.0.1"))["NodeName"]
 
     def test_weight_is_baked_in(self, fake_host):
-        """Weight IS rendered here — the opposite of what slice 0 decided, and the reversal is the
-        point. `scontrol reconfigure` resets every node to what the config files say, so a Weight
-        pushed only by `scontrol update` is wiped by the next `arm authorize`/`admit`/`remove`
-        (verified on hardware 2026-07-14: update -> 276, reconfigure -> 1). The file is the only
-        durable home a *static* node has."""
+        """Weight IS rendered here, deliberately: `scontrol reconfigure` resets every node to what
+        the config files say, so a Weight pushed only by `scontrol update` is wiped by the next
+        `arm authorize`/`admit`/`remove` (measured: update -> 276, reconfigure -> 1). The file is
+        the only durable home a *static* node has."""
         assert "Weight=276" in directives(templates.render_slurm_conf("100.99.0.1", 276))["NodeName"]
 
     def test_an_unbenchmarked_head_still_renders(self, fake_host):
@@ -241,16 +240,16 @@ class TestScratchEpilog:
     def test_the_sink_sweep_matches_the_tag_the_epilog_cannot_derive(self):
         """A Spawn's sink carries a per-submission tag (ccc_head_api.spawns, `sink=`) precisely because
         a job id is not unique across teardowns. The epilog knows only the job id, so it has to glob —
-        and must still cover the untagged name a Spawn submitted before that change would have used."""
+        and must also match the untagged name older Spawns used."""
         script = templates.render_epilog()
         assert '"/tmp/ccc-$SLURM_JOB_ID.slurm" "/tmp/ccc-$SLURM_JOB_ID-"*.slurm' in script
 
 
 class TestGuiseProlog:
-    """The Slurm prolog: where a **Guise** comes into existence on a machine (temp/spawn-isolation.md
-    Phase 3c). It runs as root, on a donor's box, with `SLURM_JOB_UID` as its only input — so every
-    failure here is a `useradd` running on someone else's machine with the wrong argument, or a node
-    drained for a job it had no opinion about."""
+    """The Slurm prolog: where a **Guise** comes into existence on a machine (see
+    temp/spawn-isolation.md). It runs as root, on a donor's box, with `SLURM_JOB_UID` as its only
+    input — so every failure here is a `useradd` running on someone else's machine with the
+    wrong argument, or a node drained for a job it had no opinion about."""
 
     def test_the_account_is_named_after_the_uid_and_nothing_else(self):
         """The prolog has no network and no head.db. If the name came from anywhere but the uid it
@@ -349,11 +348,11 @@ class TestPrologRollout:
 
 
 class TestNothingIsLeftInTmp:
-    """`install` COPIES, so every root-owned file this project writes leaves its source behind unless
-    something removes it. Four sites did not, and two of them write secrets — the [bench] rsync
-    credential and, on an Arm, the cluster munge key. Both are 0600/0400 at their destination and were
-    then left in /tmp indefinitely, which defeats the mode each was given. Found with 855 of them on
-    the Head, oldest 11 days, newest from that morning's `setup --head`."""
+    """`install` COPIES, so every root-owned file this project writes leaves its source behind
+    unless something removes it. Four sites didn't, two writing secrets — the [bench] rsync
+    credential and, on an Arm, the cluster munge key — both 0600/0400 at their destination but
+    left in /tmp indefinitely, defeating the mode each was given. (855 such files can accumulate
+    on an unpatched Head.)"""
 
     def test_the_temp_copy_does_not_outlive_the_install(self, monkeypatch):
         seen = []
@@ -397,8 +396,8 @@ class TestNothingIsLeftInTmp:
 
 
 class TestPrivateTmpRollout:
-    """Phase 4. `job_container/tmpfs` is what contains the WRAPPER around a Spawn's payload — without
-    it a remote Spawn's scratch sits in the host's shared /tmp beside every concurrent Spawn's. It
+    """`job_container/tmpfs` is what contains the WRAPPER around a Spawn's payload — without it a
+    remote Spawn's scratch sits in the host's shared /tmp beside every concurrent Spawn's. It
     carries the same drain-the-node hazard as the prolog, and the same gate, with its OWN capability."""
 
     def test_both_lines_are_absent_while_any_arm_is_missing_the_conf(self, fake_host):
@@ -418,10 +417,9 @@ class TestPrivateTmpRollout:
         assert d["PrologFlags"] == "Contain"
 
     def test_an_arm_without_the_conf_does_not_cost_the_fleet_its_guises(self, fake_host):
-        """The reason tmpfs has a capability of its own. Every Arm set up during the Phase 3 rollout
-        reported `provides: ["prolog"]` and nothing else, so a shared gate would take working Guises
-        away from those boxes the moment Phase 4 shipped — silently putting every Spawn back to
-        running as the Mantle."""
+        """The reason tmpfs has a capability of its own: an Arm that only ever reported
+        `provides: ["prolog"]` would lose its working Guises the moment a shared gate started
+        requiring tmpfs too — silently putting every Spawn back to running as the Mantle."""
         d = directives(templates.render_slurm_conf("100.99.0.1", missing_tmpfs=["oldarm"]))
         assert d["Prolog"] == str(config.SLURM_PROLOG)
         assert "JobContainerType" not in d
@@ -443,11 +441,11 @@ class TestPrivateTmpRollout:
 
 
 class TestTheFleetActuallyGetsTheNewConfig:
-    """Rendering a fleet-wide line and DELIVERING it are two different things, and for the whole life
-    of this project only the first one happened. A configless slurmd caches the copy it fetched and
-    re-fetches on its own startup or on a reconfigure — a slurmctld restart is neither. `Prolog=`
-    reached willpersonal only because the deploy happened to include an `arm admit`, which reconfigures
-    for its own reasons (enroll.render_gres). Without this the same silence swallows Phase 4."""
+    """Rendering a fleet-wide line and DELIVERING it are two different things. A configless
+    slurmd caches the copy it fetched and re-fetches only on its own startup or a reconfigure —
+    a slurmctld restart is neither. `Prolog=` reaches an Arm only when the deploy happens to
+    include an `arm admit`, which reconfigures for its own reasons (enroll.render_gres). Without
+    this the same silence would swallow any future fleet-wide config line."""
 
     def test_setting_up_the_head_pushes_the_config_to_the_arms(self, monkeypatch):
         from cuttle import setup
@@ -524,7 +522,7 @@ class TestJobContainerConf:
 
 
 class TestSlurmSudoers:
-    """The Head's ONE unattended privileged grant in Phase 3. What it is NOT is the whole point."""
+    """The Head's ONE unattended privileged grant. What it is NOT is the whole point."""
 
     def test_the_runas_is_the_guise_group_never_root(self):
         rule = headapi._SUDOERS_CCC_SLURM

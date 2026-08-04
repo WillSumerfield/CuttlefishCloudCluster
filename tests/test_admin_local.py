@@ -1,9 +1,9 @@
-"""Phase 6 slice 2 — the Head-local admin commands, where the admin writes went.
+"""The Head-local admin commands, where the admin writes went.
 
-`cuttle karma override` and `cuttle run --node` no longer travel over HTTP: they shell into
-`ccc_head_api.admin` as the `ccc` account, on the Head. That `sudo` wrapper is untestable here, but
-the module underneath is a plain Python entry point — and it is the half that actually mutates
-head.db, so it is the half worth testing.
+`cuttle karma override` and `cuttle run --node` shell into `ccc_head_api.admin` as the `ccc`
+account, on the Head, rather than travelling over HTTP. The `sudo` wrapper is untestable here,
+but the module underneath is a plain Python entry point — the half that actually mutates
+head.db, so the half worth testing.
 
 Without these, moving a capability Head-local would mean replacing a tested API route with an
 untested subprocess: the security invariant would hold and the feature would silently not work.
@@ -54,9 +54,8 @@ class TestOverride:
 
 
 class TestReset:
-    """Phase 8 loose end — "No password recovery exists": before this, a forgotten password meant
-    `remove` + `add`, which wipes the User's Karma balance and orphans their Arms. `reset` fixes the
-    same forgotten-password case without recreating the account."""
+    """`reset` handles a forgotten password without recreating the account — `remove` + `add`
+    would wipe the User's Karma balance and orphan their Arms."""
 
     def test_it_prints_a_temp_password_that_works(self, head_db, capsys):
         assert admin.main(["reset", "alice"]) == 0

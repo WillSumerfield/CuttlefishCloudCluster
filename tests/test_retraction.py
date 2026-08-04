@@ -1,9 +1,9 @@
-"""Arm Retract/Return — an owner's self-service pause (Phase 2 loose end).
+"""Arm Retract/Return — an owner's self-service pause.
 
-App-layer, not real Slurm DRAIN (see ccc_head_api.retraction's module docstring): the mechanism is a
-head.db flag steering NEW placement away from a node, plus signalling whatever is RUNNING right now.
-These are the state-machine details nothing else checks: what `retraction.retract` actually catches and
-signals, that Return never reprieves a caught Spawn, and what submit_checked refuses/excludes.
+App-layer, not real Slurm DRAIN (see ccc_head_api.retraction's module docstring): a head.db flag
+steers NEW placement away from a node, plus signals whatever is RUNNING right now. Covers what
+`retraction.retract` catches/signals, that Return never reprieves a caught Spawn, and what
+submit_checked refuses/excludes.
 """
 
 from pathlib import Path

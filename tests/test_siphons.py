@@ -1,18 +1,18 @@
 """**Siphon** — one Spawn's rsync grant, and the end of mesh membership being the authz.
 
-What used to stand here was two shared modules: `[project]` over every User's upload and `[spawns]`
-over every Spawn's results, authorized by nothing but being on the Mesh. Every failure guarded below
-is a variation on the same one — a Spawn reaching something that is not its own — and none of them
-raise. A module rooted one directory too high, a grant that outlives its Spawn, a conf left behind by
-a submission that failed: each leaves a working cluster that is simply no longer isolating anything,
-and nothing surfaces until someone goes looking.
+Replaces two shared modules — `[project]` over every User's upload and `[spawns]` over every
+Spawn's results — authorized by nothing but being on the Mesh. Every failure guarded below is a
+variation on the same one: a Spawn reaching something that isn't its own, and none of them raise.
+A module rooted one directory too high, a grant that outlives its Spawn, a conf left behind by a
+failed submission — each leaves a working cluster that's simply no longer isolating anything, and
+nothing surfaces until someone goes looking.
 
-The mechanics these tests assume were verified against real rsync 3.2.7 (2026-07-31): an `&include`d
-directory is re-scanned per connection, its files inherit the parent conf's globals (`hosts allow`,
-`read only`) and may override them per module, a wrong secret is refused, `../` out of a module root
-is refused, and unlinking a conf revokes it on the next connection.
+Assumes rsync 3.2.7 behavior: an `&include`d directory is re-scanned per connection, its files
+inherit the parent conf's globals (`hosts allow`, `read only`) and may override them per module,
+a wrong secret is refused, `../` out of a module root is refused, and unlinking a conf revokes it
+on the next connection.
 
-See temp/spawn-isolation.md Phase 2.
+See temp/spawn-isolation.md.
 """
 
 import io
@@ -516,10 +516,10 @@ class TestTheBenchmarksSecretIsMintedOnce:
         return every command it shelled out plus whatever any `install` was handed.
 
         The payload is captured DURING the call rather than read back after: `system.install_file`
-        unlinks its temp file on the way out, deliberately — this is the one that used to leave the
-        [bench] credential sitting in /tmp in plaintext. Both `run` bindings are patched because
-        setup.py does `from .system import run`, so the two names are separate objects: the `test -s`
-        probe goes through setup's, the install through system's.
+        unlinks its temp file on the way out, deliberately, so the [bench] credential never sits
+        in /tmp in plaintext. Both `run` bindings are patched because setup.py does `from
+        .system import run`, so the two names are separate objects: the `test -s` probe goes
+        through setup's, the install through system's.
         """
         calls: list[list[str]] = []
         payloads: list[str] = []

@@ -1,10 +1,10 @@
-"""Phase 8 loose end — backup/restore for head.db + arms.json + Headscale's db.sqlite.
+"""Backup/restore for head.db + arms.json + Headscale's db.sqlite.
 
-The actual snapshot/restore logic lives in `cuttle.backup._SCRIPT`, a standalone string installed at
-`config.BACKUP_SCRIPT` (no cuttle import — it must run unattended under a bare `python3` from the
-nightly systemd timer). These tests `exec` that string into its own module namespace, exactly as the
-installed file would run, with `shutil.chown` stubbed out (this sandbox has no root and no `ccc`/
-`munge`/`headscale` accounts to chown to — the real behavior was verified by hand on a scratch dir).
+The actual snapshot/restore logic lives in `cuttle.backup._SCRIPT`, a standalone string installed
+at `config.BACKUP_SCRIPT` (no cuttle import — must run unattended under a bare `python3` from the
+nightly systemd timer). These tests `exec` that string into its own module namespace, exactly as
+the installed file would run, with `shutil.chown` stubbed out (no root, and no `ccc`/`munge`/
+`headscale` accounts to chown to, in this sandbox).
 """
 
 import json

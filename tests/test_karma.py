@@ -1,14 +1,13 @@
-"""Phase 4 slices 1–2 — the ledger and the Balance it implies, and the meter that feeds it.
+"""The ledger and the Balance it implies, and the meter that feeds it.
 
-Small tests, as we go; the Fake Cluster and the across-simulated-weeks claims wait for slice 4. What is
-worth testing *now* is the arithmetic nothing else can check: every one of these failures is a **remote
-consequence** — a standing that is quietly wrong, a nice computed perfectly and pushed onto a job it
-should never have touched, or a bill that is wrong by a factor nobody will ever notice.
+What's tested is the arithmetic nothing else can check: every failure here is a **remote
+consequence** — a standing that's quietly wrong, a nice computed perfectly and pushed onto a job
+it should never have touched, or a bill wrong by a factor nobody will ever notice.
 
-- **slice 1** — the ledger's Σ ≡ 0, Decay's linearity (which is *why* no `karma_balance` table exists),
-  Share's monotonicity and saturation, and which jobs the tick refuses to touch.
-- **slice 2** — Demand (the number every bill multiplies by), the hold and its ratchet, and Settlement:
-  a Transfer that sums to zero, a Commons burn that doesn't, and self-use that costs nothing.
+- The ledger's Σ ≡ 0, Decay's linearity (which is *why* no `karma_balance` table exists), Share's
+  monotonicity and saturation, and which jobs the tick refuses to touch.
+- Demand (the number every bill multiplies by), the hold and its ratchet, and Settlement: a
+  Transfer that sums to zero, a Commons burn that doesn't, and self-use that costs nothing.
 """
 
 import sqlite3
@@ -271,13 +270,13 @@ class TestQueueBump:
         return squeue, pushed
 
     def test_bumping_a_running_spawn_is_refused(self, slurm, capsys):
-        """The regression. `squeue` lists RUNNING jobs too, so the old guard — "did squeue return
-        anything?" — only ever caught a Spawn that was *gone*, despite its error saying otherwise.
+        """`squeue` lists RUNNING jobs too, so a naive "did squeue return anything?" guard only
+        catches a Spawn that's *gone*, despite its error saying otherwise.
 
-        A bump on a running Spawn therefore succeeded, did nothing, and said it had worked. nice feeds
-        the priority that decides who runs *next*; a Spawn already holding a card is past that
-        decision, and no value we write can reach back and change it. Reporting success for that is
-        worse than failing — the operator moves on believing the queue was reordered.
+        A bump on a running Spawn would then succeed, do nothing, and claim to have worked. nice
+        feeds the priority that decides who runs *next*; a Spawn already holding a card is past
+        that decision, and no value written can reach back and change it. Reporting success
+        there is worse than failing — the operator moves on believing the queue was reordered.
         """
         squeue, pushed = slurm
         squeue("RUNNING 0\n")
@@ -313,7 +312,7 @@ class TestQueueBump:
         assert pushed == [["scontrol", "update", "JobId=42", f"Nice={-2 * cli_config.BUMP_STEP}"]]
 
     def test_clear_is_guarded_too(self, slurm, capsys):
-        """--clear on a running Spawn is just as much of a no-op, and used to be just as silent."""
+        """--clear on a running Spawn is just as much of a no-op — silently, without this guard."""
         squeue, pushed = slurm
         squeue("RUNNING -131072\n")
         with pytest.raises(typer.Exit):
@@ -326,7 +325,7 @@ class TestQueueBump:
         assert pushed == [["scontrol", "update", "JobId=42", "Nice=0"]]
 
 
-# --- slice 2: the meter -----------------------------------------------------
+# --- the meter ----------------------------------------------------------
 
 def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=True, powers=None):
     """`power=` is the single-card shorthand; `powers=` gives a multi-Device Arm its own list."""
@@ -636,7 +635,7 @@ class TestTheMeter:
         assert karma.balances(conn) == {}
 
     def test_demand_history_is_recorded_for_the_tide(self, conn, cluster):
-        """Slice 3's Tide forecasts from these samples, so slice 2 must already be collecting them —
+        """The Tide forecasts from these samples, so the meter must already be collecting them —
         otherwise the Tide lands with an empty history and forecasts nothing for its first 30 days."""
         cluster["jobs"] = [job(210, "RUNNING", node="donor", start_time=0)]
         tick.once()
@@ -645,9 +644,9 @@ class TestTheMeter:
 
 
 class TestRetraction:
-    """Phase 2 loose end. `ccc_head_api.retraction` starts the TERM + the 3-minute grace; this is the
-    tick's half — force-killing whatever is still alive past the deadline, and making sure a caught
-    Spawn settles at ZERO no matter what it accrued. Retract must never be a way to farm Karma by
+    """`ccc_head_api.retraction` starts the TERM + the 3-minute grace; this is the tick's half —
+    force-killing whatever is still alive past the deadline, and making sure a caught Spawn
+    settles at ZERO no matter what it accrued. Retract must never be a way to farm Karma by
     donating a card and yanking it back mid-run."""
 
     @pytest.fixture
@@ -717,7 +716,7 @@ class TestOverrideAndTheAdmin:
         assert "root" not in [s["username"] for s in karma.standings(conn)]
 
 
-# --- slice 3: the Tide, and the ledger a User actually reads --------------------------------------
+# --- the Tide, and the ledger a User actually reads ----------------------
 
 def put_row(conn, kind, amount, from_user, to_user, at):
     """A ledger row at an explicit past time — record_karma always stamps now, but the curve
@@ -739,8 +738,9 @@ class TestTheTide:
 
     def test_an_empty_history_forecasts_one(self, conn):
         """The cold start, and the load-bearing default. 1.0 is what a card running exactly one Spawn
-        reads, and it is what makes slice 2 a special case of slice 3 rather than something to rewrite:
-        with a flat Tide the hold reduces EXACTLY to minutes/60 x gpus x max(Power)."""
+        reads, and it is what makes the flat-hold formula a special case of the Tide rather than
+        something to rewrite: with a flat Tide the hold reduces EXACTLY to minutes/60 x gpus x
+        max(Power)."""
         assert karma.tide(karma.tides(conn), "never-seen", 3) == 1.0
 
     def test_it_is_the_mean_of_that_hour_across_days(self, conn):
@@ -792,8 +792,8 @@ class TestTheHoldRidesTheTide:
         assert hold == pytest.approx(50.0 * (1.0 + 3.0) / 2)  # ...diluted across the span
 
     def test_slice_two_is_the_special_case_of_a_flat_tide(self, conn):
-        """The compatibility claim, stated as a test: an empty history must reproduce slice 2 EXACTLY,
-        or every hold quoted before the Tide existed was wrong."""
+        """The compatibility claim, stated as a test: an empty history must reproduce the
+        flat-hold formula EXACTLY, or every hold quoted without Tide data was wrong."""
         elig = [arm("slow", power=10.0), arm("fast", power=50.0)]
         assert karma.hold_for(60, 1, elig, hours=[0, 1, 2], tides=karma.tides(conn)) \
             == karma.hold_for(60, 1, elig)

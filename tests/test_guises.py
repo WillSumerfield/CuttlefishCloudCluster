@@ -3,9 +3,9 @@
 The failures guarded here are the quiet ones. A uid handed out twice does not raise; it silently gives
 one User another's leftover files on every Arm they ever ran on. A `sudo -u` that resolves to the wrong
 account does not raise either; it either fails a Spawn nobody can explain, or acts on a job that is not
-ours. Both are exactly what this phase exists to prevent, so both are pinned here.
+ours. Both are exactly what Guises exist to prevent, so both are pinned here.
 
-See temp/spawn-isolation.md Phase 3.
+See temp/spawn-isolation.md.
 """
 
 import stat
@@ -127,8 +127,9 @@ class TestActingAsTheOwner:
         assert "-n" in guises.as_owner(["scancel", "5"], "ccc-u60002")
 
     def test_a_mantle_owned_spawn_runs_plain(self):
-        """The transitional path: a Spawn queued before this phase deployed is owned by `ccc`, and the
-        Head still is `ccc`, so it needs no sudo at all. Same for the pre-3g benchmark."""
+        """The transitional path: a Spawn queued before Guises existed is owned by `ccc`, and the
+        Head is still `ccc`, so it needs no sudo at all. Same for the enrollment benchmark,
+        which predates this too."""
         assert guises.as_owner(["scancel", "5"], "ccc") == ["scancel", "5"]
 
     def test_an_unknown_owner_runs_plain(self):
@@ -194,23 +195,22 @@ class TestTheSlurmOpsBecomeTheOwner:
         assert not any("--remove" in c or "-r" in c for c in calls)
 
     def test_the_owner_comes_from_squeue_not_the_ledger(self, ran):
-        """squeue is what `sudo -u` has to MATCH, so it is ground truth by construction. It also gets
-        three cases right the Attribution row gets wrong: a Spawn queued before this phase deployed
-        (row present, owned by the Mantle), the enrollment benchmark (no row at all), and a job that
-        has already ended."""
+        """squeue is what `sudo -u` has to MATCH, so it's ground truth by construction. It also gets
+        three cases right the Attribution row gets wrong: a Spawn queued before Guises existed
+        (row present, owned by the Mantle), the enrollment benchmark (no row at all), and a job
+        that has already ended."""
         from ccc_head_api import slurm
         slurm.cancel(7)
         assert ran[0][:3] == ["squeue", "-h", "-j"]
 
 
 class TestTheStoreIsNotReadableByAGuise:
-    """The other half of Phase 3d: a Guise must not be able to read `head.db`.
+    """A Guise must not be able to read `head.db`.
 
-    Found world-readable on the deployed Head (2026-08-01), which since this phase means every User's
-    Spawn could read every password hash, session token and admin flag on the cluster. sqlite creates a
-    database at 0644 and no code had ever changed it, while HEAD_STATE_DIR was deliberately loosened to
-    0711 (traverse, never list) *on the assumption* that this file was 0600. Two docstrings claimed the
-    mode; nothing enforced it, and no probe had ever attempted the read."""
+    sqlite creates the db at 0644 by default, and HEAD_STATE_DIR is deliberately 0711 (traverse,
+    never list) on the assumption the file itself is 0600 — docstrings claimed that mode but
+    nothing enforced it. Without this, any Guise could read every password hash, session token,
+    and admin flag on the cluster."""
 
     def test_the_store_is_0600_from_the_moment_it_exists(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
@@ -236,13 +236,13 @@ class TestTheStoreIsNotReadableByAGuise:
 
 
 class TestTheTlsKeyStaysMantleOnly:
-    """`head.key` is the private half of the cert every client pins, so a Guise that can read it can
-    impersonate the Head to any of them. Found 0644 on the deployed Head (2026-08-01).
+    """`head.key` is the private half of the cert every client pins, so a Guise that can read it
+    can impersonate the Head to any of them.
 
-    The generating branch always chmod'd it correctly — but it runs once in a Head's life, since the
+    The generating branch always chmod's it correctly, but that runs once in a Head's life — the
     cert is kept deliberately (a new one invalidates every pin) and teardown clears it only under
-    `--all`. So the mode has to be re-asserted on the keep path too, or a box that drifts stays drifted
-    forever."""
+    `--all`. So the mode has to be re-asserted on the keep path too, or a box that drifts stays
+    drifted forever."""
 
     def _install(self, monkeypatch, tmp_path, cert_exists: bool) -> list[list[str]]:
         calls: list[list[str]] = []

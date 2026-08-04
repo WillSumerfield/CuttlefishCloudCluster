@@ -2,20 +2,19 @@ import type { Recipe } from "../api";
 import { ALLOWANCE, size } from "./format";
 
 /**
- * MY STORAGE — the signature of this page, and the one thing on it that is a wall. The 24 GB allowance is
- * a vessel; your Recipes fill it left to right as a single lit iridescent mass (storage is a Head fact, so
- * it is iridescence, never pigment). The fill's chroma rises as it fills — cool and faint when there's room,
- * deeper cyan as it nears the wall — because on the iridescence ramp chroma IS "how much". There are no rules
- * inside the mass: the leading edge dissolves into the empty allowance rather than ending on a hard line.
+ * MY STORAGE — the signature of this page, and its one wall. The 24 GB allowance is a vessel;
+ * Recipes fill it left to right as a single lit iridescent mass (a Head fact, so iridescence,
+ * never pigment). Chroma rises with fill — faint when there's room, deep cyan near the wall,
+ * since on the iridescence ramp chroma IS "how much". No internal rules: the leading edge
+ * dissolves into the empty allowance rather than stopping on a hard line.
  *
- * The Recipes ARE the fill, so the two are linked: hovering a card lights that Recipe's own slice of the
- * mass brighter, and hovering the meter is answered by its card. That is the whole point of a hard wall you
- * must delete from — you can see which Recipe is eating the room.
+ * Recipes ARE the fill, so the two are linked: hovering a card lights its own slice brighter,
+ * and hovering the meter answers via its card — why a wall you must delete from is legible: you
+ * can see which Recipe is eating the room.
  *
- * `pending` is the composer talking to the wall: the bytes of a folder being frozen right now, previewed as
- * a ghost slice past the committed fill. If it fits, the ghost is faint iridescence dissolving into the free
- * room; if it would breach the wall, the ghost turns to --alarm and slams flush against the right edge —
- * you can see it hit the wall before you spend the upload.
+ * `pending` previews the composer's folder as a ghost slice past the committed fill: faint
+ * iridescence dissolving into free room if it fits; --alarm, flush against the wall, if it would
+ * breach — visible before you spend the upload.
  */
 export function Storage({
   recipes,

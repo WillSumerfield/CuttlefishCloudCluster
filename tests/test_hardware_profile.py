@@ -1,4 +1,4 @@
-"""Phase 4 slice 0 — the two numbers that price a device: what it can HOLD and what it can DO.
+"""The two numbers that price a device: what it can HOLD and what it can DO.
 
 `Price = Power x Demand`. These cover the Power half, which is intrinsic to the card and fixed at
 enroll, plus the VRAM feature that decides which cards a Spawn is even eligible for.
@@ -159,8 +159,9 @@ class TestMixedGpusAreRefused:
         assert "RTX 3090" in said and "RTX 4090" in said
 
     def test_vram_reads_every_card_rather_than_the_first(self, monkeypatch):
-        """The old bug: `.split("\\n")[0]` described a whole box by whichever card the driver happened
-        to enumerate first, silently. Reading them all is what MAKES the homogeneity check."""
+        """The bug this catches: `.split("\\n")[0]` described a whole box by whichever card the
+        driver happened to enumerate first, silently. Reading them all is what MAKES the
+        homogeneity check."""
         fake_smi(monkeypatch, [("NVIDIA GeForce RTX 4090", 24564),
                                ("NVIDIA A100-SXM4-80GB", 81920)])
         with pytest.raises(typer.Exit):

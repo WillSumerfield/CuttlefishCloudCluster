@@ -110,9 +110,9 @@ def head_pin(monkeypatch, tmp_path):
     for var, val in (("CCC_CTLD_ADDR", "100.99.0.1:6817"), ("CCC_CLUSTER", "ccc"),
                      ("CCC_PARTITION", "ccc")):
         monkeypatch.setenv(var, val)
-    # Phase 9 #2: /enroll now asks Headscale who is registered at the connecting peer. "donor-box"
-    # is registered at DONOR_IP below — tests that POST /enroll dial the TestClient at that address
-    # to satisfy the check, rather than each re-deriving this mock.
+    # /enroll asks Headscale who is registered at the connecting peer. "donor-box" is registered
+    # at DONOR_IP below — tests that POST /enroll dial the TestClient at that address to satisfy
+    # the check, rather than each re-deriving this mock.
     payload = [{"given_name": "donor-box", "ip_addresses": [DONOR_IP]}]
     monkeypatch.setattr(enroll_api.subprocess, "run",
                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload)))
@@ -124,7 +124,7 @@ class TestHeadServesApptainer:
     Head downloads the .deb ONCE and every Arm — today's and next year's — installs those same bytes."""
 
     def test_enroll_tells_the_arm_what_to_expect(self, head_pin):
-        # Dialed FROM DONOR_IP: Phase 9 #2 checks the connecting peer against Headscale's node list
+        # Dialed FROM DONOR_IP: /enroll checks the connecting peer against Headscale's node list
         # (mocked in `head_pin`), not the request body's claimed mesh_ip.
         client = TestClient(enroll_api.app, client=(DONOR_IP, 9))
         body = client.post("/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],

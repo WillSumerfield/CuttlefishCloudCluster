@@ -1,9 +1,9 @@
-"""Phase 4 slice 4 — the Fake Cluster: the real economy across simulated weeks.
+"""The Fake Cluster: the real economy across simulated weeks.
 
-These are the claims that only exist *over time*, and that no unit test can reach — they need a
-scheduler, a clock, and hundreds of Spawns interacting. The economy here is the **real** code
-(`tick.once`, `karma`, `db`, a real temp ledger); only Slurm is modelled, and only the behaviours we
-verified on hardware (see tests/fake_cluster.py). Each test states a promise the whole design makes:
+Claims that only exist *over time*, unreachable by a unit test — need a scheduler, a clock, and
+hundreds of Spawns interacting. The economy here is **real** code (`tick.once`, `karma`, `db`, a
+real temp ledger); only Slurm is modelled (see tests/fake_cluster.py). Each test states a promise
+the whole design makes:
 
   * **Karma ranks, it never gates** — poor standing loses contention and NOTHING on an idle cluster.
   * **Σ balances ≡ 0** — every settlement is a transfer; the ledger conserves Karma.
@@ -98,9 +98,9 @@ class TestTheLedgerConserves:
         assert any(r["kind"] == "settle" for r in conn.execute("SELECT kind FROM karma_ledger"))
 
     def test_a_commons_burn_drifts_the_sum_by_exactly_the_burn(self, conn, monkeypatch):
-        """The one settlement that does NOT conserve. An Admin-owned Arm is a Commons Arm: the Karma is
-        destroyed, not credited, so Σ balances goes negative by exactly what was burned — and by nothing
-        else. (Decay would reabsorb it over a month; here we read it before Decay bites.)"""
+        """The one settlement that does NOT conserve: an Admin-owned Arm is a Commons Arm, so its
+        Karma is destroyed, not credited — Σ balances goes negative by exactly what was burned.
+        (Decay would reabsorb it over a month; here we read before Decay bites.)"""
         admin = user(conn, "admin", is_admin=True)
         worker = user(conn, "worker")
         fc = FakeCluster(conn, [arm("commons", 50.0, owner="admin")]).install(monkeypatch)
@@ -165,10 +165,10 @@ class TestCancel:
 
 class TestTheBoundIsEconomic:
     def test_a_spender_cannot_hog_forever(self, conn, monkeypatch):
-        """The starvation bound is economic, not scheduler-side (temp/KARMA.md is explicit about this):
-        age saturation alone gives no hard guarantee, but *spending Karma is what makes you poor*. A User
-        who keeps a card busy pays for every second — so their Share falls, their nice climbs, and a
-        rival they were out-ranking overtakes them. The hog converts into someone the waiter can beat."""
+        """The starvation bound is economic, not scheduler-side (see temp/KARMA.md): age saturation
+        alone gives no hard guarantee, but *spending Karma is what makes you poor*. A hog pays for
+        every second it holds a card, so its Share falls and its nice climbs until a rival it was
+        out-ranking overtakes it."""
         hog = user(conn, "hog")
         waiter = user(conn, "waiter")
         fc = FakeCluster(conn, [arm("box", 50.0, owner="waiter")]).install(monkeypatch)

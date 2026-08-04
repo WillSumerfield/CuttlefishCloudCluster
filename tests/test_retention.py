@@ -1,4 +1,4 @@
-"""Output retention (docs/TODO.md "Storage retention", phase 2) — declared `$CCC_OUT` results live 7
+"""Output retention (docs/TODO.md "Storage retention") — declared `$CCC_OUT` results live 7
 days, and a User holds at most 8GB of them at once.
 
 What's tested here: registration off the tick's own signal (no marker of its own), the TTL running from

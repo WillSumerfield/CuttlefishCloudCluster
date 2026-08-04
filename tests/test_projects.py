@@ -1,4 +1,4 @@
-"""Uploaded projects are staging, not storage (docs/TODO.md "Storage retention", phase 1).
+"""Uploaded projects are staging, not storage (docs/TODO.md "Storage retention").
 
 `PROJECTS_DIR/<uuid>` held every submission's extracted project — up to 4GB each — and nothing ever
 deleted one. What's tested here: the `staged` marker in the rendered JOB_SCRIPT (both branches), the

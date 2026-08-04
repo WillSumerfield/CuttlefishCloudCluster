@@ -1,9 +1,10 @@
-"""Phase 6 slice 4 Phase B — the durable outcome the tick stamps on a finished Spawn.
+"""The durable outcome the tick stamps on a finished Spawn.
 
-The tick is the only thing that notices a Spawn has ended (absence from a successful squeue poll — see
-tick.py). `_record_endings` turns that observation into a durable row so `GET /spawns/history` can read
-an outcome squeue has long since forgotten. These pin the parts a live-queue test never sees: an Admin's
-Spawn (no Escrow, never settled) still gets an ending, and the first observed ending wins.
+The tick is the only thing that notices a Spawn has ended (absence from a successful squeue
+poll — see tick.py). `_record_endings` turns that into a durable row so `GET /spawns/history`
+can read an outcome squeue has long since forgotten. Pins what a live-queue test never sees: an
+Admin's Spawn (no Escrow, never settled) still gets an ending, and the first observed ending
+wins.
 """
 
 from datetime import datetime, timezone

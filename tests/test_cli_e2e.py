@@ -1,4 +1,4 @@
-"""Phase 6 slice 1 — the CLI end-to-end, as an operator drives it.
+"""The CLI end-to-end, as an operator drives it.
 
 These are the tests the Dashboard will never have (no browser robot, by decision), so they carry the
 weight for both clients: the Dashboard rides the same API, and what matters is that the API is safe
@@ -74,8 +74,8 @@ class TestSession:
 
 
 class TestVersion:
-    """Phase 8 loose-end A. Eager, so it answers before login/setup — the moment you ask a hand-carried
-    client what it is."""
+    """Eager, so it answers before login/setup — the moment you ask a hand-carried client what
+    it is."""
 
     def test_version_prints_and_exits(self, cli):
         for flag in ("--version", "-V"):
@@ -85,8 +85,8 @@ class TestVersion:
 
 
 class TestPasswordPolicy:
-    """Phase 8 loose-end C. The Head is authoritative (the Dashboard rides the same route), so the
-    policy is proven server-direct; the CLI adds an inline pre-check so a weak choice never round-trips.
+    """The Head is authoritative (the Dashboard rides the same route), so the policy is proven
+    server-direct; the CLI adds an inline pre-check so a weak choice never round-trips.
     """
 
     def _token(self, head, user="alice"):
@@ -170,12 +170,10 @@ class TestSubmit:
         assert "hello from a Spawn" in staged[0].read_text()
 
     def test_time_and_vram_are_required(self, signed_in, fake_slurm, project):
-        """Nothing can price a Spawn whose length nobody declared, nor place one whose needs nobody
-        did. Naming the missing option in the assertion matters: `exit_code != 0` alone would pass
-        just as happily if the rig itself were broken.
-
-        Since these became promptable the refusal is ours, not click's — a Spawn is refused because
-        there is no terminal to ask on, never because a default quietly filled it in.
+        """Nothing can price a Spawn whose length nobody declared, nor place one whose needs
+        nobody did — asserted via the missing flag, not just `exit_code != 0`, so a broken rig
+        can't pass silently. Both are promptable, so the refusal is ours, not click's: no
+        terminal to ask on, never a quietly-filled default.
         """
         no_time = signed_in("run", "train.py", "--vram", "24")
         assert no_time.exit_code != 0 and "--time" in no_time.output
@@ -209,8 +207,8 @@ class TestCancel:
         assert signed_in("cancel", spawn, input="n\n").exit_code != 0
 
     def test_you_may_not_cancel_someone_elses(self, cli, fake_slurm, project, monkeypatch):
-        """alice submits; root tries to stop it over the API and is refused — an Admin has no branch
-        on that route since Phase 6."""
+        """alice submits; root tries to stop it over the API and is refused — an Admin has no
+        branch on that route."""
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
         spawn = self._spawn(cli)
@@ -428,18 +426,17 @@ class TestTide:
 
 
 class TestNoAdminWritesOverTheApi:
-    """Phase 6's binding invariant, checked from the client side: an Admin's Session is worth no more
-    over HTTP than any User's. These are the tests that fail loudly if someone re-adds a convenience
-    route later."""
+    """The binding invariant, checked from the client side: an Admin's Session is worth no more
+    over HTTP than any User's. These are the tests that fail loudly if someone re-adds a
+    convenience route later."""
 
     def test_override_is_not_reachable_over_the_api(self, head, signed_in):
-        """It moved to the Head (`cuttle karma override`). 405 rather than 404 because the SPA
-        catch-all claims unmatched GETs, so an unknown API path rejects the *method* — either way
-        there is no POST here.
+        """Head-local only (`cuttle karma override`), not reachable over HTTP. 405 rather than
+        404 because the SPA catch-all claims unmatched GETs, so an unknown API path rejects the
+        *method* either way.
 
-        The status code is the weaker half of this test. What matters is that no Karma moved: a route
-        that answered 500 while still crediting the balance would pass a status-code assertion and
-        be a catastrophe."""
+        What matters more than the status code: no Karma moved. A route that answered 500 while
+        still crediting the balance would pass a status-code assertion and be a catastrophe."""
         token = config.CREDENTIALS_FILE.read_text().strip()
         r = head.post("/karma/override", json={"username": "alice", "amount": 500},
                       headers={"Authorization": f"Bearer {token}"})

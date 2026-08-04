@@ -1,10 +1,9 @@
-"""Phase 6 — every command runs with no args and asks for the rest.
+"""Every command runs with no args and asks for the rest.
 
 **Consequence tests only.** Nothing here checks how anything looks; see `TESTING.md`. Each test
 below names something that outlives the screen — a script that blocks forever, a user deleted
 without confirmation, a piped `id=$(cuttle run …)` corrupted, a one-time password lost, a terminal
-left stranded. This file once held 40 tests, most of them asserting cursor arithmetic and box
-borders; the drawing is verified by running `cuttle` and looking at it.
+left stranded.
 
 Prompts go through the `ui` seam with a scripted human, because a real prompt blocks on a real
 keyboard. One test at the bottom drives a real pty, because the seam stays green while the prompt
@@ -91,9 +90,9 @@ class TestNothingBlocksWithoutATerminal:
 
 class TestTheClientWizardPointsTheBoxItself:
     """A **generic** bundle leaves the box knowing no Head, and `cuttle setup --client` is what
-    install.sh tells you to run next. It used to hand straight to `auth.login`, which reads the
-    stored Head URL and — finding none — aborted with "run `cuttle login --head …`": the wizard
-    refusing to ask the one question it exists to ask."""
+    install.sh tells you to run next. Handing straight to `auth.login` would abort with "run
+    `cuttle login --head …`" the moment it found no stored Head URL — the wizard refusing to ask
+    the one question it exists to ask."""
 
     def test_an_unpointed_box_is_asked_which_head(self, answers, ccc_home, monkeypatch):
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")

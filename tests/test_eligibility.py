@@ -1,4 +1,4 @@
-"""Phase 4 slice 0 — Eligibility: which devices a Spawn may run on.
+"""Eligibility: which devices a Spawn may run on.
 
 Users declare what they *need*; only the Admin names a machine. That distinction is load-bearing for
 the economy, not just for ergonomics: a queued Spawn adds Demand to every device it is eligible for,

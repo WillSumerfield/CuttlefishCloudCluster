@@ -1,11 +1,11 @@
-"""Phase 8 loose end — the Head API observes itself: a real readiness probe, and the security events
-worth a journal line.
+"""The Head API observes itself: a real readiness probe, and the security events worth a
+journal line.
 
-Two surfaces are under test. `/readyz` is a *contract* (a monitor branches on its status code), so it is
-tested by status code and body. The log lines are not a contract — their wording may change freely — so
-only the two that carry a security signal are pinned, and only by logger/level/substring: a login
-failure must be recorded (it feeds rate-limiting and is the guessing signal), and an unhandled route
-error must never vanish silently.
+Two surfaces under test. `/readyz` is a *contract* (a monitor branches on its status code), so
+it's tested by status code and body. Log lines aren't a contract — wording may change freely — so
+only the two carrying a security signal are pinned, by logger/level/substring: a login failure
+must be recorded (feeds rate-limiting, is the guessing signal), and an unhandled route error must
+never vanish silently.
 """
 
 import logging

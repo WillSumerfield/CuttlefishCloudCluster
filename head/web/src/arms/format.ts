@@ -55,7 +55,6 @@ export const toneColor: Record<Tone, string> = {
 export const ROSTER_COLS =
   "minmax(150px,1.6fr) minmax(110px,1fr) 132px 52px 76px 78px minmax(110px,1.1fr)";
 
-/** What an inline control does to an Arm. The page owns the mutation; rows/cards just name the verb. */
 /** What the Dashboard can do to an Arm — the complete set, and it is deliberately small. Admitting,
  *  benchmarking and removing an Arm are Head-CLI-only and permanently so: the Head API exposes no
  *  admin-write endpoints, because a stolen Session must not be able to reshape the fleet. */

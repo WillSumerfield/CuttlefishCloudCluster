@@ -1,9 +1,8 @@
 """Head-box monitor — reading back what's already configured.
 
-The SMTP conf lives under HEAD_STATE_DIR (`drwx------ ccc ccc`), so every path operation the operator
-performs on it is a permission question. That is the whole content of this file: `setup --head` failed
-at "Installing the Head-box monitor" with a bare `[Errno 13] Permission denied` because an `.exists()`
-guard stat'd a file inside a directory the operator cannot traverse.
+SMTP conf lives under HEAD_STATE_DIR (`drwx------ ccc ccc`), so every path op on it is a
+permission question. Guards here exist because an unguarded `.exists()` can raise EACCES instead
+of returning False, which crashed `setup --head` on an unreadable dir.
 """
 
 import os
@@ -20,10 +19,9 @@ def _fake_run(result: subprocess.CompletedProcess):
 
 class TestReadExistingConf:
     def test_an_unreadable_state_dir_reads_as_unconfigured(self, tmp_path, monkeypatch):
-        """The regression. `Path.exists()` does NOT return False here — pathlib swallows only
-        not-found-ish errors (ENOENT/ENOTDIR/EBADF/ELOOP), never EACCES, so stat'ing a file inside a
-        0700 directory owned by someone else RAISES. Which aborted setup for a prompt whose entire
-        purpose is to be skippable."""
+        """The regression: `Path.exists()` swallows only ENOENT/ENOTDIR/EBADF/ELOOP, never EACCES,
+        so stat'ing a file in a 0700 dir owned by someone else RAISES — aborting setup for a
+        prompt whose entire purpose is to be skippable."""
         if os.geteuid() == 0:
             pytest.skip("root traverses any directory; the failure needs an unprivileged euid")
         state = tmp_path / "head"

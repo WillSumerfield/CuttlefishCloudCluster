@@ -1,8 +1,8 @@
-"""Phase 8 loose end — `cuttle logs` reaches stderr, not just stdout.
+"""`cuttle logs` reaches stderr, not just stdout.
 
-The two streams are separate files on the Head (spawns.py writes `out` and `err`). Before this, the
-CLI read only `/logs` (stdout), so a Spawn that died on a traceback showed an empty pane and FAILED
-with the cause unreachable. Now the non-follow read prints both sections, and `-f` interleaves them.
+stdout and stderr are separate files on the Head (spawns.py writes `out` and `err`). A Spawn
+that dies on a traceback can have empty stdout, so the non-follow read prints both sections and
+`-f` interleaves them.
 """
 
 from cuttle import spawns as cli_spawns

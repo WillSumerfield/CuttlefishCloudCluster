@@ -1,9 +1,9 @@
-"""Phase 6 slice 3 — the output and error layer.
+"""The output and error layer.
 
-These exist because this slice's central promise is a *negative* one: a user never sees a traceback,
-and never sees nothing at all. Both failure modes are invisible to a test that only checks exit
-codes — and during this slice the layer twice printed **nothing whatsoever** while still exiting 1,
-which is the worst outcome available. So the assertions here are about what reaches the terminal.
+The central promise is *negative*: a user never sees a traceback, and never sees nothing at all.
+Both are invisible to a test that only checks exit codes — a bug here can print **nothing
+whatsoever** while still exiting 1, the worst outcome available. So assertions here check what
+reaches the terminal.
 """
 
 import json
@@ -28,9 +28,8 @@ def _reset_flags(monkeypatch):
 class TestErrorsReachTheUser:
     """`ui.abort` is printed, not raised for a framework to render.
 
-    Typer vendors its own click, so a `click.ClickException` subclass sails past Typer's handler and
-    is shown nowhere at all. That is not a hypothetical: it happened here, and every test passed
-    except the one that asserted on the message."""
+    Typer vendors its own click, so a `click.ClickException` subclass sails past Typer's handler
+    and is shown nowhere at all — exit code 1, no message, invisible to exit-code-only checks."""
 
     def app(self):
         app = typer.Typer(pretty_exceptions_enable=False)
@@ -132,11 +131,11 @@ class TestHeadLocalOutputSurvivesQuietMode:
     def _fake_admin(self, monkeypatch, script: str):
         """The admin CLI stubbed to a plain `python -c`, and sudo stubbed out around it.
 
-        `_admin` runs through `system.run(sudo=True)` — that is what primes the credential, so the
-        password prompt is drawn rather than swallowed by the capture. These tests are about the
-        output plumbing on the way back, so the escalation is neutralised: prime is a no-op and a
-        leading "sudo" is dropped at the subprocess boundary, standing in for a NOPASSWD rule.
-        Everything under test — `run`'s capture default, `_admin`'s re-emit — still runs for real.
+        `_admin` runs through `system.run(sudo=True)`, which primes the credential so the
+        password prompt draws instead of being swallowed by capture. Here the escalation is
+        neutralised (prime is a no-op, a leading "sudo" dropped at the subprocess boundary) so
+        the test can focus on output plumbing — `run`'s capture default, `_admin`'s re-emit —
+        which still runs for real.
         """
         monkeypatch.setattr(auth, "_admin_argv", lambda args: [sys.executable, "-c", script])
         monkeypatch.setattr(system, "prime_sudo", lambda: None)

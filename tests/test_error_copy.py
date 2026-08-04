@@ -1,10 +1,9 @@
-"""Phase 8 loose end — warning/error message quality (CLI + API).
+"""Warning/error message quality (CLI + API).
 
-The pass's promise is that a failure says *what* broke and *how to fix it*, and never leaks a raw
-Python error, a bare HTTP status, or an internal route path at the user. Two contracts are worth
-pinning against regression:
+A failure must say *what* broke and *how to fix it* — never leak a raw Python error, a bare
+HTTP status, or an internal route path:
 
-* the wizard's numeric prompts re-ask instead of crashing on a typo (`int('sixty')` used to escape),
+* the wizard's numeric prompts re-ask instead of crashing on a bad `int()` parse,
 * `ApiError.user_message()` frames a 5xx and strips the route path, while a 4xx refusal and a
   transport failure reach the user verbatim (their detail is already the human reason).
 """
@@ -25,8 +24,8 @@ def answers():
 
 
 class TestNumericPromptsReAsk:
-    """A free-text prompt wrapped in `int()` crashed the wizard on a typo — a raw
-    `invalid literal for int()` with no next step. `ask_int`/`ask_float` re-ask instead."""
+    """Guards against a bad `int()` parse crashing the wizard with a raw `invalid literal` and
+    no next step; `ask_int`/`ask_float` re-ask instead."""
 
     def test_a_non_number_is_re_asked_not_crashed(self, answers, capsys):
         a = answers("sixty", "60")           # a typo, then the correction

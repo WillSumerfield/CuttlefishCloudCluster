@@ -1,11 +1,11 @@
-"""Phase 9 #2 — `POST /enroll` no longer trusts the request body's `mesh_ip`. It asks Headscale who
-is actually registered at the connecting address (`request.client.host`) and refuses a mismatch, on
-top of the pre-existing "was this name ever authorized" check. See ccc_head_api.enroll's module
+"""`POST /enroll` doesn't trust the request body's `mesh_ip`. It asks Headscale who is actually
+registered at the connecting address (`request.client.host`) and refuses a mismatch, on top of
+the pre-existing "was this name ever authorized" check. See ccc_head_api.enroll's module
 docstring and `_node_named_at`.
 
 `subprocess.run` stands in for `sudo -n headscale nodes list --output json` — the one sudo grant
-this service has (cuttle.headapi.install_enroll_sudoers). Real headscale is not exercised here, only
-the trust decision this endpoint makes from its output.
+this service has (cuttle.headapi.install_enroll_sudoers). Real headscale isn't exercised here,
+only the trust decision this endpoint makes from its output.
 """
 
 import json
@@ -64,7 +64,7 @@ class TestIdentityCheck:
         assert enroll._load()["arm1"]["mesh_ip"] == "100.99.0.5"
 
     def test_an_admitted_arm_cannot_claim_a_different_arms_name(self, app, monkeypatch):
-        """The exact gap Phase 9 #2 closes: arm2's owner, really connecting from 100.99.0.6, POSTs
+        """The gap this closes: arm2's owner, really connecting from 100.99.0.6, POSTs
         node_name=arm1 hoping to be handed arm1's key."""
         _authorize("arm1")
         _authorize("arm2")

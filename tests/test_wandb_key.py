@@ -158,7 +158,7 @@ class TestComposition:
 
     def test_a_client_sent_key_is_discarded(self, head_db):
         """The precedence rule. Honouring this would let a submitter log their Spawn into whatever
-        account they named — and would resurrect the old behaviour the moment some client sent one."""
+        account they named, the moment any client sends a key."""
         _store("mine")
         env = head_spawns.compose_wandb_env(1, {"WANDB_API_KEY": "theirs", "WANDB_MODE": "online"})
         assert env["WANDB_API_KEY"] == "mine"
@@ -268,10 +268,10 @@ class TestTheCliCommands:
 class TestThePinnedPath:
     """`cuttle run --node` composes IDENTICALLY to a Spawn that arrived over HTTP.
 
-    It does not travel over HTTP at all (Phase 6 moved pinning Head-local), so it reaches
-    `submit_checked` through `ccc_head_api.admin` instead — which passed a hardcoded `{}` for
-    wandb_env and threw `--project/--entity` on the floor. Two roads to one submit is only safe while
-    they carry the same load.
+    It doesn't travel over HTTP at all — pinning is Head-local, reaching `submit_checked` through
+    `ccc_head_api.admin` instead. Left unsynced, that path can pass a hardcoded `{}` for
+    wandb_env and drop `--project`/`--entity` on the floor. Two roads to one submit is only safe
+    while they carry the same load.
     """
 
     @pytest.fixture

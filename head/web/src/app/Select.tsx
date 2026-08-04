@@ -109,11 +109,10 @@ export function Select({
               className="menu-item"
               data-active={i === active || undefined}
               onMouseEnter={() => setActive(i)}
-              // A field label (Labeled, SubmitComposer.tsx) is a real <label> wrapping this whole
-              // control; the toggle button is its "labeled control" but this <li> is only the label's
-              // descendant, not the button's. Left alone, a native click here bubbles to the <label>,
-              // which forwards a SECOND click onto the toggle button — reopening the menu this pick()
-              // just closed. Stopping propagation keeps the click from ever reaching the <label>.
+              // A field label (Labeled, SubmitComposer.tsx) is a real <label> wrapping this control;
+              // this <li> is the label's descendant, not the toggle button's. Left alone, a click
+              // here bubbles to the <label>, which forwards a SECOND click onto the toggle button,
+              // reopening the menu pick() just closed. stopPropagation keeps it from reaching the <label>.
               onClick={(e) => {
                 e.stopPropagation();
                 pick(o.value);

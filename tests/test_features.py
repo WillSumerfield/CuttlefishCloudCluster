@@ -156,7 +156,7 @@ def test_the_install_wins_over_an_upload_that_carried_its_own(tmp_path):
 def test_the_licence_key_is_never_bound_into_an_ordinary_spawn():
     """The vendor's README puts License.key at the checkout root. Only the individual subpaths a Spawn
     needs are bound, never $VLEARN_PATH itself — so the key stays outside a Pod that has no business
-    with it, and Phase 3's activation Spawn remains the one thing that sees it."""
+    with it, and the licence's activation Spawn remains the one thing that sees it."""
     body = _script(features=["vlearn"])
     assert '$VLEARN_PATH:' not in body
     assert "License.key" not in body
@@ -308,9 +308,9 @@ def test_a_spawn_is_never_pointed_at_the_owners_own_directory(tmp_path, monkeypa
     home — and one un-traversable ancestor fails the whole container, not just that bind. So what a
     Spawn is handed is CCC's mirror, wherever the owner keeps the real thing.
 
-    Hardware, 2026-08-04: an install under /home/<owner>/Projects took the activation Spawn down with
-    "container creation failed: ... permission denied", which reads as a CCC bug and is really a fact
-    about where someone keeps their files."""
+    An install under /home/<owner>/Projects can take the activation Spawn down with "container
+    creation failed: ... permission denied" — reads as a CCC bug, but is really a fact about
+    where someone keeps their files."""
     root = _fake_install(tmp_path / "vlearn")
     (root / "assets" / "scene.bin").write_text("x")
     dest = tmp_path / "pkgs"
@@ -354,7 +354,7 @@ def test_the_mirrored_licence_key_is_not_world_readable(tmp_path, monkeypatch):
 def test_the_shared_group_exists_before_the_licence_key_is_mirrored():
     """The mirrored key is `0640 root:ccc-guises`, and `setup` records this box's Features long before
     it provisions anyone's Unix identity — so on a first run the group is not there yet and `install`
-    fails with "invalid group 'ccc-guises'", taking the whole setup with it (hardware, 2026-08-04).
+    fails with "invalid group 'ccc-guises'", taking the whole setup with it.
 
     Asserted against the source because the fact under test is an ORDER within `setup_head`, and the
     steps around it install packages and start daemons."""

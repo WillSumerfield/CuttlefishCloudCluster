@@ -1,16 +1,14 @@
-"""Per-Spawn **Environment** detection, build rendering, and the held-Spawn lifecycle around them
-(docs/TODO.md "Python Environments").
+"""Per-Spawn **Environment** detection, build rendering, and the held-Spawn lifecycle around
+them (docs/TODO.md "Python Environments").
 
-Mostly pure functions with remote consequences, in CONTRIBUTING.md's sense: nothing in the first half
-needs apptainer, a Guise, or a network, but every one of these decides what runs on a donor's box. The
-two things worth pinning are that detection never guesses past the project root, and that the rendered
-build keeps the one property the whole design rests on — the env is built at the SAME absolute path it
-is later run at.
+Mostly pure functions with remote consequences (CONTRIBUTING.md): nothing in the first half
+needs apptainer, a Guise, or a network, but each decides what runs on a donor's box. Two things
+worth pinning: detection never guesses past the project root, and the rendered build keeps the
+property the whole design rests on — built at the SAME absolute path it's later run at.
 
-The second half is the part that is not pure: a Spawn is `sbatch --hold`ed, built behind the request,
-then released or failed. What is worth pinning there is that every exit from a build reaches ONE of
-those two ends — a Spawn left held is one holding its submitter's Escrow forever, with no thread left
-to come back for it.
+The second half isn't pure: a Spawn is `sbatch --hold`ed, built behind the request, then
+released or failed. Worth pinning: every exit from a build reaches ONE of those two ends — a
+Spawn left held keeps its submitter's Escrow forever, with no thread left to come back for it.
 """
 
 import io
@@ -208,11 +206,11 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
 
 
 def test_the_remote_stage_in_recurses():
-    """The other half of the `.ccc-env` filelist entry, and a bug that shipped: `--files-from` implies
-    --dirs but NOT --recursive — rsync(1) says `-a` does not imply `-r` here — so a bare directory name
-    arrives as an EMPTY directory. The env was built, staged as nothing, bound over ENV_MOUNT, and the
-    Spawn died on `stat /opt/ccc/env/bin/python` (hardware, 2026-08-02, Spawn 16). Remote Arms only;
-    the Head-local branch is a `cp -a` and was never affected."""
+    """The other half of the `.ccc-env` filelist entry: `--files-from` implies `--dirs` but NOT
+    `--recursive` (rsync(1): `-a` doesn't imply `-r` here), so a bare directory name arrives as
+    an EMPTY directory — the env staged as nothing, bound over ENV_MOUNT, and the Spawn died on
+    `stat /opt/ccc/env/bin/python`. Remote Arms only; the Head-local branch (`cp -a`) is
+    unaffected."""
     stage_in = next(ln for ln in _script().splitlines()
                     if '--files-from="$scratch/filelist"' in ln)
     assert " -r " in stage_in
@@ -226,10 +224,9 @@ def test_tidepool_binds_the_environment_too():
 
 
 # --- a Head that cannot build ----------------------------------------------
-# The regression this guards against is not hypothetical: TOOLS_DIR is populated by
-# `cuttle setup --head`, so every Head provisioned before this feature existed has an empty one. If a
-# missing binary failed the build, every project carrying a `pyproject.toml` — which is most of them —
-# would stop submitting on those Heads, having submitted fine the day before.
+# TOOLS_DIR is populated by `cuttle setup --head`; a Head that predates this check has an empty
+# one. A missing binary failing the build would silently break every project carrying a
+# `pyproject.toml` — most of them — on such a Head.
 
 @pytest.fixture
 def no_tools(monkeypatch, tmp_path):
@@ -292,14 +289,13 @@ def test_the_build_can_reach_its_tools_inside_the_pod(with_tools, tmp_path, monk
 
 
 class TestTheBuildScratchIsOnDisk:
-    """`--contain` gives the Pod a /tmp carved out of Apptainer's session directory — a RAM tmpfs
-    capped by `sessiondir max size` (64 MB on this fleet). pip, which is what an environment.yml's
-    `pip:` section runs, downloads into TMPDIR; a wheel larger than what is left of that 64 MB dies
-    with ENOSPC. Observed on hardware 2026-08-03 building vlearn's env: nvidia-cudnn-cu13 is 366 MB.
+    """`--contain` gives the Pod a /tmp carved from Apptainer's session directory — a RAM tmpfs
+    capped by `sessiondir max size` (64 MB on this fleet). pip, run by an environment.yml's
+    `pip:` section, downloads into TMPDIR; a wheel bigger than what's left of that 64 MB dies
+    with ENOSPC (nvidia-cudnn-cu13 alone is 366 MB).
 
-    Worth pinning precisely because the symptom lies. pip reports the ENOSPC as "Download failed after
-    6 attempts ... This is an issue with network connectivity, not pip", so the failure reads as flaky
-    networking and the retries can never succeed."""
+    Worth pinning precisely because the symptom lies: pip reports the ENOSPC as "Download failed
+    after 6 attempts ... not pip", reading as flaky networking that retries can never fix."""
 
     def _build(self, tmp_path, monkeypatch):
         seen = []
@@ -356,9 +352,9 @@ class TestTheBuildScratchIsOnDisk:
 
 
 def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools, tmp_path, monkeypatch):
-    """`--active` only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it — so uv fell back to
-    the `.venv` it makes beside the manifest, inside the Mantle-owned project a Guise may only read, and
-    every pyproject.toml/uv.lock Spawn died on "Permission denied" (hardware, 2026-08-02, Spawns 14/15).
+    """`--active` only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it — so uv falls
+    back to the `.venv` it makes beside the manifest, inside the Mantle-owned project a Guise may
+    only read, and every pyproject.toml/uv.lock Spawn dies on "Permission denied".
     UV_PROJECT_ENVIRONMENT names the path outright, as --python already did on the uv-pip branch."""
     assert "--active" not in env.render_build(env.Manifest("uv-project", "pyproject.toml"))[-1]
     seen = []
@@ -472,12 +468,12 @@ def test_a_spawn_with_no_environment_stages_no_env_dir(head, tmp_path, monkeypat
 
 
 def test_a_head_without_the_tools_submits_the_spawn_anyway(head, tmp_path, monkeypatch):
-    """The regression. Before Environments existed, a project carrying a pyproject.toml submitted fine
-    and ran on the base image. On a Head that never installed uv, it must still do exactly that —
-    refusing it would break submissions that worked the day before, for a feature nobody asked for.
+    """A project with a pyproject.toml but no Environment built still runs on the base image — a
+    Head that never installed uv must fall back the same way rather than refuse the submission,
+    for a feature nobody asked for.
 
-    Un-installs uv after `head` (which provides one) rather than using the `no_tools` fixture: fixture
-    order would otherwise put the tools back."""
+    Un-installs uv after `head` (which provides one) rather than using the `no_tools` fixture:
+    fixture order would otherwise put the tools back."""
     monkeypatch.setattr(env, "UV_BIN", tmp_path / "nowhere" / "uv")
     jid = _submit(tmp_path, "pyproject.toml")
     assert "--hold" not in _sbatch(head)
@@ -502,10 +498,10 @@ def test_none_declines_the_build_end_to_end(head, tmp_path):
 def test_a_caller_that_is_about_to_exit_builds_before_it_returns(head, tmp_path, monkeypatch):
     """`background_build=False` — for a caller with no future to build in.
 
-    The build thread is a daemon, so a short-lived process (the `ccc_head_api.admin` CLI, which is how
-    every Head-local pinned Spawn is submitted) takes it down at exit. And by then the Spawn is
-    `--hold`ed: not merely unbuilt, but unrunnable, with nothing left alive that would ever release
-    it. It pends as JobHeldUser until someone notices, which is the shape of a hang, not a failure.
+    The build thread is a daemon, so a short-lived process (the `ccc_head_api.admin` CLI,
+    submitting every Head-local pinned Spawn) takes it down at exit — and by then the Spawn is
+    `--hold`ed: not merely unbuilt, but unrunnable, with nothing left alive to release it. It
+    pends as JobHeldUser until someone notices — the shape of a hang, not a failure.
     """
     monkeypatch.setattr(env, "build", lambda *a, **kw: "solved 3 packages")
     monkeypatch.setattr(env, "prune_cache", lambda: None)
@@ -517,13 +513,13 @@ def test_a_caller_that_is_about_to_exit_builds_before_it_returns(head, tmp_path,
 
 
 def test_neither_the_build_nor_sbatch_inherits_the_operators_directory(head, tmp_path, monkeypatch):
-    """Both run as a **Guise**, and neither has any business in the directory `cuttle` was invoked
-    from — which on the Head-local path is the operator's own project, unreadable to a Guise.
+    """Both run as a **Guise**, with no business in the directory `cuttle` was invoked from — on
+    the Head-local path, the operator's own project, unreadable to a Guise.
 
-    apptainer's starter chdirs to the inherited cwd on the HOST before `--pwd` applies inside, so the
-    build dies as "container creation failed: can't change directory to /home/<operator>/..." — a
-    message about the caller, attached to a Spawn, saying nothing about either. Slurm meanwhile takes
-    the job's WorkDir from the submitting process, which strands the job the same way one step later.
+    apptainer's starter chdirs to the inherited cwd on the HOST before `--pwd` applies inside, so
+    the build dies as "container creation failed: can't change directory to
+    /home/<operator>/..." — a message about the caller, saying nothing about either. Slurm takes
+    the job's WorkDir from the submitting process too, stranding it the same way one step later.
     """
     seen = {}
     real = spawns.subprocess.run

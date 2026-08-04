@@ -99,9 +99,9 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
           </div>
 
           {/* Settled Karma — right-aligned and tabular so costs compare down the column, and GOLD,
-              because Karma is gold everywhere else in this interface and a cost is still Karma. (This
-              was plain ink on the rule "pigment is standing, not cost" — but pigment is the umber→gold
-              RAMP that encodes a balance, and a flat gold is not on it. Nothing here reads as standing.)
+              because Karma is gold everywhere else in this interface and a cost is still Karma. The
+              "pigment is standing, not cost" rule doesn't apply: pigment is the umber→gold RAMP that
+              encodes a balance, and a flat gold isn't on it, so nothing here reads as standing.
               Named, because a bare number in a column of prose is a quantity of nothing. Rounded: the
               settled amount is a float, and 1.3339583333333335 is not a price anyone reads. */}
           <span className="num shrink-0 text-[13px]" style={{ minWidth: "3ch", textAlign: "right", color: "var(--gold)" }}>

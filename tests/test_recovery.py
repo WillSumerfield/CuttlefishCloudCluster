@@ -1,6 +1,5 @@
 """Recovery Window (docs/TODO.md) — a 30-min, size-capped safety net for whatever a Spawn wrote OUTSIDE
-its declared $CCC_OUT, closing the gap where that data used to be destroyed the instant the JOB_SCRIPT's
-EXIT trap fired.
+its declared $CCC_OUT, which the JOB_SCRIPT's EXIT trap would otherwise destroy instantly.
 
 What's tested here: the rendered JOB_SCRIPT's `recover_scratch` (both branches — Head-local same-
 filesystem `mv`, remote `rsync`), the DB ledger (recovery_copies), recovery.py's registration/pool-
@@ -31,8 +30,8 @@ def _iso(dt: datetime) -> str:
 # --- the rendered JOB_SCRIPT --------------------------------------------------
 
 class TestRenderedScript:
-    """`recover_scratch`, defined per-branch, called from `cleanup()` before the `rm -rf` that used to
-    be the only thing there."""
+    """`recover_scratch`, defined per-branch, called from `cleanup()` right before the
+    scratch-clearing `rm -rf`."""
 
     def render(self, **kw):
         kw.setdefault("minutes", 60)

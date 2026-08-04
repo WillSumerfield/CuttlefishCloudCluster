@@ -1,12 +1,11 @@
 // Turning a picked folder into the set of files we'll upload.
 //
-// The CLI gets this exactly right by shelling out to `git ls-files --cached --others
-// --exclude-standard`. A browser cannot: there is no git to run, and — the part no clever trick fixes
-// — git's *global* ignore file lives at ~/.config/git/ignore, OUTSIDE the folder the user picked. It is
-// unreachable from a web page by construction. So we do not chase exact parity. We approximate it with
-// the same .gitignore semantics (the `ignore` package), and then we make the result VISIBLE: the UI
-// shows the file count and total size and uploads nothing until the user confirms. A wrong answer that
-// you can see before 4 GB moves is a very different thing from a wrong answer you can't.
+// The CLI gets exact parity by shelling out to `git ls-files --cached --others
+// --exclude-standard`. A browser can't: there's no git to run, and git's *global* ignore file
+// (~/.config/git/ignore) lives outside the picked folder — unreachable from a web page by
+// construction. So we approximate with the same .gitignore semantics (the `ignore` package), and
+// make the result VISIBLE: the UI shows file count and total size and uploads nothing until
+// confirmed. A wrong answer you can see before 4 GB moves is very different from one you can't.
 
 import ignore from 'ignore'
 

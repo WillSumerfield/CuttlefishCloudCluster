@@ -1,14 +1,14 @@
 """The **Licence** account — an identity that exists only so its home is the Licence directory.
 
-The mechanism this pins is not obvious and is easy to "simplify" away: TurboActivate (vlearn) chooses
-where to keep its activation state with `getpwuid(getuid())->pw_dir` and ignores `$HOME` entirely
-(probed on hardware 2026-08-03). So the only way to decide where a licence lands is to decide which
-uid performs the activation — hence an account whose sole purpose is its passwd home field.
+TurboActivate (vlearn) picks where to keep its activation state via
+`getpwuid(getuid())->pw_dir`, ignoring `$HOME` entirely. So the only way to control where a
+licence lands is the uid that performs the activation — hence an account whose sole purpose is
+its passwd home field.
 
-The alternative, hand-copying the vendor's files out of a human's home, was tried and rejected: they
-are named from an obfuscated per-release token that is in neither TurboActivate.dat nor the vlearn
-wheels, so it cannot be derived, and a version bump renames all of them while the bind guard — which
-only tests that the directory exists — goes on succeeding. See temp/FEATURES_LICENCE.md.
+Hand-copying the vendor's files out of a human's home doesn't work: they're named from an
+obfuscated per-release token in neither TurboActivate.dat nor the vlearn wheels, so it can't be
+derived, and a version bump renames them all while the bind guard (which only checks the
+directory exists) keeps succeeding. See temp/FEATURES_LICENCE.md.
 """
 
 import pytest

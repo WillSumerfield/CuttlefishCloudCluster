@@ -1,15 +1,14 @@
 """Auto-download (`cuttle.watch`) — a Spawn's results arrive without anyone asking for them.
 
-Every consequence here is one nobody is present to see. The sweeper has no terminal, runs after
-`cuttle run` has returned, and is racing a Head that deletes results after 7 days and evicts them
-sooner when the submitter's 8GB **Allowance** fills. So each failure below is silent by construction:
-results that never arrive, an obligation dropped because a *different* Spawn was still running, a
-session that logs out and permanently strands everything, or an archive that writes outside the
-directory it was told to write into while nobody is watching the paths go by.
+The sweeper has no terminal, runs after `cuttle run` returns, and races a Head that deletes
+results after 7 days (sooner if the submitter's 8GB **Allowance** fills). Every failure mode
+here is silent by construction: results that never arrive, an obligation dropped for a
+*different* still-running Spawn, a logout that permanently strands everything, or extraction
+that writes outside its destination.
 
-NOT tested: the detached fork itself (`_launch` is stubbed suite-wide — a child interpreter inherits
-none of the monkeypatching that keeps this suite off the real `~/.ccc` and the real Head), and the
-15-second poll loop, which is `time.sleep` and a `while`.
+NOT tested: the detached fork itself (`_launch` is stubbed suite-wide — a child interpreter
+inherits none of the monkeypatching keeping this suite off the real `~/.ccc` and Head), and the
+15-second poll loop (`time.sleep` + `while`).
 """
 
 import io
