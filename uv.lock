@@ -298,6 +298,7 @@ source = { editable = "cli/core" }
 dependencies = [
     { name = "httpx" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -305,6 +306,7 @@ dependencies = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.8" },
     { name = "typer", specifier = ">=0.12" },
 ]
 
