@@ -240,6 +240,17 @@ class TestTheMenuGatesByState:
         assert rows[0] == "login"
         assert rows.index("setup") > rows.index("login")
 
+    def test_the_dashboard_is_offered_wherever_a_head_is_known_but_never_leads(self):
+        """It needs no session — the browser does its own login — so it shows on a pointed box that
+        is logged out. It must still not displace `login` as the pre-selected row there, which is the
+        one thing ORDER is protecting."""
+        root = typer.main.get_command(main.app)
+        st = menu.MenuState(logged_in=False, provisioned=False, pointed=True, on_head=False)
+        rows = [p for p, _, _ in menu._entries(root, st)]
+        assert "dashboard" in rows and rows[0] == "login"
+        assert "dashboard" not in self._paths(logged_in=True, provisioned=True, pointed=False,
+                                              on_head=False)
+
     def test_the_admin_family_is_the_heads_alone(self):
         admin = {"user", "arm", "build-installer"}
         assert admin.isdisjoint(self._paths(logged_in=True, provisioned=True, pointed=True,

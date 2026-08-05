@@ -7,6 +7,7 @@ import typer
 from . import auth as auth_mod
 from . import backup as backup_mod
 from . import config
+from . import dashboard as dashboard_mod
 from . import enroll as enroll_mod
 from . import features as feature_profiles
 from . import headapi as headapi_mod
@@ -316,6 +317,15 @@ def login(
 def logout():
     """Revoke this box's session on the Head and delete the local token."""
     auth_mod.logout()
+
+
+@app.command()
+def dashboard(
+    print_only: bool = typer.Option(False, "--print", help="Print the URL instead of opening it."),
+):
+    """Open the Dashboard — the web client for this cluster — in a browser. It lives at the same
+    address this box logs in to, so nobody has to remember the Head's IP after setup."""
+    dashboard_mod.open_dashboard(print_only)
 
 
 @app.command()

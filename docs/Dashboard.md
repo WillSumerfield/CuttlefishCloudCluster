@@ -5,6 +5,19 @@ Head as the [CLI](CLI.md) — neither is a privileged path.
 
 ## Getting to it
 
+```sh
+cuttle dashboard
+```
+
+That opens it in a browser. You do not have to remember the Head's address — the Dashboard is served
+by the Head itself, at the same address `cuttle` already logs in to, so any box that has been set up
+or logged in already knows where it is. It is also **Open the dashboard** in the `cuttle` menu.
+
+`cuttle dashboard --print` prints the URL instead of opening it, for when you are on a box with no
+browser and want to paste it into one that has.
+
+The address it opens is:
+
 ```
 https://<head-address>:8082/
 ```
@@ -14,6 +27,10 @@ self-signed, so you click through the browser warning **once** — see
 [Security](Security.md#transport) for why there is no real one.
 
 Log in with the account the Admin created for you. First login forces a password change.
+
+**On a WSL Arm**, `cuttle dashboard` opens `https://localhost:8082/` instead. The CCC mesh lives
+inside WSL and your Windows browser has no route to the Head's mesh IP, so `setup --arm` installs a
+local forward and this command hands the browser that rather than an address that could never load.
 
 ## What is there
 

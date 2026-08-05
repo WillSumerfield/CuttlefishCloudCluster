@@ -82,6 +82,7 @@ LABELS = {
     "karma override": "Adjust someone's Balance",
     "tide": "The Tide (demand)",
     "account": "My account",
+    "dashboard": "Open the dashboard",
     "login": "Log in",
     "logout": "Log out",
     "whoami": "Who am I?",
@@ -133,8 +134,10 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # `login` trails the submit verbs but leads everything unlisted, so on a freshly-installed box the
 # pre-selected row is "Log in" — what install.sh printed as the next step — rather than `setup`. It
 # only ever shows when logged out, so this costs the everyday menu nothing.
+# `dashboard` sits *after* login for the same reason: it shows on any pointed box, including the
+# logged-out one, and must not displace "Log in" as the pre-selected row there.
 ORDER = ["run", "recipe", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
-         "tide", "account", "login"]
+         "tide", "account", "login", "dashboard"]
 
 
 def is_head() -> bool:
@@ -229,6 +232,11 @@ def _visible(path: str, st: MenuState) -> bool:
         return st.provisioned or st.pointed
     if top == "login":
         return not st.logged_in
+    # Pointed, not logged in: the Dashboard does its own login, and a box that knows a Head can always
+    # open one. Deliberately not LOGIN_REQUIRED — that set is "needs a session bearer from here", and
+    # this command sends nothing anywhere; it hands an address to a browser.
+    if top == "dashboard":
+        return st.pointed
     if path in LOGIN_REQUIRED or top in LOGIN_REQUIRED:
         return st.logged_in
     return True
