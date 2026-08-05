@@ -198,6 +198,12 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         demand = karma.demand_by_arm(list(arms.values()), jobs, needs)
         db.record_demand(conn, now.strftime(_TS), demand)
         db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS, now)
+        # Expired sessions are already REJECTED at lookup (db.lookup_session filters on expires_at),
+        # so this is not a correctness fix — it is the row itself, which nothing deleted unless the
+        # User explicitly logged out. Every other reaper in this module was wired; this one was written
+        # and never plugged in.
+        db.purge_expired(conn)
+        db.prune_ledger(conn, karma.KARMA_LEDGER_RETENTION_DAYS, now)
 
         # `needs` is the queue's *declared* GPU count, feeds Demand only — the meter bills the Devices
         # Slurm actually gave a Spawn, not what it asked for.

@@ -410,16 +410,21 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     return out
 
 
+# What a swept Spawn's logs read as. A Spawn that printed nothing also returns "", so without this the
+# two are the same answer — and after retention takes the directory, every old Spawn looks silent.
+_SWEPT = "this Spawn's logs and results have expired\n"
+
+
 @api.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
 def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stdout so far (a remote Spawn's arrives only at stage-out — post-hoc)."""
-    return spawns_mod.out_text(job_id) or ""
+    return _SWEPT if spawns_mod.swept(job_id) else (spawns_mod.out_text(job_id) or "")
 
 
 @api.get("/spawns/{job_id}/stderr", response_class=PlainTextResponse)
 def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stderr — where a crash's traceback lands (`/logs` serves stdout, empty on a crash)."""
-    return spawns_mod.err_text(job_id) or ""
+    return _SWEPT if spawns_mod.swept(job_id) else (spawns_mod.err_text(job_id) or "")
 
 
 @api.get("/spawns/{job_id}/build", response_class=PlainTextResponse)

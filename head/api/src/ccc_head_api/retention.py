@@ -43,9 +43,13 @@ def _parse(ts: str) -> datetime:
     return datetime.strptime(ts, _TS).replace(tzinfo=timezone.utc)
 
 
-def _outputs_dir(job_id: int):
+def _spawn_dir(job_id: int):
     from . import spawns
-    return spawns.SPAWNS_DIR / str(job_id) / "outputs"
+    return spawns.SPAWNS_DIR / str(job_id)
+
+
+def _outputs_dir(job_id: int):
+    return _spawn_dir(job_id) / "outputs"
 
 
 def _du(path) -> int:
@@ -58,10 +62,17 @@ def _du(path) -> int:
 
 
 def _evict(conn, job_id: int) -> None:
-    """Delete one Spawn's outputs, on disk and in the ledger. The dir is NOT recreated empty: a later
-    `GET /outputs` should 404 (and say the results expired), not serve an empty tar that reads as a
-    Spawn which produced nothing."""
-    shutil.rmtree(_outputs_dir(job_id), ignore_errors=True)
+    """Delete one Spawn's whole directory, on disk and in the ledger. Nothing is recreated empty: a
+    later `GET /outputs` should 404 (and say the results expired), not serve an empty tar that reads as
+    a Spawn which produced nothing.
+
+    The WHOLE directory, not just `outputs/`: `out`, `err`, `exit`, `environment`, `build.log` and the
+    markers had no deleter anywhere, so one directory per Spawn ever submitted accumulated forever —
+    and `register_new` lists that directory on every 30-second pass, so the tick's cost grew with the
+    cluster's whole history rather than with what is live. The Spawn's *row* is untouched: history and
+    Attribution are the accounting record and outlive the files (see db.py).
+    """
+    shutil.rmtree(_spawn_dir(job_id), ignore_errors=True)
     db.delete_output(conn, job_id)
 
 

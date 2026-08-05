@@ -157,8 +157,11 @@ class TestExpiry(_Base):
             assert retention.reap_expired(conn, now) == 0
             assert d.exists()
 
-    def test_the_logs_and_the_exit_marker_survive_the_reap(self):
-        """History still has to be able to say what the Spawn did. Only `outputs/` is on the clock."""
+    def test_the_whole_spawn_directory_goes_not_just_the_outputs(self):
+        """`out`, `err`, `exit` and the markers had no deleter anywhere, so one directory per Spawn
+        ever submitted accumulated forever — and `register_new` lists that directory every pass, so the
+        tick's cost grew with the cluster's entire history. The Spawn's ROW survives: history and
+        Attribution are the accounting record, and outlive the files."""
         now = datetime.now(timezone.utc)
         stale = now - timedelta(days=retention.TTL_DAYS + 1)
         with db.connect() as conn:
@@ -169,8 +172,9 @@ class TestExpiry(_Base):
             (spawn_dir / "exit").write_text("0\n")
             db.add_output(conn, 3, 16, at=_iso(stale))
             retention.reap_expired(conn, now)
-            assert (spawn_dir / "out").read_text() == "epoch 1\n"
-            assert (spawn_dir / "exit").exists()
+            assert not spawn_dir.exists()
+            assert head_spawns.swept(3), "the logs read as expired, not as a Spawn that said nothing"
+            assert db.get_spawn(conn, 3) is not None
 
     def test_the_dir_is_not_recreated_empty(self):
         """An empty dir would serve a tar that reads as "this Spawn produced nothing" — the one wrong

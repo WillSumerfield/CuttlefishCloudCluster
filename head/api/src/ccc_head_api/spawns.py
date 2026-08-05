@@ -1108,6 +1108,15 @@ def was_cancelled(job_id: int) -> bool:
     return (_spawn_dir(job_id) / "cancelled").exists()
 
 
+def swept(job_id: int) -> bool:
+    """True when this Spawn's whole directory is gone — `retention._evict` took it.
+
+    `submit` creates the directory for every Spawn before sbatch, so its absence is never "nothing was
+    written yet". It is what lets `/logs` say the logs expired instead of returning the empty string a
+    Spawn that printed nothing also returns."""
+    return not _spawn_dir(job_id).exists()
+
+
 def out_text(job_id: int) -> str | None:
     f = _spawn_dir(job_id) / "out"
     return f.read_text() if f.exists() else None
