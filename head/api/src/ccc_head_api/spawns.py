@@ -677,7 +677,12 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         if not tidepool and script not in tf.getnames():
             raise ValueError(f"script {script!r} was not found in the uploaded project — check the "
                              f"path matches exactly (and isn't excluded by .gitignore)")
-        staging.mkdir(parents=True)
+        # 0700, not the service's ambient umask: an uploaded project is the User's own tree and may
+        # itself carry a secret (a stray .env), so what it lands as must not depend on whoever
+        # provisioned this Head. The Guise reaches it through `_lend_project`'s ACL, not through the
+        # mode — a named-user ACL entry is what grants access here, so tightening this changes nothing
+        # for the Spawn that owns it.
+        staging.mkdir(parents=True, mode=0o700)
         tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
     # The Guise is allocated HERE rather than just before sbatch, because the **Environment** build
     # below runs as it — a manifest is code, and CCC runs no User's code as the Mantle (CONTEXT.md,

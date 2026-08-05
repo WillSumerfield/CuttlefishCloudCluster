@@ -75,7 +75,9 @@ def _set_head(head: str | None) -> None:
 # --- credential store (~/.ccc/credentials, 0600) ----------------------------
 
 def _save_token(token: str) -> None:
-    config.CCC_HOME.mkdir(parents=True, exist_ok=True)
+    # mode explicitly, not the ambient umask: the file below is 0600, and a 0755 directory around it
+    # still tells every local user that this box has a CCC session and when it was obtained.
+    config.ensure_ccc_home()
     config.CREDENTIALS_FILE.write_text(token)
     config.CREDENTIALS_FILE.chmod(0o600)
 

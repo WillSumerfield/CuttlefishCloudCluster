@@ -612,10 +612,12 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     ui.say("")
     ui.say("  [warn]SECRET[/warn] — send this privately. It admits one machine, once, "
            "within the hour:")
-    ui.say(f"  [bold]{token}[/bold]")
+    # `ui.secret`/`data(log=False)`: the token reaches the screen and stdout, but not the run log,
+    # which would otherwise accumulate every token this cluster has ever minted in cleartext.
+    ui.secret(f"  [bold]{token}[/bold]")
     ui.say("  the donor runs:  [accent]cuttle setup --arm --token <token>[/accent]")
     ui.say("")
-    ui.data(token)
+    ui.data(token, log=False)
     # Registered BEFORE the wait, deliberately: a wait that times out is exactly when the operator
     # still needs the token — it stays valid for the hour, and `cuttle arm admit` finishes the job.
     ui.result("arm", f"{name} (owner: {owner})")

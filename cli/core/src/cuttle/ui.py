@@ -107,6 +107,38 @@ _LOG_PATH = None
 _TROUBLE: list[str] = []        # warnings and failures, in order — surfaced at the end
 
 
+# argv positions that hold a secret rather than an argument. These logs are the ONE place a CCC
+# secret was landing in cleartext: everything else under ~/.ccc that holds one is explicitly 0600 and
+# holds it deliberately, while this file was simply the transcript nobody thought of as secret-bearing.
+_SECRET_FLAGS = {"--token"}                 # `cuttle setup --arm --token <blob>`
+_SECRET_AFTER = [("wandb", "set")]          # `cuttle wandb set <key>` — a positional, so match on path
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    """`argv` with every secret value replaced. Enrollment tokens expire in an hour; a **W&B** key
+    does not, which is what makes this worth doing rather than trusting the lifetime."""
+    out = list(argv)
+    for i, a in enumerate(out[:-1]):
+        if a in _SECRET_FLAGS:
+            out[i + 1] = "<redacted>"
+    for path in _SECRET_AFTER:
+        n = len(path)
+        for i in range(len(out) - n):
+            if out[i:i + n] == list(path) and not out[i + n].startswith("-"):
+                out[i + n] = "<redacted>"
+    return out
+
+
+def _prune_logs(log_dir) -> None:
+    """Cap the run logs at MAX_LOGS, oldest first. The CLI is built to be scripted — anything polling
+    `cuttle status` in a loop writes one file per call — and unlike watch's bookkeeping no entry here
+    is an obligation, so plain age is the whole rule."""
+    from . import config
+    logs = sorted(log_dir.glob("cuttle-*.log"))
+    for old in logs[:max(0, len(logs) - config.MAX_LOGS)]:
+        old.unlink(missing_ok=True)
+
+
 def _open_log():
     """One file per run, opened lazily so a command that says nothing leaves nothing behind."""
     global _LOG, _LOG_PATH
@@ -114,11 +146,16 @@ def _open_log():
         import datetime
         from . import config
         try:
-            config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+            # Explicit modes, like every other sensitive path under ~/.ccc: this file records what the
+            # CLI said, and some of that is a token or a key.
+            config.ensure_ccc_home()
+            config.LOG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _prune_logs(config.LOG_DIR)
             stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             _LOG_PATH = config.LOG_DIR / f"cuttle-{stamp}.log"
             _LOG = _LOG_PATH.open("a")
-            _LOG.write(f"$ {' '.join(sys.argv)}\n")
+            _LOG_PATH.chmod(0o600)
+            _LOG.write(f"$ {' '.join(_redact_argv(sys.argv))}\n")
         except OSError:
             # An unwritable home is not a reason to refuse to run. The screen still works.
             _LOG, _LOG_PATH = False, None
@@ -136,6 +173,15 @@ def _log(markup: str) -> None:
 
 def say(message: str) -> None:
     _log(message)
+    _emit(message)
+
+
+def secret(message: str) -> None:
+    """Say something the run log must not keep — a minted token, and nothing else so far.
+
+    `arm authorize` prints the enrollment token it mints, and every printed line goes through `_log`,
+    so an admin's log directory otherwise accumulated every token the cluster had ever issued. They
+    are single-use and expire in an hour, but a permanent cleartext record of them buys nothing."""
     _emit(message)
 
 
@@ -161,12 +207,16 @@ def hint(message: str) -> None:
     _emit(f"  [muted]{message}[/muted]")
 
 
-def data(text: str = "") -> None:
+def data(text: str = "", log: bool = True) -> None:
     """Command *output* — the thing a caller might pipe. stdout, unstyled, no glyph.
 
     Inside a box this lands in the section's stdout capture rather than on screen — see `section`.
+
+    `log=False` for output that is itself a secret: a caller piping it decides where it lands, but
+    the run log keeping its own permanent copy is nobody's decision. See `secret`.
     """
-    _log(text)
+    if log:
+        _log(text)
     out.print(text, markup=False, soft_wrap=True)
 
 

@@ -172,3 +172,47 @@ class TestRunPrintsTheIdToStdout:
         result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
         assert result.exit_code == 0, result.output
         assert result.stdout.strip().isdigit()
+
+
+class TestTheRunLogKeepsNoSecrets:
+    """The one place a CCC secret was landing in cleartext. Everything else under ~/.ccc that holds
+    one is explicitly 0600 and holds it on purpose; this file was simply never thought of as
+    secret-bearing, and it records every command line verbatim."""
+
+    def test_a_token_is_redacted(self):
+        argv = ["cuttle", "setup", "--arm", "--token", "s3cr3t-blob", "--verbose"]
+        assert ui._redact_argv(argv) == [
+            "cuttle", "setup", "--arm", "--token", "<redacted>", "--verbose"]
+
+    def test_a_wandb_key_is_redacted(self):
+        """A positional, not a flag — and the durable one: an enrollment token expires in an hour,
+        a W&B key never does."""
+        assert ui._redact_argv(["cuttle", "wandb", "set", "deadbeef"])[-1] == "<redacted>"
+
+    def test_the_wandb_prompt_form_has_nothing_to_redact(self):
+        assert ui._redact_argv(["cuttle", "wandb", "set"]) == ["cuttle", "wandb", "set"]
+        assert ui._redact_argv(["cuttle", "wandb", "show"]) == ["cuttle", "wandb", "show"]
+
+    def test_an_ordinary_command_is_untouched(self):
+        argv = ["cuttle", "run", "train.py", "--vram", "24"]
+        assert ui._redact_argv(argv) == argv
+
+    def test_the_logs_are_capped(self, tmp_path, monkeypatch):
+        """One file per invocation, on a CLI built to be scripted — anything polling `cuttle status`
+        in a loop accumulates one forever."""
+        from cuttle import config
+        monkeypatch.setattr(config, "MAX_LOGS", 3)
+        for i in range(6):
+            (tmp_path / f"cuttle-2026080{i}-000000.log").write_text("x")
+        ui._prune_logs(tmp_path)
+        kept = sorted(p.name for p in tmp_path.iterdir())
+        assert kept == ["cuttle-20260803-000000.log", "cuttle-20260804-000000.log",
+                        "cuttle-20260805-000000.log"]
+
+    def test_the_minted_token_never_reaches_the_log(self, monkeypatch):
+        logged = []
+        monkeypatch.setattr(ui, "_log", lambda m: logged.append(m))
+        monkeypatch.setattr(ui, "_emit", lambda m: None)
+        ui.secret("  tok-abc123")
+        ui.data("tok-abc123", log=False)
+        assert logged == []
