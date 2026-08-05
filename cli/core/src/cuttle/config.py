@@ -89,7 +89,7 @@ PARTITION = "ccc"
 # Spawns. It can do that with ZERO privilege, because every Spawn runs as the Mantle — so the Head is
 # the *owner* of every job in the queue, and lowering your own job's priority is an owner's right.
 # (Only NEGATIVE nice — a boost — needs an operator; that's the admin Queue bump, which goes through
-# sudo. See docs/DesignDoc.md §5.)
+# sudo. See docs/Architecture.md, "Scheduling: Slurm, and no accounting database".)
 #
 # Treat a Spawn's priority as a SIGNED int32 whose zero sits at 2^31. Slurm's priority is a `uint32_t`
 # and it clamps: with no base, a *fresh* Spawn (age factor 0) computes `-nice`, which underflows to the

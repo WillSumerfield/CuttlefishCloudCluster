@@ -755,8 +755,8 @@ def run(
         None, help="Python script to run inside the Pod. With --tidepool: a Spawn id to attach/reattach "
                    "to instead of requesting a new one (unused otherwise)."),
     tidepool: bool = typer.Option(
-        False, "--tidepool", help="A live interactive shell instead of a script — see docs/TODO.md "
-                                  "'Tide Pool'. Requests one (or attaches to an existing id given as "
+        False, "--tidepool", help="A live interactive shell instead of a script — see "
+                                  "docs/elements/tide-pool.md. Requests one (or attaches to an existing id given as "
                                   "the positional arg), waits for placement, and drops you into it. "
                                   "Disconnecting does NOT end it — `cuttle cancel <id>` does, or "
                                   "--time running out."),
@@ -811,11 +811,11 @@ def run(
     that may need 2 GB.
 
     --output/-o has no default either, and none is offered anywhere: a Spawn nobody named an output
-    for is one whose results (docs/TODO.md's "Spawn Output Enforcement") have nowhere
+    for is one whose results (docs/elements/spawns.md) have nowhere
     retrievable to land — `mkdir -p "$CCC_OUT/<name>"` runs before your script does, once per name.
 
-    A wrong or incomplete --output isn't fatal the instant the Spawn ends: docs/TODO.md's "Recovery
-    Window" keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
+    A wrong or incomplete --output isn't fatal the instant the Spawn ends: the Recovery Window
+    (docs/elements/storage.md) keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
     recoverable on the Head for 30 minutes afterward (`cuttle recover <id>`), up to 16GB. Past that, or
     past the window, it's gone — declare `--output` correctly rather than leaning on it.
 
@@ -825,8 +825,8 @@ def run(
     turns that off for one Spawn.
 
     On the Head that same copy is kept 7 days, and only while your 8GB of output space has room for
-    it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/TODO.md's "Storage
-    retention"). Nothing on the Head is an archive; the automatic download is what makes that safe.
+    it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/elements/storage.md).
+    Nothing on the Head is an archive; the automatic download is what makes that safe.
 
     --tidepool replaces the whole script/output/upload story above with a live shell — see
     cuttle.tidepool for that flow; everything below this point is the ordinary script path.

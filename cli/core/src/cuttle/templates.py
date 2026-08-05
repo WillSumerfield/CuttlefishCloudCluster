@@ -70,7 +70,8 @@ SelectTypeParameters=CR_Core
 #   minute. The bound on starvation is ECONOMIC — spending Karma is what makes you poor, so nobody can
 #   hog the cluster and stay ahead of the queue. Deliberate; see temp/KARMA.md "the priority floor".
 #
-# (Fairshare stays 0 — it needs slurmdbd, and we compute standing ourselves. See docs/DesignDoc.md §5.)
+# (Fairshare stays 0 — it needs slurmdbd, and we compute standing ourselves. See docs/Architecture.md,
+#  "Scheduling: Slurm, and no accounting database".)
 PriorityType=priority/multifactor
 PriorityWeightPartition={base}
 PriorityWeightAge={age_weight}
