@@ -224,3 +224,27 @@ class TestArmVerifiesTheDeb:
         with pytest.raises(typer.Exit):
             enroll.fetch_apptainer_deb("100.99.0.1", head_pin)
         assert not (tmp_path / head_pin["filename"]).exists()  # never left for apt to find
+
+
+class TestOneVersionPerFact:
+    """A pin written twice is a pin one careless edit away from being no pin at all. These are the two
+    facts CCC used to spell out in more than one place."""
+
+    def test_slurm_is_pinned_once_for_both_roles(self):
+        """A Head on one Slurm version and an Arm on another do not fail at install — they fail later,
+        at the RPC layer, as a node that will not register."""
+        assert config.SLURM_PKG == f"slurm-wlm={config.SLURM_VERSION}"
+        assert config.SLURMD_PKG == f"slurmd={config.SLURM_VERSION}"
+
+    def test_the_two_slurm_packages_name_the_same_version(self):
+        """The property that matters, asserted independently of how it is currently derived."""
+        assert config.SLURM_PKG.split("=", 1)[1] == config.SLURMD_PKG.split("=", 1)[1]
+
+    def test_the_tailscale_repo_follows_the_ubuntu_codename(self):
+        """The release these URLs name and the release UBUNTU_SNAPSHOT pins are the same fact. A
+        second hardcoded codename is one that stays on noble the day the rest moves."""
+        assert config.UBUNTU_CODENAME in config.TAILSCALE_REPO_KEY
+        assert config.UBUNTU_CODENAME in config.TAILSCALE_REPO_LIST
+        for url in (config.TAILSCALE_REPO_KEY, config.TAILSCALE_REPO_LIST):
+            tail = url.rsplit("/", 1)[1]
+            assert tail.startswith(f"{config.UBUNTU_CODENAME}.")

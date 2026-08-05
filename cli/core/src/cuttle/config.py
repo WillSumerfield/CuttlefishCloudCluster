@@ -4,8 +4,12 @@ import os
 from pathlib import Path
 
 # --- pinned system stack (Ubuntu 24.04 noble / amd64) ---
-SLURM_PKG = "slurm-wlm=23.11.4-1.2ubuntu5"
-SLURMD_PKG = "slurmd=23.11.4-1.2ubuntu5"  # Arms need the node daemon only, not slurmctld
+# One version, two packages: the Head takes the full suite, an Arm takes the node daemon only (not
+# slurmctld). Derived rather than written twice — a Head and an Arm on different Slurm versions is a
+# cluster that fails at the protocol level, and two literals are one careless edit away from it.
+SLURM_VERSION = "23.11.4-1.2ubuntu5"
+SLURM_PKG = f"slurm-wlm={SLURM_VERSION}"
+SLURMD_PKG = f"slurmd={SLURM_VERSION}"
 NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"  # NVIDIA's repo retains old versions — safe
 MUNGE_PKG = "munge"  # auth; distro version fine
 # HEAD ONLY. `setfacl` is how the Mantle lends ONE **Guise** read access to ONE uploaded project
@@ -456,9 +460,12 @@ HEADSCALE_SERVICE_USER = "headscale"  # the unix account systemd runs headscale 
 # only lever it reads (see mesh.py's "trusting the coordinator's cert" section). Every node that has
 # ever joined this mesh, Head included, has a copy here; teardown removes it (teardown._leave_ccc_mesh).
 HEADSCALE_CA_PATH = Path("/usr/local/share/ca-certificates/ccc-headscale.crt")
-# Tailscale client ships from its own apt repo (noble). Keyring + list installed by setup.
-TAILSCALE_REPO_KEY = "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg"
-TAILSCALE_REPO_LIST = "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list"
+# Tailscale client ships from its own apt repo, one path per Ubuntu release. Keyring + list installed
+# by setup. Built off UBUNTU_CODENAME rather than a second hardcoded "noble": the release these two
+# URLs name and the release the snapshot pins are the same fact, and they must move together.
+TAILSCALE_REPO_KEY = f"https://pkgs.tailscale.com/stable/ubuntu/{UBUNTU_CODENAME}.noarmor.gpg"
+TAILSCALE_REPO_LIST = (f"https://pkgs.tailscale.com/stable/ubuntu/"
+                       f"{UBUNTU_CODENAME}.tailscale-keyring.list")
 TAILSCALE_KEYRING = Path("/usr/share/keyrings/tailscale-archive-keyring.gpg")
 TAILSCALE_REPO_FILE = Path("/etc/apt/sources.list.d/tailscale.list")
 
