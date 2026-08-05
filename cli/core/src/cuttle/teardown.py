@@ -25,7 +25,8 @@ def detect_role() -> str:
     return "client"
 
 _SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SERVICE,
-             config.RSYNCD_SERVICE, "munge", "slurmctld", "slurmd"]
+             config.RSYNCD_SERVICE, f"{config.BACKUP_SERVICE}.timer", f"{config.MONITOR_SERVICE}.timer",
+             "munge", "slurmctld", "slurmd"]
 _ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / API / rsyncd / headscale
 _PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
 # Every apt source file setup ADDED — and only those. The box's own sources.list/ubuntu.sources were
@@ -116,6 +117,31 @@ def remove_backup() -> None:
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
+def remove_monitor() -> None:
+    """Head-box health monitor: timer + service + script (monitor.install). Its state and SMTP
+    credentials live under CCC_LIB, which `remove_enroll_api` takes wholesale.
+
+    Left behind, this is worse than clutter: the unit runs as the Mantle, and every teardown deletes
+    that account — so the timer goes on firing and failing every 5 minutes on a box the operator was
+    told is clean."""
+    run(["systemctl", "disable", "--now", f"{config.MONITOR_SERVICE}.timer"], sudo=True, check=False)
+    run(["rm", "-f", str(config.MONITOR_SERVICE_UNIT), str(config.MONITOR_TIMER_UNIT),
+         str(config.MONITOR_SCRIPT)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
+def remove_head_services() -> None:
+    """Every unit `setup --head` installs. ONE list, because there were two — `_teardown_local` and
+    `teardown_full` each hand-listed the Head's services, and they had already drifted: the backup
+    timer was removed by one and not the other, and nothing anywhere removed the monitor."""
+    remove_enroll_api()
+    remove_head_api()
+    remove_karma()
+    remove_backup()
+    remove_monitor()
+    remove_rsyncd()
+
+
 def remove_rsyncd() -> None:
     """Stage-in/out daemon (Head-only, CCC-only — safe to remove wholesale). The service was already
     stopped/disabled by stop_daemons; drop its unit + config, the [bench] secret, and every open
@@ -187,7 +213,44 @@ def remove_repos() -> None:
 
 
 def remove_user_dirs() -> None:
+    revoke_session()
     shutil.rmtree(config.CCC_HOME, ignore_errors=True)
+
+
+def revoke_session() -> None:
+    """Tell the Head to drop this box's session before the credentials file goes with ~/.ccc.
+
+    Deleting the file only makes the token unreachable HERE; the row on the Head stays valid for the
+    rest of its TTL, exactly the thing `cuttle logout` avoids. Best-effort by necessity — this same
+    teardown may have just removed the Head, or be running on a box whose Head is long gone — so a
+    failure is silent and the TTL remains the backstop."""
+    if not config.CREDENTIALS_FILE.exists():
+        return
+    try:
+        from . import auth
+        auth._api("POST", "/logout", token=auth._load_token())
+    except Exception:
+        pass
+
+
+def remove_arm_state() -> None:
+    """CCC's own state on a donor's box: the mirrored Feature install (up to ~1 GB), the mirrored
+    Licence key beside it, and the /opt/ccc that images left behind.
+
+    Only `remove_enroll_api` cleared CCC_LIB, and an Arm never runs the Enroll API — so a
+    Feature-declaring donor who ran plain `cuttle teardown --arm` kept the whole mirror, against the
+    promise that CCC leaves nothing behind.
+
+    NOT the Licence *directory*: that is the Licence account's home, and it holds machine activations
+    the vendor may grant a finite number of times. See `remove_licence_account`."""
+    run(["rm", "-rf", str(config.CCC_LIB)], sudo=True, check=False)
+    prune_opt_dir()
+
+
+def prune_opt_dir() -> None:
+    """Drop /opt/ccc once its children are gone. `rmdir`, never `rm -rf`: whatever is still in there
+    was kept deliberately (base.sif and the TLS cert both survive a teardown without --all)."""
+    run(["rmdir", "--ignore-fail-on-non-empty", str(config.CCC_OPT)], sudo=True, check=False)
 
 
 def remove_images() -> None:
@@ -347,8 +410,10 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
             remove_repos()
     with ui.step("Removing this box's CCC state"):
         remove_user_dirs()      # ~/.ccc always (see teardown_local)
+        remove_arm_state()      # the Feature mirror — nothing else on an Arm ever cleared it
         if all_:
             remove_images()     # base.sif kept unless --all — multi-GB, and in /opt, not ~/.ccc
+        prune_opt_dir()         # after remove_images: with base.sif gone, /opt/ccc is empty on an Arm
     _summarise("Arm", keep_packages, kept_images=not all_)
     # Not hygiene — see `teardown_arm`: the stale Head-side node BLOCKS re-enrolling this box, so it
     # is the one thing the operator must still do, and it belongs with the results rather than in a
@@ -366,11 +431,7 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     with ui.step("Stopping the cluster's services"):
         stop_daemons()
     with ui.step("Removing the Head's services"):
-        remove_enroll_api()
-        remove_head_api()
-        remove_karma()
-        remove_backup()
-        remove_rsyncd()
+        remove_head_services()
     with ui.step("Tearing down the mesh"):
         remove_mesh(keep_packages=keep_packages)
     with ui.step("Removing Slurm's config and state"):
@@ -417,10 +478,7 @@ def teardown_full(keep_packages: bool = False) -> None:
             stop_daemons()      # Head services (no-ops where the units never existed)
             stop_arm_daemons()  # Arm bits
         with ui.step("Removing the Head's services"):
-            remove_enroll_api()
-            remove_head_api()
-            remove_karma()
-            remove_rsyncd()
+            remove_head_services()
         with ui.step("Tearing down the mesh"):
             remove_mesh(keep_packages=keep_packages)
         with ui.step("Removing Slurm, the cluster key and the CCC accounts"):
@@ -439,4 +497,5 @@ def teardown_full(keep_packages: bool = False) -> None:
             remove_user_dirs()  # local state — a full sweep always takes it
             remove_images()
             remove_tls()
+            prune_opt_dir()     # last: everything that lived under /opt/ccc is gone by now
     _summarise("everything CCC", keep_packages, kept_images=False, kept_tls=False)

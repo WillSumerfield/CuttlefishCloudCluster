@@ -13,6 +13,7 @@ import getpass
 import hashlib
 import ipaddress
 import json
+import os
 import platform
 import re
 import secrets
@@ -484,7 +485,13 @@ def build_base_sif() -> None:
         return
     def_file = config.CCC_IMAGES_DIR / "base.def"
     def_file.write_text(templates.render_base_def())
-    run(["apptainer", "build", str(config.CCC_SIF), str(def_file)])
+    # Cache into CCC's own tree, not the default ~/.apptainer/cache. This build runs unprivileged, so
+    # apptainer caches every pulled layer under the invoking operator's home — multi-GB, outside every
+    # path teardown knows about, and reclaimed by nothing. Pointed at ~/.ccc instead, which teardown
+    # already removes. Not `apptainer cache clean`, which would take the operator's unrelated layers.
+    config.APPTAINER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    run(["apptainer", "build", str(config.CCC_SIF), str(def_file)],
+        env={**os.environ, "APPTAINER_CACHEDIR": str(config.APPTAINER_CACHE_DIR)})
     run(["chmod", "-R", "a+rX", str(config.CCC_IMAGES_DIR)], sudo=True)
 
 
@@ -648,8 +655,12 @@ ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
 def make_user_dirs() -> None:
     """The operator's own ~/.ccc — settings + credentials only. No images/ or spawns/ here: Pod images
     live in the world-readable CCC_IMAGES_DIR (the home-less Mantle must read them) and Spawn results
-    live on the Head, fetched over the API."""
-    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    live on the Head, fetched over the API.
+
+    0700 explicitly: everything under ~/.ccc is this operator's alone (credentials, pinned certs, run
+    logs), and the ambient umask is not a decision anyone made about it."""
+    config.ensure_ccc_home()
+    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
 def verify() -> None:

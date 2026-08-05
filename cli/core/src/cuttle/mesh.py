@@ -42,8 +42,11 @@ def _latest_headscale() -> tuple[str, str]:
 def _install_deb(url: str, reinstall: bool = False) -> None:
     """--force-confmiss restores conffiles the admin deleted (dpkg won't, by default)."""
     opts = "--reinstall " if reinstall else ""
+    # Unlinked afterwards: dpkg has copied what it needs, and nothing sweeps /tmp/headscale.deb —
+    # `_sweep_job_tmp` only globs /tmp/ccc-*, so it would sit on every node CCC ever touched.
     sh(f"curl -fsSL -o /tmp/headscale.deb {url} && "
-       f'apt-get install -y {opts}-o Dpkg::Options::=--force-confmiss /tmp/headscale.deb', sudo=True)
+       f'apt-get install -y {opts}-o Dpkg::Options::=--force-confmiss /tmp/headscale.deb; '
+       f"rc=$?; rm -f /tmp/headscale.deb; exit $rc", sudo=True)
 
 
 def installed_headscale() -> str | None:

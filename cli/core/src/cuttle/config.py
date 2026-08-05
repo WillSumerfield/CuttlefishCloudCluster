@@ -378,6 +378,7 @@ HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 # /opt/ccc as the venv + SPA) instead. One constant path cluster-wide means the rendered job script
 # names the sif identically wherever Slurm places it. Each node BUILDS its own (apptainer build at
 # setup); nothing ships a multi-GB image over the mesh.
+CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; teardown rmdirs it last
 CCC_IMAGES_DIR = Path("/opt/ccc/images")
 CCC_SIF = CCC_IMAGES_DIR / "base.sif"
 
@@ -547,6 +548,18 @@ RSYNCD_BENCH_SECRETS = Path("/etc/ccc-rsyncd.bench.secrets")
 # credentials and its menu state depends on whether the real Head is reachable — flaky by construction.
 CCC_HOME = Path(os.environ.get("CCC_HOME") or Path.home() / ".ccc")
 CONFIG_DIR = CCC_HOME / "config"
+
+
+def ensure_ccc_home() -> Path:
+    """~/.ccc, at 0700. Every writer of a child directory calls this first.
+
+    Called rather than trusting `mkdir(mode=...)`, which applies its mode to the LEAF only — so a
+    child created 0700 under a home that the umask made 0755 is not private at all. The chmod is
+    unconditional so a directory created by an older cuttle is tightened on the next run.
+    """
+    CCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    CCC_HOME.chmod(0o700)
+    return CCC_HOME
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 # Pinned Head certificates, one PEM per host (trust-on-first-use; see tls.py). Keyed by host because a
 # client may one day talk to more than one cluster, and a pin is only meaningful against the Head that
@@ -556,6 +569,10 @@ PINS_DIR = CCC_HOME / "pins"
 # and is gone when it closes — so the log is the only place the detail survives. One file per run,
 # named for when it started, so a failure days later still has its own.
 LOG_DIR = CCC_HOME / "logs"
+# Cap on the run logs, mirroring watch.MAX_ENTRIES. One file per invocation with no reaper is a leak
+# on a CLI built to be scripted — and every one of them holds a transcript, which is why this is a cap
+# and not a policy of keeping them all (ui._prune_logs).
+MAX_LOGS = 500
 # CLI session bearer: the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 CREDENTIALS_FILE = CCC_HOME / "credentials"
@@ -563,6 +580,10 @@ CREDENTIALS_FILE = CCC_HOME / "credentials"
 # owed, plus its `<id>.log`. The FILE is the durable intent and the sweeper process is only the
 # current attempt at it — which is what lets a reboot, a logout or a `pkill` cost nothing but time.
 WATCH_DIR = CCC_HOME / "watch"
+# Where `apptainer build` caches the layers it pulls (APPTAINER_CACHEDIR, set by setup.build_base_sif).
+# Under ~/.ccc rather than apptainer's own ~/.apptainer/cache so that teardown reclaims it: the build
+# runs unprivileged, and a multi-GB cache in the operator's home is outside every tree CCC removes.
+APPTAINER_CACHE_DIR = CCC_HOME / "cache"
 # Where an auto-download lands when the directory it was submitted from no longer exists. Results are
 # the User's, never CCC's: nothing under here is ever expired or swept, unlike the Head's own copy.
 OUTPUTS_DIR = CCC_HOME / "outputs"
