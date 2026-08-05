@@ -584,9 +584,14 @@ WATCH_DIR = CCC_HOME / "watch"
 # Under ~/.ccc rather than apptainer's own ~/.apptainer/cache so that teardown reclaims it: the build
 # runs unprivileged, and a multi-GB cache in the operator's home is outside every tree CCC removes.
 APPTAINER_CACHE_DIR = CCC_HOME / "cache"
-# Where an auto-download lands when the directory it was submitted from no longer exists. Results are
-# the User's, never CCC's: nothing under here is ever expired or swept, unlike the Head's own copy.
-OUTPUTS_DIR = CCC_HOME / "outputs"
+# Where an auto-download lands. Results are the User's, never CCC's: nothing under here is ever expired
+# or swept, unlike the Head's own copy.
+#
+# `~/ccc`, deliberately NOT under the dot-directory: this is the one path in CCC a User is expected to
+# open, and results a User cannot find are results they did not get. It is also now the DEFAULT rather
+# than a fallback for a vanished submit directory — one predictable place beats results scattered
+# across every directory anyone ever submitted from. `cuttle run --dest` overrides it per Spawn.
+OUTPUTS_DIR = Path(os.environ.get("CCC_OUTPUTS") or Path.home() / "ccc" / "outputs")
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
 

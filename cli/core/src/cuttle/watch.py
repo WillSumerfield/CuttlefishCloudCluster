@@ -244,12 +244,19 @@ def _member(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
 
 
 def _extract(data: bytes, dest: Path, spawn_id: int) -> Path:
-    """Unpack the Head's tar into `dest/spawn-<id>-outputs/`, falling back when the directory the
-    Spawn was submitted from is gone (moved, deleted, an unmounted share) — results still have to
-    land somewhere rather than be dropped for a reason the User will never see."""
-    if not dest.is_dir():
-        dest = config.OUTPUTS_DIR
-        note(spawn_id, f"submit directory is gone — extracting to {dest} instead")
+    """Unpack the Head's tar into `dest/spawn-<id>-outputs/`.
+
+    `dest` is config.OUTPUTS_DIR unless the Spawn was submitted with `--dest`, and it is created rather
+    than required: the default is CCC's own directory and may not exist on a box that has never
+    downloaded anything. A `--dest` whose parent is gone (deleted, an unmounted share) falls back to
+    the default — results still have to land somewhere rather than be dropped for a reason the User
+    will never see."""
+    if not dest.is_dir() and dest != config.OUTPUTS_DIR:
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            dest = config.OUTPUTS_DIR
+            note(spawn_id, f"--dest is unreachable — extracting to {dest} instead")
     out = dest / f"spawn-{spawn_id}-outputs"
     out.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as tar:

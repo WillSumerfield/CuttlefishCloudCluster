@@ -12,6 +12,7 @@ inherits none of the monkeypatching keeping this suite off the real `~/.ccc` and
 """
 
 import io
+import pathlib
 import tarfile
 
 import pytest
@@ -172,17 +173,39 @@ class TestExtractionIsUnattended:
             watch._extract(buf.getvalue(), dest, 11)
         assert not (tmp_path / "escaped.txt").exists()
 
-    def test_a_vanished_submit_dir_falls_back_rather_than_failing(self, ccc_home, tmp_path):
-        """The project directory can be moved, deleted, or on a share that is no longer mounted by the
-        time a long Spawn ends. Results still have to land somewhere rather than be lost."""
+    def test_the_default_destination_is_created_rather_than_required(self, ccc_home, tmp_path):
+        """Results land in ~/ccc/outputs, which a box that has never downloaded anything does not
+        have yet. Nothing may be dropped for a reason the User never sees."""
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             info = tarfile.TarInfo("ckpt.pt")
             info.size = 2
             tar.addfile(info, io.BytesIO(b"ok"))
-        out = watch._extract(buf.getvalue(), tmp_path / "gone", 12)
+        assert not config.OUTPUTS_DIR.exists()
+        out = watch._extract(buf.getvalue(), config.OUTPUTS_DIR, 12)
         assert out == config.OUTPUTS_DIR / "spawn-12-outputs"
         assert (out / "ckpt.pt").read_bytes() == b"ok"
+
+    def test_an_unreachable_dest_falls_back_rather_than_failing(self, ccc_home, tmp_path,
+                                                                monkeypatch):
+        """`--dest` can name a directory that is gone by the time a long Spawn ends (deleted, an
+        unmounted share). Results still have to land somewhere."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            info = tarfile.TarInfo("ckpt.pt")
+            info.size = 2
+            tar.addfile(info, io.BytesIO(b"ok"))
+
+        bad = tmp_path / "gone"
+        real_mkdir = pathlib.Path.mkdir
+
+        def refuse(self, *a, **kw):
+            if self == bad:
+                raise OSError("read-only file system")
+            return real_mkdir(self, *a, **kw)
+        monkeypatch.setattr(pathlib.Path, "mkdir", refuse)
+        out = watch._extract(buf.getvalue(), bad, 13)
+        assert out == config.OUTPUTS_DIR / "spawn-13-outputs"
 
 
 class TestTheSweeperIsSingular:
@@ -214,6 +237,15 @@ class TestSubmitArmsIt:
         (tmp_path / "train.py").write_text("print('hi')\n")
         cli("login", input="alice\nhunter2\n")
         cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt")
+        assert [e["dest"] for e in watch.pending()] == [str(config.OUTPUTS_DIR.resolve())]
+
+    def test_dest_overrides_where_results_land(self, cli, fake_slurm, tmp_path, monkeypatch):
+        """One predictable default, and an escape hatch for anyone who does want results beside the
+        code that produced them."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "train.py").write_text("print('hi')\n")
+        cli("login", input="alice\nhunter2\n")
+        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt", "--dest", str(tmp_path))
         assert [e["dest"] for e in watch.pending()] == [str(tmp_path.resolve())]
 
     def test_no_download_arms_nothing(self, cli, fake_slurm, tmp_path, monkeypatch):

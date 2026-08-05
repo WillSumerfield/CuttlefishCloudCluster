@@ -220,7 +220,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
            outputs: list[str], project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, node: str | None = None,
            features: list[str] | None = None, manifest: str | None = None,
-           download: bool = True) -> None:
+           download: bool = True, dest: Path | None = None) -> None:
     root = Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
@@ -270,7 +270,12 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     # durable intent (cuttle.watch), so a Ctrl-C out of `--follow` leaves the obligation standing and
     # the next `cuttle` invocation of any kind picks it up.
     if download:
-        watch.arm(spawn_id, root)
+        # config.OUTPUTS_DIR, not `root`: results land in one predictable place a User can find rather
+        # than beside whichever directory they happened to submit from. Said out loud, in full, because
+        # a path nobody was told about is a result nobody collects.
+        target = Path(dest) if dest else config.OUTPUTS_DIR
+        watch.arm(spawn_id, target)
+        ui.say(f"  [muted]results → {target / f'spawn-{spawn_id}-outputs'}[/muted]")
     if follow:
         _follow(spawn_id)
     if download:

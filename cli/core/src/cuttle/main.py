@@ -796,8 +796,10 @@ def run(
                                  "requirements.txt or environment.yml."),
     no_download: bool = typer.Option(
         False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
-                                     "they are downloaded into ./spawn-<id>-outputs/ as soon as it "
-                                     "finishes, whether or not this command is still running."),
+                                     "they are downloaded into ~/ccc/outputs/spawn-<id>-outputs/ as "
+                                     "soon as it finishes, whether or not this command is running."),
+    dest: Path = typer.Option(
+        None, "--dest", help="Where to put this Spawn's results (default: ~/ccc/outputs)."),
 ):
     """Submit a Spawn: uploads the working dir to the Head, which runs
     apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
@@ -817,7 +819,7 @@ def run(
     recoverable on the Head for 30 minutes afterward (`cuttle recover <id>`), up to 16GB. Past that, or
     past the window, it's gone — declare `--output` correctly rather than leaning on it.
 
-    What you DID declare is downloaded here automatically, into ./spawn-<id>-outputs/, as soon as the
+    What you DID declare is downloaded automatically, into ~/ccc/outputs/spawn-<id>-outputs/, as the
     Spawn finishes — you do not have to be running this command, or logged into this terminal, or even
     have this machine switched on at the time (it resumes next time you run `cuttle`). `--no-download`
     turns that off for one Spawn.
@@ -887,7 +889,7 @@ def run(
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
-                      features=feature, manifest=manifest, download=not no_download)
+                      features=feature, manifest=manifest, download=not no_download, dest=dest)
 
 
 @app.command()

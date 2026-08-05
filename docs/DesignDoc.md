@@ -78,7 +78,9 @@ always run in that Linux layer, so there is a single Linux code path everywhere.
     persistent cache yet). Still open: dedup/caching for sweeps and live log streaming for remote Arms.
 *   **The last hop is automatic** (`cuttle.watch`): results do not stop at the Head. `cuttle run` records
     what this box is owed and a single detached sweeper brings each Spawn's `$CCC_OUT` down into
-    `./spawn-<id>-outputs/` as it finishes — no daemon, nothing installed, and nothing lost to a reboot,
+    `~/ccc/outputs/spawn-<id>-outputs/` as it finishes (`--dest` to choose elsewhere) — one predictable
+    place rather than results scattered across every directory anyone submitted from, and nothing is
+    lost to a reboot,
     since the on-disk entry is the intent and any later `cuttle` command re-arms a sweeper for it. The
     Head is unchanged by this: retention stays a pure function of time and **Allowance**, so the same
     result is still fetchable by hand, from a second machine, for its 7 days.

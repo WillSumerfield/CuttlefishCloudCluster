@@ -85,7 +85,7 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
         # nothing to auto-download by construction — everything it wrote lives and dies in the
         # Recovery Window, which is deliberately not something to plan around (CONTEXT.md).
         if download and outputs:
-            watch.arm(spawn_id, Path.cwd())
+            watch.arm(spawn_id, config.OUTPUTS_DIR)   # one predictable place — see config
     _wait_and_attach(spawn_id)
     # After the shell detaches, not before: attaching blocks, and a sweeper forked ahead of it would
     # spend the whole session polling a Spawn this very process is sitting inside.
