@@ -191,8 +191,11 @@ class TestRemoteLiveStreaming:
         assert early_kill < early_stage_out
 
         final_kill = script.rindex('kill "$loop_pid" 2>/dev/null')
-        final_stage_out = script.index('stage_out || echo "ccc: staging results back')
+        final_stage_out = script.index('stage_out_retry || echo "ccc: staging results back')
         assert final_kill < final_stage_out
+        # The kill must also precede the RETRY helper's own definition point in execution order — it is
+        # defined between the two, so the loop is already dead by the time any attempt runs.
+        assert final_kill < script.index("stage_out_retry() {")
 
     def test_out_err_push_every_5_seconds_no_settle_check(self):
         remote = self._remote_branch(self.render())
@@ -215,6 +218,166 @@ class TestRemoteLiveStreaming:
         assert "push_periodic" not in head
         assert "loop_pid" not in head
         assert head.count('stage_out() { :; }') == 1
+
+
+class TestTheHeadStageInIsChecked:
+    """The Head branch's `cp` is what stands between a User's uploaded project and its deletion.
+
+    `: > "$spawn_dir/staged"` is the marker `ccc_head_api.projects.sweep` reads as "the Head's copy has
+    served its purpose, delete the upload". There is no `set -e` in this script, so an unchecked `cp`
+    writes that marker after a copy that failed — and the Head then deletes the original while the
+    working copy is truncated, running the Spawn against incomplete code with nothing to restore from.
+    """
+
+    def render(self, **kw):
+        kw.setdefault("minutes", 60)
+        kw.setdefault("constraint", "vram24|vram80")
+        kw.setdefault("node", None)
+        kw.setdefault("outputs", ["outputs"])
+        return head_spawns._render(
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
+
+    def _head_branch(self, script: str) -> str:
+        start = script.index('if [ -d "$staging_dir" ]')
+        return script[start:script.index("\nelse")]
+
+    def test_the_copy_is_checked(self):
+        head = self._head_branch(self.render())
+        assert "if ! cp -a --no-preserve=ownership" in head
+
+    def test_the_staged_marker_is_only_reachable_after_a_successful_copy(self):
+        """Structural, because the marker's whole meaning is its position: it must sit after the guard
+        closes, so the failure path's `exit 1` is taken before anything can write it."""
+        head = self._head_branch(self.render())
+        guard = head.index("if ! cp -a")
+        marker = head.index(': > "$spawn_dir/staged"')
+        assert guard < marker
+        failure_exit = head.index("exit 1", guard)
+        assert failure_exit < marker, "the failure branch must exit before the marker is reached"
+
+    def test_the_failure_branch_can_report_itself(self):
+        """out/err/exit have to be NAMED before the copy, or the failure branch has nowhere to write and
+        the User meets a Spawn that failed for no stated reason."""
+        head = self._head_branch(self.render())
+        assert head.index('err="$spawn_dir/err"') < head.index("if ! cp -a")
+        fail = head[head.index("if ! cp -a"):head.index(': > "$spawn_dir/staged"')]
+        assert '>> "$err"' in fail
+        assert 'echo 1 > "$exitf"' in fail
+
+    def test_the_trap_is_fully_armed_before_the_copy_can_fire_it(self):
+        """`cleanup` calls `recover_scratch`; an undefined function there is a no-op that still writes
+        "command not found" to the sbatch sink, and a non-empty sink is kept in /tmp forever (see the
+        `sink=` rule). So the definition must precede the first `exit` that can trigger the trap."""
+        head = self._head_branch(self.render())
+        assert head.index("recover_scratch() {") < head.index("if ! cp -a")
+
+    def test_a_partial_copy_is_not_offered_as_a_recovery_window(self):
+        """$proj is emptied on the way out, so recover_scratch's "nothing to recover" gate fires. A
+        partial copy of the User's own upload is not something to hand back to them."""
+        head = self._head_branch(self.render())
+        fail = head[head.index("if ! cp -a"):head.index(': > "$spawn_dir/staged"')]
+        assert 'rm -rf "$proj"' in fail
+
+
+class TestStageOutIsRetried:
+    """A completed Spawn whose stage-out hits a network drop is reported as *killed*: no `exit` marker
+    lands, `_record_endings` stamps NULL, and an hour later retention deletes its results as debris.
+
+    The payload is already finished and the card already released by this point, so waiting costs
+    nothing but this script's own tail."""
+
+    def render(self, **kw):
+        kw.setdefault("minutes", 60)
+        kw.setdefault("constraint", "vram24|vram80")
+        kw.setdefault("node", None)
+        kw.setdefault("outputs", ["outputs"])
+        return head_spawns._render(
+            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            token="a3f9", secret="s3cr3t", **kw)
+
+    def test_the_final_stage_out_retries(self):
+        script = self.render()
+        assert "stage_out_retry() {" in script
+        assert 'stage_out_retry || echo "ccc: staging results back' in script
+
+    def test_it_backs_off_rather_than_hammering(self):
+        script = self.render()
+        body = script[script.index("stage_out_retry() {"):]
+        body = body[:body.index("\n}")]
+        assert "for backoff in 5 15 30" in body
+        assert 'sleep "$backoff"' in body
+
+    def test_the_head_branch_still_succeeds_on_the_first_attempt(self):
+        """`stage_out() { :; }` on the Head means the loop returns immediately — the retry must not put
+        a delay into the co-located path, which has no network hop at all."""
+        script = self.render()
+        head = script[script.index('if [ -d "$staging_dir" ]'):script.index("\nelse")]
+        assert "stage_out() { :; }" in head
+
+
+class TestAnUnrecordedSpawnIsNeverLeftRunning:
+    """`sbatch` returns a real, running job before anything records it. Between those two points a
+    failure leaves a Spawn no reaper can see (tick.once walks the DB), that is never billed, that holds
+    a Device, and whose outputs retention deletes an hour later as orphan debris — with the User told
+    none of it. If we cannot finish recording it, we do not leave it running."""
+
+    def _tar(self, tmp_path: Path) -> Path:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            data = b"print('hi')\n"
+            info = tarfile.TarInfo("train.py")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        path = tmp_path / "project.tar.gz"
+        path.write_bytes(buf.getvalue())
+        return path
+
+    @pytest.fixture
+    def rig(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        with db.connect() as conn:
+            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                         "VALUES (1,'alice',0,'x',0)")
+            conn.commit()
+        monkeypatch.setattr(head_spawns.subprocess, "run",
+                            lambda *a, **kw: type("R", (), {"stdout": "9001\n", "stderr": "",
+                                                            "returncode": 0})())
+        cancelled = []
+        monkeypatch.setattr(head_spawns.slurm, "cancel", lambda jid: cancelled.append(jid))
+        return cancelled
+
+    def test_a_failure_after_sbatch_cancels_the_job(self, rig, monkeypatch, tmp_path):
+        monkeypatch.setattr(head_spawns.siphons, "bind",
+                            lambda *a, **kw: (_ for _ in ()).throw(OSError("disk gone")))
+        with pytest.raises(OSError):
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                               tar_path=self._tar(tmp_path), minutes=60, constraint="",
+                               outputs=["out"])
+        assert rig == [9001], "the job sbatch already started must not be left running"
+
+    def test_a_cancel_that_itself_fails_does_not_mask_the_real_error(self, rig, monkeypatch, tmp_path):
+        """The caller has to see why the submission failed. A cancel that cannot run leaves the same
+        orphan we already had — it is not worth replacing the diagnosis with."""
+        monkeypatch.setattr(head_spawns.siphons, "bind",
+                            lambda *a, **kw: (_ for _ in ()).throw(OSError("disk gone")))
+        monkeypatch.setattr(head_spawns.slurm, "cancel",
+                            lambda jid: (_ for _ in ()).throw(RuntimeError("scancel missing")))
+        with pytest.raises(OSError, match="disk gone"):
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                               tar_path=self._tar(tmp_path), minutes=60, constraint="",
+                               outputs=["out"])
+
+    def test_a_clean_submit_cancels_nothing(self, rig, tmp_path):
+        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                                    tar_path=self._tar(tmp_path), minutes=60, constraint="",
+                                    outputs=["out"])
+        assert job_id == 9001
+        assert rig == []
 
 
 class TestPodContainment:

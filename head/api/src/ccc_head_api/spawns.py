@@ -45,6 +45,7 @@ from . import features as features_mod
 from . import guises
 from . import recovery
 from . import siphons
+from . import slurm
 
 log = logging.getLogger("ccc.api")
 
@@ -176,17 +177,10 @@ if [ -d "$staging_dir" ]; then
     proj="$scratch/proj"
     trap cleanup EXIT
     mkdir -p "$proj"
-    # --no-preserve=ownership is load-bearing, not tidiness: the upload is ccc:ccc and this now runs as
-    # the submitter's **Guise**, so plain `cp -a` would try to chown the copy back to the Mantle, get
-    # EPERM, and FAIL the whole copy (-a implies --preserve=all, which cp treats as required). Mode and
-    # timestamps still come across; ownership is the one attribute a Guise has no business restoring.
-    cp -a --no-preserve=ownership "$staging_dir/." "$proj/"
     spawn_dir="%%SPAWNS%%/$jid"
-    # Stage-in is done, so the Head's copy of the upload has served its whole purpose (docs/TODO.md
-    # "Storage retention"): this marker is what lets ccc_head_api.projects delete it, and it is written
-    # only AFTER the cp above has returned — the same "presence means done" convention `exit` and
-    # `recovery.size` follow. Nothing below ever reads $staging_dir again.
-    : > "$spawn_dir/staged"
+    # Named BEFORE the copy, and so are the two functions below — all of it so the copy's failure branch
+    # has somewhere to report and a trap that is fully armed when it fires. The remote branch names its
+    # out/err ahead of its own stage-in for the same reason.
     out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"; ccc_out="$spawn_dir/outputs"
     stage_out() { :; }  # already on the Head
     recover_scratch() {
@@ -199,6 +193,31 @@ if [ -d "$staging_dir" ]; then
         [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
         mv "$proj" "$spawn_dir/recovery" && echo "$sz" > "$spawn_dir/recovery.size"
     }
+    # --no-preserve=ownership is load-bearing, not tidiness: the upload is ccc:ccc and this now runs as
+    # the submitter's **Guise**, so plain `cp -a` would try to chown the copy back to the Mantle, get
+    # EPERM, and FAIL the whole copy (-a implies --preserve=all, which cp treats as required). Mode and
+    # timestamps still come across; ownership is the one attribute a Guise has no business restoring.
+    #
+    # CHECKED, and the check is the whole point of the ordering above. There is no `set -e` in this
+    # script, so an unchecked cp falls straight through to the `staged` marker below — and that marker
+    # is what authorises ccc_head_api.projects to delete the User's uploaded project. On ENOSPC that
+    # deletes the original against a truncated copy, and the Spawn then runs incomplete code with no way
+    # back. Same shape as the remote branch's stage-in check.
+    if ! cp -a --no-preserve=ownership "$staging_dir/." "$proj/"; then
+        echo "ccc: could not copy the project into node-local scratch at $proj —" >> "$err"
+        echo "ccc: this Spawn never started. Your uploaded project is untouched. Is the Head out of disk?" >> "$err"
+        echo 1 > "$exitf"
+        # A partial copy of the User's OWN upload is not worth a Recovery Window — emptying $proj makes
+        # recover_scratch's "nothing to recover" gate fire, so cleanup() reaps the scratch and leaves no
+        # sink behind. (The upload itself survives: no `staged` marker is written below.)
+        rm -rf "$proj"
+        exit 1
+    fi
+    # Stage-in is done, so the Head's copy of the upload has served its whole purpose (docs/TODO.md
+    # "Storage retention"): this marker is what lets ccc_head_api.projects delete it, and it is written
+    # only once the cp above has SUCCEEDED — the same "presence means done" convention `exit` and
+    # `recovery.size` follow. Nothing below ever reads $staging_dir again.
+    : > "$spawn_dir/staged"
 else
     # remote Arm: none of these files are here. Stage the project in from the Head's rsync daemon into
     # ephemeral scratch, run, and stage out/err/exit/outputs back at the end.
@@ -358,10 +377,26 @@ echo $rc > "$exitf"
 kill "$loop_pid" 2>/dev/null  # stop the periodic pusher (remote branch only — unset is a no-op here)
                               # first, so it can't race the full sync below
 # A failed stage-out is indistinguishable, from the Head, from an Arm that dropped mid-Spawn: no exit
-# file ever lands, so the Spawn reads as "killed". Say so in the node-local slurm log, which is the
-# only place left that can still be written.
-stage_out || echo "ccc: staging results back to rsync://%%HEAD_IP%%/out-%%TOKEN%%/ FAILED —" \
-                  "the Spawn ran (rc=$rc) but the Head will report it as lost." >&2
+# file ever lands, so the Spawn reads as "killed" — a Spawn that ran to completion, reported as a
+# failure, with its results deleted an hour later as orphan debris.
+#
+# So RETRY, rather than accept that on the first refused connection. The payload is already done and the
+# card is already released, so the only cost of waiting is this script's own tail; a transient drop (the
+# Head restarting, a mesh hiccup, a saturated link) is the ordinary cause and it heals inside a minute.
+# What this cannot fix is the Head's mesh IP having CHANGED under a running Spawn — %%HEAD_IP%% is baked
+# into this script and there is nothing here to re-resolve it against. Rare, and it needs stable naming
+# to fix properly.
+#
+# A no-op on the Head branch, where stage_out is `{ :; }` and the first call always succeeds.
+stage_out_retry() {
+    for backoff in 5 15 30; do
+        stage_out && return 0
+        sleep "$backoff"
+    done
+    stage_out
+}
+stage_out_retry || echo "ccc: staging results back to rsync://%%HEAD_IP%%/out-%%TOKEN%%/ FAILED after" \
+                  "4 attempts — the Spawn ran (rc=$rc) but the Head will report it as lost." >&2
 exit $rc
 """
 
@@ -776,26 +811,43 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it
         raise
     job_id = int(r.stdout.strip())
-    # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
-    # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory a
-    # module points at. Safe to do after sbatch — the job cannot start before sbatch has returned its id.
-    _make_spawn_dir(job_id, outputs=True)
-    # The Environment echo, written where both clients can read it back rather than returned, so no
-    # caller's signature changes and the Spawn page can still say months later what this Spawn ran
-    # against. Said at submit because the worst case — a manifest one directory too deep — is not a
-    # build failure at all: nothing else would ever mention it, and the User would meet it as an
-    # ImportError after paying for a GPU.
-    (SPAWNS_DIR / str(job_id) / "environment").write_text(
-        environments.describe(found, absent) + "\n")
-    # Only now can the out module name a path. The proj half has been live since before sbatch; this
-    # adds the other and renames the pair to the job id, which is how the tick finds it to close.
-    siphons.bind(token, job_id)
-    with db.connect() as conn:
-        db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
-                        vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool,
-                        build_state=db.BUILDING if declared else None)
-        if tidepool:
-            db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
+    # Everything from here to the `spawns` row is the window where a real, running job exists that
+    # nothing has recorded — invisible to every reaper the tick runs (tick.once), never billed, holding
+    # a Device, and an hour after it ends retention.register_new deletes its outputs as orphan debris.
+    # The User is told none of it. So the same bargain as the sbatch above: if we cannot finish
+    # recording the Spawn, we do not leave it running.
+    try:
+        # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
+        # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory
+        # a module points at. Safe after sbatch — the job cannot start before sbatch returned its id.
+        _make_spawn_dir(job_id, outputs=True)
+        # The Environment echo, written where both clients can read it back rather than returned, so no
+        # caller's signature changes and the Spawn page can still say months later what this Spawn ran
+        # against. Said at submit because the worst case — a manifest one directory too deep — is not a
+        # build failure at all: nothing else would ever mention it, and the User would meet it as an
+        # ImportError after paying for a GPU.
+        (SPAWNS_DIR / str(job_id) / "environment").write_text(
+            environments.describe(found, absent) + "\n")
+        # Only now can the out module name a path. The proj half has been live since before sbatch; this
+        # adds the other and renames the pair to the job id, which is how the tick finds it to close.
+        siphons.bind(token, job_id)
+        with db.connect() as conn:
+            db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
+                            vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool,
+                            build_state=db.BUILDING if declared else None)
+            if tidepool:
+                db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
+    except Exception:
+        # Best-effort both: the raise is what the caller must see, and a cancel that fails leaves the
+        # same orphan we already had. A SIGKILL of this process still slips through — closing THAT
+        # needs a reconciler in the tick, which cannot yet tell an orphan from the enrollment
+        # benchmark (legitimately row-less, sbatched outside this API).
+        try:
+            slurm.cancel(job_id)
+        except Exception:
+            log.exception("could not cancel unrecorded spawn %s — it is running with no row", job_id)
+        siphons.discard(token)
+        raise
     # LAST, and only once the row exists: the thread's first act on failure is to write that row's
     # `build_state` away again, and a build that outran its own Attribution would have nothing to clear
     # and no Escrow to settle.
