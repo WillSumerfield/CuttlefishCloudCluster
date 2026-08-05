@@ -224,8 +224,14 @@ def decay(age_days: float) -> float:
 
     NOT memoryless: `decay(a)·decay(b) ≠ decay(a+b)`, which only a plain exponential satisfies. So a
     Balance must be summed from each row's absolute age — as `balances` and `ledger` both do — and can
-    never be maintained as a running total decayed on touch."""
-    return math.exp(-((age_days / (KARMA_TAU_DAYS / DECAY_ONSET)) ** DECAY_SHARPNESS))
+    never be maintained as a running total decayed on touch.
+
+    A future-dated row weighs 1.0, not more. Clamped rather than left to the arithmetic: a fractional
+    power of a negative base is complex and would raise, and the plain exponential this replaced did
+    something quieter and worse — a row a week ahead of the clock was weighted e^(7/30)·… and one a
+    year ahead by e^12, so clock skew, a restored backup or a Head whose time jumps could inflate a
+    Balance by orders of magnitude with nothing to show for it."""
+    return math.exp(-((max(0.0, age_days) / (KARMA_TAU_DAYS / DECAY_ONSET)) ** DECAY_SHARPNESS))
 
 
 def balances(conn: sqlite3.Connection, now: datetime | None = None) -> dict[int, float]:

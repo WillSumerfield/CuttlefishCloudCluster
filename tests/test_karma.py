@@ -88,6 +88,12 @@ class TestLedger:
         ages = [0, 5, 10, 20, 30, 45]
         assert all(karma.decay(a) > karma.decay(b) for a, b in zip(ages, ages[1:]))
 
+    def test_a_future_dated_row_weighs_one_rather_than_more(self):
+        """Clock skew, a restored backup, a Head whose time jumps. The plain exponential this
+        replaced weighted a year-ahead row by e^12; here it is simply worth its face value."""
+        assert karma.decay(-1) == 1.0
+        assert karma.decay(-365) == 1.0
+
     def test_a_balance_is_summed_from_absolute_ages_not_decayed_on_touch(self, conn):
         """Why there is no `karma_balance` table — and now a stronger reason than caching.
 
