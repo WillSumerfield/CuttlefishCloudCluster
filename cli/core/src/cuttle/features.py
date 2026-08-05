@@ -159,12 +159,33 @@ def prepare(features: list[dict]) -> dict[str, list[str]]:
     landed as `{feature: [abi, ...]}`.
 
     Order matters: `unpack_packages` clears the whole per-Feature tree, so the mirrors go in behind it.
+
+    Called on EVERY setup, including one that declares nothing — `forget_undeclared` is why. A re-run
+    that drops a Feature has to erase the ~1 GB mirror describing it, and a caller that only ran this
+    when `features` was non-empty would leave the box advertising a Feature it no longer serves.
     """
+    forget_undeclared(features)
     landed = unpack_packages(features)
     for f in features:
         mirror_install(f)
         mirror_licence_key(f)
     return landed
+
+
+def forget_undeclared(features: list[dict]) -> None:
+    """Drop the mirrored tree of every Feature this node no longer declares (mirror + licence key).
+
+    Shrinking a declaration must be as real as growing one: the registry and Slurm's `Feature=` line
+    already follow it, so without this the box keeps a gigabyte of vendor runtime, and a copy of the
+    Licence key that produced it, describing something it stopped offering.
+    """
+    keep = {f["name"] for f in features}
+    try:
+        stale = [d for d in FEATURE_PKG_DIR.iterdir() if d.name not in keep]
+    except OSError:
+        return  # nothing was ever mirrored here
+    for d in stale:
+        run(["rm", "-rf", str(d)], sudo=True, check=False)
 
 
 def mirror_install(f: dict) -> None:

@@ -358,8 +358,23 @@ def render_gres(reg: dict, write_root_file) -> None:
             assert re.match(config.GPU_DEVICE_RE, device), f"bad device: {device!r}"
         nodes.append((name, e["gpu_devices"]))
     write_root_file(config.GRES_CONF, templates.render_gres_conf(nodes))
-    run(["scontrol", "reconfigure"], sudo=True)
-    reapply_weights(reg)
+    reconfigure(reg)
+
+
+def reconfigure(reg: dict | None = None, check: bool = True) -> None:
+    """The ONLY way this codebase reconfigures Slurm — because a reconfigure without the re-push that
+    follows it silently drops every dynamic node's Weight (see `reapply_weights`).
+
+    Two call sites reached `scontrol reconfigure` directly and only one remembered, so a routine
+    `setup --head` degraded scheduling to registration order with no error. One function means a third
+    call site cannot reintroduce that.
+
+    `reg` is read from disk when not supplied — `setup --head` has no registry in hand at the point it
+    starts the daemons, and on a FIRST setup there is no file at all, which loads as {} and re-pushes
+    nothing.
+    """
+    run(["scontrol", "reconfigure"], sudo=True, check=check)
+    reapply_weights(load_registry() if reg is None else reg)
 
 
 def reapply_weights(reg: dict) -> None:
@@ -367,8 +382,9 @@ def reapply_weights(reg: dict) -> None:
     config files say, and donor Arms are dynamic, so no file says anything about them.
 
     Verified: `scontrol update NodeName=X Weight=<n>` lands, and the very next `scontrol
-    reconfigure` puts it back to 1. Since a reconfigure happens on every authorize/admit/remove, a
-    Weight pushed once does not survive the next Arm joining. The Head's own Weight is in slurm.conf
+    reconfigure` puts it back to 1. A reconfigure happens on every authorize/admit/remove and on every
+    `setup --head`, so a Weight pushed once does not survive the next one — which is why `reconfigure`
+    above is the only way to issue one. The Head's own Weight is in slurm.conf
     and needs none of this; it is re-pushed anyway, because one loop is simpler than an exception.
 
     ⚠ Still lost when a donor's slurmd restarts (their box reboots): a dynamic node re-registers from

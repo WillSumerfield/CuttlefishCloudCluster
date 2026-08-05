@@ -503,3 +503,22 @@ def test_the_activation_project_tars_to_exactly_two_files():
         assert sorted(tf.getnames()) == ["activate.py", "environment.yml"]
         body = tf.extractfile("activate.py").read().decode()
     assert "import vlearn" in body
+
+
+def test_un_declaring_a_feature_erases_its_mirror(tmp_path, monkeypatch):
+    """Shrinking a declaration has to be as real as growing one. A re-run that drops a Feature
+    leaves the registry and Slurm's `Feature=` line correct, so the only thing still claiming the
+    box serves it is the mirrored gigabyte — and the copy of the Licence key beside it."""
+    dest = tmp_path / "pkgs"
+    (dest / "vlearn" / "install").mkdir(parents=True)
+    (dest / "vlearn" / "licence.key").write_text("key")
+    (dest / "isaaclab").mkdir()
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", dest)
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
+
+    af.forget_undeclared([{"name": "isaaclab"}])
+    assert not (dest / "vlearn").exists()
+    assert (dest / "isaaclab").exists()
+
+    af.forget_undeclared([])
+    assert list(dest.iterdir()) == []

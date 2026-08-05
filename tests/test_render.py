@@ -447,24 +447,40 @@ class TestTheFleetActuallyGetsTheNewConfig:
     include an `arm admit`, which reconfigures for its own reasons (enroll.render_gres). Without
     this the same silence would swallow any future fleet-wide config line."""
 
-    def test_setting_up_the_head_pushes_the_config_to_the_arms(self, monkeypatch):
-        from cuttle import setup
+    @staticmethod
+    def _daemons(monkeypatch, registry=None):
+        """`start_daemons`, with every command it issues collected in one list. Both modules are
+        patched: the reconfigure itself lives in `enroll` now (see enroll.reconfigure)."""
+        from cuttle import enroll, setup
         ran = []
         monkeypatch.setattr(setup, "run", lambda argv, **kw: ran.append(list(argv)))
+        monkeypatch.setattr(enroll, "run", lambda argv, **kw: ran.append(list(argv)))
         monkeypatch.setattr(setup, "ensure_munge_key", lambda: None)
+        monkeypatch.setattr(enroll, "load_registry", lambda: registry or {})
         setup.start_daemons()
-        assert ["scontrol", "reconfigure"] in ran
+        return ran
+
+    def test_setting_up_the_head_pushes_the_config_to_the_arms(self, monkeypatch):
+        assert ["scontrol", "reconfigure"] in self._daemons(monkeypatch)
 
     def test_it_comes_after_the_restart_not_before(self, monkeypatch):
         """Order is the point: reconfigure tells the daemons to re-read, so a reconfigure issued
         before slurmctld has the new file on disk pushes the OLD one to every Arm."""
-        from cuttle import setup
-        ran = []
-        monkeypatch.setattr(setup, "run", lambda argv, **kw: ran.append(list(argv)))
-        monkeypatch.setattr(setup, "ensure_munge_key", lambda: None)
-        setup.start_daemons()
+        ran = self._daemons(monkeypatch)
         restart = next(i for i, c in enumerate(ran) if c[:2] == ["systemctl", "restart"])
         assert ran.index(["scontrol", "reconfigure"]) > restart
+
+    def test_every_admitted_arms_weight_is_re_pushed_behind_it(self, monkeypatch):
+        """A reconfigure resets every DYNAMIC node's Weight to 1, and donor Arms are dynamic — so a
+        routine `setup --head` used to silently degrade scheduling to registration order. The
+        re-push has to follow the reconfigure, not precede it."""
+        reg = {"donor": {"admitted": True, "powers": [40.0], "gpu_devices": ["/dev/nvidia0"]},
+               "unadmitted": {"admitted": False, "powers": [40.0], "gpu_devices": []}}
+        ran = self._daemons(monkeypatch, reg)
+        pushed = [c for c in ran if c[:1] == ["scontrol"] and "update" in c]
+        assert [c for c in pushed if "NodeName=donor" in c]
+        assert not [c for c in pushed if "NodeName=unadmitted" in c]
+        assert ran.index(pushed[0]) > ran.index(["scontrol", "reconfigure"])
 
 
 class TestJobContainerConf:

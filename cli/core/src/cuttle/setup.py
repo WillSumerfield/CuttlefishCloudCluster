@@ -291,8 +291,17 @@ def ensure_guise_group() -> None:
 
     The gid is pinned (config.GUISE_GROUP_GID) so the Head and every Arm agree about it; `check=False`
     because "it already exists" is the normal case on every run after the first.
+
+    Asserted afterwards, like the Mantle's uid, because check=False also swallows a *collision* — the
+    pinned gid already belonging to some unrelated group on this box. Without the check that failure
+    surfaces far away, as every later `install -g` and `useradd --gid` reporting no such group.
     """
     run(["groupadd", "--gid", str(config.GUISE_GROUP_GID), config.GUISE_GROUP], sudo=True, check=False)
+    r = run(["getent", "group", config.GUISE_GROUP], capture_output=True, text=True, check=False)
+    gid = (r.stdout or "").strip().split(":")[2] if (r.stdout or "").strip() else None
+    assert gid == str(config.GUISE_GROUP_GID), (
+        f"{config.GUISE_GROUP} is gid {gid}, not the pinned {config.GUISE_GROUP_GID} — "
+        f"another group already holds that gid on this box")
 
 
 def provision_licence_home(path: str) -> None:
@@ -415,7 +424,10 @@ def start_daemons() -> None:
     #
     # check=False: slurmctld was restarted a moment ago and may not have finished coming up. Failing
     # setup over that would be wrong — the files are written, and the next reconfigure lands them.
-    run(["scontrol", "reconfigure"], sudo=True, check=False)
+    #
+    # Via enroll.reconfigure, never `scontrol` directly: a reconfigure resets every dynamic node's
+    # Weight, so every admitted donor Arm needs its Weight re-pushed behind it. See there.
+    enroll.reconfigure(check=False)
 
 
 def ensure_bench_secret() -> None:
@@ -764,14 +776,18 @@ def _setup_head(address: str | None = None) -> None:
     # Before write_slurm_config, which reads this box's Features back out of the registry to render its
     # NodeName line.
     with ui.step("Recording Arm Features"):
+        # Unconditional, even for an empty declaration: both writers below are also what ERASE a
+        # Feature this box just stopped declaring, so skipping them on `[]` would leave the mirror and
+        # the env file describing what the operator removed.
+        #
+        # Prepared BEFORE the env file is rendered: render_features_env exports where the packages
+        # and the mirrored install landed, and a file promising a directory that does not exist yet
+        # is a Spawn that fails on an Arm whose setup said it succeeded.
         if head_features:
-            # Prepared BEFORE the env file is rendered: render_features_env exports where the packages
-            # and the mirrored install landed, and a file promising a directory that does not exist yet
-            # is a Spawn that fails on an Arm whose setup said it succeeded.
             ensure_guise_group()   # the mirrored licence key is group-owned by it, and this is early
-            feature_profiles.prepare(head_features)
-            _write_root_file(config.ARM_FEATURES_ENV,
-                             enroll.render_features_env(head_features, head_licence))
+        feature_profiles.prepare(head_features)
+        _write_root_file(config.ARM_FEATURES_ENV,
+                         enroll.render_features_env(head_features, head_licence))
         if head_licence:
             provision_licence_home(head_licence)
     with ui.step("Configuring Slurm"):
@@ -1140,21 +1156,24 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     with ui.step("Building the Pod image"):
         build_base_sif()
 
-    if features:
-        with ui.step("Recording Arm Features"):
-            # World-readable like the other rendered configs here: install paths aren't secret, and a
-            # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The
-            # Licence PATH is likewise not secret — what is secret lives inside that directory, and is
-            # bound only into Spawns that asked for a Feature (ccc_head_api.spawns.JOB_SCRIPT).
-            #
-            # Prepared first, for the same reason as on the Head: the file about to be written names
-            # where the packages and the mirrored install went.
+    with ui.step("Recording Arm Features"):
+        # World-readable like the other rendered configs here: install paths aren't secret, and a
+        # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The
+        # Licence PATH is likewise not secret — what is secret lives inside that directory, and is
+        # bound only into Spawns that asked for a Feature (ccc_head_api.spawns.JOB_SCRIPT).
+        #
+        # Unconditional, as on the Head: an empty declaration on a re-run must erase the mirror and
+        # rewrite the env file, not skip both and leave the old one standing.
+        #
+        # Prepared first, for the same reason as on the Head: the file about to be written names
+        # where the packages and the mirrored install went.
+        if features:
             ensure_guise_group()   # as on the Head — the mirrored licence key is group-owned by it
-            feature_profiles.prepare(features)
-            _write_root_file(config.ARM_FEATURES_ENV,
-                             enroll.render_features_env(features, licence_home))
-            if licence_home:
-                provision_licence_home(licence_home)
+        feature_profiles.prepare(features)
+        _write_root_file(config.ARM_FEATURES_ENV,
+                         enroll.render_features_env(features, licence_home))
+        if licence_home:
+            provision_licence_home(licence_home)
 
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     with ui.step("Starting slurmd"):

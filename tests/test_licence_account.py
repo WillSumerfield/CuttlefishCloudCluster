@@ -23,10 +23,15 @@ def commands(monkeypatch):
     calls = []
 
     class Result:
-        stdout = ""
+        def __init__(self, stdout=""):
+            self.stdout = stdout
 
     def fake_run(cmd, **kw):
         calls.append(list(cmd))
+        # `ensure_guise_group` reads the gid back and asserts it, so the fake has to answer as getent
+        # would on a box where groupadd worked.
+        if cmd[:2] == ["getent", "group"]:
+            return Result(f"{config.GUISE_GROUP}:x:{config.GUISE_GROUP_GID}:\n")
         return Result()
 
     monkeypatch.setattr(setup, "run", fake_run)
