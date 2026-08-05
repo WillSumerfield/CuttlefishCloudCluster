@@ -171,3 +171,50 @@ class TestMixedGpusAreRefused:
         fake_smi(monkeypatch, [])
         with pytest.raises(typer.Exit):
             system.gpu_profile()
+
+
+class TestAnAbandonedBenchmarkIsCancelled:
+    """`arm admit` blocks for minutes waiting for the benchmark Spawn to write its Power file, and an
+    operator who gives up presses Ctrl-C. That Spawn takes EVERY card on the Arm being admitted — so
+    left running with nobody holding its job id, it wastes the whole box until it finishes on its own,
+    which is the one thing an admit is trying to make available."""
+
+    @pytest.fixture
+    def rig(self, monkeypatch, tmp_path):
+        from cuttle import enroll
+
+        monkeypatch.setattr(enroll, "_wait_for_node", lambda name: None)
+        monkeypatch.setattr(enroll.mesh, "tailscale_ip", lambda: "100.99.0.1")
+        monkeypatch.setattr(enroll, "load_registry", lambda: {"arm1": {"gpu_devices": [0, 1]}})
+        monkeypatch.setattr(enroll, "_bench_secret", lambda: "s3cr3t")
+        monkeypatch.setattr(enroll.templates, "render_bench_sbatch",
+                            lambda *a, **kw: "#!/bin/bash\ntrue\n")
+        monkeypatch.setattr(config, "HEAD_SPAWNS_DIR", tmp_path / "spawns")
+        monkeypatch.setattr(config, "BENCH_TIMEOUT_S", 30)
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(list(argv))
+            if "sbatch" in argv:
+                return SimpleNamespace(stdout="7788\n", stderr="", returncode=0)
+            if argv[0] == "cat":                 # the poll for the Power file
+                raise KeyboardInterrupt
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        monkeypatch.setattr(enroll, "run", fake_run)
+        return enroll, calls
+
+    def test_ctrl_c_scancels_the_benchmark_spawn(self, rig):
+        enroll, calls = rig
+        with pytest.raises(KeyboardInterrupt):
+            enroll._benchmark_arm("arm1")
+        assert ["scancel", "7788"] in calls
+
+    def test_the_job_id_is_captured_from_sbatch(self, rig):
+        """--parsable exists so there is an id to cancel. Without capturing it the interrupt handler
+        has nothing to name, which is why it was never written."""
+        enroll, calls = rig
+        with pytest.raises(KeyboardInterrupt):
+            enroll._benchmark_arm("arm1")
+        sbatch = next(c for c in calls if "sbatch" in c)
+        assert "--parsable" in sbatch

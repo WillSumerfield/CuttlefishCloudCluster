@@ -504,21 +504,31 @@ def _benchmark_arm(name: str) -> dict:
         # have made "a Spawn owned by the Mantle is a bug" a rule with an exception, and an exception is
         # not a rule you can test. Its uid is reserved, so it collides with no User's.
         try:
-            run(["-u", config.guise_name(config.GUISE_CLUSTER_UID), "sbatch", "--parsable", job_file],
-                sudo=True, check=True)
+            sub = run(["-u", config.guise_name(config.GUISE_CLUSTER_UID), "sbatch", "--parsable",
+                       job_file], sudo=True, check=True, capture_output=True, text=True)
         finally:
             Path(job_file).unlink(missing_ok=True)
-        deadline = time.time() + config.BENCH_TIMEOUT_S
-        while time.time() < deadline:
-            r = run(["cat", str(dest / "power")], sudo=True,
-                    capture_output=True, text=True, check=False)
-            if r.returncode == 0 and r.stdout.strip():
-                result = json.loads(r.stdout)
-                break
-            time.sleep(3)
-        else:
-            raise ui.abort(f"{name}'s benchmark produced no result within {config.BENCH_TIMEOUT_S}s",
-                           next_step=f"retry with `cuttle arm benchmark {name}`")
+        bench_job = sub.stdout.strip()
+        # The wait below can run for minutes, and an operator who gives up on it presses Ctrl-C. Without
+        # this the benchmark Spawn keeps running — holding every card on the Arm being admitted, with
+        # nothing left that knows its job id — until it finishes on its own. It self-heals, but it wastes
+        # the whole Arm meanwhile, which is the one thing an admit is trying to make available.
+        try:
+            deadline = time.time() + config.BENCH_TIMEOUT_S
+            while time.time() < deadline:
+                r = run(["cat", str(dest / "power")], sudo=True,
+                        capture_output=True, text=True, check=False)
+                if r.returncode == 0 and r.stdout.strip():
+                    result = json.loads(r.stdout)
+                    break
+                time.sleep(3)
+            else:
+                raise ui.abort(f"{name}'s benchmark produced no result within "
+                               f"{config.BENCH_TIMEOUT_S}s",
+                               next_step=f"retry with `cuttle arm benchmark {name}`")
+        except KeyboardInterrupt:
+            run(["scancel", bench_job], sudo=True, check=False)
+            raise
 
     # Re-read: the benchmark blocked for minutes, and `authorize` may have written the row since.
     reg = load_registry()
