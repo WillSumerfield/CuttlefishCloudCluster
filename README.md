@@ -1,102 +1,109 @@
 # Cuttlefish Cloud Cluster (CCC)
 
-A distributed GPU/CPU computing cluster: donate spare compute from any machine, run sandboxed
-experiments, and settle it all through a Karma token economy.
+Donate a spare GPU. Run sandboxed experiments on everyone else's. Settle the exchange with a Karma
+economy that ranks people rather than charging them.
 
-> Names are themed (cuttlefish) and canonical. See [`CONTEXT.md`](CONTEXT.md) for the glossary and
-> [`docs/DesignDoc.md`](docs/DesignDoc.md) for the full design + locked tech decisions.
+CCC turns a handful of desktops, lab boxes and laptops into one Slurm cluster. You submit a folder
+and a script; it finds a machine, builds your Python, runs your code in a container as an identity
+that is not you, and pulls the results back down to you when it is done — whether or not you were
+still watching.
 
-## Repository layout
+Machines run **Ubuntu 24.04**, natively or under **WSL2** on Windows. GPUs are **NVIDIA** only.
 
-Monorepo, split by **deployment context**. Each top-level dir is one bounded context with its own
-`CONTEXT.md`; deployable contexts also carry a `setup/` for provisioning.
+> Names are themed (cuttlefish) and canonical. [`CONTEXT.md`](CONTEXT.md) is the glossary;
+> [`docs/`](docs/README.md) is the documentation.
 
-| Context | Role |
-|---|---|
-| [`cli/`](cli/) | The `cuttle` tool — a single Python CLI (setup/teardown, submit, follow, admin). |
-| [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out, auth + Karma (SQLite `head.db`). |
-| [`arm/`](arm/) | Compute node: Linux-layer bring-up (native/WSL2), `slurmd`, Apptainer, staging. |
-| [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, override. Ships inside `head/api` — see `karma/setup/README.md`. |
-| [`telemetry/`](telemetry/) | W&B injection, Head-box rogue-actor detection + email alerting. |
-| [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). Lives in `cli/core` + `head/api` — see `gateway/setup/README.md`. |
-| [`shared/`](shared/) | The CLI↔Head contract as a concept (no dedicated package yet — see `shared/CONTEXT.md`). |
-| [`docs/`](docs/) | Design spec and documentation. |
-
-## Cross-platform reality
-
-Arms run **Ubuntu 24.04** — natively or under **WSL2** on Windows. GPU is **NVIDIA-only**.
-
-## Installation
+## Install
 
 `cuttle` is a Python CLI installed with [uv](https://docs.astral.sh/uv/).
 
-**From the repo** (the first Head, or any dev box — needs internet for deps):
-
-```sh
-command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv
-uv tool install --editable ./cli/core                              # drops `cuttle` on PATH
-```
-
-`--editable`: a Head resolves its own source tree (`head/api`, `head/web`) relative to the install,
-so host duties (`setup --head`, `build-installer`) need it pointed at the checkout.
-
-Then provision the box: `cuttle setup --head` (control plane), `--arm` (donor node), or
-`--client` (submit only).
-
-### Making the Head reachable to remote Arms
-
-An Arm contacts the **Coordinator** to *get* a mesh address, so the coordinator address can never be
-a mesh address — it is the one hop that happens before the Mesh exists. By default `setup --head`
-advertises the box's primary LAN IP, which only Arms on that same LAN can reach; a remote donor hangs
-at `setup --arm` until it times out.
-
-For a Head that remote Arms can reach, advertise its **Tailscale** IP instead:
-
-```sh
-tailscale ip -4                      # the Head's personal-tailnet address, e.g. 100.x.y.z
-cuttle setup --head --address=100.x.y.z
-```
-
-Use the plain `tailscale` command here. CCC runs its **own** isolated `tailscaled-ccc` daemon on a
-separate socket for the cluster Mesh, so this never returns the CCC mesh address (`100.99.x.x`) — and
-it must not: that is the address Arms cannot reach yet.
-
-The address is a durable property of the Head, not a per-run argument. A bare `cuttle setup --head`
-re-run keeps whatever is stored, and changing it is confirmed rather than announced — re-pointing the
-coordinator makes every enrollment token already handed out stop working and forces every Arm to
-re-register.
-
-> **Caveat.** This requires the donor's box to also be on your personal tailnet, which is exactly the
-> grant the CCC Mesh exists to avoid asking a donor for. It is fine for machines you own and is how
-> remote enrollment is tested today; a real public route (tunnel or port-forward + DDNS + TLS) is
-> still open.
-
-**From a bundle** (clients/Arms). On the Head, build a portable installer — run there, it bakes in
-the Head's address and pinned certificate, so the client comes pre-pointed and pre-pinned:
-
-```sh
-cuttle build-installer            # -> ./cuttle-installer.tar.gz
-```
-
-Copy it to the target box and run it:
+**From a bundle** — if your cluster's operator built one, it comes pre-pointed at their Head:
 
 ```sh
 tar xzf cuttle-installer.tar.gz
-cuttle-installer/install.sh       # installs uv if needed, installs cuttle, writes config + pin
-cuttle login                      # (pre-pointed bundle) — or `cuttle setup --client` for a generic one
+cuttle-installer/install.sh
 ```
 
-**Uninstall.** The bundle ships an `uninstall.sh` that tears the box down (auto-detecting its role)
-and then removes the tool:
+**From the repo:**
 
 ```sh
-cuttle-installer/uninstall.sh
+command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install --editable ./cli/core
 ```
 
-To only remove the tool (leaving `~/.ccc`): `uv tool uninstall cuttle`. `uv`-tool isolation means
-that takes cuttle's Python deps with it.
+`--editable` matters on a Head, which resolves its own source tree relative to the install. A client
+does not care.
+
+Then provision this box: `cuttle setup --arm` (donate a machine), `--client` (submit only), or
+`--head` (stand up the cluster).
+
+## Quickstart — donate a machine and run something on it
+
+This assumes a cluster already exists. Ask its operator for an **enrollment token**:
+
+> `cuttle arm authorize <a-name-for-my-machine> --user <my-username>`
+
+Tokens are secret, work once, and expire within the hour.
+
+**1. Join.**
+
+```sh
+cuttle setup --arm --token <the-token>
+```
+
+It joins the cluster's private network, installs Slurm and Apptainer, registers your hardware, and
+benchmarks your GPU. You will be asked which heavy or licence-bound software this box has — say yes
+only for what is really there.
+
+That is it. The machine donates itself whenever it is switched on, and
+
+```sh
+cuttle arm retract <your-arm-name>
+```
+
+takes it back instantly, at any time, without asking anyone.
+
+**2. Log in.**
+
+```sh
+cuttle login --head http://<head-address>:8082
+```
+
+Your first login forces a password change.
+
+**3. Run something.**
+
+```sh
+cd my-project
+cuttle run train.py --time 60 --vram 24 --output checkpoints
+```
+
+Three required arguments, no defaults: how long (minutes), how much GPU memory (GB), and the folder
+your script writes results into. Leave them off and `cuttle run` asks.
+
+**4. Watch it, then find your results.**
+
+```sh
+cuttle status <id>
+cuttle logs <id> -f
+```
+
+Results download themselves into `~/ccc/outputs/spawn-<id>-outputs/` as the Spawn finishes — you do
+not have to be watching, or even have the machine switched on.
+
+## Documentation
+
+**[`docs/`](docs/README.md)** routes to everything. The short version:
+
+| | |
+|---|---|
+| [Elements](docs/Elements.md) | What CCC does, one paragraph each. Start here. |
+| [Set up an Arm](docs/setup/arm.md) · [a client](docs/setup/client.md) · [the Head](docs/setup/head.md) | Getting a machine into a state. |
+| [CLI](docs/CLI.md) · [Dashboard](docs/Dashboard.md) | The two clients, at parity. |
+| [Architecture](docs/Architecture.md) · [Security](docs/Security.md) | How it works and what it defends. |
+| [Troubleshooting](docs/Troubleshooting.md) | It didn't work. |
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) — Conventional Commits (scope = context), branch + rebase onto
-`main` directly (no PRs).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — repo layout, Conventional Commits (scope = context),
+branch and rebase onto `main` directly (no PRs).

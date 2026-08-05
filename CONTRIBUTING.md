@@ -1,5 +1,25 @@
 # Contributing
 
+## Repository layout
+
+Monorepo, split by **deployment context**. Each top-level dir is one bounded context with its own
+`CONTEXT.md`; deployable contexts also carry a `setup/` for provisioning.
+
+| Context | Role |
+|---|---|
+| [`cli/`](cli/) | The `cuttle` tool — a single Python CLI (setup/teardown, submit, follow, admin). |
+| [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out, auth + Karma (SQLite `head.db`). |
+| [`arm/`](arm/) | Compute node: Linux-layer bring-up (native/WSL2), `slurmd`, Apptainer, staging. |
+| [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, override. Ships inside `head/api` — see `karma/setup/README.md`. |
+| [`telemetry/`](telemetry/) | W&B injection, Head-box rogue-actor detection + email alerting. |
+| [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). Lives in `cli/core` + `head/api` — see `gateway/setup/README.md`. |
+| [`shared/`](shared/) | The CLI↔Head contract as a concept (no dedicated package yet — see `shared/CONTEXT.md`). |
+| [`docs/`](docs/README.md) | User-facing documentation. |
+| [`examples/`](examples/) | Worked projects, one per Environment path, plus a Feature example. |
+
+Architecture — how these fit together at runtime, and why — is
+[`docs/Architecture.md`](docs/Architecture.md). Terminology is [`CONTEXT.md`](CONTEXT.md).
+
 ## Commit convention
 
 Format: **Conventional Commits**, with the **scope restricted to a top-level context**.
@@ -38,6 +58,10 @@ only surfaces later, on a donor's box, as a node that registered and then can't 
 Assert on **parsed structure, not substrings**. `"PriorityType=priority/multifactor" in conf` passes
 happily against a line that has been commented out — which is exactly how that setting would get lost.
 
+
+What the suite does **not** cover — provisioning, real placement, isolation, and the interactive
+layer — is [`tests/MANUAL.md`](tests/MANUAL.md), a checklist walked by hand before a release. The
+policy for what earns an automated test is [`tests/TESTING.md`](tests/TESTING.md).
 
 - **One logical change per commit.** Split unrelated changes into separate commits, even within a
   single working tree. When a working tree is mixed, state the intent of each change in its message.
