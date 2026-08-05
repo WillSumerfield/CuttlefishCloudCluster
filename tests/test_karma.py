@@ -4,8 +4,8 @@ What's tested is the arithmetic nothing else can check: every failure here is a 
 consequence** — a standing that's quietly wrong, a nice computed perfectly and pushed onto a job
 it should never have touched, or a bill wrong by a factor nobody will ever notice.
 
-- The ledger's Σ ≡ 0, Decay's linearity (which is *why* no `karma_balance` table exists), Share's
-  monotonicity and saturation, and which jobs the tick refuses to touch.
+- The ledger's Σ ≡ 0, Decay's shape and its NON-memorylessness (which is *why* no `karma_balance`
+  table exists), Share's monotonicity and saturation, and which jobs the tick refuses to touch.
 - Demand (the number every bill multiplies by), the hold and its ratchet, and Settlement: a
   Transfer that sums to zero, a Commons burn that doesn't, and self-use that costs nothing.
 """
@@ -66,22 +66,38 @@ class TestLedger:
         assert sum(karma.balances(conn).values()) == pytest.approx(0.0)
 
     def test_decay_pulls_a_balance_back_toward_zero(self, conn):
-        """Debt is forgiven and hoards evaporate, so standing reflects *recent* conduct. One τ of debt
-        is worth 1/e of what it was."""
+        """Debt is forgiven and hoards evaporate, so standing reflects *recent* conduct. At τ a debt is
+        worth ~5% of its face value — which is also what makes it safe to DELETE the row there
+        (db.prune_ledger)."""
         conn.execute("INSERT INTO karma_ledger (at, kind, amount, from_user, to_user) VALUES (?,?,?,?,?)",
                      (at(conn, karma.KARMA_TAU_DAYS), "transfer", 1000.0, uid(conn, "alice"),
                       uid(conn, "bob")))
         conn.commit()
-        assert karma.balances(conn)[uid(conn, "bob")] == pytest.approx(1000.0 / 2.718281828, rel=1e-3)
+        assert karma.balances(conn)[uid(conn, "bob")] == pytest.approx(50.3, rel=0.02)
 
-    def test_decay_is_linear_so_the_ledger_IS_the_balance(self, conn):
-        """Why there is no `karma_balance` table. Decay is linear, so a decayed sum over the rows and a
-        decay-on-touch running total are EXACTLY equal — not approximately. A stored balance could
-        therefore only ever be a cache that silently disagrees with the ledger that produced it, and a
-        User's standing being quietly wrong forever is the worst failure this economy has.
+    def test_the_curve_is_a_plateau_then_a_cliff(self):
+        """The shape is the point, and a plain exponential does not have it: recent conduct keeps
+        nearly all its weight for a fortnight, then falls away fast enough that a month-old event is
+        numerically dead. Under exp(-age/30) a 5-day-old event would already be down to 0.85 and a
+        30-day-old one still worth 0.37."""
+        assert karma.decay(0) == pytest.approx(1.0)
+        assert karma.decay(5) == pytest.approx(0.977, rel=0.01)
+        assert karma.decay(10) == pytest.approx(0.857, rel=0.01)
+        assert karma.decay(20) == pytest.approx(0.368, rel=0.01)
+        assert karma.decay(30) == pytest.approx(0.050, rel=0.02)
+        ages = [0, 5, 10, 20, 30, 45]
+        assert all(karma.decay(a) > karma.decay(b) for a, b in zip(ages, ages[1:]))
 
-        Here: three events at different ages, summed by the real code, against the decay-on-touch
-        recursion (`B ← B·exp(-Δt/τ); B += delta`) walked forward by hand.
+    def test_a_balance_is_summed_from_absolute_ages_not_decayed_on_touch(self, conn):
+        """Why there is no `karma_balance` table — and now a stronger reason than caching.
+
+        `decay` is a stretched exponential, so `decay(a)·decay(b) ≠ decay(a+b)`: decaying a running
+        total on every touch is not the same arithmetic as decaying each contribution by its own age.
+        A stored balance would not merely drift from the ledger, it would be *wrong*, and a User's
+        standing being quietly wrong forever is the worst failure this economy has.
+
+        Three events at different ages: the real code must match the sum over absolute ages, and must
+        NOT match the decay-on-touch recursion that a cache would have to use.
         """
         alice = uid(conn, "alice")
         events = [(30.0, 500.0), (10.0, -200.0), (2.0, 75.0)]  # (days ago, delta) — oldest first
@@ -92,14 +108,31 @@ class TestLedger:
                  None if delta > 0 else alice, alice if delta > 0 else None))
         conn.commit()
 
+        summed = sum(delta * karma.decay(days) for days, delta in events)
+        assert karma.balances(conn)[alice] == pytest.approx(summed, rel=1e-6)
+
         rolling, last = 0.0, events[0][0]
-        for days, delta in events:                      # walk the recursion forward through time
+        for days, delta in events:                      # the recursion a cache would maintain
             rolling *= karma.decay(last - days)
             rolling += delta
             last = days
-        rolling *= karma.decay(last)                    # ...and from the final event to now
+        rolling *= karma.decay(last)
+        assert rolling != pytest.approx(summed, rel=1e-3), "the curve is memoryless after all"
 
-        assert karma.balances(conn)[alice] == pytest.approx(rolling, rel=1e-6)
+    def test_events_past_the_curves_floor_are_deleted(self, conn):
+        """The ledger is the one table here that is pruned. `spawns` and `users` are the permanent
+        accounting record; a Karma row that no longer moves any Balance is not evidence of anything.
+        Safe only because of the curve: at this age a row is worth ~5%, so what the prune discards is
+        a rounding error rather than someone's standing."""
+        alice = uid(conn, "alice")
+        for days in (45.0, 31.0, 29.0, 1.0):
+            conn.execute(
+                "INSERT INTO karma_ledger (at, kind, amount, from_user, to_user) VALUES (?,?,?,?,?)",
+                (at(conn, days), "override", 100.0, None, alice))
+        conn.commit()
+        assert db.prune_ledger(conn, karma.KARMA_LEDGER_RETENTION_DAYS) == 2
+        remaining = conn.execute("SELECT COUNT(*) FROM karma_ledger").fetchone()[0]
+        assert remaining == 2
 
 
 class TestShare:

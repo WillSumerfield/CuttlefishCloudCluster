@@ -150,8 +150,10 @@ currency you can run out of.
 *   **Share** — the effect a balance has: a **saturating** (sigmoid) function of it. Hoarding has
     diminishing returns; debt has diminishing punishment. Neither end runs away, so a whale can't own
     the cluster and last place isn't a life sentence.
-*   **Decay** — balances drift back to 0 with a **one-month** time constant. Debt is forgiven, hoards
-    evaporate, and standing tracks *recent* conduct.
+*   **Decay** — balances drift back to 0 **within a month**. Debt is forgiven, hoards evaporate, and
+    standing tracks *recent* conduct. The curve is flat then steep rather than a plain exponential:
+    a fortnight-old event still counts for most of its face value, a month-old one for almost nothing.
+    Past a month an event is deleted outright, which is what keeps the ledger bounded.
 *   **Persistence:** balances, ledger, and demand history are SQLite tables in the Head API's own
     `head.db`. The API is already the single writer and already the only thing that knows which user
     submitted which Spawn, so escrow is atomic with the Spawn insert — no second daemon, no IPC.

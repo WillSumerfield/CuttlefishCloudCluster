@@ -6,13 +6,14 @@ loses *contention*, and loses nothing at all when nobody is competing.
 
 The arithmetic, end to end:
 
-    Balance(u) = Σ over the ledger of ±amount · exp(-Δt / τ)      τ = KARMA_TAU_DAYS
+    Balance(u) = Σ over the ledger of ±amount · decay(Δt)         see KARMA_TAU_DAYS for the curve
     Share(u)   = σ((Balance - Escrow) / KARMA_SHARE_SCALE)        σ = logistic, so Share ∈ (0, 1)
     nice(u)    = round((1 - Share) · NICE_MAX)                    nice ∈ [0, NICE_MAX]
 
-**A Balance is derived, never stored.** Decay is *linear*, so the decayed sum over the ledger below and
-a decay-on-touch running total are exactly equal — a `karma_balance` column could only ever be a cache
-that silently disagrees with the ledger it came from. See db._SCHEMA_V3.
+**A Balance is derived, never stored.** It is summed from each row's own age every time it is asked
+for. A `karma_balance` column decayed on touch would not merely be a cache that could drift — it would
+be *wrong*: `decay` is a stretched exponential and is not memoryless, so decaying a running total is
+not the same arithmetic as decaying each contribution. See db._SCHEMA_V3.
 
 **Escrow suppresses Share immediately**, which is what makes queue-flooding self-punishing: 500 queued
 Spawns move no Balance until they finish, so settle-at-end alone would let a burst hold the top of the
@@ -30,10 +31,24 @@ from datetime import datetime, timedelta, timezone
 
 from . import db
 
-# Decay: a Balance drifts back to 0 with a 1-month time constant. Debt forgiven, hoards evaporate,
-# standing reflects recent conduct not history. Also makes the economy self-healing — Karma conjured by
-# an Override or destroyed on a commons Arm is simply reabsorbed, so Σ balances ≡ 0 is an attractor.
+# Decay: a Balance drifts back to 0 within a month. Debt forgiven, hoards evaporate, standing reflects
+# recent conduct not history. Also makes the economy self-healing — Karma conjured by an Override or
+# destroyed on a commons Arm is simply reabsorbed, so Σ balances ≡ 0 is an attractor.
+#
+# A stretched exponential, not a plain one: `exp(-(age/scale)**SHARPNESS)`, scale = TAU/ONSET = 20 days.
+# The shape is a plateau then a cliff — 0.98 at 5d, 0.86 at 10d, 0.37 at 20d, 0.05 at 30d — where a
+# plain exp(-age/30) is already down to 0.85 by day 5 and still worth 0.37 at day 30. Two things follow.
+# Recent conduct keeps close to its full weight instead of bleeding from the first day, which is what
+# "recent" ought to mean; and by KARMA_TAU_DAYS a row is worth ~5%, which is what makes it safe to
+# DELETE at that age (db.prune_ledger). A row pruned under the old curve was still worth 37%, so the
+# table could not be bounded without visibly moving every Balance.
 KARMA_TAU_DAYS = 30.0
+DECAY_ONSET = 1.5       # how much earlier than τ the cliff begins: scale = τ/onset
+DECAY_SHARPNESS = 2.7   # how abrupt it is. 1.0 would be the plain exponential
+# Rows past this are deleted, not just decayed. Equal to τ deliberately — that is where the curve above
+# has flattened to ~5%, so the truncation is a rounding error rather than a policy. Must stay ≥ the
+# Dashboard's 30-day `ledger`/`usage` windows, which read these rows to draw their graphs.
+KARMA_LEDGER_RETENTION_DAYS = 30
 
 # Karma a User must be up/down to sit at Share ≈0.73/0.27. 1 Karma = 1 TFLOP-hour, so 10k ≈ 8 days of
 # one 4090: taking a quarter of the cluster for a month while donating nothing lands near Share 0.19.
@@ -49,8 +64,8 @@ TICK_SECONDS = 30
 
 # Ceiling on Demand. Demand is set by whoever is *queuing* but paid by whoever is *running* — without a
 # cap, queuing 500 Spawns then cancelling inflates everyone's bill for free (Escrow released, nothing
-# settled). Also, Balance drives nice for τ=30 days, so an unbounded spike could bench a User for a
-# month — a **gate**, which this model must never have. Past ~8x the signal is saturated anyway (the
+# settled). Also, Balance drives nice until the decay curve reaches the floor at ~30 days, so an
+# unbounded spike could bench a User for a month — a **gate**, which this model must never have. Past ~8x the signal is saturated anyway (the
 # card is plainly scarce); this just bounds the runaway billing consequence.
 DEMAND_MAX = 8.0
 
@@ -205,7 +220,12 @@ def _parse(ts: str) -> datetime:
 
 
 def decay(age_days: float) -> float:
-    return math.exp(-age_days / KARMA_TAU_DAYS)
+    """Weight of a ledger row `age_days` old. See KARMA_TAU_DAYS for the shape and why.
+
+    NOT memoryless: `decay(a)·decay(b) ≠ decay(a+b)`, which only a plain exponential satisfies. So a
+    Balance must be summed from each row's absolute age — as `balances` and `ledger` both do — and can
+    never be maintained as a running total decayed on touch."""
+    return math.exp(-((age_days / (KARMA_TAU_DAYS / DECAY_ONSET)) ** DECAY_SHARPNESS))
 
 
 def balances(conn: sqlite3.Connection, now: datetime | None = None) -> dict[int, float]:

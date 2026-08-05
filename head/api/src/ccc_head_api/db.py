@@ -968,6 +968,18 @@ def prune_demand(conn: sqlite3.Connection, days: int, now: datetime | None = Non
     return cur.rowcount
 
 
+def prune_ledger(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> int:
+    """Drop Karma events past the decay curve's floor (karma.KARMA_LEDGER_RETENTION_DAYS).
+
+    The one table here that is deleted from rather than kept: `spawns` and `users` are the permanent
+    accounting record, but a Karma row that no longer moves any Balance is not evidence of anything —
+    at this age `karma.decay` has it at ~5% and falling off a cliff. Without this the ledger grows for
+    the cluster's whole life to keep rows nobody's standing can feel."""
+    cur = conn.execute("DELETE FROM karma_ledger WHERE at < ?", (_window_start(days, now),))
+    conn.commit()
+    return cur.rowcount
+
+
 def demand_by_hour(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> list[sqlite3.Row]:
     """The **Tide**: mean Demand per Arm per hour-of-day, over a rolling window. 24 buckets per Arm."""
     return conn.execute(
