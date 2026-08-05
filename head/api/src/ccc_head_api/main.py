@@ -998,13 +998,21 @@ async def _spool_upload(request: Request, limit: int | None = None) -> Path:
     total = 0
     with tempfile.NamedTemporaryFile("wb", suffix=".tar.gz", delete=False) as f:
         path = Path(f.name)
-        async for chunk in request.stream():
-            total += len(chunk)
-            if total > cap:
-                path.unlink(missing_ok=True)
-                raise HTTPException(413, f"upload exceeds {_human(cap)} — "
-                                         "exclude data/checkpoints (honor .gitignore) and retry")
-            f.write(chunk)
+        # `delete=False` means NOTHING here reaps this file but us. It is spooled to the system temp
+        # dir, which is outside every path CCC tracks and has no reaper of its own, so any way out of
+        # this loop that is not `return` has to unlink — not just the over-cap branch. A client that
+        # Ctrl-Cs a multi-GB folder upload mid-stream raises out of `request.stream()`, and without
+        # this it strands the partial .tar.gz until the OS cleans /tmp, if it ever does.
+        try:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > cap:
+                    raise HTTPException(413, f"upload exceeds {_human(cap)} — "
+                                             "exclude data/checkpoints (honor .gitignore) and retry")
+                f.write(chunk)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
     return path
 
 

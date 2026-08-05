@@ -4,6 +4,7 @@
 whose needs nobody declared). `--node` is refused over the API for everyone — pinning is Head-local only.
 """
 
+import asyncio
 import io
 import json
 import tarfile
@@ -378,6 +379,54 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
                                     outputs=["out"])
         assert job_id == 9001
         assert rig == []
+
+
+class TestAnAbandonedUploadIsNotLeftOnDisk:
+    """`_spool_upload` streams to `NamedTemporaryFile(delete=False)`, so nothing but this function ever
+    reaps that file. It lands in the SYSTEM temp dir — outside every path CCC tracks, with no reaper of
+    its own — so any exit that is not a `return` has to unlink. A client that Ctrl-Cs a multi-GB folder
+    upload raises out of `request.stream()`, which is the ordinary way that happens."""
+
+    class _Req:
+        def __init__(self, chunks, boom=None):
+            self._chunks, self._boom = chunks, boom
+
+        async def stream(self):
+            for c in self._chunks:
+                yield c
+            if self._boom is not None:
+                raise self._boom
+
+    def _spool(self, monkeypatch, tmp_path, req, **kw):
+        monkeypatch.setattr(head_main.tempfile, "tempdir", str(tmp_path))
+        return asyncio.run(head_main._spool_upload(req, **kw))
+
+    def test_a_disconnect_mid_stream_leaves_nothing_behind(self, monkeypatch, tmp_path):
+        req = self._Req([b"a" * 100, b"b" * 100], boom=ConnectionResetError("client went away"))
+        with pytest.raises(ConnectionResetError):
+            self._spool(monkeypatch, tmp_path, req)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_cancelled_upload_leaves_nothing_behind(self, monkeypatch, tmp_path):
+        """asyncio.CancelledError inherits BaseException, not Exception — a plain `except Exception`
+        would let the most likely shutdown path strand the file."""
+        req = self._Req([b"a" * 100], boom=asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
+            self._spool(monkeypatch, tmp_path, req)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_over_cap_refusal_still_cleans_up(self, monkeypatch, tmp_path):
+        req = self._Req([b"a" * 10_000])
+        with pytest.raises(head_main.HTTPException) as e:
+            self._spool(monkeypatch, tmp_path, req, limit=100)
+        assert e.value.status_code == 413
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_complete_upload_is_kept(self, monkeypatch, tmp_path):
+        """The unlink must not be so eager it takes the successful path's file with it."""
+        path = self._spool(monkeypatch, tmp_path, self._Req([b"hello", b"world"]))
+        assert path.exists()
+        assert path.read_bytes() == b"helloworld"
 
 
 class TestPodContainment:
