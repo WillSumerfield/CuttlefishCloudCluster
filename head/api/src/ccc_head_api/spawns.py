@@ -779,7 +779,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
     # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory a
     # module points at. Safe to do after sbatch — the job cannot start before sbatch has returned its id.
-    (SPAWNS_DIR / str(job_id) / "outputs").mkdir(parents=True, exist_ok=True)
+    _make_spawn_dir(job_id, outputs=True)
     # The Environment echo, written where both clients can read it back rather than returned, so no
     # caller's signature changes and the Spawn page can still say months later what this Spawn ran
     # against. Said at submit because the worst case — a manifest one directory too deep — is not a
@@ -890,8 +890,7 @@ def _write_build_log(job_id: int, text: str) -> None:
     is the only answer to "why did my Spawn get that version" once the env itself has been swept."""
     if not text:
         return
-    d = _spawn_dir(job_id)
-    d.mkdir(parents=True, exist_ok=True)
+    d = _make_spawn_dir(job_id)
     (d / "build.log").write_text(text)
 
 
@@ -916,8 +915,7 @@ def _fail_spawn(job_id: int, guise: str, message: str) -> None:
     scancel as the Guise, not as root: a job's own owner may always cancel it (slurm.cancel relies on
     exactly this), and the Mantle holds no Slurm operator privilege anywhere in CCC.
     """
-    d = _spawn_dir(job_id)
-    d.mkdir(parents=True, exist_ok=True)
+    d = _make_spawn_dir(job_id)
     (d / "err").write_text(message + "\n")
     (d / "exit").write_text("1\n")
     with db.connect() as conn:
@@ -1051,6 +1049,36 @@ def _spawn_dir(job_id: int) -> Path:
     return SPAWNS_DIR / str(job_id)
 
 
+# What the Slurm prolog sets on a Spawn dir it lends to a **Guise** (templates.PROLOG_TMPL): rwx for the
+# owner and for the Mantle's group, nothing for anyone else. Matched here so the API's own creation is
+# not looser than the hook that may later overwrite it.
+SPAWN_DIR_MODE = 0o770
+
+
+def _make_spawn_dir(job_id: int, outputs: bool = False) -> Path:
+    """The Spawn's directory, at SPAWN_DIR_MODE rather than the service's ambient umask.
+
+    Explicit because the prolog only covers the Head's own co-located Arm — `if [ -d "$head_spawns" ]`
+    is false on a donor box — so for a REMOTE Spawn nothing else ever sets this mode, and the directory
+    keeps whatever umask the API service happened to run with, for good. That matters more here than
+    for an upload: `projects/<uuid>` is named by an unguessable uuid, but a Spawn dir is named by a
+    sequential job id, and the 0711 parent grants exactly the traversal that makes a guessed name
+    enough to read someone else's `out`, `err` and results.
+    """
+    d = _spawn_dir(job_id)
+    (d / "outputs" if outputs else d).mkdir(parents=True, exist_ok=True)
+    for p in (d, d / "outputs") if outputs else (d,):
+        try:
+            # chmod, not mkdir(mode=): mkdir's mode is masked by the umask, which is the whole problem.
+            p.chmod(SPAWN_DIR_MODE)
+        except PermissionError:
+            # The prolog has lent this directory to the **Guise** and we are the Mantle, so we no
+            # longer own it — which only happens once the job is RUNNING, and `mark_cancelled` runs
+            # exactly then. Nothing to do: the prolog set this same mode when it took it.
+            pass
+    return d
+
+
 def active_state(job_id: int) -> str | None:
     """Slurm state if the job is still known to squeue, else None.
 
@@ -1099,8 +1127,7 @@ def mark_cancelled(job_id: int) -> None:
     so there is no `sacct` to ask once the job leaves squeue. The one moment the answer is known for
     certain is right here, so it is written down rather than inferred later.
     """
-    d = _spawn_dir(job_id)
-    d.mkdir(parents=True, exist_ok=True)
+    d = _make_spawn_dir(job_id)
     (d / "cancelled").touch()
 
 

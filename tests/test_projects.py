@@ -6,6 +6,9 @@ sweep's three cases, the half-close of the Siphon that goes with it, and `--no-r
 a requeued job would re-stage a project the sweep has already deleted.
 """
 
+import os
+import pathlib
+import stat
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -300,3 +303,38 @@ class TestTheTickSweeps:
             tick.once(now=now)
 
             assert not proj.exists()
+
+
+class TestWhatASubmissionLandsAs:
+    """Modes, not contents. A Spawn dir holds a User's own results on a box other Users have accounts
+    on, and must not inherit whatever umask the Head operator happened to provision under. The
+    upload's own mode is covered in test_submit.py, on the real submit path."""
+
+    def test_a_spawn_dir_is_not_world_readable(self):
+        """The prolog sets 0770 on a Spawn dir it lends to a Guise — but only on the Head's own
+        co-located Arm (`if [ -d "$head_spawns" ]` is false on a donor box). So for a REMOTE Spawn
+        nothing else ever sets this, and a Spawn dir is named by a SEQUENTIAL job id while the 0711
+        parent grants exactly the traversal a guessed name needs."""
+        old = os.umask(0o022)
+        try:
+            d = head_spawns._make_spawn_dir(4321, outputs=True)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(d.stat().st_mode) == head_spawns.SPAWN_DIR_MODE
+        assert stat.S_IMODE((d / "outputs").stat().st_mode) == head_spawns.SPAWN_DIR_MODE
+        assert not stat.S_IMODE(d.stat().st_mode) & 0o007, "other has nothing"
+
+    def test_a_lent_directory_is_left_alone(self, monkeypatch):
+        """Once the prolog hands a Spawn dir to the Guise, the Mantle no longer owns it and cannot
+        chmod it — and `mark_cancelled` runs at exactly that moment. Cancelling a RUNNING Spawn must
+        not fail over a mode the prolog already set."""
+        d = head_spawns._make_spawn_dir(9911)
+        real = pathlib.Path.chmod
+
+        def lent(self, *a, **kw):
+            if self == d:
+                raise PermissionError(1, "Operation not permitted")
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(pathlib.Path, "chmod", lent)
+        assert head_spawns._make_spawn_dir(9911) == d

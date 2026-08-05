@@ -363,6 +363,21 @@ class TestSpawnsRunAsTheirSubmitter:
     def _sbatch(self, calls):
         return next(argv for argv, _ in calls if "sbatch" in argv)
 
+    def test_the_upload_lands_owner_only(self, submitted, tmp_path, monkeypatch):
+        """An uploaded project is the User's own tree and may itself carry a secret — a stray .env —
+        so what it lands as must not depend on whichever umask the Head was provisioned under. The
+        Guise reaches it through `_lend_project`'s ACL, never through the mode."""
+        import os
+        import stat
+        old = os.umask(0o022)
+        try:
+            self._submit(tmp_path)
+        finally:
+            os.umask(old)
+        staged = [d for d in head_spawns.PROJECTS_DIR.iterdir() if d.is_dir()]
+        assert staged, "nothing was staged"
+        assert stat.S_IMODE(staged[0].stat().st_mode) == 0o700
+
     def test_sbatch_runs_as_the_submitters_guise(self, submitted, tmp_path):
         self._submit(tmp_path)
         assert self._sbatch(submitted)[:5] == ["sudo", "-n", "-u", "ccc-u60002", "sbatch"]
