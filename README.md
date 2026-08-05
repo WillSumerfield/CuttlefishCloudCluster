@@ -45,7 +45,12 @@ This assumes a cluster already exists. Ask its operator for an **enrollment toke
 
 Tokens are secret, work once, and expire within the hour.
 
-**1. Join.**
+> **You do not have to memorise any of this.** Run `cuttle` on its own and it opens a menu of what
+> this box can do *right now*, then asks for whatever the thing you picked needs. The explicit
+> commands below are the same actions, written out — for scripts, and for when you already know what
+> you want.
+
+**1. Join.** `cuttle` → **Set up this box**, which asks for the token. Or:
 
 ```sh
 cuttle setup --arm --token <the-token>
@@ -55,15 +60,11 @@ It joins the cluster's private network, installs Slurm and Apptainer, registers 
 benchmarks your GPU. You will be asked which heavy or licence-bound software this box has — say yes
 only for what is really there.
 
-That is it. The machine donates itself whenever it is switched on, and
+That is it. The machine donates itself whenever it is switched on, and **Pause your Arm** in the menu
+— `cuttle arm retract <your-arm-name>` — takes it back instantly, at any time, without asking anyone.
 
-```sh
-cuttle arm retract <your-arm-name>
-```
-
-takes it back instantly, at any time, without asking anyone.
-
-**2. Log in.**
+**2. Log in.** `cuttle` → **Log in**, which is the pre-selected entry on a box that has never logged
+in. Or:
 
 ```sh
 cuttle login --head http://<head-address>:8082
@@ -71,17 +72,20 @@ cuttle login --head http://<head-address>:8082
 
 Your first login forces a password change.
 
-**3. Run something.**
+**3. Run something.** From your project folder, `cuttle` → **Submit a Spawn**. It asks how long, how
+much GPU memory, and which folder holds your results, then shows you the whole submission before it
+sends anything. The same thing, typed:
 
 ```sh
 cd my-project
 cuttle run train.py --time 60 --vram 24 --output checkpoints
 ```
 
-Three required arguments, no defaults: how long (minutes), how much GPU memory (GB), and the folder
-your script writes results into. Leave them off and `cuttle run` asks.
+Those three are required and have no defaults: minutes, GB of GPU memory, and the folder your script
+writes into.
 
-**4. Watch it, then find your results.**
+**4. Watch it, then find your results.** **Check a Spawn** and **Read a Spawn's output** in the menu,
+or:
 
 ```sh
 cuttle status <id>

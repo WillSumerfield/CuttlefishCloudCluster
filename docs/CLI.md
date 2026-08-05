@@ -3,15 +3,27 @@
 A map of every command, and where each one is explained properly. **Flags are not listed here** —
 `cuttle <command> --help` has them, and unlike this page it cannot go stale.
 
+## You can just run `cuttle`
+
+On a terminal, `cuttle` with nothing after it opens an arrow-key menu. It shows only what this box
+can do *right now* — the submit commands appear once you are logged in, the admin ones only on the
+Head — so you are never picking from a list of things that would refuse you. Pick something and it
+asks for what it needs.
+
+In a pipe or a script it prints help instead, because a menu there would wait forever for a keystroke
+nobody can send.
+
+The same is true one level down: leave a command's required arguments out and it prompts for them
+rather than failing. `cuttle run` and `cuttle setup` especially — both walk you through and show you
+what they are about to do before they do it. The rest of this page is the typed form, which is what
+you want once you know the command and what a script needs.
+
+## Who can run what
+
 `cuttle` is the whole of CCC's command line: there is no second, more privileged tool. Rows marked
 **admin** are refused for ordinary Users, and most of them additionally have to be run *while sitting
 on the Head*, because CCC's Head API exposes no administrative writes at all — see
 [Security](Security.md#the-head-api-has-no-admin-writes).
-
-Running `cuttle` on its own opens a menu on a terminal, and prints help anywhere else (a pipe or a
-script gets help, because a menu there would wait forever for a keystroke nobody can send). Most
-commands also drop into a short guided prompt when you leave their required arguments out — `cuttle
-run` and `cuttle setup` especially.
 
 ## Getting a machine ready
 
@@ -50,6 +62,7 @@ run` and `cuttle setup` especially.
 | `cuttle cancel` | End a Spawn early. Yours from anywhere; **admin** `--any`, on the Head. | [Spawns](elements/spawns.md#ending-one-early) |
 | `cuttle outputs` | Download a finished Spawn's declared results again. | [Storage](elements/storage.md) |
 | `cuttle recover` | Download what a Spawn wrote *outside* its declared outputs. 30-minute window. | [Storage](elements/storage.md#the-recovery-window) |
+| `cuttle dashboard` | Open the web Dashboard in a browser. `--print` gives the URL instead. | [Dashboard](Dashboard.md#getting-to-it) |
 
 ## Recipes
 
@@ -76,8 +89,8 @@ run` and `cuttle setup` especially.
 
 | Command | | Explained in |
 |---|---|---|
-| `cuttle arm retract` | Take your machine back, now. Stops new work, ends what is running. | [Arms](elements/arms.md#retract-and-return) |
-| `cuttle arm return` | Give a retracted Arm back to the cluster. | [Arms](elements/arms.md#retract-and-return) |
+| `cuttle arm retract` | Take your machine back, now. Stops new work, ends what is running. Yours from anywhere; **admin** `--any`, on the Head. | [Arms](elements/arms.md#retract-and-return) |
+| `cuttle arm return` | Give a retracted Arm back to the cluster. Same reach as `retract`. | [Arms](elements/arms.md#retract-and-return) |
 | `cuttle arm list` | Every Arm: owner, and whether it is authorized, enrolled, admitted. | [Arms](elements/arms.md) |
 | `cuttle arm sync-key` | *On the Arm.* Re-fetch the cluster's munge key after a rotation. | [Mesh](elements/mesh.md#the-munge-key) |
 | `cuttle arm authorize` | **admin** Mint one machine's enrollment token, then wait and admit it. | [Arms](elements/arms.md#admin--on-the-head) |

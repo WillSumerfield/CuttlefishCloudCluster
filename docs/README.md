@@ -1,14 +1,18 @@
 # CCC documentation
 
-Everything here is written for **people**. If you want the exact, unhedged wording of a term —
-what a *Guise* is versus a *Pod*, why *Escrow* only ratchets up — read [`CONTEXT.md`](../CONTEXT.md);
-it is the glossary, written for precision rather than for reading.
+This is the table of contents for the documentation.
+
+For technical specifications, read [`CONTEXT.md`](../CONTEXT.md).
+
+> Whatever you are trying to do, running `cuttle` on its own is a reasonable first move: it opens a
+> menu of what this box can do right now and asks for whatever your choice needs. These pages give
+> the typed form of each command, because it is precise and because it is what a script uses.
 
 ## I want to set a machine up
 
 | Doc | For |
 |---|---|
-| [Set up an Arm](setup/arm.md) | Donating a machine to a cluster that already exists. Self-contained — read this and nothing else. |
+| [Set up an Arm](setup/arm.md) | Donating a machine to a cluster that already exists. |
 | [Set up a client](setup/client.md) | Submitting work from a laptop that donates nothing. |
 | [Set up the Head](setup/head.md) | Standing up the cluster itself. One box, once. |
 

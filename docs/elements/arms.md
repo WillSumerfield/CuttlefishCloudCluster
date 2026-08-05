@@ -65,6 +65,16 @@ Retract would be a way to farm Karma by yanking a card back mid-run.
 `cuttle arm return` reopens the Arm. It does not resurrect a Spawn the Retract already caught —
 that one is gone.
 
+### Where you can retract from
+
+Anywhere you are logged in. Retract and Return are ordinary network calls to the Head, like `cuttle
+cancel`, so they run from your laptop, a Client box, the Head, or the Arm itself — and they work
+whether or not the Arm is up, because the state that stops placement lives on the Head.
+
+Two conditions: you need a session (`cuttle login` — enrolling an Arm does not create one), and the
+Arm has to be **yours**. The Head checks ownership on every call and there is no admin exception to
+it; an operator acting for a donor uses `--any`, which is refused off the Head.
+
 A retracted Arm **never leaves**. It stays enrolled and stays on the mesh; it simply stops accepting
 work. So returning it is entirely yours to do: no admin, no new enrollment token, no re-setup.
 Retract and Return are a machine being lent and reclaimed — not one joining and leaving.

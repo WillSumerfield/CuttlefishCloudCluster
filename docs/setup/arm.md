@@ -57,11 +57,14 @@ Either way you now have `cuttle` on your PATH. Check with `cuttle --version`.
 
 ## 2. Enroll
 
+Run `cuttle` on its own. It opens a menu of what this box can do; pick **Set up this box** and it
+walks you through enrolling, asking for the token as it goes.
+
+If you would rather type it:
+
 ```sh
 cuttle setup --arm --token <the-token-from-the-admin>
 ```
-
-Or run `cuttle setup` with no flags and it will walk you through it, asking for the token.
 
 This takes a while. It joins the mesh, registers your hardware with the Head, installs Slurm, munge
 and Apptainer, and runs a benchmark on your GPU to measure how fast it actually is.
@@ -87,22 +90,35 @@ Ask the admin to run `cuttle arm list`. Your Arm should be **admitted**, not mer
 If it is stuck at *enrolled*, the admin runs `cuttle arm admit <your-arm-name>` — that usually just
 means `arm authorize` gave up waiting while you were still installing.
 
-That is the whole setup. You do not need to keep `cuttle` open, log in, or do anything else. The
-machine donates itself whenever it is switched on.
+That is the whole setup. Donating needs nothing further from you — no session, no `cuttle` left
+running. The machine donates itself whenever it is switched on.
+
+To watch what your Arm is doing, `cuttle dashboard` opens the cluster's web page in a browser. It
+already knows the address, and on WSL it opens the one your *Windows* browser can actually reach.
 
 ## Taking your machine back
 
 This is the part worth remembering.
 
+Run `cuttle` and pick **Pause your Arm**. It lists the Arms you own and asks which one. Typed out:
+
 ```sh
+cuttle login          # once per box, if you have not already
 cuttle arm retract <your-arm-name>
 ```
 
-Immediately: no new work is placed here, and anything running right now is signalled — `TERM`, then
-a 3-minute grace period, then killed. Whoever's Spawn that was pays nothing for it, and you earn
-nothing for stopping it.
+Once you retract your arm, no new work will be placed there. Anything currently running is signalled `TERM`, and is killed forcefully
+after a 3-minute grace period if it hasn't exited. Whoever's Spawn that was pays nothing for it, and you earn no karma for that job.
 
-When you are done:
+**You do not have to be sitting at the machine.** Retract is a request to the Head, so it works from
+any box logged in as you — your laptop, a Client, the Arm itself — and it works whether or not the
+Arm is reachable, or even switched on. What it does need is a session: `cuttle login`. Setup points
+this box at the Head but does not log you in, so if you have never logged in *here*, do that first.
+
+You can only retract an Arm **you own**; the Head refuses anyone else's, including the admin's own
+attempt over the network.
+
+When you are done, **Reopen a retracted Arm** in the menu, or:
 
 ```sh
 cuttle arm return <your-arm-name>

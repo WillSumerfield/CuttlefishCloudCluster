@@ -32,43 +32,58 @@ uv tool install --editable ./cli/core
 
 ## 2. Set up and log in
 
+Run `cuttle` with nothing after it:
+
 ```sh
-cuttle setup --client
+cuttle
 ```
 
-Then, pointing at your cluster's Head the first time:
+That opens a menu of what this box can do right now. On a box that has never logged in, **Log in** is
+already selected — press enter and it asks for the Head's address, your username and your password.
+**Set up this box** is in the same menu if you skipped `setup --client`.
+
+Typed out, the same two steps are:
 
 ```sh
+cuttle setup --client
 cuttle login --head http://<head-address>:8082
 ```
 
-After that a bare `cuttle login` remembers where to go.
+After the first time, both the menu and a bare `cuttle login` remember where to go.
 
 Your first login **forces you to change the temporary password**. You cannot skip it.
 
 ## 3. Run something
 
+From your project folder, open the menu and pick **Submit a Spawn**:
+
 ```sh
 cd my-project
-cuttle run train.py --time 60 --vram 24 --output checkpoints
+cuttle
 ```
 
-Three things are required and none have defaults:
+It asks for the three things a Spawn cannot be submitted without, then shows you the whole thing and
+asks before it sends anything:
 
 - `--time` — wall-clock minutes. Your job is killed at it.
 - `--vram` — GPU memory in GB. Every card with at least this much becomes eligible.
 - `--output`/`-o` — a folder under `$CCC_OUT` your script writes results into. Repeatable.
 
-Leave them all off (`cuttle run`) and you are prompted for each, shown a preview, and asked before
-anything is submitted.
+None have defaults. If you already know them, skip the prompting entirely:
 
-Then:
+```sh
+cuttle run train.py --time 60 --vram 24 --output checkpoints
+```
+
+Every command works this way — give it what you have, and it asks for the rest. Then:
 
 ```sh
 cuttle status <id>       # queued, running, or done
 cuttle logs <id> -f      # follow its output
 cuttle queue             # what the whole cluster is doing
 ```
+
+or **Check a Spawn**, **Read a Spawn's output** and **See the queue** in the menu.
 
 **Your results come to you.** As soon as the Spawn finishes, its declared outputs download into
 `~/ccc/outputs/spawn-<id>-outputs/` — you do not have to be watching, or even have this machine
@@ -92,8 +107,13 @@ cuttle account
 **Read [Elements](../Elements.md)** — it is the one-paragraph-each tour of what the cluster actually
 does.
 
-There is also a [Dashboard](../Dashboard.md) in a browser, with the same account and the same
-cluster.
+**Open the Dashboard** — the same account and the same cluster, in a browser:
+
+```sh
+cuttle dashboard
+```
+
+It knows the address, so you never have to. See [Dashboard](../Dashboard.md).
 
 ## Uninstalling
 

@@ -32,12 +32,13 @@ install however it likes; a Head cannot.
 
 ## 2. Provision
 
+Run `cuttle` on its own and pick **Set up this box**. The guided version asks for the address Arms
+will reach this box at, pre-filled with whatever this Head already advertises — which is the field
+worth getting right, so prefer it. Typed out:
+
 ```sh
 cuttle setup --head --address=<address-Arms-will-reach-this-box-at>
 ```
-
-Or run `cuttle setup` with no flags for the guided version, which asks for the address and pre-fills
-it with whatever this Head already advertises.
 
 This does a great deal, in order: joins its own mesh, installs Slurm/munge/Apptainer, configures the
 scheduler, provisions the cluster's own identity and the auth store, provisions Guises, installs
@@ -147,8 +148,11 @@ removes the tool.
 
 ## The dashboard
 
-`setup --head` builds and serves it. It is at `https://<head-address>:8082/` and uses a self-signed
-certificate, so you click through the browser warning once. See [Dashboard](../Dashboard.md).
+`setup --head` builds and serves it, at `https://<head-address>:8082/`. The certificate is
+self-signed, so you click through the browser warning once.
+
+You do not have to hand that address to anyone, or remember it yourself: `cuttle dashboard` opens it
+from any box that is set up or logged in. See [Dashboard](../Dashboard.md).
 
 ## Running the cluster
 
