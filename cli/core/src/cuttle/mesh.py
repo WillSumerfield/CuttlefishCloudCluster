@@ -16,7 +16,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,17 +25,11 @@ from .system import hostname, run, sh
 
 # --- install ---------------------------------------------------------------
 
-def _release(url: str) -> tuple[str, str]:
-    """(version_tag, amd64_deb_url) for a Headscale GitHub release."""
-    with urllib.request.urlopen(url) as r:
-        rel = json.load(r)
-    deb = next(a["browser_download_url"] for a in rel["assets"]
-               if a["name"].endswith("_linux_amd64.deb"))
-    return rel["tag_name"], deb
-
-
-def _latest_headscale() -> tuple[str, str]:
-    return _release(config.HEADSCALE_RELEASES)
+def _headscale_deb(tag: str) -> str:
+    """The amd64 .deb URL for a Headscale release tag. Composed, not discovered: the asset name is a
+    documented convention, so asking the GitHub API for it only added an unauthenticated request
+    (60/hr per IP) to the setup path and a way for the answer to change between two Heads."""
+    return config.HEADSCALE_DEB.format(tag=tag, ver=tag.lstrip("v"))
 
 
 def _install_deb(url: str, reinstall: bool = False) -> None:
@@ -60,29 +53,28 @@ def installed_headscale() -> str | None:
 
 
 def install_headscale() -> str:
-    """Install the latest Headscale .deb (not carried in apt). Returns the version tag.
+    """Install the pinned Headscale .deb (not carried in apt). Returns the version tag.
 
-    Skipped if already installed: `_latest_headscale()` tracks upstream, so re-running setup would
-    otherwise upgrade Headscale and migrate its database — the database holding every node's mesh IP
-    — as a side effect of, say, changing the coordinator address. Upgrade deliberately, not
-    incidentally.
+    Skipped if already installed, even though the version is pinned: bumping HEADSCALE_VERSION would
+    otherwise upgrade Headscale and migrate its database — the database holding every node's mesh IP —
+    as a side effect of, say, changing the coordinator address. Upgrade deliberately, not incidentally.
     """
     if (have := installed_headscale()) is not None:
         # `teardown --keep-packages` removes /etc/headscale but leaves the package, so a re-setup
         # finds the binary and no config, then seds a file that isn't there. Re-fetch the deb for
-        # the version that is *already installed* — never `_latest_headscale()` here, or a missing
-        # config would silently upgrade Headscale and migrate the node database.
+        # the version that is *already installed* — never the pinned one here, or a missing config
+        # would silently move an existing Head onto a new Headscale and migrate its node database.
         # (`apt-get install --reinstall headscale` can't work: the deb came from a URL, not a repo.)
         if not config.HEADSCALE_CONF.exists():
             print(f"headscale {have} installed but {config.HEADSCALE_CONF} is missing — "
                   f"re-fetching {have} to restore the shipped config")
-            _install_deb(config.HEADSCALE_DEB.format(tag=have, ver=have.lstrip("v")), reinstall=True)
+            _install_deb(_headscale_deb(have), reinstall=True)
         else:
             print(f"headscale already installed ({have}) — skipping (upgrade deliberately)")
         return have
-    tag, url = _latest_headscale()
+    tag = config.HEADSCALE_VERSION
     print(f"headscale: installing {tag}")
-    _install_deb(url)
+    _install_deb(_headscale_deb(tag))
     return tag
 
 

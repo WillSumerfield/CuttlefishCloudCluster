@@ -436,8 +436,12 @@ WSL_NVIDIA_SMI = f"{WSL_LIB_ROOT}/lib/nvidia-smi"
 NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 
 # --- mesh (self-hosted Headscale coordinator + Tailscale client) ---
-# Headscale isn't in apt — install the newest GitHub-release .deb (version recorded, pinned later).
-HEADSCALE_RELEASES = "https://api.github.com/repos/juanfont/headscale/releases/latest"
+# Headscale isn't in apt, so it comes from a GitHub release .deb — PINNED, like every other version
+# here. Tracking "latest" meant two Heads built weeks apart ran different coordinators with nothing
+# recording how, and the coordinator owns the database mapping every node to its mesh IP. Not the
+# fetch-record-serve dance `setup.pin_apptainer_deb` does: that exists because the Head serves that
+# deb to every Arm forever, and Headscale is Head-only. Upgrading is editing this line.
+HEADSCALE_VERSION = "v0.29.3"
 # Deterministic asset URL for a known tag — no API call, so no unauthenticated rate limit.
 HEADSCALE_DEB = ("https://github.com/juanfont/headscale/releases/download/"
                  "{tag}/headscale_{ver}_linux_amd64.deb")

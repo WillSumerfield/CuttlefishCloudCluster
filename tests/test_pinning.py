@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from ccc_head_api import enroll as enroll_api
 from ccc_head_api import slurm
-from cuttle import config, enroll, setup, templates
+from cuttle import config, enroll, mesh, setup, templates
 
 
 class TestUbuntuSnapshot:
@@ -248,3 +248,49 @@ class TestOneVersionPerFact:
         for url in (config.TAILSCALE_REPO_KEY, config.TAILSCALE_REPO_LIST):
             tail = url.rsplit("/", 1)[1]
             assert tail.startswith(f"{config.UBUNTU_CODENAME}.")
+
+
+class TestHeadscaleIsPinned:
+    """Headscale is not in apt, so it comes from a GitHub release. Tracking "latest" meant two Heads
+    built weeks apart ran different coordinators with nothing recording how — and the coordinator owns
+    the database mapping every node to its mesh IP."""
+
+    def test_the_version_is_a_constant_not_a_lookup(self):
+        assert config.HEADSCALE_VERSION.startswith("v")
+        assert not hasattr(mesh, "_latest_headscale")
+        assert not hasattr(config, "HEADSCALE_RELEASES")
+
+    def test_the_deb_url_is_composed_from_the_pin(self):
+        """The tag keeps its `v`, the filename drops it — getting that backwards 404s at install."""
+        url = mesh._headscale_deb(config.HEADSCALE_VERSION)
+        bare = config.HEADSCALE_VERSION.lstrip("v")
+        assert f"/download/{config.HEADSCALE_VERSION}/" in url
+        assert url.endswith(f"headscale_{bare}_linux_amd64.deb")
+
+    def test_installing_reaches_for_the_pinned_version(self, monkeypatch):
+        monkeypatch.setattr(mesh, "installed_headscale", lambda: None)
+        got = []
+        monkeypatch.setattr(mesh, "_install_deb", lambda url, **kw: got.append(url))
+        assert mesh.install_headscale() == config.HEADSCALE_VERSION
+        assert got == [mesh._headscale_deb(config.HEADSCALE_VERSION)]
+
+    def test_an_existing_head_is_never_moved_onto_the_pin(self, monkeypatch, tmp_path):
+        """The pin must not become an upgrade trigger. A Head already running an older Headscale keeps
+        it — migrating its node database as a side effect of an unrelated re-setup is the failure this
+        skip has always existed to prevent."""
+        monkeypatch.setattr(mesh, "installed_headscale", lambda: "v0.26.1")
+        monkeypatch.setattr(config, "HEADSCALE_CONF", tmp_path / "config.yaml")
+        (tmp_path / "config.yaml").write_text("x")
+        monkeypatch.setattr(mesh, "_install_deb",
+                            lambda *a, **kw: pytest.fail("must not touch an installed Headscale"))
+        assert mesh.install_headscale() == "v0.26.1"
+
+    def test_a_restored_config_refetches_what_is_installed(self, monkeypatch, tmp_path):
+        """`teardown --keep-packages` leaves the binary and drops /etc/headscale. The re-fetch must
+        name the INSTALLED version, not the pin, or restoring a config silently upgrades the node db."""
+        monkeypatch.setattr(mesh, "installed_headscale", lambda: "v0.26.1")
+        monkeypatch.setattr(config, "HEADSCALE_CONF", tmp_path / "missing.yaml")
+        got = []
+        monkeypatch.setattr(mesh, "_install_deb", lambda url, **kw: got.append(url))
+        assert mesh.install_headscale() == "v0.26.1"
+        assert got == [mesh._headscale_deb("v0.26.1")]
