@@ -84,7 +84,8 @@ class TestNoRequeue:
             uid = db.get_user(conn, "alice")["id"]
         tar = tmp_path / "p.tar.gz"
         _write_tar(tar)
-        head_spawns.submit(uid, "train.py", 1, [], {}, tar, 60, "", ["outputs"])
+        head_spawns.submit(uid, "train.py", 1, [], {}, tar, 60, "", ["outputs"],
+                           manifest="requirements.txt")
         sbatch = next(c for c in calls if "sbatch" in c)
         assert "--no-requeue" in sbatch
 
@@ -94,10 +95,13 @@ def _write_tar(path):
     import tarfile
 
     with tarfile.open(path, "w:gz") as tf:
-        data = b"print('hi')\n"
-        info = tarfile.TarInfo("train.py")
-        info.size = len(data)
-        tf.addfile(info, io.BytesIO(data))
+        # Every Spawn declares its **Environment**, so a project tar without a manifest in it is one
+        # that could not be submitted at all.
+        for name in ("train.py", "requirements.txt"):
+            data = b"print('hi')\n"
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
 
 
 # --- the sweep ----------------------------------------------------------------

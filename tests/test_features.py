@@ -72,11 +72,19 @@ def test_the_payload_gets_the_features_binds_and_env():
     if the payload appends them. Both payload shapes: a Tide Pool on a vlearn Arm is how someone
     debugs a vlearn Spawn, and it is useless if the runtime is not the same one."""
     script = _script(features=["vlearn"])
-    assert '--bind "$proj,$ccc_out$envbind$licbind$featbind"' in script
-    assert "CCC_OUT=$ccc_out$featenv" in script
+    assert '--bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind"' in script
+    # `$featenv` stays LAST in the --env list, whatever else is added before it — it accumulates
+    # `,NAME=value` fragments, so anything appended after it would land inside the last value.
+    assert _env_line(script).endswith('$featenv" \\')
     pool = _script(features=["vlearn"], tidepool_port=2222, tidepool_pubkey="ssh-ed25519 AAAA")
     assert "$envbind$licbind$featbind" in pool
-    assert "CCC_PROJ=$proj$featenv" in pool
+    assert _env_line(pool).endswith('$featenv" \\')
+    assert "CCC_PROJ=$proj" in _env_line(pool)
+
+
+def _env_line(script: str) -> str:
+    """The payload's own `--env` line — not one of the comments above it that mention the flag."""
+    return next(ln for ln in script.splitlines() if ln.strip().startswith('--env "$wenv'))
 
 
 def test_the_arm_package_wins_over_anything_the_submitter_installed():
@@ -206,36 +214,39 @@ def test_the_snippet_order_does_not_depend_on_how_the_user_typed_it():
     assert hf.setup_snippet(["vlearn", "vlearn"]) == hf.setup_snippet(["vlearn"])
 
 
-# --- the generated environment.yml -----------------------------------------
+# --- what `cuttle feature show` describes ------------------------------------
 
-def test_the_starter_environment_is_valid_and_names_the_system_libraries():
-    yaml = pytest.importorskip("yaml")
-    doc = yaml.safe_load(hf.environment_yml("vlearn"))
-    assert doc["name"] == "vlearn"
-    deps = [d for d in doc["dependencies"] if isinstance(d, str)]
-    assert "python=3.11" in deps, "vlearn ships no wheel for base.sif's 3.12"
+def test_the_runtime_summary_names_every_system_library_ccc_builds():
+    """The one canonical list. A library added for a new vlearn release has to reach both the prefix
+    CCC builds and the answer a submitter gets when they ask what a Feature needs."""
+    text = hf.runtime_summary("vlearn")
     # Every library libgym.so links, which resolve at LOAD time — a missing one is an ImportError.
-    assert {"sdl2", "assimp=5", "zeromq", "czmq", "libglu", "mesalib"} <= set(deps)
-    pip = next(d["pip"] for d in doc["dependencies"] if isinstance(d, dict))
-    assert any("nvidia-cuda-runtime" in p for p in pip), "libcudart.so.13 has no other source"
-    # NVIDIA dropped the `-cuXX` suffix at CUDA 13 and left the old name reserved on PyPI as a 0.0.1
-    # placeholder with no wheels. pip does not fail on a name that does not exist — it fails building
-    # the placeholder's sdist, minutes in, and takes the whole Environment with it.
-    assert not any(p.startswith("nvidia-cuda-runtime-cu") for p in pip), \
-        "the -cuXX names are PyPI placeholders; the CUDA major rides in the version now"
+    for lib in ("sdl2", "assimp=5", "zeromq", "czmq", "libglu", "mesalib"):
+        assert lib in text, lib
+    assert "cuda-cudart=13" in text, "libcudart.so.13 has no other source"
+    assert "Python 3.11" in text, "vlearn ships binary wheels only"
 
 
-def test_the_starter_environment_does_not_ship_vlearn_itself():
+def test_the_runtime_summary_is_not_a_file_to_copy_into_a_project():
+    """It used to be a starter `environment.yml`, back when those libraries had to be in the
+    submitter's own manifest. CCC builds them now, so copying this list into a project would install a
+    second copy of it — the text must not read as something to paste."""
+    text = hf.runtime_summary("vlearn")
+    assert "dependencies:" not in text and "channels:" not in text
+    assert "Do not declare them" in text
+
+
+def test_the_runtime_summary_does_not_ship_vlearn_itself():
     """The whole point of the profile: the package comes from the Arm, on PYTHONPATH. A submitter who
-    pip-installed their own would be running an unactivated build against someone else's licence."""
-    text = hf.environment_yml("vlearn")
+    installed their own would be running an unactivated build against someone else's licence."""
+    text = hf.runtime_summary("vlearn")
     assert ".whl" not in text
-    assert "\n      - vlearn" not in text and "\n  - vlearn" not in text
+    assert "\n  vlearn" not in text.replace(f"\n{hf.VLEARN.name} —", "")
 
 
-def test_a_feature_with_no_profile_has_no_environment_to_describe():
+def test_a_feature_with_no_profile_has_no_runtime_to_describe():
     with pytest.raises(KeyError):
-        hf.environment_yml("isaaclab")
+        hf.runtime_summary("isaaclab")
 
 
 # --- the Arm's side ---------------------------------------------------------
@@ -449,7 +460,8 @@ def test_the_licence_key_is_bound_only_for_an_activation_spawn():
     assert "$VLEARN_LICENCE_KEY:$VLEARN_LICENCE_KEY:ro" in activating
     assert "VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY" in activating
     # Everything the ordinary Spawn got, it still gets — activation is an addition, not a variant.
-    base = hf.VLEARN_SETUP.replace("%%FEATURE_MOUNT%%", hf.FEATURE_MOUNT).strip()
+    base = (hf.VLEARN_SETUP.replace("%%FEATURE_MOUNT%%", hf.FEATURE_MOUNT)
+                           .replace("%%FEATLIB_MOUNT%%", hf.FEATLIB_MOUNT).strip())
     assert base in activating
 
 
@@ -470,19 +482,28 @@ def test_the_activation_flag_cannot_arrive_over_http():
     assert "activation" not in src.split("def submit", 1)[-1][:4000]
 
 
-def test_the_activation_project_is_the_starter_environment_plus_the_vendors_one_line():
-    """One copy of the library list. If a vlearn release adds a system library, the thing CCC runs to
-    activate a donated box picks it up at the same moment a submitter's own Spawn does."""
+def test_the_activation_project_declares_only_the_interpreter_vlearn_needs():
+    """CCC writes this manifest, so it says the one thing it actually knows: the ABI a binary wheel was
+    built for. The system libraries are no longer in here — they are the prefix CCC builds for any
+    Spawn asking for the Feature, and this Spawn asks for it like any other."""
     project = hf.activation_project("vlearn")
-    assert set(project) == {"environment.yml", "activate.py"}
-    assert project["environment.yml"] == hf.environment_yml("vlearn")
+    assert set(project) == {"pyproject.toml", "activate.py"}
+    assert 'requires-python = "==3.11.*"' in project["pyproject.toml"]
     assert "create_gym(with_render=False)" in project["activate.py"]
     # No vlearn in the Environment: the package comes from the Arm's own unpacked wheel, which is the
     # build its licence covers. Installing a second one from an index would activate the wrong thing.
-    # Checked against the DEPENDENCY lines, not the whole text — the comments say the name constantly.
-    deps = [ln.strip() for ln in project["environment.yml"].splitlines()
-            if ln.strip().startswith("- ")]
-    assert not any("vlearn" in d for d in deps), deps
+    assert 'dependencies = []' in project["pyproject.toml"]
+
+
+def test_the_activation_manifest_is_the_one_the_activation_spawn_submits():
+    """A manifest CCC generates but does not name would leave the Spawn declaring nothing, which is
+    refused outright now that declaring is mandatory."""
+    import inspect
+
+    from cuttle import enroll
+    src = inspect.getsource(enroll._activate_one)
+    named = src.split("manifest=", 1)[1].split(",")[0].strip().strip('"')
+    assert named in hf.activation_project("vlearn"), named
 
 
 def test_a_feature_with_no_activation_is_admitted_without_one():
@@ -500,7 +521,7 @@ def test_the_activation_project_tars_to_exactly_two_files():
     from cuttle import spawns as spawn_client
     tar = spawn_client.tar_from_files(hf.activation_project("vlearn"))
     with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
-        assert sorted(tf.getnames()) == ["activate.py", "environment.yml"]
+        assert sorted(tf.getnames()) == ["activate.py", "pyproject.toml"]
         body = tf.extractfile("activate.py").read().decode()
     assert "import vlearn" in body
 
@@ -522,3 +543,68 @@ def test_un_declaring_a_feature_erases_its_mirror(tmp_path, monkeypatch):
 
     af.forget_undeclared([])
     assert list(dest.iterdir()) == []
+
+
+# --- the placeholder is removed on the Arm ----------------------------------
+# The Head replaced the submitter's declared vlearn with an empty stub before building the Environment
+# (environments.substitute_supplied), because the copy that RUNS has to be the one this Arm's owner
+# activated. That leaves an empty `vlearn/` in site-packages, and this is where it goes away again.
+
+
+def test_the_placeholder_vlearn_is_deleted_from_the_environment():
+    """sys.path would already resolve `import vlearn` to the PYTHONPATH entry, which precedes
+    site-packages. That ordering is not a thing to rest a LICENSING invariant on — it is subtle, it is
+    Python's to change, and a `.pth` in site-packages can reorder it. So the stub is deleted outright
+    and there is only one vlearn on the box to find."""
+    body = _script(features=["vlearn"])
+    assert "$vl_site/vlearn" in body
+    for pattern in ("vlearn-*.dist-info", "vlearn_bindings*.so", "*vlearn*.pth"):
+        assert pattern in body, pattern
+
+
+def test_the_deletion_happens_on_the_arms_filesystem_not_inside_a_pod():
+    """The Environment is bound READ-ONLY into every Pod, so this could not be done from inside one.
+    The probe reports a Pod-side path; the prefix has to be rewritten to the Arm's own."""
+    body = _script(features=["vlearn"])
+    assert 'vl_site="$scratch/env${feature_purelib#$envmount}"' in body
+
+
+def test_the_deletion_is_skipped_when_there_is_no_environment_to_delete_from():
+    """A **Tide Pool** may decline to declare one. `rm -rf` on a path built from two empty variables
+    would be `rm -rf /vlearn`, which is nothing on this box — but only by luck."""
+    body = _script(features=["vlearn"])
+    guard = next(ln for ln in body.splitlines() if ln.startswith('if [ -n "$envmount" ]'))
+    assert '[ -n "$feature_purelib" ]' in guard
+
+
+def test_the_interpreter_is_asked_where_its_site_packages_is():
+    """One probe, three answers, no assumptions: a conda prefix and a uv venv put site-packages at
+    different depths, and only the interpreter knows which this is."""
+    body = _script(features=["vlearn"])
+    assert 'print(sysconfig.get_paths()["purelib"])' in body
+    assert "feature_purelib=$(printf %s \"$feature_probe\" | sed -n 3p)" in body
+
+
+# --- the Feature's system libraries reach the Arm ---------------------------
+
+def test_the_feature_library_prefix_is_mounted_for_the_payload():
+    """Seeded into `$featbind`, which is already on both payloads' --bind — so a Tide Pool on a vlearn
+    Arm gets exactly the runtime a Script Spawn would, which is the whole point of debugging in one."""
+    body = _script(features=["vlearn"])
+    assert f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"' in body
+    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" in body, "and on LD_LIBRARY_PATH"
+
+
+def test_the_library_prefix_is_moved_out_of_the_project():
+    """$proj is what recover_scratch() measures against RECOVERY_MAX_BYTES and rsyncs home. Half a
+    gigabyte of CCC's own libraries left in there would silently disable recovery for every Spawn that
+    asked for a Feature — the same bug the Environment's own `mv` records having fixed once."""
+    body = _script(features=["vlearn"])
+    assert f'mv "$proj/{env.FEATLIB_DIRNAME}" "$scratch/featlibs"' in body
+
+
+def test_a_spawn_that_asked_for_no_feature_never_mounts_one():
+    """The `[ -d ]` test is what decides, at run time, so the branch is inert rather than absent."""
+    body = _script(features=[])
+    assert "$scratch/featlibs" in body, "the slot is rendered for every Spawn"
+    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" not in body, "but no profile put a path on it"

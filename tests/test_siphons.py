@@ -380,14 +380,17 @@ class TestSubmitOpensAndBindsOne:
         def go():
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-                info = tarfile.TarInfo("train.py")
-                info.size = 0
-                tf.addfile(info, io.BytesIO(b""))
+                # The manifest rides along because every Spawn declares its **Environment** — a Spawn
+                # without one is refused before a Siphon is ever minted, which is not this test.
+                for name in ("train.py", "requirements.txt"):
+                    info = tarfile.TarInfo(name)
+                    info.size = 0
+                    tf.addfile(info, io.BytesIO(b""))
             tar = tmp_path / "up.tar.gz"
             tar.write_bytes(buf.getvalue())
             jid = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
                                      tar_path=tar, minutes=60, constraint="vram24",
-                                     outputs=["outputs"])
+                                     outputs=["outputs"], manifest="requirements.txt")
             return jid, bodies["script"]
         return go
 
@@ -421,12 +424,14 @@ class TestSubmitOpensAndBindsOne:
         monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            info = tarfile.TarInfo("train.py")
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
+            for name in ("train.py", "requirements.txt"):
+                info = tarfile.TarInfo(name)
+                info.size = 0
+                tf.addfile(info, io.BytesIO(b""))
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
         head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={}, tar_path=tar,
+                           manifest="requirements.txt",
                            minutes=60, constraint="vram24", outputs=["outputs"])
         assert len(seen["confs"]) == 1
 
@@ -445,14 +450,16 @@ class TestSubmitOpensAndBindsOne:
         monkeypatch.setattr(head_spawns.subprocess, "run", boom)
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            info = tarfile.TarInfo("train.py")
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
+            for name in ("train.py", "requirements.txt"):
+                info = tarfile.TarInfo(name)
+                info.size = 0
+                tf.addfile(info, io.BytesIO(b""))
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
         with pytest.raises(subprocess.CalledProcessError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
-                               tar_path=tar, minutes=60, constraint="vram24", outputs=["outputs"])
+                               tar_path=tar, minutes=60, constraint="vram24", outputs=["outputs"],
+                               manifest="requirements.txt")
         assert list(siphons.RSYNCD_DIR.iterdir()) == []
 
     def test_the_filelist_is_relative_to_the_project_not_its_parent(self, submitted):
@@ -461,7 +468,9 @@ class TestSubmitOpensAndBindsOne:
         and the Spawn would die in `cd "$proj"` on the far side of the mesh."""
         _, body = submitted()
         filelist = body.split("<<'CCC_FILELIST'\n")[1].split("\nCCC_FILELIST")[0]
-        assert filelist.strip() == "train.py"
+        # `.ccc-env` rides along too — the built **Environment**, named as a bare directory because it
+        # does not exist yet when the script is rendered (ccc_head_api.environments).
+        assert sorted(filelist.split()) == [".ccc-env", "requirements.txt", "train.py"]
 
 
 class TestTheDaemonConfig:

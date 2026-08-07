@@ -230,11 +230,42 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
                                    "a3f9", "s3cr3t")
         assert "sshd" not in body
         assert "PAYLOAD_TIDEPOOL" not in body
-        # `$py`, not a literal `python`: the interpreter is chosen by the script at run time, since a
-        # Spawn whose submitter declared an **Environment** runs that env's python instead
-        # (ccc_head_api.environments). It still defaults to the image's own.
+        # `$py`, not a literal `python`: the interpreter is chosen by the script at run time from the
+        # env dir's presence, not baked in here (ccc_head_api.environments). This render was given no
+        # manifest, so the token falls back to the image's own — a state only a Tide Pool can reach now.
         assert '$py train.py' in body
         assert 'py="python"' in body
+
+    def test_the_shell_is_given_the_submitters_wandb_key(self, tmp_path):
+        """sshd builds a FRESH environment per session and does not pass its own down — confirmed by
+        experiment. So `$wenv` reaching the Pod through apptainer's --env is NOT enough here, the way
+        it is for a Script Spawn that runs `$py` directly: sshd stands in between and drops it.
+
+        Without this, `wandb.init()` at a Tide Pool shell ran unauthenticated, and "a Spawn logs to
+        its submitter's own account" (CONTEXT.md) was untrue of the one Spawn a User sits inside."""
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        boot = body[body.index("tp_boot.sh"):]
+        assert "WANDB_API_KEY" in boot
+        # Written into the login shell's own profile, not merely handed to the Pod.
+        assert "/etc/profile.d/ccc-tidepool.sh" in boot[boot.index("WANDB_API_KEY"):]
+
+    def test_the_key_is_not_left_world_readable_in_the_pod(self, tmp_path):
+        """It is a User's API key on disk. No new exposure — it is already in PID 1's environment in
+        this same Pod and the overlay dies with the session — but not a thing to leave lying around."""
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        assert "chmod 600 /etc/profile.d/ccc-tidepool.sh" in body
+
+    def test_the_shell_writes_temp_files_to_disk_not_to_the_64mb_ram_tmp(self, tmp_path):
+        """`--contain` gives the Pod a /tmp carved from apptainer's session directory — a RAM tmpfs
+        capped at 64MB by `sessiondir max size`, and shared with the --writable-tmpfs overlay. A Tide
+        Pool is where `pip install` is most used, and any wheel bigger than what is left of that dies
+        with an ENOSPC pip reports as "an issue with network connectivity, not pip"."""
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        assert "$scratch/tmp:/ccc-tmp" in body            # the disk-backed bind
+        assert 'export TMPDIR=/ccc-tmp' in body           # ...and the login shell told to use it
 
     def test_missing_outputs_still_required_without_tidepool(self, tmp_path):
         with pytest.raises(ValueError, match="output"):

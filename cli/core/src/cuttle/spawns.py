@@ -191,7 +191,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
 
 
 def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
-           outputs: list[str], features: list[str] | None = None) -> None:
+           outputs: list[str], features: list[str] | None = None, manifest: str | None = None) -> None:
     """Show what is about to be uploaded, before it is.
 
     The Dashboard gates submission behind a preview; the CLI has never had one, so `cuttle run` in
@@ -207,6 +207,9 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
     total = sum(p.stat().st_size for p in paths if p.exists())
     ui.kv([
         ("script", script),
+        # Named here because the preview's whole job is "is this the directory you meant" — and the
+        # manifest is the one line that says what the work will run against, not merely what ships.
+        ("environment", manifest or "—"),
         ("upload", f"{len(paths)} files, {total / 1_048_576:.1f} MB"
                    f"{'' if no_gitignore else '  (.gitignore honored)'}"),
         ("limit", f"{minutes} min"),
@@ -244,9 +247,10 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
                 # Omitted rather than sent empty, matching the rest of this dict's optional fields —
                 # most Spawns declare none, and the Head reads an absent key as "no requirement".
                 **({"features": features} if features else {}),
-                # Absent means "look for one yourself"; "none" means "do not build one at all". Both
-                # differ from a missing key only at the Head, which is where the project actually is.
-                **({"manifest": manifest} if manifest else {})}
+                # Required, unlike everything above it — the Head refuses a Spawn that names no
+                # dependency file (ccc_head_api.environments). Sent unconditionally so a caller that
+                # somehow got here without one meets the Head's message rather than a missing key.
+                "manifest": manifest or ""}
         client = auth._client()
         client.token = auth._load_token()
         try:
@@ -307,29 +311,39 @@ def _download_now(spawn_id: int) -> None:
 
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
-                    features: list[str] | None = None) -> int:
-    """Request a Tide Pool — no project upload, no script: only declared needs travel.
-    Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in tidepool.py, owns the UI
-    from here, since it still has to poll for placement and attach).
+                    features: list[str] | None = None, manifest: str | None = None,
+                    no_gitignore: bool = False) -> int:
+    """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
+    tidepool.py, owns the UI from here, since it still has to poll for placement and attach).
 
-    The upload body is a genuinely empty gzip-tar (`_make_tar` with an empty file list), not raw empty
-    bytes — the Head unconditionally opens it as a tar archive (spawns.submit), and every client sends
-    the same wire shape whether or not there is a project behind it.
+    A Tide Pool is the one Spawn that may decline to declare an **Environment**
+    (ccc_head_api.environments): it is a shell rather than a run, and one opened to poke at a box has
+    no project behind it at all. `manifest` is how you opt back IN — and naming one necessarily
+    UPLOADS THE WORKING DIRECTORY, because an env cannot be built from a file that was not sent. That
+    is also what you want: a Tide Pool opened over your project, holding the env your Spawn would get,
+    is the only way to debug the thing that actually failed.
+
+    Without it the body is a genuinely empty gzip-tar (`_make_tar` with an empty file list), not raw
+    empty bytes — the Head unconditionally opens it as a tar archive (spawns.submit), and every client
+    sends the same wire shape whether or not there is a project behind it.
     """
     features = features or []
-    empty_tar = _make_tar(Path.cwd(), [])
+    if manifest:
+        tar = _make_tar(Path.cwd(), None if no_gitignore else _project_files(Path.cwd()))
+    else:
+        tar = _make_tar(Path.cwd(), [])
     if node:
-        # The Environment echo is dropped here alone: a Tide Pool uploads an empty tar, so there is no
-        # project to have found a manifest in and the note would say "no dependency file found" about a
-        # project nobody sent. tidepool.py owns this flow's UI (see the docstring above).
-        return _submit_pinned(empty_tar, "", [], minutes, vram, gpu, node, {}, outputs,
-                              features=features, tidepool=True)[0]
+        return _submit_pinned(tar, "", [], minutes, vram, gpu, node, {}, outputs,
+                              features=features, tidepool=True, manifest=manifest)[0]
     meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,
-           **({"features": features} if features else {})}
+           **({"features": features} if features else {}),
+           # Absent means "no Environment", which for a Tide Pool alone is legal — so unlike an
+           # ordinary Spawn this is omitted rather than sent empty.
+           **({"manifest": manifest} if manifest else {})}
     client = auth._client()
     client.token = auth._load_token()
     try:
-        return client.upload("/submit", empty_tar, meta)["id"]
+        return client.upload("/submit", tar, meta)["id"]
     except api.ApiError as e:
         if ui.DEBUG:
             raise

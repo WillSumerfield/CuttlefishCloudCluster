@@ -251,19 +251,19 @@ def features(user: dict = Depends(current_user)) -> list[str]:
     return slurm.feature_catalog()
 
 
-@api.get("/features/{name}/environment.yml", response_class=PlainTextResponse)
+@api.get("/features/{name}/runtime", response_class=PlainTextResponse)
 def feature_environment(name: str, user: dict = Depends(current_user)) -> str:
-    """A starter `environment.yml` for a Feature that has a runtime profile (`cuttle feature show`).
+    """What CCC arranges for a Feature that has a runtime profile (`cuttle feature show`).
 
     Served rather than shipped in the CLI so the library list a Feature's software links against has
-    exactly one copy — this one, which is also what CCC builds its own activation Environment from.
+    exactly one copy — this one, which is also the list CCC builds into every Spawn that asks for it.
 
     404 for a Feature with no profile: `isaaclab` is a real, catalogued Feature that simply has no
-    Environment to describe, and that is an answer rather than a failure."""
+    runtime to describe, and that is an answer rather than a failure."""
     if name not in features_mod.PROFILES:
         raise HTTPException(404, f"'{name}' has no runtime profile — nothing to describe. CCC supports "
                                  f"profiles for: {', '.join(sorted(features_mod.PROFILES))}.")
-    return features_mod.environment_yml(name)
+    return features_mod.runtime_summary(name)
 
 
 @api.post("/arms/{name}/retract", status_code=204)
@@ -805,6 +805,14 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     if meta.get("node"):
         raise HTTPException(403, "pinning a Spawn to an Arm is not available over the API — it is "
                                  "`cuttle run --node`, on the Head.")
+    # The **Environment** every Spawn declares (ccc_head_api.environments). Gated here, beside the
+    # outputs gate and for the same reason: refused before the upload is spooled to disk rather than
+    # after. `spawns.submit` re-checks it against the extracted project — this is only the "did the
+    # client send one" half. Skipped for a Tide Pool alone, the one Spawn that may decline to declare.
+    if not (meta.get("manifest") or "").strip() and not tidepool:
+        raise HTTPException(422, "missing 'manifest' in X-CCC-Meta — name the dependency file to build "
+                                 "this Spawn's environment from (--manifest), e.g. pyproject.toml, "
+                                 "uv.lock, requirements.txt or environment.yml")
     minutes, vram_gb, gpus = int(meta["minutes"]), int(meta["vram"]), int(meta.get("gpu", 1))
     tar_path = await _spool_upload(request)
     try:
@@ -843,9 +851,20 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
 @api.get("/recipes")
 def recipes(user: dict = Depends(current_user)) -> list[dict]:
     """The caller's own shelf. Never anyone else's: there is no admin view of Recipes, because a Recipe
-    holds a User's actual source code rather than a fact about the cluster."""
+    holds a User's actual source code rather than a fact about the cluster.
+
+    `running` is best-effort: it asks the live Slurm queue, and a shelf a User can save/update/delete
+    entirely without Slurm must not start 503ing because the scheduler hiccuped answering an ENRICHMENT
+    to it. A Recipe just says `running: false` on a Head that can't be asked right now — the same as
+    before this existed — rather than hiding the whole shelf."""
+    try:
+        live_ids = [j["id"] for j in slurm.queue() if j["id"] is not None]
+    except HTTPException:
+        live_ids = []
     with db.connect() as conn:
-        return [recipes_mod.to_json(r) for r in db.recipes_for(conn, user["id"])]
+        rows = db.recipes_for(conn, user["id"])
+        running = db.running_recipe_names(conn, user["id"], live_ids)
+    return [recipes_mod.to_json(r, running=r["name"] in running) for r in rows]
 
 
 @api.post("/recipes", status_code=201)
@@ -899,14 +918,37 @@ async def update_recipe(name: str, request: Request, user: dict = Depends(curren
     return saved
 
 
+@api.patch("/recipes/{name}")
+async def update_recipe_settings(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
+    """Change a Recipe's settings without re-freezing its code — a plain JSON body, not the gzip-tar
+    `X-CCC-Meta` upload `create_recipe`/`update_recipe` share, since nothing here touches the 24GB wall or
+    `bytes`/`frozen_at`. What the Dashboard's "Edit" hits when no folder was dropped alongside it; a
+    dropped folder instead goes to `update_recipe` above, which DOES re-freeze the code."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before editing a recipe (run `cuttle passwd`)")
+    meta = await request.json()
+    try:
+        with db.connect() as conn:
+            saved = recipes_mod.update_meta(conn, user["id"], name, meta)
+    except ValueError as e:
+        raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
+    log.info("recipe settings edit %r by %s", name, user["username"])
+    return saved
+
+
 @api.post("/recipes/{name}/run")
 def run_recipe(name: str, user: dict = Depends(current_user)) -> dict:
-    """Deferred. Running a Recipe means building a Spawn from code that is already ON the Head, which is
-    the one thing `spawns.submit_checked` has never had to do — it stages from an upload it is handed.
-    Threading it around a tree that is already staged is its own job, so this says so rather than
-    pretending: a route that 501s is discoverable, and one that silently does nothing is not."""
-    raise HTTPException(501, "running a Recipe isn't wired up yet — the snapshot is saved and safe; "
-                             "submit the project directly meanwhile")
+    """Run the frozen snapshot as a new Spawn — nothing to upload, nothing to hand, from any machine.
+    Every setting is frozen with the Recipe already, so this takes no body at all; see `recipes.run`."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before running a recipe (run `cuttle passwd`)")
+    try:
+        with db.connect() as conn:
+            job_id = recipes_mod.run(conn, user["id"], name, user["is_admin"])
+    except ValueError as e:
+        raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
+    log.info("recipe run %r by %s -> spawn %s", name, user["username"], job_id)
+    return {"id": job_id}
 
 
 @api.delete("/recipes/{name}", status_code=204)

@@ -536,15 +536,14 @@ def feature_list(as_json: bool = typer.Option(False, "--json", help="Machine-rea
 
 @feature_app.command("show")
 def feature_show(name: str = typer.Argument(..., help="A Feature from `cuttle feature list`.")):
-    """Print a starter `environment.yml` for a Feature — the system libraries its software links
-    against, ready to add your own dependencies to.
+    """Describe what CCC arranges for a Feature — the system libraries it builds for you, and which
+    Python your own Environment has to be.
 
     Fetched from the Head rather than built here, so there is one copy of that list in the codebase and
-    it is the same one CCC itself builds against. Not every Feature has one: a Feature can be nothing
-    but placement plus an install path, which needs no Environment to describe."""
-    # Plain `print`, not ui.say: this is a file body meant to be redirected into environment.yml, and
-    # Rich would both style it and read `[...]` in it as markup.
-    print(feature_profiles.environment_yml(name), end="")
+    it is the same one CCC itself builds. Not every Feature has one: a Feature can be nothing but
+    placement plus an install path, which needs no runtime to describe."""
+    # Plain `print`, not ui.say: Rich would read the `[...]` in a version spec as markup.
+    print(feature_profiles.runtime_summary(name), end="")
 
 
 # --- recipes ------------------------------------------------------------------
@@ -571,6 +570,10 @@ def recipe_save(
     output: list[str] = typer.Option(
         None, "--output", "-o", help="Subdir under $CCC_OUT the script writes results to (repeatable). "
                                      "Required — a Recipe with none could never be run."),
+    manifest: str = typer.Option(
+        None, "--manifest", help="REQUIRED. Dependency file the Recipe's Python environment is built "
+                                 "from, frozen with the code — a Recipe freezes what its work runs "
+                                 "IN, not just the code."),
     project: str = typer.Option(None, "--project", help="W&B project, frozen with the code."),
     entity: str = typer.Option(None, "--entity", help="W&B entity/slug, frozen with the code."),
     no_gitignore: bool = typer.Option(
@@ -587,7 +590,8 @@ def recipe_save(
     Recipe. It holds space against your 24GB allowance until you run `cuttle recipe delete`.
 
     Extra args after the script are frozen as the Recipe's arguments
-    (`cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints -- --epochs 5`).
+    (`cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints
+    --manifest pyproject.toml -- --epochs 5`).
     """
     # Same shape as `cuttle run`: bare invocation walks the wizard, flag-driven one prompts for
     # nothing. `recipes._validate` is the unconditional hard gate — the block below alone can't
@@ -598,6 +602,9 @@ def recipe_save(
         script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
         vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
+        # Asked outright, never suggested — see `cuttle run`'s own prompt for why.
+        manifest = ui.need(manifest, "--manifest", lambda: ui.ask_text(
+            "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)"))
         output = list(output) if output else []
         if wizard:
             while not output:
@@ -607,7 +614,8 @@ def recipe_save(
                 else:
                     ui.warn("at least one output folder is required")
     recipes_mod.save(name, script, minutes=time, vram=vram, gpu=gpu, args=ctx.args, outputs=output,
-                     project=project, entity=entity, no_gitignore=no_gitignore, yes=yes)
+                     manifest=manifest, project=project, entity=entity, no_gitignore=no_gitignore,
+                     yes=yes)
 
 
 @recipe_app.command("update", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -620,6 +628,9 @@ def recipe_update(
     gpu: int = typer.Option(None, "--gpu", help="Change the GPU count (default: keep)."),
     output: list[str] = typer.Option(
         None, "--output", "-o", help="REPLACE the declared outputs (repeatable; default: keep)."),
+    manifest: str = typer.Option(
+        None, "--manifest", help="Change the dependency file the environment is built from "
+                                 "(default: keep)."),
     project: str = typer.Option(None, "--project", help="Change the W&B project (default: keep)."),
     entity: str = typer.Option(None, "--entity", help="Change the W&B entity (default: keep)."),
     no_gitignore: bool = typer.Option(
@@ -638,15 +649,15 @@ def recipe_update(
     name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to update?"))
     recipes_mod.update(name, script=script, minutes=time, vram=vram, gpu=gpu,
                        args=ctx.args or None, outputs=list(output) if output else None,
-                       project=project, entity=entity, no_gitignore=no_gitignore, yes=yes)
+                       manifest=manifest, project=project, entity=entity,
+                       no_gitignore=no_gitignore, yes=yes)
 
 
 @recipe_app.command("run")
 def recipe_run(name: str = typer.Argument(None, help="Recipe to run.")):
-    """Run a Recipe's frozen snapshot as a Spawn.
+    """Run a Recipe's frozen snapshot as a Spawn — one call, from any machine, nothing to hand.
 
-    NOT WIRED UP YET — the Head answers 501. Saving, updating, listing and deleting all work; only this
-    does not. Submit the project directly with `cuttle run` meanwhile.
+    Every setting was already answered when the Recipe was saved, so this sends nothing but the name.
     """
     name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to run?"))
     recipes_mod.run(name)
@@ -799,11 +810,13 @@ def run(
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
                                 "none; unsatisfiable requests are refused, not queued."),
     manifest: str = typer.Option(
-        None, "--manifest", help="Dependency file to build this Spawn's Python environment from "
-                                 "(e.g. requirements-gpu.txt, envs/cuda12.yml), relative to the "
-                                 "project root. 'none' builds no environment at all. Default: the "
-                                 "Head looks in the project root for uv.lock, pyproject.toml, "
-                                 "requirements.txt or environment.yml."),
+        None, "--manifest", help="REQUIRED (optional with --tidepool). Dependency file to build this "
+                                 "Spawn's Python environment from, relative to the project root — "
+                                 "pyproject.toml, uv.lock, requirements.txt, environment.yml, or one "
+                                 "you keep under another name (envs/cuda12.yml). There is no default "
+                                 "and nothing is detected: the environment carries its own Python and "
+                                 "inherits nothing, so it is yours to name. With --tidepool it is "
+                                 "optional, and passing one uploads this directory too."),
     no_download: bool = typer.Option(
         False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
                                      "they are downloaded into ~/ccc/outputs/spawn-<id>-outputs/ as "
@@ -844,8 +857,15 @@ def run(
     output = list(output) if output else []
     feature = list(feature) if feature else []
     if tidepool:
+        # --manifest is OPTIONAL here and nowhere else, so it is passed through rather than prompted
+        # for: a Tide Pool opened to poke at a box has no project behind it to name a file in. Naming
+        # one uploads the working directory and builds that Environment into the shell.
+        if manifest and not (Path.cwd() / manifest).is_file():
+            raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the "
+                           f"current directory, {Path.cwd()})")
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
-                                features=feature, follow=follow, download=not no_download)
+                                features=feature, follow=follow, download=not no_download,
+                                manifest=manifest, no_gitignore=no_gitignore)
     wizard = script is None
     with ui.section("Submit a Spawn", lambda: f"{script}  {time}min  {vram}G"):
         # No file picker: you pass the path. Prompting through a directory listing is slower than
@@ -856,6 +876,12 @@ def run(
         # highest Demand for work that may need 2 GB.
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
         vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
+        # Asked outright, never suggested. Offering what happens to be lying in the directory would be
+        # CCC inferring which file is the instruction — and a suggestion is an inference, accepted by
+        # whoever presses Enter. The Environment carries its own Python and inherits nothing, so which
+        # file it is built from decides everything the work runs against; that is the User's to say.
+        manifest = ui.need(manifest, "--manifest", lambda: ui.ask_text(
+            "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)"))
         if wizard:
             gpu = ui.ask_int("How many GPUs?", default=str(gpu))
             project = project or (ui.ask_text("W&B project? (blank = config default)") or None)
@@ -892,9 +918,15 @@ def run(
     if not (Path.cwd() / script).is_file():
         raise ui.abort(f"script {script!r} was not found (looked for it relative to the current "
                        f"directory, {Path.cwd()})")
+    # Same shape as the script check, and for the same reason: caught here rather than as a 422 after
+    # the whole working directory has been uploaded. The Head re-checks it against what actually
+    # arrived, which is the check that counts — .gitignore can drop a file that is right here.
+    if not (Path.cwd() / manifest).is_file():
+        raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the current "
+                       f"directory, {Path.cwd()})")
     if wizard:
         spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore,
-                          outputs=output, features=feature)
+                          outputs=output, features=feature, manifest=manifest)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,

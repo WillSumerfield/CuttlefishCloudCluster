@@ -258,6 +258,7 @@ class TestTheCliCommands:
 
         monkeypatch.setattr(head_spawns, "submit", spy)
         r = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+                          "--manifest", "requirements.txt",
                       "--project", "vision")
         assert r.exit_code == 0, r.output
         assert seen["WANDB_API_KEY"] == "wandb_deadbeef"
@@ -444,13 +445,14 @@ class TestItReachesSbatch:
     def _submit(self, tmp_path, client_env, wandb=True):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            info = tarfile.TarInfo("train.py")
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
+            for name in ("train.py", "requirements.txt"):
+                info = tarfile.TarInfo(name)
+                info.size = 0
+                tf.addfile(info, io.BytesIO(b""))
         tar_path = tmp_path / "upload.tar.gz"
         tar_path.write_bytes(buf.getvalue())
         head_spawns.submit_checked(1, False, "train.py", 1, [], client_env, tar_path, 60, 24, ["out"],
-                                   wandb=wandb)
+                                   wandb=wandb, manifest="requirements.txt")
 
     def test_the_stored_key_reaches_sbatch(self, sbatch_env, tmp_path):
         _store("wandb_deadbeef")

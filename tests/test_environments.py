@@ -1,10 +1,11 @@
-"""Per-Spawn **Environment** detection, build rendering, and the held-Spawn lifecycle around
-them (docs/TODO.md "Python Environments").
+"""Per-Spawn **Environment** declaration, build rendering, and the held-Spawn lifecycle around
+them (docs/elements/environments.md).
 
 Mostly pure functions with remote consequences (CONTRIBUTING.md): nothing in the first half
-needs apptainer, a Guise, or a network, but each decides what runs on a donor's box. Two things
-worth pinning: detection never guesses past the project root, and the rendered build keeps the
-property the whole design rests on — built at the SAME absolute path it's later run at.
+needs apptainer, a Guise, or a network, but each decides what runs on a donor's box. Three things
+worth pinning: naming a manifest is mandatory and nothing is ever detected, an env inherits
+nothing and carries its own interpreter, and the rendered build keeps the property the whole
+design rests on — built at the SAME absolute path it's later run at.
 
 The second half isn't pure: a Spawn is `sbatch --hold`ed, built behind the request, then
 released or failed. Worth pinning: every exit from a build reaches ONE of those two ends — a
@@ -30,11 +31,28 @@ def _project(tmp_path, **files):
     return tmp_path
 
 
-# --- detection -------------------------------------------------------------
+# --- declaration -----------------------------------------------------------
+# Naming the manifest is mandatory and there is no auto-detection: an **Environment** carries its own
+# interpreter and inherits nothing, so which file it is built from decides what every line of the
+# User's work runs against. Too much to infer from a file someone happened to commit.
 
-def test_no_manifest_is_no_environment(tmp_path):
-    """The common case, and today's behaviour: a project that declares nothing runs on the base image."""
-    assert env.detect(_project(tmp_path, **{"train.py": "print(1)"})) is None
+
+def test_declaring_nothing_is_refused(tmp_path):
+    """And refused even when there is an obvious candidate sitting right there. CCC picking it would
+    be CCC deciding that a `pyproject.toml` in the repo is an instruction to the cluster — which it is
+    not, if the User is vendoring something."""
+    p = _project(tmp_path, **{"pyproject.toml": "", "requirements.txt": ""})
+    for nothing in (None, "", "   "):
+        with pytest.raises(env.BuildError, match="declares no environment"):
+            env.detect(p, nothing)
+
+
+def test_the_refusal_names_what_to_type(tmp_path):
+    """A User who submitted the way they always did meets this message. "Required" alone would leave
+    them nowhere to go, so it names the flag and the files it accepts."""
+    with pytest.raises(env.BuildError) as e:
+        env.detect(_project(tmp_path), None)
+    assert "--manifest" in str(e.value) and "pyproject.toml" in str(e.value)
 
 
 @pytest.mark.parametrize("name,kind", [
@@ -45,72 +63,57 @@ def test_no_manifest_is_no_environment(tmp_path):
     ("environment.yaml", "conda"),
 ])
 def test_each_manifest_shape_is_recognised(tmp_path, name, kind):
-    m = env.detect(_project(tmp_path, **{name: ""}))
+    m = env.detect(_project(tmp_path, **{name: ""}), name)
     assert (m.kind, m.path) == (kind, name)
 
 
-def test_lock_file_wins_over_bare_pyproject(tmp_path):
-    """A lock is preferred because it is the only manifest that makes a Recipe's `frozen` promise true
-    of its Environment too (CONTEXT.md, **Recipe**)."""
-    m = env.detect(_project(tmp_path, **{"pyproject.toml": "", "uv.lock": "", "requirements.txt": ""}))
-    assert m.path == "uv.lock"
-
-
-def test_detection_never_walks_below_the_root(tmp_path):
-    """A pyproject three directories down belongs to something the User is vendoring, not to this Spawn.
-    Finding it would build a stranger's dependencies and bill this User for the privilege."""
-    assert env.detect(_project(tmp_path, **{"vendor/thirdparty/pyproject.toml": ""})) is None
-
-
-def test_none_declines_a_build_outright(tmp_path):
-    """A file in a repo is not an instruction to the cluster — CONTEXT.md, **Environment**."""
-    p = _project(tmp_path, **{"pyproject.toml": ""})
-    assert env.detect(p, manifest="none") is None
-    assert env.detect(p, manifest="NONE") is None
-
-
-def test_named_manifest_overrides_the_guess(tmp_path):
-    p = _project(tmp_path, **{"pyproject.toml": "", "requirements-gpu.txt": ""})
-    m = env.detect(p, manifest="requirements-gpu.txt")
-    assert (m.kind, m.path) == ("uv-requirements", "requirements-gpu.txt")
-
-
-def test_named_manifest_in_a_subdirectory_is_allowed(tmp_path):
-    """Explicit is different from auto-detected: the User pointed at it, so depth is their business."""
-    m = env.detect(_project(tmp_path, **{"envs/cuda12.yml": ""}), manifest="envs/cuda12.yml")
+def test_a_manifest_in_a_subdirectory_is_allowed(tmp_path):
+    """The User pointed at it, so depth is their business — there is no root to be "below" any more."""
+    m = env.detect(_project(tmp_path, **{"envs/cuda12.yml": ""}), "envs/cuda12.yml")
     assert m.kind == "conda"
 
 
-def test_named_manifest_must_exist(tmp_path):
+def test_a_manifest_under_any_name_is_allowed(tmp_path):
+    """Classified by extension, never by parsing: a User may keep several and point at one without CCC
+    opening a file to work out what it is."""
+    m = env.detect(_project(tmp_path, **{"requirements-gpu.txt": ""}), "requirements-gpu.txt")
+    assert (m.kind, m.path) == ("uv-requirements", "requirements-gpu.txt")
+
+
+def test_the_named_manifest_must_exist(tmp_path):
     with pytest.raises(env.BuildError, match="no such manifest"):
-        env.detect(_project(tmp_path), manifest="requirements.txt")
+        env.detect(_project(tmp_path), "requirements.txt")
 
 
-def test_named_manifest_cannot_escape_the_project(tmp_path):
+def test_the_named_manifest_cannot_escape_the_project(tmp_path):
     """The containment rule declared output names get (spawns.OUTPUT_NAME_RE), for the same reason: this
     path is joined onto a directory the Head owns, and `..` must not be a way out of it."""
     (tmp_path.parent / "outside.txt").write_text("")
     with pytest.raises(env.BuildError, match="no such manifest"):
-        env.detect(_project(tmp_path), manifest="../outside.txt")
+        env.detect(_project(tmp_path), "../outside.txt")
 
 
-def test_unclassifiable_named_manifest_says_what_is_accepted(tmp_path):
+def test_an_unclassifiable_manifest_says_what_is_accepted(tmp_path):
     with pytest.raises(env.BuildError, match="cannot tell what kind"):
-        env.detect(_project(tmp_path, **{"deps.cfg": ""}), manifest="deps.cfg")
+        env.detect(_project(tmp_path, **{"deps.cfg": ""}), "deps.cfg")
 
 
 # --- the submit-time echo --------------------------------------------------
 
 def test_echo_names_the_no_environment_case(tmp_path):
-    """The worst failure is a manifest one directory too deep: not a build failure at all, so this line
-    is the only thing that would ever mention it — before a GPU is held, not after."""
-    assert "no dependency file found" in env.describe(None)
+    """Reachable only by a **Tide Pool** now — the one Spawn that may decline to declare. The echo
+    still says so out loud rather than staying blank, because after the image slims there is no Python
+    at all in that shell and a User meeting it should know why."""
+    assert "Tide Pool" in env.describe(None)
 
 
-def test_echo_distinguishes_conda_as_a_replacement(tmp_path):
-    """uv layers on the base image; conda replaces it. A User should not have to know that from docs."""
-    assert "replaces" in env.describe(env.detect(_project(tmp_path, **{"environment.yml": ""})))
-    assert "on top of" in env.describe(env.detect(_project(tmp_path, **{"requirements.txt": ""})))
+def test_echo_names_the_manifest_and_the_tool(tmp_path):
+    """Both shapes are self-contained now, so the echo no longer draws a distinction between them — it
+    says which file was read and which tool will read it, and nothing about what is inherited, because
+    nothing is."""
+    assert "conda" in env.describe(env.detect(_project(tmp_path, **{"environment.yml": ""}), "environment.yml"))
+    note = env.describe(env.detect(_project(tmp_path, **{"requirements.txt": ""}), "requirements.txt"))
+    assert "requirements.txt" in note and "uv" in note
 
 
 # --- build rendering -------------------------------------------------------
@@ -120,46 +123,102 @@ def test_every_build_targets_the_one_fixed_mount(tmp_path):
     a conda prefix bakes it into hundreds of files. Built anywhere other than where it is later run,
     an env arrives on the Arm broken."""
     for name in ("uv.lock", "requirements.txt", "environment.yml"):
-        m = env.detect(_project(tmp_path / name, **{name: ""}))
+        m = env.detect(_project(tmp_path / name, **{name: ""}), name)
         cmds = env.render_build(m)
         assert any(env.ENV_MOUNT in part for cmd in cmds for part in cmd), name
 
 
-def test_uv_paths_inherit_the_image_rather_than_rebuild_it(tmp_path):
-    """--system-site-packages is what makes this the DELTA. Without it a bare `torch` in a manifest
-    redownloads the 2.5GB the base image already ships, on every Spawn, with nothing cached."""
-    for name in ("uv.lock", "requirements.txt"):
-        m = env.detect(_project(tmp_path / name, **{name: ""}))
-        assert "--system-site-packages" in env.render_build(m)[0]
+def test_no_env_inherits_anything_from_the_image(tmp_path):
+    """The property the restructure exists for. `--system-site-packages` is a RUNTIME flag, not a set of
+    per-package links, so an env that used it held whatever the image happened to hold on the day the
+    Spawn ran — which is not a freeze, and is not what a **Recipe** promises."""
+    for name in ("uv.lock", "requirements.txt", "environment.yml"):
+        m = env.detect(_project(tmp_path / name, **{name: ""}), name)
+        cmds = env.render_build(m)
+        assert not any("--system-site-packages" in part for cmd in cmds for part in cmd), name
 
 
 def test_uv_project_build_installs_the_project_itself(tmp_path):
     """Plain `uv sync`, NOT --no-install-project: uv already treats a project with no [build-system] as
     virtual (this repo's own root pyproject does exactly that), while a real src-layout package gets
     installed — which is the only way its imports resolve."""
-    cmds = env.render_build(env.detect(_project(tmp_path, **{"uv.lock": ""})))
-    sync = cmds[-1]
-    assert "sync" in sync and "--no-install-project" not in sync
+    cmds = env.render_build(env.detect(_project(tmp_path, **{"uv.lock": ""}), "uv.lock"))
+    sync = next(c for c in cmds if "sync" in c)
+    assert "--no-install-project" not in sync
+
+
+def test_a_uv_project_needs_no_venv_prestep(tmp_path):
+    """`uv sync` reads `requires-python` and fetches that exact interpreter itself. A `uv venv` first
+    could only GUESS the version uv is about to resolve, and a wrong guess is what a project pinning
+    `==3.11.14` would meet as a resolver error about an interpreter it never asked for."""
+    cmds = env.render_build(env.detect(_project(tmp_path, **{"pyproject.toml": ""}), "pyproject.toml"))
+    assert not any(cmd[1:2] == ["venv"] for cmd in cmds)
+
+
+class TestTheInterpreterIsChosenNotInherited:
+    """A `requirements.txt` names no Python version, so CCC names one rather than falling back to
+    whatever the image ships — after this restructure the image ships none at all."""
+
+    def _venv(self, project):
+        cmds = env.render_build(env.detect(project, "requirements.txt"), project)
+        return cmds[0]
+
+    def test_a_pinned_default_when_the_project_says_nothing(self, tmp_path):
+        assert ["--python", env.DEFAULT_PYTHON] == self._venv(
+            _project(tmp_path, **{"requirements.txt": ""}))[2:4]
+
+    def test_a_dot_python_version_is_the_users_answer_and_wins(self, tmp_path):
+        """uv reads `.python-version` itself, so passing --python as well would override the User's own
+        answer with the default — silently, and only for projects that bothered to state one."""
+        p = _project(tmp_path, **{"requirements.txt": "", ".python-version": "3.11\n"})
+        assert "--python" not in self._venv(p)
+
+
+@pytest.mark.parametrize("pkg", ["wandb", "pip"])
+def test_every_uv_env_is_seeded_without_overriding_a_declared_version(tmp_path, pkg):
+    """Two packages no manifest asked for. `wandb`, because nothing is inherited any more and without
+    it "a Spawn logs to its submitter's own account" (CONTEXT.md) stops being true. `pip`, because uv
+    does not seed one and a **Tide Pool** promises `pip install` at the shell works.
+
+    UNPINNED: an already-satisfied requirement is a no-op, so a User who declared their own version
+    keeps it — as they did when the image supplied one."""
+    for name in ("uv.lock", "requirements.txt"):
+        cmds = env.render_build(env.detect(_project(tmp_path / name, **{name: ""}), name))
+        seed = next(c for c in cmds if pkg in c and "install" in c)
+        assert not any("==" in part for part in seed), name
+
+
+def test_pip_is_seeded_with_uv_not_with_pip(tmp_path):
+    """The bootstrap order that makes it possible at all: `python -m pip install pip` cannot run in an
+    env that has no pip yet. `uv pip` needs nothing in the target env."""
+    cmds = env.render_build(env.detect(_project(tmp_path, **{"uv.lock": ""}), "uv.lock"))
+    seed = next(c for c in cmds if "pip" in c and "install" in c)
+    assert seed[0] == str(env.UV_BIN) and "-m" not in seed
 
 
 def test_conda_build_injects_wandb(tmp_path):
     """A conda env replaces the image's Python and inherits nothing — including wandb. Without this the
     Head's promise that a Spawn logs to its submitter's own account (CONTEXT.md) silently stops holding
     for exactly the Users who declared the most."""
-    cmds = env.render_build(env.detect(_project(tmp_path, **{"environment.yml": ""})))
+    cmds = env.render_build(env.detect(_project(tmp_path, **{"environment.yml": ""}), "environment.yml"))
     assert any("wandb" in part for cmd in cmds for part in cmd)
 
 
-def test_conda_build_does_not_inherit_system_site_packages(tmp_path):
-    """The asymmetry is deliberate: uv layers, conda replaces."""
-    cmds = env.render_build(env.detect(_project(tmp_path, **{"environment.yml": ""})))
-    assert not any("--system-site-packages" in part for cmd in cmds for part in cmd)
-
-
-def test_interpreter_is_under_the_mount(tmp_path):
+@pytest.mark.parametrize("kind", ["uv-project", "uv-requirements", "conda"])
+def test_the_interpreter_is_under_the_mount(kind):
     """What the rendered JOB_SCRIPT names as `$py`. It has to resolve inside the Pod, against the bind —
-    not against whatever path the env happened to be built in on the Head."""
-    assert env.ENV_INTERPRETER.startswith(env.ENV_MOUNT + "/")
+    not against whatever path the env happened to be built in on the Head. Per-SHAPE now rather than one
+    constant: micromamba owns ENV_MOUNT outright, while a uv env keeps its venv one level down."""
+    m = env.Manifest(kind, "m")
+    assert m.interpreter.startswith(env.ENV_MOUNT + "/")
+    assert m.interpreter == m.bin_dir + "/python"
+
+
+def test_the_two_shapes_do_not_share_a_path():
+    """Which is the whole reason the interpreter stopped being a module constant. A conda prefix at
+    ENV_MOUNT/venv would be a lie, and a venv at ENV_MOUNT would have the interpreter uv downloads
+    sitting inside the directory uv itself prunes."""
+    assert env.Manifest("conda", "m").interpreter != env.Manifest("uv-project", "m").interpreter
 
 
 # --- what the rendered job script does with it -----------------------------
@@ -202,7 +261,36 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     file-not-found the User cannot act on."""
     body = _script()
     assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$ccc_out$envbind$licbind$featbind"' in body
+    assert '--bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind"' in body
+
+
+@pytest.mark.parametrize("kind,expect", [
+    ("uv-project", f"{env.VENV_DIR}/bin/python"),
+    ("conda", f"{env.ENV_MOUNT}/bin/python"),
+])
+def test_the_script_names_the_interpreter_the_build_actually_produced(kind, expect):
+    """`$py` is per-Spawn substitution data, not a constant: only the manifest says which of the two
+    shapes was built, and naming the wrong one is a `stat` failure on a donor's box after the Spawn has
+    already staged in and taken a card."""
+    assert f'py="{expect}"' in _script(declared=env.Manifest(kind, "m"))
+
+
+def test_every_spawn_writes_temp_files_to_disk_not_to_the_pods_ram_tmp():
+    """Not only a Tide Pool. `--contain` gives EVERY Pod a /tmp carved from apptainer's session
+    directory — 64MB of RAM by default, shared with the --writable-tmpfs overlay — and a training
+    script extracting a dataset or building a wheel hits it exactly as pip does. `environments.py`
+    already makes this fix for the BUILD Pod; this is the same fix for the Pod that runs the work."""
+    body = _script()
+    assert 'mkdir -p "$scratch/tmp/pip"' in body
+    assert "$scratch/tmp:/ccc-tmp" in body
+    assert "TMPDIR=/ccc-tmp" in body
+
+
+def test_the_temp_scratch_is_outside_the_recovery_window():
+    """recover_scratch() copies $proj and measures it against RECOVERY_MAX_BYTES. A pip cache inside
+    it would spend a User's recovery allowance on temp files nobody wants back."""
+    body = _script()
+    assert '"$scratch/tmp' in body and '"$proj/tmp' not in body
 
 
 def test_the_remote_stage_in_recurses():
@@ -218,15 +306,35 @@ def test_the_remote_stage_in_recurses():
 
 def test_tidepool_binds_the_environment_too():
     """A Tide Pool debugs against the env its Spawn would get, or it is not debugging what failed."""
-    body = _script(tidepool_port=22001, tidepool_pubkey="ssh-ed25519 AAAA")
+    body = _script(tidepool_port=22001, tidepool_pubkey="ssh-ed25519 AAAA",
+                   declared=env.Manifest("uv-project", "pyproject.toml"))
     assert "$envbind" in body
-    assert f"{env.ENV_MOUNT}/bin" in body  # on PATH for the interactive shell
+    assert f"{env.VENV_DIR}/bin" in body  # on PATH for the interactive shell
+
+
+def test_the_tide_pool_path_follows_the_shape_that_was_built():
+    """The bin dir is not one path any more. A Tide Pool that prepended ENV_MOUNT/bin for a uv Spawn
+    would put an empty directory on PATH and hand the User the image's `python` — the one interpreter
+    that is certainly not what their Spawn runs."""
+    conda = _script(tidepool_port=22001, tidepool_pubkey="k",
+                    declared=env.Manifest("conda", "environment.yml"))
+    assert f'[ -x {env.ENV_MOUNT}/bin/python ]' in conda
+    assert env.VENV_DIR not in conda
+
+
+def test_a_spawn_with_no_environment_names_a_path_that_cannot_exist():
+    """The `$py` branch is dead in that Spawn, but the Tide Pool's PATH test still RUNS — so what it
+    tests for has to be absent. ENV_MOUNT is never bound when nothing was declared; /usr/bin would
+    have passed and put the image's own bin first on PATH for no reason."""
+    body = _script(tidepool_port=22001, tidepool_pubkey="k")
+    assert f'[ -x {env.ENV_MOUNT}/bin/python ]' in body
 
 
 # --- a Head that cannot build ----------------------------------------------
-# TOOLS_DIR is populated by `cuttle setup --head`; a Head that predates this check has an empty
-# one. A missing binary failing the build would silently break every project carrying a
-# `pyproject.toml` — most of them — on such a Head.
+# TOOLS_DIR is populated by `cuttle setup --head`. A Head with an empty one now REFUSES rather than
+# degrading: the degradation existed so Spawns that worked before Environments existed kept working,
+# and there is no such Spawn left — every one declares, so falling back to the base image would mean
+# running the User's work against something they did not ask for and cannot see.
 
 @pytest.fixture
 def no_tools(monkeypatch, tmp_path):
@@ -249,27 +357,30 @@ def with_tools(monkeypatch, tmp_path):
     monkeypatch.setattr(env, "TMP_DIR", tmp_path / "envtmp")
 
 
-def test_a_missing_tool_is_named_not_hidden(no_tools, tmp_path):
-    m = env.detect(_project(tmp_path, **{"requirements.txt": ""}))
-    assert env.missing_tool(m).endswith("/uv")
+def test_an_unequipped_head_refuses_and_says_which_binary(no_tools, tmp_path):
+    m = env.detect(_project(tmp_path, **{"requirements.txt": ""}), "requirements.txt")
+    with pytest.raises(env.BuildError) as e:
+        env.require_tool(m)
+    assert "uv" in str(e.value)
+
+
+def test_the_refusal_names_the_command_that_fixes_it(no_tools, tmp_path):
+    """Only the operator can fix this, and the User meeting it needs to know that — otherwise they
+    conclude their own manifest was wrong and go on editing it."""
+    m = env.detect(_project(tmp_path, **{"requirements.txt": ""}), "requirements.txt")
+    with pytest.raises(env.BuildError, match="cuttle setup --head"):
+        env.require_tool(m)
 
 
 def test_conda_asks_for_micromamba_not_uv(no_tools, tmp_path):
-    m = env.detect(_project(tmp_path, **{"environment.yml": ""}))
-    assert env.missing_tool(m).endswith("/micromamba")
+    m = env.detect(_project(tmp_path, **{"environment.yml": ""}), "environment.yml")
+    with pytest.raises(env.BuildError, match="micromamba"):
+        env.require_tool(m)
 
 
-def test_an_equipped_head_is_missing_nothing(with_tools, tmp_path):
-    m = env.detect(_project(tmp_path, **{"requirements.txt": ""}))
-    assert env.missing_tool(m) is None
-
-
-def test_the_echo_says_which_manifest_went_unbuilt(no_tools, tmp_path):
-    """Not merely that something did. A User whose Spawn ran on the base image needs to know the Head
-    is unequipped, not conclude their manifest was wrong and go on editing it."""
-    m = env.detect(_project(tmp_path, **{"requirements.txt": ""}))
-    note = env.describe(m, env.missing_tool(m))
-    assert "requirements.txt" in note and "uv" in note and "cluster base" in note
+def test_an_equipped_head_refuses_nothing(with_tools, tmp_path):
+    m = env.detect(_project(tmp_path, **{"requirements.txt": ""}), "requirements.txt")
+    assert env.require_tool(m) is None
 
 
 def test_the_build_can_reach_its_tools_inside_the_pod(with_tools, tmp_path, monkeypatch):
@@ -283,7 +394,7 @@ def test_the_build_can_reach_its_tools_inside_the_pod(with_tools, tmp_path, monk
 
     monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
     project = _project(tmp_path / "p", **{"requirements.txt": ""})
-    env.build(project, env.detect(project), "ccc-u60002")
+    env.build(project, env.detect(project, "requirements.txt"), "ccc-u60002")
     binds = [c[c.index("--bind") + 1] for c in seen if "--bind" in c]
     assert binds and all(f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in b for b in binds)
 
@@ -305,7 +416,7 @@ class TestTheBuildScratchIsOnDisk:
 
         monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
         project = _project(tmp_path / "p", **{"environment.yml": ""})
-        env.build(project, env.detect(project), "ccc-u60002")
+        env.build(project, env.detect(project, "environment.yml"), "ccc-u60002")
         return seen
 
     def test_tmpdir_is_moved_off_the_session_tmpfs(self, with_tools, tmp_path, monkeypatch):
@@ -341,7 +452,7 @@ class TestTheBuildScratchIsOnDisk:
         monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: R())
         project = _project(tmp_path / "p", **{"environment.yml": ""})
         with pytest.raises(env.BuildError):
-            env.build(project, env.detect(project), "ccc-u60002")
+            env.build(project, env.detect(project, "environment.yml"), "ccc-u60002")
         assert list(env.TMP_DIR.iterdir()) == []
 
     def test_the_scratch_is_not_swept_by_the_cache_reaper(self, with_tools, tmp_path, monkeypatch):
@@ -351,22 +462,49 @@ class TestTheBuildScratchIsOnDisk:
         assert env.CACHE_DIR not in env.TMP_DIR.parents
 
 
-def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools, tmp_path, monkeypatch):
-    """`--active` only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it — so uv falls
-    back to the `.venv` it makes beside the manifest, inside the Mantle-owned project a Guise may
-    only read, and every pyproject.toml/uv.lock Spawn dies on "Permission denied".
-    UV_PROJECT_ENVIRONMENT names the path outright, as --python already did on the uv-pip branch."""
-    assert "--active" not in env.render_build(env.Manifest("uv-project", "pyproject.toml"))[-1]
+def _build_env_list(tmp_path, monkeypatch, **files):
+    """The `--env` strings a build Pod is given, with the shell captured."""
     seen = []
 
     class R:
         returncode, stdout, stderr = 0, "", ""
 
     monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
-    project = _project(tmp_path / "p", **{"pyproject.toml": ""})
-    env.build(project, env.detect(project), "ccc-u60002")
-    envs = [c[c.index("--env") + 1] for c in seen if "--env" in c]
-    assert envs and all(f"UV_PROJECT_ENVIRONMENT={env.ENV_MOUNT}" in e for e in envs)
+    project = _project(tmp_path / "p", **files)
+    env.build(project, env.detect(project, next(iter(files))), "ccc-u60002")
+    return [c[c.index("--env") + 1] for c in seen if "--env" in c]
+
+
+def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools, tmp_path, monkeypatch):
+    """`--active` only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it — so uv falls
+    back to the `.venv` it makes beside the manifest, inside the Mantle-owned project a Guise may
+    only read, and every pyproject.toml/uv.lock Spawn dies on "Permission denied".
+    UV_PROJECT_ENVIRONMENT names the path outright, as --python already did on the uv-pip branch."""
+    cmds = env.render_build(env.Manifest("uv-project", "pyproject.toml"))
+    assert not any("--active" in part for cmd in cmds for part in cmd)
+    envs = _build_env_list(tmp_path, monkeypatch, **{"pyproject.toml": ""})
+    assert envs and all(f"UV_PROJECT_ENVIRONMENT={env.VENV_DIR}" in e for e in envs)
+
+
+class TestTheEnvCarriesItsOwnInterpreter:
+    """The mechanism the whole restructure rests on. Both settings are on the build Pod rather than in
+    the argv because all three build paths need them, including the one that runs no uv command at all
+    until `uv sync` decides for itself which CPython to fetch."""
+
+    def test_uv_may_not_adopt_an_interpreter_it_did_not_install(self, with_tools, tmp_path, monkeypatch):
+        """Without only-managed, uv happily picks up a system python of the right version — and the venv
+        it builds then points at a path that exists on the HEAD and not on the Arm. Confirmed against
+        uv 0.12.1: `uv venv --python 3.12` took the host's 3.12.3 until this was set."""
+        envs = _build_env_list(tmp_path, monkeypatch, **{"pyproject.toml": ""})
+        assert envs and all("UV_PYTHON_PREFERENCE=only-managed" in e for e in envs)
+
+    def test_the_downloaded_interpreter_lands_inside_the_shipped_tree(self, with_tools, tmp_path,
+                                                                      monkeypatch):
+        """Otherwise it goes to $HOME — which a **Guise** has not got — or to the Pod's 64MB session
+        tmpfs, and either way the env that reaches the Arm has no interpreter to run."""
+        envs = _build_env_list(tmp_path, monkeypatch, **{"pyproject.toml": ""})
+        assert envs and all(f"UV_PYTHON_INSTALL_DIR={env.PY_INSTALL_DIR}" in e for e in envs)
+        assert env.PY_INSTALL_DIR.startswith(env.ENV_MOUNT + "/")
 
 
 # --- the held Spawn: submit, build, release or fail -------------------------
@@ -413,7 +551,9 @@ def _tar(tmp_path, *names):
 
 
 def _submit(tmp_path, *names, **kw):
-    return spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+    kw.setdefault("script", "train.py")
+    kw.setdefault("manifest", names[0] if names else None)
+    return spawns.submit(user_id=1, gpu=1, args=[], wandb_env={},
                          tar_path=_tar(tmp_path, "train.py", *names), minutes=60,
                          constraint="", outputs=["out"], **kw)
 
@@ -422,13 +562,32 @@ def _sbatch(calls):
     return next(c for c in calls if "sbatch" in c)
 
 
-def test_a_spawn_with_no_manifest_is_never_held(head, tmp_path):
-    """The overwhelmingly common case, and the one that must not regress: nothing to build, so nothing
-    to wait for, and the Spawn goes straight into the queue exactly as it always did."""
-    jid = _submit(tmp_path)
+def test_a_spawn_that_declares_nothing_never_reaches_sbatch(head, tmp_path):
+    """Refused, not held and not degraded — and refused before sbatch, so there is no Spawn to Escrow,
+    nothing in the queue, and nothing for a reaper to come back for."""
+    with pytest.raises(env.BuildError, match="declares no environment"):
+        _submit(tmp_path)
+    assert not [c for c in head if "sbatch" in c]
+
+
+def test_a_tide_pool_may_decline_and_is_never_held(head, tmp_path):
+    """The one exemption. A bare Tide Pool uploads an empty tar — there is no file in it to name — and
+    it is a shell rather than a run, so nothing has to be built before it can start."""
+    jid = _submit(tmp_path, tidepool=True, script=None)
     assert "--hold" not in _sbatch(head)
     with db.connect() as conn:
         assert db.get_spawn(conn, jid)["build_state"] is None
+
+
+def test_a_tide_pool_that_declares_one_gets_it_built(head, tmp_path):
+    """The exemption is from the REQUIREMENT, not from the feature. A Tide Pool opened over a project
+    is how you debug the thing that failed, and that is only true if the shell holds the env the Spawn
+    would have run in — so naming a manifest here holds and builds exactly like any other Spawn."""
+    jid = _submit(tmp_path, "requirements.txt", tidepool=True, script=None)
+    assert "--hold" in _sbatch(head)
+    with db.connect() as conn:
+        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
+    assert "requirements.txt" in spawns.environment_note(jid)
 
 
 def test_a_declared_environment_holds_the_spawn(head, tmp_path):
@@ -455,44 +614,34 @@ def test_the_environment_is_in_what_a_remote_arm_stages_in(head, tmp_path, monke
     assert env.ENV_DIRNAME in seen["files"]
 
 
-def test_a_spawn_with_no_environment_stages_no_env_dir(head, tmp_path, monkeypatch):
-    """The other half: naming a directory that will never exist would make every ordinary Spawn's
-    stage-in report a missing file."""
+def test_a_tide_pool_that_declared_nothing_stages_no_env_dir(head, tmp_path, monkeypatch):
+    """The other half: naming a directory that will never exist would make that Spawn's stage-in
+    report a missing file. Only a Tide Pool can be in this state now."""
     seen = {}
     real = spawns._render
     # `files` is the 5th positional arg of _render, not a keyword — see spawns.submit's call.
     monkeypatch.setattr(spawns, "_render",
                         lambda *a, **kw: (seen.update(files=a[4]), real(*a, **kw))[1])
-    _submit(tmp_path)
+    _submit(tmp_path, tidepool=True, script=None)
     assert env.ENV_DIRNAME not in seen["files"]
 
 
-def test_a_head_without_the_tools_submits_the_spawn_anyway(head, tmp_path, monkeypatch):
-    """A project with a pyproject.toml but no Environment built still runs on the base image — a
-    Head that never installed uv must fall back the same way rather than refuse the submission,
-    for a feature nobody asked for.
+def test_a_head_without_the_tools_refuses_before_sbatch(head, tmp_path, monkeypatch):
+    """It used to submit anyway and run on the base image. That fallback was for Spawns written before
+    Environments existed; none are left, so falling back now means running the User's work against
+    something they never asked for. Refused where nothing is Escrowed and no Spawn exists.
 
     Un-installs uv after `head` (which provides one) rather than using the `no_tools` fixture:
     fixture order would otherwise put the tools back."""
     monkeypatch.setattr(env, "UV_BIN", tmp_path / "nowhere" / "uv")
-    jid = _submit(tmp_path, "pyproject.toml")
-    assert "--hold" not in _sbatch(head)
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
-    assert "cluster base" in spawns.environment_note(jid)
+    with pytest.raises(env.BuildError, match="cannot build Environments"):
+        _submit(tmp_path, "pyproject.toml")
+    assert not [c for c in head if "sbatch" in c]
 
 
 def test_the_echo_is_written_for_every_spawn(head, tmp_path):
     jid = _submit(tmp_path, "requirements.txt")
     assert "requirements.txt" in spawns.environment_note(jid)
-
-
-def test_none_declines_the_build_end_to_end(head, tmp_path):
-    """`--manifest none`, all the way from the wire to sbatch — a file in a repo is not an instruction
-    to the cluster (CONTEXT.md, **Environment**)."""
-    jid = _submit(tmp_path, "requirements.txt", manifest="none")
-    assert "--hold" not in _sbatch(head)
-    assert "no dependency file found" in spawns.environment_note(jid)
 
 
 def test_a_caller_that_is_about_to_exit_builds_before_it_returns(head, tmp_path, monkeypatch):
@@ -645,3 +794,212 @@ def test_a_building_spawn_generates_no_demand(head, tmp_path, monkeypatch):
     arms = [{"name": "arm1", "powers": [10.0], "state": "idle", "vram_gb": 24, "features": []}]
     needs = {jid: {"gpus": 1, "vram_gb": 24, "node": None}}
     assert karma.demand_by_arm(arms, slurm.queue(), needs)["arm1"] == 0.0
+
+
+# --- packages an Arm Feature supplies ---------------------------------------
+# A **Feature**'s package is licensed to the Arm, not to the submitter, so the copy that RUNS has to be
+# the Arm's own. The submitter still has to be able to declare it or their project will not resolve —
+# so CCC accepts the declaration, replaces the wheel with an empty stub before building, and lets the
+# Feature put the real one back on the Arm (features.VLEARN_SETUP). What is pinned here is that the
+# stub never becomes a working package, and that everything decidable about it is decided at SUBMIT.
+
+import zipfile
+
+
+def _sourced(tmp_path, path="../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"):
+    """A project whose pyproject.toml path-sources vlearn, laid out like a real staging dir."""
+    proj = tmp_path / "projects" / "abc"
+    proj.mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0"\nrequires-python = "==3.11.14"\n'
+        'dependencies = ["vlearn"]\n\n'
+        f'[tool.uv.sources]\nvlearn = {{ path = "{path}" }}\n'
+    )
+    return proj
+
+
+def test_a_features_package_may_be_declared_as_a_path(tmp_path):
+    """The driver for this whole design: a real project pinning its own local wheel has to submit
+    unmodified. Recognising it is what makes the substitution possible at all."""
+    proj = _sourced(tmp_path)
+    found = env.supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
+    assert [(s.package, s.feature) for s in found] == [("vlearn", "vlearn")]
+    assert found[0].filename == "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
+    assert not found[0].inside_project, "../wheels is beside the project, not in it"
+
+
+def test_an_ordinary_project_declares_nothing_supplied(tmp_path):
+    proj = _project(tmp_path, **{"pyproject.toml": '[project]\nname = "t"\nversion = "0"\n'})
+    assert env.supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml")) == []
+
+
+def test_declaring_a_features_package_without_the_feature_is_refused(tmp_path):
+    """The Spawn would build cleanly, place on any Arm, and die at `import` — after the User paid to
+    hold a GPU. Everything needed to know that is on the Head before the Spawn exists."""
+    proj = _sourced(tmp_path)
+    m = env.Manifest(kind="uv-project", path="pyproject.toml")
+    with pytest.raises(env.BuildError) as e:
+        env.check_supplied(proj, m, requested=[])
+    assert "--feature vlearn" in str(e.value)
+    assert env.check_supplied(proj, m, requested=["vlearn"])
+
+
+def test_a_path_source_may_not_reach_out_of_the_staging_root(tmp_path):
+    """The stub's directory is BOUND into the build Pod at the path the source resolves to. Without
+    this rule a `path` of `../../../etc` would name a system directory as the mountpoint."""
+    proj = _sourced(tmp_path, path="../../../../etc/vlearn-0.3.9-py3-none-any.whl")
+    with pytest.raises(env.BuildError) as e:
+        env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+    assert "outside" in str(e.value)
+
+
+def test_a_sibling_directory_is_as_far_as_a_path_source_reaches(tmp_path):
+    """One `..` is the ordinary layout — a checkout beside the project — and has to keep working, or
+    the rule above would refuse the very case it exists to serve."""
+    proj = _sourced(tmp_path)
+    env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+
+
+def test_only_a_wheel_can_be_stubbed(tmp_path):
+    proj = _sourced(tmp_path, path="../vlearn-main")
+    with pytest.raises(env.BuildError) as e:
+        env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+    assert "not a wheel" in str(e.value)
+
+
+class TestTheStubIsNotAWorkingPackage:
+    """What the licensing rests on. The stub exists to satisfy a resolver and must never be something
+    `import vlearn` could succeed against."""
+
+    def _built(self, tmp_path):
+        proj = _sourced(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+        binds, log = env.substitute_supplied(
+            proj, env.Manifest(kind="uv-project", path="pyproject.toml"), work)
+        wheel = next(work.rglob("*.whl"))
+        return proj, binds, log, wheel
+
+    def test_the_package_it_installs_is_empty(self, tmp_path):
+        _, _, _, wheel = self._built(tmp_path)
+        with zipfile.ZipFile(wheel) as z:
+            assert z.read("vlearn/__init__.py") == b""
+            assert not any(n.endswith(".so") for n in z.namelist())
+
+    def test_it_answers_to_the_name_and_version_the_user_declared(self, tmp_path):
+        """Read out of the FILENAME, never out of the real wheel — the Head has never seen that file.
+        It is on the submitter's own machine and is not uploaded, which is why this is synthesized
+        rather than emptied."""
+        _, _, _, wheel = self._built(tmp_path)
+        with zipfile.ZipFile(wheel) as z:
+            meta = z.read("vlearn-0.3.9.dist-info/METADATA").decode()
+            assert "Name: vlearn" in meta and "Version: 0.3.9" in meta
+            # The compatibility tag has to match too, or uv rejects the wheel as unusable here.
+            assert "Tag: cp311-cp311-linux_x86_64" in z.read("vlearn-0.3.9.dist-info/WHEEL").decode()
+
+    def test_a_wheel_outside_the_project_is_bound_in_at_the_path_it_resolves_to(self, tmp_path):
+        proj, binds, _, wheel = self._built(tmp_path)
+        assert binds == [f"{wheel.parent}:{(proj / '../wheels').resolve()}"]
+
+    def test_the_substitution_is_said_out_loud_in_the_build_log(self, tmp_path):
+        """A User who declared a wheel and got someone else's build has to be able to find out why."""
+        _, _, log, _ = self._built(tmp_path)
+        assert any("vlearn" in ln and "Arm Feature" in ln for ln in log)
+
+
+def test_a_wheel_inside_the_project_is_overwritten_where_it_lies(tmp_path):
+    """The upload carried a real wheel. It needs no bind — the project is already mounted — and the
+    stub replaces it, so what gets installed is the same either way."""
+    proj = _sourced(tmp_path, path="wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
+    real = proj / "wheels" / "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
+    real.parent.mkdir()
+    real.write_bytes(b"the user's real, licensed wheel")
+    work = tmp_path / "work"
+    work.mkdir()
+    binds, _ = env.substitute_supplied(
+        proj, env.Manifest(kind="uv-project", path="pyproject.toml"), work)
+    assert binds == []
+    assert zipfile.is_zipfile(real), "the real wheel was replaced by the stub in place"
+
+
+def test_the_lock_is_repointed_at_the_stub(tmp_path):
+    """Not an optimisation. uv records a sha256 of a path-sourced wheel and verifies it on EVERY sync,
+    plain or --locked; a mismatch is a hard failure with no re-resolve escape."""
+    import hashlib
+
+    proj = _sourced(tmp_path)
+    (proj / "uv.lock").write_text(
+        'version = 1\n\n'
+        '[[package]]\nname = "pyfiglet"\nversion = "1.0.4"\n'
+        'wheels = [{ url = "https://x/y.whl", hash = "sha256:' + "a" * 64 + '" }]\n\n'
+        '[[package]]\nname = "vlearn"\nversion = "0.3.9"\n'
+        'source = { path = "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl" }\n'
+        'wheels = [{ filename = "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", '
+        'hash = "sha256:' + "b" * 64 + '" }]\n'
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    env.substitute_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), work)
+    stub = next(work.rglob("*.whl"))
+    text = (proj / "uv.lock").read_text()
+    assert f"sha256:{hashlib.sha256(stub.read_bytes()).hexdigest()}" in text
+    # Every OTHER package stays frozen at exactly what it was resolved to.
+    assert "sha256:" + "a" * 64 in text
+    assert "sha256:" + "b" * 64 not in text
+
+
+# --- the Feature's own system libraries -------------------------------------
+# `libgym.so` links SDL2, assimp, zeromq, czmq, GLU and libcudart, resolved at LOAD time. These used to
+# come from the submitter's `environment.yml` — which is WHY a vlearn Spawn had to be a conda Spawn.
+# Now that an Environment carries its own interpreter, the manifest can be anything, and uv has no way
+# to install libassimp.so.5. So CCC builds them itself, into a prefix of its own.
+
+
+def test_a_uv_spawn_asking_for_a_feature_still_needs_micromamba(with_tools, tmp_path):
+    """The libraries are a conda prefix whatever the manifest is. A Head with uv but no micromamba
+    could build the Environment and not the Feature — and finding that out at BUILD time would cost the
+    User an Escrow for a Head that was never fully provisioned."""
+    env.MICROMAMBA_BIN.unlink()
+    m = env.Manifest(kind="uv-project", path="pyproject.toml")
+    env.require_tool(m, [])              # no Feature: uv alone is enough
+    env.require_tool(m, ["isaaclab"])    # a Feature with no libraries needs nothing extra
+    with pytest.raises(env.BuildError) as e:
+        env.require_tool(m, ["vlearn"])
+    assert "micromamba" in str(e.value)
+
+
+def test_a_feature_with_no_libraries_asks_for_nothing_extra(with_tools):
+    from ccc_head_api import features as hf
+    assert hf.lib_specs(["isaaclab"]) == {}
+    assert hf.lib_specs([])  == {}
+    assert "cuda-cudart=13" in hf.lib_specs(["vlearn"])["vlearn"]
+
+
+def test_the_library_prefix_is_built_at_the_path_it_is_later_bound_at(with_tools, tmp_path,
+                                                                     monkeypatch):
+    """A conda prefix bakes its own path into hundreds of files and does not survive being moved — the
+    same invariant the Environment rests on, for the same reason."""
+    from ccc_head_api import features as hf
+
+    seen = []
+    monkeypatch.setattr(env.subprocess, "run",
+                        lambda cmd, **kw: seen.append(cmd) or _ok())
+    proj = _project(tmp_path, **{"pyproject.toml": "x"})
+    env.build_feature_libs(proj, {"vlearn": ["sdl2"]}, "ccc-u1", tmp_path / "t")
+    argv = seen[0]
+    assert "--prefix" in argv and f"{hf.FEATLIB_MOUNT}/vlearn" in argv
+    bind = argv[argv.index("--bind") + 1]
+    assert f"{proj / env.FEATLIB_DIRNAME}:{hf.FEATLIB_MOUNT}" in bind
+
+
+def test_the_library_prefix_installs_no_interpreter(with_tools):
+    """It is bound for its lib/ directory alone and never run. A Python in here would be a second one
+    on the box for no reason — and the reason it used to need one (a pip section) is gone."""
+    from ccc_head_api import features as hf
+    assert not any(s.startswith("python") for s in hf.lib_specs(["vlearn"])["vlearn"])
+
+
+def _ok():
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+    return R()

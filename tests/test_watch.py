@@ -235,8 +235,10 @@ class TestSubmitArmsIt:
         """The default is the feature. If `run` stops arming, nothing else in this file ever fires."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "train.py").write_text("print('hi')\n")
+        (tmp_path / "requirements.txt").write_text("")
         cli("login", input="alice\nhunter2\n")
-        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt")
+        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt",
+            "--manifest", "requirements.txt")
         assert [e["dest"] for e in watch.pending()] == [str(config.OUTPUTS_DIR.resolve())]
 
     def test_dest_overrides_where_results_land(self, cli, fake_slurm, tmp_path, monkeypatch):
@@ -244,13 +246,17 @@ class TestSubmitArmsIt:
         code that produced them."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "train.py").write_text("print('hi')\n")
+        (tmp_path / "requirements.txt").write_text("")
         cli("login", input="alice\nhunter2\n")
-        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt", "--dest", str(tmp_path))
+        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt",
+            "--manifest", "requirements.txt", "--dest", str(tmp_path))
         assert [e["dest"] for e in watch.pending()] == [str(tmp_path.resolve())]
 
     def test_no_download_arms_nothing(self, cli, fake_slurm, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "train.py").write_text("print('hi')\n")
+        (tmp_path / "requirements.txt").write_text("")
         cli("login", input="alice\nhunter2\n")
-        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt", "--no-download")
+        cli("run", "train.py", "--time", "10", "--vram", "8", "-o", "ckpt",
+            "--manifest", "requirements.txt", "--no-download")
         assert watch.entries() == []

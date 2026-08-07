@@ -29,6 +29,18 @@ from dataclasses import dataclass
 # shadowing part of the other.
 FEATURE_MOUNT = "/ccc/feature"
 
+# Where the SYSTEM LIBRARIES a Feature's shared objects link against are bound — a small conda prefix
+# CCC builds on the Head per Spawn (environments.build_feature_libs) and ships inside the project, the
+# same way the Environment travels.
+#
+# A third mount for a third owner, by the same rule as FEATURE_MOUNT above. These are not the
+# submitter's dependencies and must not be in their Environment: they used to be, back when a vlearn
+# Spawn's manifest HAD to be an `environment.yml` (conda was the only way to get an interpreter vlearn
+# ships a wheel for). Now that an Environment carries its own interpreter, a submitter can declare a
+# `pyproject.toml` — and uv has no way to install libassimp.so.5. So CCC builds these itself, and a
+# submitter never has to discover by watching `import` fail that `libgym.so` wanted SDL2.
+FEATLIB_MOUNT = "/ccc/featlibs"
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -39,24 +51,24 @@ class Profile:
     variables, `featbind` and `featenv`, each a leading-comma fragment appended to the `apptainer exec`
     bind and env lists.
 
-    `conda`/`pip` are the system libraries and wheels the Feature's shared objects need — the ONE
-    canonical copy. `cuttle feature show <name>` emits a starter `environment.yml` from them, and the
-    activation Spawn builds its Environment from the same lists, so a library added for a new release
-    fixes both.
+    `libs` are the system libraries the Feature's shared objects link against — the ONE canonical copy,
+    and CCC's own responsibility rather than the submitter's. `environments.build_feature_libs` builds
+    exactly this list into a conda prefix at FEATLIB_MOUNT for every Spawn that asks for the Feature, so
+    a library added for a new release reaches every Spawn without anyone editing a manifest.
 
-    Each `conda`/`pip` entry is `(spec, why)` — the reason travels with the requirement, since "why is
-    assimp pinned to 5" is exactly what someone editing a generated `environment.yml` will ask, and
-    that file is the only place they'll be looking.
+    Each entry is `(spec, why)` — the reason travels with the requirement, since "why is assimp pinned
+    to 5" is the question a future reader of this list will actually have.
+
+    `supplies` names the packages that come from the ARM and must therefore never be installed into a
+    submitter's Environment — see `SUPPLIED_BY` and `environments.substitute_supplied`.
     """
 
     name: str
     summary: str
     python: str = ""
     python_why: str = ""
-    conda: tuple[tuple[str, str], ...] = ()
-    pip: tuple[tuple[str, str], ...] = ()
-    pip_index: str = ""
-    pip_index_why: str = ""
+    libs: tuple[tuple[str, str], ...] = ()
+    supplies: tuple[str, ...] = ()
     setup: str = ""
     # Bash appended to `setup` for an ACTIVATION Spawn only (`spawns.submit(activation=True)`), and the
     # payload that Spawn runs. This is the one Spawn allowed to see the Arm's licence *key*, as opposed
@@ -86,6 +98,24 @@ VLEARN_SETUP = r"""
 vl_pkg="$VLEARN_PKG_ROOT/$feature_abi"
 [ -d "$vl_pkg" ] || feature_fail \
   "this Spawn's Environment is Python $feature_abi, and this Arm's vlearn is built for: $(ls "$VLEARN_PKG_ROOT" 2>/dev/null | tr '\n' ' '). vlearn ships binary wheels only, so the two have to match -- pin that Python in your environment.yml. (No Environment at all means the base image's Python, which vlearn has never shipped a wheel for.)"
+# The Environment must not contain a WORKING vlearn, and this is where that is made true rather than
+# merely likely. The Head replaced the submitter's declared wheel with an empty stub before the build
+# (environments.substitute_supplied), because vlearn is licensed per machine and the copy that runs has
+# to be the copy this Arm's owner activated -- so what `uv sync` installed is a package directory with
+# nothing in it.
+#
+# sys.path would already resolve `import vlearn` to the PYTHONPATH entry below, which precedes
+# site-packages. That ordering is not a thing to rest a LICENSING invariant on: it is subtle, it is
+# Python's to change, and a `.pth` file in site-packages can reorder it. Deleting the stub outright
+# means there is only ever one vlearn on the box to find.
+if [ -n "$envmount" ] && [ -n "$feature_purelib" ]; then
+    # $feature_purelib is the Pod-side path the probe asked the interpreter for; the deletion happens
+    # out here on the ARM's filesystem, where the env is still writable -- it is bound read-only into
+    # every Pod, so this could not be done from inside one.
+    vl_site="$scratch/env${feature_purelib#$envmount}"
+    rm -rf "$vl_site/vlearn" "$vl_site"/vlearn-*.dist-info "$vl_site"/vlearn_bindings*.so \
+           "$vl_site"/*vlearn*.pth
+fi
 # vlearn resolves assets/, shaders/, cache/ and TurboActivate.dat against VL_WORKING_DIRECTORY, which
 # is this Spawn's own directory -- so those four names have to exist in it. Three come from the Arm's
 # install, and the install always wins: an upload that carried its own assets/ or shaders/ is replaced,
@@ -116,10 +146,15 @@ featbind="$featbind,$VLEARN_PATH/assets:$VLEARN_PATH/assets:ro,$VLEARN_PATH/shad
 # bindings module is the one `import vlearn` fails without.
 #
 # LD_LIBRARY_PATH is why this whole block is CCC's job. libgym.so links SDL2, assimp, zeromq, czmq, GLU
-# and libcudart dynamically; they resolve at load time, so they are needed even headless. They come
-# from the submitter's Environment (see this profile's conda/pip lists) and from the nvidia wheels in
-# it, whose lib directories the probe above asked the interpreter itself to name.
-vl_ld="%%FEATURE_MOUNT%%/vlearn/vlearn/lib"
+# and libcudart dynamically; they resolve at load time, so they are needed even headless.
+#
+# They come from the prefix CCC built for this Feature (this profile's `libs`), NOT from the
+# submitter's Environment as they used to -- an Environment can now be a `pyproject.toml`, and uv has
+# no way to install libassimp.so.5. The Environment's own lib dir stays on the path behind it, since a
+# conda manifest may still carry its own copies, and the nvidia wheel dirs the probe found go last:
+# a torch install brings its own libcudart, and if it did, that is the one its extensions were built
+# against.
+vl_ld="%%FEATURE_MOUNT%%/vlearn/vlearn/lib:%%FEATLIB_MOUNT%%/vlearn/lib"
 [ -n "$envbind" ] && vl_ld="$vl_ld:$envmount/lib"
 [ -n "$feature_nvlibs" ] && vl_ld="$vl_ld:$feature_nvlibs"
 featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=$proj,LD_LIBRARY_PATH=$vl_ld"
@@ -163,39 +198,41 @@ VLEARN = Profile(
     name="vlearn",
     summary="Vsim/vlearn — GPU physics + RL, licensed per machine (TurboActivate).",
     python="3.11",
-    python_why="the only versions vlearn ships a Linux wheel for, with 3.10 — and base.sif is 3.12, "
-               "which is why this file has to be conda (its own interpreter) and not uv (which "
-               "inherits the image's)",
+    python_why="the only versions vlearn ships a Linux wheel for, with 3.10. An Environment now "
+               "carries its own interpreter, so any manifest can ask for it — but it must be asked "
+               "for, since a binary wheel cannot be built for a version it was not compiled against",
+    # vlearn itself, which is why a submitter must never install it: the Arm holds the build its own
+    # licence covers, and CCC puts that on PYTHONPATH. A declared vlearn is replaced by an empty stub
+    # before the Environment is built (environments.substitute_supplied) and deleted again on the Arm
+    # (VLEARN_SETUP above).
+    supplies=("vlearn",),
     # libgym.so links all of these dynamically, resolving at LOAD time — required even headless
     # (missing one is an OSError on import, not a render error). conda-forge not apt: base.sif is a
     # pinned, cluster-wide image with no per-Arm hook, so baking one Feature's deps in would change
     # the image for every Arm.
-    conda=(
+    libs=(
         ("sdl2", ""),
         ("assimp=5", "conda-forge defaults to 6 (libassimp.so.6); libgym.so wants libassimp.so.5"),
         ("zeromq", ""),
         ("czmq", ""),
         ("libglu", ""),
-        ("mesalib", ""),
+        ("mesalib", "software GL, so a Spawn is not relying on --nv having injected a libGL.so.1"),
+        # From conda-forge rather than the `nvidia-cuda-runtime` PyPI wheel it used to be. That wheel
+        # needed a pip, which needed a Python, in a prefix whose whole point is that it holds neither —
+        # this prefix is libraries and nothing else. (libcuda.so.1 is the host driver's, injected by
+        # `apptainer --nv`; only the runtime comes from here.)
+        ("cuda-cudart=13", "libcudart.so.13, which libvsimdynamics.so needs and neither a uv "
+                           "Environment nor a torch-free conda one has any other source for"),
     ),
-    # Named explicitly rather than left to torch: a Spawn that doesn't need torch shouldn't carry 3 GB
-    # for one shared object, and the activation Spawn needs only libcudart. (libcuda.so.1 is the host
-    # driver's, injected by `apptainer --nv`.)
-    # NOT `nvidia-cuda-runtime-cu13`: NVIDIA dropped the `-cuXX` suffix at CUDA 13; that name is a
-    # reserved 0.0.1 PyPI placeholder with no wheels, so pip falls back to its sdist and fails to build.
-    # The unsuffixed name carries the CUDA major in its version instead, hence the pin.
-    pip=(("nvidia-cuda-runtime>=13,<14",
-          "libcudart.so.13, which libvsimdynamics.so needs and a bare conda env has no other source "
-          "for"),),
-    pip_index="https://download.pytorch.org/whl/cu130",
-    pip_index_why="cu130, to match base.sif's CUDA and vlearn's own build",
     setup=VLEARN_SETUP,
     activation=VLEARN_ACTIVATION,
     activation_script=VLEARN_ACTIVATE_PY,
     notes=(
         "assets/, shaders/, cache/ and TurboActivate.dat come from the Arm — do not upload your own.",
-        "Do not add vlearn itself here. The Arm supplies the build its own licence covers, and CCC "
-        "puts it on this Spawn's PYTHONPATH.",
+        "You may declare vlearn as a path to your own wheel, and should if that is what makes your "
+        "project resolve. CCC replaces it with an empty placeholder before building, and removes "
+        "that again on the Arm: what you import is the Arm's own build, which is the one its licence "
+        "covers. A Spawn that declares vlearn must also ask for this Feature.",
     ),
 )
 
@@ -208,10 +245,10 @@ PROFILES: dict[str, Profile] = {VLEARN.name: VLEARN}
 # The preamble every profiled Spawn gets, once, before the individual blocks. Rendered only when at
 # least one requested Feature HAS a profile — an ordinary Spawn's script doesn't contain it at all.
 #
-# The probe is one Pod launch asking this Spawn's own interpreter two questions rather than assuming
-# either: which ABI tag a Feature's binary package must match, and where the nvidia wheels in that
-# Environment put their shared libraries. Runs on the ARM, where the Environment has landed and where
-# the Feature's package lives — both halves of the comparison are here.
+# The probe is one Pod launch asking this Spawn's own interpreter three questions rather than assuming
+# any of them: which ABI tag a Feature's binary package must match, where the nvidia wheels in that
+# Environment put their shared libraries, and where its site-packages is. Runs on the ARM, where the
+# Environment has landed and where the Feature's package lives — both halves of the comparison are here.
 PREAMBLE = r"""
 # Arm **Features** were requested, so CCC arranges each one's runtime here -- package, binds, working
 # directory, cache and env vars -- and the submitter's script contains none of it. See
@@ -229,9 +266,12 @@ feature_probe=$(apptainer exec --contain $dxg --bind "$proj$envbind" "$sif" $py 
 import glob, os, sys, sysconfig
 print("cp%d%d" % sys.version_info[:2])
 print(":".join(sorted(glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "*", "lib")))))
+print(sysconfig.get_paths()["purelib"])
 ' 2>>"$err")
 feature_abi=$(printf %s "$feature_probe" | sed -n 1p)
 feature_nvlibs=$(printf %s "$feature_probe" | sed -n 2p)
+# Pod-side, so it starts with $envmount; a profile that needs the ARM-side path rewrites the prefix.
+feature_purelib=$(printf %s "$feature_probe" | sed -n 3p)
 [ -n "$feature_abi" ] || feature_fail \
   "could not run this Spawn's interpreter ($py) to identify it, which every Feature below needs. If this Spawn declared an Environment, its build is the place to look."
 """
@@ -256,16 +296,64 @@ def setup_snippet(features: list[str], activation: bool = False) -> str:
               for n in sorted(set(features)) if n in PROFILES]
     if not blocks:
         return ""
-    return (PREAMBLE + "".join(blocks)).replace("%%FEATURE_MOUNT%%", FEATURE_MOUNT)
+    return (PREAMBLE + "".join(blocks)).replace("%%FEATURE_MOUNT%%", FEATURE_MOUNT) \
+                                       .replace("%%FEATLIB_MOUNT%%", FEATLIB_MOUNT)
+
+
+# Which Feature supplies a package the submitter must therefore not install: `{package: feature}`.
+# Built from the profiles rather than written out, so adding a package to a Profile's `supplies` is the
+# only edit needed. Names are lowercased — a dependency may be spelled any way PEP 503 allows.
+SUPPLIED_BY: dict[str, str] = {
+    pkg.lower(): p.name for p in PROFILES.values() for pkg in p.supplies
+}
+
+
+def lib_specs(features: list[str]) -> dict[str, list[str]]:
+    """The conda specs each requested Feature needs built, `{feature: [spec, ...]}`, skipping those
+    with none. What `environments.build_feature_libs` turns into a prefix at FEATLIB_MOUNT.
+
+    Ordered by Feature name so the same request builds the same prefix — a solve that varies with
+    argument order would make two identical Spawns ship different bytes.
+    """
+    return {n: [s for s, _why in PROFILES[n].libs]
+            for n in sorted(set(features)) if n in PROFILES and PROFILES[n].libs}
+
+
+# The activation Spawn's whole manifest: an interpreter of the right version and nothing else.
+#
+# It used to be the same starter `environment.yml` a submitter was handed, carrying the full system
+# library list — because back then that file was the ONLY way to get a Python vlearn ships a wheel for,
+# and the libraries had nowhere else to live. Both halves of that have gone: an Environment carries its
+# own interpreter whatever its manifest, and the libraries are CCC's own prefix now (`lib_specs`),
+# built for this Spawn because it asks for the Feature like any other. So what is left to declare is
+# the version, which is a real requirement — a binary wheel cannot be built for an ABI it was not
+# compiled against, and this is the one Spawn CCC writes the manifest for.
+#
+# `package = false` because there is no package here to install: two loose files, no build backend.
+ACTIVATION_PYPROJECT = """\
+# Written by CCC to activate the '{name}' Arm Feature — not a file anyone edits.
+[project]
+name = "ccc-{name}-activation"
+version = "0"
+# {why}
+requires-python = "=={python}.*"
+dependencies = []
+
+[tool.uv]
+package = false
+"""
+
+# Only reached by a profile with an activation script but no pinned Python — none today, and a Feature
+# whose package is not a binary wheel would legitimately not care which interpreter it activates under.
+DEFAULT_ACTIVATION_PYTHON = "3.12"
 
 
 def activation_project(name: str) -> dict[str, str]:
     """The whole project an activation Spawn uploads for `name`: `{filename: contents}`.
 
-    Two files, no repository. The Environment comes from the same profile every submitter's starter
-    `environment.yml` does, so a release adding a system library reaches both at once. Deliberately
-    excludes vlearn itself: the package a Spawn imports comes from the Arm's own unpacked wheel (the
-    copy the licence covers), and installing a second from an index would activate the wrong build.
+    Two files, no repository. Deliberately excludes the Feature's own package: what a Spawn imports
+    comes from the Arm's unpacked wheel (the copy the licence covers), and installing a second from an
+    index would activate the wrong build.
 
     Raises KeyError for a Feature with no activation — most don't; an Arm declaring one is simply
     admitted without this step.
@@ -273,7 +361,11 @@ def activation_project(name: str) -> dict[str, str]:
     p = PROFILES[name]
     if not p.activation_script:
         raise KeyError(name)
-    return {"environment.yml": environment_yml(name), "activate.py": p.activation_script}
+    return {
+        "pyproject.toml": ACTIVATION_PYPROJECT.format(
+            name=p.name, python=p.python or DEFAULT_ACTIVATION_PYTHON, why=p.python_why),
+        "activate.py": p.activation_script,
+    }
 
 
 def needs_activation(features: list[str]) -> list[str]:
@@ -282,50 +374,39 @@ def needs_activation(features: list[str]) -> list[str]:
             if n in PROFILES and PROFILES[n].activation_script]
 
 
-def environment_yml(name: str) -> str:
-    """A starter `environment.yml` for a Feature, from the profile's one canonical library list.
+def runtime_summary(name: str) -> str:
+    """What CCC arranges for a Feature, in prose — served by `GET /features/{name}/runtime` and printed
+    by `cuttle feature show <name>`.
 
-    Served by `GET /features/{name}/environment.yml` and printed by `cuttle feature show <name>`, so
-    there is exactly one copy of "what does this software link against" in the codebase and it is this
-    one. A submitter adds their own dependencies to what comes out; the point is that they never have
-    to discover the system libraries by watching `import` fail.
+    This used to emit a starter `environment.yml` for the submitter to copy into their project, because
+    the system libraries below had to be in THEIR manifest or nothing would load them. CCC builds them
+    itself now (`lib_specs`, `environments.build_feature_libs`), so copying this list into a project
+    would only install a second copy of it — hence a description rather than a file.
+
+    The list is still here, and still the one canonical copy, because "why is my Environment 500 MB
+    bigger when I ask for vlearn" and "which Python may I pin" are questions someone will have.
 
     Raises KeyError for a Feature with no profile — the caller turns that into a 404, since "this name
     has no runtime to describe" is a real and permanent answer, not an error.
     """
     p = PROFILES[name]
-
-    def spec(indent: str, s: str, why: str) -> list[str]:
-        """One dependency line, with its reason inline if it fits and above it if it does not — a
-        wrapped trailing comment is not a thing YAML has, and a 200-column line is not a thing anyone
-        reads."""
-        line = f"{indent}- {s}"
-        if not why:
-            return [line]
-        if len(line) + len(why) + 5 <= 99:
-            return [f"{line}   # {why}"]
-        return [f"{indent}# {w}" for w in textwrap.wrap(why, 96 - len(indent))] + [line]
-
-    out = [f"# Starter Environment for the '{p.name}' Arm Feature — `cuttle feature show {p.name}`.",
-           f"# {p.summary}"]
+    out = [f"{p.name} — {p.summary}", ""]
     for n in p.notes:
-        out += ["#"] + [f"# {w}" for w in textwrap.wrap(n, 96)]
-    out += [f"name: {p.name}", "channels:", "  - conda-forge", "dependencies:"]
-    if p.python:
-        out += spec("  ", f"python={p.python}", p.python_why)
-    out.append("  - pip")
-    out.append("")
-    out.append(f"  # What {p.name}'s shared objects link against. They resolve at LOAD time, so a")
-    out.append("  # missing one is an ImportError rather than a missing-feature error at run time.")
-    for s, why in p.conda:
-        out += spec("  ", s, why)
-    if p.pip:
+        out += textwrap.wrap(n, 96, initial_indent="  ", subsequent_indent="  ") + [""]
+    if p.libs:
+        out.append("CCC builds these into every Spawn that asks for this Feature. Do not declare them")
+        out.append("yourself — they are system libraries, and no Python manifest can install them:")
+        for s, why in p.libs:
+            out.append(f"  {s}" + (f"   # {why}" if why and len(s) + len(why) < 88 else ""))
+            if why and len(s) + len(why) >= 88:
+                out += textwrap.wrap(why, 92, initial_indent="      # ", subsequent_indent="      # ")
         out.append("")
-        out.append("  - pip:")
-        if p.pip_index:
-            out += spec("      ", f"--extra-index-url {p.pip_index}", p.pip_index_why)
-        for s, why in p.pip:
-            out += spec("      ", s, why)
-    out.append("")
-    out.append("  # Your own dependencies go below, in whichever of the two lists they belong to.")
-    return "\n".join(out) + "\n"
+    if p.python:
+        out.append(f"Your Environment must be Python {p.python}.")
+        out += textwrap.wrap(p.python_why, 96, initial_indent="  ", subsequent_indent="  ")
+        out.append("")
+        out.append("Any manifest can ask for it — an Environment carries its own interpreter:")
+        out.append(f'  pyproject.toml   requires-python = "=={p.python}.*"')
+        out.append(f"  environment.yml  - python={p.python}")
+        out.append(f"  requirements.txt put {p.python} in a .python-version file beside it")
+    return "\n".join(out).rstrip() + "\n"

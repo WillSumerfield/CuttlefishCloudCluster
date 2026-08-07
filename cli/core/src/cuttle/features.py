@@ -266,8 +266,8 @@ def features_env_extras(features: list[dict]) -> list[str]:
     return lines
 
 
-def environment_yml(name: str) -> str:
-    """A starter `environment.yml` for `name`, **from the Head** (`GET /features/{name}/environment.yml`).
+def runtime_summary(name: str) -> str:
+    """What CCC arranges for `name`, **from the Head** (`GET /features/{name}/runtime`).
 
     The one thing here that is not offline, and deliberately not local: the list of system libraries a
     Feature's software links against belongs next to the code that builds against it, which is
@@ -278,7 +278,7 @@ def environment_yml(name: str) -> str:
     client = auth._client()
     client.token = auth._load_token()
     try:
-        return (client.raw(f"/features/{name}/environment.yml") or b"").decode()
+        return (client.raw(f"/features/{name}/runtime") or b"").decode()
     except api.ApiError as e:
         if ui.DEBUG:
             raise

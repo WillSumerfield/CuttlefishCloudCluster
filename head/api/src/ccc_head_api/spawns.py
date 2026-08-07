@@ -33,6 +33,7 @@ import io
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import threading
@@ -338,22 +339,38 @@ fi
 %%MKDIR_OUTPUTS%%
 
 cd "$proj"
+# Scratch for whatever the payload runs, on DISK — the same fix `environments.py` makes for the BUILD
+# Pod, applied to the Pod that runs the work. `--contain` gives a Pod a private /tmp carved from
+# apptainer's session directory, a RAM tmpfs capped by `sessiondir max size` (64MB, apptainer's stock
+# default — CCC does not set it), and that same 64MB also backs `--writable-tmpfs`. Nothing sets TMPDIR,
+# so anything writing a large temp file lands there: pip unpacking a wheel, torch extracting a dataset,
+# a script calling tempfile. It dies as ENOSPC, and pip in particular reports that as "This is an issue
+# with network connectivity, not pip" — which sends the User debugging the mesh instead of the disk.
+#
+# Deliberately OUTSIDE $proj: recover_scratch() copies $proj for the Recovery Window and measures it
+# against RECOVERY_MAX_BYTES, so a cache in there would eat a User's recovery for temp files nobody
+# wants back. The EXIT trap's `rm -rf "$scratch"` takes it either way.
+mkdir -p "$scratch/tmp/pip"
 # The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one. The Head built
 # it before this Spawn was ever placed, and it travelled INSIDE the project — so it needed no transfer of
 # its own on either branch.
 #
 # Moved OUT of $proj before anything runs, and that is not tidiness: $proj is what recover_scratch()
-# copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so an 8GB conda env left in
+# copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so a multi-GB env left in
 # place would silently disable recovery for exactly the Spawns most likely to need it.
 #
 # Bound at ONE absolute path, the same one it was built at, because neither shape survives being moved:
-# a venv bakes its prefix into pyvenv.cfg and every console-script shebang, and a conda prefix bakes it
-# into hundreds of files. The directory underneath differs on the Head and on an Arm; the path the env
-# sees never does.
+# a venv bakes its prefix into pyvenv.cfg, its own interpreter symlink and every console-script shebang,
+# and a conda prefix bakes it into hundreds of files. The directory underneath differs on the Head and on
+# an Arm; the path the env sees never does.
 #
 # `envmount` carries the Pod-side path as a VARIABLE, empty when this Spawn declared no Environment,
 # because an Arm **Feature**'s setup block below has to name it (its LD_LIBRARY_PATH includes the
 # Environment's own lib dir) and those blocks arrive already substituted — see _render.
+#
+# The `else` is reachable by exactly one kind of Spawn now that declaring is mandatory: a **Tide Pool**,
+# which may decline. It never uses `$py` — its payload boots a login daemon rather than an interpreter —
+# so the fallback below matters only to `$envbind`/`$envmount`, which correctly stay empty.
 py="%%BASE_INTERPRETER%%"; envbind=""; envmount=""
 if [ -d "$proj/%%ENV_DIRNAME%%" ]; then
     mv "$proj/%%ENV_DIRNAME%%" "$scratch/env"
@@ -363,6 +380,17 @@ fi
 # Spawn: only a Feature with a runtime *profile* renders anything here, and what it renders contributes
 # to these two accumulators, which the payload appends to its bind and env lists.
 featbind=""; featenv=""
+# The system libraries those Features link against — a conda prefix per Feature, built on the Head
+# (environments.build_feature_libs) and carried inside the project like the Environment, then moved out
+# of $proj for the same reason: $proj is what the Recovery Window measures.
+#
+# Seeded into $featbind rather than bound by the payload directly, because that is already the list of
+# "things an Arm Feature needs mounted" and it is already on both payloads' --bind. Read-only: nothing
+# writes to it, and each profile's block below puts its own prefix on LD_LIBRARY_PATH.
+if [ -d "$proj/%%FEATLIB_DIRNAME%%" ]; then
+    mv "$proj/%%FEATLIB_DIRNAME%%" "$scratch/featlibs"
+    featbind=",$scratch/featlibs:%%FEATLIB_MOUNT%%:ro"
+fi
 %%FEATURE_SETUP%%
 # Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
 # fail rather than fall back to the account default.
@@ -429,8 +457,8 @@ exit $rc
 # interpreter named here can never be one the bind did not provide.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
-  --bind "$proj,$ccc_out$envbind$licbind$featbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out$featenv" \\
+  --bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$featenv" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
@@ -512,8 +540,35 @@ echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" >> /etc/profile.d/ccc-tidepool.sh
 # first on PATH rather than making the User type the interpreter's full path. Writable, too (it is this
 # session's own node-local copy, so read-only would buy no safety): `pip install` at the shell works and
 # dies with the session, which is most of what a Tide Pool is for.
-[ -x %%ENV_MOUNT%%/bin/python ] && \\
-  echo "export PATH=\\"%%ENV_MOUNT%%/bin:\\$PATH\\"" >> /etc/profile.d/ccc-tidepool.sh
+[ -x %%ENV_BINDIR%%/python ] && \\
+  echo "export PATH=\\"%%ENV_BINDIR%%:\\$PATH\\"" >> /etc/profile.d/ccc-tidepool.sh
+# Everything above is in this profile rather than in apptainer's `--env` for one reason, and it is the
+# same reason the two lines below have to be here too: **sshd builds a FRESH environment for every
+# session and does not pass its own down.** Confirmed by experiment (2026-08-07): a marker variable and
+# a TMPDIR set in sshd's own environment both come back EMPTY inside the session. So everything
+# apptainer hands this Pod through --env reaches THIS script and stops here.
+#
+# W&B is the half that was silently missing. `$wenv` puts the submitter's key in the Pod's environment
+# exactly as it does for a Script Spawn — but a Script Spawn runs `$py` directly under apptainer, while
+# here sshd stands in between and drops it. So `wandb.init()` at a Tide Pool shell ran unauthenticated,
+# and the Head's promise that "a Spawn logs to its submitter's own account" (CONTEXT.md) was not true
+# of the one Spawn a User is actually sitting inside. Only the names that are SET are written: an empty
+# WANDB_ENTITY makes wandb.init() fail rather than fall back to the account default (see `wenv` above).
+#
+# Single-quoted, and the file is then 0600: this writes a User's API key to disk inside the Pod. No new
+# exposure — it is already in PID 1's environment in this same Pod, the overlay dies with the session,
+# and a **Guise** is the only account that can log in here — but a secret in a world-readable
+# /etc/profile.d is not a thing to leave lying around even for an hour.
+for v in WANDB_API_KEY WANDB_PROJECT WANDB_ENTITY WANDB_MODE WANDB_NAME; do
+  if [ -n "${!v-}" ]; then echo "export $v='${!v}'" >> /etc/profile.d/ccc-tidepool.sh; fi
+done
+# The Pod's own /tmp is a RAM tmpfs sharing 64MB with the --writable-tmpfs overlay (see the mkdir in
+# JOB_SCRIPT). Point the shell at the bound disk scratch instead, or `pip install` at a Tide Pool —
+# the thing a Tide Pool is most used for — dies on any wheel bigger than what is left of that 64MB,
+# with pip blaming the network for it.
+echo "export TMPDIR=/ccc-tmp" >> /etc/profile.d/ccc-tidepool.sh
+echo "export PIP_CACHE_DIR=/ccc-tmp/pip" >> /etc/profile.d/ccc-tidepool.sh
+chmod 600 /etc/profile.d/ccc-tidepool.sh
 # UsePAM no: `ccc` is a `useradd --system` account with no /etc/shadow entry inside the Pod (the image
 # only bakes /etc/passwd + /etc/group — see BASE_DEF_TMPL), so PAM's account phase (pam_unix, checking a
 # shadow entry that doesn't exist) refuses the session even after the ephemeral keypair already
@@ -531,8 +586,8 @@ CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$ccc_out,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj$featenv" \\
+  --bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
@@ -540,7 +595,8 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
             files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
-            features: list[str] | None = None, activation: bool = False) -> str:
+            features: list[str] | None = None, activation: bool = False,
+            declared: environments.Manifest | None = None) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
@@ -578,14 +634,26 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # Recovery Window: the per-Spawn cap `recover_scratch` gates on, both branches.
         "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
-        # The Spawn's **Environment** (environments.py). Every one of these is a constant, not a
-        # per-Spawn value: whether this Spawn HAS an env is decided by the rendered script at run time
-        # (`[ -d "$proj/.ccc-env" ]`), not here — so one rendering serves both cases and a build that
-        # produced nothing degrades to the base interpreter on its own.
+        # The Spawn's **Environment** (environments.py). The first two are constants — one mount point,
+        # on every machine — but the interpreter is NOT: a conda prefix keeps its python at
+        # `ENV_MOUNT/bin`, a uv env one level down in its venv, and only the manifest says which shape
+        # was built. Whether this Spawn HAS an env is still decided by the rendered script at run time
+        # (`[ -d "$proj/.ccc-env" ]`) rather than here, so a build that produced nothing degrades to the
+        # base interpreter on its own — which is also what these two fall back to when nothing was
+        # declared, leaving the unused branch inert rather than naming a path that could never exist.
         "%%ENV_DIRNAME%%": environments.ENV_DIRNAME,
         "%%ENV_MOUNT%%": environments.ENV_MOUNT,
-        "%%ENV_INTERPRETER%%": environments.ENV_INTERPRETER,
+        "%%ENV_INTERPRETER%%": declared.interpreter if declared else environments.BASE_INTERPRETER,
+        # ENV_MOUNT itself when nothing was declared: the mount does not exist in that Pod, so the Tide
+        # Pool's `[ -x ... ]` test is simply false. A real directory (/usr/bin) would pass it and put the
+        # image's own bin first on PATH for no reason.
+        "%%ENV_BINDIR%%": declared.bin_dir if declared else f"{environments.ENV_MOUNT}/bin",
         "%%BASE_INTERPRETER%%": environments.BASE_INTERPRETER,
+        # The Arm **Feature** library prefix, on the same terms as the Environment above: a constant
+        # mount point, and a run-time `[ -d ]` test deciding whether this Spawn actually has one — so a
+        # Spawn requesting only unprofiled Features renders these and never uses them.
+        "%%FEATLIB_DIRNAME%%": environments.FEATLIB_DIRNAME,
+        "%%FEATLIB_MOUNT%%": features_mod.FEATLIB_MOUNT,
         "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),
         "%%HEAD_IP%%": MESH_IP,
@@ -653,39 +721,45 @@ def _lend_project(staging: Path, guise: str) -> None:
 
 
 def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
-           tar_path: Path, minutes: int, constraint: str, outputs: list[str], node: str | None = None,
-           vram_gb: int = 0, hold: float | None = None, exclude: str = "",
+           tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
+           node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None,
            features: list[str] | None = None, activation: bool = False,
-           background_build: bool = True) -> int:
-    """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
-    Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
-    Spawn to one Arm.
+           background_build: bool = True, source_dir: Path | None = None,
+           recipe_name: str | None = None) -> int:
+    """Unpack an uploaded project (or copy an already-on-disk one), render + sbatch it **as the
+    submitter's Guise**, and record the Attribution row + the Karma Escrow. Returns the Slurm job id
+    (== the Spawn id). `node` pins the Spawn to one Arm.
 
     `hold` is the Escrow quoted by the caller, or **None** for a Spawn nobody is charged for (an
     Admin's — the Admin is outside the economy). It is written in the SAME transaction as the
     Attribution row: a Spawn that existed without its hold, even briefly, would be one its submitter's
     Share had not yet been charged for, which is precisely the window a queue-flooder wants.
 
-    `tar_path` is a spooled file, not bytes: the caller streams the upload to disk so a large project
-    never sits in this process's memory (see main._spool_upload). tarfile reads it incrementally. A
-    Tide Pool still uploads one (an empty gzip-tar — every client sends the same wire shape) since
-    there is no project to run; `script` rides along as None and the tar's member list is never checked
-    against it.
+    Exactly one of `tar_path`/`source_dir` names where the project comes from. `tar_path` is a spooled
+    file, not bytes: the caller streams the upload to disk so a large project never sits in this
+    process's memory (see main._spool_upload). tarfile reads it incrementally. A Tide Pool still
+    uploads one (an empty gzip-tar — every client sends the same wire shape) since there is no project
+    to run; `script` rides along as None and the tar's member list is never checked against it.
+    `source_dir` is the other way in — a directory ALREADY on this Head's disk, copied rather than
+    unpacked. The one caller today is `recipes.run`: a Recipe's code already sits in its own durable
+    directory, and this Spawn needs its own disposable COPY of it (its staging dir is deleted after
+    stage-in; the Recipe's is not, and must survive to be run again).
 
     `outputs` names the subdirs made under the one `$CCC_OUT` root before the payload runs — checked
     here, not just at the HTTP boundary, so the Head-local pinned path (`cuttle run --node`) gets the
     identical guarantee. Both checks below (outputs
-    non-empty, script present in the tar) are hard validation for an ORDINARY Spawn: a Spawn that failed
-    either would either write nowhere retrievable or never start at all, so neither is worth a Spawn's
-    Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no script to
-    find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can enforce ahead
-    of time (the CLI still warns, see cuttle/tidepool.py).
+    non-empty, script present in the project) are hard validation for an ORDINARY Spawn: a Spawn that
+    failed either would either write nowhere retrievable or never start at all, so neither is worth a
+    Spawn's Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no
+    script to find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can
+    enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
 
     `background_build` is whether this process will still exist when the Environment build finishes.
     True for the API service, which is the case the whole `--hold`-then-release dance was designed
     around. False for a caller that returns and dies — see `start_build`.
     """
+    assert (tar_path is None) != (source_dir is None), "submit() needs exactly one of tar_path/source_dir"
     # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
     # Arm, and only discoverable minutes later, on another machine, as a Spawn that "vanished". We
@@ -704,21 +778,35 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
 
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
-    # Checked against the tar's own member list, BEFORE anything is written to disk: a script that isn't
-    # here would never start (or, worse, silently run some OTHER script if bash's glob ever changed
-    # underneath us), and refusing before staging.mkdir() means a bad submission leaves nothing behind.
-    # Skipped for a Tide Pool — `script` is None, and its (empty) tar names nothing to find.
-    with tarfile.open(tar_path, mode="r:gz") as tf:
-        if not tidepool and script not in tf.getnames():
-            raise ValueError(f"script {script!r} was not found in the uploaded project — check the "
-                             f"path matches exactly (and isn't excluded by .gitignore)")
-        # 0700, not the service's ambient umask: an uploaded project is the User's own tree and may
-        # itself carry a secret (a stray .env), so what it lands as must not depend on whoever
-        # provisioned this Head. The Guise reaches it through `_lend_project`'s ACL, not through the
-        # mode — a named-user ACL entry is what grants access here, so tightening this changes nothing
-        # for the Spawn that owns it.
+    if source_dir is not None:
+        # The `source_dir` path in: a Recipe's code, already extracted and sitting in ITS OWN durable
+        # directory. Checked against the disk directly, same reasoning as the tar member check below —
+        # refusing before staging.mkdir() means a bad run leaves nothing behind.
+        if not tidepool and not (source_dir / script).is_file():
+            raise ValueError(f"script {script!r} was not found in the recipe's project — it may have "
+                             f"been captured around a folder that no longer contains it")
+        # 0700 for the same reason the tar path uses it below — see its comment. copytree preserves the
+        # SOURCE tree's own file/dir permissions underneath, which is fine: `_lend_project`'s ACL is what
+        # actually grants the Guise access, not the mode.
         staging.mkdir(parents=True, mode=0o700)
-        tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
+        shutil.copytree(source_dir, staging, dirs_exist_ok=True, symlinks=True)
+    else:
+        # Checked against the tar's own member list, BEFORE anything is written to disk: a script that
+        # isn't here would never start (or, worse, silently run some OTHER script if bash's glob ever
+        # changed underneath us), and refusing before staging.mkdir() means a bad submission leaves
+        # nothing behind. Skipped for a Tide Pool — `script` is None, and its (empty) tar names nothing
+        # to find.
+        with tarfile.open(tar_path, mode="r:gz") as tf:
+            if not tidepool and script not in tf.getnames():
+                raise ValueError(f"script {script!r} was not found in the uploaded project — check the "
+                                 f"path matches exactly (and isn't excluded by .gitignore)")
+            # 0700, not the service's ambient umask: an uploaded project is the User's own tree and may
+            # itself carry a secret (a stray .env), so what it lands as must not depend on whoever
+            # provisioned this Head. The Guise reaches it through `_lend_project`'s ACL, not through the
+            # mode — a named-user ACL entry is what grants access here, so tightening this changes
+            # nothing for the Spawn that owns it.
+            staging.mkdir(parents=True, mode=0o700)
+            tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
     # The Guise is allocated HERE rather than just before sbatch, because the **Environment** build
     # below runs as it — a manifest is code, and CCC runs no User's code as the Mantle (CONTEXT.md,
     # **Guise**). `_lend_project` comes with it: the build enters a Pod with the project bound and this
@@ -728,30 +816,31 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     _lend_project(staging, guise)
 
     # DETECTION is synchronous; the BUILD is not. Detection is a couple of stat calls, and everything it
-    # can raise is bad input — a manifest that does not exist, or one nothing can classify — so it stays
-    # here where a BuildError is still a plain 4xx and no Spawn has been brought into existence.
-    # A Tide Pool is included deliberately: you debug against the Environment your Spawn would get, or
-    # you are not debugging the thing that failed. (Its tar is empty, so it declares nothing and this is
-    # a no-op — unless a User picked a project for it, which is exactly when it matters.)
-    found = environments.detect(staging, manifest)
-    # A Head with no uv/micromamba runs the Spawn on the cluster base instead of refusing it. Skipping
-    # is the whole point: a project with a `pyproject.toml` submitted fine before this feature existed,
-    # and a Head that cannot build must not be the reason it stops. `found` is kept either way — it is
-    # what the echo names, so the User is told which manifest went unbuilt and not merely that one did.
-    absent = environments.missing_tool(found) if found else None
-    if absent:
-        log.warning("no %s on this Head — spawn %s runs on the cluster base", absent, uuid)
-    declared = None if absent else found
+    # and `require_tool` can raise is a REJECTION — nothing declared, a manifest that does not exist, one
+    # nothing can classify, a Head without the tools — so both stay here, where a BuildError is still a
+    # plain 4xx and no Spawn has been brought into existence to Escrow or queue.
+    #
+    # A **Tide Pool** is the one Spawn that may decline: it is a shell, not a run, and a bare one uploads
+    # an empty tar with no file in it to name. Declaring is still allowed there and still builds — the
+    # exemption is from the requirement, not from the feature.
+    declared = None
+    if manifest or not tidepool:
+        declared = environments.detect(staging, manifest)
+        environments.require_tool(declared, features or [])
+        # Anything the project declares that an **Arm Feature** supplies instead. A rejection for the
+        # same reason as the two above — asking for a Feature's package without asking for the Feature
+        # is decided here, in stat calls, and would otherwise be an ImportError after a GPU was held.
+        environments.check_supplied(staging, declared, features or [])
 
     # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
     # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
     # that re-rooting IS the isolation, and it is why the list no longer carries a <uuid>/ prefix. The
     # upload was already gitignore-filtered client-side, so every file here is meant to transfer.
     #
-    # Symlinks are listed too, and that is load-bearing for the Environment: a --system-site-packages
-    # venv's `bin/python` points into the Pod image, which does not exist on the Head's own filesystem,
-    # so `is_file()` alone reports it missing and the env would arrive on the Arm with no interpreter.
-    # rsync -a copies a symlink AS a symlink, and inside the Pod on the Arm it resolves.
+    # Symlinks are listed too, and that is load-bearing for the Environment: a venv's `bin/python` is an
+    # absolute link to ENV_MOUNT, a path that exists only INSIDE a Pod and never on the Head's own
+    # filesystem — so `is_file()` alone reports it missing and the env would arrive on the Arm with no
+    # interpreter. rsync -a copies a symlink AS a symlink, and inside the Pod on the Arm it resolves.
     files = [p.relative_to(staging).as_posix() for p in staging.rglob("*")
              if p.is_symlink() or p.is_file()]
     # The env does not exist yet — it is built after sbatch, behind the held job — so it cannot be
@@ -762,6 +851,10 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # filled it in.
     if declared is not None:
         files.append(environments.ENV_DIRNAME)
+        # Same trick, same reason, for the **Arm Feature** library prefix: built behind the hold, so it
+        # cannot be enumerated either, and one directory entry stands in for whatever lands there.
+        if features_mod.lib_specs(features or []):
+            files.append(environments.FEATLIB_DIRNAME)
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -779,7 +872,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     token, secret = siphons.open(uuid)
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
-                   wants_licence=bool(features), features=features, activation=activation)
+                   wants_licence=bool(features), features=features, activation=activation,
+                   declared=declared)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -827,14 +921,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # build failure at all: nothing else would ever mention it, and the User would meet it as an
         # ImportError after paying for a GPU.
         (SPAWNS_DIR / str(job_id) / "environment").write_text(
-            environments.describe(found, absent) + "\n")
+            environments.describe(declared) + "\n")
         # Only now can the out module name a path. The proj half has been live since before sbatch; this
         # adds the other and renames the pair to the job id, which is how the tick finds it to close.
         siphons.bind(token, job_id)
         with db.connect() as conn:
             db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
                             vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool,
-                            build_state=db.BUILDING if declared else None)
+                            build_state=db.BUILDING if declared else None, recipe_name=recipe_name)
             if tidepool:
                 db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
     except Exception:
@@ -853,13 +947,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # and no Escrow to settle.
     if declared is not None:
         if background_build:
-            start_build(job_id, staging, declared, guise)
+            start_build(job_id, staging, declared, guise, features or [])
         else:
-            _build_then_release(job_id, staging, declared, guise)
+            _build_then_release(job_id, staging, declared, guise, features or [])
     return job_id
 
 
-def start_build(job_id: int, staging: Path, declared, guise: str) -> None:
+def start_build(job_id: int, staging: Path, declared, guise: str,
+                feature_names: list[str] | None = None) -> None:
     """Run this Spawn's Environment build behind the request that submitted it.
 
     A thread rather than a unit of its own: the API process is already the only writer of
@@ -873,15 +968,17 @@ def start_build(job_id: int, staging: Path, declared, guise: str) -> None:
     `--hold`ed by then, so it is not merely unbuilt, it is unrunnable, forever. The Head API survives
     its own requests and is fine; a CLI does not.
     """
-    threading.Thread(target=_build_then_release, args=(job_id, staging, declared, guise),
+    threading.Thread(target=_build_then_release,
+                     args=(job_id, staging, declared, guise, feature_names or []),
                      name=f"ccc-build-{job_id}", daemon=True).start()
 
 
-def _build_then_release(job_id: int, staging: Path, declared, guise: str) -> None:
+def _build_then_release(job_id: int, staging: Path, declared, guise: str,
+                        feature_names: list[str] | None = None) -> None:
     """Build, then either let the Spawn go or fail it. Never raises — it is a thread, and an exception
     here would vanish into the void leaving a held Spawn nobody is coming back for."""
     try:
-        log_text = environments.build(staging, declared, guise)
+        log_text = environments.build(staging, declared, guise, feature_names or [])
         _write_build_log(job_id, log_text)
         environments.prune_cache()
     except environments.BuildError as e:
@@ -1010,11 +1107,12 @@ def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = Tr
 
 
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
-                   wandb_env: dict[str, str], tar_path: Path, minutes: int, vram_gb: int,
+                   wandb_env: dict[str, str], tar_path: Path | None, minutes: int, vram_gb: int,
                    outputs: list[str], node: str | None = None, wandb: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, activation: bool = False,
-                   background_build: bool = True) -> int:
+                   background_build: bool = True, source_dir: Path | None = None,
+                   recipe_name: str | None = None) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
@@ -1045,6 +1143,10 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
 
     Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
     already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
+
+    `source_dir`/`recipe_name` are `recipes.run`'s pair — a pre-staged directory instead of an upload,
+    and the name that links the resulting Spawn back to it (see `submit`, `db.record_spawn`). Every
+    other caller leaves both None.
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
@@ -1092,6 +1194,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, features=features, activation=activation,
+                  source_dir=source_dir, recipe_name=recipe_name,
                   background_build=background_build)
 
 

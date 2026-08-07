@@ -326,10 +326,13 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
     def _tar(self, tmp_path: Path) -> Path:
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            data = b"print('hi')\n"
-            info = tarfile.TarInfo("train.py")
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
+            # The manifest rides along in every project tar here: a Spawn that declares no
+            # **Environment** is refused before sbatch, which is not the failure these tests are about.
+            for name in ("train.py", "requirements.txt"):
+                data = b"print('hi')\n"
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
         path = tmp_path / "project.tar.gz"
         path.write_bytes(buf.getvalue())
         return path
@@ -358,7 +361,7 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
         with pytest.raises(OSError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
                                tar_path=self._tar(tmp_path), minutes=60, constraint="",
-                               outputs=["out"])
+                               outputs=["out"], manifest="requirements.txt")
         assert rig == [9001], "the job sbatch already started must not be left running"
 
     def test_a_cancel_that_itself_fails_does_not_mask_the_real_error(self, rig, monkeypatch, tmp_path):
@@ -371,14 +374,85 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
         with pytest.raises(OSError, match="disk gone"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
                                tar_path=self._tar(tmp_path), minutes=60, constraint="",
-                               outputs=["out"])
+                               outputs=["out"], manifest="requirements.txt")
 
     def test_a_clean_submit_cancels_nothing(self, rig, tmp_path):
         job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
                                     tar_path=self._tar(tmp_path), minutes=60, constraint="",
-                                    outputs=["out"])
+                                    outputs=["out"], manifest="requirements.txt")
         assert job_id == 9001
         assert rig == []
+
+
+class TestSubmitFromAnAlreadyStagedDirectory:
+    """`recipes.run`'s way in: a Recipe's code already sits in its own durable directory, so `submit()`
+    copies it into a fresh staging dir instead of unpacking a tar. The copy is load-bearing: that Spawn's
+    staging is disposable and deleted after stage-in, while the Recipe must survive to be run again."""
+
+    @pytest.fixture
+    def rig(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        with db.connect() as conn:
+            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                         "VALUES (1,'alice',0,'x',0)")
+            conn.commit()
+        monkeypatch.setattr(head_spawns.subprocess, "run",
+                            lambda *a, **kw: type("R", (), {"stdout": "9001\n", "stderr": "",
+                                                            "returncode": 0})())
+        return tmp_path
+
+    def _source(self, tmp_path: Path) -> Path:
+        src = tmp_path / "recipe-src"
+        src.mkdir()
+        (src / "train.py").write_text("print('hi')\n")
+        # A Recipe freezes its **Environment** with its code, so its directory always carries one.
+        (src / "requirements.txt").write_text("")
+        return src
+
+    def test_exactly_one_of_tar_path_source_dir_is_required(self, rig):
+        with pytest.raises(AssertionError):
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                               tar_path=None, minutes=60, constraint="", outputs=["out"])
+
+    def test_copies_rather_than_moves_the_source(self, rig):
+        src = self._source(rig)
+        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                                    tar_path=None, minutes=60, constraint="", outputs=["out"],
+                                    manifest="requirements.txt", source_dir=src)
+        assert job_id == 9001
+        assert (src / "train.py").exists(), "the source directory must survive the Spawn it fed"
+
+    def test_the_staged_copy_is_a_different_directory(self, rig):
+        src = self._source(rig)
+        head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                           tar_path=None, minutes=60, constraint="", outputs=["out"], source_dir=src,
+                           manifest="requirements.txt")
+        staged = list((rig / "projects").iterdir())
+        assert len(staged) == 1
+        assert staged[0] != src
+        assert (staged[0] / "train.py").read_text() == "print('hi')\n"
+
+    def test_a_missing_script_is_refused_before_anything_is_staged(self, rig):
+        src = self._source(rig)
+        with pytest.raises(ValueError, match="was not found"):
+            head_spawns.submit(user_id=1, script="nope.py", gpu=1, args=[], wandb_env={},
+                               tar_path=None, minutes=60, constraint="", outputs=["out"],
+                               manifest="requirements.txt", source_dir=src)
+        assert not (rig / "projects").exists()
+
+    def test_the_resulting_spawn_carries_the_recipe_name(self, rig):
+        src = self._source(rig)
+        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                                    tar_path=None, minutes=60, constraint="", outputs=["out"],
+                                    source_dir=src, recipe_name="resnet",
+                                    manifest="requirements.txt")
+        with db.connect() as conn:
+            row = db.get_spawn(conn, job_id)
+        assert row["recipe_name"] == "resnet"
 
 
 class TestAnAbandonedUploadIsNotLeftOnDisk:
@@ -564,13 +638,15 @@ class TestSpawnsRunAsTheirSubmitter:
     def _submit(self, tmp_path, user_id=1):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            info = tarfile.TarInfo("train.py")
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
+            for name in ("train.py", "requirements.txt"):
+                info = tarfile.TarInfo(name)
+                info.size = 0
+                tf.addfile(info, io.BytesIO(b""))
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
         return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[], wandb_env={},
-                                  tar_path=tar, minutes=60, constraint="vram24", outputs=["out"])
+                                  tar_path=tar, minutes=60, constraint="vram24", outputs=["out"],
+                                  manifest="requirements.txt")
 
     def _sbatch(self, calls):
         return next(argv for argv, _ in calls if "sbatch" in argv)
@@ -731,6 +807,9 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 def post(c: TestClient, **meta):
     meta.setdefault("script", "train.py")
     meta.setdefault("outputs", ["outputs"])
+    # Every Spawn declares its **Environment** — see TestManifestIsRequired below for the gate itself.
+    # Defaulted here so the tests about everything ELSE aren't all about this one field.
+    meta.setdefault("manifest", "requirements.txt")
     return c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
 
 
@@ -744,7 +823,7 @@ class TestSubmitRequiresDeclarations:
     def test_happy_path(self, monkeypatch):
         r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24)
         assert r.status_code == 200
-        # `environment` is the submit-time echo (docs/TODO.md "Python Environments"). None here because
+        # `environment` is the submit-time echo (docs/elements/environments.md). None here because
         # this route is stubbed at submit_checked, so no Spawn dir — and a client must treat it as
         # optional anyway, since a Spawn submitted before the feature existed has no note to give back.
         assert r.json() == {"id": 4242, "environment": None}
@@ -756,6 +835,33 @@ class TestSubmitRequiresDeclarations:
         r = post(client(monkeypatch, is_admin=False), **meta)
         assert r.status_code == 422
         assert missing in r.json()["detail"]
+
+
+class TestTheEnvironmentMustBeDeclared:
+    """`--manifest` joins `--time`/`--vram`/`--output` as something every Spawn says for itself. There
+    is no default and no auto-detection: an **Environment** carries its own interpreter and inherits
+    nothing, so which file it is built from decides what all the work runs against — too much to infer
+    from a `pyproject.toml` that might belong to something the User is only vendoring."""
+
+    def test_a_spawn_naming_no_manifest_is_refused(self, monkeypatch):
+        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, manifest=None)
+        assert r.status_code == 422
+        assert "manifest" in r.json()["detail"]
+
+    def test_the_refusal_names_the_flag_that_fixes_it(self, monkeypatch):
+        """A message that only says "required" leaves the User with nowhere to go. Refused BEFORE the
+        upload is spooled, too — there is no reason to carry a gigabyte of project across the wire to
+        find out a field is blank."""
+        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, manifest="")
+        assert "--manifest" in r.json()["detail"]
+        assert "pyproject.toml" in r.json()["detail"]
+
+    def test_a_tide_pool_may_decline(self, monkeypatch):
+        """The one Spawn exempt: it is a shell, not a run, and a bare one uploads an empty tar with no
+        file in it to name."""
+        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, tidepool=True,
+                 script=None, outputs=[], manifest=None)
+        assert r.status_code == 200
 
 
 class TestNodeIsNotAvailableOverTheApi:
@@ -947,7 +1053,8 @@ class TestSubmitValidatesOutputsAndScript:
         monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
         kw.setdefault("script", "train.py")
         kw.setdefault("outputs", ["out"])
-        kw.setdefault("tar_path", self._tar(tmp_path, "train.py"))
+        kw.setdefault("manifest", "requirements.txt")
+        kw.setdefault("tar_path", self._tar(tmp_path, "train.py", "requirements.txt"))
         return head_spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, minutes=60,
                                   constraint="", **kw)
 
@@ -1049,15 +1156,16 @@ class TestOutputsPlumbThroughToTheRenderedScript:
     def test_declared_outputs_reach_the_actual_sbatch_script(self, rendered, tmp_path):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            data = b"print('hi')\n"
-            info = tarfile.TarInfo("train.py")
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
+            for name in ("train.py", "requirements.txt"):
+                data = b"print('hi')\n"
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
         tar_path = tmp_path / "upload.tar.gz"
         tar_path.write_bytes(buf.getvalue())
 
         head_spawns.submit_checked(1, False, "train.py", 1, [], {}, tar_path, 60, 24,
-                                   ["checkpoints", "logs"])
+                                   ["checkpoints", "logs"], manifest="requirements.txt")
 
         assert 'mkdir -p "$ccc_out/checkpoints"' in rendered["body"]
         assert 'mkdir -p "$ccc_out/logs"' in rendered["body"]

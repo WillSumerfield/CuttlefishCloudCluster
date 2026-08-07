@@ -250,9 +250,9 @@ def main(argv: list[str] | None = None) -> int:
                         "Arm's licence key into the Pod — Head-local only, never over HTTP.")
     s.add_argument("--tidepool", action="store_true",
                    help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
-    s.add_argument("--manifest", help="dependency file to build this Spawn's environment from, "
-                                      "relative to the project root, or 'none' to build none "
-                                      "(default: auto-detect in the project root).")
+    s.add_argument("--manifest", help="REQUIRED (except --tidepool): dependency file to build this "
+                                      "Spawn's environment from, relative to the project root. "
+                                      "Nothing is detected and there is no default.")
     # The client's project/entity hint, as the JSON dict submit_checked takes — not two --project/
     # --entity flags, so the CLI and the HTTP route hand over the *same* value and there is one place
     # that decides what a W&B run is called (cuttle.settings.wandb_env).

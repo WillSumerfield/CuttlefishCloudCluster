@@ -119,17 +119,19 @@ class TestPinnedSubmit:
         tar = tmp_path / "project.tar.gz"
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            data = b"print('pinned')\n"
-            info = tarfile.TarInfo("train.py")
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
+            # The manifest rides along because every Spawn declares its **Environment**, pinned or not.
+            for name in ("train.py", "requirements.txt"):
+                data = b"print('pinned')\n"
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
         tar.write_bytes(buf.getvalue())
         return tar
 
     def test_a_pinned_spawn_is_recorded_and_attributed(self, rig, capsys):
         rc = admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
                          "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                         "--output", "out"])
+                         "--output", "out", "--manifest", "requirements.txt"])
         assert rc == 0
         job_id = int(capsys.readouterr().out.strip())
         with db.connect() as conn:
@@ -143,7 +145,8 @@ class TestPinnedSubmit:
         """The whole reason this path reuses submit_checked. A Spawn submitted around the pricing
         code would occupy a donated card that nobody is charged for."""
         admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
-                    "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out"])
+                    "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out",
+                    "--manifest", "requirements.txt"])
         job_id = int(capsys.readouterr().out.strip())
         with db.connect() as conn:
             assert job_id in {e["job_id"] for e in db.live_escrows(conn)}
@@ -158,7 +161,8 @@ class TestPinnedSubmit:
         seen = {}
         monkeypatch.setattr(spawns, "submit", lambda *a, **kw: seen.update(kw) or 4242)
         admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
-                    "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out"])
+                    "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out",
+                    "--manifest", "requirements.txt"])
         assert seen["background_build"] is False
 
     def test_an_unknown_arm_is_refused(self, rig, capsys):

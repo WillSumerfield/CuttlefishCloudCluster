@@ -144,7 +144,8 @@ class TestSubmit:
     """`cuttle run` — the operation the whole cluster exists for."""
 
     def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+                          "--manifest", "requirements.txt")
         assert result.exit_code == 0, result.output
         assert "submitted spawn" in result.output
         # Attribution is the ledger's, not Slurm's — every Spawn runs as the Mantle, so Slurm's own
@@ -158,13 +159,15 @@ class TestSubmit:
     def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm, project):
         """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
         been charged for — precisely the window a queue-flooder wants."""
-        result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+                          "--manifest", "requirements.txt")
         with db.connect() as conn:
             escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
         assert _spawn_id(result.output) in escrows
 
     def test_the_uploaded_project_reaches_the_head(self, signed_in, fake_slurm, project):
-        signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
+        signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+                          "--manifest", "requirements.txt")
         staged = list((fake_slurm / "projects").glob("*/train.py"))
         assert staged, "the project tree was not unpacked on the Head"
         assert "hello from a Spawn" in staged[0].read_text()
@@ -181,7 +184,8 @@ class TestSubmit:
         assert no_vram.exit_code != 0 and "--vram" in no_vram.output
 
     def test_submitting_without_a_session_is_refused(self, cli, fake_slurm, project):
-        result = cli("run", "train.py", "--time", "60", "--vram", "24", "--output", "out")
+        result = cli("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+                          "--manifest", "requirements.txt")
         assert result.exit_code != 0
         assert "not logged in" in result.output
 
@@ -190,7 +194,8 @@ class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
     def _spawn(self, cli):
-        return _spawn_id(cli("run", "train.py", "--time", "60", "--vram", "24", "--output", "out").output)
+        return _spawn_id(cli("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+                          "--manifest", "requirements.txt").output)
 
     def test_you_may_cancel_your_own(self, signed_in, fake_slurm, project, monkeypatch):
         killed = []
@@ -464,7 +469,7 @@ class TestRecipes:
 
     def test_save_freezes_the_directory_and_lists_it_back(self, signed_in, project):
         r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                      "-o", "checkpoints", "--yes")
+                      "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
         assert r.exit_code == 0, r.output
         assert "saved recipe nightly" in r.output
         listed = signed_in("recipe", "list", "--json")
@@ -477,19 +482,28 @@ class TestRecipes:
         """No Spawn, no Escrow, no queue place — which is what keeps the 24GB wall out of the submit
         path entirely, so a full shelf can never stop a User working."""
         signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--yes")
+                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
         with db.connect() as conn:
             assert conn.execute("SELECT COUNT(*) FROM spawns").fetchone()[0] == 0
             assert conn.execute("SELECT COUNT(*) FROM karma_escrow").fetchone()[0] == 0
 
     def test_a_recipe_with_no_output_is_refused_before_uploading(self, signed_in, project):
-        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24", "--yes")
+        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                      "--manifest", "requirements.txt", "--yes")
         assert r.exit_code != 0
         assert "could never be run" in r.output
 
+    def test_a_recipe_with_no_manifest_is_refused_before_uploading(self, signed_in, project):
+        """A Recipe freezes the **Environment** its work runs in, not just the code — so this is as
+        much a Recipe that could never be run as one with no declared output."""
+        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
+                      "-o", "checkpoints", "--yes")
+        assert r.exit_code != 0
+        assert "missing --manifest" in r.output
+
     def test_a_missing_script_is_refused_before_uploading(self, signed_in, project):
         r = signed_in("recipe", "save", "nightly", "nope.py", "--time", "60", "--vram", "24",
-                      "-o", "out", "--yes")
+                      "-o", "out", "--manifest", "requirements.txt", "--yes")
         assert r.exit_code != 0
         assert "was not found" in r.output
 
@@ -497,7 +511,7 @@ class TestRecipes:
         """A bare update refreshes the CODE and nothing else — re-typing --time/--vram would be a
         chance to silently change them."""
         signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--yes")
+                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
         (project / "train.py").write_text("print('v2')\n")
         r = signed_in("recipe", "update", "nightly", "--yes")
         assert r.exit_code == 0, r.output
@@ -507,7 +521,7 @@ class TestRecipes:
 
     def test_delete_frees_the_shelf(self, signed_in, project):
         signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--yes")
+                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
         r = signed_in("recipe", "delete", "nightly", "--yes")
         assert r.exit_code == 0, r.output
         assert json.loads(signed_in("recipe", "list", "--json").output) == []
@@ -517,13 +531,29 @@ class TestRecipes:
         assert r.exit_code != 0
         assert "no recipe named 'ghost'" in r.output
 
-    def test_run_says_it_is_not_wired_up_yet(self, signed_in, project):
-        """The one deferred verb. It must name itself as unbuilt rather than fail obscurely."""
+    def test_run_spawns_a_job_from_the_stored_snapshot(self, signed_in, fake_slurm, project):
+        """The verb that used to be deferred. Runs from the Recipe's OWN directory — never the picked project on the operator's machine, which `project`
+        the fixture deletes nothing of, proving the Head never reached back for it."""
         signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--yes")
+                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
         r = signed_in("recipe", "run", "nightly")
+        assert r.exit_code == 0, r.output
+        assert "running recipe 'nightly' as spawn" in r.output
+        spawn_id = int(re.search(r"as spawn (\d+)", r.output).group(1))
+        with db.connect() as conn:
+            spawn = db.get_spawn(conn, spawn_id)
+        assert spawn is not None, "no Attribution row was recorded"
+        assert spawn["recipe_name"] == "nightly"
+        # The Recipe survives the Spawn it fed — it can be run again.
+        from ccc_head_api import recipes as head_recipes
+        with db.connect() as conn:
+            alice = db.get_user(conn, "alice")
+        assert (head_recipes._dir(alice["id"], "nightly") / "train.py").exists()
+
+    def test_running_a_recipe_that_does_not_exist_says_so(self, signed_in, fake_slurm, project):
+        r = signed_in("recipe", "run", "ghost")
         assert r.exit_code != 0
-        assert "saved and safe" in r.output
+        assert "no recipe named 'ghost'" in r.output  # `_find`'s client-side check catches it first
 
     def test_the_wall_refusal_reaches_the_user_intact(self, signed_in, project, monkeypatch):
         """The Head's 413 is the only message that says how far over you are and that the fix is
@@ -536,7 +566,7 @@ class TestRecipes:
         (project / "weights.bin").write_bytes(b"x" * 200_000)
         monkeypatch.setattr(head_recipes, "MAX_USER_BYTES", 50_000)
         r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                      "-o", "checkpoints", "--yes")
+                      "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
         assert r.exit_code != 0
         assert "delete a recipe" in r.output
         assert "recipe allowance is free" in r.output

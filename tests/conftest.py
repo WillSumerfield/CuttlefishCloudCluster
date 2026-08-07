@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from ccc_head_api import db
+from ccc_head_api import environments
 from ccc_head_api import main as head_main
 from ccc_head_api import ratelimit
 from ccc_head_api import siphons
@@ -168,6 +169,30 @@ def _head_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
 
 
+@pytest.fixture(autouse=True)
+def _env_build_is_never_real(monkeypatch, tmp_path_factory):
+    """Every Spawn declares an **Environment** now, so every test that submits one walks this path.
+
+    Two things stand in. A TOOLS_DIR that exists, because `environments.require_tool` REFUSES a Spawn
+    on a Head with no uv/micromamba — without this, a suite running on a box that never ran `cuttle
+    setup --head` would fail every submission test with a message about the Head's provisioning. And a
+    no-op `start_build`, because the real one starts a daemon thread that shells out to apptainer:
+    a race against every assertion, on a binary the suite does not require.
+
+    Autouse and unconditional, for the same reason as `_head_state` above — a Spawn is submitted by
+    tests that are about Karma, Siphons, watches and the CLI, none of which mention Environments.
+    Autouse fixtures are set up before requested ones, so `tests/test_environments.py`'s own
+    `no_tools`/`with_tools` still override this and stay in charge of the path they are about.
+    """
+    tools = tmp_path_factory.mktemp("ccc-tools")
+    for name in ("uv", "micromamba"):
+        (tools / name).write_text("#!/bin/sh\n")
+    monkeypatch.setattr(environments, "TOOLS_DIR", tools)
+    monkeypatch.setattr(environments, "UV_BIN", tools / "uv")
+    monkeypatch.setattr(environments, "MICROMAMBA_BIN", tools / "micromamba")
+    monkeypatch.setattr(head_spawns, "start_build", lambda *a, **kw: None)
+
+
 @pytest.fixture
 def fake_slurm(monkeypatch, tmp_path):
     """Stand in for Slurm with two throwaway executables on PATH.
@@ -227,10 +252,15 @@ def fake_slurm(monkeypatch, tmp_path):
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    """A minimal project tree for `cuttle run` to upload, and a cwd to run it from."""
+    """A minimal project tree for `cuttle run` to upload, and a cwd to run it from.
+
+    Carries a `requirements.txt` because every Spawn declares its **Environment** and both the CLI and
+    the Head check the named file is really there — a project without one could not be submitted at
+    all, which is not the state any test using this fixture is about."""
     root = tmp_path / "project"
     root.mkdir()
     (root / "train.py").write_text("print('hello from a Spawn')\n")
+    (root / "requirements.txt").write_text("")
     monkeypatch.chdir(root)
     return root
 

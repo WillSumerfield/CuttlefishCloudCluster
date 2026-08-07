@@ -67,9 +67,13 @@ def _cancel_hint(spawn_id: int) -> str:
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
         node: str | None, outputs: list[str], features: list[str], follow: bool,
-        download: bool = True) -> None:
+        download: bool = True, manifest: str | None = None, no_gitignore: bool = False) -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
-    Spawn) unless `script_or_id` resolves to an existing one, then attaches either way."""
+    Spawn) unless `script_or_id` resolves to an existing one, then attaches either way.
+
+    `manifest` is optional here and only here — see `spawns.submit_tidepool`. Passing one uploads the
+    working directory and builds that **Environment** into the shell, so what you debug in is what your
+    Spawn would have run in."""
     if follow:
         ui.warn("--follow is ignored with --tidepool — it attaches an interactive shell instead of "
                 "streaming output")
@@ -80,7 +84,8 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
         if script_or_id:
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
-        spawn_id = _request(minutes, vram, gpu, node, outputs, features)
+        spawn_id = _request(minutes, vram, gpu, node, outputs, features, manifest=manifest,
+                            no_gitignore=no_gitignore)
         # Only when it declared somewhere for results to land. A Tide Pool with no --output has
         # nothing to auto-download by construction — everything it wrote lives and dies in the
         # Recovery Window, which is deliberately not something to plan around (CONTEXT.md).
@@ -94,9 +99,11 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
 
 
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
-            outputs: list[str], features: list[str]) -> int:
+            outputs: list[str], features: list[str], manifest: str | None = None,
+            no_gitignore: bool = False) -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
-    nothing here weakens that gate; `--output` alone is optional, gated behind a confirm instead."""
+    nothing here weakens that gate; `--output` and `--manifest` alone are optional, the first gated
+    behind a confirm instead and the second simply absent when nobody asked for one."""
     minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
     vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
     outputs = list(outputs) if outputs else []
@@ -115,7 +122,8 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
             # No terminal to confirm on — this is optional, not a hard gate (unlike --time/--vram), so a
             # scripted request proceeds; it just cannot be asked first.
             ui.warn(warning)
-    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, outputs, node=node, features=features)
+    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, outputs, node=node, features=features,
+                                          manifest=manifest, no_gitignore=no_gitignore)
     ui.ok(f"requested tide pool {spawn_id}")
     return spawn_id
 
