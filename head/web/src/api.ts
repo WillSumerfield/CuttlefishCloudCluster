@@ -297,6 +297,11 @@ export type Recipe = {
   wandb: boolean
   wandb_project: string
   wandb_entity: string
+  // The same two declared-need fields a Spawn carries (SubmitOpts below), frozen with the code rather
+  // than asked again on every run. `features` is usually empty; `manifest` never is — a Recipe freezes
+  // the environment its work runs in, not just the code, so naming one is required to save at all.
+  manifest: string
+  features: string[]
 }
 
 // Per-User storage allowance: 24 GB, a hard wall — saving past it means deleting a Recipe first, never a
@@ -324,6 +329,10 @@ export type NewRecipe = {
   wandb: boolean
   wandb_project: string
   wandb_entity: string
+  // Same as above — asked once, frozen with the code. `manifest` is REQUIRED: a Recipe that named no
+  // dependency file could never be run, so the Head refuses the save rather than freezing a dead one.
+  manifest: string
+  features: string[]
 }
 
 // The upload both save and update make: tar the picked folder, gzip it, put the settings in the header.
@@ -339,6 +348,10 @@ async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
     name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
     vram_mb: r.vram_mb, minutes: r.minutes,
     wandb: r.wandb, wandb_project: r.wandb_project, wandb_entity: r.wandb_entity,
+    // `features` is omitted rather than sent empty — absent means "no features required", which is
+    // not the same instruction as any other value. `manifest` is required, so it always travels.
+    ...(r.features.length ? { features: r.features } : {}),
+    manifest: r.manifest.trim(),
   }
   const res = await req(path, {
     method: 'POST',
@@ -360,12 +373,44 @@ export const createRecipe = (r: NewRecipe) => recipeUpload(r, '/recipes')
 export const updateRecipe = (name: string, r: NewRecipe) =>
   recipeUpload(r, `/recipes/${encodeURIComponent(name)}/update`)
 
+// Everything about a Recipe except its code and name — what "Edit" changes when no folder is dropped
+// alongside it (dropping one goes through updateRecipe above instead, a fresh upload). `script` still
+// names a file, but one already sitting in the Recipe's saved tree rather than a freshly-picked folder's.
+export type RecipeSettings = {
+  script: string
+  args: string[]
+  outputs: string[]
+  gpus: number
+  vram_mb: number
+  minutes: number
+  wandb: boolean
+  wandb_project: string
+  wandb_entity: string
+  manifest: string
+  features: string[]
+}
+
 /**
- * Run the frozen snapshot — one click, from any machine, nothing to hand. Spawns a job (seen on Queue).
- * NOT WIRED UP YET: the Head answers 501. Saving, updating and deleting are all live; only this is not.
+ * Change a Recipe's settings in place — no code moves, so this is a plain JSON PATCH rather than the
+ * tar+gzip body create/update share. `bytes` and `frozen_at` are untouched on the Head.
+ */
+export const updateRecipeSettings = (name: string, r: RecipeSettings) =>
+  req(`/recipes/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(r),
+  }).then((res) => res.json() as Promise<Recipe>)
+
+/**
+ * Run the frozen snapshot — one click, from any machine, nothing to hand. Every setting was already
+ * answered when the Recipe was saved, so this takes no body. Returns the new Spawn's id; the Dashboard
+ * doesn't need it (the card's own `running` flips true on the next refetch), but the CLI's `cuttle
+ * recipe run` does, to echo it back the same way `cuttle run` echoes a fresh submit.
  */
 export const runRecipe = (name: string) =>
-  req(`/recipes/${encodeURIComponent(name)}/run`, { method: 'POST' }).then(() => {})
+  req(`/recipes/${encodeURIComponent(name)}/run`, { method: 'POST' })
+    .then((r) => r.json() as Promise<{ id: number }>)
+    .then((r) => r.id)
 /** Delete a Recipe, freeing its bytes back to the allowance. */
 export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
@@ -517,8 +562,10 @@ export type SubmitOpts = {
   // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
   // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
   features: string[]
-  // Which dependency file builds this Spawn's Python environment (docs/TODO.md "Python Environments"),
-  // relative to the project root. Blank = let the Head look in the root itself; 'none' = build nothing.
+  // Which dependency file builds this Spawn's Python environment (docs/elements/environments.md),
+  // relative to the project root. REQUIRED — nothing is detected and there is no default, because an
+  // Environment carries its own Python and inherits nothing, so which file it comes from decides
+  // everything the work runs against.
   manifest: string
 }
 
@@ -555,9 +602,9 @@ export async function submit({
   const meta = {
     name, script, gpu, minutes, vram, node, args, wandb, wandb_env, outputs,
     ...(features.length ? { features } : {}),
-    // Omitted when blank, like the fields above: absent means "look for a dependency file yourself",
-    // which is not the same instruction as any string this field could hold.
-    ...(manifest.trim() ? { manifest: manifest.trim() } : {}),
+    // Always sent, unlike the fields above: the Head refuses a Spawn that names no dependency file, and
+    // an omitted key would meet that refusal as a confusing "missing" rather than the empty box it is.
+    manifest: manifest.trim(),
   }
   const r = await req('/submit', {
     method: 'POST',
@@ -580,10 +627,13 @@ export type SubmitTidepoolOpts = {
   features: string[]
   picked: Picked | null
   name: string | null
+  /** OPTIONAL here and only here — a Tide Pool may decline to declare an Environment. Blank gives a
+   *  bare shell; a name builds that env into it, and needs `picked` to resolve against. */
+  manifest?: string
 }
 
 export async function submitTidepool({
-  minutes, vram, gpu, node, features, picked, name,
+  minutes, vram, gpu, node, features, picked, name, manifest,
 }: SubmitTidepoolOpts): Promise<number> {
   // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens the
   // upload as a tar archive (ccc_head_api.spawns.submit). `makeTar([])` writes the two all-zero
@@ -596,6 +646,10 @@ export async function submitTidepool({
   const meta = {
     minutes, vram, gpu, node, tidepool: true, outputs: [], name,
     ...(features.length ? { features } : {}),
+    // Omitted rather than sent empty, unlike submit()'s above: a Tide Pool is the one Spawn the Head
+    // lets decline to declare an Environment, so absent here means "a bare shell" rather than an
+    // error. Naming one requires the picked folder — it is built from the upload.
+    ...(manifest?.trim() ? { manifest: manifest.trim() } : {}),
   }
   const r = await req('/submit', {
     method: 'POST',

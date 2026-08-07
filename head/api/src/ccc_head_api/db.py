@@ -31,7 +31,7 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers (the API: submit→escrow, override→ledger; the Karma tick: settle→ledger).
 # WAL permits that, but a writer that collides with another gets SQLITE_BUSY back *immediately* unless
@@ -371,10 +371,25 @@ _SCHEMA_V14 = """
 ALTER TABLE spawns ADD COLUMN placed_node TEXT;
 """
 
+# `manifest`/`features` — the two declared-need fields `/submit` already carried that a Recipe couldn't
+# freeze until now. Structural only, like `vram_mb`/`gpus` above: stored as declared, never checked
+# against the fleet's current capability at save time — that check happens for real when the Recipe is
+# actually run, exactly like any other Spawn (`spawns.submit_checked`).
+#
+# `recipe_name` on `spawns` is the other half of the same change: the link `recipes.running` reads to
+# tell whether a Spawn on the live queue came from this Recipe. NULL for every ad-hoc Spawn (nearly all
+# of them) and for every Spawn that predates this migration. Not a foreign key — a Recipe can be deleted
+# out from under a Spawn that already ran from it, and that Spawn's history should not go with it.
+_SCHEMA_V15 = """
+ALTER TABLE recipes ADD COLUMN manifest TEXT;
+ALTER TABLE recipes ADD COLUMN features TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE spawns ADD COLUMN recipe_name TEXT;
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
               _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
-              _SCHEMA_V14]
+              _SCHEMA_V14, _SCHEMA_V15]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -626,7 +641,8 @@ BUILDING = "building"
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
                  staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
                  node: str | None = None, hold: float | None = None,
-                 tidepool: bool = False, build_state: str | None = None) -> None:
+                 tidepool: bool = False, build_state: str | None = None,
+                 recipe_name: str | None = None) -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
     ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
     submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
@@ -638,13 +654,16 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
     (see _SCHEMA_V13). It is set in this same transaction rather than updated a moment later: between
     the two there would be a held Spawn that nothing knew was building, and a Head that crashed in that
     window would leave it held forever with no row to find it by.
+
+    `recipe_name` is set only for a Spawn made by `recipes.run` — it's what `running_recipe_names`
+    reads back to tell a Recipe's card it has a live Spawn on the queue right now.
     """
     conn.execute(
         """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
-                              tidepool, build_state)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                              tidepool, build_state, recipe_name)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool),
-         build_state),
+         build_state, recipe_name),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -1269,13 +1288,31 @@ def get_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row
 
 def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
                outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
-               wandb_project: str, wandb_entity: str, size_bytes: int) -> sqlite3.Row:
+               wandb_project: str, wandb_entity: str, size_bytes: int,
+               manifest: str | None, features: list[str]) -> sqlite3.Row:
     conn.execute(
         """INSERT INTO recipes (user_id, name, script, args, outputs, gpus, vram_mb, minutes,
-                                wandb, wandb_project, wandb_entity, bytes)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                wandb, wandb_project, wandb_entity, bytes, manifest, features)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (user_id, name, script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         int(wandb), wandb_project, wandb_entity, size_bytes))
+         int(wandb), wandb_project, wandb_entity, size_bytes, manifest, json.dumps(features)))
+    conn.commit()
+    return get_recipe(conn, user_id, name)
+
+
+def update_recipe_meta(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
+                        outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
+                        wandb_project: str, wandb_entity: str, manifest: str | None,
+                        features: list[str]) -> sqlite3.Row:
+    """Change what a Recipe runs and how, without touching its code or `bytes`/`frozen_at` — the settings-
+    only sibling of `add_recipe`'s insert. `recipes.update_meta` has already checked `script` against the
+    code already on disk, so this is a plain column write."""
+    conn.execute(
+        """UPDATE recipes SET script=?, args=?, outputs=?, gpus=?, vram_mb=?, minutes=?,
+                              wandb=?, wandb_project=?, wandb_entity=?, manifest=?, features=?
+           WHERE user_id=? AND name=?""",
+        (script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
+         int(wandb), wandb_project, wandb_entity, manifest, json.dumps(features), user_id, name))
     conn.commit()
     return get_recipe(conn, user_id, name)
 
@@ -1292,6 +1329,22 @@ def user_recipe_bytes(conn: sqlite3.Connection, user_id: int) -> int:
     (total,) = conn.execute("SELECT COALESCE(SUM(bytes), 0) FROM recipes WHERE user_id=?",
                             (user_id,)).fetchone()
     return total
+
+
+def running_recipe_names(conn: sqlite3.Connection, user_id: int, live_job_ids: list[int]) -> set[str]:
+    """Which of this User's Recipes has a Spawn among `live_job_ids` (the current Slurm queue) right
+    now — what `GET /recipes` reports back as `running`. `live_job_ids` is handed in rather than read
+    here because the caller already polled Slurm once for the whole page; asking again per-Recipe would
+    be a query per card instead of one for the shelf."""
+    if not live_job_ids:
+        return set()
+    marks = ",".join("?" * len(live_job_ids))
+    rows = conn.execute(
+        f"""SELECT DISTINCT recipe_name FROM spawns
+            WHERE user_id=? AND recipe_name IS NOT NULL AND job_id IN ({marks})""",
+        (user_id, *live_job_ids),
+    ).fetchall()
+    return {r["recipe_name"] for r in rows}
 
 
 def recipe_owner_ids(conn: sqlite3.Connection) -> set[int]:

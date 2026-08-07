@@ -47,38 +47,45 @@ def _pack(no_gitignore: bool) -> tuple[bytes, int, int]:
 
 
 def _meta(name: str, script: str, args: list[str], minutes: int, vram: int, gpu: int,
-          outputs: list[str], project: str | None, entity: str | None) -> dict:
+          outputs: list[str], project: str | None, entity: str | None, manifest: str) -> dict:
     # vram_mb, not the `vram` (GB) a Spawn sends: a Recipe stores the declared need rather than handing
     # it straight to Slurm, and the Head's Recipe schema keeps it in MB.
     wandb_env = settings.wandb_env(project, entity)
     return {"name": name, "script": script, "args": args, "outputs": outputs, "gpus": gpu,
-            "vram_mb": vram * 1024, "minutes": minutes,
+            "vram_mb": vram * 1024, "minutes": minutes, "manifest": manifest,
             "wandb": True, "wandb_project": wandb_env.get("WANDB_PROJECT", ""),
             "wandb_entity": wandb_env.get("WANDB_ENTITY", "")}
 
 
-def _validate(script: str, outputs: list[str]) -> None:
-    """The two gates `cuttle run` applies before uploading, applied here for the same reasons — and one
-    of them matters MORE here. A Spawn with a missing script fails now; a Recipe with one fails every
-    time it is ever run, discovered long after the folder that would have fixed it is gone."""
+def _validate(script: str, outputs: list[str], manifest: str) -> None:
+    """The gates `cuttle run` applies before uploading, applied here for the same reasons — and they
+    matter MORE here. A Spawn with a missing script or manifest fails now; a Recipe with one fails
+    every time it is ever run, discovered long after the folder that would have fixed it is gone."""
     if not outputs:
         raise ui.abort("at least one --output/-o is required — a recipe with none could never be run "
                        "(e.g. `--output checkpoints`)")
-    if not (Path.cwd() / script).is_file():
-        raise ui.abort(f"script {script!r} was not found (looked for it relative to the current "
-                       f"directory, {Path.cwd()})")
+    if not manifest:
+        raise ui.abort("--manifest is required — a Recipe freezes the environment its work runs in, "
+                       "not just the code (e.g. `--manifest pyproject.toml`)")
+    for label, rel in (("script", script), ("manifest", manifest)):
+        if not (Path.cwd() / rel).is_file():
+            raise ui.abort(f"{label} {rel!r} was not found (looked for it relative to the current "
+                           f"directory, {Path.cwd()})")
 
 
 def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[str],
-         outputs: list[str], project: str | None = None, entity: str | None = None,
+         outputs: list[str], manifest: str, project: str | None = None, entity: str | None = None,
          no_gitignore: bool = False, yes: bool = False) -> None:
     """Freeze the working dir into a new Recipe."""
-    _validate(script, outputs)
+    _validate(script, outputs, manifest)
     tar_bytes, count, total = _pack(no_gitignore)
     if not yes:
         ui.kv([
             ("recipe", name),
             ("script", script),
+            # A Recipe freezes the **Environment** as well as the code, so this line is as much part of
+            # "what am I about to freeze" as the script is.
+            ("environment", manifest),
             ("upload", f"{count} files, {total / 1_048_576:.1f} MB"
                        f"{'' if no_gitignore else '  (.gitignore honored)'}"),
             ("limit", f"{minutes} min"),
@@ -92,7 +99,7 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
         if not ui.ask_confirm("Save?", True):
             raise ui.abort("not saved")
     saved = _upload("/recipes", tar_bytes,
-                    _meta(name, script, args, minutes, vram, gpu, outputs, project, entity),
+                    _meta(name, script, args, minutes, vram, gpu, outputs, project, entity, manifest),
                     f"save recipe {name!r}")
     ui.ok(f"saved recipe {saved['name']} ({_human(saved['size_bytes'])})")
     ui.data(saved["name"])
@@ -100,8 +107,8 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
 
 def update(name: str, script: str | None = None, minutes: int | None = None, vram: int | None = None,
            gpu: int | None = None, args: list[str] | None = None, outputs: list[str] | None = None,
-           project: str | None = None, entity: str | None = None, no_gitignore: bool = False,
-           yes: bool = False) -> None:
+           manifest: str | None = None, project: str | None = None, entity: str | None = None,
+           no_gitignore: bool = False, yes: bool = False) -> None:
     """Re-capture the working dir into an existing Recipe.
 
     Every setting defaults to what the Recipe already holds, so `cuttle recipe update foo` in a changed
@@ -110,7 +117,8 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
     """
     current = _find(name)
     script = script or current["script"]
-    _validate(script, list(outputs) if outputs else current["outputs"])
+    manifest = manifest or current["manifest"]
+    _validate(script, list(outputs) if outputs else current["outputs"], manifest)
     tar_bytes, count, total = _pack(no_gitignore)
     meta = _meta(name, script,
                  list(args) if args else current["args"],
@@ -118,7 +126,7 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
                  vram if vram is not None else current["vram_mb"] // 1024,
                  gpu if gpu is not None else current["gpus"],
                  list(outputs) if outputs else current["outputs"],
-                 project, entity)
+                 project, entity, manifest)
     if not project and not entity:
         # Keep what the Recipe already froze rather than the local config's answer: an update is about
         # the code, and silently re-pointing someone's runs at a different W&B project is not.
@@ -128,6 +136,7 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
         ui.kv([
             ("recipe", name),
             ("script", script),
+            ("environment", manifest),
             ("upload", f"{count} files, {total / 1_048_576:.1f} MB"),
             ("replaces", _human(current["size_bytes"])),
         ], title="About to update")
@@ -156,15 +165,20 @@ def delete(name: str, yes: bool = False) -> None:
 
 
 def run(name: str) -> None:
-    """Run a Recipe's frozen snapshot. Not wired up on the Head yet — it answers 501, and that message
-    is what the user sees, rather than a client-side guess at when it might land."""
-    _find(name)  # so a typo'd name says "no recipe named" rather than "not implemented"
+    """Run a Recipe's frozen snapshot — one call, from any machine, nothing to hand. Every setting was
+    already answered when it was saved, so this sends nothing but the name."""
+    _find(name)  # so a typo'd name says "no recipe named" rather than a 404 with no context
     try:
-        _client().json("POST", f"/recipes/{name}/run")
+        resp = _client().json("POST", f"/recipes/{name}/run")
     except api.ApiError as e:
         if ui.DEBUG:
             raise
         raise ui.abort(e.user_message()) from None
+    spawn_id = resp["id"]
+    # The id goes to stdout and the confirmation to stderr, matching `cuttle run` — so
+    # `id=$(cuttle recipe run foo)` captures exactly the id while a human still sees what happened.
+    ui.ok(f"running recipe {name!r} as spawn {spawn_id}")
+    ui.data(str(spawn_id))
 
 
 def _find(name: str) -> dict:

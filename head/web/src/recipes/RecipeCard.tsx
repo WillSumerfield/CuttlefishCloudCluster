@@ -28,8 +28,9 @@ export function RecipeCard({
   const command = [script, ...args].join(" ");
 
   return (
-    <li
-      className="shard relative"
+    // ComposerSlot (its parent, RecipesPage.tsx) owns the actual grid item now.
+    <div
+      className="shard relative h-full"
       style={{ padding: "1.9rem 1.9rem" }}
       // Hovering a card lights its own slice on the storage wall — the card itself doesn't change.
       onMouseEnter={() => onHover(name)}
@@ -86,10 +87,7 @@ export function RecipeCard({
               <button className="btn-primary" disabled={updating} onClick={() => onAct(name, "run")}>
                 Queue
               </button>
-              <button className="btn-ghost" disabled={updating} onClick={() => onAct(name, "update")}>
-                Update code
-              </button>
-              <button className="btn-ghost" onClick={() => onAct(name, "edit")}>
+              <button className="btn-ghost" disabled={updating} onClick={() => onAct(name, "edit")}>
                 Edit
               </button>
               <button className="btn-ghost" onClick={() => setConfirm(true)}>
@@ -99,6 +97,6 @@ export function RecipeCard({
           )}
         </div>
       </div>
-    </li>
+    </div>
   );
 }

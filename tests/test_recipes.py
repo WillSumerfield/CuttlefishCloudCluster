@@ -4,8 +4,9 @@ the Head's permanent consumers of disk.
 What's tested here: that a save freezes code AND settings, that the wall is a hard refusal rather than
 the eviction `retention.py` does, that an update is delete-then-save (charged what it grows by, and
 harmless to the old snapshot when refused), that bytes are counted uncompressed so the Head and the
-composer agree, that a shelf is private to its owner, and that a deleted User's shelf is collected.
-NOT tested: running a Recipe — `POST /recipes/{name}/run` is deferred and answers 501, which is asserted.
+composer agree, that a shelf is private to its owner, that a deleted User's shelf is collected, that
+running a Recipe hands `spawns.submit_checked` a copy of the stored snapshot rather than the snapshot
+itself, and that a live Spawn from a Recipe is what makes `running` true on the shelf.
 """
 
 import io
@@ -15,13 +16,16 @@ import tarfile
 import pytest
 from fastapi.testclient import TestClient
 
-from ccc_head_api import db, recipes
+from ccc_head_api import db, recipes, slurm
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
 
 _META = {"name": "resnet", "script": "train.py", "args": ["--lr", "1e-3"], "outputs": ["checkpoints"],
          "gpus": 1, "vram_mb": 24576, "minutes": 120,
-         "wandb": True, "wandb_project": "ccc", "wandb_entity": "me"}
+         "wandb": True, "wandb_project": "ccc", "wandb_entity": "me",
+         # A Recipe freezes the **Environment** its work runs in, not just the code, so naming one is
+         # required to save at all — see test_saving_without_a_manifest_is_refused.
+         "manifest": "requirements.txt"}
 
 
 def _targz(files: dict) -> bytes:
@@ -38,7 +42,8 @@ def _targz(files: dict) -> bytes:
 
 
 def _project(payload_bytes: int = 64) -> bytes:
-    return _targz({"train.py": b"print('hi')\n", "data.bin": b"x" * payload_bytes})
+    return _targz({"train.py": b"print('hi')\n", "requirements.txt": b"",
+                   "data.bin": b"x" * payload_bytes})
 
 
 class _Base:
@@ -131,6 +136,41 @@ class TestSaving(_Base):
             self._save(tar=_targz({"other.py": b"x"}))
         assert not recipes._dir(1, "resnet").exists()
 
+    def test_manifest_and_features_freeze_with_the_code(self):
+        """The two declared-need fields `/submit` already carried that a Recipe couldn't freeze until
+        now. `features` is structural only, same as vram_mb/gpus: never checked against the fleet here.
+        `manifest` is checked against the upload, because a Recipe pointed at a file it has not got is
+        one that fails every time it is ever run."""
+        saved = self._save(meta={"manifest": "requirements.txt", "features": ["vlearn"]})
+        assert saved["manifest"] == "requirements.txt"
+        assert saved["features"] == ["vlearn"]
+
+    def test_features_default_to_unset(self):
+        """Unlike `manifest`: most Recipes require no Arm Feature, and every Recipe has an
+        Environment."""
+        saved = self._save()
+        assert saved["features"] == []
+
+    def test_saving_without_a_manifest_is_refused(self):
+        """A Recipe captures its **Environment** as well as its code (CONTEXT.md, **Recipe**), so one
+        saved without a manifest could never be run — the same defect an empty `outputs` is refused
+        for, caught at save time rather than the day it is needed."""
+        for nothing in (None, ""):
+            with pytest.raises(ValueError, match="manifest"):
+                self._save(manifest=nothing)
+        assert not recipes._dir(1, "resnet").exists()
+
+    def test_a_manifest_not_in_the_upload_is_refused_before_anything_is_written(self):
+        """Same check the entrypoint gets, and for the same reason. A `.gitignore` that drops the
+        dependency file is exactly how this happens."""
+        with pytest.raises(ValueError, match="manifest 'requirements.txt' was not found"):
+            self._save(tar=_targz({"train.py": b"x"}))
+        assert not recipes._dir(1, "resnet").exists()
+
+    def test_features_must_be_a_list_of_strings(self):
+        with pytest.raises(ValueError, match="'features'"):
+            self._save(meta={"features": "vlearn"})
+
 
 class TestTheWall(_Base):
     """A hard wall, never an eviction (CONTEXT.md, **Allowance**). `retention.py` always accepts a result
@@ -173,7 +213,7 @@ class TestUpdate(_Base):
 
     def test_an_update_re_captures_the_code(self):
         self._save()
-        self._save(tar=_targz({"train.py": b"new code\n"}), replacing="resnet")
+        self._save(tar=_targz({"train.py": b"new code\n", "requirements.txt": b""}), replacing="resnet")
         assert (recipes._dir(1, "resnet") / "train.py").read_bytes() == b"new code\n"
         with db.connect() as conn:
             assert len(db.recipes_for(conn, 1)) == 1  # replaced in place, never duplicated
@@ -190,7 +230,7 @@ class TestUpdate(_Base):
         """The "neither version" case is a crash mid-extract, never a save the Head said no to: the wall
         is weighed before a byte is written, so a refusal costs the owner nothing."""
         monkeypatch.setattr(recipes, "MAX_USER_BYTES", 12_000)
-        self._save(tar=_targz({"train.py": b"original\n", "data.bin": b"x" * 8_000}))
+        self._save(tar=_targz({"train.py": b"original\n", "requirements.txt": b"", "data.bin": b"x" * 8_000}))
         with pytest.raises(recipes.WallExceeded):
             self._save(tar=_project(payload_bytes=20_000), replacing="resnet")
         assert (recipes._dir(1, "resnet") / "train.py").read_bytes() == b"original\n"
@@ -230,8 +270,8 @@ class TestDeletedUsers(_Base):
 # --- the API ------------------------------------------------------------------
 # Same in-process rig test_retention.py uses.
 
-def _client(monkeypatch, tmp_path, user_id=1) -> TestClient:
-    user = {"id": user_id, "username": "alice", "is_admin": False, "must_change_password": False}
+def _client(monkeypatch, tmp_path, user_id=1, is_admin=False) -> TestClient:
+    user = {"id": user_id, "username": "alice", "is_admin": is_admin, "must_change_password": False}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
     db.ensure_schema()
@@ -239,6 +279,12 @@ def _client(monkeypatch, tmp_path, user_id=1) -> TestClient:
         db.add_user(conn, "alice")
         db.add_user(conn, "bob")
     monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", tmp_path)
+    # Only touched by the run/running tests below — an empty queue and one eligible Arm, so
+    # submit_checked's placement/pricing checks have something to chew on without a real Slurm or
+    # Arm registry file.
+    monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
+    monkeypatch.setattr(slurm, "queue", lambda: [])
+    monkeypatch.setattr(slurm, "vram_constraint", lambda gb: f"vram{gb}")
     return TestClient(head_main.app)
 
 
@@ -281,7 +327,7 @@ class TestApi:
     def test_update_re_captures_over_the_same_name(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)
         _post(c, "/api/recipes", _project())
-        r = _post(c, "/api/recipes/resnet/update", _targz({"train.py": b"v2\n"}))
+        r = _post(c, "/api/recipes/resnet/update", _targz({"train.py": b"v2\n", "requirements.txt": b""}))
         assert r.status_code == 200
         assert (recipes._dir(1, "resnet") / "train.py").read_bytes() == b"v2\n"
 
@@ -299,15 +345,6 @@ class TestApi:
         c = _client(monkeypatch, tmp_path)
         assert c.delete("/api/recipes/ghost").status_code == 404
 
-    def test_run_is_deferred_and_says_so(self, monkeypatch, tmp_path):
-        """Storage and the wall are built; spawning from a stored snapshot is not. A route that 501s is
-        discoverable — one that silently does nothing is not."""
-        c = _client(monkeypatch, tmp_path)
-        _post(c, "/api/recipes", _project())
-        r = c.post("/api/recipes/resnet/run")
-        assert r.status_code == 501
-        assert "saved and safe" in r.json()["detail"]
-
     def test_a_bad_entrypoint_is_422_not_413(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)
         assert _post(c, "/api/recipes", _targz({"other.py": b"x"})).status_code == 422
@@ -315,6 +352,88 @@ class TestApi:
     def test_the_routes_need_a_session(self, tmp_path):
         head_main.app.dependency_overrides.clear()
         assert TestClient(head_main.app).get("/api/recipes").status_code == 401
+
+
+class TestRunRoute:
+    """`spawns.submit` is stubbed throughout — placement/pricing/staging are `submit_checked`'s and
+    `submit`'s own tests (test_submit.py), not this route's. What belongs here is that `recipes.run`
+    hands it the right things: a COPY of the stored snapshot (never the snapshot itself) and the frozen
+    settings, nothing re-asked."""
+
+    def test_run_spawns_a_job_from_the_stored_snapshot(self, monkeypatch, tmp_path):
+        c = _client(monkeypatch, tmp_path)
+        _post(c, "/api/recipes", _project())
+        calls = []
+        monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: (calls.append(kw), 4242)[1])
+        r = c.post("/api/recipes/resnet/run")
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": 4242}
+        assert calls[0]["recipe_name"] == "resnet"
+        assert calls[0]["source_dir"] == recipes._dir(1, "resnet")
+
+    def test_run_carries_the_frozen_settings_not_new_ones(self, monkeypatch, tmp_path):
+        c = _client(monkeypatch, tmp_path)
+        _post(c, "/api/recipes", _project(), gpus=2, vram_mb=49152, minutes=45,
+             features=["vlearn"], manifest="requirements.txt")
+        monkeypatch.setattr(slurm, "arms_with_features", lambda names: [{"name": "gpu-box"}])
+        captured = {}
+
+        def fake_submit(user_id, script, gpu, args, wandb_env, tar_path, minutes, constraint, outputs,
+                        node=None, **kw):
+            captured.update(script=script, gpu=gpu, minutes=minutes, outputs=outputs, **kw)
+            return 99
+
+        monkeypatch.setattr(head_spawns, "submit", fake_submit)
+        r = c.post("/api/recipes/resnet/run")
+        assert r.status_code == 200, r.text
+        assert (captured["script"], captured["gpu"], captured["minutes"]) == ("train.py", 2, 45)
+        assert captured["outputs"] == ["checkpoints"]
+        assert captured["features"] == ["vlearn"]
+        assert captured["manifest"] == "requirements.txt"
+
+    def test_running_a_missing_recipe_404s(self, monkeypatch, tmp_path):
+        c = _client(monkeypatch, tmp_path)
+        assert c.post("/api/recipes/ghost/run").status_code == 404
+
+    def test_a_request_submit_checked_refuses_is_422(self, monkeypatch, tmp_path):
+        """The concurrent-Spawn cap and an unsatisfiable feature request are real ways `submit_checked`
+        can refuse a run — surfaced as a 422, the same as any other Spawn's."""
+        c = _client(monkeypatch, tmp_path)
+        _post(c, "/api/recipes", _project(), features=["vsim"])
+        monkeypatch.setattr(slurm, "arms_with_features", lambda names: [])
+        monkeypatch.setattr(slurm, "all_feature_names", lambda: [])
+        r = c.post("/api/recipes/resnet/run")
+        assert r.status_code == 422
+
+
+class TestRunningStatus:
+    """`running` was always a stub before `/run` existed. Now it reads `db.running_recipe_names` against
+    the live Slurm queue — proven here at the db/route seam, independent of how a Spawn got its
+    `recipe_name` (that plumbing is `recipes.run`'s own tests above, and `submit()`'s in test_submit.py)."""
+
+    def test_a_live_spawn_from_this_recipe_makes_it_running(self, monkeypatch, tmp_path):
+        c = _client(monkeypatch, tmp_path)
+        _post(c, "/api/recipes", _project())
+        with db.connect() as conn:
+            db.record_spawn(conn, 777, 1, "train.py", "uuid-1", recipe_name="resnet")
+        monkeypatch.setattr(slurm, "queue", lambda: [{"id": 777}])
+        assert c.get("/api/recipes").json()[0]["running"] is True
+
+    def test_no_live_spawn_means_not_running(self, monkeypatch, tmp_path):
+        c = _client(monkeypatch, tmp_path)
+        _post(c, "/api/recipes", _project())
+        with db.connect() as conn:
+            db.record_spawn(conn, 777, 1, "train.py", "uuid-1", recipe_name="resnet")
+        monkeypatch.setattr(slurm, "queue", lambda: [])  # already settled — off the queue
+        assert c.get("/api/recipes").json()[0]["running"] is False
+
+    def test_another_users_spawn_never_marks_it_running(self, monkeypatch, tmp_path):
+        c = _client(monkeypatch, tmp_path)
+        _post(c, "/api/recipes", _project())
+        with db.connect() as conn:
+            db.record_spawn(conn, 777, 2, "train.py", "uuid-1", recipe_name="resnet")  # bob's
+        monkeypatch.setattr(slurm, "queue", lambda: [{"id": 777}])
+        assert c.get("/api/recipes").json()[0]["running"] is False
 
 
 def _spool_body(body: bytes):

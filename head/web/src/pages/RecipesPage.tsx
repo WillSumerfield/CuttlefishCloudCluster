@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
-import { getRecipes, createRecipe, runRecipe, updateRecipe, deleteRecipe, Unauthorized, errMessage, type Recipe } from "../api";
+import { getRecipes, createRecipe, runRecipe, updateRecipe, updateRecipeSettings, deleteRecipe, Unauthorized, errMessage, type Recipe } from "../api";
 import { Storage } from "../recipes/Storage";
 import { RecipeCard } from "../recipes/RecipeCard";
-import { RecipeComposer, type RecipePayload } from "../recipes/RecipeComposer";
+import { RecipeComposer, type RecipePayload, type RecipeSettingsPayload } from "../recipes/RecipeComposer";
 import { NewRecipeTile } from "../recipes/NewRecipeTile";
+import { ComposerSlot } from "../recipes/ComposerSlot";
 import type { RecipeAction } from "../recipes/format";
 
 /**
@@ -14,16 +15,18 @@ import type { RecipeAction } from "../recipes/format";
  * becomes the composer in its own cell — row-spanning 2, pushing the column down rather than replacing
  * the shelf (wall previews the new bytes throughout).
  *
- * Update code turns THAT card into the same composer in place: an update IS a fresh upload (no copy of
- * the folder exists on the Head or your machine to re-freeze), so it prefills settings, fixes the name,
- * and hands the wall an allowance with the Recipe's own bytes already off (Head does delete-then-save,
- * charged what it grows by). Only one composer open at a time.
+ * Edit turns THAT card into the same composer in place, prefilled and name fixed. A folder there is
+ * optional: dropping one is a fresh upload (no copy exists on the Head or your machine to re-freeze
+ * otherwise), weighed against the wall with the Recipe's own bytes already off (Head does delete-then-
+ * save, charged what it grows by); leaving it out changes settings alone, no upload at all. Only one
+ * composer open at a time.
  *
- * Every action is optimistic, confirmed by a refetch — except Run, which the Head still answers 501 to
- * (docs/TODO.md "Running a Recipe").
+ * Delete is optimistic (the card leaves before the Head confirms, re-synced on failure). Run isn't:
+ * nothing on THIS card changes locally — its `running` bloom is the Head's answer to the next fetch, not
+ * a guess made here — so a successful run just triggers that refetch.
  */
 
-const API: Record<"run" | "delete", (name: string) => Promise<void>> = {
+const API: Record<"run" | "delete", (name: string) => Promise<unknown>> = {
   run: runRecipe, delete: deleteRecipe,
 };
 
@@ -57,12 +60,10 @@ export function RecipesPage() {
 
   const onAct = useCallback(
     (name: string, action: RecipeAction) => {
-      if (action === "edit") return; // settings form — a later phase; the control is here, inert for now.
-
-      if (action === "update") {
-        // An update needs a folder, so it goes through the composer rather than firing an endpoint —
-        // nothing moves here, and nothing is charged, until a folder is picked and Update code is hit.
-        // Guarded like the New-recipe click below: only one composer open at a time.
+      if (action === "edit") {
+        // Doesn't fire an endpoint directly — opens the composer on this card instead. Whether the save
+        // that follows also refreshes the code is the composer's own call (a dropped folder or not), not
+        // this page's. Guarded like the New-recipe click below: only one composer open at a time.
         if (active) return;
         setActive(name);
         setActionError(null);
@@ -72,10 +73,11 @@ export function RecipesPage() {
       if (action === "delete") {
         setRecipes((prev) => prev.filter((r) => r.name !== name));
       }
-      // Run reshapes nothing here — it spawns a job that surfaces on the Queue, not on this page.
 
       setActionError(null);
-      API[action as "run" | "delete"](name).catch((e) => {
+      const sent = API[action as "run" | "delete"](name);
+      if (action === "run") sent.then(refresh); // the new Spawn is what flips `running` true
+      sent.catch((e) => {
         if (e instanceof Unauthorized) return logout();
         setActionError(`Couldn't ${action} recipe '${name}' — ${errMessage(e)} The shelf has been refreshed.`);
         refresh(); // an action that failed live: re-sync to the truth.
@@ -107,6 +109,8 @@ export function RecipesPage() {
         wandb: r.wandb,
         wandb_project: r.wandb_project,
         wandb_entity: r.wandb_entity,
+        manifest: r.manifest,
+        features: r.features,
       };
       setRecipes((prev) =>
         target ? prev.map((x) => (x.name === target.name ? optimistic : x)) : [...prev, optimistic],
@@ -128,6 +132,29 @@ export function RecipesPage() {
         });
     },
     [active, logout, recipes, refresh],
+  );
+
+  // Edit: settings only, no code, no bytes/frozen_at change — optimistic the same way onSave is, but
+  // without the `updating` bloom (there's no upload for it to describe here).
+  const onSaveMeta = useCallback(
+    (name: string, r: RecipeSettingsPayload) => {
+      const target = recipes.find((x) => x.name === name);
+      if (!target) return;
+      setRecipes((prev) =>
+        prev.map((x) => (x.name === name ? { ...x, ...r, manifest: r.manifest } : x)),
+      );
+      setActive(null);
+      setActionError(null);
+
+      updateRecipeSettings(name, r)
+        .then((saved) => setRecipes((prev) => prev.map((x) => (x.name === name ? saved : x))))
+        .catch((e) => {
+          if (e instanceof Unauthorized) return logout();
+          setActionError(`Couldn't update recipe '${name}' — ${errMessage(e)} The shelf has been refreshed.`);
+          refresh();
+        });
+    },
+    [recipes, logout, refresh],
   );
 
   const used = recipes.reduce((n, r) => n + r.size_bytes, 0);
@@ -167,35 +194,45 @@ export function RecipesPage() {
               dead space stretched into an otherwise normal card. Top-aligning instead lets them sit at
               their natural height inside the tall row. */}
           <ul className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {active === "new" ? (
-              <RecipeComposer
-                used={used}
-                existingNames={recipes.map((r) => r.name)}
-                onPending={setPending}
-                onSave={onSave}
-                onCancel={() => setActive(null)}
-              />
-            ) : (
-              <NewRecipeTile onClick={() => !active && setActive("new")} />
-            )}
-            {recipes.map((r) =>
-              active === r.name ? (
+            <ComposerSlot
+              isOpen={active === "new"}
+              closed={<NewRecipeTile onClick={() => !active && setActive("new")} />}
+              // Matches NewRecipeTile's own recess fill exactly — ComposerSlot's default tint is close
+              // (both land in the same --abyss/--well family) but not identical, and this tile's own
+              // fade already dissolves toward the real page background at its edges, so a mismatch here
+              // would show as a seam right where the backdrop takes over during growing/shrinking.
+              closedTint="color-mix(in oklab, var(--abyss) 75%, var(--shoal))"
+              open={
                 <RecipeComposer
-                  key={r.name}
-                  // Delete-then-save: an update's own bytes come off before the new folder is weighed, so
-                  // the wall previews exactly the arithmetic recipes.save does on the Head. Its name comes
-                  // off the taken list for the same reason — a Recipe is not a duplicate of itself.
-                  used={used - r.size_bytes}
-                  existingNames={recipes.map((x) => x.name).filter((n) => n !== r.name)}
-                  editing={r}
+                  used={used}
+                  existingNames={recipes.map((r) => r.name)}
                   onPending={setPending}
                   onSave={onSave}
                   onCancel={() => setActive(null)}
                 />
-              ) : (
-                <RecipeCard key={r.name} recipe={r} onHover={setHovered} onAct={onAct} />
-              ),
-            )}
+              }
+            />
+            {recipes.map((r) => (
+              <ComposerSlot
+                key={r.name}
+                isOpen={active === r.name}
+                closed={<RecipeCard recipe={r} onHover={setHovered} onAct={onAct} />}
+                open={
+                  // Delete-then-save: an update's own bytes come off before the new folder is weighed, so
+                  // the wall previews exactly the arithmetic recipes.save does on the Head. Its name comes
+                  // off the taken list for the same reason — a Recipe is not a duplicate of itself.
+                  <RecipeComposer
+                    used={used - r.size_bytes}
+                    existingNames={recipes.map((x) => x.name).filter((n) => n !== r.name)}
+                    editing={r}
+                    onPending={setPending}
+                    onSave={onSave}
+                    onSaveMeta={(patch) => onSaveMeta(r.name, patch)}
+                    onCancel={() => setActive(null)}
+                  />
+                }
+              />
+            ))}
           </ul>
         </section>
       </div>

@@ -58,18 +58,21 @@ def _dir(user_id: int, name: str) -> Path:
     return _root() / str(user_id) / name
 
 
-def weigh(tar_path: Path, script: str | None) -> int:
-    """Uncompressed bytes in the upload, and the `script`-is-really-in-there check, in one pass.
+def weigh(tar_path: Path, script: str | None, manifest: str | None = None) -> int:
+    """Uncompressed bytes in the upload, plus the two is-it-really-in-there checks, in one pass.
 
-    Both happen before anything is written, so a save the wall refuses — or one naming an entrypoint the
-    tar does not contain — leaves nothing behind at all. The script check mirrors `spawns.submit_checked`:
-    a Recipe frozen around a missing entrypoint is one that fails every time it is ever run, discovered
-    long after the folder that would have fixed it is gone."""
+    All three happen before anything is written, so a save the wall refuses — or one naming an entrypoint
+    or a manifest the tar does not contain — leaves nothing behind at all. Both checks mirror
+    `spawns.submit_checked`: a Recipe frozen around a missing file is one that fails every time it is ever
+    run, discovered long after the folder that would have fixed it is gone. The manifest matters as much
+    as the script here, because a Recipe freezes its **Environment** and not merely its code."""
     with tarfile.open(tar_path, mode="r:gz") as tf:
         members = tf.getmembers()
-        if script is not None and script not in [m.name for m in members]:
-            raise ValueError(f"script {script!r} was not found in the uploaded project — check the path "
-                             f"matches exactly (and isn't excluded by .gitignore)")
+        names = [m.name for m in members]
+        for label, rel in (("script", script), ("manifest", manifest)):
+            if rel is not None and rel not in names:
+                raise ValueError(f"{label} {rel!r} was not found in the uploaded project — check the "
+                                 f"path matches exactly (and isn't excluded by .gitignore)")
         return sum(m.size for m in members if m.isfile())
 
 
@@ -103,6 +106,21 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
         if not isinstance(out, str) or not OUTPUT_NAME_RE.match(out):
             raise ValueError(f"invalid output name {out!r} — letters/digits/'.'/'_'/'-' only, may not "
                              f"start with '.' (no slashes, no '..')")
+    # `features` is frozen structurally only, exactly like `vram_mb`/`gpus` above — never checked against
+    # the fleet's current capability here. That check is `spawns.submit_checked`'s, and it runs for real
+    # when the Recipe is actually run, not months earlier when it happened to be saved.
+    features = meta.get("features") or []
+    if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
+        raise ValueError("'features' in X-CCC-Meta must be a list of strings")
+    # Required, like `script` and unlike `features`: a Recipe captures its **Environment** as well as its
+    # code (CONTEXT.md, **Recipe**), and every Spawn names the file it declares. A Recipe saved without
+    # one is a Recipe that could never be run — the same defect `outputs` is checked for above, caught
+    # here rather than the day it is needed. `weigh` checks the named file is actually in the upload.
+    manifest = meta.get("manifest") or ""
+    if not manifest:
+        raise ValueError("missing 'manifest' in X-CCC-Meta — a Recipe freezes the environment its work "
+                         "runs in, not just the code, so it must name the dependency file to build "
+                         "(e.g. pyproject.toml, uv.lock, requirements.txt, environment.yml)")
 
     old = db.get_recipe(conn, user_id, replacing) if replacing else None
     if replacing and old is None:
@@ -110,7 +128,7 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
     if not replacing and db.get_recipe(conn, user_id, name) is not None:
         raise ValueError(f"you already have a recipe named {name!r} — delete it or update it instead")
 
-    size = weigh(tar_path, script)
+    size = weigh(tar_path, script, manifest)
     # Delete-then-save arithmetic: the old snapshot is already released here, so an update is weighed on
     # what it GROWS BY. Nothing on disk has moved yet.
     used = db.user_recipe_bytes(conn, user_id) - (old["bytes"] if old else 0)
@@ -129,7 +147,59 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
     row = db.add_recipe(conn, user_id, name, script, meta.get("args") or [], outputs,
                         int(meta.get("gpus", 1)), int(meta["vram_mb"]), int(meta["minutes"]),
                         bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                        meta.get("wandb_entity") or "", size)
+                        meta.get("wandb_entity") or "", size, manifest, features)
+    return to_json(row)
+
+
+def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
+    """Change a Recipe's settings in place — no code moves, no upload, no wall arithmetic (`bytes` and
+    `frozen_at` are untouched). The Dashboard's "Edit" without a folder dropped; dropping one there goes
+    through `save(..., replacing=)` instead, which DOES re-freeze the code.
+
+    Same field validation as `save`, minus everything about the tar: `script` is checked against the code
+    already extracted on disk (`_dir`) instead of a fresh upload's members, since there isn't one here.
+    Raises ValueError for a bad name/entrypoint/no-such-recipe (422/404 at the boundary, same split as
+    `save`'s callers already make)."""
+    old = db.get_recipe(conn, user_id, name)
+    if old is None:
+        raise ValueError(f"no recipe named {name!r}")
+
+    script = meta.get("script") or ""
+    if not script:
+        raise ValueError("missing 'script' in the request — a Recipe freezes an entrypoint, not just code")
+    if not (_dir(user_id, name) / script).is_file():
+        raise ValueError(f"script {script!r} was not found in this recipe's saved code — drop a folder "
+                         f"instead if you meant to point it at a different one")
+    for field in ("minutes", "vram_mb"):
+        if not meta.get(field):
+            raise ValueError(f"missing '{field}' — a Recipe carries the same declared need and length a "
+                             f"Spawn does")
+    from .spawns import OUTPUT_NAME_RE
+    outputs = meta.get("outputs") or []
+    if not isinstance(outputs, list) or not outputs:
+        raise ValueError("missing 'outputs' — at least one output folder name is required (a Recipe with "
+                         "none could never be run)")
+    for out in outputs:
+        if not isinstance(out, str) or not OUTPUT_NAME_RE.match(out):
+            raise ValueError(f"invalid output name {out!r} — letters/digits/'.'/'_'/'-' only, may not "
+                             f"start with '.' (no slashes, no '..')")
+    features = meta.get("features") or []
+    if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
+        raise ValueError("'features' must be a list of strings")
+    # Checked against the code already on disk, exactly as `script` is above — there is no upload here to
+    # look inside, and a settings edit must not be able to point a Recipe at a manifest it has not got.
+    manifest = meta.get("manifest") or ""
+    if not manifest:
+        raise ValueError("missing 'manifest' — a Recipe freezes the environment its work runs in, not "
+                         "just the code")
+    if not (_dir(user_id, name) / manifest).is_file():
+        raise ValueError(f"manifest {manifest!r} was not found in this recipe's saved code — drop a "
+                         f"folder instead if you meant to point it at a different one")
+
+    row = db.update_recipe_meta(conn, user_id, name, script, meta.get("args") or [], outputs,
+                                int(meta.get("gpus", 1)), int(meta["vram_mb"]), int(meta["minutes"]),
+                                bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
+                                meta.get("wandb_entity") or "", manifest, features)
     return to_json(row)
 
 
@@ -148,6 +218,42 @@ def delete(conn, user_id: int, name: str) -> bool:
         return False
     _evict(conn, user_id, name)
     return True
+
+
+def run(conn, user_id: int, name: str, is_admin: bool) -> int:
+    """Run the frozen snapshot as a new Spawn. Returns the Spawn id.
+
+    Every setting the Spawn needs was already answered when the Recipe was saved (CONTEXT.md — a re-run
+    doesn't re-answer it), so this takes nothing from the caller but the name. `spawns.submit()` gets a
+    COPY of the Recipe's own directory (`source_dir`), never the directory itself: that Spawn's staging
+    is disposable and deleted after stage-in, while the Recipe must survive to be run again.
+
+    Raises ValueError for no-such-recipe (a 404 at the boundary) or anything
+    `spawns.submit_checked` itself refuses (422) — a Recipe never names an Arm, so that particular
+    failure can't happen here, but the concurrent-Spawn cap and an unsatisfiable feature request still
+    can."""
+    from . import spawns
+
+    row = db.get_recipe(conn, user_id, name)
+    if row is None:
+        raise ValueError(f"no recipe named {name!r}")
+
+    # Head owns the key (spawns.compose_wandb_env reads it from storage); only the run's identity is the
+    # Recipe's to carry, the same two fields the composer sends for an ad-hoc Spawn. Omitted rather than
+    # sent empty for the same reason api.ts's submit() omits them — WANDB_ENTITY="" breaks wandb.init()
+    # instead of falling back to the account default.
+    wandb_env: dict[str, str] = {}
+    if row["wandb_project"]:
+        wandb_env["WANDB_PROJECT"] = row["wandb_project"]
+    if row["wandb_entity"]:
+        wandb_env["WANDB_ENTITY"] = row["wandb_entity"]
+
+    return spawns.submit_checked(
+        user_id, is_admin, row["script"], row["gpus"], json.loads(row["args"]), wandb_env,
+        None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
+        wandb=bool(row["wandb"]), features=json.loads(row["features"]), manifest=row["manifest"],
+        source_dir=_dir(user_id, name), recipe_name=name,
+    )
 
 
 def sweep_orphans(conn) -> int:
@@ -171,12 +277,14 @@ def sweep_orphans(conn) -> int:
     return swept
 
 
-def to_json(row) -> dict:
+def to_json(row, running: bool = False) -> dict:
     """The wire shape `api.ts`'s `Recipe` type already describes.
 
-    `frozen_at` is epoch **ms**, what the browser renders staleness from. `updating`/`running` are always
-    false here, not a stub: a save is synchronous (never mid-upload by GET time), and nothing can yet
-    spawn from a Recipe (no `POST /recipes/{name}/run` yet), so nothing can yet be running one."""
+    `frozen_at` is epoch **ms**, what the browser renders staleness from. `updating` is always false
+    here, not a stub: a save is synchronous, never mid-upload by GET time. `running` is the caller's to
+    know — it needs the live Slurm queue (`db.running_recipe_names`), which a single row has no way to
+    ask for itself; defaults false for callers (save/update) where the Recipe cannot possibly be running
+    yet, since it was just written."""
     from datetime import datetime, timezone
     frozen = datetime.strptime(row["frozen_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return {
@@ -190,10 +298,13 @@ def to_json(row) -> dict:
         "size_bytes": row["bytes"],
         "frozen_at": int(frozen.timestamp() * 1000),
         "updating": False,
-        "running": False,
+        "running": running,
         # Sent back, not just stored: the update form prefills from this, so re-saving never silently
         # resets W&B config to defaults (CONTEXT.md — a Recipe holds it).
         "wandb": bool(row["wandb"]),
         "wandb_project": row["wandb_project"],
         "wandb_entity": row["wandb_entity"],
+        # Frozen structurally only — see `save`'s note on why neither is checked against the fleet here.
+        "manifest": row["manifest"],
+        "features": json.loads(row["features"]),
     }

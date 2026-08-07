@@ -7,7 +7,11 @@
  * inlined here because the tile is a recess (a dark fill), not the raised ::before plate that `.surface`
  * draws, so it can't just borrow the class without looking like a card.
  */
-const FADE = 22; // px depth per axis; the visible ramp is 2× this (matches the shard rim feel)
+// px depth per axis; the visible ramp is 2× this. Tuned generous now that the tile stretches to match
+// the taller Recipe cards beside it (self-stretch, RecipesPage.tsx) rather than sitting at its own
+// 150px minimum — the old, shallower depth left most of a ~220px+ box at full opaque fill, reading as a
+// solid dark block instead of a dissolving recess.
+const FADE = 40;
 const ramp = (dir: string) =>
   `linear-gradient(${dir},` +
   ` transparent 0,` +
@@ -24,10 +28,9 @@ const FADE_MASK = `${ramp("to right")}, ${ramp("to bottom")}`;
 
 export function NewRecipeTile({ onClick }: { onClick: () => void }) {
   return (
-    // self-stretch: the grid is items-start (see RecipesPage.tsx, next to its <ul>), which defeats
-    // a plain tile's default stretch to its row's height — without this it reads shorter than the
-    // recipe cards beside it, which set that height from their own content.
-    <li className="min-h-[150px] self-stretch">
+    // min-h/h-full: ComposerSlot (its parent, RecipesPage.tsx) owns the actual grid item and its
+    // self-stretch now — this just fills whatever box that hands it.
+    <div className="min-h-[150px] h-full">
       <button
         onClick={onClick}
         className="group relative flex h-full w-full flex-col items-center justify-center gap-2"
@@ -38,7 +41,10 @@ export function NewRecipeTile({ onClick }: { onClick: () => void }) {
           aria-hidden
           className="absolute inset-0"
           style={{
-            background: "color-mix(in oklab, var(--well) 55%, black)",
+            // `--abyss`, not literal black — it's the same blue-ish hue family as every other tone token
+            // in the app (--well/--body/--shoal), just its darkest point, so this reads as a deep recess
+            // rather than a true-black hole punched through the page.
+            background: "color-mix(in oklab, var(--abyss) 75%, var(--shoal))",
             WebkitMaskImage: FADE_MASK,
             maskImage: FADE_MASK,
             WebkitMaskComposite: "source-in",
@@ -55,6 +61,6 @@ export function NewRecipeTile({ onClick }: { onClick: () => void }) {
           New recipe
         </span>
       </button>
-    </li>
+    </div>
   );
 }

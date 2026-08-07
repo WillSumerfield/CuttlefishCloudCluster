@@ -41,4 +41,4 @@ export function ago(ms: number): string {
 }
 
 /** What an inline control does to a Recipe. The page owns the mutation; cards just name the verb. */
-export type RecipeAction = "run" | "update" | "edit" | "delete";
+export type RecipeAction = "run" | "edit" | "delete";
