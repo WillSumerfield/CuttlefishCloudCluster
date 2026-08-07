@@ -9,7 +9,7 @@ header — see `spawns._make_tar`), so a Recipe packs identically to a Spawn. Sa
 nothing** though: no Spawn, no Escrow, no queue place — so no `--follow` and no id, a save answers
 with a name.
 
-**The wall is the Head's, not ours.** Nothing here pre-checks the 24GB: only the Head knows what the
+**The wall is the Head's, not ours.** Nothing here pre-checks the 32GB: only the Head knows what the
 User already holds, and a client that guessed would refuse saves the Head would take. The Head answers
 413 with the numbers and the remedy in it, and that message is printed verbatim — see `_upload`.
 """
@@ -95,7 +95,7 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
         # Said before the bytes move, because this is the one upload in CCC that is kept indefinitely:
         # a Spawn's project is deleted at stage-in, its results expire in 7 days, and a Recipe does
         # neither. Nothing on the Head ever deletes one for you.
-        ui.hint("held on the Head until you delete it — counts against your 24GB recipe allowance")
+        ui.hint("held on the Head until you delete it — counts against your 32GB recipe allowance")
         if not ui.ask_confirm("Save?", True):
             raise ui.abort("not saved")
     saved = _upload("/recipes", tar_bytes,
@@ -208,7 +208,9 @@ def listing(as_json: bool = False) -> None:
             [[r["name"], r["script"], _human(r["size_bytes"]), r["gpus"],
               f"{r['vram_mb'] // 1024}G", r["minutes"], ", ".join(r["outputs"])] for r in rows])
         total = sum(r["size_bytes"] for r in rows)
-        ui.hint(f"{_human(total)} of your 24.0 GiB recipe allowance")
+        # Hardcoded, like api.ts's RECIPE_ALLOWANCE_BYTES: only the Head's `recipes.MAX_USER_BYTES` is
+        # the authority and it is not on the wire, so this is a label to keep in step, not a check.
+        ui.hint(f"{_human(total)} of your 32.0 GiB recipe allowance")
 
     ui.emit(rows, as_json, render)
 

@@ -9,10 +9,15 @@ the whole of it:
 |---|---|---|
 | An uploaded project | Until the Spawn stages it in | 4 GB per upload |
 | A Spawn's declared results | 7 days from when it ended | 8 GB, all yours together |
-| A [Recipe](recipes.md) | Forever, until you delete it | 24 GB, all yours together |
+| A [Recipe](recipes.md) | Forever, until you delete it | 32 GB, all yours together |
 | The Recovery Window copy | 30 minutes from when the Spawn ended | 16 GB per Spawn |
 
 Each ceiling is its own. Filling one never costs you any of another.
+
+A Recipe holds more than the code you uploaded: after its first run it also keeps the
+[Environment](environments.md) built from it, which carries its own interpreter and its own
+dependencies and is usually the larger half. That is what makes a Recipe genuinely frozen, and it is
+why the Recipe ceiling is the big one. `cuttle recipe list` shows the total, env included.
 
 None of this is priced. Storage is never contended for, never costs [Karma](karma.md), and a full
 allowance never affects who wins the queue.

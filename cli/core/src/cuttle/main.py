@@ -50,7 +50,7 @@ feature_app = typer.Typer(no_args_is_help=True,
                           help="Arm Features: heavy/hardware-licence-gated software CCC knows how to run.")
 app.add_typer(feature_app, name="feature")
 recipe_app = typer.Typer(no_args_is_help=True,
-                         help="Recipes: frozen, re-runnable snapshots of a project (24GB allowance).")
+                         help="Recipes: frozen, re-runnable snapshots of a project (32GB allowance).")
 app.add_typer(recipe_app, name="recipe")
 
 
@@ -553,7 +553,7 @@ def feature_show(name: str = typer.Argument(..., help="A Feature from `cuttle fe
 
 @recipe_app.command("list")
 def recipe_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
-    """Your saved Recipes, and what they hold against your 24GB allowance. Yours alone — a Recipe holds
+    """Your saved Recipes, and what they hold against your 32GB allowance. Yours alone — a Recipe holds
     your actual source, so unlike the queue there is no everyone-else view of them."""
     recipes_mod.listing(as_json=as_json)
 
@@ -587,7 +587,7 @@ def recipe_save(
 
     Unlike everything else `cuttle` uploads, this is kept indefinitely: a Spawn's project is deleted the
     moment it stages in and its results expire after 7 days, but nothing on the Head ever deletes a
-    Recipe. It holds space against your 24GB allowance until you run `cuttle recipe delete`.
+    Recipe. It holds space against your 32GB allowance until you run `cuttle recipe delete`.
 
     Extra args after the script are frozen as the Recipe's arguments
     (`cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints
