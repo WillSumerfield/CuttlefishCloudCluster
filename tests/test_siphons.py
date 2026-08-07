@@ -468,9 +468,9 @@ class TestSubmitOpensAndBindsOne:
         and the Spawn would die in `cd "$proj"` on the far side of the mesh."""
         _, body = submitted()
         filelist = body.split("<<'CCC_FILELIST'\n")[1].split("\nCCC_FILELIST")[0]
-        # `.ccc-env` rides along too — the built **Environment**, named as a bare directory because it
-        # does not exist yet when the script is rendered (ccc_head_api.environments).
-        assert sorted(filelist.split()) == [".ccc-env", "requirements.txt", "train.py"]
+        # Nothing built is in here any more: the **Environment** is made on the Arm, in node-local
+        # scratch, and never crosses the mesh in either direction (ccc_head_api.environments).
+        assert sorted(filelist.split()) == ["requirements.txt", "train.py"]
 
 
 class TestTheDaemonConfig:

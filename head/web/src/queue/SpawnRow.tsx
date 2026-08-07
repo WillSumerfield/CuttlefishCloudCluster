@@ -99,16 +99,10 @@ export function SpawnRow({
             <>
               <span aria-hidden>·</span>
               <span className="num">{duration(spawn.time_limit)}</span>
-              {/* A Spawn whose Python environment the Head is still building (docs/TODO.md "Python
-                  Environments"). It sits in Waiting because it is not running — but it is not waiting
-                  for a machine either, and a User wondering why their Spawn hasn't been placed
-                  deserves the actual answer rather than a queue position that isn't the reason. */}
-              {/building/i.test(spawn.state) && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span>building environment</span>
-                </>
-              )}
+              {/* No "building environment" here any more. A Spawn used to sit in Waiting while the Head
+                  built its Python — not running, but not waiting for a machine either — and this said
+                  so. The Arm builds it inside its own allocation now, so such a Spawn is Running and
+                  the queue has nothing left to explain. */}
             </>
           )}
         </div>

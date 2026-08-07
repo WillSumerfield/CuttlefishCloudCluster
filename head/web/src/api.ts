@@ -238,7 +238,6 @@ export const getSpawn = (id: number) => json<SpawnDetail>(`/spawns/${id}`)
 export const getStderr = (id: number) => req(`/spawns/${id}/stderr`).then((r) => r.text())
 /** The Environment build's output — empty string for a Spawn that declared none. The Head's work, not
  *  the Spawn's, which is why it is its own stream rather than the head of stdout. */
-export const getBuildLog = (id: number) => req(`/spawns/${id}/build`).then((r) => r.text())
 // null = no open Recovery Window (never made, over the 16GB cap, evicted for the 50GB pool cap, or its
 // 30 min are up) — a normal outcome for a finished Spawn, not surfaced as an error to the caller.
 export async function getRecovery(id: number): Promise<RecoveryStatus | null> {

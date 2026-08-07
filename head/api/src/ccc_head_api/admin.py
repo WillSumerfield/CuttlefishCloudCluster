@@ -173,11 +173,7 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
-                                       activation=activation,
-                                       # This process exits right after printing the id, and the
-                                       # Environment build runs in a DAEMON thread — backgrounding it
-                                       # here would kill the build at exit and strand a `--hold`ed Spawn.
-                                       background_build=False)
+                                       activation=activation)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1

@@ -13,6 +13,7 @@ Spawn left held keeps its submitter's Escrow forever, with no thread left to com
 """
 
 import io
+import shlex
 import tarfile
 from pathlib import Path
 
@@ -230,31 +231,40 @@ def _script(**kw):
     kw.setdefault("constraint", "")
     kw.setdefault("node", None)
     kw.setdefault("outputs", ["outputs"])
-    return spawns._render(staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+    return spawns._render(staging=Path("/tmp/u"), gpu=1, script="train.py", args=[], files=[],
                           token="a3f9", secret="s3cr3t", **kw)
 
 
-def test_script_decides_at_run_time_whether_there_is_an_environment():
-    """One rendering serves both cases: the script tests for the env dir itself rather than the Head
-    baking in an answer. A build that produced nothing leaves `$py` empty — the image has no
-    interpreter to degrade to (cuttle.templates.BASE_DEF_TMPL)."""
+def _declared(**kw):
+    kw.setdefault("declared", env.Manifest("uv-requirements", "requirements.txt"))
+    return _script(**kw)
+
+
+def test_a_spawn_that_declared_nothing_renders_no_build_at_all():
+    """The Head knows at submit whether there is anything to build, so the no-env case is ABSENT rather
+    than an inert run-time branch. `$py` stays empty and there is nothing to degrade to — the image has
+    no interpreter (cuttle.templates.BASE_DEF_TMPL)."""
     body = _script()
-    assert f'[ -d "$proj/{env.ENV_DIRNAME}" ]' in body
-    assert 'py=""' in body
+    assert 'py=""; envbind=""; envmount=""' in body
+    assert "ccc_build_or_die" not in body
     assert 'py="python"' not in body, "the image's python came back — nothing supplies one now"
 
 
-def test_environment_is_moved_out_of_the_project_before_running():
+def test_the_environment_is_built_outside_the_project():
     """$proj is what recover_scratch() copies for the Recovery Window and measures against
-    RECOVERY_MAX_BYTES. An 8GB conda env left inside it would silently disable recovery for exactly the
-    Spawns most likely to need it."""
-    body = _script()
-    assert f'mv "$proj/{env.ENV_DIRNAME}" "$scratch/env"' in body
+    RECOVERY_MAX_BYTES. An 8GB conda env built inside it would silently disable recovery for exactly the
+    Spawns most likely to need it. Built straight into $scratch, so there is nothing to move."""
+    body = _declared()
+    assert 'mkdir -p "$scratch/env" "$scratch/tmp"' in body
+    assert f"$scratch/env:{env.ENV_MOUNT}" in body
 
 
 def test_environment_is_bound_at_the_path_it_was_built_at():
-    """The one property the design rests on — see test_every_build_targets_the_one_fixed_mount."""
-    assert f'envbind=",$scratch/env:{env.ENV_MOUNT}"' in _script()
+    """The one property the design rests on — see test_every_build_targets_the_one_fixed_mount. Built
+    and run on the same box in the same job now, so the two binds are the same string."""
+    body = _declared()
+    assert f'envbind=",$scratch/env:{env.ENV_MOUNT}"' in body
+    assert f'--bind "$proj,$scratch/env:{env.ENV_MOUNT},' in body, "the build binds it at the same path"
 
 
 def test_payload_runs_the_environments_interpreter_and_binds_it_together():
@@ -296,11 +306,10 @@ def test_the_temp_scratch_is_outside_the_recovery_window():
 
 
 def test_the_remote_stage_in_recurses():
-    """The other half of the `.ccc-env` filelist entry: `--files-from` implies `--dirs` but NOT
-    `--recursive` (rsync(1): `-a` doesn't imply `-r` here), so a bare directory name arrives as
-    an EMPTY directory — the env staged as nothing, bound over ENV_MOUNT, and the Spawn died on
-    `stat /opt/ccc/env/bin/python`. Remote Arms only; the Head-local branch (`cp -a`) is
-    unaffected."""
+    """`--files-from` implies `--dirs` but NOT `--recursive` (rsync(1): `-a` doesn't imply `-r` here),
+    so any bare directory name in the list would arrive EMPTY. Nothing built is named that way any more,
+    but a project of the User's own can still contain a directory, and losing its contents silently is
+    the same bug. Remote Arms only; the Head-local branch (`cp -a`) is unaffected."""
     stage_in = next(ln for ln in _script().splitlines()
                     if '--files-from="$scratch/filelist"' in ln)
     assert " -r " in stage_in
@@ -320,8 +329,11 @@ def test_the_tide_pool_path_follows_the_shape_that_was_built():
     that is certainly not what their Spawn runs."""
     conda = _script(tidepool_port=22001, tidepool_pubkey="k",
                     declared=env.Manifest("conda", "environment.yml"))
-    assert f'[ -x {env.ENV_MOUNT}/bin/python ]' in conda
-    assert env.VENV_DIR not in conda
+    # The PATH line only, not the whole script: the build Pod's own env names VENV_DIR unconditionally
+    # (it is inert on the conda path), and what must not be wrong is what the shell puts on PATH.
+    path_line = next(ln for ln in conda.splitlines() if "export PATH" in ln)
+    assert f"{env.ENV_MOUNT}/bin" in path_line
+    assert env.VENV_DIR not in path_line
 
 
 def test_a_spawn_with_no_environment_names_a_path_that_cannot_exist():
@@ -347,7 +359,7 @@ def no_tools(monkeypatch, tmp_path):
 
 @pytest.fixture
 def with_tools(monkeypatch, tmp_path):
-    """A Head that has both build tools installed, and a cache + scratch it may write to."""
+    """A node that has both build tools installed, and a download cache it may write to."""
     d = tmp_path / "tools"
     d.mkdir(parents=True, exist_ok=True)
     for name in ("uv", "micromamba"):
@@ -356,7 +368,6 @@ def with_tools(monkeypatch, tmp_path):
     monkeypatch.setattr(env, "MICROMAMBA_BIN", d / "micromamba")
     monkeypatch.setattr(env, "TOOLS_DIR", d)
     monkeypatch.setattr(env, "CACHE_DIR", tmp_path / "cache")
-    monkeypatch.setattr(env, "TMP_DIR", tmp_path / "envtmp")
 
 
 def test_an_unequipped_head_refuses_and_says_which_binary(no_tools, tmp_path):
@@ -385,20 +396,53 @@ def test_an_equipped_head_refuses_nothing(with_tools, tmp_path):
     assert env.require_tool(m) is None
 
 
-def test_the_build_can_reach_its_tools_inside_the_pod(with_tools, tmp_path, monkeypatch):
-    """--contain gives the build nothing of the Head's filesystem but what is bound. uv and micromamba
-    live on the HEAD, not in base.sif, so without this bind the argv names a binary that does not exist
-    inside the Pod — and every declared Environment fails on a Head that installed them correctly."""
-    seen = []
+# --- the build Pod, as rendered into the job script -------------------------
+# The build runs on the ARM now, inside the Spawn's own job, so what there is to check is the shell the
+# Head renders — not a subprocess it launches. Nothing here executes anything.
 
-    class R:
-        returncode, stdout, stderr = 0, "", ""
+def _block(kind="uv-requirements", path="requirements.txt", features=(), stubs=(), log=(),
+           declared=...):
+    """The %%ENV_BUILD%% text for one declaration.
 
-    monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
-    project = _project(tmp_path / "p", **{"requirements.txt": ""})
-    env.build(project, env.detect(project, "requirements.txt"), "ccc-u60002")
-    binds = [c[c.index("--bind") + 1] for c in seen if "--bind" in c]
-    assert binds and all(f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in b for b in binds)
+    The three script-wide tokens are substituted here the way `_render`'s own pass does a moment later —
+    they are written once for the whole job script, and a test reading `%%ENV_MOUNT%%` back would be
+    pinning the seam rather than the behaviour."""
+    from ccc_head_api import features as _hf
+    m = env.Manifest(kind, path) if declared is ... else declared
+    text = spawns._render_env_build(m, Path("/tmp/u"), list(features), list(stubs), list(log))
+    for tok, val in (("%%ENV_MOUNT%%", env.ENV_MOUNT),
+                     ("%%FEATLIB_MOUNT%%", _hf.FEATLIB_MOUNT),
+                     ("%%ENV_INTERPRETER%%", m.interpreter if m else "")):
+        text = text.replace(tok, val)
+    return text
+
+
+def _pod_binds(block):
+    """The --bind argument of the build Pod, as one string."""
+    line = next(ln for ln in block.splitlines() if ln.strip().startswith("--bind"))
+    return line.strip()
+
+
+def test_the_build_can_reach_its_tools_inside_the_pod(with_tools):
+    """--contain gives the build nothing of the node's filesystem but what is bound. uv and micromamba
+    are installed beside base.sif, not inside it, so without this bind the argv names a binary that does
+    not exist in the Pod — and every declared Environment fails on a node provisioned correctly."""
+    assert f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in _pod_binds(_block())
+
+
+def test_the_tools_are_bound_read_only(with_tools):
+    """A build runs the submitter's own code as their **Guise**. It may not rewrite the binaries the
+    next Spawn's build will run."""
+    assert f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in _pod_binds(_block())
+
+
+def test_the_build_gets_the_same_walls_the_payload_gets(with_tools):
+    """A manifest is code — build backends, sdist setup.py, conda post-link scripts all execute — so it
+    is contained exactly as the work is, not by a weaker isolation invented for it. No --nv: a build
+    needs no GPU, even though this job already holds one."""
+    block = _block()
+    assert 'apptainer exec --contain --pid --pwd "$proj"' in block
+    assert "--nv" not in block
 
 
 class TestTheBuildScratchIsOnDisk:
@@ -410,82 +454,64 @@ class TestTheBuildScratchIsOnDisk:
     Worth pinning precisely because the symptom lies: pip reports the ENOSPC as "Download failed
     after 6 attempts ... not pip", reading as flaky networking that retries can never fix."""
 
-    def _build(self, tmp_path, monkeypatch):
-        seen = []
+    def test_tmpdir_is_moved_off_the_session_tmpfs(self, with_tools):
+        assert f"TMPDIR={env.POD_TMP}" in _block("conda", "environment.yml")
 
-        class R:
-            returncode, stdout, stderr = 0, "", ""
-
-        monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
-        project = _project(tmp_path / "p", **{"environment.yml": ""})
-        env.build(project, env.detect(project, "environment.yml"), "ccc-u60002")
-        return seen
-
-    def test_tmpdir_is_moved_off_the_session_tmpfs(self, with_tools, tmp_path, monkeypatch):
-        seen = self._build(tmp_path, monkeypatch)
-        envs = [c[c.index("--env") + 1] for c in seen if "--env" in c]
-        assert envs and all("TMPDIR=/ccc-tmp" in e for e in envs)
-
-    def test_the_scratch_is_actually_bound(self, with_tools, tmp_path, monkeypatch):
+    def test_the_scratch_is_actually_bound(self, with_tools):
         """TMPDIR naming a path that is not bound would be worse than leaving it alone — the tools
         would fail on a missing directory instead of a full one."""
-        seen = self._build(tmp_path, monkeypatch)
-        binds = [c[c.index("--bind") + 1] for c in seen if "--bind" in c]
-        assert binds and all(":/ccc-tmp" in b for b in binds)
+        assert f"$scratch/tmp:{env.POD_TMP}" in _pod_binds(_block("conda", "environment.yml"))
 
-    def test_pips_download_cache_is_a_cache_not_scratch(self, with_tools, tmp_path, monkeypatch):
-        """Under /ccc-cache, which persists and is pruned — not /ccc-tmp, which is deleted after every
-        build. Otherwise pip re-downloads every wheel on every rebuild."""
-        seen = self._build(tmp_path, monkeypatch)
-        envs = [c[c.index("--env") + 1] for c in seen if "--env" in c]
-        assert envs and all("PIP_CACHE_DIR=/ccc-cache/pip" in e for e in envs)
+    def test_pips_download_cache_is_a_cache_not_scratch(self, with_tools):
+        """Under the node's shared cache, which persists between Spawns — not under the per-Spawn
+        scratch, which dies with the job. Otherwise pip re-downloads every wheel every time."""
+        assert f"PIP_CACHE_DIR={env.POD_CACHE}/pip" in _block("conda", "environment.yml")
 
-    def test_the_scratch_is_removed_when_the_build_ends(self, with_tools, tmp_path, monkeypatch):
-        """Per-build and deleted in a `finally`: a timed-out build leaves partial downloads behind, and
-        nothing ever looks in this tree again — prune_cache deliberately does not cover it."""
-        self._build(tmp_path, monkeypatch)
-        assert list(env.TMP_DIR.iterdir()) == []
+    def test_the_scratch_dies_with_the_spawn(self, with_tools):
+        """Per-Spawn, inside $scratch, which the job script's EXIT trap already rm -rf's. A build that
+        times out or fails leaves the biggest partial download behind, and nothing looks here again."""
+        assert "$scratch/tmp" in _block()
 
-    def test_it_survives_a_failed_build(self, with_tools, tmp_path, monkeypatch):
-        """The failing build is exactly the one that leaves the biggest partial download behind."""
-        class R:
-            returncode, stdout, stderr = 1, "", "boom"
-
-        monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: R())
-        project = _project(tmp_path / "p", **{"environment.yml": ""})
-        with pytest.raises(env.BuildError):
-            env.build(project, env.detect(project, "environment.yml"), "ccc-u60002")
-        assert list(env.TMP_DIR.iterdir()) == []
-
-    def test_the_scratch_is_not_swept_by_the_cache_reaper(self, with_tools, tmp_path, monkeypatch):
-        """prune_cache empties the WHOLE cache when over the cap. With the scratch inside it, one
-        build finishing would delete another's half-downloaded wheel out from under it."""
-        assert env.TMP_DIR not in env.CACHE_DIR.parents
-        assert env.CACHE_DIR not in env.TMP_DIR.parents
+    def test_the_scratch_is_not_inside_the_cache(self, with_tools):
+        """The prune empties the WHOLE cache at the cap. With one Spawn's scratch inside it, another
+        Spawn hitting the cap would delete a half-downloaded wheel out from under a live build."""
+        assert not str(env.CACHE_DIR).startswith("$scratch")
+        assert f"$scratch/tmp:{env.POD_TMP}" in _pod_binds(_block())
+        assert f"{env.CACHE_DIR}:{env.POD_CACHE}" in _pod_binds(_block())
 
 
-def _build_env_list(tmp_path, monkeypatch, **files):
-    """The `--env` strings a build Pod is given, with the shell captured."""
-    seen = []
+class TestTheNodeCacheIsWhatMakesThisAffordable:
+    """Every Spawn rebuilds. That is only tolerable because the DOWNLOADS are kept: uv and micromamba
+    hard-link out of this tree, so the second Spawn to want a given torch fetches nothing."""
 
-    class R:
-        returncode, stdout, stderr = 0, "", ""
+    def test_the_cache_is_bound_into_every_build(self, with_tools):
+        assert f"{env.CACHE_DIR}:{env.POD_CACHE}" in _pod_binds(_block())
 
-    monkeypatch.setattr(env.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), R())[1])
-    project = _project(tmp_path / "p", **files)
-    env.build(project, env.detect(project, next(iter(files))), "ccc-u60002")
-    return [c[c.index("--env") + 1] for c in seen if "--env" in c]
+    def test_every_tool_is_pointed_at_it(self, with_tools):
+        block = _block()
+        for var in (f"UV_CACHE_DIR={env.POD_CACHE}/uv",
+                    f"MAMBA_ROOT_PREFIX={env.POD_CACHE}/mamba",
+                    f"PIP_CACHE_DIR={env.POD_CACHE}/pip"):
+            assert var in block
+
+    def test_it_is_pruned_before_the_build_not_after(self, with_tools):
+        """After would throw away exactly what this Spawn just downloaded, on the Spawn that paid for
+        it. Whole-cache rather than per-entry: both tools hard-link out, so evicting one entry safely
+        would need their own bookkeeping."""
+        block = _block()
+        prune = block.index(f'rm -rf "{env.CACHE_DIR}"/*')
+        assert prune < block.index("ccc_build_or_die")
+        assert str(env.CACHE_MAX_GB * 1024**3) in block
 
 
-def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools, tmp_path, monkeypatch):
+def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools):
     """`--active` only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it — so uv falls
     back to the `.venv` it makes beside the manifest, inside the Mantle-owned project a Guise may
     only read, and every pyproject.toml/uv.lock Spawn dies on "Permission denied".
     UV_PROJECT_ENVIRONMENT names the path outright, as --python already did on the uv-pip branch."""
     cmds = env.render_build(env.Manifest("uv-project", "pyproject.toml"))
     assert not any("--active" in part for cmd in cmds for part in cmd)
-    envs = _build_env_list(tmp_path, monkeypatch, **{"pyproject.toml": ""})
-    assert envs and all(f"UV_PROJECT_ENVIRONMENT={env.VENV_DIR}" in e for e in envs)
+    assert f"UV_PROJECT_ENVIRONMENT={env.VENV_DIR}" in _block("uv-project", "pyproject.toml")
 
 
 class TestTheEnvCarriesItsOwnInterpreter:
@@ -493,26 +519,52 @@ class TestTheEnvCarriesItsOwnInterpreter:
     the argv because all three build paths need them, including the one that runs no uv command at all
     until `uv sync` decides for itself which CPython to fetch."""
 
-    def test_uv_may_not_adopt_an_interpreter_it_did_not_install(self, with_tools, tmp_path, monkeypatch):
-        """Without only-managed, uv happily picks up a system python of the right version — and the venv
-        it builds then points at a path that exists on the HEAD and not on the Arm. Confirmed against
-        uv 0.12.1: `uv venv --python 3.12` took the host's 3.12.3 until this was set."""
-        envs = _build_env_list(tmp_path, monkeypatch, **{"pyproject.toml": ""})
-        assert envs and all("UV_PYTHON_PREFERENCE=only-managed" in e for e in envs)
+    def test_uv_may_not_adopt_an_interpreter_it_did_not_install(self, with_tools):
+        """Without only-managed, uv happily picks up a system python of the right version — one that
+        exists on this box and not inside the Pod, so the venv points at nothing runnable. Confirmed
+        against uv 0.12.1: `uv venv --python 3.12` took the host's 3.12.3 until this was set."""
+        assert "UV_PYTHON_PREFERENCE=only-managed" in _block("uv-project", "pyproject.toml")
 
-    def test_the_downloaded_interpreter_lands_inside_the_shipped_tree(self, with_tools, tmp_path,
-                                                                      monkeypatch):
+    def test_the_downloaded_interpreter_lands_inside_the_shipped_tree(self, with_tools):
         """Otherwise it goes to $HOME — which a **Guise** has not got — or to the Pod's 64MB session
-        tmpfs, and either way the env that reaches the Arm has no interpreter to run."""
-        envs = _build_env_list(tmp_path, monkeypatch, **{"pyproject.toml": ""})
-        assert envs and all(f"UV_PYTHON_INSTALL_DIR={env.PY_INSTALL_DIR}" in e for e in envs)
+        tmpfs, and either way the env has no interpreter to run."""
+        assert f"UV_PYTHON_INSTALL_DIR={env.PY_INSTALL_DIR}" in _block("uv-project", "pyproject.toml")
         assert env.PY_INSTALL_DIR.startswith(env.ENV_MOUNT + "/")
 
 
-# --- the held Spawn: submit, build, release or fail -------------------------
-# A Spawn is `sbatch --hold`ed so Slurm cannot place it before its env exists, then built behind the
-# request. Every path out of that build must reach exactly one of two ends — released, or failed — or
-# the Spawn sits held forever with its submitter's Escrow suppressing their Share.
+class TestAFailedBuildIsAFailedSpawn:
+    """The deliberate cost of building on the Arm. The Head used to refuse a broken manifest before the
+    Spawn existed; now it is accepted, Escrowed, queued and placed, and the failure happens there."""
+
+    def test_it_ends_the_spawn_the_way_every_other_early_exit_does(self, with_tools):
+        """The same four things a failed stage-in does: say why in `err`, record a non-zero `exit`,
+        stop the periodic pusher, and stage out. Anything less is a Spawn the Head reports as lost."""
+        block = _block()
+        fail = block[block.index("ccc_build_or_die() {"):]
+        for line in ('>> "$err"', 'echo 1 > "$exitf"', 'kill "$loop_pid" 2>/dev/null',
+                     "stage_out", "exit 1"):
+            assert line in fail
+
+    def test_the_failure_names_which_of_the_two_builds_failed(self, with_tools):
+        """A Feature's conda solve and the submitter's own manifest fail in the same function, and
+        blaming the manifest for CCC's own prefix would send a User editing a file that is fine."""
+        block = _block(features=["vlearn"])
+        assert "ccc_building='the environment declared in requirements.txt'" in block
+        feat = next(ln for ln in block.splitlines()
+                    if ln.startswith("ccc_building=") and "requirements" not in ln)
+        assert shlex.split(feat.split("=", 1)[1])[0] == "the 'vlearn' Arm Feature's system libraries"
+
+    def test_the_build_output_is_the_spawns_own_stderr(self, with_tools):
+        """No separate build log to fetch. It is the answer to "why did my Spawn get that version" on
+        success and to "why did it not run" on failure, and one place to look beats two — `cuttle logs`
+        and the Spawn page both already show it, live."""
+        assert '"$sif" "$@" >> "$err" 2>&1' in _block()
+
+
+# --- submit: what the Head decides, and what it hands the Arm ----------------
+# There is no hold and no build thread any more. What `submit` still owes is every REFUSAL that can be
+# decided from the declaration, made before the Spawn exists — and a job script that carries the build
+# the Arm will run.
 
 @pytest.fixture
 def head(monkeypatch, tmp_path, with_tools):
@@ -535,8 +587,6 @@ def head(monkeypatch, tmp_path, with_tools):
         return type("R", (), {"stdout": "4242\n", "stderr": "", "returncode": 0})()
 
     monkeypatch.setattr(spawns.subprocess, "run", fake_run)
-    # The build is what these tests drive by hand — starting a thread would race every assertion.
-    monkeypatch.setattr(spawns, "start_build", lambda *a, **kw: None)
     return calls
 
 
@@ -564,142 +614,93 @@ def _sbatch(calls):
     return next(c for c in calls if "sbatch" in c)
 
 
+def _body(calls):
+    """The job script `submit` fed sbatch on stdin — captured through _render, since the fake shell
+    never sees the input."""
+    return calls  # placeholder; see _rendered below
+
+
 def test_a_spawn_that_declares_nothing_never_reaches_sbatch(head, tmp_path):
-    """Refused, not held and not degraded — and refused before sbatch, so there is no Spawn to Escrow,
-    nothing in the queue, and nothing for a reaper to come back for."""
+    """Refused, not degraded — and refused before sbatch, so there is no Spawn to Escrow, nothing in
+    the queue, and nothing for a reaper to come back for. This is the one class of build problem that
+    is still caught for free, and it is why detection stayed on the Head."""
     with pytest.raises(env.BuildError, match="declares no environment"):
         _submit(tmp_path)
     assert not [c for c in head if "sbatch" in c]
 
 
-def test_a_tide_pool_may_decline_and_is_never_held(head, tmp_path):
+def test_no_spawn_is_ever_held(head, tmp_path):
+    """The hold existed to keep Slurm from placing a Spawn before the Head had finished building its
+    env. The Arm builds inside its own allocation now, so a held Spawn would be pure latency — and one
+    with nothing alive to release it."""
+    _submit(tmp_path, "requirements.txt")
+    assert "--hold" not in _sbatch(head)
+
+
+def test_a_tide_pool_may_decline(head, tmp_path):
     """The one exemption. A bare Tide Pool uploads an empty tar — there is no file in it to name — and
-    it is a shell rather than a run, so nothing has to be built before it can start."""
+    it is a shell rather than a run."""
     jid = _submit(tmp_path, tidepool=True, script=None)
     assert "--hold" not in _sbatch(head)
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
+    assert "none declared" in spawns.environment_note(jid)
 
 
 def test_a_tide_pool_that_declares_one_gets_it_built(head, tmp_path):
     """The exemption is from the REQUIREMENT, not from the feature. A Tide Pool opened over a project
     is how you debug the thing that failed, and that is only true if the shell holds the env the Spawn
-    would have run in — so naming a manifest here holds and builds exactly like any other Spawn."""
+    would have run in — so naming a manifest here builds exactly like any other Spawn."""
     jid = _submit(tmp_path, "requirements.txt", tidepool=True, script=None)
-    assert "--hold" in _sbatch(head)
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
     assert "requirements.txt" in spawns.environment_note(jid)
 
 
-def test_a_declared_environment_holds_the_spawn(head, tmp_path):
-    """The dispatch interlock. Without --hold, Slurm can place the Spawn on an Arm while the env it is
-    supposed to run against is still being built on the Head — and the Arm stages in a half-written
-    directory, or none at all."""
-    jid = _submit(tmp_path, "requirements.txt")
-    assert "--hold" in _sbatch(head)
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
+def _rendered(monkeypatch):
+    """Capture what `submit` passed to `_render`, and what came back."""
+    seen = {}
+    real = spawns._render
+
+    def watch(*a, **kw):
+        seen["files"] = a[4]          # the 5th positional arg — see spawns.submit's call
+        seen["body"] = real(*a, **kw)
+        return seen["body"]
+
+    monkeypatch.setattr(spawns, "_render", watch)
+    return seen
 
 
-def _recipe_dir(tmp_path, *, env_built=True):
-    """A **Recipe**'s durable directory, as `recipes.store_env` leaves one: the code, plus the env a
-    previous Spawn from it built. `spawns.submit(source_dir=)` copies this, env and all."""
+def test_the_job_script_carries_the_build(head, tmp_path, monkeypatch):
+    """The whole handover. The Head resolved the manifest into commands; the Arm runs them."""
+    seen = _rendered(monkeypatch)
+    _submit(tmp_path, "requirements.txt")
+    assert "ccc_build_or_die" in seen["body"]
+    assert "requirements.txt" in seen["body"]
+
+
+def test_nothing_built_is_in_what_a_remote_arm_stages_in(head, tmp_path, monkeypatch):
+    """The Environment used to ride the project transfer as a bare directory entry — several GB across
+    the mesh on every Spawn, which is the whole reason the build moved. Nothing built is named here now;
+    the Arm makes it in its own node-local scratch."""
+    seen = _rendered(monkeypatch)
+    _submit(tmp_path, "requirements.txt")
+    assert sorted(seen["files"]) == ["requirements.txt", "train.py"]
+
+
+def test_a_recipe_is_code_and_a_declaration_not_a_built_tree(head, tmp_path, monkeypatch):
+    """A Recipe briefly kept the env the Head built for it. There is no Head-built env now, so a Recipe
+    freezes the declaration and every Spawn from it rebuilds — cheaply, out of the Arm's package cache."""
     d = tmp_path / "recipe"
     d.mkdir()
     (d / "train.py").write_text("print('hi')\n")
     (d / "requirements.txt").write_text("numpy\n")
-    if env_built:
-        (d / env.ENV_DIRNAME / "venv" / "bin").mkdir(parents=True)
-        (d / env.ENV_DIRNAME / "venv" / "bin" / "python").write_text("#!/bin/sh\n")
-    return d
-
-
-def test_a_recipe_that_brought_its_own_environment_is_never_held(head, tmp_path, monkeypatch):
-    """The whole point of a Recipe keeping one: there is no build for the hold to be waiting on, so
-    holding would be latency and nothing else. The second Spawn from a Recipe starts as soon as Slurm
-    can place it."""
-    started = []
-    monkeypatch.setattr(spawns, "start_build", lambda *a, **kw: started.append(a))
-    jid = spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
-                        source_dir=_recipe_dir(tmp_path), recipe_name="resnet",
-                        script="train.py", manifest="requirements.txt", minutes=60,
-                        constraint="", outputs=["out"])
+    seen = _rendered(monkeypatch)
+    spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
+                  source_dir=d, recipe_name="resnet", script="train.py",
+                  manifest="requirements.txt", minutes=60, constraint="", outputs=["out"])
     assert "--hold" not in _sbatch(head)
-    assert started == [], "it rebuilt an environment it was handed"
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
+    assert sorted(seen["files"]) == ["requirements.txt", "train.py"]
+    assert "ccc_build_or_die" in seen["body"], "it must still build what the Recipe declared"
 
 
-def test_a_recipe_without_one_yet_builds_and_is_held(head, tmp_path, monkeypatch):
-    """The first Spawn from a Recipe is an ordinary Spawn — and it is the one that is told which
-    Recipe should end up owning what it builds."""
-    started = []
-    monkeypatch.setattr(spawns, "start_build", lambda *a, **kw: started.append(a))
-    spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
-                  source_dir=_recipe_dir(tmp_path, env_built=False), recipe_name="resnet",
-                  script="train.py", manifest="requirements.txt", minutes=60,
-                  constraint="", outputs=["out"])
-    assert "--hold" in _sbatch(head)
-    assert started and started[0][-1] == (1, "resnet"), "the build was not told who to keep it for"
-
-
-def test_an_uploaded_env_directory_is_never_trusted(head, tmp_path):
-    """`.ccc-env` is an ordinary directory name and an upload can carry one. Taking it at face value
-    would let a submitter hand the Head a tree of their own choosing and have it bound into the Pod as
-    this Spawn's Environment, unbuilt and unexamined. Only a directory the HEAD wrote is trusted, so
-    this one is held and built over like any other."""
-    tar = _tar(tmp_path, "train.py", "requirements.txt",
-               f"{env.ENV_DIRNAME}/venv/bin/python")
-    jid = spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=tar, script="train.py",
-                        manifest="requirements.txt", minutes=60, constraint="", outputs=["out"])
-    assert "--hold" in _sbatch(head)
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
-
-
-def test_a_stored_environment_is_named_once_not_file_by_file(head, tmp_path, monkeypatch):
-    """A built env is tens of thousands of files. Listing them individually would say, at length,
-    what the one directory entry and the stage-in's explicit -r already say."""
-    seen = {}
-    real = spawns._render
-    monkeypatch.setattr(spawns, "_render",
-                        lambda *a, **kw: (seen.update(files=a[4]), real(*a, **kw))[1])
-    spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
-                  source_dir=_recipe_dir(tmp_path), recipe_name="resnet",
-                  script="train.py", manifest="requirements.txt", minutes=60,
-                  constraint="", outputs=["out"])
-    assert env.ENV_DIRNAME in seen["files"]
-    assert not [f for f in seen["files"] if f.startswith(f"{env.ENV_DIRNAME}/")]
-
-
-def test_the_environment_is_in_what_a_remote_arm_stages_in(head, tmp_path, monkeypatch):
-    """It cannot be enumerated like the other files — it does not exist yet when the script is rendered
-    — so one directory entry stands in for the tree, and the stage-in's explicit -r is what makes that
-    one entry pull the whole env (see the next test). Without the entry a remote Arm stages in a project
-    with no env in it and runs against an interpreter that was never copied."""
-    seen = {}
-    real = spawns._render
-    # `files` is the 5th positional arg of _render, not a keyword — see spawns.submit's call.
-    monkeypatch.setattr(spawns, "_render",
-                        lambda *a, **kw: (seen.update(files=a[4]), real(*a, **kw))[1])
-    _submit(tmp_path, "requirements.txt")
-    assert env.ENV_DIRNAME in seen["files"]
-
-
-def test_a_tide_pool_that_declared_nothing_stages_no_env_dir(head, tmp_path, monkeypatch):
-    """The other half: naming a directory that will never exist would make that Spawn's stage-in
-    report a missing file. Only a Tide Pool can be in this state now."""
-    seen = {}
-    real = spawns._render
-    # `files` is the 5th positional arg of _render, not a keyword — see spawns.submit's call.
-    monkeypatch.setattr(spawns, "_render",
-                        lambda *a, **kw: (seen.update(files=a[4]), real(*a, **kw))[1])
-    _submit(tmp_path, tidepool=True, script=None)
-    assert env.ENV_DIRNAME not in seen["files"]
-
-
-def test_a_head_without_the_tools_refuses_before_sbatch(head, tmp_path, monkeypatch):
+def test_a_node_without_the_tools_refuses_before_sbatch(head, tmp_path, monkeypatch):
     """It used to submit anyway and run on the base image. That fallback was for Spawns written before
     Environments existed; none are left, so falling back now means running the User's work against
     something they never asked for. Refused where nothing is Escrowed and no Spawn exists.
@@ -717,156 +718,35 @@ def test_the_echo_is_written_for_every_spawn(head, tmp_path):
     assert "requirements.txt" in spawns.environment_note(jid)
 
 
-def test_a_caller_that_is_about_to_exit_builds_before_it_returns(head, tmp_path, monkeypatch):
-    """`background_build=False` — for a caller with no future to build in.
-
-    The build thread is a daemon, so a short-lived process (the `ccc_head_api.admin` CLI,
-    submitting every Head-local pinned Spawn) takes it down at exit — and by then the Spawn is
-    `--hold`ed: not merely unbuilt, but unrunnable, with nothing left alive to release it. It
-    pends as JobHeldUser until someone notices — the shape of a hang, not a failure.
-    """
-    monkeypatch.setattr(env, "build", lambda *a, **kw: "solved 3 packages")
-    monkeypatch.setattr(env, "prune_cache", lambda: None)
-    jid = _submit(tmp_path, "requirements.txt", background_build=False)
-    assert "--hold" in _sbatch(head), "the interlock still applies — it is just resolved inline"
-    assert ["sudo", "-n", "-u", "ccc-u60002", "scontrol", "release", str(jid)] in head
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
-
-
-def test_neither_the_build_nor_sbatch_inherits_the_operators_directory(head, tmp_path, monkeypatch):
-    """Both run as a **Guise**, with no business in the directory `cuttle` was invoked from — on
-    the Head-local path, the operator's own project, unreadable to a Guise.
-
-    apptainer's starter chdirs to the inherited cwd on the HOST before `--pwd` applies inside, so
-    the build dies as "container creation failed: can't change directory to
-    /home/<operator>/..." — a message about the caller, saying nothing about either. Slurm takes
-    the job's WorkDir from the submitting process too, stranding it the same way one step later.
-    """
+def test_sbatch_does_not_inherit_the_operators_directory(head, tmp_path, monkeypatch):
+    """It runs as a **Guise**, with no business in the directory `cuttle` was invoked from — on the
+    Head-local path, the operator's own project, unreadable to a Guise. Slurm takes the job's WorkDir
+    from the submitting process, so inheriting it strands the Spawn one step later."""
     seen = {}
     real = spawns.subprocess.run
 
     def watch(argv, **kw):
-        # Only these two care: everything else here (setfacl, scontrol) names absolute paths or is an
-        # RPC, and pinning their cwd would assert nothing.
-        for exe in ("apptainer", "sbatch"):
-            if exe in argv:
-                seen[exe] = kw.get("cwd")
+        if "sbatch" in argv:
+            seen["sbatch"] = kw.get("cwd")
         return real(argv, **kw)
 
     monkeypatch.setattr(spawns.subprocess, "run", watch)
-    monkeypatch.setattr(env, "prune_cache", lambda: None)
-    _submit(tmp_path, "requirements.txt", background_build=False)
-    assert seen == {"sbatch": "/", "apptainer": "/"}, f"inherited the caller's cwd: {seen}"
+    _submit(tmp_path, "requirements.txt")
+    assert seen == {"sbatch": "/"}, f"inherited the caller's cwd: {seen}"
 
 
-def test_backgrounding_is_the_default_and_releases_nothing_by_itself(head, tmp_path):
-    """The other half of the same contract: the API service DOES background its build, so `submit`
-    returns with the Spawn still held and the release owed by a thread. Asserted so the fix above
-    cannot quietly become "build synchronously for everyone" — that would put a cold conda solve
-    inside the HTTP request every submitter waits on."""
-    jid = _submit(tmp_path, "requirements.txt")
-    assert not [c for c in head if "release" in c]
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
-
-
-def test_a_built_spawn_is_released_as_its_guise(head, tmp_path, monkeypatch):
-    """Release is the ONLY thing standing between a successful build and a Spawn that never runs. As
-    the Guise, not root: Slurm lets a job's owner release their own hold, and CCC holds no root."""
-    jid = _submit(tmp_path, "requirements.txt")
-    monkeypatch.setattr(env, "build", lambda *a, **kw: "solved 3 packages")
-    monkeypatch.setattr(env, "prune_cache", lambda: None)
-    spawns._build_then_release(jid, spawns.PROJECTS_DIR, None, "ccc-u60002")
-    release = next(c for c in head if "release" in c)
-    assert release == ["sudo", "-n", "-u", "ccc-u60002", "scontrol", "release", str(jid)]
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
-
-
-def test_a_successful_build_keeps_its_log(head, tmp_path, monkeypatch):
-    """`uv sync` reports what it resolved, and that is the only answer to "why did my Spawn get that
-    version" once the env itself has been swept with the staging dir."""
-    jid = _submit(tmp_path, "requirements.txt")
-    monkeypatch.setattr(env, "build", lambda *a, **kw: "resolved torch==2.13.0")
-    monkeypatch.setattr(env, "prune_cache", lambda: None)
-    spawns._build_then_release(jid, spawns.PROJECTS_DIR, None, "ccc-u60002")
-    assert "torch==2.13.0" in spawns.build_log(jid)
-
-
-def test_a_failed_build_is_a_failed_spawn_not_a_lost_one(head, tmp_path, monkeypatch):
-    """It was accepted, Escrowed and queued minutes ago and its submitter has walked away — so it ends
-    the way every other failed Spawn ends, with an `err` they can read and a non-zero `exit`. scancel
-    takes it out of the queue, and its absence from the next tick's poll settles the Escrow at zero (it
-    held no Device for a second of this)."""
-    jid = _submit(tmp_path, "requirements.txt")
-
-    def boom(*a, **kw):
-        raise env.BuildError("environment build failed (requirements.txt):\nno such package", log="$ uv")
-
-    monkeypatch.setattr(env, "build", boom)
-    spawns._build_then_release(jid, spawns.PROJECTS_DIR, None, "ccc-u60002")
-    assert spawns.exit_code(jid) == 1
-    assert "no such package" in spawns.err_text(jid)
-    assert any("scancel" in c for c in head)
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
-
-
-def test_a_crashing_build_still_ends_the_spawn(head, tmp_path, monkeypatch):
-    """Any exception, not just BuildError. This runs in a thread: an escaping exception vanishes into
-    the void and leaves a Spawn held forever, which is the one outcome this design cannot have."""
-    jid = _submit(tmp_path, "requirements.txt")
-
-    def boom(*a, **kw):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(env, "build", boom)
-    spawns._build_then_release(jid, spawns.PROJECTS_DIR, None, "ccc-u60002")
-    assert spawns.exit_code(jid) == 1
-    with db.connect() as conn:
-        assert db.get_spawn(conn, jid)["build_state"] is None
-
-
-def test_a_restart_fails_the_builds_it_interrupted(head, tmp_path, monkeypatch):
-    """Builds run in threads of the API process, so a build_state surviving into a fresh one is
-    necessarily orphaned — nothing is coming back for it. Failed rather than rebuilt: its Escrow has
-    been suppressing its submitter's Share the whole time the Head was down."""
-    jid = _submit(tmp_path, "requirements.txt")
-    monkeypatch.setattr(spawns, "_owner_of", lambda _id: "ccc-u60002")
-    spawns.sweep_orphaned_builds()
-    assert spawns.exit_code(jid) == 1
-    assert "restarted" in spawns.err_text(jid)
-    with db.connect() as conn:
-        assert db.building_spawns(conn) == set()
-
-
-def test_the_queue_tells_building_apart_from_waiting_for_a_card(head, tmp_path, monkeypatch):
-    """squeue reports a held job as plain PENDING — indistinguishable from one waiting for a machine.
-    The difference decides what the queue says, whether the Spawn generates Demand, and whether the
-    tick re-nices it, so it comes from the Head's own record rather than an inference."""
+def test_a_spawn_installing_its_dependencies_is_simply_running(head, tmp_path, monkeypatch):
+    """squeue is the whole truth again. A Spawn used to be held while the Head built for it, reported
+    as PENDING, and CCC had to keep a `build_state` to tell that apart from waiting for a card. The
+    build happens inside the allocation now, so Slurm can see it and there is nothing left to override."""
     from ccc_head_api import slurm
     jid = _submit(tmp_path, "requirements.txt")
     monkeypatch.setattr(slurm, "_slurm_json", lambda *a, **kw: {"jobs": [
-        {"job_id": jid, "partition": slurm.PARTITION, "job_state": ["PENDING"], "name": "t",
-         "nodes": "", "user_name": "ccc-u60002", "time_limit": 60},
+        {"job_id": jid, "partition": slurm.PARTITION, "job_state": ["RUNNING"], "name": "t",
+         "nodes": "arm1", "user_name": "ccc-u60002", "time_limit": 60},
     ]})
-    assert slurm.spawns()[0]["state"] == "building"
-    assert slurm.queue()[0]["state"] == "BUILDING"
-
-
-def test_a_building_spawn_generates_no_demand(head, tmp_path, monkeypatch):
-    """Nobody is waiting on a Device yet. Counting it would price every Arm it is eligible for as
-    wanted, on the strength of a Spawn that cannot be placed at all until the Head finishes."""
-    from ccc_head_api import karma, slurm
-    jid = _submit(tmp_path, "requirements.txt")
-    monkeypatch.setattr(slurm, "_slurm_json", lambda *a, **kw: {"jobs": [
-        {"job_id": jid, "partition": slurm.PARTITION, "job_state": ["PENDING"], "name": "t",
-         "nodes": "", "user_name": "ccc-u60002", "time_limit": 60},
-    ]})
-    arms = [{"name": "arm1", "powers": [10.0], "state": "idle", "vram_gb": 24, "features": []}]
-    needs = {jid: {"gpus": 1, "vram_gb": 24, "node": None}}
-    assert karma.demand_by_arm(arms, slurm.queue(), needs)["arm1"] == 0.0
+    assert slurm.spawns()[0]["state"] == "running"
+    assert slurm.queue()[0]["state"] == "RUNNING"
 
 
 # --- packages an Arm Feature supplies ---------------------------------------
@@ -946,11 +826,9 @@ class TestTheStubIsNotAWorkingPackage:
 
     def _built(self, tmp_path):
         proj = _sourced(tmp_path)
-        work = tmp_path / "work"
-        work.mkdir()
         binds, log = env.substitute_supplied(
-            proj, env.Manifest(kind="uv-project", path="pyproject.toml"), work)
-        wheel = next(work.rglob("*.whl"))
+            proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
+        wheel = next((proj / env.STUB_DIRNAME).rglob("*.whl"))
         return proj, binds, log, wheel
 
     def test_the_package_it_installs_is_empty(self, tmp_path):
@@ -971,13 +849,28 @@ class TestTheStubIsNotAWorkingPackage:
             assert "Tag: cp311-cp311-linux_x86_64" in z.read("vlearn-0.3.9.dist-info/WHEEL").decode()
 
     def test_a_wheel_outside_the_project_is_bound_in_at_the_path_it_resolves_to(self, tmp_path):
+        """The stub is written INSIDE the project so it rides the transfer that already exists, and the
+        bind is PROJECT-RELATIVE — only the Arm knows where the project landed on its own disk."""
         proj, binds, _, wheel = self._built(tmp_path)
-        assert binds == [f"{wheel.parent}:{(proj / '../wheels').resolve()}"]
+        rel = wheel.parent.relative_to(proj).as_posix()
+        assert binds == [f"{rel}:{(proj / '../wheels').resolve()}"]
+        assert rel.startswith(env.STUB_DIRNAME + "/")
 
-    def test_the_substitution_is_said_out_loud_in_the_build_log(self, tmp_path):
-        """A User who declared a wheel and got someone else's build has to be able to find out why."""
+    def test_the_bind_is_rendered_against_the_arms_own_project(self, tmp_path):
+        """`$proj` is the only name for it that is true on both branches — the Head's co-located Arm
+        copies into node-local scratch, a remote one rsyncs into /tmp."""
+        proj, binds, _, _ = self._built(tmp_path)
+        assert f"$proj/{binds[0]}" in _block("uv-project", "pyproject.toml", stubs=binds)
+
+    def test_the_substitution_is_said_out_loud_where_the_user_will_see_it(self, tmp_path):
+        """A User who declared a wheel and got someone else's build has to be able to find out why. It
+        is decided on the Head and SAID on the Arm, in the Spawn's own `err`, beside the build it
+        changed — there is no separate build log to go looking in."""
         _, _, log, _ = self._built(tmp_path)
         assert any("vlearn" in ln and "Arm Feature" in ln for ln in log)
+        block = _block("uv-project", "pyproject.toml", log=log)
+        assert all(shlex.quote(ln) in block for ln in log)
+        assert block.index(shlex.quote(log[0])) < block.index("ccc_build_or_die /")
 
 
 def test_a_wheel_inside_the_project_is_overwritten_where_it_lies(tmp_path):
@@ -987,10 +880,8 @@ def test_a_wheel_inside_the_project_is_overwritten_where_it_lies(tmp_path):
     real = proj / "wheels" / "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
     real.parent.mkdir()
     real.write_bytes(b"the user's real, licensed wheel")
-    work = tmp_path / "work"
-    work.mkdir()
     binds, _ = env.substitute_supplied(
-        proj, env.Manifest(kind="uv-project", path="pyproject.toml"), work)
+        proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
     assert binds == []
     assert zipfile.is_zipfile(real), "the real wheel was replaced by the stub in place"
 
@@ -1010,10 +901,8 @@ def test_the_lock_is_repointed_at_the_stub(tmp_path):
         'wheels = [{ filename = "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", '
         'hash = "sha256:' + "b" * 64 + '" }]\n'
     )
-    work = tmp_path / "work"
-    work.mkdir()
-    env.substitute_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), work)
-    stub = next(work.rglob("*.whl"))
+    env.substitute_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
+    stub = next((proj / env.STUB_DIRNAME).rglob("*.whl"))
     text = (proj / "uv.lock").read_text()
     assert f"sha256:{hashlib.sha256(stub.read_bytes()).hexdigest()}" in text
     # Every OTHER package stays frozen at exactly what it was resolved to.
@@ -1048,21 +937,28 @@ def test_a_feature_with_no_libraries_asks_for_nothing_extra(with_tools):
     assert "cuda-cudart=13" in hf.lib_specs(["vlearn"])["vlearn"]
 
 
-def test_the_library_prefix_is_built_at_the_path_it_is_later_bound_at(with_tools, tmp_path,
-                                                                     monkeypatch):
+def test_the_library_prefix_is_built_at_the_path_it_is_later_bound_at(with_tools):
     """A conda prefix bakes its own path into hundreds of files and does not survive being moved — the
-    same invariant the Environment rests on, for the same reason."""
+    same invariant the Environment rests on, for the same reason. Built and bound in the same job on the
+    same box, so the two cannot disagree."""
     from ccc_head_api import features as hf
 
-    seen = []
-    monkeypatch.setattr(env.subprocess, "run",
-                        lambda cmd, **kw: seen.append(cmd) or _ok())
-    proj = _project(tmp_path, **{"pyproject.toml": "x"})
-    env.build_feature_libs(proj, {"vlearn": ["sdl2"]}, "ccc-u1", tmp_path / "t")
-    argv = seen[0]
+    (argv,) = env.render_featlib_build({"vlearn": ["sdl2"]})
     assert "--prefix" in argv and f"{hf.FEATLIB_MOUNT}/vlearn" in argv
-    bind = argv[argv.index("--bind") + 1]
-    assert f"{proj / env.FEATLIB_DIRNAME}:{hf.FEATLIB_MOUNT}" in bind
+    block = _block(features=["vlearn"])
+    assert f"$scratch/featlibs:{hf.FEATLIB_MOUNT}" in _pod_binds(block), "writable for the build"
+    assert f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"' in block, "read-only for the payload"
+
+
+def test_the_feature_libraries_are_owed_even_to_a_spawn_that_declared_nothing(with_tools):
+    """They are CCC's, not the submitter's. A **Tide Pool** may decline to declare a manifest and still
+    asked for the Feature — and a Feature whose shared objects cannot dlopen their dependencies is a
+    Feature that does not work. Previously this needed a manifest, because the libraries were built by
+    the same Head-side call that built the env."""
+    from ccc_head_api import features as hf
+    block = _block(features=["vlearn"], declared=None)
+    assert f"{hf.FEATLIB_MOUNT}/vlearn" in block
+    assert 'py="' not in block, "but it still gets no interpreter — it declared none"
 
 
 def test_the_library_prefix_installs_no_interpreter(with_tools):

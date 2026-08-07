@@ -31,7 +31,7 @@ def _script(**kw):
     kw.setdefault("constraint", "")
     kw.setdefault("node", None)
     kw.setdefault("outputs", ["outputs"])
-    return spawns._render(staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+    return spawns._render(staging=Path("/tmp/u"), gpu=1, script="train.py", args=[], files=[],
                           token="a3f9", secret="s3cr3t", **kw)
 
 
@@ -176,7 +176,8 @@ def test_the_environments_lib_dir_is_only_used_when_there_is_an_environment():
     """LD_LIBRARY_PATH is built from `$envmount`, which the Environment branch sets and the base branch
     leaves empty — so a Spawn with no Environment does not get a trailing `/lib` pointing at a mount
     that was never made."""
-    body = _script(features=["vlearn"])
+    body = _script(features=["vlearn"],
+                   declared=env.Manifest(kind="uv-requirements", path="requirements.txt"))
     assert 'envbind=""; envmount=""' in body
     assert f'envmount="{env.ENV_MOUNT}"' in body
     assert '[ -n "$envbind" ] && vl_ld="$vl_ld:$envmount/lib"' in body
@@ -595,16 +596,18 @@ def test_the_feature_library_prefix_is_mounted_for_the_payload():
     assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" in body, "and on LD_LIBRARY_PATH"
 
 
-def test_the_library_prefix_is_moved_out_of_the_project():
+def test_the_library_prefix_is_built_outside_the_project():
     """$proj is what recover_scratch() measures against RECOVERY_MAX_BYTES and rsyncs home. Half a
-    gigabyte of CCC's own libraries left in there would silently disable recovery for every Spawn that
-    asked for a Feature — the same bug the Environment's own `mv` records having fixed once."""
+    gigabyte of CCC's own libraries built in there would silently disable recovery for every Spawn that
+    asked for a Feature. Built straight into $scratch, so there is nothing to move."""
     body = _script(features=["vlearn"])
-    assert f'mv "$proj/{env.FEATLIB_DIRNAME}" "$scratch/featlibs"' in body
+    assert 'mkdir -p "$scratch/env" "$scratch/tmp" "$scratch/featlibs"' in body
+    assert f"$proj/{env.STUB_DIRNAME}" not in body, "no Feature library ever lands in the project"
 
 
 def test_a_spawn_that_asked_for_no_feature_never_mounts_one():
-    """The `[ -d ]` test is what decides, at run time, so the branch is inert rather than absent."""
+    """Nothing is rendered at all now — no mkdir, no build, no bind. The Head knows at submit which
+    Features were asked for, so the absent case is absent rather than an inert run-time branch."""
     body = _script(features=[])
-    assert "$scratch/featlibs" in body, "the slot is rendered for every Spawn"
-    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" not in body, "but no profile put a path on it"
+    assert "$scratch/featlibs" not in body
+    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" not in body

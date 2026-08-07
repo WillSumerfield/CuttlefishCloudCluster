@@ -33,10 +33,10 @@ import io
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
-import threading
 from pathlib import Path
 from uuid import uuid4
 
@@ -351,49 +351,38 @@ cd "$proj"
 # against RECOVERY_MAX_BYTES, so a cache in there would eat a User's recovery for temp files nobody
 # wants back. The EXIT trap's `rm -rf "$scratch"` takes it either way.
 mkdir -p "$scratch/tmp/pip"
-# The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one. The Head built
-# it before this Spawn was ever placed, and it travelled INSIDE the project — so it needed no transfer of
-# its own on either branch.
+# The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one — built HERE,
+# now, out of this box's own bandwidth. The Head decided what to build and rendered the commands into
+# %%ENV_BUILD%% below; running them is all that happens on this side.
 #
-# Moved OUT of $proj before anything runs, and that is not tidiness: $proj is what recover_scratch()
-# copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so a multi-GB env left in
-# place would silently disable recovery for exactly the Spawns most likely to need it.
+# It is built into $scratch, NOT into $proj, and that is not tidiness: $proj is what recover_scratch()
+# copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so a multi-GB env in there
+# would silently disable recovery for exactly the Spawns most likely to need it. It also dies with the
+# Spawn — no box grows an env store — while the package DOWNLOADS survive in the node's shared cache,
+# which is what makes the next build cheap.
 #
-# Bound at ONE absolute path, the same one it was built at, because neither shape survives being moved:
+# Bound at ONE absolute path, the same one it is built at, because neither shape survives being moved:
 # a venv bakes its prefix into pyvenv.cfg, its own interpreter symlink and every console-script shebang,
-# and a conda prefix bakes it into hundreds of files. The directory underneath differs on the Head and on
-# an Arm; the path the env sees never does.
+# and a conda prefix bakes it into hundreds of files. Building and running on the same box in the same
+# job makes that invariant trivially true.
 #
 # `envmount` carries the Pod-side path as a VARIABLE, empty when this Spawn declared no Environment,
 # because an Arm **Feature**'s setup block below has to name it (its LD_LIBRARY_PATH includes the
 # Environment's own lib dir) and those blocks arrive already substituted — see _render.
 #
 # `$py` starts EMPTY and there is no fallback, because there is nothing to fall back to: the Pod image
-# carries no interpreter at all (cuttle.templates.BASE_DEF_TMPL). The else branch is reachable by exactly
-# one kind of Spawn now that declaring is mandatory — a **Tide Pool**, which may decline — and it never
-# uses `$py`: its payload boots a login daemon rather than an interpreter. So what the else leaves behind
-# is `$envbind`/`$envmount`, which correctly stay empty. An **Arm Feature**'s probe is the one other
-# reader, and it fails loudly on an empty `$py` rather than silently (features.PREAMBLE).
-py=""; envbind=""; envmount=""
-if [ -d "$proj/%%ENV_DIRNAME%%" ]; then
-    mv "$proj/%%ENV_DIRNAME%%" "$scratch/env"
-    py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"; envmount="%%ENV_MOUNT%%"
-fi
-# The Arm **Feature** runtimes this Spawn asked for (ccc_head_api.features). Empty for almost every
-# Spawn: only a Feature with a runtime *profile* renders anything here, and what it renders contributes
-# to these two accumulators, which the payload appends to its bind and env lists.
-featbind=""; featenv=""
-# The system libraries those Features link against — a conda prefix per Feature, built on the Head
-# (environments.build_feature_libs) and carried inside the project like the Environment, then moved out
-# of $proj for the same reason: $proj is what the Recovery Window measures.
+# carries no interpreter at all (cuttle.templates.BASE_DEF_TMPL). %%ENV_BUILD%% is empty for exactly one
+# kind of Spawn now that declaring is mandatory — a **Tide Pool**, which may decline — and it never uses
+# `$py`: its payload boots a login daemon rather than an interpreter. So what it leaves behind is
+# `$envbind`/`$envmount`, which correctly stay empty. An **Arm Feature**'s probe is the one other reader,
+# and it fails loudly on an empty `$py` rather than silently (features.PREAMBLE).
 #
-# Seeded into $featbind rather than bound by the payload directly, because that is already the list of
-# "things an Arm Feature needs mounted" and it is already on both payloads' --bind. Read-only: nothing
-# writes to it, and each profile's block below puts its own prefix on LD_LIBRARY_PATH.
-if [ -d "$proj/%%FEATLIB_DIRNAME%%" ]; then
-    mv "$proj/%%FEATLIB_DIRNAME%%" "$scratch/featlibs"
-    featbind=",$scratch/featlibs:%%FEATLIB_MOUNT%%:ro"
-fi
+# `featbind`/`featenv` are the Arm **Feature** runtime accumulators (ccc_head_api.features), appended to
+# the payload's bind and env lists. Empty for almost every Spawn: only a Feature with a runtime *profile*
+# renders anything into them. %%ENV_BUILD%% seeds `featbind` with the Feature library prefix it built,
+# read-only — nothing writes to it, and each profile's block below puts it on LD_LIBRARY_PATH.
+py=""; envbind=""; envmount=""; featbind=""; featenv=""
+%%ENV_BUILD%%
 %%FEATURE_SETUP%%
 # Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
 # fail rather than fall back to the account default.
@@ -430,6 +419,60 @@ stage_out_retry || echo "ccc: staging results back to rsync://%%HEAD_IP%%/out-%%
                   "4 attempts — the Spawn ran (rc=$rc) but the Head will report it as lost." >&2
 exit $rc
 """
+
+# What fills `%%ENV_BUILD%%` for a Spawn that declared an **Environment**. Empty for the one that may
+# not — a **Tide Pool** with no manifest — and that emptiness is the whole of the no-env case.
+#
+# The build runs in the SAME Pod shape as the payload (`--contain --pid --pwd "$proj"`, base.sif, this
+# job's own Guise). A manifest is code — build backends, sdist `setup.py`, conda post-link scripts all
+# execute — so it gets the same walls the work gets, not a weaker isolation invented for it. There is no
+# `--nv`: a build needs no GPU. The card is already allocated to this job either way, which is the one
+# real cost of building here rather than on the Head, and it is what buys every Spawn the ability to
+# start at all (environments.py's module docstring).
+#
+# Output goes to `$err`, not to a separate log: it IS the answer to "why did my Spawn get that version"
+# on success and to "why did it not run" on failure, and one place to look beats two. `cuttle logs`
+# already streams it, live, on both branches.
+ENV_BUILD = """\
+mkdir -p "$scratch/env" "$scratch/tmp"%%FEATLIB_MKDIR%%
+# The node's shared package download cache (cuttle.config.NODE_ENV_CACHE_DIR). Emptied WHOLE at the cap
+# rather than evicted per entry: uv and micromamba both hard-link out of it, so evicting one entry needs
+# their own bookkeeping to be safe. Costs re-downloads and nothing else — no Spawn depends on it. Checked
+# before the build so this Spawn's own downloads are never the ones thrown away.
+if [ -d "%%ENV_CACHE%%" ]; then
+    csz=$(du -sb "%%ENV_CACHE%%" 2>/dev/null | cut -f1)
+    if [ -n "$csz" ] && [ "$csz" -gt %%ENV_CACHE_MAX%% ]; then
+        echo "ccc: the node's package cache passed %%ENV_CACHE_MAX_GB%%GB — emptying it" >> "$err"
+        rm -rf "%%ENV_CACHE%%"/* 2>/dev/null
+    fi
+fi
+ccc_build() {
+    apptainer exec --contain --pid --pwd "$proj" \\
+      --bind "$proj,$scratch/env:%%ENV_MOUNT%%,%%ENV_CACHE%%:%%POD_CACHE%%,\
+$scratch/tmp:%%POD_TMP%%,%%TOOLS_DIR%%:%%TOOLS_DIR%%:ro%%FEATLIB_BUILD_BIND%%%%STUB_BINDS%%" \\
+      --env "%%BUILD_POD_ENV%%" \\
+      "$sif" "$@" >> "$err" 2>&1
+}
+# A failed build is a failed SPAWN. It was accepted, Escrowed and queued minutes ago and its submitter
+# has already walked away, so it ends the way every other failed Spawn ends — the build's own output in
+# `err`, a non-zero `exit`, and the Escrow settled but NOT refunded. That is the deliberate cost of
+# building here: the Head can no longer refuse a broken manifest for free.
+#
+# `$ccc_building` names what is being built, reset before each group below, so the failure says which of
+# the two failed rather than blaming the manifest for a Feature's conda solve.
+ccc_build_or_die() {
+    echo "ccc: $*" >> "$err"
+    if ! ccc_build "$@"; then
+        echo "ccc: $ccc_building could not be built (see above)." >> "$err"
+        echo "ccc: this Spawn never ran. Fix the declaration and resubmit." >> "$err"
+        echo 1 > "$exitf"
+        kill "$loop_pid" 2>/dev/null
+        stage_out
+        exit 1
+    fi
+}
+%%STUB_LOG%%%%BUILD_CMDS%%
+%%POST%%"""
 
 # The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
 # periodic $CCC_OUT pusher — is identical either way, which is the whole point of the slot: a Tide Pool
@@ -594,18 +637,91 @@ apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
+def _render_env_build(declared: environments.Manifest | None, staging: Path,
+                      feature_names: list[str], stub_binds: list[str],
+                      stub_log: list[str]) -> str:
+    """Fill ENV_BUILD for this Spawn, or return "" when it has nothing to build at all.
+
+    Everything decided here is decided ONCE, on the Head, at submit: which commands build this manifest
+    (`environments.render_build`), which Feature libraries it needs, which stubs stand in for a Feature's
+    packages. The Arm receives shell and runs it. That split is what keeps "what does this manifest mean"
+    in one tested place while the bytes are fetched where they are cheap.
+
+    The two halves are INDEPENDENT. A Spawn's own **Environment** exists only if it declared a manifest;
+    an **Arm Feature**'s system libraries are CCC's own and are owed to anything that asked for that
+    Feature — including a **Tide Pool**, which may decline to declare and still wants the Feature it
+    asked for to actually load. So either half alone is enough to render this block.
+
+    Tokens shared with the wider script (%%ENV_MOUNT%%, %%ENV_INTERPRETER%%, %%FEATLIB_MOUNT%%) are left
+    for `_render`'s own pass, which runs after this text is spliced in.
+    """
+    specs = features_mod.lib_specs(feature_names)
+    if declared is None and not specs:
+        return ""
+    cmds: list[str] = []
+    if declared is not None:
+        cmds.append(f"ccc_building={shlex.quote(f'the environment declared in {declared.path}')}")
+        cmds += [f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}"
+                 for argv in environments.render_build(declared, staging)]
+    # AFTER the Environment: this prefix is CCC's, not the submitter's, so a Feature's libraries must not
+    # be what a submitter waits through before learning their own declaration was broken.
+    for feat, argv in zip(specs, environments.render_featlib_build(specs)):
+        what = f"the '{feat}' Arm Feature's system libraries"
+        cmds.append(f"ccc_building={shlex.quote(what)}")
+        cmds.append(f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}")
+    post = []
+    if declared is not None:
+        post.append('py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"; '
+                    'envmount="%%ENV_MOUNT%%"')
+    if specs:
+        post.append('featbind=",$scratch/featlibs:%%FEATLIB_MOUNT%%:ro"')
+    body = ENV_BUILD
+    subs = {
+        "%%FEATLIB_MKDIR%%": ' "$scratch/featlibs"' if specs else "",
+        # Bound WRITABLE for the build that fills it, read-only for the payload that reads it — the
+        # same directory, two different jobs to do.
+        "%%FEATLIB_BUILD_BIND%%": ',$scratch/featlibs:%%FEATLIB_MOUNT%%' if specs else "",
+        # What the payload picks up. Only a Spawn that DECLARED a manifest gets an interpreter and an
+        # env mount — which is what keeps `$py` empty for a Tide Pool that asked for a Feature and
+        # nothing else, exactly as it was before any of this was built here.
+        "%%POST%%": "\n".join(post),
+        # Project-relative on the wire (environments.substitute_supplied), because only this side knows
+        # where the project landed. Almost always empty — see that function.
+        "%%STUB_BINDS%%": "".join(f",$proj/{b}" for b in stub_binds),
+        "%%STUB_LOG%%": "".join(f'echo {shlex.quote(line)} >> "$err"\n' for line in stub_log),
+        "%%BUILD_CMDS%%": "\n".join(cmds),
+        "%%ENV_CACHE%%": str(environments.CACHE_DIR),
+        "%%ENV_CACHE_MAX%%": str(environments.CACHE_MAX_GB * 1024**3),
+        "%%ENV_CACHE_MAX_GB%%": str(environments.CACHE_MAX_GB),
+        "%%POD_CACHE%%": environments.POD_CACHE,
+        "%%POD_TMP%%": environments.POD_TMP,
+        "%%TOOLS_DIR%%": str(environments.TOOLS_DIR),
+        "%%BUILD_POD_ENV%%": environments.BUILD_POD_ENV,
+    }
+    for k, v in subs.items():
+        body = body.replace(k, v)
+    return body
+
+
 def _render(staging: Path, gpu: int, script: str, args: list[str],
             files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
             features: list[str] | None = None, activation: bool = False,
-            declared: environments.Manifest | None = None) -> str:
+            declared: environments.Manifest | None = None,
+            stub_binds: list[str] | None = None, stub_log: list[str] | None = None) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
     # depending which payload this is), and every token below is a plain single-pass `.replace()`.
     # Doing it here rather than relying on dict order keeps that dependency from being invisible.
     body = JOB_SCRIPT.replace("%%PAYLOAD%%", payload)
+    # %%ENV_BUILD%% is substituted here for the same reason as %%PAYLOAD%% above and not the one below:
+    # its replacement text DOES contain tokens (%%ENV_MOUNT%%, %%ENV_INTERPRETER%%, %%FEATLIB_MOUNT%%),
+    # deliberately, so that the mount point is written down once for the whole script rather than twice.
+    body = body.replace("%%ENV_BUILD%%",
+                        _render_env_build(declared, staging, features or [],
+                                          stub_binds or [], stub_log or []))
     # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
     # tokens, deliberately. A Feature profile (ccc_head_api.features) is bash the Head splices in
     # verbatim, so it reads as bash rather than as a second template — everything it needs from this
@@ -637,27 +753,21 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # Recovery Window: the per-Spawn cap `recover_scratch` gates on, both branches.
         "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
-        # The Spawn's **Environment** (environments.py). The first two are constants — one mount point,
-        # on every machine — but the interpreter is NOT: a conda prefix keeps its python at
-        # `ENV_MOUNT/bin`, a uv env one level down in its venv, and only the manifest says which shape
-        # was built. Whether this Spawn HAS an env is still decided by the rendered script at run time
-        # (`[ -d "$proj/.ccc-env" ]`) rather than here, so a build that produced nothing leaves `$py`
-        # empty rather than naming an interpreter no Pod has.
+        # The Spawn's **Environment** (environments.py). The mount point is a constant — one path, on
+        # every machine — but the interpreter is NOT: a conda prefix keeps its python at `ENV_MOUNT/bin`,
+        # a uv env one level down in its venv, and only the manifest says which shape it is.
         #
         # Both fall back to a path UNDER the mount when nothing was declared, never to something the
         # image supplies — there is nothing there to supply one (BASE_DEF_TMPL). That leaves the unused
         # branch inert: the mount does not exist in a Pod that declared nothing, so the Tide Pool's
         # `[ -x ... ]` test is simply false, where a real directory (/usr/bin) would pass it and put the
         # image's own bin first on PATH for no reason.
-        "%%ENV_DIRNAME%%": environments.ENV_DIRNAME,
         "%%ENV_MOUNT%%": environments.ENV_MOUNT,
         "%%ENV_INTERPRETER%%": (declared.interpreter if declared
                                 else f"{environments.ENV_MOUNT}/bin/python"),
         "%%ENV_BINDIR%%": declared.bin_dir if declared else f"{environments.ENV_MOUNT}/bin",
-        # The Arm **Feature** library prefix, on the same terms as the Environment above: a constant
-        # mount point, and a run-time `[ -d ]` test deciding whether this Spawn actually has one — so a
-        # Spawn requesting only unprofiled Features renders these and never uses them.
-        "%%FEATLIB_DIRNAME%%": environments.FEATLIB_DIRNAME,
+        # Where the Arm **Feature** library prefix is mounted, named by %%ENV_BUILD%% (which both builds
+        # and binds it) and by each profile's own setup block.
         "%%FEATLIB_MOUNT%%": features_mod.FEATLIB_MOUNT,
         "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),
@@ -729,9 +839,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
            tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None,
-           features: list[str] | None = None, activation: bool = False,
-           background_build: bool = True, source_dir: Path | None = None,
-           recipe_name: str | None = None) -> int:
+           features: list[str] | None = None, source_dir: Path | None = None,
+           activation: bool = False, recipe_name: str | None = None) -> int:
     """Unpack an uploaded project (or copy an already-on-disk one), render + sbatch it **as the
     submitter's Guise**, and record the Attribution row + the Karma Escrow. Returns the Slurm job id
     (== the Spawn id). `node` pins the Spawn to one Arm.
@@ -760,9 +869,6 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     script to find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can
     enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
 
-    `background_build` is whether this process will still exist when the Environment build finishes.
-    True for the API service, which is the case the whole `--hold`-then-release dance was designed
-    around. False for a caller that returns and dies — see `start_build`.
     """
     assert (tar_path is None) != (source_dir is None), "submit() needs exactly one of tar_path/source_dir"
     # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
@@ -820,27 +926,18 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         guise = guises.name(db.allocate_guise(conn, user_id))
     _lend_project(staging, guise)
 
-    # DETECTION is synchronous; the BUILD is not. Detection is a couple of stat calls, and everything it
-    # and `require_tool` can raise is a REJECTION — nothing declared, a manifest that does not exist, one
-    # nothing can classify, a Head without the tools — so both stay here, where a BuildError is still a
-    # plain 4xx and no Spawn has been brought into existence to Escrow or queue.
+    # What the declaration MEANS is decided here, synchronously; the build itself happens on the Arm.
+    # Detection is a couple of stat calls, and everything it and `require_tool` can raise is a REJECTION
+    # — nothing declared, a manifest that does not exist, one nothing can classify, a node without the
+    # tools — so it stays here, where a BuildError is still a plain 4xx and no Spawn has been brought
+    # into existence to Escrow or queue. Past this point a bad declaration costs a failed Spawn.
     #
     # A **Tide Pool** is the one Spawn that may decline: it is a shell, not a run, and a bare one uploads
     # an empty tar with no file in it to name. Declaring is still allowed there and still builds — the
     # exemption is from the requirement, not from the feature.
-    # A **Recipe** that already kept the env a previous Spawn from it built (`recipes.store_env`) came
-    # through `copytree` above with that env inside it. There is nothing to build, so this Spawn is
-    # neither held nor `build_state`d and starts the moment Slurm can place it — which is the whole
-    # point of a Recipe keeping one. Detection below still runs: the echo, and every refusal it can
-    # raise, are as true of a stored env as of one about to be built.
-    #
-    # `source_dir` is half the test, and it is the load-bearing half: `.ccc-env` is an ordinary
-    # directory name and an UPLOAD could carry one. Trusting that would let a submitter hand the Head a
-    # tree of their own choosing and have it bound into the Pod as this Spawn's Environment, unbuilt and
-    # unexamined. Only a directory the Head itself wrote is taken at its word. (An uploaded one is not
-    # an error either — `environments.build` rmtree's whatever is there before building.)
-    prebuilt = source_dir is not None and (staging / environments.ENV_DIRNAME).is_dir()
     declared = None
+    stub_binds: list[str] = []
+    stub_log: list[str] = []
     if manifest or not tidepool:
         declared = environments.detect(staging, manifest)
         environments.require_tool(declared, features or [])
@@ -848,37 +945,23 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # same reason as the two above — asking for a Feature's package without asking for the Feature
         # is decided here, in stat calls, and would otherwise be an ImportError after a GPU was held.
         environments.check_supplied(staging, declared, features or [])
+        # BEFORE the file list below, because it WRITES INTO the project: each Feature-supplied wheel is
+        # replaced by an empty stub of the same name and version, and `uv.lock` repointed at it. Those
+        # stubs have to be in the walk, or the Arm's build looks for a wheel that never transferred.
+        stub_binds, stub_log = environments.substitute_supplied(staging, declared)
 
     # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
     # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
     # that re-rooting IS the isolation, and it is why the list no longer carries a <uuid>/ prefix. The
     # upload was already gitignore-filtered client-side, so every file here is meant to transfer.
     #
-    # Symlinks are listed too, and that is load-bearing for the Environment: a venv's `bin/python` is an
-    # absolute link to ENV_MOUNT, a path that exists only INSIDE a Pod and never on the Head's own
-    # filesystem — so `is_file()` alone reports it missing and the env would arrive on the Arm with no
-    # interpreter. rsync -a copies a symlink AS a symlink, and inside the Pod on the Arm it resolves.
-    #
-    # The env and the Feature libraries are excluded from the WALK whatever their state, and named
-    # below as bare directories instead. A Recipe's stored env is already on disk here, so listing it
-    # file-by-file would put tens of thousands of paths in `--files-from` to say what one line says.
-    built = (environments.ENV_DIRNAME, environments.FEATLIB_DIRNAME)
+    # Symlinks are listed too: a project can legitimately contain one, and rsync -a copies a symlink AS a
+    # symlink. Nothing built appears here any more — the Environment and the Feature library prefix are
+    # made on the Arm, in node-local scratch, and never cross the mesh in either direction. What DOES
+    # ride along is the stub wheels written just above, which are ordinary files inside the project and
+    # are picked up by this walk like any other.
     files = [rel.as_posix() for rel in (p.relative_to(staging) for p in staging.rglob("*"))
-             if rel.parts[0] not in built and ((staging / rel).is_symlink()
-                                               or (staging / rel).is_file())]
-    # The env usually does not exist yet — it is built after sbatch, behind the held job — so it cannot
-    # be enumerated like the rest. One directory entry stands in for it, and the stage-in passes an
-    # explicit -r (which --files-from does NOT imply — see the JOB_SCRIPT) so the bare name pulls the
-    # whole tree, whatever ends up there. Safe to name something absent: the Arm only reads this list
-    # once the hold is released, and the hold is not released until the build has filled it in. A
-    # Recipe's stored env is the case where it is already there, and the same one line still names it.
-    if declared is not None:
-        files.append(environments.ENV_DIRNAME)
-        # Same trick, same reason, for the **Arm Feature** library prefix. `prebuilt` covers the Recipe
-        # case, where the prefix came out of the Recipe rather than from a build about to run — the
-        # request is what says whether there is one either way, so it is checked the same.
-        if features_mod.lib_specs(features or []):
-            files.append(environments.FEATLIB_DIRNAME)
+             if (staging / rel).is_symlink() or (staging / rel).is_file()]
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -897,7 +980,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
                    wants_licence=bool(features), features=features, activation=activation,
-                   declared=declared)
+                   declared=declared, stub_binds=stub_binds, stub_log=stub_log)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -914,14 +997,12 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # makes explicit what retraction already assumed: a Spawn whose
         # node failed is a failed Spawn, not one that quietly restarts somewhere else hours later,
         # having been re-billed for and re-queued behind everyone who was waiting.
-        # --hold when an Environment is being built: the Spawn gets its real id, Attribution and Escrow
-        # now, and Slurm is forbidden to place it until `_build_then_release` says the env exists. The
-        # hold is a dispatch interlock, NOT a queue position — the build overlaps the wait for a card
-        # rather than being added to it, and a held job holds no Device, so the tick meters nothing.
-        # A **Recipe** that brought its own env is not held at all: there is no build for the hold to
-        # be waiting on, so holding would be pure latency.
-        building = declared is not None and not prebuilt
-        argv = ["sbatch", "--parsable", "--no-requeue"] + (["--hold"] if building else [])
+        #
+        # No `--hold` any more, and nothing to release. The hold existed to keep Slurm from placing a
+        # Spawn before the Head had finished building its Environment; the Arm builds it now, inside its
+        # own allocation, so there is nothing for the Head to wait on and every Spawn is runnable the
+        # moment sbatch returns.
+        argv = ["sbatch", "--parsable", "--no-requeue"]
         # cwd="/" for the same reason the build sets it: Slurm takes the job's WorkDir from the
         # SUBMITTING process's cwd, and a Head-local submit inherits whatever directory the operator
         # ran `cuttle` from — which the Guise that will run the job cannot necessarily enter. "/" is
@@ -955,7 +1036,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         with db.connect() as conn:
             db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
                             vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool,
-                            build_state=db.BUILDING if building else None, recipe_name=recipe_name)
+                            recipe_name=recipe_name)
             if tidepool:
                 db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
     except Exception:
@@ -969,155 +1050,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
             log.exception("could not cancel unrecorded spawn %s — it is running with no row", job_id)
         siphons.discard(token)
         raise
-    # LAST, and only once the row exists: the thread's first act on failure is to write that row's
-    # `build_state` away again, and a build that outran its own Attribution would have nothing to clear
-    # and no Escrow to settle.
-    #
-    # `keep_for` names the **Recipe** that should end up owning this env, and only on the run that
-    # actually builds one — the second Spawn from a Recipe takes the `prebuilt` path and never gets
-    # here, so there is no attempt to re-store what it was handed.
-    if building:
-        keep_for = (user_id, recipe_name) if recipe_name else None
-        if background_build:
-            start_build(job_id, staging, declared, guise, features or [], keep_for)
-        else:
-            _build_then_release(job_id, staging, declared, guise, features or [], keep_for)
     return job_id
-
-
-def start_build(job_id: int, staging: Path, declared, guise: str,
-                feature_names: list[str] | None = None,
-                keep_for: tuple[int, str] | None = None) -> None:
-    """Run this Spawn's Environment build behind the request that submitted it.
-
-    A thread rather than a unit of its own: the API process is already the only writer of
-    projects/<uuid>, the work is one `subprocess.run` waiting on apptainer (so the GIL is held for
-    none of it), and a build needs nothing that outlives the process. What a thread costs is
-    durability — a Head restarted mid-build leaves a Spawn held forever, with no thread left to
-    release it. That is what `build_state` and `sweep_orphaned_builds` are for.
-
-    **Only a long-lived process may call this** (`background_build=False` is for everyone else). The
-    thread is a daemon, so an interpreter that exits takes it with it — and the Spawn is already
-    `--hold`ed by then, so it is not merely unbuilt, it is unrunnable, forever. The Head API survives
-    its own requests and is fine; a CLI does not.
-    """
-    threading.Thread(target=_build_then_release,
-                     args=(job_id, staging, declared, guise, feature_names or [], keep_for),
-                     name=f"ccc-build-{job_id}", daemon=True).start()
-
-
-def _build_then_release(job_id: int, staging: Path, declared, guise: str,
-                        feature_names: list[str] | None = None,
-                        keep_for: tuple[int, str] | None = None) -> None:
-    """Build, then either let the Spawn go or fail it. Never raises — it is a thread, and an exception
-    here would vanish into the void leaving a held Spawn nobody is coming back for.
-
-    `keep_for` is the `(user_id, recipe_name)` this env belongs to, when this Spawn came from a
-    **Recipe** that has not got one yet. Stored BEFORE the release, while the staging tree is
-    guaranteed to still be there: after the release the Spawn stages in and `projects.sweep` deletes it,
-    and a Recipe would silently never acquire an env at all."""
-    try:
-        log_text = environments.build(staging, declared, guise, feature_names or [])
-        _write_build_log(job_id, log_text)
-        environments.prune_cache()
-        if keep_for is not None:
-            from . import recipes
-            try:
-                with db.connect() as conn:
-                    recipes.store_env(conn, keep_for[0], keep_for[1], staging)
-            except Exception:
-                # A Recipe that failed to keep its env is a Recipe that rebuilds next time. The Spawn
-                # this thread exists to release is already built and is not made to pay for it.
-                log.exception("could not store the environment for recipe %r", keep_for[1])
-    except environments.BuildError as e:
-        # A failed build is a failed SPAWN, not a rejection: it was accepted, Escrowed and queued
-        # minutes ago and its submitter has already walked away. So it ends the way every other failed
-        # Spawn does — an `err` they can read and a non-zero `exit` — and scancel takes it out of the
-        # queue, after which its absence from the tick's poll settles the Escrow. It held no Device for
-        # a second of this, so Settlement bills it nothing.
-        log.warning("environment build failed for spawn %s: %s", job_id, e)
-        _write_build_log(job_id, e.log)
-        _fail_spawn(job_id, guise, str(e))
-        return
-    except Exception:
-        log.exception("environment build crashed for spawn %s", job_id)
-        _fail_spawn(job_id, guise,
-                    "the Head failed while building this Spawn's environment — see the Head log")
-        return
-    _release(job_id, guise)
-
-
-def sweep_orphaned_builds() -> None:
-    """Fail every Spawn this Head was building when it last stopped. Called once at API startup.
-
-    Startup is the one moment the question has an exact answer, which is why it is asked here and not
-    in the Karma tick: builds run in *this* process's threads, so a `build_state` row surviving into a
-    fresh process is necessarily one whose thread is gone. The tick is a separate unit and could only
-    guess with a timeout, and guessing wrong either kills a live build or leaves a Spawn held forever.
-
-    Failed rather than rebuilt (the User resubmits). A rebuild would have to re-enter a Pod as a Guise
-    on behalf of a request that ended long ago, with an Escrow that has been suppressing its
-    submitter's Share the entire time the Head was down, for a Spawn they very likely gave up on.
-    """
-    with db.connect() as conn:
-        stuck = db.building_spawns(conn)
-    for job_id in stuck:
-        guise = _owner_of(job_id)
-        log.warning("spawn %s was still building when the Head stopped — failing it", job_id)
-        _fail_spawn(job_id, guise, "the Head restarted while building this Spawn's environment, so it "
-                                   "never started — resubmit it")
-
-
-def _owner_of(job_id: int) -> str:
-    """The Guise to act as. Slurm's answer where it still has one, the Attribution row where it does
-    not — a Spawn whose hold outlived slurmctld's memory of it still has a `guises` row, and scancel on
-    a job Slurm has forgotten is a harmless no-op either way."""
-    from . import slurm
-    owner = slurm.owner_of(job_id)
-    if owner:
-        return owner
-    with db.connect() as conn:
-        row = db.get_spawn(conn, job_id)
-        uid = db.guise_uid(conn, row["user_id"]) if row else None
-    return guises.name(uid) if uid is not None else ""
-
-
-def _write_build_log(job_id: int, text: str) -> None:
-    """Kept whether the build failed or not. A successful `uv sync` reports what it resolved, and that
-    is the only answer to "why did my Spawn get that version" once the env itself has been swept."""
-    if not text:
-        return
-    d = _make_spawn_dir(job_id)
-    (d / "build.log").write_text(text)
-
-
-def _release(job_id: int, guise: str) -> None:
-    """Let a built Spawn into the queue. As the Guise, like everything else CCC does to a Spawn — Slurm
-    lets a job's owner release their own hold, and CCC holds no root."""
-    with db.connect() as conn:
-        db.clear_build_state(conn, job_id)
-    subprocess.run(guises.as_owner(["scontrol", "release", str(job_id)], guise),
-                   capture_output=True, text=True)
-
-
-def _fail_spawn(job_id: int, guise: str, message: str) -> None:
-    """End a Spawn that never ran, the way a Spawn that ran and failed ends.
-
-    `err` + a non-zero `exit` are what every read path already understands — `cuttle logs`, the Spawn
-    page, history — so a build failure needs no display path of its own. The order matters: write the
-    reason and clear the build state BEFORE scancel. Cancelling first would let the tick see the job
-    leave the queue and settle it while the Head still called it building, and record an ending with no
-    reason beside it.
-
-    scancel as the Guise, not as root: a job's own owner may always cancel it (slurm.cancel relies on
-    exactly this), and the Mantle holds no Slurm operator privilege anywhere in CCC.
-    """
-    d = _make_spawn_dir(job_id)
-    (d / "err").write_text(message + "\n")
-    (d / "exit").write_text("1\n")
-    with db.connect() as conn:
-        db.clear_build_state(conn, job_id)
-    subprocess.run(guises.as_owner(["scancel", str(job_id)], guise), capture_output=True, text=True)
 
 
 def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True) -> dict[str, str]:
@@ -1159,8 +1092,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    outputs: list[str], node: str | None = None, wandb: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, activation: bool = False,
-                   background_build: bool = True, source_dir: Path | None = None,
-                   recipe_name: str | None = None) -> int:
+                   source_dir: Path | None = None, recipe_name: str | None = None) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
@@ -1242,8 +1174,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, features=features, activation=activation,
-                  source_dir=source_dir, recipe_name=recipe_name,
-                  background_build=background_build)
+                  source_dir=source_dir, recipe_name=recipe_name)
 
 
 # --- reads ---------------------------------------------------------------------
@@ -1283,21 +1214,15 @@ def _make_spawn_dir(job_id: int, outputs: bool = False) -> Path:
 
 
 def active_state(job_id: int) -> str | None:
-    """Slurm state if the job is still known to squeue, else None.
+    """Slurm state if the job is still known to squeue, else None. Slurm's answer, unedited.
 
-    BUILDING overrides Slurm's PENDING for a Spawn held while its Environment builds — squeue cannot
-    tell the two apart (a held job is just PENDING), and the difference is the whole of what a User
-    watching a silent Spawn wants to know. Same substitution slurm.queue() makes, so the single-Spawn
-    view and the queue never disagree about what a Spawn is doing.
+    It used to need an override: a Spawn `--hold`ed while the Head built its Environment reported as
+    PENDING, and only the Head knew better. The Arm builds inside its own allocation now, so a Spawn
+    installing its dependencies is RUNNING and squeue says so.
     """
     r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%T"],
                        capture_output=True, text=True)
-    state = r.stdout.strip() or None
-    if state == "PENDING":
-        with db.connect() as conn:
-            if job_id in db.building_spawns(conn):
-                return "BUILDING"
-    return state
+    return r.stdout.strip() or None
 
 
 def exit_code(job_id: int) -> int | None:
@@ -1311,14 +1236,6 @@ def environment_note(job_id: int) -> str | None:
     predate the feature."""
     f = _spawn_dir(job_id) / "environment"
     return f.read_text().strip() if f.exists() else None
-
-
-def build_log(job_id: int) -> str | None:
-    """The Environment build's own output, or None if this Spawn never built one. Separate from `out`
-    and `err`, which belong to the payload — sbatch's redirects would clobber anything written there
-    before the job ran."""
-    f = _spawn_dir(job_id) / "build.log"
-    return f.read_text() if f.exists() else None
 
 
 def mark_cancelled(job_id: int) -> None:

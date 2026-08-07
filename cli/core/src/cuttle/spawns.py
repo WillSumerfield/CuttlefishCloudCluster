@@ -408,15 +408,13 @@ def _follow(spawn_id: int) -> None:
     are separate files, indistinguishable once merged). Ordering is per-poll, so approximate. Local/
     co-located Spawns stream live; a remote Spawn's streams arrive only at stage-out (post-hoc).
 
-    The Environment build comes first, tagged `[env]`, and is followed on the same poll as the other
-    two: it is the only thing happening for the first minutes of a Spawn that declared dependencies,
-    and a User watching an otherwise silent BUILDING Spawn should see the solve rather than nothing."""
-    out_pos = err_pos = env_pos = 0
+    The Environment build needs no stream of its own: the Arm builds it inside the job, before the
+    payload, and writes to the same `err` — so it arrives here tagged `[err]`, in order, and a User
+    watching an otherwise silent Spawn sees the solve rather than nothing."""
+    out_pos = err_pos = 0
     while True:
-        env = _get_bytes(f"/spawns/{spawn_id}/build").decode()
         out = _get_bytes(f"/spawns/{spawn_id}/logs").decode()
         err = _get_bytes(f"/spawns/{spawn_id}/stderr").decode()
-        env_pos = _drain("env", env, env_pos)
         out_pos = _drain("out", out, out_pos)
         err_pos = _drain("err", err, err_pos)
         st = auth._api("GET", f"/spawns/{spawn_id}")

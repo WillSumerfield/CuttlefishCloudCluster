@@ -3,7 +3,6 @@ import { Page } from "../app/Page";
 import {
   downloadOutputs,
   downloadRecovery,
-  getBuildLog,
   getLogs,
   getRecovery,
   getRetention,
@@ -180,8 +179,8 @@ const LOG_PANE = {
 /**
  * One output stream. stdout and stderr get their own panes rather than being interleaved the way
  * `cuttle logs -f` does: the CLI interleaves because a terminal has one column, but the two files carry
- * no shared timestamps, so a merge here would be a guess presented as fact. Build log joins as a third
- * pane when a Spawn built an Environment (the Head's work, not the Spawn's).
+ * no shared timestamps, so a merge here would be a guess presented as fact. The Environment build's own
+ * output is not a third pane: the Arm builds it inside the job now, so it IS this Spawn's stderr.
  *
  * Empty is stated, not blank: "nothing on stderr" is good news on a Spawn that ran fine; an empty black
  * box says nothing at all.
@@ -192,11 +191,7 @@ function LogPane({ title, text, note }: { title: string; text: string | null; no
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <Tip
           className="label"
-          text={
-            title === "environment build"
-              ? "The Head building your declared Python before the run was placed. It happens before any card is held, so it costs you nothing."
-              : "Kept as two streams rather than merged, because they carry no shared timestamps and interleaving them would be a guess. A crash's traceback lands in stderr."
-          }
+          text="Kept as two streams rather than merged, because they carry no shared timestamps and interleaving them would be a guess. A crash's traceback lands in stderr — as does the Environment build that runs before it."
         >
           {title}
         </Tip>
@@ -239,18 +234,16 @@ export function SpawnPage({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [out, setOut] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [build, setBuild] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [d, o, e, b] = await Promise.all([
-        getSpawn(jobId), getLogs(jobId), getStderr(jobId), getBuildLog(jobId),
+      const [d, o, e] = await Promise.all([
+        getSpawn(jobId), getLogs(jobId), getStderr(jobId),
       ]);
       setDetail(d);
       setOut(o);
       setErr(e);
-      setBuild(b);
       return d.done;
     } catch (e) {
       if (e instanceof Unauthorized) logout();
@@ -361,9 +354,6 @@ export function SpawnPage({ id }: { id: string }) {
               note={detail.done ? undefined : "updating every 3s"}
             />
             <LogPane title="stderr" text={err} />
-            {build !== null && build.trim() !== "" && (
-              <LogPane title="environment build" text={build} note="the Head's work, before yours ran" />
-            )}
           </section>
         </div>
       )}

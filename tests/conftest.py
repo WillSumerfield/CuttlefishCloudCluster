@@ -170,14 +170,16 @@ def _head_state(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _env_build_is_never_real(monkeypatch, tmp_path_factory):
+def _env_tools_exist(monkeypatch, tmp_path_factory):
     """Every Spawn declares an **Environment** now, so every test that submits one walks this path.
 
-    Two things stand in. A TOOLS_DIR that exists, because `environments.require_tool` REFUSES a Spawn
-    on a Head with no uv/micromamba — without this, a suite running on a box that never ran `cuttle
-    setup --head` would fail every submission test with a message about the Head's provisioning. And a
-    no-op `start_build`, because the real one starts a daemon thread that shells out to apptainer:
-    a race against every assertion, on a binary the suite does not require.
+    One thing stands in: a TOOLS_DIR that exists, because `environments.require_tool` REFUSES a Spawn on
+    a node with no uv/micromamba — without this, a suite running on a box that never ran `cuttle setup`
+    would fail every submission test with a message about provisioning.
+
+    Nothing needs to stand in for the BUILD itself any more. It runs on the Arm, inside the rendered job
+    script, so a test that submits renders shell and executes none of it — there is no thread to race and
+    no apptainer to require.
 
     Autouse and unconditional, for the same reason as `_head_state` above — a Spawn is submitted by
     tests that are about Karma, Siphons, watches and the CLI, none of which mention Environments.
@@ -190,7 +192,6 @@ def _env_build_is_never_real(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(environments, "TOOLS_DIR", tools)
     monkeypatch.setattr(environments, "UV_BIN", tools / "uv")
     monkeypatch.setattr(environments, "MICROMAMBA_BIN", tools / "micromamba")
-    monkeypatch.setattr(head_spawns, "start_build", lambda *a, **kw: None)
 
 
 @pytest.fixture

@@ -1,26 +1,34 @@
-"""Per-Spawn Python **Environment**s — declared by the User, built by the Head, kept by nobody.
+"""Per-Spawn Python **Environment**s — declared by the User, built by the Arm that runs them, kept by
+nobody.
 
-A project declares its dependencies in the file its own tooling already writes, and the Head builds that
-before the Spawn is placed.
+A project declares its dependencies in the file its own tooling already writes. This module decides what
+that declaration MEANS — which file, which shape, which commands build it — and the Arm runs those
+commands at job start.
 
-**Built on the Head, before placement — an economy decision.** Building inside the allocation would make
-a User pay Karma to hold a GPU while pip downloads — Settlement bills seconds *held*, not seconds busy.
-Building here costs no Karma, no Device, and needs no per-Arm cache.
+**Built on the Arm, because a built env cannot be moved cheaply.** It used to be built here and shipped
+inside the uploaded project. That is several GB across the mesh on every Spawn, and the mesh is not a
+LAN: measured Head→remote Arm at 2.82 MB/s, so a 4.6 GB torch env is ~29 minutes of transfer before the
+payload's first line. The manifest is kilobytes and every donor box has its own link to PyPI, so the
+declaration travels and the download does not.
 
-**Built while the Spawn queues, not while the User waits.** `spawns.submit` `sbatch --hold`s the Spawn
-first, so it has its real id, Attribution and Escrow immediately, and runs the build behind the request.
-The hold is a dispatch interlock only — Slurm can't place the Spawn before the env exists, but the build
-overlaps the queue wait instead of adding to it.
+**Decided here, executed there.** `detect`, `require_tool`, `check_supplied` and `render_build` all still
+run on the Head, at submit, and every refusal they can raise is still a 4xx with no Spawn in existence.
+Only the *running* moved: `render_build` returns argv, `spawns._render` splices it into the job script,
+and the Arm executes it inside the Pod. One tested place still says what a manifest means.
+
+**What that costs, stated plainly.** A build failure is now a failed **Spawn** rather than a refused
+submission — it happens after the queue place and inside the Escrow, and the Escrow is not refunded (it
+is not refunded for any other failed Spawn either). In exchange every Spawn can actually start.
 
 **In a Pod, as the submitter's Guise.** A manifest is code: build backends, sdist `setup.py`, conda
-post-link scripts all execute. So the build gets the same walls a Spawn gets — `base.sif`, entered as
-that User's Guise — rather than a second, weaker isolation invented for it. `render_build` returns argv
-the caller runs through `guises.as_owner`; nothing here runs as the Mantle.
+post-link scripts all execute. So the build gets the same walls the payload gets — `base.sif`, entered as
+that User's Guise, `--contain --pid` — rather than a second, weaker isolation invented for it. On the Arm
+that is the same Pod flags the payload uses, one step earlier in the same job script.
 
 **One fixed path, so nothing needs relocating.** A venv bakes its own prefix into `pyvenv.cfg` and every
 console-script shebang; a conda prefix bakes it into hundreds of files and is famously not relocatable.
-Both are built AND run at `ENV_MOUNT`, bound there on the Head at build time and on the Arm at run time —
-the directory underneath differs, the path inside the Pod never does.
+It is built AND run at `ENV_MOUNT`, in the same job, on the same box — which is now trivially true rather
+than something two machines had to agree on.
 
 **Self-contained: an Environment carries its own interpreter and inherits nothing** (CONTEXT.md,
 **Environment**). A conda prefix always did. A uv venv is made to, by two settings that are the whole
@@ -42,11 +50,12 @@ Pool**'s promise that `pip install` at the shell works. Both unpinned, because a
 requirement is a no-op for both installers: a User who declared their own version keeps it, exactly as
 they used to when the image supplied one.
 
-**Nothing is cached except downloads.** The built env is destroyed with the Spawn's staging, like the
-uploaded project (`projects.py`) — keeps the Head from growing a fourth permanent disk consumer, and
-keeps **Allowance** meaning a ceiling on things a User would *lose*, which a rebuildable env is not. The
-package *download* cache (`CACHE_DIR`) persists: Mantle-owned, size-capped, never staged — the only
-reason "rebuild every time" is affordable.
+**Nothing is cached except downloads.** The built env lives in the Spawn's node-local scratch and dies
+with it, like the working directory around it — no box grows a permanent env store, and **Allowance**
+keeps meaning a ceiling on things a User would *lose*, which a rebuildable env is not. The package
+*download* cache on each Arm persists: node-local, size-capped, never staged, shared by every Guise on
+the box — the only reason "rebuild every time" is affordable. The second Spawn to want a given torch
+hard-links it out of that cache instead of fetching it.
 
 **Nothing is detected, because detection is a guess.** Every Spawn NAMES the file it declares, and
 `detect` only checks that the named file is there and is inside the project. There is no auto-detection
@@ -58,15 +67,12 @@ A **Tide Pool** is the sole exception — it is a shell, not a run, and may decl
 import hashlib
 import os
 import re
-import shutil
-import subprocess
-import tempfile
 import tomllib
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import features, guises
+from . import features
 
 # Where the env is built and run, INSIDE the Pod, on every machine. Absolute paths baked into the env
 # resolve against this and only this — see the module docstring.
@@ -85,75 +91,76 @@ PY_INSTALL_DIR = f"{ENV_MOUNT}/py"
 # manifest overrides this; uv reads that file itself, so `render_build` simply omits `--python`.
 DEFAULT_PYTHON = "3.12"
 
-# The env's home inside the uploaded project, so it rides the transfer that already exists: `cp -a` on
-# the Head's co-located Arm, the Siphon's `[proj-…]` module on a remote one. The JOB_SCRIPT moves it
-# OUT of the project before running — it must not land in the Recovery Window copy, and a multi-GB env
-# counted against RECOVERY_MAX_BYTES would disable recovery for every Spawn that declared much.
-ENV_DIRNAME = ".ccc-env"
+# Where the stub wheels an **Arm Feature** substitutes for a submitter's declared path source are
+# written, INSIDE the uploaded project so they ride the transfer that already exists (`cp -a` on the
+# Head's co-located Arm, the Siphon's `[proj-…]` module on a remote one). Kilobytes: each is an empty
+# wheel of the right name and version. Only ever non-empty for a project whose `[tool.uv.sources]`
+# points OUTSIDE its own upload — see `substitute_supplied`.
+STUB_DIRNAME = ".ccc-stubs"
 
-# The **Arm Feature** library prefix's home inside the uploaded project, for the same reason and by the
-# same route as ENV_DIRNAME above: it is built on the Head, it has to reach the Arm, and the project is
-# the transfer that already exists. A sibling of the env rather than a directory inside it, because it
-# has a different owner — the submitter's Environment is theirs, this is CCC's — and because putting a
-# CCC-owned directory inside a live conda prefix is asking for one of the two to prune the other.
-FEATLIB_DIRNAME = ".ccc-featlibs"
-
-# uv and micromamba are single static binaries, installed on the HEAD ONLY and bound into the build
-# Pod. Deliberately not baked into BASE_DEF_TMPL: `base.sif` is built per node and skipped when it
-# already exists (cuttle.setup), so baking them in would grow every Arm's image for work only the Head
-# does and leave every already-enrolled node without them until a teardown/setup.
+# uv and micromamba are single static binaries, installed on EVERY node (cuttle.setup.install_env_tools)
+# and bound into the build Pod read-only. Deliberately not baked into BASE_DEF_TMPL: `base.sif` is built
+# per node and skipped when it already exists, so a tool pinned inside the image could only be bumped by
+# a full teardown of every enrolled box.
 TOOLS_DIR = Path(os.environ.get("CCC_TOOLS_DIR", "/opt/ccc/tools"))
 UV_BIN = TOOLS_DIR / "uv"
 MICROMAMBA_BIN = TOOLS_DIR / "micromamba"
 
-# The package download cache — NOT an env cache. Mantle-owned, never staged to an Arm, never per-User.
-CACHE_DIR = Path(os.environ.get("CCC_ENV_CACHE", "/var/lib/ccc/head/envcache"))
-CACHE_MAX_BYTES = int(os.environ.get("CCC_ENV_CACHE_MAX", 20 * 1024**3))
+# The node-local package download cache — NOT an env cache. Shared by every Guise on the box, size-capped
+# by the job script, swept by teardown. Mirrors cuttle.config.NODE_ENV_CACHE_DIR, the same duplication
+# TOOLS_DIR already carries across two packages that do not import each other.
+CACHE_DIR = Path(os.environ.get("CCC_ENV_CACHE", "/var/lib/ccc/envcache"))
+CACHE_MAX_GB = int(os.environ.get("CCC_ENV_CACHE_MAX_GB", 20))
 
-# Scratch for the build tools, on DISK. `--contain` gives the Pod a /tmp carved from Apptainer's session
-# directory, a RAM tmpfs capped by `sessiondir max size` in apptainer.conf (64 MB on this fleet). uv is
-# pointed at the cache below, but pip (what an environment.yml's `pip:` section runs) writes downloads
-# to TMPDIR, so any wheel bigger than what's left of that 64 MB dies — nvidia-cudnn-cu13 alone is 366 MB,
-# and pip reports the resulting ENOSPC as "This is an issue with network connectivity, not pip", which
-# misdirects debugging toward the network instead of the disk.
+# Where the build tools put scratch, INSIDE the Pod. `--contain` gives the Pod a /tmp carved from
+# Apptainer's session directory, a RAM tmpfs capped by `sessiondir max size` in apptainer.conf (64 MB on
+# this fleet). uv is pointed at the cache above, but pip (what an environment.yml's `pip:` section runs)
+# writes downloads to TMPDIR, so any wheel bigger than what is left of that 64 MB dies — nvidia-cudnn-cu13
+# alone is 366 MB, and pip reports the resulting ENOSPC as "This is an issue with network connectivity,
+# not pip", which misdirects debugging toward the network instead of the disk.
 #
-# A sibling of CACHE_DIR rather than a directory inside it: prune_cache below empties the WHOLE cache
-# when over the cap, and one build finishing could otherwise delete another's half-downloaded wheel.
-# Nothing here is cache — it's per-build and deleted when that build ends.
-TMP_DIR = Path(os.environ.get("CCC_ENV_TMP", "/var/lib/ccc/head/envtmp"))
-
-# Clears a hung solver without killing a legitimately slow one: uv resolves in seconds, a real conda
-# solve can take minutes — and a self-contained env now downloads its own interpreter and its own torch
-# rather than inheriting either, so the honest floor is a cold full install, not a delta.
-BUILD_TIMEOUT_SECONDS = int(os.environ.get("CCC_ENV_BUILD_TIMEOUT", 30 * 60))
-
-# A built env is not uploaded, so it escapes MAX_UPLOAD_BYTES entirely — yet it is still rsync'd onto a
-# donor's disk over the Siphon, on every Spawn, because nothing is cached. 12GB, not the 8GB that was
-# enough when uv envs were a delta over the image: a self-contained env holds its own interpreter (~90MB)
-# and its own torch/cuDNN (~2.5GB) rather than borrowing the image's, so the same declaration weighs
-# several GB more than it used to.
-MAX_ENV_BYTES = int(os.environ.get("CCC_ENV_MAX", 12 * 1024**3))
+# The job script binds the Spawn's own node-local scratch here, so it is per-Spawn and the EXIT trap
+# already destroys it. Deliberately NOT inside the cache: the prune empties the whole cache at the cap,
+# and one Spawn's prune must not delete another's half-downloaded wheel.
+POD_TMP = "/ccc-tmp"
+POD_CACHE = "/ccc-cache"
 
 # wandb, injected into every env because nothing is inherited any more (module docstring). UNPINNED on
 # purpose: an already-satisfied requirement is a no-op, so a User who declared their own version keeps
 # it — the same way a manifest naming a package the image shipped used to win silently.
 WANDB_PKG = "wandb"
 
+# The build Pod's environment, identical on every node because the Pod's own paths are. Rendered into
+# the job script by `spawns._render`; nothing here reads it at build time any more.
+#
+#   UV_PROJECT_ENVIRONMENT  points `uv sync` at VENV_DIR instead of the `.venv` it would otherwise create
+#                           beside the manifest, inside a project directory the Guise cannot write.
+#                           Harmless on the other two shapes, which never consult it.
+#   only-managed            uv may not adopt an interpreter it did not install. Without it uv happily
+#                           picks up whatever system python the image or the box happens to have, and the
+#                           env stops being self-contained (module docstring).
+#   UV_PYTHON_INSTALL_DIR   the interpreter it downloads lands INSIDE the env tree rather than under
+#                           $HOME (which a Guise has not got) or on the Pod's 64MB /tmp.
+#   TMPDIR                  every tool's scratch onto disk — see POD_TMP.
+#   PIP_CACHE_DIR           with the OTHER caches, not the per-Spawn scratch, or pip re-fetches every
+#                           wheel on every build.
+BUILD_POD_ENV = (f"UV_CACHE_DIR={POD_CACHE}/uv,UV_PROJECT_ENVIRONMENT={VENV_DIR},"
+                 f"UV_PYTHON_PREFERENCE=only-managed,UV_PYTHON_INSTALL_DIR={PY_INSTALL_DIR},"
+                 f"MAMBA_ROOT_PREFIX={POD_CACHE}/mamba,TMPDIR={POD_TMP},"
+                 f"PIP_CACHE_DIR={POD_CACHE}/pip,LC_ALL=C.UTF-8,LANG=C.UTF-8")
+
 
 class BuildError(ValueError):
-    """The declared environment could not be built.
+    """The declared environment cannot be built, decided at SUBMIT.
 
-    Raised at two different moments, which is why this class carries a log. From `detect` or
-    `require_tool` it's a *rejection* — bad input or an unequipped Head, decided in microseconds and
-    turned into a 4xx before any Spawn exists, so nothing is Escrowed and nothing queues. From
-    `build` it's a failed **Spawn**: already accepted, Escrowed and held, so the failure is recorded as
-    its `err` and a non-zero `exit`, and Settlement bills it nothing (never held a Device). `.log` is
-    what the User reads to find out why.
+    Only ever a *rejection* now — from `detect`, `require_tool` or `check_supplied`: bad input or an
+    unequipped node, decided in microseconds and turned into a 4xx before any Spawn exists, so nothing is
+    Escrowed and nothing queues.
+
+    A build that FAILS is a different thing entirely and does not come through here: it happens on the
+    Arm, inside the job, and it ends that Spawn the way every other failed Spawn ends — the build's own
+    output in `err`, a non-zero `exit`, and no refund of the Escrow.
     """
-
-    def __init__(self, message: str, log: str = "") -> None:
-        super().__init__(message)
-        self.log = log
 
 
 @dataclass(frozen=True)
@@ -488,18 +495,25 @@ def _relock(lock: Path, package: str, digest: str) -> bool:
     return True
 
 
-def substitute_supplied(project: Path, m: Manifest, work: Path) -> tuple[list[str], list[str]]:
+def substitute_supplied(project: Path, m: Manifest) -> tuple[list[str], list[str]]:
     """Replace every Feature-supplied wheel with a stub. Returns `(extra binds, log lines)`.
+
+    Done HERE, at submit, even though the build runs on the Arm: it is pure file-writing — a synthesized
+    wheel and a one-line edit to `uv.lock` — and it is the same class of decision as `detect`. The Arm
+    runs commands, it does not reason about manifests.
 
     Two shapes, and the difference is only where the stub is written:
 
     * **Inside the project** — the User's real wheel rode the upload, and the stub overwrites it in
-      place. No bind: the project is already mounted at its own path.
+      place. No bind: the project is already mounted at its own path on the Arm.
     * **Outside it** (`../vlearn-main/...`, the ordinary layout) — the file was never uploaded and does
-      not exist on the Head at all. A directory is made under this build's scratch and BOUND at the
-      path the source resolves to, so the wheel is there when uv looks. Apptainer creates the
+      not exist on the Head at all. A directory is made under STUB_DIRNAME *inside the project*, so it
+      rides the transfer, and BOUND on the Arm at the path the source resolves to. Apptainer creates the
       mountpoint even though its parent is not itself bound, which is what makes this work under
       `--contain`.
+
+    Each returned bind is `<project-relative dir>:<pod path>`. Project-relative because the host path
+    differs per node and only the Arm knows its own — `spawns._render` prefixes `$proj`.
 
     Either way `uv.lock`'s recorded hash for that package is repointed at the stub, or the sync fails
     on a mismatch it has no way to resolve past.
@@ -514,14 +528,15 @@ def substitute_supplied(project: Path, m: Manifest, work: Path) -> tuple[list[st
             host_dir = dirs.get(s.pod_dir)
             if host_dir is None:
                 # Named by index, not by the declared basename: two sources could name directories with
-                # the same basename at different depths, and one scratch dir per POD path keeps them
-                # apart. 0777 for the same reason every other build directory is — the Guise writes
-                # nothing here, but it has to read it, and the Mantle cannot chown.
-                host_dir = work / f"src{len(dirs)}"
+                # the same basename at different depths, and one dir per POD path keeps them apart.
+                rel = f"{STUB_DIRNAME}/src{len(dirs)}"
+                host_dir = project / rel
                 host_dir.mkdir(parents=True)
+                # 0777 for the same reason every other build directory is: the Guise writes nothing here
+                # but has to read it, and on the Head branch it is copied as that Guise.
                 os.chmod(host_dir, 0o777)
                 dirs[s.pod_dir] = host_dir
-                binds.append(f"{host_dir}:{s.pod_dir}")
+                binds.append(f"{rel}:{s.pod_dir}")
         dest = host_dir / s.filename
         digest = _stub_wheel(dest, s.package, s.filename)
         os.chmod(dest, 0o644)
@@ -532,10 +547,8 @@ def substitute_supplied(project: Path, m: Manifest, work: Path) -> tuple[list[st
     return binds, log
 
 
-def build_feature_libs(project: Path, specs: dict[str, list[str]], guise: str,
-                       build_tmp: Path) -> list[str]:
-    """Build each requested **Arm Feature**'s system libraries into `project/FEATLIB_DIRNAME`, one conda
-    prefix per Feature. Returns log lines. Raises BuildError.
+def render_featlib_build(specs: dict[str, list[str]]) -> list[list[str]]:
+    """The commands that build each requested **Arm Feature**'s system libraries, in order. Pure.
 
     Conda, and only conda, because these are not Python packages: `libassimp.so.5` and `libSDL2` have no
     wheel and no manifest a submitter could put them in. They used to arrive inside the submitter's own
@@ -543,185 +556,12 @@ def build_feature_libs(project: Path, specs: dict[str, list[str]], guise: str,
     carries its own interpreter, the manifest can be anything, and these have to come from somewhere
     that does not care.
 
-    No interpreter is installed into this prefix and none is wanted: it is bound for its `lib/`
-    directory alone (features.FEATLIB_MOUNT, on LD_LIBRARY_PATH), never run.
+    One prefix per Feature, under features.FEATLIB_MOUNT. No interpreter is installed into it and none is
+    wanted: it is bound for its `lib/` directory alone (on LD_LIBRARY_PATH), never run.
+
+    Built on the Arm alongside the Environment, and for the same reason — it is CCC's own multi-hundred-MB
+    conda prefix, and shipping it from the Head cost exactly what shipping the env cost.
     """
-    from .spawns import CCC_SIF
-
-    out = project / FEATLIB_DIRNAME
-    out.mkdir(parents=True, exist_ok=True)
-    os.chmod(out, 0o777)
-    log = []
-    for feat, want in specs.items():
-        argv = [str(MICROMAMBA_BIN), "create", "--yes", "--quiet",
-                "--prefix", f"{features.FEATLIB_MOUNT}/{feat}", "-c", "conda-forge", *want]
-        cmd = guises.as_owner([
-            "apptainer", "exec", "--contain", "--pid", "--pwd", str(project),
-            "--bind", f"{project},{out}:{features.FEATLIB_MOUNT},{CACHE_DIR}:/ccc-cache,"
-                      f"{build_tmp}:/ccc-tmp,{TOOLS_DIR}:{TOOLS_DIR}:ro",
-            "--env", "MAMBA_ROOT_PREFIX=/ccc-cache/mamba,TMPDIR=/ccc-tmp,"
-                     "LC_ALL=C.UTF-8,LANG=C.UTF-8",
-            str(CCC_SIF), *argv,
-        ], guise)
-        log.append(f"$ ccc feature-libs {feat}")
-        try:
-            r = subprocess.run(cmd, cwd="/", capture_output=True, text=True,
-                               timeout=BUILD_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            raise BuildError(f"building the '{feat}' Feature's system libraries timed out",
-                             log="\n".join(log))
-        log.append((r.stdout + r.stderr).strip())
-        if r.returncode != 0:
-            raise BuildError(
-                f"could not build the '{feat}' Arm Feature's system libraries:\n{r.stderr.strip()}",
-                log="\n".join(log))
-    return log
-
-
-def build(project: Path, m: Manifest, guise: str, feature_names: list[str] | None = None) -> str:
-    """Build `m` into `project/ENV_DIRNAME`, as `guise`, inside a Pod. Returns the build log. Raises
-    BuildError, whose text is what the Spawn shows as its `err`, with the log so far as `.log`.
-
-    The env dir is created HERE rather than inside the Pod so its ownership is the Guise's from the
-    start — apptainer binds it, doesn't create it, and a root-owned mountpoint would leave the build
-    unable to write into its own prefix.
-    """
-    env_dir = project / ENV_DIRNAME
-    if env_dir.exists():
-        shutil.rmtree(env_dir, ignore_errors=True)
-    env_dir.mkdir(parents=True)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(TMP_DIR, 0o777)
-    # Per-build, so two Spawns building at once cannot collide in each other's scratch, and so the
-    # `finally` below can delete this one's leftovers without touching a build still running.
-    build_tmp = Path(tempfile.mkdtemp(dir=TMP_DIR))
-    # 0777 on every directory the Guise must write: the Mantle owns them, and a Guise is a separate
-    # uid in a shared group. Deliberately not a chown — the Mantle cannot give away what it owns without
-    # privilege it does not have, and this whole module is built on the Head never needing root.
-    for d in (env_dir, CACHE_DIR, build_tmp):
-        os.chmod(d, 0o777)
-
-    try:
-        return _run_build(project, m, guise, env_dir, build_tmp, feature_names or [])
-    finally:
-        # Always: a timed-out or failed build leaves partial downloads behind, and nothing else ever
-        # looks in here again. prune_cache does not cover this tree by design (see TMP_DIR).
-        shutil.rmtree(build_tmp, ignore_errors=True)
-
-
-def _run_build(project: Path, m: Manifest, guise: str, env_dir: Path, build_tmp: Path,
-               feature_names: list[str]) -> str:
-    """The build itself. Split out of `build` only so the scratch it is given is cleaned up whatever
-    happens to it — every exit from here is inside that caller's `finally`."""
-    from .spawns import CCC_SIF  # local: spawns imports this module, and the constant lives there
-
-    log = [f"$ ccc build {m.summary}"]
-    # BEFORE the build, because it changes what the build resolves: any dependency an **Arm Feature**
-    # supplies is replaced by an empty stub of the same name and version, and the lock repointed at it.
-    # `check_supplied` already refused everything invalid about these at submit time.
-    src_binds, src_log = substitute_supplied(project, m, build_tmp)
-    log += src_log
-    for argv in render_build(m, project):
-        # --contain: the build gets the same walls the payload gets, nothing of the Head's filesystem
-        # beyond the five paths named here. TOOLS_DIR is bound read-only since uv/micromamba live on the
-        # HEAD, not the image — without the bind the binary named in argv wouldn't exist in the Pod.
-        # No --nv: a build needs no GPU, and asking for one on a Head whose cards are all busy would
-        # fail for no reason.
-        cmd = guises.as_owner([
-            "apptainer", "exec", "--contain", "--pid", "--pwd", str(project),
-            # `src_binds` is empty for almost every Spawn: it appears only when a path source names a
-            # wheel OUTSIDE the upload, and carries the stub written in its place.
-            "--bind", f"{project},{env_dir}:{ENV_MOUNT},{CACHE_DIR}:/ccc-cache,"
-                      f"{build_tmp}:/ccc-tmp,{TOOLS_DIR}:{TOOLS_DIR}:ro"
-                      + "".join(f",{b}" for b in src_binds),
-            # UV_PROJECT_ENVIRONMENT points `uv sync` at VENV_DIR instead of the `.venv` it'd otherwise
-            # create beside the manifest, in a project directory the Guise cannot write (render_build).
-            # Harmless on the other two paths, which never consult it.
-            #
-            # The two settings that make an Environment SELF-CONTAINED, and the reason a `requires-python`
-            # pin the image cannot satisfy is now buildable at all:
-            #   only-managed  — uv may not adopt an interpreter it did not install. Without it uv happily
-            #                   picks up a system python of the right version, and the venv it builds
-            #                   points at a path that exists on the Head and not on the Arm.
-            #   INSTALL_DIR   — the interpreter it downloads lands INSIDE the shipped tree rather than
-            #                   under $HOME (which a Guise has not got) or on the Pod's 64MB /tmp.
-            #
-            # TMPDIR moves every tool's scratch off the Pod's 64 MB RAM /tmp and onto disk (TMP_DIR) —
-            # set for all three build paths since uv stages large artifacts through TMPDIR too.
-            # PIP_CACHE_DIR belongs with the OTHER caches, not the scratch deleted after every build —
-            # without it pip re-fetches every wheel on every rebuild.
-            "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PROJECT_ENVIRONMENT={VENV_DIR},"
-                     f"UV_PYTHON_PREFERENCE=only-managed,UV_PYTHON_INSTALL_DIR={PY_INSTALL_DIR},"
-                     f"MAMBA_ROOT_PREFIX=/ccc-cache/mamba,TMPDIR=/ccc-tmp,"
-                     f"PIP_CACHE_DIR=/ccc-cache/pip,LC_ALL=C.UTF-8,LANG=C.UTF-8",
-            str(CCC_SIF), *argv,
-        ], guise)
-        log.append(f"$ {' '.join(argv)}")
-        try:
-            # cwd="/" — a build has no relationship to the directory its caller happened to be standing
-            # in, and apptainer's starter chdirs to the inherited cwd on the HOST before `--pwd` ever
-            # applies (which is inside). Run as the Guise, that chdir fails on anything the Guise cannot
-            # traverse, and "container creation failed: can't change directory to /home/<operator>/..."
-            # is what a Spawn's build reports instead of anything about itself. Bites every Head-local
-            # caller (every pinned Spawn's build), never the API service, whose cwd is systemd's.
-            r = subprocess.run(cmd, cwd="/", capture_output=True, text=True,
-                               timeout=BUILD_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            shutil.rmtree(env_dir, ignore_errors=True)
-            raise BuildError(
-                f"environment build timed out after {BUILD_TIMEOUT_SECONDS // 60} minutes "
-                f"({m.path}) — a dependency solve that cannot finish is a Spawn that can never start",
-                log="\n".join(log),
-            )
-        # Both streams, in the log, on success too: `uv sync` reports what it resolved on stderr, and
-        # that is the answer to "why did my Spawn get that version" long after the build succeeded.
-        log.append((r.stdout + r.stderr).strip())
-        if r.returncode != 0:
-            shutil.rmtree(env_dir, ignore_errors=True)
-            raise BuildError(f"environment build failed ({m.path}):\n{r.stderr.strip()}",
-                             log="\n".join(log))
-
-    size = _tree_bytes(env_dir)
-    if size > MAX_ENV_BYTES:
-        shutil.rmtree(env_dir, ignore_errors=True)
-        raise BuildError(
-            f"built environment is {size // 1024**3}GB, over the {MAX_ENV_BYTES // 1024**3}GB ceiling "
-            f"({m.path}) — nothing is cached, so this would be copied to the Arm on every Spawn",
-            log="\n".join(log),
-        )
-
-    # AFTER the Environment, and measured separately: this prefix is CCC's, not the submitter's, so a
-    # Feature's libraries must not be what pushes their own declaration over MAX_ENV_BYTES. Nothing in
-    # it depends on the env and nothing in the env depends on it — they meet on LD_LIBRARY_PATH, on the
-    # Arm. Last because it is the cheaper of the two to lose if the env build has already failed.
-    specs = features.lib_specs(feature_names)
-    if specs:
-        log += build_feature_libs(project, specs, guise, build_tmp)
-    return "\n".join(log)
-
-
-def _tree_bytes(root: Path) -> int:
-    """Apparent size of the built env. Follows no symlinks, and counts none: a uv env's `bin/python` and
-    the minor-version alias beside its interpreter both point back into this same tree, so following
-    them would bill the User twice for one copy of CPython."""
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
-        for f in filenames:
-            p = Path(dirpath) / f
-            if not p.is_symlink():
-                total += p.stat().st_size
-    return total
-
-
-def prune_cache() -> None:
-    """Keep the download cache under CACHE_MAX_BYTES. Whole-cache, not LRU-by-entry: uv and micromamba
-    both hard-link out of their caches, so per-entry eviction would need their own bookkeeping to be
-    safe. Emptying it costs re-downloads on the next build and nothing else — it holds no state any
-    Spawn depends on."""
-    if not CACHE_DIR.exists():
-        return
-    if _tree_bytes(CACHE_DIR) > CACHE_MAX_BYTES:
-        shutil.rmtree(CACHE_DIR, ignore_errors=True)
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        os.chmod(CACHE_DIR, 0o777)
+    return [[str(MICROMAMBA_BIN), "create", "--yes", "--quiet",
+             "--prefix", f"{features.FEATLIB_MOUNT}/{feat}", "-c", "conda-forge", *want]
+            for feat, want in specs.items()]
