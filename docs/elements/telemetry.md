@@ -28,7 +28,7 @@ cuttle wandb show
 **Send one Spawn to a particular project:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --project my-ablations
+cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml --project my-ablations
 ```
 
 **Stop logging entirely:**

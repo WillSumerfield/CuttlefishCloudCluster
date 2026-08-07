@@ -21,4 +21,8 @@ rsync -a --delete "$SRC/train/" "$HERE/train/"
 
 echo
 echo "ready. submit from this directory with:"
-echo "  cuttle run run.py --feature vlearn --output runs --vram 16 --gpu 1 --time 30 --follow"
+echo "  cuttle run run.py --feature vlearn --manifest pyproject.toml --no-gitignore \\"
+echo "    --output runs --vram 16 --gpu 1 --time 30 --follow"
+echo
+echo "--no-gitignore because train/ is listed in this directory's .gitignore (it is copied"
+echo "third-party material, not committed) — without it the trainer is not uploaded."

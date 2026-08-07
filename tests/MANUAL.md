@@ -49,18 +49,23 @@ cuttle setup --arm --token <token>
 
 ```sh
 cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8 -o out
+cuttle run check_env.py --time 10 --vram 8 -o out --manifest requirements.txt
 ```
 
-- [ ] The submit echo names the manifest it detected.
+- [ ] The submit echo names the manifest you declared.
 - [ ] `cuttle queue` shows `building`, then pending, then running.
 - [ ] Results land in `~/ccc/outputs/spawn-<id>-outputs/` **without** the command still running.
 - [ ] `env.txt` matches the table in [`../examples/environments/README.md`](../examples/environments/README.md).
 
-Walk the other five example projects. `conda/` should show torch MISSING; `fails/` should produce a
-**failed Spawn**, not a rejected submission.
+Walk the other example projects, naming each one's manifest. `torch` should come back MISSING from
+every one that builds — an Environment inherits nothing. `uv-project/` should report python
+**3.11.14**, a version the image does not ship. `fails/` should produce a **failed Spawn**, not a
+rejected submission.
 
-- [ ] `--manifest none` declines the build; `--manifest nope.txt` is refused at submit with no Spawn.
+- [ ] Omitting `--manifest` off a terminal is refused before anything uploads, naming the flag; at a
+      terminal `cuttle run` asks for it instead.
+- [ ] `--manifest nope.txt` is refused at submit with no Spawn.
+- [ ] A Recipe saved without `--manifest` is refused; one saved with it re-runs against that env.
 
 ### The download survives a reboot
 

@@ -92,9 +92,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   it. So a Recipe is *captured*, never recovered — never reconstructed from a Spawn that has already run,
   because the Head holds an ad-hoc **Spawn**'s uploaded project only while that Spawn is starting
   (**Allowance**), and by the time there is a result to admire the code behind it is already gone.
-  Frozen covers what it *captured*, not what that captured thing later resolves to: a Recipe holds its
-  owner's dependency declaration, so one that names its needs loosely can build a different
-  **Environment** months later. Pinning is the User's to do, in the file they already keep.
+  A Recipe captures its **Environment** as well as its code, so *frozen* covers what the work runs
+  **in**, not merely what it declared: a Recipe whose dependency file names its needs loosely still
+  re-runs against the same resolved dependencies months later, rather than rebuilding a different
+  Environment from the same file. Updating the Recipe is what releases it.
 - **Spawn** — a single traceable execution of a piece of work on the cluster. It may come from a
   **Recipe** (re-running the snapshot) or be submitted ad-hoc (a project uploaded there and then); a
   Recipe is a convenience, not a prerequisite. A Spawn runs **once**: if the machine it was placed on
@@ -133,19 +134,25 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   any concurrent Spawn's working files, including their scratch. A Pod is the *walls*, never the
   contents: what is installed within one is that Spawn's **Environment**. And a Pod is not only an
   **Arm**'s: work the **Head** does on a User's behalf is walled the same way, as the same **Guise**.
-- **Environment** — the Python a **Spawn**'s code actually runs against inside its **Pod**. Every Spawn
-  gets a base one, identical on every machine in the cluster; a **User** who needs more than it holds
-  **declares** the difference in their project, in the dependency file their own tooling already writes.
-  CCC finds that declaration itself, but never insists on its own guess: a User may name which one to
-  use, and "none" is one of the things they may name — a file in a repo is not always an instruction to
-  the cluster.
+- **Environment** — the Python a **Spawn**'s code actually runs against inside its **Pod**. It is
+  **self-contained**: it carries its own interpreter and inherits nothing from the machine or from the
+  Pod's image, so the same declaration runs the same way everywhere and nothing the cluster changes
+  underneath can alter what a Spawn already runs. A **User** declares one in their project, in the
+  dependency file their own tooling already writes, and **every Spawn names the file it declares** —
+  the cluster supplies no default and infers nothing, so a Spawn that names no declaration is refused
+  before it exists. CCC never guesses which file describes the work, because a dependency file in a
+  repo is not always the one that does; a **Recipe** captures the name along with the code, so it is
+  said once rather than at every run. A **Tide Pool** is the one exception, and may decline: it is a
+  shell rather than a run, and one opened with no project has no file in it to name.
   The **Head** builds what was declared *before* the Spawn is placed, so no **Device** is ever held while
   packages are fetched and building costs no **Karma**. It builds it in a **Pod**, as that User's
   **Guise** — a declaration is code, and CCC runs no User's code as the **Mantle** on any machine.
-  An Environment is built for one Spawn and kept for none: it dies with that Spawn's staging and the next
-  run builds it again. So it is never something a User owns, holds, or spends **Allowance** on — only the
-  *declaration* persists, and only because it is part of their code. A Spawn whose declaration cannot be
-  built never reaches an **Arm**: it fails having held nothing, and is billed for nothing.
+  An ad-hoc Spawn's Environment is built for that Spawn and kept for none: it dies with the Spawn's
+  staging and the next run builds it again, so it is never something that User owns or spends
+  **Allowance** on. A **Recipe**'s is the deliberate exception — kept for as long as the Recipe itself,
+  because a Recipe that did not hold its Environment would not really be frozen. A Spawn whose
+  declaration cannot be built never reaches an **Arm**: it fails having held nothing, and is billed for
+  nothing.
 - **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
   held thing has its own, independent of the others: filling one never costs a User any of another. An
   Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
@@ -189,6 +196,14 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   by the loader at `exec`, so nothing running inside the **Pod** can set it for itself. Without a
   profile a Feature is placement plus `$<NAME>_PATH`, which is a complete answer for software a
   submitter drives directly.
+  A profiled Feature also brings the **system libraries** its software links against. Those are CCC's
+  to supply rather than the submitter's, because they are not Python packages and no **Environment**
+  could install them — so a Spawn that requests the Feature gets them without declaring anything.
+  Where a Feature *supplies the software itself*, a **User** may still declare that package — pointing
+  at a local copy is often what makes their project resolve on their own machine — but what runs is
+  always the Arm's: CCC replaces the declaration with an empty placeholder before building and removes
+  it again on the Arm. Declaring such a package without also requesting its Feature is refused, since
+  no placeholder would ever be replaced and the Spawn could only fail at `import`.
 - **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm

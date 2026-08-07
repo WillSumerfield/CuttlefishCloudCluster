@@ -3,13 +3,15 @@
 ## What it is
 
 A **Recipe** is a piece of work you saved: the code itself, plus how to run it — entry point,
-arguments, how long it needs, how much VRAM, where its results go.
+arguments, how long it needs, how much VRAM, where its results go, and which dependency file its
+[Environment](environments.md) is built from.
 
 Because it holds the actual code, you can run a Recipe from any machine with nothing to hand. New
 laptop, no checkout, no clone: `cuttle recipe run nightly` and it goes.
 
-And it is **frozen**. It keeps running exactly what it captured until you deliberately update it —
-your local directory can drift as far as you like and the Recipe does not care.
+And it is **frozen** — including what it runs *in*, not merely what it declared. It keeps running
+exactly what it captured until you deliberately update it; your local directory can drift as far as
+you like and the Recipe does not care.
 
 Recipes are private to you. Nobody else can see or run yours.
 
@@ -18,7 +20,8 @@ Recipes are private to you. Nobody else can see or run yours.
 **Save the thing you keep re-running:**
 
 ```sh
-cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints -- --epochs 5
+cuttle recipe save nightly train.py --time 60 --vram 24 -o checkpoints \
+  --manifest pyproject.toml -- --epochs 5
 ```
 
 Everything after `--` is frozen as the Recipe's arguments, the same way `cuttle run` passes them

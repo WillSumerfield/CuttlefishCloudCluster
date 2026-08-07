@@ -18,25 +18,25 @@ same single run.
 **Run a training script for an hour on a 24 GB card:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --output checkpoints
+cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
 ```
 
 **Pass arguments through to your own script** — everything after `--` is yours:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o checkpoints -- --epochs 5 --lr 3e-4
+cuttle run train.py --time 60 --vram 24 -o checkpoints --manifest pyproject.toml -- --epochs 5 --lr 3e-4
 ```
 
 **Watch it happen** rather than walking away:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o checkpoints --follow
+cuttle run train.py --time 60 --vram 24 -o checkpoints --manifest pyproject.toml --follow
 ```
 
 **Ask for a machine that has particular software on it** (see [Arm Features](arm-features.md)):
 
 ```sh
-cuttle run sim.py --time 30 --vram 16 -o results --feature isaaclab
+cuttle run sim.py --time 30 --vram 16 -o results --manifest pyproject.toml --feature isaaclab
 ```
 
 **Leave the flags off entirely** and let it ask you:

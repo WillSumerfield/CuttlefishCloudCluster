@@ -13,7 +13,7 @@ installed, and for some, the whole runtime environment a Spawn needs to load it.
 You ask for a Feature the same way you ask for VRAM: as a **need**, not a machine name.
 
 ```sh
-cuttle run sim.py --time 30 --vram 16 -o results --feature isaaclab
+cuttle run sim.py --time 30 --vram 16 -o results --manifest pyproject.toml --feature isaaclab
 ```
 
 That widens or narrows which Arms your Spawn can land on, and nothing else. You still never choose
@@ -32,26 +32,26 @@ Runs anywhere, needs no login — the catalog is a constant.
 **Require one:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --feature vlearn
+cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml --feature vlearn
 ```
 
 Repeatable, if you need more than one.
 
-**Get a starting `environment.yml`** for the system libraries a Feature's software links against:
+**See what CCC arranges** for a Feature — the system libraries it builds for you, and which Python
+your own Environment has to be:
 
 ```sh
-cuttle feature show vlearn > environment.yml
+cuttle feature show vlearn
 ```
 
-Then add your own dependencies to it. See [`examples/vlearn/`](../../examples/vlearn/) for a worked
-project.
+You declare none of it. See [`examples/vlearn/`](../../examples/vlearn/) for a worked project.
 
 ## Commands
 
 | | |
 |---|---|
 | `cuttle feature list` | The Features CCC knows how to run. |
-| `cuttle feature show <name>` | A starter `environment.yml` for that Feature's system libraries. |
+| `cuttle feature show <name>` | What CCC arranges for that Feature, and which Python it needs. |
 
 ## Behavior
 
@@ -73,12 +73,25 @@ to run outside your process.
 
 ### Writing against a Feature
 
-If a Feature has a runtime profile, `cuttle feature show` gives you the system libraries its shared
-objects need, as an `environment.yml` you extend. It is fetched from the Head rather than generated
-locally, so there is exactly one copy of that list and it is the same one CCC itself builds against.
+**You declare your own dependencies and nothing else.** A Feature's system libraries — the shared
+objects its software links at load time — are CCC's to provide: it builds them into a small conda
+prefix per Spawn and puts them on `LD_LIBRARY_PATH`. They are not Python packages, so no manifest of
+yours could install them anyway. `cuttle feature show` lists them so you can see what you are getting;
+it is fetched from the Head, so there is exactly one copy of that list and it is the one CCC builds.
 
-Not every Feature has one — a Feature can be nothing but placement plus an install path, which needs
-no Environment at all.
+**What you do have to declare is the Python version**, when a Feature ships binary packages. vlearn
+has cp310/cp311 wheels only, so `requires-python = "==3.11.*"` (or `- python=3.11`, or a
+`.python-version`) is a real requirement — an Environment carries its own interpreter, so any manifest
+can ask for any version.
+
+**A Feature's own package is never yours to install.** You may still declare it — pointing at a local
+wheel is often what makes a project resolve on your own machine — and CCC will accept it, replace it
+with an empty placeholder before building, and delete that again on the Arm. What you import is the
+Arm's build, which is the one its licence covers. A path source may name a file inside your project
+or in a directory beside it; anything further up is refused, since CCC only unpacks your project.
+
+Not every Feature has a profile — a Feature can be nothing but placement plus an install path, which
+needs no runtime arranged at all.
 
 ### Licences
 

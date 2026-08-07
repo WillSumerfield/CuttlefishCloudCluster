@@ -1,0 +1,44 @@
+# This example's own dependencies — what train/rl_games_train.py imports, and nothing else.
+#
+# What is NOT here, and does not need to be:
+#
+#   vlearn            comes from the Arm, on PYTHONPATH. It is licensed per machine and the copy that
+#                     runs has to be the one that Arm's owner activated. You MAY declare it as a path
+#                     to your own wheel if that is what makes your project resolve locally — CCC
+#                     replaces it with a placeholder for the build and removes that again on the Arm.
+#   sdl2, assimp,     the system libraries vlearn's shared objects link against. CCC builds these for
+#   zeromq, czmq,     every Spawn that passes `--feature vlearn` (`cuttle feature show vlearn` lists
+#   libglu, mesalib,  them). They are not Python packages and no manifest could install them.
+#   cuda-cudart
+[project]
+name = "vlearn-ant"
+version = "0.1.0"
+# vlearn ships cp310/cp311 binary wheels only, so the Environment has to be one of those. Saying so is
+# the whole requirement — an Environment carries its own interpreter, so any manifest can ask for any
+# version and the Pod image's own Python is not involved.
+requires-python = "==3.11.*"
+dependencies = [
+    "torch",
+    "rl_games==1.6.5",
+    "gym==0.26.2",
+    "gymnasium",
+    "hydra-core",
+    "tensorboard",
+    "h5py",
+    "matplotlib",
+    "pyyaml",
+]
+
+# Two loose scripts, no package to install.
+[tool.uv]
+package = false
+
+# cu130, to match vlearn's own build. torch brings its own libcudart either way; this keeps the two
+# from being different CUDA majors on the same LD_LIBRARY_PATH.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }

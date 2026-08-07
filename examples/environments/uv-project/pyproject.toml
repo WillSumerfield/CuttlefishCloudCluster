@@ -1,10 +1,14 @@
 # A project with no lock file: detection falls through uv.lock to this, and `uv sync` resolves it
 # fresh at build time. `package = false` makes it a *virtual* project — dependencies get installed,
 # the directory itself does not, which is what a project with no build backend wants.
+#
+# requires-python is pinned to an EXACT patch the cluster's image does not ship, on purpose: an
+# Environment carries its own interpreter, so this is the version the Spawn reports back. A version
+# nobody could have inherited is the only kind that proves it.
 [project]
 name = "ccc-env-uv-project"
 version = "0"
-requires-python = ">=3.11"
+requires-python = "==3.11.14"
 dependencies = ["pyfiglet==1.0.4"]
 
 [tool.uv]

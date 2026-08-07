@@ -9,7 +9,7 @@ Symptom, cause, fix. Grouped by who you are.
 Not a bug. Name the folder(s) under `$CCC_OUT` your script writes results into:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --output checkpoints
+cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
 ```
 
 There is no default and none is offered — a Spawn with no declared output has nowhere retrievable for
@@ -21,7 +21,9 @@ You asked for something the fleet can never satisfy — more VRAM than the bigge
 [Feature](elements/arm-features.md) no enrolled Arm carries. Refusing is deliberate: the alternative
 is queuing forever for a machine that may never exist.
 
-Also refused: a `--manifest` naming a file that is not in your project.
+Also refused, before anything is uploaded: **no `--manifest`** (every Spawn names the dependency file
+its [Environment](elements/environments.md) is built from — there is no default), or a `--manifest`
+naming a file that is not in your project.
 
 ### My Spawn got an id, then failed immediately
 
@@ -69,15 +71,16 @@ backup — stored keys deliberately do not survive that. Re-run `cuttle wandb se
 
 ### torch disappeared inside my Spawn
 
-You have an `environment.yml`. conda **replaces** the base image; uv layers on top of it. Add torch
-to your `environment.yml`, or declare dependencies with a `requirements.txt`/`pyproject.toml`
-instead. See [Environments](elements/environments.md).
+You declared an Environment, and an Environment inherits nothing from the base image — whichever file
+you declared it in. Add torch to it. That is also what lets you pin the version you actually want
+rather than living with the cluster's. See [Environments](elements/environments.md).
 
-### Everything runs against the base image no matter what I declare
+### "this Head cannot build Environments"
 
-The Head has no `uv`/`micromamba` installed — a Head provisioned before Environments existed. It
-degrades rather than refusing Spawns that used to work, and says so in the submit echo. The operator
-runs `cuttle setup --head`.
+The Head has no `uv`/`micromamba` under `/opt/ccc/tools`. Only the operator can fix it —
+`cuttle setup --head` installs them. It used to fall back to the base image instead of refusing;
+it no longer does, because falling back means running your work against something you did not ask
+for.
 
 ## Donating a machine
 

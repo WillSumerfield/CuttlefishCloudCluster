@@ -78,7 +78,7 @@ sends anything. The same thing, typed:
 
 ```sh
 cd my-project
-cuttle run train.py --time 60 --vram 24 --output checkpoints
+cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
 ```
 
 Those three are required and have no defaults: minutes, GB of GPU memory, and the folder your script

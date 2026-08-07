@@ -21,14 +21,19 @@ Spawn that asks for a Feature.
 
 ```bash
 ./prepare.sh                  # copies train/ out of a vlearn checkout — that is the whole project
-cuttle run run.py --feature vlearn --output runs --vram 16 --gpu 1 --time 30 --follow
+cuttle run run.py --feature vlearn --manifest pyproject.toml --no-gitignore \
+  --output runs --vram 16 --gpu 1 --time 30 --follow
 ```
 
 `--feature vlearn` is the entire request. It restricts placement to an Arm that holds the licence, and
 it is what tells CCC to arrange the runtime. Without it the Spawn lands anywhere and fails at
 `import vlearn`.
 
-The first submission builds the conda Environment on the Head and takes a while; the download cache is
+`--no-gitignore` is this directory's own quirk, not a vlearn one: `train/` is copied third-party
+material and is listed in `.gitignore`, so the ordinary gitignore-aware upload leaves the trainer
+behind and `run.py` dies on a missing file.
+
+The first submission builds the Environment on the Head and takes a while; the download cache is
 shared, so later ones are much faster.
 
 ## What the upload does *not* contain
@@ -48,10 +53,11 @@ So `prepare.sh` copies `train/` and nothing else, and a submission is a few hund
 
 ## Why the pieces are shaped this way
 
-**`environment.yml`, not `pyproject.toml`.** vlearn ships cp310/cp311 wheels and `base.sif` is Python
-3.12. The uv path inherits the image interpreter; micromamba brings its own. The system libraries at
-the top of the file are the generated starter — `cuttle feature show vlearn` prints exactly that, and
-everything below the divider is this example's own.
+**`pyproject.toml`, and it declares only this example's own dependencies.** vlearn ships cp310/cp311
+wheels, so the Environment has to be one of those — `requires-python = "==3.11.*"` is the whole of
+that requirement, because an Environment carries its own interpreter and the Pod image's Python is
+not involved. Neither vlearn nor the system libraries it links against appear: the Arm supplies the
+first and CCC builds the second (`cuttle feature show vlearn` lists them).
 
 **`run.py` is four lines of work.** It used to arrange `LD_LIBRARY_PATH` (through a re-exec, since the
 loader reads it once at `exec`), `VL_WORKING_DIRECTORY`, the cache directory and the licence key. CCC
@@ -71,10 +77,15 @@ event files, downloaded to your machine when the Spawn finishes.
 ## If it fails
 
 - `this Spawn's Environment is Python cp312, and this Arm's vlearn is built for: cp310 cp311` — the
-  `python=3.11` pin is missing from `environment.yml`, or the Spawn declared no Environment at all.
+  `requires-python` pin is missing from `pyproject.toml`, or the Spawn declared no Environment at all.
 - `License validation failed` — the Arm's licence directory is empty or unreadable by the Guise. It
   should have been filled by the activation Spawn at admit; check `/etc/ccc/features.env` on the Arm.
 - `libassimp.so.5: cannot open shared object file` — conda-forge resolved assimp 6. The `assimp=5` pin
-  is load-bearing.
+  in the Feature's own library list (`ccc_head_api.features`) is load-bearing.
+- `FileNotFoundError: .../proj/train/rl_games_train.py` — `--no-gitignore` was left off, so `train/`
+  was filtered out of the upload.
+- `declares 'vlearn', which comes from the 'vlearn' Arm Feature, but this Spawn did not request it` —
+  add `--feature vlearn`. A declared vlearn is replaced by a placeholder for the build, and only the
+  Feature puts the Arm's real one back.
 - `no Arm has every requested feature (vlearn)` — no admitted Arm declares it. Re-run
   `cuttle setup --arm` on the box that has it.

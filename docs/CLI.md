@@ -104,7 +104,7 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | Command | | Explained in |
 |---|---|---|
 | `cuttle feature list` | The Features CCC knows how to run. Built in, not configurable. | [Arm Features](elements/arm-features.md) |
-| `cuttle feature show` | A starter `environment.yml` for a Feature's system libraries. | [Arm Features](elements/arm-features.md#writing-against-a-feature) |
+| `cuttle feature show` | What CCC arranges for a Feature, and which Python it needs. | [Arm Features](elements/arm-features.md#writing-against-a-feature) |
 
 ## Experiment tracking
 

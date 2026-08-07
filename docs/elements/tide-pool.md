@@ -24,6 +24,18 @@ cuttle run --tidepool --time 30 --vram 24
 
 You wait for placement, and then you are in.
 
+**Debug against your project's environment** — name a dependency file and the shell gets the
+[Environment](environments.md) your Spawn would have run in, built the same way. This uploads the
+working directory too, since the environment is built from what you send:
+
+```sh
+cuttle run --tidepool --time 30 --vram 24 --manifest pyproject.toml
+```
+
+This is the one place `--manifest` is optional. Leave it off and you get a bare shell with no
+Environment at all — which is the right answer when you are poking at the machine rather than at your
+code.
+
 **Come back to one you left:**
 
 ```sh

@@ -72,7 +72,7 @@ asks before it sends anything:
 None have defaults. If you already know them, skip the prompting entirely:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --output checkpoints
+cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
 ```
 
 Every command works this way — give it what you have, and it asks for the rest. Then:
