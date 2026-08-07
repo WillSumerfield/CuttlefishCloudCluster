@@ -62,9 +62,9 @@ submit from any box, whether or not it ever ran `setup`.
 
 - `cuttle run <script> --time MIN --vram GB [--gpu N] [-f] [--project P] [--entity E]
   [--no-gitignore] [-- ARGS]` — submit a **Spawn**: uploads the working dir (honoring `.gitignore`
-  unless `--no-gitignore`) to the Head, which builds the declared **Environment** and runs
-  `apptainer exec --nv base.sif <that env's python> <script>` as
-  the **Mantle**. `--project`/`--entity` set W&B per-Spawn. `-f` streams stdout. Job id = spawn id.
+  unless `--no-gitignore`) to the Head, which resolves the declared **Environment** into build commands
+  and queues the job. The **Arm** it lands on builds that env, then runs
+  `apptainer exec --nv base.sif <that env's python> <script>` as the **Mantle**. `--project`/`--entity` set W&B per-Spawn. `-f` streams stdout. Job id = spawn id.
   - `--time` (wall-clock minutes) and `--vram` (GB) are **required, with no defaults**. Nothing can
     price a Spawn whose length nobody declared, and a `--vram` that defaulted to the fleet's biggest
     card would make every untouched field eligible for that one GPU alone — queued behind everything,

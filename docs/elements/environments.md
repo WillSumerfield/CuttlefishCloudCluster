@@ -38,8 +38,8 @@ and it is the price of the two things you get for it:
   cluster happened to ship.
 - **It is genuinely frozen.** Nothing in your Environment can change because the cluster's image
   changed underneath it — there is nothing in that image to change: it carries no Python at all. A
-  [Recipe](recipes.md) goes further and keeps the built Environment itself, so re-running one is not
-  merely re-resolving the same file.
+  [Recipe](recipes.md) keeps the declaration exactly as you froze it, so re-running one re-resolves the
+  same file and nothing else.
 
 Two packages arrive that you did not ask for: **`wandb`**, because that is what makes your Spawn log
 to your own account, and **`pip`**, so `pip install` works if you open a
@@ -70,7 +70,8 @@ requires-python = "==3.11.14"
 
 That exact interpreter is fetched and built against. The cluster's image has nothing to do with it.
 
-**Watch it build** — build output is tagged `[env]`, ahead of your script's `[out]`/`[err]`:
+**Watch it build** — the build runs first, and its output arrives on your Spawn's `[err]` stream
+ahead of anything your script prints:
 
 ```sh
 cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml --follow
@@ -81,34 +82,35 @@ path through the resolver, with a table of exactly what each should print.
 
 ## Behavior
 
-### It is built before your Spawn is placed
+### It is built on the machine that runs it
 
-The Head builds your Environment first, and only then goes looking for a machine. Two consequences,
-both good for you:
+Your Spawn is placed first, and the machine it lands on builds your Environment as its first act —
+before your script's first line, out of that machine's own connection to PyPI.
 
-- **No GPU is held while packages download.** Nobody is paying for a card that is running `pip`.
-- **Building costs no Karma.** It happens before anything is placed, so there is nothing to bill.
+It used to be built on the Head and copied out, which was better in one way (no card was held while
+packages downloaded) and fatal in another: a built Environment is several GB, the cluster's private
+network is not a LAN, and a machine in another building could spend half an hour receiving one. Now
+only your *declaration* travels, which is kilobytes.
 
-While it builds, your Spawn shows as `building` rather than `pending` in `cuttle queue`. That is the
-Spawn being held *before* the scheduler may place it — the build overlaps the wait for a card rather
-than being added on to it.
+Two things follow, and one of them costs you:
+
+- **The card is yours while it builds**, and you are billed for that time like any other. A cold build
+  of a large declaration is minutes; declare `--time` with that in mind.
+- **Each machine keeps what it downloads.** The first Spawn to want a given torch on a given box pays
+  for it; every later one gets it from disk. In practice a repeat run of the same declaration is fast.
 
 ### It is built as you, in a sandbox
 
-A dependency declaration is code — a `pyproject.toml` can run arbitrary build hooks. So the Head
-builds it inside a [Pod](isolation.md), as your own [Guise](isolation.md), never as the cluster
-itself. Your code has no way to become the cluster, on any machine, including the Head.
+A dependency declaration is code — a `pyproject.toml` can run arbitrary build hooks. So it is built
+inside a [Pod](isolation.md), as your own [Guise](isolation.md), never as the cluster itself, with the
+same walls your script gets a moment later. Your code has no way to become the cluster, on any machine.
 
-### An ad-hoc Spawn's is built for it and kept for none
+### Nobody owns one
 
-Submit a project with `cuttle run` and its Environment dies with that Spawn's staging; the next run
-builds it again. You do not own one, hold one, or spend any allowance on one. Only the *declaration*
-persists, and only because it is part of your code.
-
-A [Recipe](recipes.md) is the deliberate exception. The first run from one builds an Environment and
-the Recipe keeps it, so every later run starts with no build — that is what "a Recipe is frozen" means
-in practice. It is the only Environment you own, it counts against your Recipe allowance, and it is
-released when you change what the Recipe declares.
+Your Environment dies with the Spawn that built it; the next run builds it again. You do not own one,
+hold one, or spend any allowance on one. Only the *declaration* persists, and only because it is part
+of your code — including in a [Recipe](recipes.md), which freezes what you declared rather than a tree
+built from it.
 
 ### A package an Arm Feature supplies is replaced before the build
 
@@ -125,22 +127,25 @@ source **further up than a directory beside your project** (CCC only unpacks you
 nothing above it to point at).
 
 A Feature's *system libraries* are handled separately and need no declaration at all — CCC builds them
-into a prefix of their own for any Spawn that requests the Feature.
+into a prefix of their own, on the same machine and in the same job, for any Spawn that requests the
+Feature. That includes a [Tide Pool](tide-pool.md) that declared no manifest at all.
 
 ### What happens when it goes wrong
 
-- **The build fails** (a package that will not resolve, a conflict) — the Spawn **fails having held
-  nothing** and is billed nothing. It is not a rejected submission: you get a Spawn id, it appears in
-  your history explaining itself, and `cuttle logs <id>` has the resolver's complaint.
+- **The build fails** (a package that will not resolve, a conflict) — the Spawn **fails**, and it
+  fails on a machine it has already been given, so the [Karma](karma.md) held for it is spent, not
+  returned. It is not a rejected submission: you get a Spawn id, it appears in your history explaining
+  itself, and `cuttle logs <id>` has the resolver's complaint. This is the one real cost of building
+  where the work runs — everything decidable *without* building is still refused for free, below.
 - **You named a `--manifest` that is not there** — refused at submit, with no Spawn and nothing
   escrowed. A file you named and that does not exist is bad input, decided immediately. (Contrast the
   case above, where the file exists and it is the *build* that fails.)
 - **You declared nothing** — refused before anything is uploaded, naming the flag that fixes it.
   `cuttle run` asks you for it rather than refusing, if you are at a terminal.
-- **Every Spawn is refused with "this Head cannot build Environments"** — the Head has no
-  `uv`/`micromamba` under `/opt/ccc/tools`, which only the operator can fix (`cuttle setup --head`).
-  It used to fall back to the base image; it no longer does, because falling back would mean running
-  your work against something you did not ask for.
+- **Every Spawn is refused with "this Head cannot build Environments"** — there is no
+  `uv`/`micromamba` under `/opt/ccc/tools`, which only the operator can fix (`cuttle setup`). Every
+  machine in the cluster is given them at setup. It used to fall back to the base image; it no longer
+  does, because falling back would mean running your work against something you did not ask for.
 
 `cuttle run` prints the Environment it will build before it returns, so you can see what you declared
 without waiting for the Spawn.

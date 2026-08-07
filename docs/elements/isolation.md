@@ -33,9 +33,9 @@ your files in and out, not just your code. From inside one, a Spawn cannot see:
 A Pod is the *walls*, never the contents. What is installed inside one is that Spawn's
 [Environment](environments.md).
 
-Pods are not only an Arm's. Work the Head does on your behalf — building your Environment before
-placement — is walled the same way, on the Head, as the same Guise. A dependency file can run
-arbitrary build hooks, so it is code, and CCC runs no User's code unwalled anywhere.
+Your Spawn enters a Pod twice: once to build its [Environment](environments.md), and once to run your
+script. Same walls, same Guise, same machine, one step apart. A dependency file can run arbitrary build
+hooks, so it is code, and CCC runs no User's code unwalled anywhere.
 
 ### Guises — who it runs as
 
@@ -49,8 +49,8 @@ and has nothing to do with your [session](users-and-access.md). It is not you-on
 a boundary with your name on it.
 
 It also is not the cluster. Anything CCC does on your behalf that involves *your code* — including
-building your Environment on the Head — is done as your Guise, never as the cluster's own identity.
-Your code has no route to becoming the cluster, on any machine, including the Head.
+building your Environment — is done as your Guise, never as the cluster's own identity. Your code has
+no route to becoming the cluster, on any machine, including the Head.
 
 ### Siphons — what it can reach
 

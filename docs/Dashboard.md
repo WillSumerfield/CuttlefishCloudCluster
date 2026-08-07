@@ -36,7 +36,7 @@ local forward and this command hands the browser that rather than an address tha
 
 | | |
 |---|---|
-| **Queue** | The live cluster: everything pending, building or running, and whose it is. Also where you submit. |
+| **Queue** | The live cluster: everything pending or running, and whose it is. Also where you submit. |
 | **History** | Past Spawns, with cost and outcome. |
 | **Arms** | The fleet — who owns what, and its state. Retract and Return your own. |
 | **Recipes** | Your saved projects. |

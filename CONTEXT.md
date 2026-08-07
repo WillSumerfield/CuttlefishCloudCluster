@@ -92,10 +92,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   it. So a Recipe is *captured*, never recovered — never reconstructed from a Spawn that has already run,
   because the Head holds an ad-hoc **Spawn**'s uploaded project only while that Spawn is starting
   (**Allowance**), and by the time there is a result to admire the code behind it is already gone.
-  A Recipe captures its **Environment** as well as its code, so *frozen* covers what the work runs
-  **in**, not merely what it declared: a Recipe whose dependency file names its needs loosely still
-  re-runs against the same resolved dependencies months later, rather than rebuilding a different
-  Environment from the same file. Updating the Recipe is what releases it.
+  A Recipe captures the **Environment**'s *declaration* — which file, and which **Arm Feature**s —
+  alongside the code, so re-running one is said once rather than at every run. It does not hold a built
+  Environment: that is made by whichever **Arm** runs the Spawn (**Environment**), so a Recipe freezes
+  what was declared and not a tree resolved from it.
 - **Spawn** — a single traceable execution of a piece of work on the cluster. It may come from a
   **Recipe** (re-running the snapshot) or be submitted ad-hoc (a project uploaded there and then); a
   Recipe is a convenience, not a prerequisite. A Spawn runs **once**: if the machine it was placed on
@@ -117,10 +117,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   *not* an account a person can log into: it authenticates nobody, carries no authority, and is
   unrelated to a User's **Session**. Distinct from **Pod** (*what* a Spawn runs inside), from the
   **Mantle** (who the *cluster* is), and from **Attribution** (the Head's own record of whose it is).
-  It is not confined to the machine that ultimately runs the work: anything the cluster does on a User's
-  behalf that involves *their* code — including building their **Environment** on the **Head** before
-  placement — is done as their Guise, never as the **Mantle**. A User's code has no way to be the
-  cluster, on any machine.
+  It is not confined to any one machine: anything the cluster does on a User's behalf that involves
+  *their* code — including building their **Environment**, on the **Arm** that will run it — is done as
+  their Guise, never as the **Mantle**. A User's code has no way to be the cluster, on any machine.
 - **Siphon** — the one channel through which a **Spawn** draws its project in and sends its results
   home. Opened when the Spawn is submitted and closed once its transfers have finished, it reaches
   exactly that Spawn's own uploaded work and its own results, and nothing else the **Head** holds — so
@@ -144,15 +143,19 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   repo is not always the one that does; a **Recipe** captures the name along with the code, so it is
   said once rather than at every run. A **Tide Pool** is the one exception, and may decline: it is a
   shell rather than a run, and one opened with no project has no file in it to name.
-  The **Head** builds what was declared *before* the Spawn is placed, so no **Device** is ever held while
-  packages are fetched and building costs no **Karma**. It builds it in a **Pod**, as that User's
-  **Guise** — a declaration is code, and CCC runs no User's code as the **Mantle** on any machine.
-  An ad-hoc Spawn's Environment is built for that Spawn and kept for none: it dies with the Spawn's
-  staging and the next run builds it again, so it is never something that User owns or spends
-  **Allowance** on. A **Recipe**'s is the deliberate exception — kept for as long as the Recipe itself,
-  because a Recipe that did not hold its Environment would not really be frozen. A Spawn whose
-  declaration cannot be built never reaches an **Arm**: it fails having held nothing, and is billed for
-  nothing.
+  The **Head** decides what a declaration *means* — which file, which shape, which commands — and the
+  **Arm** the Spawn is placed on builds it, at job start, out of its own bandwidth. A built Environment
+  is several GB and the mesh is not a LAN, so the declaration travels and the packages do not. It is
+  built in a **Pod**, as that User's **Guise** — a declaration is code, and CCC runs no User's code as
+  the **Mantle** on any machine.
+  An Environment is kept by nobody: it dies with the Spawn that built it and the next run builds it
+  again, so it is never something a User owns or spends **Allowance** on — a **Recipe** included. What
+  each Arm keeps instead is the *downloads*, cached node-locally, which is what makes rebuilding every
+  time affordable.
+  Everything decidable without building is still refused at submit, before the Spawn exists: no
+  declaration, a named file that is not there, one nothing can classify, a node without the build tools.
+  A **build** that fails is a failed Spawn — it holds a **Device** while it builds, so its **Karma** is
+  spent rather than returned.
 - **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
   held thing has its own, independent of the others: filling one never costs a User any of another. An
   Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,

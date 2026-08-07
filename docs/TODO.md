@@ -102,3 +102,6 @@ Notably, only the head is planned to have multi-gpus. Could we instead make mult
 
 ## IsaacSim feature implementation
 Currently, the isaacsim arm feature is not implemented. We should fix that.
+
+## Recipe Tidepools should keep all files
+Recipe tidepools are just saved workspaces that can be revisted anytime (at the cost of karma, of course).

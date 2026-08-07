@@ -9,9 +9,9 @@ arguments, how long it needs, how much VRAM, where its results go, and which dep
 Because it holds the actual code, you can run a Recipe from any machine with nothing to hand. New
 laptop, no checkout, no clone: `cuttle recipe run nightly` and it goes.
 
-And it is **frozen** — including what it runs *in*, not merely what it declared. It keeps running
-exactly what it captured until you deliberately update it; your local directory can drift as far as
-you like and the Recipe does not care.
+And it is **frozen**: it keeps running exactly what it captured — the code and the declaration —
+until you deliberately update it. Your local directory can drift as far as you like and the Recipe does
+not care.
 
 Recipes are private to you. Nobody else can see or run yours.
 
@@ -88,19 +88,20 @@ snapshot is left alone.
 The freeze is a promise the *cluster* keeps, not one it keeps against you. An update simply replaces
 what was there. Abandon one half-way and you have neither version.
 
-### The dependencies are frozen too
+### The declaration is frozen too
 
-A Recipe holds the [Environment](environments.md) built from it, not just the file that declared it.
-The first run from a Recipe builds one and the Recipe keeps it; every run after that starts with no
-build at all — faster, and running byte-for-byte what the first run ran. So a loose
-`requirements.txt` does *not* quietly resolve to something different six months later.
+A Recipe holds the dependency file it names and the [Arm Features](arm-features.md) it asks for,
+alongside the code — so re-running one is one command, with nothing to re-type and nothing to get
+wrong. What it does *not* hold is a built [Environment](environments.md): that is made fresh by
+whichever machine runs the Spawn, every time.
 
-Two consequences worth knowing:
+So the honest limit of the freeze: a loose `requirements.txt` can still resolve to something different
+six months from now, because it is the *file* that is frozen. Pin what you need pinned — a `uv.lock`
+or exact versions — exactly as you would anywhere else.
 
-- **It counts against your 32 GB.** An Environment carries its own interpreter and its own torch, so
-  it is usually much larger than the code. If it does not fit, nothing breaks — the env simply is not
-  kept and each run builds one, exactly as an ad-hoc Spawn does.
-- **Changing what it declares releases it.** Update the code, point the Recipe at a different
-  dependency file, or change which [Arm Features](arm-features.md) it asks for, and the stored
-  Environment goes: it described the Recipe as it used to be. The next run builds a fresh one and
-  keeps that instead.
+Rebuilding every run is cheap in practice. Each machine keeps the packages it has already downloaded,
+so a repeat run of a Recipe on a box that has run it before installs from disk rather than the network.
+
+A Recipe briefly kept its built Environment, when the cluster built those centrally. It cannot any
+more, and should not: an Environment built on one machine could not be moved to another cheaply, which
+is why it is now built where it runs.

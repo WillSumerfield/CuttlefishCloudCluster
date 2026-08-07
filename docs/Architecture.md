@@ -14,7 +14,7 @@ designed but not built, see [TODO](TODO.md).
         │                HEAD                  │
         │  slurmctld · Head API · Karma tick    │
         │  coordinator · auth · head.db        │
-        │  stage-in/out · Environment builds   │
+        │  stage-in/out · dashboard · SPA      │
         │  + its own co-located Arm            │
         └──────────────────────────────────────┘
                           |
@@ -127,18 +127,25 @@ result is still fetchable by hand, from a second machine, for its 7 days. See
 
 ## Environments
 
-Every Spawn names the file its own tooling already writes — nothing is inferred. The Head builds the
-environment **before the Spawn is placed**, inside a Pod, as the submitter's Guise.
+Every Spawn names the file its own tooling already writes — nothing is inferred. The **Head resolves
+that declaration** into the commands that build it, at submit; the **Arm the Spawn lands on runs them**,
+at job start, inside a Pod, as the submitter's Guise.
 
 An environment **inherits nothing**: the Pod image is Ubuntu plus sshd and CA certificates, with no
-Python and no torch in it, so what gets built carries its own interpreter and its own dependencies and
-is shipped to whichever Arm runs it. That is what lets a project pin a Python version the cluster has
-never heard of, and what makes an environment mean the same thing on every machine.
+Python and no torch in it, so what gets built carries its own interpreter and its own dependencies.
+That is what lets a project pin a Python version the cluster has never heard of, and what makes an
+environment mean the same thing on every machine.
 
-Building before placement is what makes it free: no device is held while packages download, so there
-is nothing to bill. An ad-hoc Spawn's is kept for nothing and the next run builds it again; a
-[Recipe](elements/recipes.md) keeps the one built from it, which is what makes a Recipe frozen. See
-[Environments](elements/environments.md).
+**Why it is not built centrally.** It was, until a built environment had to reach a remote Arm: 4.6 GB
+over a mesh measured at 2.82 MB/s is ~29 minutes, against an enrollment benchmark's 10-minute wall, and
+every torch Spawn on that box paid the same. The manifest is kilobytes and every donor's box has its
+own link to PyPI, so the declaration travels and the packages do not. Each node keeps a capped package
+cache, which is what makes rebuilding per Spawn affordable rather than merely possible.
+
+The cost is real and deliberate: a device IS held while packages download, so the submitter is billed
+for it, and a build that fails is a failed Spawn rather than a refused submission. Everything decidable
+without building — no declaration, a file that is not there, a node without the tools — is still
+refused at submit, before the Spawn exists. See [Environments](elements/environments.md).
 
 ## The economy, in one place
 

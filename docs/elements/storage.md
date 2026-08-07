@@ -14,10 +14,9 @@ the whole of it:
 
 Each ceiling is its own. Filling one never costs you any of another.
 
-A Recipe holds more than the code you uploaded: after its first run it also keeps the
-[Environment](environments.md) built from it, which carries its own interpreter and its own
-dependencies and is usually the larger half. That is what makes a Recipe genuinely frozen, and it is
-why the Recipe ceiling is the big one. `cuttle recipe list` shows the total, env included.
+A Recipe holds the code you uploaded and the declaration that goes with it — nothing else. Its
+[Environment](environments.md) is built fresh on whichever machine runs it and belongs to no
+allowance. `cuttle recipe list` shows what each one weighs.
 
 None of this is priced. Storage is never contended for, never costs [Karma](karma.md), and a full
 allowance never affects who wins the queue.

@@ -30,12 +30,12 @@ the Spawn ends, so the answer is:
 cat spawn-<id>-outputs/env.txt
 ```
 
-Add `-f` to watch it happen instead of waiting — build output is tagged `[env]`, ahead of the
-script's own `[out]`/`[err]`.
+Add `-f` to watch it happen instead of waiting — the build runs first, on the machine the Spawn was
+placed on, and its output arrives on the `[err]` stream ahead of anything the script prints.
 
-While the env builds the Spawn shows as `building` rather than `pending` (`cuttle queue`). That is
-the Spawn held before Slurm may place it; the build overlaps the wait for a card rather than being
-added to it.
+The Spawn is `running` throughout (`cuttle queue`): the build happens inside the allocation, so the
+card is held — and billed — while packages download. A cold build of a large declaration is minutes;
+after that the machine has the packages cached and a repeat run is fast.
 
 ## What each one should give you
 
