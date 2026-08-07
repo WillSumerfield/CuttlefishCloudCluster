@@ -13,9 +13,10 @@ import { createPortal } from "react-dom";
  * Tide Pool modal, and an in-flow absolute panel gets clipped by both. Positioned from the trigger's rect
  * on open, flipped to the other side when it would leave the viewport.
  *
- * Pointer can travel into the panel without closing (a short delay the panel cancels) so text stays
- * selectable. Keyboard focus opens it too; Escape/blur close it. Touch gets nothing — a stated gap, not
- * an oversight: this is a LAN tool for staging project folders, nobody does that from a phone.
+ * Leaving the trigger always closes it, even if the pointer lands on the panel itself — a tip is a quick
+ * gloss on the control it's attached to, not a second thing to go read. Keyboard focus opens it too;
+ * Escape/blur close it. Touch gets nothing — a stated gap, not an oversight: this is a LAN tool for
+ * staging project folders, nobody does that from a phone.
  */
 
 /** The knobs worth tuning on a tooltip. Edit, save, watch. */
@@ -108,6 +109,11 @@ export function Tip({
   const ref = useRef<HTMLSpanElement | null>(null);
   const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
+  // A click on the trigger (e.g. opening a Select's own menu) focuses the clicked control, and that
+  // focus bubbles up here as onFocus — which would reopen the panel right after the pointerdown below
+  // just closed it. Set for the one focus event a pointerdown causes, so only THAT focus is swallowed;
+  // a later Tab into the same control still opens it normally.
+  const suppressFocus = useRef(false);
   const [pos, setPos] = useState<Pos | null>(null);
 
   const clear = () => {
@@ -177,9 +183,23 @@ export function Tip({
         // User cannot dismiss by moving away. `pointerType` is what tells them apart.
         onPointerEnter={(e) => e.pointerType !== "touch" && open(TIP.openDelay)}
         onPointerLeave={(e) => e.pointerType !== "touch" && close(TIP.closeDelay)}
+        // A click is the User acting on the target, not reading about it — e.g. opening a Select's own
+        // menu while still hovering the trigger, which pointerleave never fires for. Closes instantly,
+        // no delay: the thing they clicked is about to draw its own panel in roughly the same place.
+        onPointerDown={() => {
+          clear();
+          setPos(null);
+          suppressFocus.current = true;
+        }}
         // Keyboard opens with no delay — a delay after a deliberate Tab is just latency, where after an
         // incidental pointer sweep it is the whole point.
-        onFocus={() => open(0)}
+        onFocus={() => {
+          if (suppressFocus.current) {
+            suppressFocus.current = false;
+            return;
+          }
+          open(0);
+        }}
         onBlur={() => close(0)}
       >
         {children}
@@ -190,8 +210,6 @@ export function Tip({
           <div
             id={id}
             role="tooltip"
-            onPointerEnter={clear}
-            onPointerLeave={() => close(TIP.closeDelay)}
             // NOT `.surface`: a surface dissolves at its rim by an alpha mask, this panel has a hard gold
             // edge instead, deliberately — the one element floating over content it has nothing to do
             // with needs a stated boundary, not a melt. Plate gradient reproduces `.surface`'s

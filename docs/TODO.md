@@ -100,8 +100,5 @@ one free action in the economy.
 
 Notably, only the head is planned to have multi-gpus. Could we instead make multi-gpu setup manually defined?
 
-## Make the Recipe Composer a subclass of the SubmitComposer for the Webapp
-Right now they're reparate, but they should be the same in nearly all ways. The recipe composer has missing features, too.
-
 ## IsaacSim feature implementation
 Currently, the isaacsim arm feature is not implemented. We should fix that.

@@ -247,8 +247,9 @@
  * outlined box. Focus lifts it and lights a soft pigment ring; it never draws an outline. */
 @utility field {
   width: 100%;
-  /* No border: there's no global `* { border: 0 }` reset, so native inputs/selects would otherwise ship
-     their OS border. A field is a RECESS, not an outlined box. */
+  /* A field is a RECESS, not an outlined box. Tailwind's preflight already zeroes borders globally
+     (`border: 0 solid` on `*`), so this is a restatement of the rule where the rule matters — not the
+     thing holding an OS border off a native input. */
   border: 0;
   border-radius: var(--radius-control);
   /* A solid pool with EDGES feathered to transparent by a mask (below), not a flat rounded rect — a hard
@@ -510,7 +511,7 @@ input[type="number"].field::-webkit-inner-spin-button {
     /* OWN feather, not the inherited --fade-mask: that resolves at the roster .surface's --fy (30px),
      * deeper than half this row, swallowing the highlight into a top-to-bottom fade. Declared here so
      * var()s resolve in this scope: generous horizontal, small vertical, crossed + intersected. */
-    --hx: 72px;
+    --hx: 16px;
     --hy: 10px;
     -webkit-mask-image:
       linear-gradient(to right, transparent 0, rgba(0,0,0,0.5) calc(var(--hx) * 0.5), black var(--hx), black calc(100% - var(--hx)), rgba(0,0,0,0.5) calc(100% - var(--hx) * 0.5), transparent 100%),
