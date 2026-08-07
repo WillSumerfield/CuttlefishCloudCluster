@@ -83,7 +83,7 @@ export function ArmRow({ arm }: { arm: Arm }) {
         <div className="num text-right text-[13px] text-ink-soft">{power(arm.power)}</div>
 
         {/* MESH — where it lives on the Mesh, or a dash before it joins. */}
-        <div className="num truncate text-[13px] text-ink-mute">{mesh(arm.mesh_ip)}</div>
+        <div className="num text-right text-[13px] text-ink-soft">{mesh(arm.mesh_ip)}</div>
       </div>
 
     </li>

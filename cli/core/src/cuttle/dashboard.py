@@ -57,4 +57,5 @@ def open_dashboard(print_only: bool = False) -> None:
     if not launch(target):
         ui.hint("no browser here — open that address yourself")
         return
+    ui.ok(f"opened the dashboard in your browser to: {target}")
     ui.say("  [muted]self-signed certificate — click through the warning once[/muted]")

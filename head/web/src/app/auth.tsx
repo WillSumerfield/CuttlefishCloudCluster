@@ -205,7 +205,7 @@ function ChangePassword({ current, onDone }: { current: string; onDone: () => vo
             {error ?? "The two passwords do not match."}
           </p>
         )}
-        <button className="btn-primary w-full" disabled={!newPw || newPw !== confirm}>
+        <button className="btn-primary w-1/3 mx-auto block" disabled={!newPw || newPw !== confirm}>
           Change password
         </button>
       </form>

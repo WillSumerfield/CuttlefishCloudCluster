@@ -53,7 +53,7 @@ export const toneColor: Record<Tone, string> = {
 // rule between them (there are no rules anywhere). NAME · OWNER · STATE · GPUS · VRAM · POWER · MESH.
 // Numeric columns are fixed-width and right-aligned; the text columns flex.
 export const ROSTER_COLS =
-  "minmax(150px,1.6fr) minmax(110px,1fr) 132px 52px 76px 78px minmax(110px,1.1fr)";
+  "minmax(150px,1.6fr) minmax(110px,1fr) 80px 80px 80px 80px 80px";
 
 /** What the Dashboard can do to an Arm — the complete set, and it is deliberately small. Admitting,
  *  benchmarking and removing an Arm are Head-CLI-only and permanently so: the Head API exposes no

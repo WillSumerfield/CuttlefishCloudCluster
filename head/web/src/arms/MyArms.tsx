@@ -23,7 +23,7 @@ function MyArmCard({ arm, onAct }: { arm: Arm; onAct: (name: string, action: Arm
   const [confirm, setConfirm] = useState(false);
 
   return (
-    <li className="shard relative" style={{ padding: "1.9rem 1.9rem" }}>
+    <li className="shard relative" style={{ padding: "2.4rem 2.4rem" }}>
       {cloud ? <CloudDrift /> : bloom ? <IridBloom /> : null}
 
       <div className="relative z-10">
