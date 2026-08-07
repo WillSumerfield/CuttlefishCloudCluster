@@ -235,7 +235,8 @@ def revoke_session() -> None:
 
 def remove_arm_state() -> None:
     """CCC's own state on a donor's box: the mirrored Feature install (up to ~1 GB), the mirrored
-    Licence key beside it, and the /opt/ccc that images left behind.
+    Licence key beside it, the Environment build cache (up to config.NODE_ENV_CACHE_MAX_GB), and the
+    /opt/ccc that images left behind.
 
     Only `remove_enroll_api` cleared CCC_LIB, and an Arm never runs the Enroll API — so a
     Feature-declaring donor who ran plain `cuttle teardown --arm` kept the whole mirror, against the
@@ -264,6 +265,24 @@ def remove_images() -> None:
     run(["rm", "-rf", str(config.CCC_IMAGES_DIR)], sudo=True, check=False)
 
 
+def remove_env_tools() -> None:
+    """The pinned uv + micromamba (config.ENV_TOOLS_DIR). Every node has them — every node builds
+    Environments now — so both teardowns drop them.
+
+    UNCONDITIONAL, unlike base.sif beside it: these are ~50MB, `setup` re-fetches and re-verifies them
+    on every run regardless, and nothing downstream is pinned to the copy on disk. Keeping them past a
+    teardown would be a pure leak, which is what it was until this existed."""
+    run(["rm", "-rf", str(config.ENV_TOOLS_DIR)], sudo=True, check=False)
+
+
+def remove_bench_env() -> None:
+    """This node's benchmark torch **Environment** (config.BENCH_ENV_DIR). Every node builds one at
+    setup, so both teardowns drop it — and only under --all, on exactly base.sif's rule: it is several
+    GB, `setup` skips the build whenever it already exists, and --all is therefore the only way a
+    changed config.BENCH_TORCH_PKG ever reaches this box."""
+    run(["rm", "-rf", str(config.BENCH_ENV_DIR)], sudo=True, check=False)
+
+
 def remove_tls() -> None:
     """The Head's self-signed cert. Head-only, and --all only: every client has PINNED this cert, so
     dropping it means the next setup mints a different one and every client refuses to connect until
@@ -283,7 +302,7 @@ def _summarise(what: str, keep_packages: bool, kept_images: bool = True,
     """
     ui.result("torn down", what)
     kept = [label for label, keep in (("packages + repos", keep_packages),
-                                      ("base.sif", kept_images),
+                                      ("base.sif + the benchmark env", kept_images),
                                       ("the Head's TLS cert", kept_tls)) if keep]
     ui.result("kept", ", ".join(kept) if kept else "nothing — this box is clean")
     if kept_tls is False:
@@ -414,11 +433,13 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
             remove_repos()
     with ui.step("Removing this box's CCC state"):
         remove_user_dirs()      # ~/.ccc always (see teardown_local)
-        remove_arm_state()      # the Feature mirror — nothing else on an Arm ever cleared it
+        remove_arm_state()      # the Feature mirror + the env build cache, both under CCC_LIB
+        remove_env_tools()      # uv + micromamba: re-fetched by every setup, so never worth keeping
         if all_:
             remove_images()     # base.sif kept unless --all — in /opt, not ~/.ccc, and --all is the
                                 # only way a changed image definition ever reaches this box
-        prune_opt_dir()         # after remove_images: with base.sif gone, /opt/ccc is empty on an Arm
+            remove_bench_env()  # same rule, same reason: setup skips it whenever it already exists
+        prune_opt_dir()         # after the /opt removals above: with those gone, /opt/ccc is empty here
     _summarise("Arm", keep_packages, kept_images=not all_)
     # Not hygiene — see `teardown_arm`: the stale Head-side node BLOCKS re-enrolling this box, so it
     # is the one thing the operator must still do, and it belongs with the results rather than in a
@@ -448,9 +469,11 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     with ui.step("Removing this box's CCC state"):
         remove_user_dirs()      # ~/.ccc (session, config, cert pins) always — leaving your login and
                                 # pins behind after a teardown is what surprised people
+        remove_env_tools()      # uv + micromamba: re-fetched by every setup, so never worth keeping
         if all_:
             remove_images()     # base.sif lives in /opt, not ~/.ccc; the Head cert
             remove_tls()        # is pinned by every client — both kept unless --all
+            remove_bench_env()  # base.sif's rule again: setup skips it whenever it already exists
     _summarise("local cluster", keep_packages, kept_images=not all_, kept_tls=not all_)
 
 

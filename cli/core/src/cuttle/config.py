@@ -54,7 +54,7 @@ APPTAINER_PPA = "ppa:apptainer/ppa"  # added on the HEAD only
 BASE_IMAGE_DOCKER = ("ubuntu@sha256:"
                      "561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea")
 
-# --- pinned Environment build tools (Head only) ---
+# --- pinned Environment build tools (every node) ---
 # uv and micromamba build a Spawn's declared Environment (ccc_head_api.environments). Pinned by
 # version AND sha256, checked here rather than against the sidecar .sha256 each project publishes: a
 # sidecar fetched from the same host as the file it vouches for proves only that the download wasn't
@@ -62,8 +62,13 @@ BASE_IMAGE_DOCKER = ("ubuntu@sha256:"
 # for these two than for apptainer, because a uv release can change what `uv sync` resolves and every
 # Spawn's dependencies would move underneath their Users with nothing to point at.
 #
-# Installed on the HEAD ONLY, so `uname -m` is the Head's own arch. Both are static binaries with no
-# runtime deps; uv ships a tarball, micromamba a bare binary.
+# Installed on EVERY node, Head and Arm alike, because every node builds: an Environment is built by
+# the Arm that runs it, at job start, from its own bandwidth. A Head-built env had to cross the mesh —
+# measured at 2.82 MB/s to a remote Arm, which is ~29 minutes for a 4.6 GB torch env, against a
+# benchmark's 10-minute wall. The manifest is kilobytes and PyPI is fast from everywhere.
+#
+# Pinned by `uname -m` on the node doing the installing, so a mixed-arch fleet is fine. Both are static
+# binaries with no runtime deps; uv ships a tarball, micromamba a bare binary.
 ENV_TOOLS_DIR = Path("/opt/ccc/tools")
 UV_VERSION = "0.12.1"
 UV_URL = ("https://github.com/astral-sh/uv/releases/download/{v}/"
@@ -128,21 +133,32 @@ BENCH_TIME_MINUTES = 10
 BENCH_DIR_NAME = "bench"  # HEAD_SPAWNS_DIR/bench/<node>/power — where a benchmark stages its result
 BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may still be booting slurmd)
 
-# The benchmark's own **Environment**, because base.sif no longer has a torch to borrow. Built ONCE on
-# the Head (setup.build_bench_env) and pulled by each Arm at enrollment over the [benchenv] rsync module
-# — the same route, and the same one-time cost, as the Arm's own base.sif build.
+# The benchmark's own **Environment**, because base.sif no longer has a torch to borrow. Built by EACH
+# NODE at `cuttle setup` (setup.build_bench_env), from PyPI, and kept — the same one-time, per-node,
+# uncapped cost as that node's own base.sif build, and paid at the same moment.
 #
-# Built rather than shipped from PyPI by each Arm: an Arm never builds anything (that is the Head's job,
-# and only the Head has uv), and a Power number is only comparable across the fleet if every card was
-# measured by the SAME torch. Pinning the version is what makes that true over time as well as across
-# machines — `torch==2.13.0` is the version the old PyTorch base image carried, so numbers measured
-# before and after this change mean the same thing.
+# Built at setup rather than inside the benchmark job because the job has a 10-minute wall
+# (BENCH_TIME_MINUTES) and a cold torch install does not reliably fit in it. Setup is already long and
+# has no wall, and a box that cannot build this is a box that cannot run a Spawn either — better learned
+# before it enrolls than as an unexplained enrollment failure.
+#
+# **Version-pinned, and that pin is load-bearing.** Power is the divisor in every Settlement, so two
+# cards measured by two different torches would put a difference in the *fleet's prices* that is not a
+# difference in the *cards*. One Head-built tree used to guarantee that; per-node resolution makes the
+# pin the only thing that does. It holds the version fixed, not the CUDA wheel variant — a node on a
+# different driver can still resolve a different build, so Power is comparable, not identical.
+# `torch==2.13.0` is the version the old PyTorch base image carried, so numbers measured before and
+# after this change mean the same thing.
 BENCH_TORCH_PKG = "torch==2.13.0"
-BENCH_ENV_DIR_NAME = "env"   # HEAD_SPAWNS_DIR/bench/env — a sibling of the per-node result dirs
+# Where that env LIVES on every node. In /opt beside base.sif, not under HEAD_SPAWNS_DIR: it is now a
+# per-node artifact like the image, it must be readable by the home-less Guise the benchmark runs as,
+# and an Arm has no HEAD_SPAWNS_DIR at all.
+BENCH_ENV_DIR = Path("/opt/ccc/benchenv")   # under CCC_OPT, which is defined further down
 # Where that env is BUILT and where it is RUN, which must be one path: a venv bakes its own prefix into
 # pyvenv.cfg, its interpreter symlink and every console-script shebang, so it does not survive being
-# moved. Must equal `ccc_head_api.environments.ENV_MOUNT` — the same duplication ENV_TOOLS_DIR already
-# carries across the two packages, which do not import each other.
+# moved. BENCH_ENV_DIR above is only the host directory underneath, which is free to differ per node.
+# Must equal `ccc_head_api.environments.ENV_MOUNT` — the same duplication ENV_TOOLS_DIR already carries
+# across the two packages, which do not import each other.
 BENCH_ENV_MOUNT = "/opt/ccc/env"
 BENCH_ENV_PYTHON = "3.12"    # a benchmark declares no requires-python, so one is named here
 
@@ -254,6 +270,19 @@ ENROLL_API_UNIT = Path("/etc/systemd/system/ccc-enroll-api.service")
 SUDOERS_MUNGE_HEADSCALE = Path("/etc/sudoers.d/ccc-munge-headscale")
 ENROLL_API_USER = "munge"
 CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only writable location
+# The package download cache that makes a per-Spawn build affordable — NOT an env cache. Node-local,
+# never staged anywhere, shared by every Guise on the box (0777, like the Head's own build dirs: the
+# Mantle owns them and a Guise is a separate uid in a shared group).
+#
+# Without it every Spawn re-downloads its whole dependency set; with it, uv and micromamba hard-link a
+# rebuild out of what is already on disk. Under CCC_LIB so both teardowns already sweep it
+# (remove_arm_state on an Arm, remove_enroll_api on the Head).
+#
+# Whole-cache pruning at the cap, not per-entry LRU: both tools hard-link OUT of these trees, so
+# evicting one entry needs their own bookkeeping to be safe. Emptying costs re-downloads and nothing
+# else — it holds no state any Spawn depends on. Mirrors ccc_head_api.environments.prune_cache.
+NODE_ENV_CACHE_DIR = CCC_LIB / "envcache"
+NODE_ENV_CACHE_MAX_GB = 20
 # The Arm registry. `cuttle arm authorize` CREATES each row (owner + name) before the donor's token is
 # issued — /enroll refuses a name that isn't here, so mesh membership alone can't fetch the munge key.
 # The donor's POST only fills in gpu_devices + mesh_ip; it never gets to say who owns the machine.
@@ -574,11 +603,6 @@ RSYNCD_DIR = HEAD_STATE_DIR / "rsyncd.d"
 RSYNC_MODULE_BENCH = "bench"
 RSYNC_BENCH_USER = "ccc-bench"
 RSYNCD_BENCH_SECRETS = Path("/etc/ccc-rsyncd.bench.secrets")
-# The benchmark's torch **Environment**, served READ-ONLY on the same cluster-lifetime secret. A second
-# module rather than a subdirectory of [bench] for one reason: [bench] must be writable (it is where a
-# Power file lands), and every Arm holds its secret — so an env inside it would be an env any single Arm
-# could rewrite, and every card enrolled afterwards would be priced by whatever it put there.
-RSYNC_MODULE_BENCH_ENV = "benchenv"
 
 # --- CCC user artifacts ---
 # The OPERATOR's own dir — settings + credentials only. It holds no Spawn machinery: images live in

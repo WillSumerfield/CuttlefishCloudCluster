@@ -649,23 +649,22 @@ class TestBenchmarkSbatch:
         assert f"{config.BENCH_ENV_MOUNT}/venv/bin/python" in job
         assert " python " not in job, "the image's own python came back"
 
-    def test_the_env_is_pulled_before_it_is_used(self):
-        """It arrives over the mesh at enrollment rather than being built on the Arm — an Arm builds
-        nothing, and one torch for the whole fleet is what makes two Powers comparable."""
+    def test_the_env_is_already_on_the_node(self):
+        """Nothing multi-GB crosses the mesh inside this job. The env is built by `cuttle setup` on the
+        node itself (setup.build_bench_env); pulling it from the Head measured 29 minutes against this
+        job's 10-minute wall, so a remote Arm could never finish one."""
         job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        pull = job.index(f"/{config.RSYNC_MODULE_BENCH_ENV}/")
-        assert pull < job.index("apptainer exec")
+        assert str(config.BENCH_ENV_DIR) in job
+        # The one rsync left in the job is the Power file going home.
+        assert [ln for ln in job.splitlines() if ln.startswith("rsync ")] == \
+               [f'rsync -a "$out/power" "rsync://{config.RSYNC_BENCH_USER}@100.99.0.1/'
+                f'{config.RSYNC_MODULE_BENCH}/donor-box/"']
 
     def test_the_env_is_bound_at_the_path_it_was_built_at(self):
         """A venv bakes its own prefix into pyvenv.cfg, `bin/python` and every console-script shebang.
         Bound anywhere else, its interpreter does not resolve and the benchmark cannot start."""
         job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert f'--bind "$out/env:{config.BENCH_ENV_MOUNT}"' in job
-
-    def test_the_env_pull_dereferences_symlinks(self):
-        """`bin/python` is an absolute link to a path that exists only INSIDE a Pod. Copied as a link
-        it dangles on the Arm; -L copies the file it names."""
-        assert "rsync -aL" in templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        assert f'--bind "{config.BENCH_ENV_DIR}:{config.BENCH_ENV_MOUNT}"' in job
 
     def test_result_comes_home_by_rsync(self):
         """One code path for a donor's box and for the Head's own Arm (which rsyncs to itself over the

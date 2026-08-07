@@ -502,21 +502,23 @@ def build_base_sif() -> None:
 
 
 def install_env_tools() -> None:
-    """**Head only.** Install the pinned uv + micromamba that build a Spawn's declared **Environment**
-    (ccc_head_api.environments), into config.ENV_TOOLS_DIR.
+    """Install the pinned uv + micromamba that build a Spawn's declared **Environment**
+    (ccc_head_api.environments), into config.ENV_TOOLS_DIR. **Every node**, Head and Arm alike.
 
-    Not baked into base.sif, and not installed on Arms: an Arm never builds anything, and `base.sif` is
-    built once per node and skipped when it already exists, so baking them in would grow every donated
-    box's image for work only the Head does — and leave every already-enrolled node without them until
-    a full teardown.
+    On an Arm because an Arm now builds every Environment it runs, at job start, out of its own
+    bandwidth — see config.ENV_TOOLS_DIR for the measurement that forced that. On the Head because its
+    co-located Arm is an Arm like any other, and because **Arm Feature** libraries are still built here.
+
+    Not baked into base.sif: the image is built once per node and skipped when it already exists
+    (`build_base_sif`), so a tool pinned inside it could only be bumped by a full teardown of every
+    enrolled box. As a separate tree it is re-installed by an ordinary re-setup.
 
     Verified against the sha256 pinned in config, then installed 0755 into a root-owned tree: the build
     runs as a **Guise** inside a Pod with this directory bound read-only, so the binaries must be
     readable and executable by a uid that is not the Mantle and must not be writable by one either.
 
-    Re-runs re-verify and re-install — unlike the apptainer .deb, there is nothing fleet-wide to
-    preserve here (no Arm ever sees these), so bumping the pin in config and re-running is the whole
-    upgrade path.
+    Re-runs re-verify and re-install: bumping the pin in config and re-running `setup` is the whole
+    upgrade path, and it is per-node — a fleet on a new uv is a fleet that re-ran setup.
     """
     arch = platform.machine()
     if arch not in config.UV_SHA256:
@@ -541,57 +543,85 @@ def install_env_tools() -> None:
            f"{config.ENV_TOOLS_DIR}[/muted]")
 
 
+def provision_env_cache() -> None:
+    """The node-local package download cache every Environment build on this box shares
+    (config.NODE_ENV_CACHE_DIR). **Every node**, for the same reason as `install_env_tools`.
+
+    This is what makes building per-Spawn affordable rather than merely possible: uv and micromamba
+    hard-link out of it, so the second Spawn to declare a given torch pays no download at all. Without
+    it an Arm re-fetches several GB every time.
+
+    0777 and NOT sticky. Every build on this box runs as a different **Guise**, they must all write
+    here, and the pruning below is done by whichever Guise happens to find the cache over its cap — a
+    sticky bit would leave it unable to evict anyone else's entries and the cap unenforceable. Nothing
+    in here is secret (public wheels) and nothing depends on it (see NODE_ENV_CACHE_DIR).
+
+    The parent is created without -o/-g so an existing munge-owned CCC_LIB on the Head keeps its owner.
+    """
+    run(["install", "-d", "-m", "0755", str(config.CCC_LIB)], sudo=True)
+    run(["install", "-d", "-m", "0777", str(config.NODE_ENV_CACHE_DIR)], sudo=True)
+    ui.say(f"  [muted]environment build cache → {config.NODE_ENV_CACHE_DIR} "
+           f"(pruned past {config.NODE_ENV_CACHE_MAX_GB}GB)[/muted]")
+
+
 def build_bench_env() -> None:
-    """**Head only.** Build the enrollment benchmark's torch **Environment**, once, for the whole fleet.
+    """Build THIS node's copy of the enrollment benchmark's torch **Environment**. Every node.
 
     base.sif carries no Python and no torch any more (templates.BASE_DEF_TMPL), and the benchmark is the
     one thing that ran on the image's own — so it needs an env of its own. It is not a Spawn's: nobody
-    submitted it, it has no manifest and no Guise, and it is the same env for every Arm forever.
+    submitted it, it has no manifest and no Guise, and it is the same declaration on every box forever.
 
-    **One env, built once, pinned** (config.BENCH_TORCH_PKG). **Power** is a number cards are compared
-    by — the divisor in every Settlement — so measuring two boxes with two different torches would put
-    a difference in the *fleet's* prices that is not a difference in the *cards*. Each Arm pulls this
-    exact tree at enrollment over the read-only [benchenv] module and runs its interpreter inside the
-    Pod (templates.BENCH_SBATCH_TMPL).
+    **Per node, from PyPI, pinned** (config.BENCH_TORCH_PKG). It used to be built once on the Head and
+    pulled by each Arm over a read-only [benchenv] rsync module — but that is 4.6 GB across the mesh,
+    measured at 29 minutes to a remote Arm against the benchmark job's 10-minute wall. The pin is what
+    now carries the comparability that one shared tree used to; see config.BENCH_TORCH_PKG.
+
+    Here at setup rather than inside the benchmark job, for two reasons: the job has a wall and this
+    does not, and a box whose network cannot fetch torch is a box that cannot run a Spawn either — which
+    is worth failing on before it enrolls rather than as an unexplained missing Power.
 
     Built INSIDE a Pod, with the destination bound at the one path it will ever be used at: a venv bakes
     its prefix into pyvenv.cfg, its own `bin/python` symlink and every console-script shebang, so the
     tree does not survive being used from a different path. The host directory underneath is free to
     move, which is why this can build in the operator's temp dir and be installed afterwards.
 
-    Skipped if it already exists — like base.sif, a re-run must not re-fetch 2.5 GB. `cuttle teardown
-    --all` is what discards it (and the image) when a pin here changes.
+    Skipped if it already exists — like base.sif, a re-run must not re-fetch 4.6 GB. `cuttle teardown
+    --all` is what discards it (and the image) when the pin here changes.
     """
-    dest = config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME / config.BENCH_ENV_DIR_NAME
+    dest = config.BENCH_ENV_DIR
     if (dest / "venv" / "bin" / "python").exists():
         ui.say(f"  [muted]benchmark environment exists ({dest}) — skipping build[/muted]")
         return
     uv = str(config.ENV_TOOLS_DIR / "uv")
     venv = f"{config.BENCH_ENV_MOUNT}/venv"
     with tempfile.TemporaryDirectory() as tmp:
-        build, cache = Path(tmp) / "env", Path(tmp) / "cache"
-        build.mkdir(), cache.mkdir()
+        build = Path(tmp) / "env"
+        build.mkdir()
         for argv in ([uv, "venv", "--python", config.BENCH_ENV_PYTHON, venv],
                      [uv, "pip", "install", "--python", f"{venv}/bin/python",
                       config.BENCH_TORCH_PKG]):
             # The same two settings that make a Spawn's Environment self-contained (see
             # ccc_head_api.environments): only-managed forbids uv from adopting an interpreter it did
-            # not install — one that exists on the Head and on no Arm — and INSTALL_DIR puts the one it
-            # downloads inside the tree that ships.
+            # not install — a system python this box happens to have and the Pod does not — and
+            # INSTALL_DIR puts the one it downloads inside the tree that is kept.
+            #
+            # The node's shared download cache, not a throwaway: the first Spawn here to declare this
+            # same torch then hard-links it instead of re-fetching several GB.
             run(["apptainer", "exec", "--contain", "--pwd", "/",
-                 "--bind", f"{build}:{config.BENCH_ENV_MOUNT},{cache}:/ccc-cache,"
+                 "--bind", f"{build}:{config.BENCH_ENV_MOUNT},"
+                           f"{config.NODE_ENV_CACHE_DIR}:/ccc-cache,"
                            f"{config.ENV_TOOLS_DIR}:{config.ENV_TOOLS_DIR}:ro",
                  "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PYTHON_PREFERENCE=only-managed,"
                           f"UV_PYTHON_INSTALL_DIR={config.BENCH_ENV_MOUNT}/py,"
                           f"TMPDIR=/ccc-cache/tmp,LC_ALL=C.UTF-8,LANG=C.UTF-8",
                  str(config.CCC_SIF), *argv], cwd="/")
-        # Into the Mantle-owned bench subtree, because rsyncd drops to `ccc` to serve it. `cp -a` keeps
-        # the symlinks as symlinks — `bin/python` points at BENCH_ENV_MOUNT, a path that exists only
-        # inside a Pod, so resolving them here would copy nothing.
-        run(["install", "-d", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
-             str(dest)], sudo=True)
+        # World-readable in /opt, like base.sif and for the same reason: the benchmark runs as the
+        # home-less cluster **Guise**, which can read neither the operator's home nor a 0700 Mantle
+        # tree. `cp -a` keeps the symlinks as symlinks — `bin/python` points at BENCH_ENV_MOUNT, a path
+        # that exists only inside a Pod, so resolving them here would copy nothing.
+        run(["install", "-d", "-m", "0755", str(dest)], sudo=True)
         run(["cp", "-a", *[str(p) for p in build.iterdir()], str(dest)], sudo=True)
-        run(["chown", "-R", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(dest)], sudo=True)
+        run(["chmod", "-R", "a+rX", str(dest)], sudo=True)
     ui.say(f"  [muted]{config.BENCH_TORCH_PKG} → {dest}[/muted]")
 
 
@@ -896,9 +926,10 @@ def _setup_head(address: str | None = None) -> None:
     with ui.step("Building the Pod image"):
         build_base_sif()                         # Mantle-readable, at the cluster-wide path
     with ui.step("Installing the Environment build tools"):
-        install_env_tools()                      # uv + micromamba, Head-only (environments.py)
+        install_env_tools()                      # uv + micromamba — every node builds (environments.py)
+        provision_env_cache()                    # what every build on this box downloads into
     with ui.step("Building the benchmark environment"):
-        build_bench_env()                        # the torch base.sif no longer carries; needs uv above
+        build_bench_env()                        # the torch base.sif no longer carries; needs both above
     # The Head's own Arm is an Arm like any other, so it is priced like one — and its declared Arm
     # Features are proved like any other's. Last, because both are real Spawns: they need slurmd up,
     # the Pod image built, and rsyncd listening.
@@ -1228,6 +1259,17 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
         auth.provision_guise(config.GUISE_CLUSTER_UID)
     with ui.step("Building the Pod image"):
         build_base_sif()
+    # Every Environment this Arm ever runs is built HERE, at job start, out of this box's own bandwidth
+    # — a Head-built env had to cross the mesh, and that measured 29 minutes for a 4.6 GB torch tree
+    # (config.ENV_TOOLS_DIR). So the tools and the cache are part of enrolling, not Head furniture.
+    with ui.step("Installing the Environment build tools"):
+        install_env_tools()
+        provision_env_cache()
+    # Before the benchmark below, which runs this env's interpreter. The long one: a cold torch install
+    # over a donor's link. It is the same one-time cost as the base.sif build above, and it is paid here
+    # rather than inside the benchmark job because that job has a 10-minute wall.
+    with ui.step("Building the benchmark environment"):
+        build_bench_env()
 
     with ui.step("Recording Arm Features"):
         # World-readable like the other rendered configs here: install paths aren't secret, and a

@@ -215,21 +215,18 @@ mkdir -p "$out"
 cat > "$out/bench.py" <<'CCC_BENCH_PY'
 {bench_py}
 CCC_BENCH_PY
-# Both transfers use the cluster-lifetime secret from RSYNCD_BENCH_SECRETS — a benchmark never goes
-# through the Head API, so there is no **Siphon** for it to be handed. Each module is rooted at a
-# subtree, so between them these URLs reach the benchmark's env and the Power files and nothing else.
+# The stage-out uses the cluster-lifetime secret from RSYNCD_BENCH_SECRETS — a benchmark never goes
+# through the Head API, so there is no **Siphon** for it to be handed. The module is rooted at the bench
+# subtree, so this URL reaches the Power files and nothing else.
 export RSYNC_PASSWORD={bench_secret}
-# The torch this measurement needs, which base.sif no longer carries — see config.BENCH_TORCH_PKG for
-# why it is one pinned env built once on the Head rather than each Arm resolving its own. Pulled here
-# rather than at setup because a benchmark is the FIRST thing a new Arm runs and this is the one place
-# that knows it is about to need it. -L: the tree contains absolute symlinks (a venv's `bin/python`)
-# pointing at a path that exists only inside the Pod, so they are copied as the files they name.
-mkdir -p "$out/env"
-rsync -aL "rsync://{bench_user}@{head_ip}/{bench_env_mod}/" "$out/env/"
+# The torch this measurement needs, which base.sif no longer carries. Built by THIS node at
+# `cuttle setup` (setup.build_bench_env) into config.BENCH_ENV_DIR, so nothing is fetched here — the
+# env was 4.6 GB and pulling it from the Head measured 29 minutes against this job's 10-minute wall.
+#
 # /tmp is auto-mounted by Apptainer, so $CCC_OUT needs no explicit --bind (unlike a Spawn's, which
 # lives under /var/lib/ccc). The env is bound at the ONE path it was built at and cannot be moved from
 # (config.BENCH_ENV_MOUNT), and its own interpreter is what runs — the image has none.
-apptainer exec --nv --env CCC_OUT="$out" --bind "$out/env:{env_mount}" \\
+apptainer exec --nv --env CCC_OUT="$out" --bind "{bench_env_dir}:{env_mount}" \\
   {sif} {env_mount}/venv/bin/python "$out/bench.py"
 rsync -a "$out/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """
@@ -314,17 +311,14 @@ From: {image}
 # tell one Spawn from another on the same Arm. What isolates a Spawn is its module's root plus its own
 # secret. `list = false` keeps the live Siphon names out of a bare `rsync rsync://<head>/`.
 #
-# [bench] and [benchenv] are the two modules here, and the two that are not per-Spawn: the enrollment
-# benchmark stages its Power file home and pulls its torch env out, and never touches the Head API, so it
-# cannot be handed a Siphon. Rooted at the bench subtree, so between them they reach the Power files and
-# the benchmark's env and nothing else. `strict modes` stays TRUE for both — their secrets file is
+# [bench] is the one module here that is not per-Spawn: the enrollment benchmark stages its Power file
+# home and never touches the Head API, so it cannot be handed a Siphon. Rooted at the bench subtree, so
+# it reaches the Power files and nothing else. `strict modes` stays TRUE — its secrets file is
 # root-owned, unlike a Siphon's, which must be writable by the Head API.
 #
-# The split is the point: [bench] must be WRITABLE (it is where a Power file lands) and every Arm holds
-# the one secret, so an env served from inside it would be an env any single Arm could overwrite — and
-# every card enrolled after that would be priced by whatever it left there. [benchenv] inherits the
-# file's `read only = true` default and says nothing about it, which is what makes that hard to undo by
-# accident.
+# It is WRITABLE (it is where a Power file lands) and every Arm holds the one secret, so nothing that
+# must not be overwritten may live under it. Nothing does: the benchmark's torch env is built by each
+# node at setup (config.BENCH_ENV_DIR) rather than served from here.
 RSYNCD_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 address = {mesh_ip}
@@ -339,11 +333,6 @@ strict modes = false
 [{bench_mod}]
     path = {bench_dir}
     read only = false
-    auth users = {bench_user}
-    secrets file = {bench_secrets}
-    strict modes = true
-[{bench_env_mod}]
-    path = {bench_env_dir}
     auth users = {bench_user}
     secrets file = {bench_secrets}
     strict modes = true
@@ -373,9 +362,6 @@ def render_rsyncd_conf(mesh_ip: str) -> str:
         user=config.HEAD_API_USER, group=config.HEAD_API_USER,
         bench_mod=config.RSYNC_MODULE_BENCH,
         bench_dir=config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME,
-        bench_env_mod=config.RSYNC_MODULE_BENCH_ENV,
-        bench_env_dir=(config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME
-                       / config.BENCH_ENV_DIR_NAME),
         bench_user=config.RSYNC_BENCH_USER, bench_secrets=config.RSYNCD_BENCH_SECRETS,
         rsyncd_dir=config.RSYNCD_DIR,
         v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
@@ -624,7 +610,7 @@ def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, gpus: i
         sif=config.CCC_SIF,
         head_ip=head_mesh_ip,
         bench_mod=config.RSYNC_MODULE_BENCH,
-        bench_env_mod=config.RSYNC_MODULE_BENCH_ENV,
+        bench_env_dir=config.BENCH_ENV_DIR,
         env_mount=config.BENCH_ENV_MOUNT,
         bench_user=config.RSYNC_BENCH_USER,
         bench_secret=bench_secret,
