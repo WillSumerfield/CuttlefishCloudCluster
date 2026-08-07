@@ -1,4 +1,4 @@
-"""Recipes: a User's shelf of frozen, re-runnable snapshots, bounded by a **24GB** per-User wall.
+"""Recipes: a User's shelf of frozen, re-runnable snapshots, bounded by a **32GB** per-User wall.
 
 A Recipe is kept because its owner deliberately asked for it — unlike an upload (deleted at stage-in) or
 an output (TTL'd against an Allowance), nothing here has a tick, a TTL, or eviction. Only a wall.
@@ -18,6 +18,12 @@ old version untouched.
 **Bytes are counted uncompressed**, from the tar's own member sizes, not the extracted tree — the same
 number the browser's `File.size` check already used, so the Head never refuses a save the composer
 promised would fit, or accepts one it had blocked.
+
+**A Recipe keeps its built Environment** (`store_env`), which is what makes *frozen* cover what the work
+runs IN and not merely what it declared. It is not stored at save time — saving runs nothing and must
+never be able to fail on a build — but on the first Spawn from that Recipe whose build succeeded. Every
+Spawn after that starts with no build at all. The stored tree counts against the same wall as the code,
+so a User can see what it costs; if it will not fit, it is simply not kept and every run rebuilds.
 """
 
 import json
@@ -31,7 +37,11 @@ from . import db
 
 # Per-User. Also stated in the frontend (`api.ts` RECIPE_ALLOWANCE_BYTES) so the composer can block a
 # doomed save before spending the upload — but only the Head's number is trusted.
-MAX_USER_BYTES = int(os.environ.get("CCC_RECIPE_MAX_USER", 24 * 1024**3))
+#
+# 32GB, not the 24GB that was enough when a Recipe held code alone: a Recipe now also keeps the
+# **Environment** built from it (`store_env`), and a self-contained one carries its own interpreter and
+# its own torch — several GB per Recipe that its owner never uploaded and cannot trim.
+MAX_USER_BYTES = int(os.environ.get("CCC_RECIPE_MAX_USER", 32 * 1024**3))
 
 # A Recipe's name is a directory component and an URL path segment, so it is checked rather than escaped.
 # Same shape as spawns.OUTPUT_NAME_RE: no slashes, no '..', no leading dot.
@@ -39,7 +49,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class WallExceeded(Exception):
-    """The 24GB wall refused a save. Carried to the HTTP boundary as 413 with these numbers in it —
+    """The 32GB wall refused a save. Carried to the HTTP boundary as 413 with these numbers in it —
     a wall a User cannot see the far side of is one they cannot act on."""
 
     def __init__(self, used: int, incoming: int) -> None:
@@ -196,11 +206,103 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
         raise ValueError(f"manifest {manifest!r} was not found in this recipe's saved code — drop a "
                          f"folder instead if you meant to point it at a different one")
 
+    # A stored **Environment** was built from THIS manifest, with THESE Features. Change either and it
+    # describes the Recipe as it used to be, so it goes — the next Spawn builds a fresh one and keeps
+    # it. Compared before the write, since afterwards there is nothing left to compare against. `bytes`
+    # is deliberately not adjusted: a settings edit does not re-weigh a Recipe, and the next `store_env`
+    # recomputes the total from whatever the row then says.
+    if manifest != old["manifest"] or features != json.loads(old["features"]):
+        drop_env(conn, user_id, name)
     row = db.update_recipe_meta(conn, user_id, name, script, meta.get("args") or [], outputs,
                                 int(meta.get("gpus", 1)), int(meta["vram_mb"]), int(meta["minutes"]),
                                 bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
                                 meta.get("wandb_entity") or "", manifest, features)
     return to_json(row)
+
+
+def store_env(conn, user_id: int, name: str, staging: Path) -> None:
+    """Keep the **Environment** (and any **Arm Feature** library prefix) a Spawn from this Recipe just
+    built, so the next Spawn from it starts with no build at all.
+
+    Called once per Recipe, from the build thread, after a build this Recipe's own Spawn succeeded —
+    which is why it is here and not in `save`: saving runs nothing and must never be able to fail on a
+    build, and a Recipe whose declaration is broken should still be savable and still fail loudly at
+    run time rather than at save time.
+
+    **Never raises.** Its caller is a background thread whose actual job — releasing a held Spawn — has
+    already succeeded by the time this runs, and a Recipe that failed to keep its env is only a Recipe
+    that rebuilds next time. So a full shelf, a vanished directory and a copy that dies half-way all end
+    the same way: nothing stored, nothing charged, the Spawn unaffected.
+
+    Both trees or neither. The library prefix is what a Feature's shared objects are dlopen'd from, so an
+    env kept without it would make every later Spawn from a Recipe with Features fail at import — later,
+    on an Arm, with the Head reporting a clean build.
+    """
+    from . import environments
+    dest = _dir(user_id, name)
+    row = db.get_recipe(conn, user_id, name)
+    if row is None or not dest.is_dir():
+        return  # deleted, or replaced, while its own Spawn was building
+    trees = [d for d in (environments.ENV_DIRNAME, environments.FEATLIB_DIRNAME)
+             if (staging / d).is_dir()]
+    if not trees or (dest / environments.ENV_DIRNAME).exists():
+        return  # nothing was built, or this Recipe already has one
+    # Weighed from DISK, both halves, rather than adding to the tar-derived number `save` recorded:
+    # `drop_env` re-weighs the same way, so the two cannot drift into charging a Recipe for an env it
+    # no longer holds. The code half is unchanged by this and the guard above means no env is in it yet.
+    size = _tree_bytes(dest) + sum(_tree_bytes(staging / d) for d in trees)
+    # The same wall a save is weighed against, and released the same way — by deleting a Recipe. A
+    # Recipe that will not fit its own env is not an error: it keeps working exactly as it did, and
+    # rebuilds on every run. Silent because nobody is waiting on this; the shelf's own numbers are
+    # where a User sees which Recipes are carrying an env and which are not.
+    used = db.user_recipe_bytes(conn, user_id) - row["bytes"]
+    if used + size > MAX_USER_BYTES:
+        return
+    try:
+        for d in trees:
+            # symlinks=True: a venv's `bin/python` is an absolute link to the Pod-side mount, a path
+            # that exists on no host filesystem. Following it would copy nothing and leave the stored
+            # env without an interpreter.
+            shutil.copytree(staging / d, dest / d, symlinks=True)
+    except OSError:
+        for d in trees:
+            shutil.rmtree(dest / d, ignore_errors=True)  # half a stored env is worse than none
+        return
+    db.set_recipe_bytes(conn, user_id, name, size)
+
+
+def drop_env(conn, user_id: int, name: str) -> None:
+    """Throw away a Recipe's stored **Environment**, so the next Spawn from it builds a fresh one, and
+    give its owner the bytes back.
+
+    What a settings edit needs: `update_meta` can repoint a Recipe at a different manifest or change
+    which **Arm Feature**s it asks for, with no upload and no rebuild — and a stored env would silently
+    outlive both, leaving the Recipe running against something its own declaration no longer describes.
+    Dropping it is the honest answer; refusing the edit would make a Recipe's settings less editable the
+    moment it became fast.
+
+    Re-weighed from disk afterwards, by the same rule `store_env` charges by — an owner who is still
+    billed for an env that is gone would be one deleting Recipes to make room they already have.
+    """
+    from . import environments
+    d = _dir(user_id, name)
+    for tree in (environments.ENV_DIRNAME, environments.FEATLIB_DIRNAME):
+        shutil.rmtree(d / tree, ignore_errors=True)
+    if d.is_dir():
+        db.set_recipe_bytes(conn, user_id, name, _tree_bytes(d))
+
+
+def _tree_bytes(root: Path) -> int:
+    """Apparent size on disk, following and counting no symlinks — a venv's `bin/python` and the
+    minor-version alias beside its interpreter both point back into this same tree, so following them
+    would bill the owner twice for one copy of CPython. Same rule as `environments._tree_bytes`."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for f in filenames:
+            p = Path(dirpath) / f
+            if not p.is_symlink():
+                total += p.stat().st_size
+    return total
 
 
 def _evict(conn, user_id: int, name: str) -> None:

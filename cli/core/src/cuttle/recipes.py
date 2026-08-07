@@ -1,7 +1,7 @@
 """Recipes: `cuttle recipe list/save/update/delete/run`.
 
 A **Recipe** is a frozen, re-runnable snapshot — the project code plus how to run it — held on the Head
-against a 24GB per-User **Allowance**. This module is the CLI half of the Dashboard's Recipes page, at
+against a 32GB per-User **Allowance**. This module is the CLI half of the Dashboard's Recipes page, at
 the operation **parity** CONTEXT.md asks of the two clients.
 
 The upload reuses `cuttle run`'s exactly (same gitignore-aware file set, gzip-tar, `X-CCC-Meta`

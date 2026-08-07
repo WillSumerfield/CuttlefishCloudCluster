@@ -69,7 +69,7 @@ Everything else `cuttle` uploads is temporary — a Spawn's project is deleted t
 its results expire after 7 days. A Recipe is the exception: nothing on the Head ever deletes one.
 They do not expire and they are never evicted to make room.
 
-The cost of that is space. Recipes hold against a **24 GB allowance**, and your shelf only shrinks
+The cost of that is space. Recipes hold against a **32 GB allowance**, and your shelf only shrinks
 when you say so. Saving past the ceiling **fails** — you delete one and try again — because a Recipe
 is something you deliberately chose to keep, unlike a result, which arrives on its own from work
 already done. (See [Storage](storage.md) for how the two differ at the ceiling.)
@@ -88,13 +88,19 @@ snapshot is left alone.
 The freeze is a promise the *cluster* keeps, not one it keeps against you. An update simply replaces
 what was there. Abandon one half-way and you have neither version.
 
-### Frozen code, unfrozen dependencies
+### The dependencies are frozen too
 
-A Recipe freezes what it *captured*, which is your dependency declaration — not what that
-declaration resolves to. A Recipe holding a loose `requirements.txt` can build a genuinely different
-[Environment](environments.md) months later. Pinning is yours to do, in the file you already keep.
+A Recipe holds the [Environment](environments.md) built from it, not just the file that declared it.
+The first run from a Recipe builds one and the Recipe keeps it; every run after that starts with no
+build at all — faster, and running byte-for-byte what the first run ran. So a loose
+`requirements.txt` does *not* quietly resolve to something different six months later.
 
-### `cuttle recipe run` is not wired up
+Two consequences worth knowing:
 
-The Head answers `501`. Saving, listing, updating and deleting all work. Submit the project directly
-with [`cuttle run`](spawns.md) in the meantime.
+- **It counts against your 32 GB.** An Environment carries its own interpreter and its own torch, so
+  it is usually much larger than the code. If it does not fit, nothing breaks — the env simply is not
+  kept and each run builds one, exactly as an ad-hoc Spawn does.
+- **Changing what it declares releases it.** Update the code, point the Recipe at a different
+  dependency file, or change which [Arm Features](arm-features.md) it asks for, and the stored
+  Environment goes: it described the Recipe as it used to be. The next run builds a fresh one and
+  keeps that instead.

@@ -37,7 +37,9 @@ and it is the price of the two things you get for it:
   `requires-python = "==3.11.14"` gets exactly that, fetched for you — not the nearest thing the
   cluster happened to ship.
 - **It is genuinely frozen.** Nothing in your Environment can change because the cluster's image
-  changed underneath it, which is what makes a [Recipe](recipes.md) mean what it says.
+  changed underneath it — there is nothing in that image to change: it carries no Python at all. A
+  [Recipe](recipes.md) goes further and keeps the built Environment itself, so re-running one is not
+  merely re-resolving the same file.
 
 Two packages arrive that you did not ask for: **`wandb`**, because that is what makes your Spawn log
 to your own account, and **`pip`**, so `pip install` works if you open a
@@ -97,11 +99,16 @@ A dependency declaration is code — a `pyproject.toml` can run arbitrary build 
 builds it inside a [Pod](isolation.md), as your own [Guise](isolation.md), never as the cluster
 itself. Your code has no way to become the cluster, on any machine, including the Head.
 
-### It is built for one Spawn and kept for none
+### An ad-hoc Spawn's is built for it and kept for none
 
-The Environment dies with the Spawn's staging, and the next run builds it again. You do not own one,
-hold one, or spend any allowance on one. Only the *declaration* persists, and only because it is part
-of your code.
+Submit a project with `cuttle run` and its Environment dies with that Spawn's staging; the next run
+builds it again. You do not own one, hold one, or spend any allowance on one. Only the *declaration*
+persists, and only because it is part of your code.
+
+A [Recipe](recipes.md) is the deliberate exception. The first run from one builds an Environment and
+the Recipe keeps it, so every later run starts with no build — that is what "a Recipe is frozen" means
+in practice. It is the only Environment you own, it counts against your Recipe allowance, and it is
+released when you change what the Recipe declares.
 
 ### A package an Arm Feature supplies is replaced before the build
 

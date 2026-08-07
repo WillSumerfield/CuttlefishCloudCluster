@@ -236,10 +236,12 @@ def _script(**kw):
 
 def test_script_decides_at_run_time_whether_there_is_an_environment():
     """One rendering serves both cases: the script tests for the env dir itself rather than the Head
-    baking in an answer. A build that produced nothing degrades to the base interpreter on its own."""
+    baking in an answer. A build that produced nothing leaves `$py` empty — the image has no
+    interpreter to degrade to (cuttle.templates.BASE_DEF_TMPL)."""
     body = _script()
     assert f'[ -d "$proj/{env.ENV_DIRNAME}" ]' in body
-    assert 'py="python"' in body
+    assert 'py=""' in body
+    assert 'py="python"' not in body, "the image's python came back — nothing supplies one now"
 
 
 def test_environment_is_moved_out_of_the_project_before_running():
@@ -598,6 +600,77 @@ def test_a_declared_environment_holds_the_spawn(head, tmp_path):
     assert "--hold" in _sbatch(head)
     with db.connect() as conn:
         assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
+
+
+def _recipe_dir(tmp_path, *, env_built=True):
+    """A **Recipe**'s durable directory, as `recipes.store_env` leaves one: the code, plus the env a
+    previous Spawn from it built. `spawns.submit(source_dir=)` copies this, env and all."""
+    d = tmp_path / "recipe"
+    d.mkdir()
+    (d / "train.py").write_text("print('hi')\n")
+    (d / "requirements.txt").write_text("numpy\n")
+    if env_built:
+        (d / env.ENV_DIRNAME / "venv" / "bin").mkdir(parents=True)
+        (d / env.ENV_DIRNAME / "venv" / "bin" / "python").write_text("#!/bin/sh\n")
+    return d
+
+
+def test_a_recipe_that_brought_its_own_environment_is_never_held(head, tmp_path, monkeypatch):
+    """The whole point of a Recipe keeping one: there is no build for the hold to be waiting on, so
+    holding would be latency and nothing else. The second Spawn from a Recipe starts as soon as Slurm
+    can place it."""
+    started = []
+    monkeypatch.setattr(spawns, "start_build", lambda *a, **kw: started.append(a))
+    jid = spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
+                        source_dir=_recipe_dir(tmp_path), recipe_name="resnet",
+                        script="train.py", manifest="requirements.txt", minutes=60,
+                        constraint="", outputs=["out"])
+    assert "--hold" not in _sbatch(head)
+    assert started == [], "it rebuilt an environment it was handed"
+    with db.connect() as conn:
+        assert db.get_spawn(conn, jid)["build_state"] is None
+
+
+def test_a_recipe_without_one_yet_builds_and_is_held(head, tmp_path, monkeypatch):
+    """The first Spawn from a Recipe is an ordinary Spawn — and it is the one that is told which
+    Recipe should end up owning what it builds."""
+    started = []
+    monkeypatch.setattr(spawns, "start_build", lambda *a, **kw: started.append(a))
+    spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
+                  source_dir=_recipe_dir(tmp_path, env_built=False), recipe_name="resnet",
+                  script="train.py", manifest="requirements.txt", minutes=60,
+                  constraint="", outputs=["out"])
+    assert "--hold" in _sbatch(head)
+    assert started and started[0][-1] == (1, "resnet"), "the build was not told who to keep it for"
+
+
+def test_an_uploaded_env_directory_is_never_trusted(head, tmp_path):
+    """`.ccc-env` is an ordinary directory name and an upload can carry one. Taking it at face value
+    would let a submitter hand the Head a tree of their own choosing and have it bound into the Pod as
+    this Spawn's Environment, unbuilt and unexamined. Only a directory the HEAD wrote is trusted, so
+    this one is held and built over like any other."""
+    tar = _tar(tmp_path, "train.py", "requirements.txt",
+               f"{env.ENV_DIRNAME}/venv/bin/python")
+    jid = spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=tar, script="train.py",
+                        manifest="requirements.txt", minutes=60, constraint="", outputs=["out"])
+    assert "--hold" in _sbatch(head)
+    with db.connect() as conn:
+        assert db.get_spawn(conn, jid)["build_state"] == db.BUILDING
+
+
+def test_a_stored_environment_is_named_once_not_file_by_file(head, tmp_path, monkeypatch):
+    """A built env is tens of thousands of files. Listing them individually would say, at length,
+    what the one directory entry and the stage-in's explicit -r already say."""
+    seen = {}
+    real = spawns._render
+    monkeypatch.setattr(spawns, "_render",
+                        lambda *a, **kw: (seen.update(files=a[4]), real(*a, **kw))[1])
+    spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
+                  source_dir=_recipe_dir(tmp_path), recipe_name="resnet",
+                  script="train.py", manifest="requirements.txt", minutes=60,
+                  constraint="", outputs=["out"])
+    assert env.ENV_DIRNAME in seen["files"]
+    assert not [f for f in seen["files"] if f.startswith(f"{env.ENV_DIRNAME}/")]
 
 
 def test_the_environment_is_in_what_a_remote_arm_stages_in(head, tmp_path, monkeypatch):

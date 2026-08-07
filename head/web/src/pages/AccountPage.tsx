@@ -87,7 +87,7 @@ export function AccountPage() {
               <FactRow
                 to="/recipes"
                 label="Storage"
-                help="Disk your Recipes hold on the Head, against a 24 GB ceiling. It's a hard wall — saving past it fails and you delete something, rather than something older being quietly dropped."
+                help="Disk your Recipes hold on the Head, against a 32 GB ceiling. It's a hard wall — saving past it fails and you delete something, rather than something older being quietly dropped."
                 value={
                   <span className="flex items-center gap-3">
                     <span className="relative h-1.5 w-24 overflow-hidden rounded-full" style={{ filter: "blur(0.6px)" }}>

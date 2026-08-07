@@ -299,7 +299,7 @@ CREATE TABLE output_copies (
 
 # Recipes: a User's frozen, re-runnable snapshots. This row is *how* to run one, and
 # `recipes/<user_id>/<name>/` on disk is the code itself. `bytes` is what that tree costs against the
-# 24GB per-User **Allowance**, measured UNCOMPRESSED — the composer blocks a doomed save from
+# 32GB per-User **Allowance**, measured UNCOMPRESSED — the composer blocks a doomed save from
 # `File.size` before spending the upload, and a Head that counted the gzip instead would be answering a
 # different question than the one the browser asked.
 #
@@ -1323,8 +1323,16 @@ def delete_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> bool:
     return cur.rowcount > 0
 
 
+def set_recipe_bytes(conn: sqlite3.Connection, user_id: int, name: str, size: int) -> None:
+    """Re-weigh one Recipe in place. `recipes.store_env` is the only caller: a Recipe grows once, when
+    the first Spawn from it has built the **Environment** it now keeps, and the shelf's arithmetic has
+    to see those bytes or the wall would let a User hold far more than their Allowance says."""
+    conn.execute("UPDATE recipes SET bytes=? WHERE user_id=? AND name=?", (size, user_id, name))
+    conn.commit()
+
+
 def user_recipe_bytes(conn: sqlite3.Connection, user_id: int) -> int:
-    """What one User's shelf holds, against their 24GB Allowance — the left side of the wall's
+    """What one User's shelf holds, against their 32GB Allowance — the left side of the wall's
     arithmetic. Independent of `user_output_bytes` in both directions (CONTEXT.md, **Allowance**)."""
     (total,) = conn.execute("SELECT COALESCE(SUM(bytes), 0) FROM recipes WHERE user_id=?",
                             (user_id,)).fetchone()

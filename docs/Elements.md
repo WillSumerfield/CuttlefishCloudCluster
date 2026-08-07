@@ -41,7 +41,7 @@ all. **admin:** `override`, `bump`.
 ### [Storage](elements/storage.md)
 
 Where your things live and how long they last: uploaded projects (until the Spawn starts), results
-(7 days, 8 GB), Recipes (indefinitely, 24 GB), and the 30-minute Recovery Window that catches what you
+(7 days, 8 GB), Recipes (indefinitely, 32 GB), and the 30-minute Recovery Window that catches what you
 forgot to declare.
 
 ## Donating a machine

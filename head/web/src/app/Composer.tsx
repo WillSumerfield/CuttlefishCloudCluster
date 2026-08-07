@@ -20,7 +20,7 @@ import { ALLOWANCE, size } from "../recipes/format";
  *   · Tide Pool mode and admin node-targeting exist for a Spawn only — neither means anything for a
  *     Recipe (CONTEXT.md: it runs from any machine with nothing to hand, so pinning a node contradicts
  *     the point, and there is no "live shell" to freeze).
- *   · The 24GB wall is a Recipe-only hard gate, checked from `File.size` at pick time.
+ *   · The 32GB wall is a Recipe-only hard gate, checked from `File.size` at pick time.
  *   · W&B is gated on whether the User has a key stored for a Spawn (it runs NOW); ungated for a
  *     Recipe, which is durable config that outlives today's answer.
  *   · Saving: a Spawn composer performs its own submit (busy/error/reset live here). A Recipe composer

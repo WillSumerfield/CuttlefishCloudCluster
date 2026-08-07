@@ -134,10 +134,6 @@ BUILD_TIMEOUT_SECONDS = int(os.environ.get("CCC_ENV_BUILD_TIMEOUT", 30 * 60))
 # several GB more than it used to.
 MAX_ENV_BYTES = int(os.environ.get("CCC_ENV_MAX", 12 * 1024**3))
 
-# What the payload runs when this Spawn declared nothing. The image's own interpreter — see
-# `Manifest.interpreter` for what a declared Environment runs instead.
-BASE_INTERPRETER = "python"
-
 # wandb, injected into every env because nothing is inherited any more (module docstring). UNPINNED on
 # purpose: an already-satisfied requirement is a no-op, so a User who declared their own version keeps
 # it — the same way a manifest naming a package the image shipped used to win silently.

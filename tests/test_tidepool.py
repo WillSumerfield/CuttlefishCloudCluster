@@ -232,9 +232,10 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         assert "PAYLOAD_TIDEPOOL" not in body
         # `$py`, not a literal `python`: the interpreter is chosen by the script at run time from the
         # env dir's presence, not baked in here (ccc_head_api.environments). This render was given no
-        # manifest, so the token falls back to the image's own — a state only a Tide Pool can reach now.
+        # manifest, so the token starts EMPTY — the image supplies no interpreter to fall back to, and
+        # a state only a Tide Pool can reach now anyway.
         assert '$py train.py' in body
-        assert 'py="python"' in body
+        assert 'py=""' in body
 
     def test_the_shell_is_given_the_submitters_wandb_key(self, tmp_path):
         """sshd builds a FRESH environment per session and does not pass its own down — confirmed by

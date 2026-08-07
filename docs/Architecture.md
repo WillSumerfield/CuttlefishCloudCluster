@@ -127,12 +127,17 @@ result is still fetchable by hand, from a second machine, for its 7 days. See
 
 ## Environments
 
-A project declares dependencies in the file its own tooling already writes. The Head detects it and
-builds the environment **before the Spawn is placed** — uv layered on the base image, or conda
-replacing it — inside a Pod, as the submitter's Guise.
+Every Spawn names the file its own tooling already writes — nothing is inferred. The Head builds the
+environment **before the Spawn is placed**, inside a Pod, as the submitter's Guise.
+
+An environment **inherits nothing**: the Pod image is Ubuntu plus sshd and CA certificates, with no
+Python and no torch in it, so what gets built carries its own interpreter and its own dependencies and
+is shipped to whichever Arm runs it. That is what lets a project pin a Python version the cluster has
+never heard of, and what makes an environment mean the same thing on every machine.
 
 Building before placement is what makes it free: no device is held while packages download, so there
-is nothing to bill. Nothing is kept; the next run builds it again. See
+is nothing to bill. An ad-hoc Spawn's is kept for nothing and the next run builds it again; a
+[Recipe](elements/recipes.md) keeps the one built from it, which is what makes a Recipe frozen. See
 [Environments](elements/environments.md).
 
 ## The economy, in one place
@@ -151,6 +156,8 @@ Price is **Power × Demand** — capability and scarcity, measured separately. P
 enrollment by a benchmark Spawn submitted down the normal Slurm path, inside a Pod, so it sees the GPU
 as real Spawns will: WSL's virtualized `/dev/dxg`, a throttled laptop card, a stale driver, an x4
 PCIe lane. None of that is on a spec sheet, and all of it is the norm on donated personal machines.
+It runs against one pinned torch built once on the Head and pulled by each Arm at enrollment, so two
+cards measured a year apart are still comparable — the number is the card, not the software.
 Power is not optional: a meter counting only seconds would pay a slow card *more* for the same work,
 so donating your worst hardware would pay best.
 

@@ -842,7 +842,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
 # A **Recipe** is a User's frozen, re-runnable snapshot, and these routes are the whole of its lifecycle
 # except one: `run` is deferred (see below). Every route is scoped to the caller — a Recipe is private to
 # its owner, so there is no roster read here and no `user_id` any client can name. See recipes.py for the
-# 24GB wall these hang off, and why it is a wall rather than the eviction `retention.py` does.
+# 32GB wall these hang off, and why it is a wall rather than the eviction `retention.py` does.
 #
 # Uploads here are spooled against the Recipe **Allowance**, not `MAX_UPLOAD_BYTES`: the 4GB cap is a
 # Spawn's, and a Recipe is bounded by the wall it is about to be weighed against instead. Both are the
@@ -921,7 +921,7 @@ async def update_recipe(name: str, request: Request, user: dict = Depends(curren
 @api.patch("/recipes/{name}")
 async def update_recipe_settings(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
     """Change a Recipe's settings without re-freezing its code — a plain JSON body, not the gzip-tar
-    `X-CCC-Meta` upload `create_recipe`/`update_recipe` share, since nothing here touches the 24GB wall or
+    `X-CCC-Meta` upload `create_recipe`/`update_recipe` share, since nothing here touches the 32GB wall or
     `bytes`/`frozen_at`. What the Dashboard's "Edit" hits when no folder was dropped alongside it; a
     dropped folder instead goes to `update_recipe` above, which DOES re-freeze the code."""
     if user["must_change_password"]:

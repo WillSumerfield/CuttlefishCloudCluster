@@ -278,7 +278,7 @@ export const returnArm = (name: string) => armPost(name, 'return')
 
 // A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its
 // owner. Runs exactly what it captured until Update code; `frozen_at` is how stale that snapshot is.
-// `size_bytes` counts against the 24 GB allowance. `updating` is true only while a fresh snapshot
+// `size_bytes` counts against the 32 GB allowance. `updating` is true only while a fresh snapshot
 // uploads (the bloom) — at rest a frozen thing does not move.
 export type Recipe = {
   name: string
@@ -304,16 +304,16 @@ export type Recipe = {
   features: string[]
 }
 
-// Per-User storage allowance: 24 GB, a hard wall — saving past it means deleting a Recipe first, never a
+// Per-User storage allowance: 32 GB, a hard wall — saving past it means deleting a Recipe first, never a
 // warning. Mirrored in recipes/format.ts (meter) and the Head's recipes.py MAX_USER_BYTES, the actual
 // authority; the composer just blocks a doomed save early, from File.size, before spending the upload.
-export const RECIPE_ALLOWANCE_BYTES = 24 * 1024 ** 3
+export const RECIPE_ALLOWANCE_BYTES = 32 * 1024 ** 3
 
 export const getRecipes = () => json<Recipe[]>('/recipes')
 
 // Freeze a project into a new Recipe. Same wire shape as submit() — tar+gzip body, meta in the header —
 // because a Recipe IS the same upload a Spawn carries, just persisted on the Head instead of run once. The
-// Head weighs it against the 24 GB wall and answers 413 if it won't fit (the composer blocks first, from
+// Head weighs it against the 32 GB wall and answers 413 if it won't fit (the composer blocks first, from
 // File.size, so the browser never spends the upload on a doomed save). Returns the frozen Recipe.
 export type NewRecipe = {
   picked: Picked
@@ -368,7 +368,7 @@ export const createRecipe = (r: NewRecipe) => recipeUpload(r, '/recipes')
  *
  * Carries a body (unlike other actions here): an update IS a fresh upload, since there's no local copy of
  * the old folder to diff against and the Head keeps no Spawn code either. Until it lands, the Recipe keeps
- * running the old snapshot; a save the 24 GB wall refuses leaves that old snapshot untouched.
+ * running the old snapshot; a save the 32 GB wall refuses leaves that old snapshot untouched.
  */
 export const updateRecipe = (name: string, r: NewRecipe) =>
   recipeUpload(r, `/recipes/${encodeURIComponent(name)}/update`)
