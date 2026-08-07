@@ -139,7 +139,10 @@ cuttle teardown
 ```
 
 It detects that this box is an Arm and reverses the setup — services, mesh, packages, local state. It
-makes you type the machine's hostname to confirm.
+makes you type the machine's hostname to confirm. It keeps the Pod image, which is a few hundred MB
+in `/opt/ccc`; `cuttle teardown --all` takes that too. (If the admin tells you the cluster's image has
+changed, `--all` is the only thing that picks up the new one — a plain re-run of setup keeps whatever
+this box already built.)
 
 If you installed from a bundle, `cuttle-installer/uninstall.sh` does the teardown and then removes
 the tool itself.

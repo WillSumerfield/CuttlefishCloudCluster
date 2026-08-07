@@ -474,14 +474,20 @@ def build_base_sif() -> None:
     job script names the sif identically wherever Slurm places the Spawn.
 
     Built locally on each node (apptainer build) — deliberately NOT shipped from the Head, which would
-    push a multi-GB image over the mesh at every enrollment. Skipped if already present (a re-run must
-    not trigger a multi-GB rebuild; teardown keeps it unless --all).
+    push the image over the mesh at every enrollment. Skipped if already present, and teardown keeps it
+    unless --all.
+
+    **That skip is why a changed image needs `cuttle teardown --all`.** The definition here is rendered
+    fresh on every run, but an existing base.sif is never compared against it: a node that already has
+    one keeps whatever it built, however old. So changing BASE_DEF_TMPL or its pinned digest is a
+    fleet-wide teardown --all + setup, not a re-run.
     """
     # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
     run(["install", "-d", "-o", getpass.getuser(), "-g", getpass.getuser(),
          str(config.CCC_IMAGES_DIR)], sudo=True)
     if config.CCC_SIF.exists():
-        ui.say(f"  [muted]base.sif exists ({config.CCC_SIF}) — skipping build[/muted]")
+        ui.say(f"  [muted]base.sif exists ({config.CCC_SIF}) — skipping build. `cuttle teardown "
+               f"--all` is what rebuilds it if the image definition has changed.[/muted]")
         return
     def_file = config.CCC_IMAGES_DIR / "base.def"
     def_file.write_text(templates.render_base_def())
@@ -533,6 +539,60 @@ def install_env_tools() -> None:
         run(["install", "-m", "0755", str(mm), str(config.ENV_TOOLS_DIR / "micromamba")], sudo=True)
     ui.say(f"  [muted]uv {config.UV_VERSION} + micromamba {config.MICROMAMBA_VERSION} → "
            f"{config.ENV_TOOLS_DIR}[/muted]")
+
+
+def build_bench_env() -> None:
+    """**Head only.** Build the enrollment benchmark's torch **Environment**, once, for the whole fleet.
+
+    base.sif carries no Python and no torch any more (templates.BASE_DEF_TMPL), and the benchmark is the
+    one thing that ran on the image's own — so it needs an env of its own. It is not a Spawn's: nobody
+    submitted it, it has no manifest and no Guise, and it is the same env for every Arm forever.
+
+    **One env, built once, pinned** (config.BENCH_TORCH_PKG). **Power** is a number cards are compared
+    by — the divisor in every Settlement — so measuring two boxes with two different torches would put
+    a difference in the *fleet's* prices that is not a difference in the *cards*. Each Arm pulls this
+    exact tree at enrollment over the read-only [benchenv] module and runs its interpreter inside the
+    Pod (templates.BENCH_SBATCH_TMPL).
+
+    Built INSIDE a Pod, with the destination bound at the one path it will ever be used at: a venv bakes
+    its prefix into pyvenv.cfg, its own `bin/python` symlink and every console-script shebang, so the
+    tree does not survive being used from a different path. The host directory underneath is free to
+    move, which is why this can build in the operator's temp dir and be installed afterwards.
+
+    Skipped if it already exists — like base.sif, a re-run must not re-fetch 2.5 GB. `cuttle teardown
+    --all` is what discards it (and the image) when a pin here changes.
+    """
+    dest = config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME / config.BENCH_ENV_DIR_NAME
+    if (dest / "venv" / "bin" / "python").exists():
+        ui.say(f"  [muted]benchmark environment exists ({dest}) — skipping build[/muted]")
+        return
+    uv = str(config.ENV_TOOLS_DIR / "uv")
+    venv = f"{config.BENCH_ENV_MOUNT}/venv"
+    with tempfile.TemporaryDirectory() as tmp:
+        build, cache = Path(tmp) / "env", Path(tmp) / "cache"
+        build.mkdir(), cache.mkdir()
+        for argv in ([uv, "venv", "--python", config.BENCH_ENV_PYTHON, venv],
+                     [uv, "pip", "install", "--python", f"{venv}/bin/python",
+                      config.BENCH_TORCH_PKG]):
+            # The same two settings that make a Spawn's Environment self-contained (see
+            # ccc_head_api.environments): only-managed forbids uv from adopting an interpreter it did
+            # not install — one that exists on the Head and on no Arm — and INSTALL_DIR puts the one it
+            # downloads inside the tree that ships.
+            run(["apptainer", "exec", "--contain", "--pwd", "/",
+                 "--bind", f"{build}:{config.BENCH_ENV_MOUNT},{cache}:/ccc-cache,"
+                           f"{config.ENV_TOOLS_DIR}:{config.ENV_TOOLS_DIR}:ro",
+                 "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PYTHON_PREFERENCE=only-managed,"
+                          f"UV_PYTHON_INSTALL_DIR={config.BENCH_ENV_MOUNT}/py,"
+                          f"TMPDIR=/ccc-cache/tmp,LC_ALL=C.UTF-8,LANG=C.UTF-8",
+                 str(config.CCC_SIF), *argv], cwd="/")
+        # Into the Mantle-owned bench subtree, because rsyncd drops to `ccc` to serve it. `cp -a` keeps
+        # the symlinks as symlinks — `bin/python` points at BENCH_ENV_MOUNT, a path that exists only
+        # inside a Pod, so resolving them here would copy nothing.
+        run(["install", "-d", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+             str(dest)], sudo=True)
+        run(["cp", "-a", *[str(p) for p in build.iterdir()], str(dest)], sudo=True)
+        run(["chown", "-R", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(dest)], sudo=True)
+    ui.say(f"  [muted]{config.BENCH_TORCH_PKG} → {dest}[/muted]")
 
 
 def _fetch(url: str, dest: Path, sha256: str) -> None:
@@ -837,6 +897,8 @@ def _setup_head(address: str | None = None) -> None:
         build_base_sif()                         # Mantle-readable, at the cluster-wide path
     with ui.step("Installing the Environment build tools"):
         install_env_tools()                      # uv + micromamba, Head-only (environments.py)
+    with ui.step("Building the benchmark environment"):
+        build_bench_env()                        # the torch base.sif no longer carries; needs uv above
     # The Head's own Arm is an Arm like any other, so it is priced like one — and its declared Arm
     # Features are proved like any other's. Last, because both are real Spawns: they need slurmd up,
     # the Pod image built, and rsyncd listening.

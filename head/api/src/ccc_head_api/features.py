@@ -273,7 +273,7 @@ feature_nvlibs=$(printf %s "$feature_probe" | sed -n 2p)
 # Pod-side, so it starts with $envmount; a profile that needs the ARM-side path rewrites the prefix.
 feature_purelib=$(printf %s "$feature_probe" | sed -n 3p)
 [ -n "$feature_abi" ] || feature_fail \
-  "could not run this Spawn's interpreter ($py) to identify it, which every Feature below needs. If this Spawn declared an Environment, its build is the place to look."
+  "could not run this Spawn's interpreter ($py) to identify it, which every Feature below needs. The Pod image supplies none, so this is a Spawn that declared no Environment -- a Tide Pool opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to. If an Environment WAS declared, its build is the place to look."
 """
 
 

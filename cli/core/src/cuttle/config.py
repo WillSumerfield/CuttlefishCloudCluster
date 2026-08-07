@@ -39,13 +39,20 @@ UBUNTU_SNAPSHOT_LIST = Path("/etc/apt/sources.list.d/ccc-ubuntu-snapshot.list")
 APPTAINER_PKG = "apptainer"
 APPTAINER_PPA = "ppa:apptainer/ppa"  # added on the HEAD only
 
-# --- pinned base Pod image (built from a def: pytorch image + pip wandb) ---
-# By DIGEST, not by tag: `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` is mutable and upstream
-# re-pushes it, so a tag would silently hand two nodes different CUDA/torch builds of "the same" image.
-# The digest below is that tag's current digest (linux/amd64). `docker://` accepts a digest reference.
-BASE_IMAGE_DOCKER = ("pytorch/pytorch@sha256:"
-                     "db80a41f8428644cebcb3d75b0b62df334ab6c0e75785951eb25f48bfbd42407")
-WANDB_PKG = "wandb==0.28.1"  # PyPI is immutable per version — this pin cannot rot
+# --- pinned base Pod image (built from a def: plain Ubuntu + sshd + CA certs) ---
+# Ubuntu, NOT a PyTorch image, and that is the whole point: every **Environment** now carries its own
+# interpreter and its own torch (ccc_head_api.environments), so an image supplying either would only ever
+# be shadowed by what the Spawn brought. Removing them takes base.sif from 2.9 GB to ~150 MB — a number
+# every Arm pays in durable disk, and every donated box is somebody's own machine.
+#
+# What is left is exactly what a Pod cannot bring with it: sshd (a **Tide Pool** runs one INSIDE the Pod),
+# CA certificates (the build Pod's uv fetches from PyPI over TLS), and the baked `mantle` account.
+#
+# By DIGEST, not by tag: `ubuntu:24.04` is mutable and Canonical re-pushes it monthly, so a tag would
+# silently hand two nodes different builds of "the same" image. This is the multi-arch index digest, so
+# apptainer still selects the platform. 24.04 to match UBUNTU_CODENAME — one Ubuntu release fleet-wide.
+BASE_IMAGE_DOCKER = ("ubuntu@sha256:"
+                     "561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea")
 
 # --- pinned Environment build tools (Head only) ---
 # uv and micromamba build a Spawn's declared Environment (ccc_head_api.environments). Pinned by
@@ -120,6 +127,24 @@ BENCH_ITERS = 50
 BENCH_TIME_MINUTES = 10
 BENCH_DIR_NAME = "bench"  # HEAD_SPAWNS_DIR/bench/<node>/power — where a benchmark stages its result
 BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may still be booting slurmd)
+
+# The benchmark's own **Environment**, because base.sif no longer has a torch to borrow. Built ONCE on
+# the Head (setup.build_bench_env) and pulled by each Arm at enrollment over the [benchenv] rsync module
+# — the same route, and the same one-time cost, as the Arm's own base.sif build.
+#
+# Built rather than shipped from PyPI by each Arm: an Arm never builds anything (that is the Head's job,
+# and only the Head has uv), and a Power number is only comparable across the fleet if every card was
+# measured by the SAME torch. Pinning the version is what makes that true over time as well as across
+# machines — `torch==2.13.0` is the version the old PyTorch base image carried, so numbers measured
+# before and after this change mean the same thing.
+BENCH_TORCH_PKG = "torch==2.13.0"
+BENCH_ENV_DIR_NAME = "env"   # HEAD_SPAWNS_DIR/bench/env — a sibling of the per-node result dirs
+# Where that env is BUILT and where it is RUN, which must be one path: a venv bakes its own prefix into
+# pyvenv.cfg, its interpreter symlink and every console-script shebang, so it does not survive being
+# moved. Must equal `ccc_head_api.environments.ENV_MOUNT` — the same duplication ENV_TOOLS_DIR already
+# carries across the two packages, which do not import each other.
+BENCH_ENV_MOUNT = "/opt/ccc/env"
+BENCH_ENV_PYTHON = "3.12"    # a benchmark declares no requires-python, so one is named here
 
 # Slurm schedules the LOWEST-weight eligible node first, so Weight must run inverse to Power: the
 # fastest free card that fits wins. It is a preference among *free* nodes, not a reservation — Slurm
@@ -549,6 +574,11 @@ RSYNCD_DIR = HEAD_STATE_DIR / "rsyncd.d"
 RSYNC_MODULE_BENCH = "bench"
 RSYNC_BENCH_USER = "ccc-bench"
 RSYNCD_BENCH_SECRETS = Path("/etc/ccc-rsyncd.bench.secrets")
+# The benchmark's torch **Environment**, served READ-ONLY on the same cluster-lifetime secret. A second
+# module rather than a subdirectory of [bench] for one reason: [bench] must be writable (it is where a
+# Power file lands), and every Arm holds its secret — so an env inside it would be an env any single Arm
+# could rewrite, and every card enrolled afterwards would be priced by whatever it put there.
+RSYNC_MODULE_BENCH_ENV = "benchenv"
 
 # --- CCC user artifacts ---
 # The OPERATOR's own dir — settings + credentials only. It holds no Spawn machinery: images live in

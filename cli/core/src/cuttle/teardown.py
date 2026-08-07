@@ -255,8 +255,12 @@ def prune_opt_dir() -> None:
 
 def remove_images() -> None:
     """The node's base.sif (built to /opt so the home-less Mantle can read it). Every node has one —
-    Head and Arm alike — so both teardowns drop it, and both only under --all: it is multi-GB, and a
-    config-only re-verify must not trigger an apptainer rebuild."""
+    Head and Arm alike — so both teardowns drop it, and both only under --all: a config-only re-verify
+    must not trigger an apptainer rebuild.
+
+    --all is also the ONLY way a changed image reaches a node. `setup.build_base_sif` skips whenever the
+    file exists and never compares it against the definition it would render now, so a fleet whose image
+    definition moved needs teardown --all + setup on every node, Head included."""
     run(["rm", "-rf", str(config.CCC_IMAGES_DIR)], sudo=True, check=False)
 
 
@@ -412,7 +416,8 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         remove_user_dirs()      # ~/.ccc always (see teardown_local)
         remove_arm_state()      # the Feature mirror — nothing else on an Arm ever cleared it
         if all_:
-            remove_images()     # base.sif kept unless --all — multi-GB, and in /opt, not ~/.ccc
+            remove_images()     # base.sif kept unless --all — in /opt, not ~/.ccc, and --all is the
+                                # only way a changed image definition ever reaches this box
         prune_opt_dir()         # after remove_images: with base.sif gone, /opt/ccc is empty on an Arm
     _summarise("Arm", keep_packages, kept_images=not all_)
     # Not hygiene — see `teardown_arm`: the stale Head-side node BLOCKS re-enrolling this box, so it
@@ -444,7 +449,7 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
         remove_user_dirs()      # ~/.ccc (session, config, cert pins) always — leaving your login and
                                 # pins behind after a teardown is what surprised people
         if all_:
-            remove_images()     # base.sif is multi-GB and lives in /opt, not ~/.ccc; the Head cert
+            remove_images()     # base.sif lives in /opt, not ~/.ccc; the Head cert
             remove_tls()        # is pinned by every client — both kept unless --all
     _summarise("local cluster", keep_packages, kept_images=not all_, kept_tls=not all_)
 

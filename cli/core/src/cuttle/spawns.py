@@ -1,6 +1,7 @@
 """Spawn submission + inspection: `cuttle run` / `status` / `logs` / `outputs`.
 
-A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif python <script>`. The Slurm job id
+A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif <its own env's python> <script>`. The
+image supplies no interpreter — every Spawn declares an **Environment** and brings one. The Slurm job id
 IS the spawn id. `cuttle run` is not Head-local: it tars the working dir and POSTs it to the Head
 API (authenticated), which unpacks, renders, and submits it as the `ccc` service account, recording
 who submitted it. So this module is a thin API client — the render + stage machinery lives

@@ -642,6 +642,31 @@ class TestBenchmarkSbatch:
         assert "apptainer exec --nv" in job
         assert str(config.CCC_SIF) in job
 
+    def test_it_brings_its_own_interpreter(self):
+        """base.sif has no Python and no torch, so a bare `python` here would be an Arm that enrolls
+        and then prices at nothing — discovered as a missing Power file, on someone else's machine."""
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        assert f"{config.BENCH_ENV_MOUNT}/venv/bin/python" in job
+        assert " python " not in job, "the image's own python came back"
+
+    def test_the_env_is_pulled_before_it_is_used(self):
+        """It arrives over the mesh at enrollment rather than being built on the Arm — an Arm builds
+        nothing, and one torch for the whole fleet is what makes two Powers comparable."""
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        pull = job.index(f"/{config.RSYNC_MODULE_BENCH_ENV}/")
+        assert pull < job.index("apptainer exec")
+
+    def test_the_env_is_bound_at_the_path_it_was_built_at(self):
+        """A venv bakes its own prefix into pyvenv.cfg, `bin/python` and every console-script shebang.
+        Bound anywhere else, its interpreter does not resolve and the benchmark cannot start."""
+        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        assert f'--bind "$out/env:{config.BENCH_ENV_MOUNT}"' in job
+
+    def test_the_env_pull_dereferences_symlinks(self):
+        """`bin/python` is an absolute link to a path that exists only INSIDE a Pod. Copied as a link
+        it dangles on the Arm; -L copies the file it names."""
+        assert "rsync -aL" in templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+
     def test_result_comes_home_by_rsync(self):
         """One code path for a donor's box and for the Head's own Arm (which rsyncs to itself over the
         mesh). rsync will not invent the destination directory — the Head pre-creates it."""

@@ -824,8 +824,8 @@ def run(
     dest: Path = typer.Option(
         None, "--dest", help="Where to put this Spawn's results (default: ~/ccc/outputs)."),
 ):
-    """Submit a Spawn: uploads the working dir to the Head, which runs
-    apptainer exec --nv base.sif python <script>. Requires `cuttle login`. Extra args after the
+    """Submit a Spawn: uploads the working dir to the Head, which builds the environment you
+    declared and runs your script against it inside a Pod. Requires `cuttle login`. Extra args after the
     script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -o checkpoints -- --epochs 5`).
 
     --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody

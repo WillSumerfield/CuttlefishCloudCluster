@@ -62,7 +62,8 @@ submit from any box, whether or not it ever ran `setup`.
 
 - `cuttle run <script> --time MIN --vram GB [--gpu N] [-f] [--project P] [--entity E]
   [--no-gitignore] [-- ARGS]` — submit a **Spawn**: uploads the working dir (honoring `.gitignore`
-  unless `--no-gitignore`) to the Head, which runs `apptainer exec --nv base.sif python <script>` as
+  unless `--no-gitignore`) to the Head, which builds the declared **Environment** and runs
+  `apptainer exec --nv base.sif <that env's python> <script>` as
   the **Mantle**. `--project`/`--entity` set W&B per-Spawn. `-f` streams stdout. Job id = spawn id.
   - `--time` (wall-clock minutes) and `--vram` (GB) are **required, with no defaults**. Nothing can
     price a Spawn whose length nobody declared, and a `--vram` that defaulted to the fleet's biggest
@@ -114,5 +115,7 @@ doesn't happen on every redeploy.
   they live on the Head under `/var/lib/ccc/head/spawns/<id>/{out,err,exit,outputs}` (owned by the
   Mantle) and are read back over the API — a submitter never touches the Head's disk.
 - The Pod image is at `/opt/ccc/images/base.sif`, the same path on every node, so it is readable by the
-  home-less Mantle.
+  home-less Mantle. It is Ubuntu + sshd + CA certs (~150 MB) and carries no Python — every Spawn
+  brings its own. A changed image reaches a node only through `teardown --all` + setup; a plain
+  setup re-run keeps whatever is already there.
 - Pinned versions live in `src/cuttle/config.py`.

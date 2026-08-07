@@ -43,14 +43,17 @@ cuttle setup --head --address=<address-Arms-will-reach-this-box-at>
 This does a great deal, in order: joins its own mesh, installs Slurm/munge/Apptainer, configures the
 scheduler, provisions the cluster's own identity and the auth store, provisions Guises, installs
 stage-in/out, builds the dashboard, issues a TLS certificate, starts the Head API and the Karma tick,
-installs the nightly backup timer and the health monitor, builds the Pod image, and installs the
-Environment build tools.
+installs the nightly backup timer and the health monitor, builds the Pod image, installs the
+Environment build tools, and builds the benchmark environment every Arm is priced against.
 
 Along the way it asks which [Features](../elements/arm-features.md) *this* box has — the Head's own
 Arm is an Arm like any other — and, if you want alerting, for [SMTP credentials](../SMTP-Runbook.md).
 Both are skippable and both can be filled in by re-running setup later.
 
-Re-running `cuttle setup --head` is safe and is the normal way to change something.
+Re-running `cuttle setup --head` is safe and is the normal way to change something. The one thing it
+will *not* redo is the Pod image: an existing `base.sif` is kept as-is and never compared against the
+definition setup would render now. Changing the image means `cuttle teardown --all` and setup again,
+on the Head and on every Arm.
 
 ## 3. Check it
 

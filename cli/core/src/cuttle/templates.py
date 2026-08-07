@@ -215,13 +215,22 @@ mkdir -p "$out"
 cat > "$out/bench.py" <<'CCC_BENCH_PY'
 {bench_py}
 CCC_BENCH_PY
-# /tmp is auto-mounted by Apptainer, so $CCC_OUT needs no explicit --bind (unlike a Spawn's, which
-# lives under /var/lib/ccc).
-apptainer exec --nv --env CCC_OUT="$out" {sif} python "$out/bench.py"
-# The [bench] module is rooted at the bench subtree, so this URL can reach the Power files and nothing
-# else on the Head. Its secret is the cluster-lifetime one from RSYNCD_BENCH_SECRETS — a benchmark
-# never goes through the Head API, so there is no **Siphon** for it to be handed.
+# Both transfers use the cluster-lifetime secret from RSYNCD_BENCH_SECRETS — a benchmark never goes
+# through the Head API, so there is no **Siphon** for it to be handed. Each module is rooted at a
+# subtree, so between them these URLs reach the benchmark's env and the Power files and nothing else.
 export RSYNC_PASSWORD={bench_secret}
+# The torch this measurement needs, which base.sif no longer carries — see config.BENCH_TORCH_PKG for
+# why it is one pinned env built once on the Head rather than each Arm resolving its own. Pulled here
+# rather than at setup because a benchmark is the FIRST thing a new Arm runs and this is the one place
+# that knows it is about to need it. -L: the tree contains absolute symlinks (a venv's `bin/python`)
+# pointing at a path that exists only inside the Pod, so they are copied as the files they name.
+mkdir -p "$out/env"
+rsync -aL "rsync://{bench_user}@{head_ip}/{bench_env_mod}/" "$out/env/"
+# /tmp is auto-mounted by Apptainer, so $CCC_OUT needs no explicit --bind (unlike a Spawn's, which
+# lives under /var/lib/ccc). The env is bound at the ONE path it was built at and cannot be moved from
+# (config.BENCH_ENV_MOUNT), and its own interpreter is what runs — the image has none.
+apptainer exec --nv --env CCC_OUT="$out" --bind "$out/env:{env_mount}" \\
+  {sif} {env_mount}/venv/bin/python "$out/bench.py"
 rsync -a "$out/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """
 
@@ -255,14 +264,24 @@ def render_ubuntu_snapshot_list() -> str:
     )
 
 
-# Base Pod image: official PyTorch + pinned wandb (so Spawns can log W&B out of the box), plus what a
-# Tide Pool needs to run a live shell:
+# Base Pod image: plain Ubuntu and the three things a Pod cannot bring with it. NO Python, no torch, no
+# CUDA — every Spawn declares an **Environment** and that Environment carries its own interpreter and its
+# own torch (ccc_head_api.environments), so anything supplied here would be shadowed by what the Spawn
+# brought and paid for in durable disk on every donated box regardless. ~150 MB instead of 2.9 GB.
+#
+# `--nv` still injects the host's driver at exec, and PyPI's torch wheels bundle their own CUDA runtime,
+# so removing the CUDA image costs a GPU Spawn nothing.
 #
 # * `openssh-server` — sshd runs INSIDE the Pod, unprivileged, as the Mantle (see
 #   ccc_head_api.spawns.PAYLOAD_TIDEPOOL). It never setuid()s: the "login" is to the SAME uid already
 #   running the Pod, so there is no privilege drop and no per-User account to provision on the Arm.
+#   It pulls in openssh-client, which is where `ssh-keygen -A` comes from.
+# * `ca-certificates` — an Environment is built in a Pod off THIS image, and uv fetches every package
+#   (and the standalone CPython itself) over TLS. A stock Ubuntu image carries no trust store, so
+#   without this every build fails at the first HTTPS connection. The PyTorch image happened to have
+#   one; nothing here may depend on happening to.
 # * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
-#   sshd still needs that a stock PyTorch image does not have: the connecting uid has to resolve via
+#   sshd still needs that a stock image does not have: the connecting uid has to resolve via
 #   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
 #   directly rather than via useradd/groupadd (not guaranteed present in every base image) — three text
 #   appends and a directory, nothing that can fail for a missing tool.
@@ -272,8 +291,7 @@ From: {image}
 
 %post
     # Runs inside the (disposable) build container only — never the host.
-    python -m pip install --no-cache-dir --break-system-packages {wandb}
-    apt-get update && apt-get install -y --no-install-recommends openssh-server \
+    apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
       && rm -rf /var/lib/apt/lists/*
     echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
     echo "mantle:x:{gid}:" >> /etc/group
@@ -296,10 +314,17 @@ From: {image}
 # tell one Spawn from another on the same Arm. What isolates a Spawn is its module's root plus its own
 # secret. `list = false` keeps the live Siphon names out of a bare `rsync rsync://<head>/`.
 #
-# [bench] is the one module here, and the one that is not per-Spawn: the enrollment benchmark stages
-# its Power file home and never touches the Head API, so it cannot be handed a Siphon. Rooted at the
-# bench subtree, so it reaches the Power files and nothing else. `strict modes` stays TRUE for it —
-# its secrets file is root-owned, unlike a Siphon's, which must be writable by the Head API.
+# [bench] and [benchenv] are the two modules here, and the two that are not per-Spawn: the enrollment
+# benchmark stages its Power file home and pulls its torch env out, and never touches the Head API, so it
+# cannot be handed a Siphon. Rooted at the bench subtree, so between them they reach the Power files and
+# the benchmark's env and nothing else. `strict modes` stays TRUE for both — their secrets file is
+# root-owned, unlike a Siphon's, which must be writable by the Head API.
+#
+# The split is the point: [bench] must be WRITABLE (it is where a Power file lands) and every Arm holds
+# the one secret, so an env served from inside it would be an env any single Arm could overwrite — and
+# every card enrolled after that would be priced by whatever it left there. [benchenv] inherits the
+# file's `read only = true` default and says nothing about it, which is what makes that hard to undo by
+# accident.
 RSYNCD_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 address = {mesh_ip}
@@ -314,6 +339,11 @@ strict modes = false
 [{bench_mod}]
     path = {bench_dir}
     read only = false
+    auth users = {bench_user}
+    secrets file = {bench_secrets}
+    strict modes = true
+[{bench_env_mod}]
+    path = {bench_env_dir}
     auth users = {bench_user}
     secrets file = {bench_secrets}
     strict modes = true
@@ -343,6 +373,9 @@ def render_rsyncd_conf(mesh_ip: str) -> str:
         user=config.HEAD_API_USER, group=config.HEAD_API_USER,
         bench_mod=config.RSYNC_MODULE_BENCH,
         bench_dir=config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME,
+        bench_env_mod=config.RSYNC_MODULE_BENCH_ENV,
+        bench_env_dir=(config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME
+                       / config.BENCH_ENV_DIR_NAME),
         bench_user=config.RSYNC_BENCH_USER, bench_secrets=config.RSYNCD_BENCH_SECRETS,
         rsyncd_dir=config.RSYNCD_DIR,
         v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
@@ -354,7 +387,7 @@ def render_rsyncd_unit() -> str:
 
 
 def render_base_def() -> str:
-    return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER, wandb=config.WANDB_PKG,
+    return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER,
                                 uid=config.CCC_UID, gid=config.CCC_GID)
 
 
@@ -591,6 +624,8 @@ def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, gpus: i
         sif=config.CCC_SIF,
         head_ip=head_mesh_ip,
         bench_mod=config.RSYNC_MODULE_BENCH,
+        bench_env_mod=config.RSYNC_MODULE_BENCH_ENV,
+        env_mount=config.BENCH_ENV_MOUNT,
         bench_user=config.RSYNC_BENCH_USER,
         bench_secret=bench_secret,
     )

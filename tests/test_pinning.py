@@ -72,19 +72,51 @@ class TestUbuntuSnapshot:
 
 
 class TestBaseImageDigest:
-    """`pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` is a MUTABLE tag — upstream re-pushes it — so
-    two nodes building base.sif months apart would get different torch/CUDA builds of "the same"
-    image, and nothing would say so."""
+    """`ubuntu:24.04` is a MUTABLE tag — Canonical re-pushes it monthly — so two nodes building
+    base.sif months apart would get different builds of "the same" image, and nothing would say so."""
 
     def test_def_pins_a_digest_not_a_tag(self):
         image = [line for line in templates.render_base_def().splitlines()
                  if line.startswith("From:")][0]
         assert "@sha256:" in image
-        assert ":2.13.0-" not in image, "a mutable tag came back"
+        assert ":24.04" not in image, "a mutable tag came back"
 
     def test_digest_is_a_full_sha256(self):
         digest = config.BASE_IMAGE_DOCKER.split("@sha256:")[1]
         assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
+
+    def test_one_ubuntu_release_fleet_wide(self):
+        """The Pod image and the apt snapshot every node pins against are the same release, so a
+        version pinned for the host is a version the image could install too."""
+        assert config.UBUNTU_CODENAME == "noble"  # 24.04
+        assert config.BASE_IMAGE_DOCKER.startswith("ubuntu@")
+
+
+class TestTheImageCarriesNoRuntime:
+    """base.sif is Ubuntu plus what a Pod cannot bring with it, and nothing else. Every **Environment**
+    now carries its own interpreter and its own torch, so anything here would only be shadowed — and
+    paid for in durable disk on every donated box regardless."""
+
+    def test_no_python_and_no_torch(self):
+        d = templates.render_base_def()
+        for word in ("python", "torch", "pip", "wandb", "conda", "cuda"):
+            assert word not in d.lower(), f"{word} came back into the image"
+
+    def test_sshd_stays(self):
+        """A **Tide Pool** runs sshd INSIDE the Pod, so this one cannot come from an Environment."""
+        assert "openssh-server" in templates.render_base_def()
+
+    def test_ca_certificates_stay(self):
+        """An Environment is BUILT in a Pod off this image and uv fetches every package over TLS. A
+        stock Ubuntu image has no trust store, so without this every build dies at the first
+        connection — and the PyTorch image's happening to have one is why nothing noticed before."""
+        assert "ca-certificates" in templates.render_base_def()
+
+    def test_the_mantle_account_is_baked_in(self):
+        """Unprivileged sshd needs the connecting uid to resolve via getpwuid or it cannot find a home
+        for authorized_keys. Nothing in an Environment can supply an /etc/passwd entry."""
+        d = templates.render_base_def()
+        assert f"mantle:x:{config.CCC_UID}:{config.CCC_GID}" in d
 
 
 DEB_BYTES = b"!<arch>\ndebian-binary   pretend apptainer .deb\n"
