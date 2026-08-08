@@ -89,6 +89,18 @@ MICROMAMBA_SHA256 = {
 # --- cluster identity ---
 CLUSTER_NAME = "ccc"
 PARTITION = "ccc"
+# The **Cluster name** (CONTEXT.md): the one name every machine CCC installs on uses to reach the Head,
+# in place of an address. Hardcoded, not a flag — there is one cluster, and a name that varied per
+# deployment would have to be baked into certs, pins and the installer bundle anyway.
+#
+# Nothing resolves it. CCC has no DNS: the mesh runs no resolver and there is no router to configure,
+# so `setup` writes it into /etc/hosts on every box it touches (system.write_hosts_entry), pointed at
+# whichever address THAT box can reach the Head on — 127.0.0.1 on the Head, the Head's mesh IP on an
+# Arm, the configured address on a client. A device CCC was never installed on has no way to learn it
+# and reaches the Dashboard by IP instead.
+DOMAIN = "ccc.glados"
+# The marker that makes our /etc/hosts line ours: rewritten in place on re-setup, removed by teardown.
+HOSTS_MARKER = "# cuttle"
 
 # --- GPU devices (distro Slurm lacks NVML; map GRES to the device nodes explicitly) ---
 # There is no constant here on purpose: a node's device list is DETECTED (system.gpu_devices()), not
@@ -414,17 +426,40 @@ def guise_name(uid: int) -> str:
 FIRST_ADMIN_USER = "admin"
 HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
 # LAN TLS. The Head API carries passwords and session tokens on `0.0.0.0`, so the LAN path must be
-# encrypted. No CA will sign a cert for a box with no public domain (that's item #8), so the Head signs
-# its OWN — which gives encryption but no identity: anyone can self-sign a cert claiming to be the
-# Head. Identity comes back from PINNING (see cuttle/tls.py): the CLI remembers this exact cert the
-# first time it sees it, exactly like SSH's known_hosts. Browsers can't pin, so they show the
-# "not private" warning once and the user adds an exception (setup prints that this is expected).
-# Lives in /opt (not CCC_LIB) so a plain teardown preserves it, like base.sif — regenerating the cert
-# would invalidate every client's pin.
+# encrypted. No public CA will sign a cert for a box with no public domain, so the Head is its OWN CA:
+# it mints a root once and signs its serving cert (the "leaf") with it.
+#
+# A CA rather than a bare self-signed leaf, for two reasons that are really one:
+#   * every box CCC installs on TRUSTS the CA — OS store for curl/python, NSS + Firefox policy for
+#     browsers (system.trust_ccc_ca*) — so the Dashboard loads clean, no "not private" warning;
+#   * the leaf can then be REISSUED (a new SAN, a changed LAN IP, expiry) without invalidating anything,
+#     because what is trusted and pinned is the CA, not the leaf. A bare self-signed cert had to be
+#     kept forever or every client broke at once.
+#
+# Identity still comes from PINNING (cuttle/tls.py): cuttle verifies the Head against this CA alone,
+# never the public bundle. A client that has no CA yet gets it on first contact, SSH-known_hosts style.
+#
+# Lives in /opt (not CCC_LIB) so a plain teardown preserves it, like base.sif — a NEW CA is the one
+# thing that would still invalidate every client, so it is minted once and kept (`--all` clears it).
 CCC_TLS_DIR = Path("/opt/ccc/tls")
-HEAD_CERT = CCC_TLS_DIR / "head.crt"   # 0644, the public ID card clients pin
+HEAD_CA_CERT = CCC_TLS_DIR / "ccc-ca.crt"  # 0644, the trust anchor every box installs and cuttle pins
+HEAD_CA_KEY = CCC_TLS_DIR / "ccc-ca.key"   # 0600 ccc — signs leaves; never leaves the Head
+HEAD_CERT = CCC_TLS_DIR / "head.crt"   # 0644, the serving cert; reissued freely under the CA above
 HEAD_KEY = CCC_TLS_DIR / "head.key"    # 0600 ccc — only the Head API may read it
 CERT_DAYS = 3650                       # effectively never expires; a pin outliving the cert is worse
+# Where a box that trusts this cluster installs the CA. Same store, same mechanism and the same reasons
+# as HEADSCALE_CA_PATH below — a distinct file so each can be removed without disturbing the other.
+HEAD_CA_TRUST_PATH = Path("/usr/local/share/ca-certificates/ccc-head.crt")
+HEAD_CA_NICKNAME = "CCC Head CA"       # the name it goes in (and comes out) of an NSS db under
+# Chromium-family browsers (Chrome, Chromium, Edge, Brave) share ONE per-user NSS db on Linux and
+# ignore the OS store entirely, so trusting the CA there is a separate act from update-ca-certificates.
+# Per-user by construction: a second login account on the same box does its own import.
+NSSDB_DIR = ".pki/nssdb"               # relative to $HOME
+NSS_TOOLS_PKG = "libnss3-tools"        # provides `certutil`
+# Firefox ignores both stores, but reads an enterprise policy that tells it to honour the OS store —
+# which is why it needs no package. Cuttle merges its key into an existing file rather than clobbering
+# whatever else is configured there.
+FIREFOX_POLICIES = Path("/etc/firefox/policies/policies.json")
 # Cap an upload rather than buffering whatever arrives: the Head API streams the body to disk, and the
 # Head is the one box that must stay up. A browser folder-picker makes a huge accidental selection easy.
 MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB

@@ -641,52 +641,116 @@ def _fetch(url: str, dest: Path, sha256: str) -> None:
         raise RuntimeError(f"checksum mismatch for {url}\n  expected {sha256}\n  got      {got}")
 
 
-def install_tls(mesh_ip: str) -> None:
-    """Generate the Head's self-signed TLS cert, so the LAN path stops carrying passwords in the clear.
-
-    Every address a client might dial the Head at must be in the cert's SANs, or TLS rejects the
-    connection with a name mismatch *on top of* the self-signed warning:
-      - the LAN IP + hostname  — a browser or CLI on the local network,
+def required_sans(mesh_ip: str) -> list[str]:
+    """Every address a client might dial the Head at. All of them must be in the serving cert's SANs,
+    or TLS rejects the connection with a name mismatch:
+      - the **Cluster name** — what everything canonically uses now (config.DOMAIN),
+      - the LAN IP + hostname  — a browser or CLI on the local network, or a device with no hosts entry,
       - the mesh IP            — a remote Arm's owner browsing over the mesh,
       - localhost/127.0.0.1    — a WSL Arm's dashboard forward, which surfaces the Head at
                                  https://localhost:8082 in the Windows browser.
-
-    Generated only if absent: regenerating would change the cert's fingerprint and invalidate the pin
-    every client stored (see cuttle/tls.py), so a routine teardown+setup must not churn it. The key is
-    readable only by the Mantle, which is the user the Head API runs as — re-asserted on every run,
-    see `_secure_tls`.
     """
-    if config.HEAD_CERT.exists():
-        print(f"cuttle: TLS cert exists ({config.HEAD_CERT}) — keeping it (clients have pinned it)")
-        _secure_tls()
-        return
-    host, lan = system.hostname(), system.primary_ip()
-    san = (f"DNS:{host},DNS:localhost,IP:{lan},IP:{mesh_ip},IP:127.0.0.1")
+    return [f"DNS:{config.DOMAIN}", f"DNS:{system.hostname()}", "DNS:localhost",
+            f"IP:{system.primary_ip()}", f"IP:{mesh_ip}", "IP:127.0.0.1"]
+
+
+def _cert_sans(cert: Path) -> set[str]:
+    """The SANs actually present in `cert`. openssl PRINTS an IP SAN as `IP Address:1.2.3.4` but ACCEPTS
+    it as `IP:1.2.3.4`, so normalise to the input spelling — otherwise every IP reads as missing and the
+    cert is reissued on every single run."""
+    r = run(["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", str(cert)],
+            sudo=True, capture_output=True, text=True, check=False)
+    parts = re.split(r"[,\n]", r.stdout.replace("IP Address:", "IP:"))
+    return {p.strip() for p in parts if p.strip().startswith(("DNS:", "IP:"))}
+
+
+def install_tls(mesh_ip: str) -> None:
+    """The Head's TLS identity: a CCC root CA, and a serving cert signed by it.
+
+    The CA is minted ONCE and kept — it is the thing every box trusts and every client pins, so a new
+    one un-trusts the whole cluster at a stroke. `teardown.remove_tls` is `--all` only for exactly that
+    reason, so a routine teardown+setup does not churn it either.
+
+    The LEAF, by contrast, is cheap to replace, and this reissues it whenever it stops covering
+    `required_sans` — or stops being signed by the current CA. That is what upgrades an existing Head
+    onto the Cluster name, and it also self-heals a changed LAN IP, which previously left TLS quietly
+    broken with no path back short of a `--all` teardown. Clients notice nothing: what they pinned is
+    the CA, and the new leaf still chains to it.
+
+    Keys are readable only by the Mantle, the user the Head API runs as — re-asserted every run, see
+    `_secure_tls`.
+    """
     run(["install", "-d", "-m", "0755", str(config.CCC_TLS_DIR)], sudo=True)
-    run(["openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
-         "-days", str(config.CERT_DAYS),
-         "-subj", f"/CN={host}", "-addext", f"subjectAltName={san}",
-         "-keyout", str(config.HEAD_KEY), "-out", str(config.HEAD_CERT)], sudo=True)
+    if not config.HEAD_CA_CERT.exists():
+        # pathlen:0 — this CA signs the Head's serving cert and nothing that can sign in turn. It is
+        # about to be installed into the OS trust store of every box in the cluster; a CA that could
+        # mint intermediates would be a far larger thing to have handed them.
+        run(["openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
+             "-days", str(config.CERT_DAYS),
+             "-subj", f"/CN=CCC Head CA ({system.hostname()})",
+             "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+             "-keyout", str(config.HEAD_CA_KEY), "-out", str(config.HEAD_CA_CERT)], sudo=True)
+        print(f"cuttle: minted the CCC certificate authority ({config.HEAD_CA_CERT})")
+    want = required_sans(mesh_ip)
+    if config.HEAD_CERT.exists():
+        missing = [s for s in want if s not in _cert_sans(config.HEAD_CERT)]
+        chains = run(["openssl", "verify", "-CAfile", str(config.HEAD_CA_CERT),
+                      str(config.HEAD_CERT)], sudo=True, check=False,
+                     capture_output=True, text=True).returncode == 0
+        if not missing and chains:
+            print(f"cuttle: TLS cert exists ({config.HEAD_CERT}) and covers every address — keeping it")
+            _secure_tls()
+            return
+        why = (f"it does not cover {', '.join(missing)}" if missing
+               else "it is not signed by this Head's CA")
+        print(f"cuttle: reissuing the Head's TLS cert — {why}.\n"
+              f"        Clients pin the CA, not this cert, so none of them has to do anything.")
+    _mint_leaf(want)
     _secure_tls()
-    print(f"cuttle: TLS cert for {san}")
+    print(f"cuttle: TLS cert for {','.join(want)}")
+
+
+def _mint_leaf(sans: list[str]) -> None:
+    """Issue the serving cert under the CA. A CSR + `x509 -req` rather than `req -x509`, because the
+    latter can only self-sign. The CSR and the extension file are scratch and are removed here: they
+    live in the same root-owned 0755 dir as the keys, and a stale head.ext would be a confusing thing
+    to find next to a cert whose SANs no longer match it."""
+    d, san = config.CCC_TLS_DIR, ",".join(sans)
+    sh(f"""
+umask 077
+cat > {d}/head.ext <<'EOF'
+basicConstraints=CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName={san}
+EOF
+openssl req -newkey rsa:4096 -nodes -subj '/CN={config.DOMAIN}' \
+    -keyout {config.HEAD_KEY} -out {d}/head.csr
+openssl x509 -req -in {d}/head.csr -CA {config.HEAD_CA_CERT} -CAkey {config.HEAD_CA_KEY} \
+    -CAcreateserial -days {config.CERT_DAYS} -extfile {d}/head.ext -out {config.HEAD_CERT}
+rm -f {d}/head.csr {d}/head.ext
+""", sudo=True)
 
 
 def _secure_tls() -> None:
-    """Owner and modes on the keypair, re-asserted on EVERY `setup --head` — not only the run that
-    minted it.
+    """Owner and modes on both keypairs, re-asserted on EVERY `setup --head` — not only the run that
+    minted them.
 
-    The generating branch above runs once in a Head's life and then never again: the cert is kept
-    deliberately (a new one invalidates every client's pin), and `teardown.remove_tls` is `--all` only,
-    so a routine teardown does not clear it either. That makes anything which widens the key afterwards
-    permanent, with no path back short of throwing away every pin.
+    The CA is minted once in a Head's life and then never again, and `teardown.remove_tls` is `--all`
+    only, so a routine teardown does not clear it either. That makes anything which widens a key
+    afterwards permanent, with no path back short of un-trusting the cluster everywhere.
 
-    openssl writes the key 0600 itself, so a widened key means something outside setup touched it —
+    openssl writes keys 0600 itself, so a widened key means something outside setup touched it —
     unattributable after the fact, which is the point of re-asserting rather than just checking. A
-    **Guise** could otherwise read the private half of the cert its own Head authenticates with.
+    **Guise** could otherwise read the private half of the cert its own Head authenticates with, or
+    worse, the CA key that would let it mint a cert for any name in the cluster.
     """
-    run(["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(config.HEAD_KEY)], sudo=True)
-    run(["chmod", "0600", str(config.HEAD_KEY)], sudo=True)  # the private half: Mantle-only
-    run(["chmod", "0644", str(config.HEAD_CERT)], sudo=True)  # the public ID card: anyone may read
+    for key in (config.HEAD_KEY, config.HEAD_CA_KEY):
+        run(["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}", str(key)], sudo=True)
+        run(["chmod", "0600", str(key)], sudo=True)   # the private halves: Mantle-only
+    for crt in (config.HEAD_CERT, config.HEAD_CA_CERT):
+        run(["chmod", "0644", str(crt)], sudo=True)   # the public ID cards: anyone may read
 
 
 def build_spa() -> None:
