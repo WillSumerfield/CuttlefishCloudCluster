@@ -798,7 +798,7 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
     # disk of our own, not the operator's.
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", Path(tempfile.mkdtemp()) / "spawns")
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-    monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
+    monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
     monkeypatch.setattr(slurm, "queue", lambda: [])  # no live Spawns — submit_checked's cap check
     monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
     return TestClient(head_main.app)
@@ -1130,7 +1130,7 @@ class TestOutputsPlumbThroughToTheRenderedScript:
         monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-        monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
+        monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
         monkeypatch.setattr(slurm, "queue", lambda: [])
         # submit_checked reads the DB even for a non-admin's cap check, retracted-node check, and Tide
         # quote — and submit() writes the Attribution row at the end (FK'd to a real user).

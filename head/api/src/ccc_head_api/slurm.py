@@ -95,8 +95,9 @@ def _gpu_indices(gres_detail: list[str] | None) -> list[int]:
     Spawn is billed for the card it held rather than a node average.
 
     `squeue --json` must set `detail_flag` (SHOW_DETAIL) or slurmctld packs this empty and every Spawn
-    looks device-less. Also empty by construction for a job not yet started or requesting no GRES — []
-    for both a PENDING Spawn and a CPU-only one; the caller tells those apart by the Spawn's GPU count.
+    looks device-less. Also empty by construction for a job not yet started. Every Spawn requests GRES
+    (there is no Device-less work here), so an empty list on a RUNNING one is always a failure to
+    report, never a Spawn that asked for nothing.
 
     CCC Spawns are single-node, so the list is flattened rather than kept per-node.
     """
@@ -156,20 +157,56 @@ def arms() -> list[dict]:
     return sorted(out, key=lambda a: a["name"])
 
 
-def vram_constraint(vram_gb: int) -> str:
-    """Turn `--vram 20` into a Slurm constraint over the fleet's actual cards: `vram24|vram48|vram80`.
+def _devices(entry: dict) -> int:
+    """How many **Device**s an Arm enrolled with. `gpu_devices` is the per-card list Powers align to,
+    so its length is the count — not `vram_mb`, which is one number for the whole node."""
+    return len(entry.get("gpu_devices") or [])
+
+
+def max_devices() -> int:
+    """The most Devices any admitted Arm carries — the ceiling on a `--gpus` count, and how far the
+    Dashboard's dropdown runs."""
+    return max((_devices(e) for e in load_registry().values() if e.get("admitted")), default=0)
+
+
+def vram_constraint(vram_gb: int, gpus: int = 1) -> str:
+    """Turn `--vram 20 --gpus 2` into a Slurm constraint over the fleet's actual cards:
+    `vram24|vram48|vram80`.
 
     Slurm constraints are string **set-membership** — there is no `>=`. So an arbitrary integer can
     only be honoured by whoever knows every distinct card in the cluster, and expands the request into
     the OR of the ones that qualify. That is the Head, here. The alternative (fixed buckets baked into
     the Arms) would cap what a User may ask for at whatever list we guessed at design time.
+
+    `--vram` is a **total across the Devices asked for**, so the per-card need is `ceil(vram/gpus)` —
+    exact, never an approximation, because a mixed-GPU box is refused at enrollment and every card on a
+    node is therefore the same size.
+
+    The two needs are one **joint** question, which is why the registry is narrowed to Arms with enough
+    Devices *first* and the card sizes are drawn only from that set. Asked separately they pass a Spawn
+    nothing can run: a 2×40GB box satisfies `--gpus 2` and a 1×96GB box satisfies the 90GB per-card
+    need, and neither box can host the Spawn.
     """
-    sizes = sorted({round(e["vram_mb"] / 1024) for e in load_registry().values()
-                    if e.get("admitted") and e.get("vram_mb")})
-    eligible = [g for g in sizes if g >= vram_gb]
+    admitted = [e for e in load_registry().values() if e.get("admitted") and e.get("vram_mb")]
+    roomy = [e for e in admitted if _devices(e) >= gpus]
+    if not roomy:
+        most = max((_devices(e) for e in admitted), default=0)
+        raise HTTPException(422, f"no Arm has {gpus} GPUs — the largest has {most}")
+    per_card = -(-vram_gb // gpus)  # ceil
+    sizes = sorted({round(e["vram_mb"] / 1024) for e in roomy})
+    eligible = [g for g in sizes if g >= per_card]
     if not eligible:
+        # What a User can act on: the per-card figure their own two numbers imply, the card sizes that
+        # exist (already public — a User picks --vram against them), and the smallest count that would
+        # make the same total fit. WHICH machine has what is the Admin's business and stays out.
         have = ", ".join(f"{g}GB" for g in sizes) or "none"
-        raise HTTPException(422, f"no Arm has {vram_gb}GB of VRAM — the cluster has: {have}")
+        fix = next((n for n in range(gpus + 1, max_devices() + 1)
+                    if any(round(e["vram_mb"] / 1024) >= -(-vram_gb // n)
+                           for e in admitted if _devices(e) >= n)), None)
+        hint = f" — try --gpus {fix}" if fix else ""
+        asked = (f"no Arm has {vram_gb}GB of VRAM" if gpus == 1 else
+                 f"{vram_gb}GB across {gpus} GPUs needs {per_card}GB per card")
+        raise HTTPException(422, f"{asked} — the cluster has: {have}{hint}")
     return "|".join(f"vram{g}" for g in eligible)
 
 

@@ -470,6 +470,14 @@ input[type="number"].field::-webkit-inner-spin-button {
   }
 }
 
+/* A row the cluster can't currently honour (a GPU count no Arm has). Dimmed and inert, never hidden —
+ * seeing the option greyed out says "this exists, but not here", which an absent row cannot. No
+ * strikethrough: the choice isn't wrong, it's unavailable. */
+@utility menu-item-off {
+  color: var(--ink-mute);
+  cursor: default;
+}
+
 /* History row: NOT a shard (no per-row plate/gaps) — the archive is one surface, rows are soft pools of
  * light in it. `--band` is pool strength, `--dim` row opacity; both fall off with depth so the list
  * darkens and recedes rather than ending on a hard edge. Hover (it's a link) lifts it. */

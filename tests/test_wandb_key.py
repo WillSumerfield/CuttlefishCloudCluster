@@ -424,7 +424,7 @@ class TestItReachesSbatch:
         monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-        monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
+        monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
         monkeypatch.setattr(slurm, "queue", lambda: [])
         # The submit inherits os.environ, so a developer with W&B configured in their own shell would
         # otherwise see their key leak into the assertions below.

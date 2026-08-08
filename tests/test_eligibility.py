@@ -15,8 +15,12 @@ def registry(monkeypatch, arms: dict) -> None:
     monkeypatch.setattr(slurm, "load_registry", lambda: arms)
 
 
-def arm(vram_mb: int | None, admitted: bool = True) -> dict:
-    return {"vram_mb": vram_mb, "admitted": admitted}
+def arm(vram_mb: int | None, admitted: bool = True, devices: int = 1) -> dict:
+    """`devices` is how many cards the box has — `gpu_devices` in a real registry row, one name per
+    card. All the same size: a mixed-GPU box is refused at enroll, which is what makes `vram_mb` one
+    number for the node and the per-card division exact."""
+    return {"vram_mb": vram_mb, "admitted": admitted,
+            "gpu_devices": [f"card{i}" for i in range(devices)]}
 
 
 class TestVramConstraint:
@@ -72,6 +76,77 @@ class TestVramConstraint:
         with pytest.raises(HTTPException) as e:
             slurm.vram_constraint(8)
         assert e.value.status_code == 422
+
+
+class TestMultiDevice:
+    """`--gpus N` asks for N Devices **on one Arm** (CONTEXT.md — never across two), and `--vram` is
+    the TOTAL across them. Both are one joint question: an Arm with enough cards, each holding its
+    share."""
+
+    def test_vram_is_divided_across_the_cards_asked_for(self, monkeypatch):
+        """128GB over two cards asks 64 of each — a 2×96 box has it, a 2×48 box does not, though its
+        two cards TOGETHER hold 96."""
+        registry(monkeypatch, {"pair": arm(98304, devices=2)})
+        assert slurm.vram_constraint(128, 2) == "vram96"
+        registry(monkeypatch, {"pair": arm(49152, devices=2)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(128, 2)
+        assert e.value.status_code == 422
+
+    def test_the_two_needs_are_asked_of_one_arm_together(self, monkeypatch):
+        """The trap the joint check exists for. A 2×40 box satisfies "two cards"; a 1×96 box satisfies
+        "90GB each". Asked separately both pass and the Spawn queues forever, because neither box can
+        host it."""
+        registry(monkeypatch, {"pair": arm(40960, devices=2), "big": arm(98304, devices=1)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(180, 2)
+        assert e.value.status_code == 422
+
+    def test_a_count_no_arm_has_names_the_largest(self, monkeypatch):
+        registry(monkeypatch, {"a": arm(98304, devices=1), "b": arm(24576, devices=2)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(8, 4)
+        assert "no Arm has 4 GPUs" in e.value.detail
+        assert "the largest has 2" in e.value.detail
+
+    def test_an_unmeetable_total_suggests_the_count_that_would_work(self, monkeypatch):
+        """The derived need and the fix, and nothing else — no machine names, no per-Arm tallies. 96GB
+        on one 48GB card is impossible; spread over the box's two, it is 48 each, which fits."""
+        registry(monkeypatch, {"pair": arm(49152, devices=2)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(96, 1)
+        assert "no Arm has 96GB of VRAM" in e.value.detail
+        assert "try --gpus 2" in e.value.detail
+
+    def test_a_multi_card_refusal_names_the_derived_per_card_need(self, monkeypatch):
+        """Past one card the total alone doesn't explain the refusal — 128GB sounds satisfiable on a
+        box holding 96. The per-card figure is the number that actually failed."""
+        registry(monkeypatch, {"pair": arm(49152, devices=2)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(128, 2)
+        assert "128GB across 2 GPUs needs 64GB per card" in e.value.detail
+
+    def test_no_count_works_so_nothing_is_suggested(self, monkeypatch):
+        """Two 24GB cards can never total 200GB. Suggesting a count that also fails would be worse than
+        saying nothing."""
+        registry(monkeypatch, {"pair": arm(24576, devices=2)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(200, 2)
+        assert "try --gpus" not in e.value.detail
+
+    def test_one_gpu_behaves_exactly_as_before(self, monkeypatch):
+        """The common path is untouched: at one Device the total IS the per-card need, and the refusal
+        still names the fleet's real sizes."""
+        registry(monkeypatch, {"a": arm(24576), "b": arm(49152)})
+        assert slurm.vram_constraint(20, 1) == "vram24|vram48"
+        assert slurm.vram_constraint(20) == "vram24|vram48"
+
+    def test_a_partly_filled_box_still_counts_every_card_it_has(self, monkeypatch):
+        """Device count comes from the registry's per-card list, not from VRAM — the two say different
+        things and only one of them counts cards."""
+        registry(monkeypatch, {"quad": arm(24576, devices=4)})
+        assert slurm.max_devices() == 4
+        assert slurm.vram_constraint(96, 4) == "vram24"
 
 
 def arm_with_features(admitted: bool, features: list[str]) -> dict:

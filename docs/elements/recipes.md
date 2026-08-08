@@ -3,8 +3,8 @@
 ## What it is
 
 A **Recipe** is a piece of work you saved: the code itself, plus how to run it — entry point,
-arguments, how long it needs, how much VRAM, where its results go, and which dependency file its
-[Environment](environments.md) is built from.
+arguments, how long it needs, how many cards and how much VRAM across them, where its results go, and
+which dependency file its [Environment](environments.md) is built from.
 
 Because it holds the actual code, you can run a Recipe from any machine with nothing to hand. New
 laptop, no checkout, no clone: `cuttle recipe run nightly` and it goes.

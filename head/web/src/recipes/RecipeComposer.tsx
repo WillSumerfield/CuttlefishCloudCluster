@@ -1,4 +1,4 @@
-import type { Recipe } from "../api";
+import type { Arm, Recipe } from "../api";
 import { Composer, type RecipePayload, type RecipeSettingsPayload } from "../app/Composer";
 
 export type { RecipePayload, RecipeSettingsPayload };
@@ -8,6 +8,7 @@ export type { RecipePayload, RecipeSettingsPayload };
  * its module docstring for what actually differs between this and the Spawn composer, and why.
  */
 export function RecipeComposer({
+  arms,
   used,
   existingNames,
   editing,
@@ -16,6 +17,8 @@ export function RecipeComposer({
   onSaveMeta,
   onCancel,
 }: {
+  /** The fleet, for the GPU-count control — see Composer's RecipeProps. */
+  arms: Arm[];
   /** Bytes already committed to the wall — the fit test adds the picked folder to this. */
   used: number;
   /** Names already taken on this shelf; a Recipe's name is its key, so it must be unique. */
@@ -33,6 +36,7 @@ export function RecipeComposer({
   return (
     <Composer
       variant="recipe"
+      arms={arms}
       used={used}
       existingNames={existingNames}
       editing={editing}

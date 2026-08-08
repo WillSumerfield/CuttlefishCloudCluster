@@ -13,7 +13,7 @@ Every 30s, one pass, in this order:
    (tidepool.reap_dead) — a live Tide Pool holds a Device like any RUNNING Spawn, so steps 1-4 already
    meter/settle it with no branch of their own.
 6. **Register** any Recovery Window copy that's fully landed since the last pass, and **expire** any
-   whose 30 minutes are up (recovery.py) — registration is polled here, not pushed by the job script.
+   whose day is up (recovery.py) — registration is polled here, not pushed by the job script.
 7. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
 
 Runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
@@ -60,15 +60,16 @@ def _held_powers(job: dict, arm: dict | None) -> list[float] | None:
     throttled second card is billed at that card's number, not an average.
 
     Returns **None** — not a guess — when the answer can't be had: an unpriced Arm, a card count that
-    disagrees with the priced list, or a GPU Spawn with no reported indices. Averaging Powers would
-    settle those silently at a price nobody could check. A CPU-only Spawn isn't that case: [] -> 0.
+    disagrees with the priced list, or a Spawn with no reported indices. Averaging Powers would settle
+    those silently at a price nobody could check. Every Spawn holds at least one Device, so an empty
+    index list is always Slurm failing to say WHICH — never a Spawn that wanted none.
     """
     powers = (arm or {}).get("powers")
     if not powers:
         return None
     devices = job["devices"]
     if not devices:
-        return [] if not job["gpus"] else None
+        return None
     if max(devices) >= len(powers):
         return None      # Slurm knows about a card the registry does not: the Arm needs re-benchmarking
     return [powers[i] for i in devices]
@@ -215,7 +216,7 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # queue — the one place a relay ever goes back down.
         tidepool.reap_dead(conn, set(ids))
         # Recovery Window: pick up any copy that finished landing since the last pass, drop anything
-        # whose 30 minutes are up, then sweep_orphans deletes what neither will ever touch (a copy that
+        # whose day is up, then sweep_orphans deletes what neither will ever touch (a copy that
         # landed but whose marker never followed). Order here is presentation, not correctness —
         # sweep_orphans skips everything still inside register_new's window by construction.
         recovery.register_new(conn, now)

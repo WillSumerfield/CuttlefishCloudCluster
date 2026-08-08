@@ -32,7 +32,10 @@ GPU — the Head runs a co-located Arm like any other.
 
 **Many Arms.** Each runs `slurmd` and Apptainer, on Ubuntu 24.04, natively or under WSL2. `slurmd`
 and the container runtime always run in the Linux layer, so there is a single Linux code path
-everywhere. GPUs are NVIDIA-only; a machine without one can still join as a CPU-only Arm.
+everywhere. GPUs are NVIDIA-only, and required: a machine without one is refused at enroll, because
+every Spawn holds at least one card. Several cards of the *same* model are welcome — a Spawn can ask
+for more than one of them at a time — but a box mixing models cannot advertise one honest VRAM size,
+so it is refused too.
 
 **Two clients, at parity.** The [Dashboard](Dashboard.md) is the primary everyday surface; the
 [CLI](CLI.md) does everything it does. Neither is a privileged path. The CLI additionally has *host*

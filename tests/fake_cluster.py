@@ -36,9 +36,14 @@ class FakeCluster:
     def __init__(self, conn, arms: list[dict], start: datetime | None = None):
         """`arms`: registry-shaped dicts (name, powers, vram_mb, owner, admitted, state) — `powers` is
         one Power per **Device**, as the registry holds it. `conn`: the real temp head.db the economy
-        reads and writes."""
+        reads and writes.
+
+        `gpus` (sinfo's live card count) defaults to however many Powers there are, which is what a
+        real Arm reports — the two are counts of the same cards, from the two places CCC learns about
+        them."""
         self.conn = conn
-        self._arms = {a["name"]: {"state": "idle", "admitted": True, **a} for a in arms}
+        self._arms = {a["name"]: {"state": "idle", "admitted": True,
+                                  "gpus": len(a.get("powers") or []), **a} for a in arms}
         self.jobs: dict[int, dict] = {}
         self.now = start or datetime(2026, 1, 6, 9, 0, tzinfo=timezone.utc)  # a Monday 09:00
         self._next_id = 1

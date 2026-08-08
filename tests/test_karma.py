@@ -366,9 +366,15 @@ class TestQueueBump:
 
 # --- the meter ----------------------------------------------------------
 
-def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=True, powers=None):
-    """`power=` is the single-card shorthand; `powers=` gives a multi-Device Arm its own list."""
-    return {"name": name, "powers": powers if powers is not None else ([power] if power else None),
+def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=True, powers=None,
+        gpus=None):
+    """`power=` is the single-card shorthand; `powers=` gives a multi-Device Arm its own list.
+
+    `gpus` defaults to however many Powers there are, which is what a real Arm reports — sinfo counts
+    the cards and the registry benchmarks one Power each, so the two agree by construction. Pass it
+    explicitly only to test them disagreeing."""
+    p = powers if powers is not None else ([power] if power else None)
+    return {"name": name, "powers": p, "gpus": gpus if gpus is not None else len(p or []),
             "vram_mb": vram_mb, "owner": owner, "state": state, "admitted": admitted}
 
 
@@ -441,9 +447,20 @@ class TestDemand:
         assert drained["a"] == pytest.approx(1.0)   # b is gone; a absorbs the whole claim
         assert drained["b"] == 0.0
 
-    def test_a_cpu_only_spawn_claims_no_device(self):
-        """--gpu 0 is free, and falls out of the arithmetic rather than being special-cased."""
-        assert karma.demand_by_arm([arm("a")], [job(1)], {1: need(gpus=0)})["a"] == 0.0
+    def test_a_queued_spawn_is_not_eligible_for_an_arm_with_too_few_devices(self):
+        """Both declared needs, one question. A two-card Spawn adds no Demand to a one-card Arm, because
+        it could never land there — were the count ignored, every single-card Arm in the fleet would be
+        priced for work it cannot take."""
+        d = karma.demand_by_arm([arm("solo"), arm("pair", powers=[50.0, 50.0])],
+                                [job(1, gpus=2)], {1: need(gpus=2, vram_gb=16)})
+        assert d == {"solo": 0.0, "pair": 1.0}
+
+    def test_vram_is_a_total_so_a_bigger_count_needs_less_per_card(self):
+        """--vram is the total across the Devices asked for. 48GB over two cards asks 24 of each, which
+        a pair of 24GB cards satisfies; over one card it asks 48, which none of them has."""
+        pair = arm("pair", powers=[50.0, 50.0], vram_mb=24564)
+        assert karma.eligible([pair], need(gpus=2, vram_gb=48)) == [pair]
+        assert karma.eligible([pair], need(gpus=1, vram_gb=48)) == []
 
     def test_an_admin_pinned_spawn_concentrates_its_demand(self):
         """--node names a machine instead of declaring a need, so all of its Demand lands on that one
@@ -641,13 +658,14 @@ class TestTheMeter:
         tick.once()
         assert db.live_escrows(conn)[0]["accrued"] == 0.0
 
-    def test_a_cpu_only_spawn_holds_no_device_and_pays_nothing(self, conn, cluster):
-        """The same empty device list, and NOT the same case: a Spawn that asked for no GPU is
-        correctly free, and must not be confused with one whose card we failed to identify."""
+    def test_a_running_spawn_slurm_reports_no_devices_for_is_not_guessed_at(self, conn, cluster):
+        """Every Spawn holds at least one Device, so an empty device list on a RUNNING one is Slurm
+        failing to say WHICH — not a Spawn that wanted none. Billing it at a guessed card's rate would
+        be silent and wrong, so it bills nothing."""
         cluster["arms"] = [arm("donor", powers=[80.0])]
         self.spawn(conn, 305, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=1)
-        cluster["jobs"] = [job(305, "RUNNING", node="donor", gpus=0, devices=[],
+        cluster["jobs"] = [job(305, "RUNNING", node="donor", devices=[],
                                start_time=started.timestamp())]
         tick.once()
         assert db.live_escrows(conn)[0]["accrued"] == 0.0

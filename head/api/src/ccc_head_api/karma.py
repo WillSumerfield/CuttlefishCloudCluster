@@ -112,11 +112,18 @@ def eligible(arms: list[dict], need) -> list[dict]:
 
     An Admin-pinned Spawn (`--node`) is eligible for exactly one Arm, concentrating all of its Demand
     there — the honest price of naming a machine instead of declaring a need.
+
+    Both declared needs are applied **together**, exactly as `slurm.vram_constraint` applies them at
+    submit: enough Devices on the one Arm, each holding the per-card share of the total `--vram`. Were
+    the count left out, Demand — and therefore price — would land on Arms too small to ever host the
+    Spawn.
     """
     if need["node"]:
         return [a for a in arms if a["name"] == need["node"]]
-    return [a for a in arms if _up(a) and a["vram_mb"]
-            and round(a["vram_mb"] / 1024) >= (need["vram_gb"] or 0)]
+    gpus = max(1, need["gpus"] or 1)
+    per_card = -(-(need["vram_gb"] or 0) // gpus)  # ceil; --vram is the total across the Devices
+    return [a for a in arms if _up(a) and a["vram_mb"] and (a["gpus"] or 0) >= gpus
+            and round(a["vram_mb"] / 1024) >= per_card]
 
 
 def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, float]:
@@ -142,7 +149,7 @@ def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, 
         if j["state"] != "PENDING":
             continue
         need = needs.get(j["id"])
-        if need is None or not need["gpus"]:  # unattributed, or CPU-only (claims no device)
+        if need is None:  # unattributed (the enrollment benchmark) — no declared need to spread
             continue
         elig = eligible(arms, need)
         for a in elig:
@@ -159,7 +166,7 @@ def cost(seconds: float, powers: list[float], demand: float) -> float:
 
     `powers` is one entry per Device **held**, summed (not averaged) — several Devices are several
     separate purchases, so a Spawn on a slow card costs less than one on a fast card on the same node.
-    Empty list = CPU-only, costs nothing.
+    Empty only for a Spawn Slurm hasn't placed yet; every Spawn holds at least one Device.
 
     Demand is per-card and shared by the whole node, so it multiplies the sum once rather than per
     Device — how a node is divided can never move its scarcity.

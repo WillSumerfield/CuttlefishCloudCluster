@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
-import { getRecipes, createRecipe, runRecipe, updateRecipe, updateRecipeSettings, deleteRecipe, Unauthorized, errMessage, type Recipe } from "../api";
+import { getArms, getRecipes, createRecipe, runRecipe, updateRecipe, updateRecipeSettings, deleteRecipe, Unauthorized, errMessage, type Arm, type Recipe } from "../api";
 import { Storage } from "../recipes/Storage";
 import { RecipeCard } from "../recipes/RecipeCard";
 import { RecipeComposer, type RecipePayload, type RecipeSettingsPayload } from "../recipes/RecipeComposer";
@@ -33,6 +33,9 @@ const API: Record<"run" | "delete", (name: string) => Promise<unknown>> = {
 export function RecipesPage() {
   const { logout } = useAuth();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
+  // The fleet, only so the composer can grey out GPU counts no Arm can host. Fetched once, not
+  // polled — a Recipe is frozen, and an Arm joining mid-edit is the Head's to catch at save.
+  const [arms, setArms] = useState<Arm[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   // Which grid slot is showing the composer instead of its normal tile: "new" for the New-recipe slot, a
@@ -56,6 +59,7 @@ export function RecipesPage() {
 
   useEffect(() => {
     refresh(); // Recipes are frozen; no polling needed.
+    getArms().then(setArms).catch(() => setArms([])); // unreadable → every count stays pickable
   }, [refresh]);
 
   const onAct = useCallback(
@@ -204,6 +208,7 @@ export function RecipesPage() {
               closedTint="color-mix(in oklab, var(--abyss) 75%, var(--shoal))"
               open={
                 <RecipeComposer
+                  arms={arms}
                   used={used}
                   existingNames={recipes.map((r) => r.name)}
                   onPending={setPending}
@@ -222,6 +227,7 @@ export function RecipesPage() {
                   // the wall previews exactly the arithmetic recipes.save does on the Head. Its name comes
                   // off the taken list for the same reason — a Recipe is not a duplicate of itself.
                   <RecipeComposer
+                    arms={arms}
                     used={used - r.size_bytes}
                     existingNames={recipes.map((x) => x.name).filter((n) => n !== r.name)}
                     editing={r}

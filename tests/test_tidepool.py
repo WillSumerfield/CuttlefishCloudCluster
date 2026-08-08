@@ -285,7 +285,7 @@ def _client(monkeypatch, tmp_path, user_id=1, is_admin=False):
     db.ensure_schema()
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-    monkeypatch.setattr(slurm, "vram_constraint", lambda gb: "vram24")
+    monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
     monkeypatch.setattr(slurm, "queue", lambda: [])
     return TestClient(head_main.app)
 

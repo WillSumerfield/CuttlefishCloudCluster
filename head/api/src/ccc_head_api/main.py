@@ -358,7 +358,7 @@ def spawns_history(days: int = 30, limit: int | None = None,
     history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
     carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
     finished_at). Also carries a Recovery Window countdown, for the History row that still has one open — `recovery_expires_at` is null for every row that never had a copy, already had
-    it evicted, or whose 30 minutes are up — and, on the same terms, `output_expires_at`: when the
+    it evicted, or whose day is up — and, on the same terms, `output_expires_at`: when the
     Spawn's declared results are deleted, 7 days after it ended (null once they are, or before the tick
     has registered them)."""
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
@@ -472,9 +472,11 @@ def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
 @api.get("/spawns/{job_id}/recovery")
 def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
     """Whether Spawn `job_id` still has an open Recovery Window copy, and if so how much of it and when
-    it closes. 404 means no copy: never made (skipped for the 16GB per-Spawn cap, or the
-    Arm dropped before it landed), already evicted for the 50GB pool cap, or its 30 minutes are up —
-    the CLI and Dashboard both read all three the same way, "nothing left to recover".
+    it closes. 404 means no copy: never made (skipped for the 16GB per-Spawn cap, or the Arm dropped
+    before it landed), evicted to make room for a newer copy of the submitter's own (the per-User
+    Allowance, or the pool backstop behind it), or its day is up — the CLI and Dashboard both read all
+    of them the same way, "nothing left to recover", and the detail stays deliberately generic: the
+    Allowance is the one a User is never quoted a number for (CONTEXT.md, Recovery Window).
 
     Same permission shape as `/spawns/{id}/outputs` (authed, no ownership check) — this is data about a
     shared cluster's Spawn, not a secret, unlike the Tide Pool SSH keypair route, which IS ownership-
@@ -490,7 +492,7 @@ def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
 @api.get("/spawns/{job_id}/recovery/download")
 def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of Spawn `job_id`'s Recovery Window copy — everything it wrote OUTSIDE its declared
-    `$CCC_OUT`, while the 30-minute window is still open. Distinct download from
+    `$CCC_OUT`, while the window is still open. Distinct download from
     `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
     artifact whose contents would otherwise silently change once the window closes."""
     data = recovery_mod.tar_bytes(job_id)
@@ -760,9 +762,9 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     handed back the WANDB_MODE the Head just took off it.
 
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
-    with no declared need cannot be placed. `vram` is OR-expanded here into a Slurm constraint over the
-    fleet's real cards (slurm.vram_constraint); the client can't do it, because only the Head knows
-    what hardware exists.
+    with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
+    for, and is OR-expanded here into a Slurm constraint over the fleet's real cards
+    (slurm.vram_constraint); the client can't do it, because only the Head knows what hardware exists.
 
     Pinning a Spawn to a named Arm is **not possible over this route**: the Head API exposes no admin
     writes at all, so a `node` in the metadata is refused outright rather than honoured for an Admin —
@@ -807,7 +809,10 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         raise HTTPException(422, "missing 'manifest' in X-CCC-Meta — name the dependency file to build "
                                  "this Spawn's environment from (--manifest), e.g. pyproject.toml, "
                                  "uv.lock, requirements.txt or environment.yml")
-    minutes, vram_gb, gpus = int(meta["minutes"]), int(meta["vram"]), int(meta.get("gpu", 1))
+    # `gpus` is the current name; `gpu` is what older clients send. Either is accepted — see
+    # spawns.submit_checked, which is where a count no Arm can host is refused.
+    minutes, vram_gb = int(meta["minutes"]), int(meta["vram"])
+    gpus = int(meta.get("gpus", meta.get("gpu", 1)))
     tar_path = await _spool_upload(request)
     try:
         # Placement, pricing and the Attribution row all live in submit_checked, shared with the

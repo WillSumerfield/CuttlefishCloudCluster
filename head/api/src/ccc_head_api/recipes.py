@@ -156,7 +156,7 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
         dest.mkdir()
         tf.extractall(dest, filter="data")  # 'data' filter blocks path-traversal entries
     row = db.add_recipe(conn, user_id, name, script, meta.get("args") or [], outputs,
-                        int(meta.get("gpus", 1)), int(meta["vram_mb"]), int(meta["minutes"]),
+                        max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]), int(meta["minutes"]),
                         bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
                         meta.get("wandb_entity") or "", size, manifest, features)
     return to_json(row)
@@ -208,7 +208,8 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
                          f"folder instead if you meant to point it at a different one")
 
     row = db.update_recipe_meta(conn, user_id, name, script, meta.get("args") or [], outputs,
-                                int(meta.get("gpus", 1)), int(meta["vram_mb"]), int(meta["minutes"]),
+                                max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]),
+                                int(meta["minutes"]),
                                 bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
                                 meta.get("wandb_entity") or "", manifest, features)
     return to_json(row)
@@ -260,7 +261,7 @@ def run(conn, user_id: int, name: str, is_admin: bool) -> int:
         wandb_env["WANDB_ENTITY"] = row["wandb_entity"]
 
     return spawns.submit_checked(
-        user_id, is_admin, row["script"], row["gpus"], json.loads(row["args"]), wandb_env,
+        user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]), wandb_env,
         None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
         wandb=bool(row["wandb"]), features=json.loads(row["features"]), manifest=row["manifest"],
         source_dir=_dir(user_id, name), recipe_name=name,
@@ -303,7 +304,9 @@ def to_json(row, running: bool = False) -> dict:
         "script": row["script"],
         "args": json.loads(row["args"]),
         "outputs": json.loads(row["outputs"]),
-        "gpus": row["gpus"],
+        # Clamped, not trusted: a Recipe frozen before CCC required a Device could carry 0, and every
+        # surface that reads one now assumes at least 1. Silent — the Recipe still runs, on one card.
+        "gpus": max(1, row["gpus"]),
         "vram_mb": row["vram_mb"],
         "minutes": row["minutes"],
         "size_bytes": row["bytes"],

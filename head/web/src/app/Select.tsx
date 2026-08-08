@@ -9,7 +9,10 @@ import { useEffect, useRef, useState } from "react";
  * Keyboard: Enter/Space/↓ open; ↑/↓ move the highlight; Enter picks; Escape closes; click-outside closes.
  */
 
-export type Option = { value: string; label: string };
+/** `disabled` renders the row muted and makes it unpickable by click or keyboard — for a choice that
+ *  is real but the cluster cannot currently honour (a GPU count no Arm has). Shown rather than hidden:
+ *  a list that silently shortens tells a User nothing about why. */
+export type Option = { value: string; label: string; disabled?: boolean };
 
 export function Select({
   value,
@@ -42,9 +45,19 @@ export function Select({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const pick = (v: string) => {
-    onChange(v);
+  const pick = (o: Option) => {
+    if (o.disabled) return;
+    onChange(o.value);
     setOpen(false);
+  };
+
+  // Next pickable index in `dir`, skipping disabled rows. Stays put when there is none, so the
+  // highlight never lands somewhere Enter would do nothing.
+  const step = (from: number, dir: 1 | -1) => {
+    for (let i = from + dir; i >= 0 && i < options.length; i += dir) {
+      if (!options[i].disabled) return i;
+    }
+    return from;
   };
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -58,13 +71,13 @@ export function Select({
     if (e.key === "Escape") setOpen(false);
     else if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((i) => Math.min(options.length - 1, i + 1));
+      setActive((i) => step(i, 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActive((i) => Math.max(0, i - 1));
+      setActive((i) => step(i, -1));
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      pick(options[active].value);
+      pick(options[active]);
     }
   };
 
@@ -106,16 +119,17 @@ export function Select({
               key={o.value}
               role="option"
               aria-selected={o.value === value}
-              className="menu-item"
-              data-active={i === active || undefined}
-              onMouseEnter={() => setActive(i)}
+              aria-disabled={o.disabled || undefined}
+              className={`menu-item${o.disabled ? " menu-item-off" : ""}`}
+              data-active={(i === active && !o.disabled) || undefined}
+              onMouseEnter={() => !o.disabled && setActive(i)}
               // A field label (Labeled, SubmitComposer.tsx) is a real <label> wrapping this control;
               // this <li> is the label's descendant, not the toggle button's. Left alone, a click
               // here bubbles to the <label>, which forwards a SECOND click onto the toggle button,
               // reopening the menu pick() just closed. stopPropagation keeps it from reaching the <label>.
               onClick={(e) => {
                 e.stopPropagation();
-                pick(o.value);
+                pick(o);
               }}
             >
               {o.label}

@@ -284,7 +284,7 @@ def _client(monkeypatch, tmp_path, user_id=1, is_admin=False) -> TestClient:
     # Arm registry file.
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
     monkeypatch.setattr(slurm, "queue", lambda: [])
-    monkeypatch.setattr(slurm, "vram_constraint", lambda gb: f"vram{gb}")
+    monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: f"vram{gb}")
     return TestClient(head_main.app)
 
 

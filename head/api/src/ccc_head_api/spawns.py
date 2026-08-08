@@ -157,7 +157,7 @@ sink="/tmp/ccc-$jid-%%SINK_TAG%%.slurm"
 #
 # recover_scratch, defined per-branch below, runs BEFORE the rm -rf that used to be the only thing here
 # (docs/TODO.md "Recovery Window") — it copies $proj home (Head-local: a same-filesystem `mv`; remote:
-# an rsync) so a User whose --output was wrong or incomplete has a 30-minute window to get the rest of
+# an rsync) so a User whose --output was wrong or incomplete has a day to get the rest of
 # what the Spawn wrote back, instead of losing it the instant this trap fires. Unset/undefined is a safe
 # no-op in bash (prints to stderr, does not abort the function), so this is harmless even if the script
 # exited before either branch got far enough to define it.
@@ -1126,6 +1126,11 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     refused outright before ever reaching sbatch (mirrors `slurm.vram_constraint`'s "no Arm has that
     much VRAM" — hard validation, no partial/best-effort placement).
 
+    `gpu` is how many **Device**s to hold at once, always on a single Arm, and is at least 1 — there is
+    no Device-less work here. `vram_gb` is the **total** across them, which `slurm.vram_constraint`
+    turns into the per-card need; the two are checked as one question, so a Spawn nothing can host is
+    refused here rather than left to pend forever.
+
     `tidepool` rides straight through to `submit()`, which is the one place either the
     outputs-required gate or the script-in-tar check are actually skipped — placement, pricing and
     Attribution are otherwise completely unaffected, because a Tide Pool holds a Device exactly like any
@@ -1171,7 +1176,9 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     # Unpinned only: a pinned Spawn already named the one node it may run on above, and excluding a
     # retracted node it wasn't headed for anyway would be a no-op.
     exclude = ",".join(sorted(retracted)) if not node else ""
-    constraint = slurm.vram_constraint(vram_gb)
+    if gpu < 1:
+        raise ValueError("a Spawn holds at least one GPU — --gpus must be 1 or more")
+    constraint = slurm.vram_constraint(vram_gb, gpu)
     features = features or []
     if features:
         wanted = sorted(set(features))

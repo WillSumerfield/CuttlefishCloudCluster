@@ -87,7 +87,8 @@ from paying an owner *more* for being *slower*.
 it the whole time was demanded for *two* hours. It is capped, because Demand is set by the people
 queuing and paid by the people running — without a ceiling, a queue could bill your Spawn arbitrarily.
 
-Ask for several GPUs and they are several separate purchases.
+Ask for several GPUs and they are several separate purchases — each billed at its own card's Power,
+for as long as you hold it, whether or not your code ever touches it.
 
 ### Escrow, and why over-estimating is safe
 

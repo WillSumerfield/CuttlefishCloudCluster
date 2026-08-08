@@ -568,8 +568,10 @@ def recipe_save(
                                           "it need only be unique among your own."),
     script: str = typer.Argument(None, help="Python script the Recipe runs, relative to this directory."),
     time: int = typer.Option(None, "--time", help="Wall-clock limit in MINUTES, frozen with the code."),
-    vram: int = typer.Option(None, "--vram", help="GPU memory needed, in GB, frozen with the code."),
-    gpu: int = typer.Option(1, "--gpu", help="GPUs to request (GRES gpu:N)."),
+    vram: int = typer.Option(None, "--vram", help="TOTAL GPU memory needed, in GB, across the cards "
+                                                  "asked for. Frozen with the code."),
+    gpu: int = typer.Option(1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. "
+                                                      "--vram is the total across them."),
     output: list[str] = typer.Option(
         None, "--output", "-o", help="Subdir under $CCC_OUT the script writes results to (repeatable). "
                                      "Required — a Recipe with none could never be run."),
@@ -604,7 +606,7 @@ def recipe_save(
         name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Name for this recipe?"))
         script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
-        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
+        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
         # Asked outright, never suggested — see `cuttle run`'s own prompt for why.
         manifest = ui.need(manifest, "--manifest", lambda: ui.ask_text(
             "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)"))
@@ -627,8 +629,9 @@ def recipe_update(
     name: str = typer.Argument(None, help="Recipe to re-capture."),
     script: str = typer.Option(None, "--script", help="Change the entry point too (default: keep)."),
     time: int = typer.Option(None, "--time", help="Change the wall-clock limit (default: keep)."),
-    vram: int = typer.Option(None, "--vram", help="Change the VRAM need (default: keep)."),
-    gpu: int = typer.Option(None, "--gpu", help="Change the GPU count (default: keep)."),
+    vram: int = typer.Option(None, "--vram", help="Change the TOTAL VRAM need (default: keep)."),
+    gpu: int = typer.Option(None, "--gpus", "--gpu", help="Change how many GPUs to hold (default: "
+                                                         "keep)."),
     output: list[str] = typer.Option(
         None, "--output", "-o", help="REPLACE the declared outputs (repeatable; default: keep)."),
     manifest: str = typer.Option(
@@ -789,9 +792,12 @@ def run(
                             "limit, and Karma is escrowed against it — over-estimating costs you "
                             "only queue position, and is refunded when the Spawn ends."),
     vram: int = typer.Option(
-        None, "--vram", help="GPU memory this Spawn needs, in GB. Required. Every card with at least "
-                            "this much is eligible; Slurm takes the fastest one that is free."),
-    gpu: int = typer.Option(1, "--gpu", help="GPUs to request (GRES gpu:N)."),
+        None, "--vram", help="TOTAL GPU memory this Spawn needs, in GB, across the cards you asked "
+                            "for. Required. Every card holding its share is eligible; Slurm takes the "
+                            "fastest set that is free."),
+    gpu: int = typer.Option(
+        1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. --vram is the total "
+                                   "across them. Refused if no Arm has this many."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
     project: str = typer.Option(None, "--project", help="W&B project for this Spawn (default: config)."),
     entity: str = typer.Option(
@@ -805,7 +811,7 @@ def run(
         None, "--output", "-o", help="Name of a subdir under $CCC_OUT your script writes results to "
                                      "(repeatable). Required — at least one (optional, with a y/n "
                                      "warning, for --tidepool). Anything your script writes OUTSIDE "
-                                     "these dirs is still recoverable for 30 min after the Spawn ends "
+                                     "these dirs is still recoverable for a day after the Spawn ends "
                                      "(`cuttle recover`) — but declare the right dirs here rather than "
                                      "relying on it."),
     feature: list[str] = typer.Option(
@@ -842,7 +848,7 @@ def run(
 
     A wrong or incomplete --output isn't fatal the instant the Spawn ends: the Recovery Window
     (docs/elements/storage.md) keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
-    recoverable on the Head for 30 minutes afterward (`cuttle recover <id>`), up to 16GB. Past that, or
+    recoverable on the Head for a day afterward (`cuttle recover <id>`), up to 16GB. Past that, or
     past the window, it's gone — declare `--output` correctly rather than leaning on it.
 
     What you DID declare is downloaded automatically, into ~/ccc/outputs/spawn-<id>-outputs/, as the
@@ -870,7 +876,10 @@ def run(
                                 features=feature, follow=follow, download=not no_download,
                                 manifest=manifest, no_gitignore=no_gitignore)
     wizard = script is None
-    with ui.section("Submit a Spawn", lambda: f"{script}  {time}min  {vram}G"):
+    # The card count shows only past one: at a single Device it is what every Spawn does, and `24G`
+    # already IS the per-card figure, so printing it would add a word and say nothing.
+    with ui.section("Submit a Spawn",
+                    lambda: f"{script}  {time}min  {vram}G" + (f"  {gpu} GPUs" if gpu > 1 else "")):
         # No file picker: you pass the path. Prompting through a directory listing is slower than
         # typing a name you already know, and wrong the moment the script lives in a subdirectory.
         script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
@@ -878,7 +887,7 @@ def run(
         # biggest card would make every untouched field eligible for it alone — queued at the
         # highest Demand for work that may need 2 GB.
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
-        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
+        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
         # Asked outright, never suggested. Offering what happens to be lying in the directory would be
         # CCC inferring which file is the instruction — and a suggestion is an inference, accepted by
         # whoever presses Enter. The Environment carries its own Python and inherits nothing, so which
@@ -886,7 +895,7 @@ def run(
         manifest = ui.need(manifest, "--manifest", lambda: ui.ask_text(
             "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)"))
         if wizard:
-            gpu = ui.ask_int("How many GPUs?", default=str(gpu))
+            gpu = ui.ask_int("How many GPUs? (all on one machine)", default=str(gpu))
             project = project or (ui.ask_text("W&B project? (blank = config default)") or None)
             entity = entity or (ui.ask_text("W&B entity? (blank = config default)") or None)
             no_gitignore = not ui.ask_confirm("Honor .gitignore when uploading?", True)
@@ -1021,7 +1030,7 @@ def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
 @app.command()
 def recover(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
     """Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared $CCC_OUT,
-    while the 30-minute window since it ended is still open. See `--output`'s help on `cuttle run` for
+    while the day-long window since it ended is still open. See `--output`'s help on `cuttle run` for
     what this is a safety net for; `cuttle outputs` is the separate, permanent $CCC_OUT download."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Recover which Spawn?"))
     spawns_mod.recover(spawn_id)

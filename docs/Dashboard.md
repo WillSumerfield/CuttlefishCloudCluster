@@ -68,6 +68,10 @@ You then fill in the same three required things the CLI requires — the script,
 the VRAM — plus your output folders. There is a [Tide Pool](elements/tide-pool.md) mode which hides
 the project and upload story entirely and asks only for the resource needs.
 
+**GPUs** is a dropdown rather than a number, because only some counts are real: it lists what the
+fleet can actually place, and greys out the rest. Memory is the *total* across the cards you pick, so
+choosing 2 shows you what each one will have to hold.
+
 ## The one thing the CLI does that this cannot
 
 **Downloading results unattended.**

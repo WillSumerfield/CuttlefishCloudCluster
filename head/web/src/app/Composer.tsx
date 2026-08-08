@@ -78,6 +78,10 @@ type SpawnProps = {
 
 type RecipeProps = {
   variant: "recipe";
+  /** The fleet, for the same reason a Spawn needs it: the GPU-count dropdown greys out counts no
+   *  single Arm can host. A Recipe is blocked at save exactly as a Spawn is at submit — freezing a
+   *  need nothing can satisfy just moves the refusal to the day it's finally run. */
+  arms: Arm[];
   /** Bytes already committed to the wall — the fit test adds the picked folder to this. */
   used: number;
   /** Names already taken on this shelf; a Recipe's name is its key, so it must be unique. */
@@ -125,7 +129,9 @@ export function Composer(props: ComposerProps) {
   const [honor, setHonor] = useState(true);
   const [name, setName] = useState(editing?.name ?? "");
   const [script, setScript] = useState(editing?.script ?? "");
-  const [gpu, setGpu] = useState(editing?.gpus ?? 1);
+  // Clamped: a Recipe frozen before CCC required a Device could carry 0, and 0 is no longer a count
+  // this control can even offer.
+  const [gpu, setGpu] = useState(Math.max(1, editing?.gpus ?? 1));
   const [minutes, setMinutes] = useState(editing ? String(editing.minutes) : "");
   const [vram, setVram] = useState(editing ? String(editing.vram_mb / 1024) : "");
   const [node, setNode] = useState("");
@@ -169,6 +175,37 @@ export function Composer(props: ComposerProps) {
 
   const toggleFeature = (n: string) =>
     setFeatures((prev) => (prev.includes(n) ? prev.filter((f) => f !== n) : [...prev, n]));
+
+  // --- how many Devices, and whether the fleet can host that many ---------------------------------
+  //
+  // The Devices one Spawn holds are always on a SINGLE Arm (CONTEXT.md), so every question below is
+  // asked of one Arm at a time — never of the fleet's total card count.
+  const arms = (spawn?.arms ?? recipe!.arms).filter((a) => a.admitted && !a.retracted);
+
+  // Memory is a TOTAL, so the per-card need is the total divided by the count, rounded up. Exact
+  // rather than approximate: a mixed-GPU box is refused at enroll, so every card on an Arm is the
+  // same size. This is the same arithmetic slurm.vram_constraint does at submit.
+  const perCard = vram ? Math.ceil(Number(vram) / Math.max(1, gpu)) : 0;
+
+  // Both needs are checked TOGETHER, against one Arm. Asked separately they would leave a count
+  // enabled that nothing can run: a 2×40GB box answers "two cards" and a 1×96GB box answers "90GB
+  // each", and neither box can host the Spawn that wanted both.
+  //
+  // An empty `arms` means the fleet hasn't loaded, not that nothing can run — every count stays
+  // pickable and the Head answers for real at submit. Greying out the whole control on a slow fetch
+  // would read as "the cluster is broken".
+  const known = arms.length > 0;
+  const gpuOptions = Array.from(
+    { length: Math.max(1, ...arms.map((a) => a.gpus)) },
+    (_, i) => i + 1,
+  ).map((n) => {
+    const need = vram ? Math.ceil(Number(vram) / n) : 0;
+    return {
+      value: String(n),
+      label: String(n),
+      disabled: known && !arms.some((a) => a.gpus >= n && (a.vram_mb ?? 0) / 1024 >= need),
+    };
+  });
 
   const setPick = useCallback(
     (p: Picked | null) => {
@@ -277,7 +314,13 @@ export function Composer(props: ComposerProps) {
   // an Environment carries its own Python and inherits nothing, so the Head refuses a Spawn or a Recipe
   // that named none. A Tide Pool is the one Spawn that may decline — it is a shell, not a run.
   const named = !!manifest.trim();
-  const ready =
+  // The selected count can go stale without being re-picked: choose 2 cards at 40GB, then raise Memory
+  // to 400, and the option that was fine is now one no Arm can host. Greying the row out doesn't undo
+  // a choice already made, so readiness re-asks the same question of what is currently selected.
+  // A count past the end of the list is unplaceable too, not merely unlisted — an old Recipe frozen at
+  // 4 cards, opened after the 4-card Arm left, has no row here at all.
+  const placeable = !known || !!gpuOptions[gpu - 1] && !gpuOptions[gpu - 1].disabled;
+  const ready = placeable && (
     variant === "spawn" && mode === "tidepool"
       // A named manifest needs the folder that holds it — the Head builds from the upload, and there
       // is nothing to resolve the name against otherwise.
@@ -288,7 +331,7 @@ export function Composer(props: ComposerProps) {
           : !!picked && !!trimmed && !dup && !!script && named && Number(minutes) > 0 &&
             Number(vram) > 0 && outputs.length > 0 && !over
         : !!picked && !!script && named && Number(minutes) > 0 && Number(vram) > 0 &&
-          outputs.length > 0;
+          outputs.length > 0);
 
   const go = async () => {
     if (!ready || variant !== "spawn") return;
@@ -441,7 +484,7 @@ export function Composer(props: ComposerProps) {
             <Labeled label="Arguments" className="sm:col-span-2" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
               <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
             </Labeled>
-            <Labeled label="Output folders" className="sm:col-span-2" help="Folders your results are written into. Anything written outside them is recoverable for 30 minutes after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days.">
+            <Labeled label="Output folders" className="sm:col-span-2" help="Folders your results are written into. Anything written outside them is recoverable for a day after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days.">
               <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
                 {outputs.map((o) => (
                   <span
@@ -537,14 +580,26 @@ export function Composer(props: ComposerProps) {
             </div>
           </Labeled>
         )}
-        <Labeled label="Memory" help="How much GPU memory you need. Every card with at least this much becomes eligible, and the fastest free one takes the job — asking for more than you need narrows the pool and makes you wait longer.">
+        <Labeled label="Memory" help="TOTAL GPU memory you need, across the cards you asked for. Every card holding its share becomes eligible, and the fastest free set takes the job — asking for more than you need narrows the pool and makes you wait longer.">
           <NumberField value={vram} onChange={setVram} min={1} placeholder="VRAM, GB" ariaLabel="Memory, VRAM in GB" />
         </Labeled>
         <Labeled label="Time" help="How long the run may take before it is killed. Karma is escrowed against it, so over-estimating costs you queue position and nothing else — the difference is refunded when the Spawn ends.">
           <NumberField value={minutes} onChange={setMinutes} min={1} placeholder="minutes" ariaLabel="Time in minutes" />
         </Labeled>
-        <Labeled label="GPUs" help="How many separate cards this run holds at once. Each one is priced separately.">
-          <NumberField value={gpu} onChange={(v) => setGpu(Number(v))} min={0} ariaLabel="GPUs" />
+        <Labeled label="GPUs" help="How many separate cards this run holds at once, always on ONE machine. Each is priced separately, and Memory above is the total across them. Counts no Arm in the fleet can host are greyed out.">
+          <Select
+            ariaLabel="GPUs"
+            value={String(gpu)}
+            onChange={(v) => setGpu(Number(v))}
+            options={gpuOptions}
+          />
+          {/* Only past one card: at a single Device the total IS the per-card figure, so this would do
+              nothing but restate the Memory field directly above it. */}
+          {gpu > 1 && perCard > 0 && (
+            <span className="mt-1 block text-[12px] text-[var(--muted)]">
+              {gpu} × ≥{perCard} GB per card
+            </span>
+          )}
         </Labeled>
         {/* Naming a machine is an Admin power, and only means anything for a Spawn — a Recipe never
             targets one (CONTEXT.md: it runs from any machine with nothing to hand). */}
