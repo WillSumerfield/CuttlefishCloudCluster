@@ -55,7 +55,16 @@ def install_enroll(write_unit, mesh_ip: str) -> None:
     """Build the shared API venv, install the Enroll API unit, start it bound to `mesh_ip`."""
     uv = shutil.which("uv")
     run(["install", "-d", "-o", "root", "-g", "root", str(config.API_VENV.parent)], sudo=True)
-    run([uv, "venv", str(config.API_VENV)], sudo=True)
+    # --python/--no-managed-python: the version this package requires, off the SYSTEM interpreter.
+    # See config.API_PYTHON — the failure either one prevents is a venv that builds and a service that
+    # cannot start, which is a far worse place to find out.
+    #
+    # --clear: setup is re-run routinely (teardown+setup is the normal redeploy here), and a venv built
+    # on the wrong interpreter must be REPLACED rather than reused. uv already replaces it, but warns
+    # that a future version will refuse to without this — asking now, while it is a warning, rather
+    # than on the upgrade that turns it into a failed setup.
+    run([uv, "venv", "--clear", "--python", config.API_PYTHON, "--no-managed-python",
+         str(config.API_VENV)], sudo=True)
     run([uv, "pip", "install", "--python", str(config.API_VENV / "bin" / "python"),
          str(API_SRC)], sudo=True)
     # The venv is root-owned; the service users (munge, ccc, nobody) must read/execute it.

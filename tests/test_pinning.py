@@ -8,6 +8,7 @@ enrolled six months later gets a different apptainer, a rebuilt Pod image gets a
 import hashlib
 import json
 import subprocess
+import tomllib
 
 import pytest
 import typer
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from ccc_head_api import enroll as enroll_api
 from ccc_head_api import slurm
-from cuttle import config, enroll, mesh, setup, templates
+from cuttle import config, enroll, headapi, mesh, setup, templates
 
 
 class TestUbuntuSnapshot:
@@ -326,3 +327,40 @@ class TestHeadscaleIsPinned:
         monkeypatch.setattr(mesh, "_install_deb", lambda url, **kw: got.append(url))
         assert mesh.install_headscale() == "v0.26.1"
         assert got == [mesh._headscale_deb("v0.26.1")]
+
+
+class TestTheApiVenvInterpreter:
+    """`uv venv` with no interpreter named picks one for itself, and both ways it can pick wrong end
+    the same way: the venv builds, setup reports success, and the SERVICE fails to start.
+
+    Under `sudo` uv does not see the operator's UV_PYTHON_INSTALL_DIR, so it reaches into root's own
+    uv-managed set — which produced a 3.11 venv for a package that declares requires-python >=3.12, and
+    would have produced an unreadable one even at the right version, because a uv-managed interpreter
+    lives under /root (0700) where `munge` and `ccc` cannot execute it.
+    """
+
+    def _venv_argv(self, monkeypatch) -> list[str]:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(headapi, "run", lambda argv, **kw: calls.append([str(a) for a in argv]))
+        monkeypatch.setattr(headapi.shutil, "which", lambda _: "/usr/bin/uv")
+        headapi.install_enroll(lambda *a, **kw: None, "100.99.0.1")
+        return next(c for c in calls if c[1:2] == ["venv"])
+
+    def test_it_names_the_version_the_package_requires(self, monkeypatch):
+        argv = self._venv_argv(monkeypatch)
+        assert "--python" in argv and config.API_PYTHON in argv
+        req = tomllib.loads(
+            (headapi.API_SRC / "pyproject.toml").read_text())["project"]["requires-python"]
+        assert req == f">={config.API_PYTHON}", \
+            "the venv's Python and the package's requires-python have drifted apart"
+
+    def test_it_refuses_a_uv_managed_interpreter(self, monkeypatch):
+        """The one that cannot be caught by reading the version afterwards: /root is 0700, so a
+        managed interpreter is unexecutable by the service accounts and no chmod under /opt/ccc
+        reaches it."""
+        assert "--no-managed-python" in self._venv_argv(monkeypatch)
+
+    def test_a_rerun_replaces_rather_than_reuses(self, monkeypatch):
+        """Teardown+setup is the normal redeploy here, and a venv built on the wrong interpreter has
+        to be replaced. uv warns that it will one day refuse to without this."""
+        assert "--clear" in self._venv_argv(monkeypatch)

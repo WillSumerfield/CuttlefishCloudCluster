@@ -267,6 +267,17 @@ MUNGEKEY_BIN = "/usr/sbin/mungekey"
 # Both head-side FastAPI apps live in one package (`ccc_head_api`) and run from this one venv, kept
 # out of the CLI's own venv. The Enroll API app and the Head API app are two ASGI targets off it.
 API_VENV = Path("/opt/ccc/api/.venv")
+# The interpreter that venv is built ON, named explicitly for two reasons — leave either out and the
+# build succeeds and the SERVICE fails:
+#   * version — ccc_head_api declares requires-python >=3.12, and `uv venv` with no version picks
+#     whatever it likes best. Under sudo it does not see the operator's UV_PYTHON_INSTALL_DIR, so it
+#     reaches for root's own uv-managed set and can land on an older one. 24.04 ships 3.12 and
+#     `preflight` refuses any other release, so this is the platform's version, not a preference.
+#   * system, not uv-managed — a uv-managed interpreter lives under `/root/.local/share/uv/` when uv
+#     runs as root, and /root is 0700. The venv would build fine and then be unexecutable by the
+#     accounts that actually run these services (munge, ccc), which `chmod -R a+rX /opt/ccc` cannot
+#     fix because the interpreter is not under /opt/ccc at all.
+API_PYTHON = "3.12"
 
 # --- Enroll API (③: /enroll; mesh-only, serves the munge key) ---
 # Bound to the Head's MESH address only: being on the mesh is the entire authorization. Glossary
