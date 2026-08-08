@@ -103,5 +103,11 @@ Notably, only the head is planned to have multi-gpus. Could we instead make mult
 ## IsaacSim feature implementation
 Currently, the isaacsim arm feature is not implemented. We should fix that.
 
-## Recipe Tidepools should keep all files
-Recipe tidepools are just saved workspaces that can be revisted anytime (at the cost of karma, of course).
+## Recipes should be changed in "Workspaces"
+Recipes should just be saved workspaces that can be revisted anytime (at the cost of karma, of course).
+
+## Increase the amount of time a full spawn can be recovered to 1 day
+30 mins is too short.
+
+## Add a proper domain name
+Let's assign a domain name to the webapp, like ccc.glados
