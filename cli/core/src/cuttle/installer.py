@@ -27,27 +27,42 @@ SCRIPTS_DIR = Path(__file__).resolve().parent / "installer_scripts"
 
 
 def _bake_head_creds(stage: Path, head_url: str | None, generic: bool = False) -> str | None:
-    """When run on a Head, lay this Head's config + pinned cert into the bundle at exactly the names
-    `install.sh` will copy them to (so the script parses no URLs). Returns the baked URL, or None if
-    this isn't a Head / has no cert yet / `generic` was asked for — a generic bundle.
+    """When run on a Head, lay this Head's config + CA into the bundle at exactly the names `install.sh`
+    will copy them to (so the script parses no URLs). Returns the baked URL, or None if this isn't a
+    Head / has no CA yet / `generic` was asked for — a generic bundle.
 
-    The default address is this box's LAN IP, so a baked bundle only works for boxes on that LAN. A
-    remote box has no route to it (and cannot use the mesh address either — it joins the mesh during
-    `setup --arm`, after this bundle has already been installed). `generic` is the honest answer for
-    those: ship the tool, let enrollment point the box.
+    What is baked is the **Cluster name**, plus — in `head/addr` — the LAN IP it has to resolve to,
+    because nothing resolves that name for the target box until `install.sh` writes its hosts entry.
+    A baked bundle therefore only works for boxes on that LAN. A remote box has no route to the IP (and
+    cannot use the mesh address either — it joins the mesh during `setup --arm`, after this bundle has
+    already been installed). `generic` is the honest answer for those: ship the tool, let enrollment
+    point the box.
+
+    The CA, not the serving cert: that is what a client pins now, and it is also what has to reach the
+    box's trust stores for the Dashboard to load without a warning.
     """
     if generic or not menu.is_head():
         return None
-    url = head_url or headapi.head_url(system.primary_ip())
-    if not config.HEAD_CERT.exists():
-        ui.warn(f"no Head certificate at {config.HEAD_CERT} — building a generic bundle")
+    url = head_url or headapi.head_url(config.DOMAIN)
+    if not config.HEAD_CA_CERT.exists():
+        ui.warn(f"no CA certificate at {config.HEAD_CA_CERT} — building a generic bundle")
         return None
     head_dir = stage / "head"
     (head_dir / "pins").mkdir(parents=True)
     (head_dir / "config.yaml").write_text(yaml.safe_dump({"head": url}, sort_keys=False))
+    # The whole hosts line, ready to append — not just the address. install.sh is static package data
+    # with no templating, so anything it had to RECONSTRUCT (the name, the marker) would be a literal
+    # duplicating config.py, drifting silently the day either changed. Baking the finished line leaves
+    # the script with nothing to know but where to put it. Its own file, not a key in config.yaml,
+    # which is cuttle's settings file and gets copied verbatim.
+    (head_dir / "hosts").write_text(
+        f"{system.primary_ip()}\t{config.DOMAIN} {config.HOSTS_MARKER}\n")
+    (head_dir / "ca-nickname").write_text(config.HEAD_CA_NICKNAME + "\n")
     # tls._pin_path is the single source of truth for a pin's filename (host_port.pem), so a baked
-    # pin lands exactly where cuttle will later look for it.
-    shutil.copy(config.HEAD_CERT, head_dir / "pins" / tls._pin_path(url).name)
+    # CA lands exactly where cuttle will later look for it — now the same filename on every client,
+    # since every client dials the same name.
+    shutil.copy(config.HEAD_CA_CERT, head_dir / "pins" / tls._pin_path(url).name)
+    shutil.copy(config.HEAD_CA_CERT, head_dir / "ccc-ca.crt")
     return url
 
 

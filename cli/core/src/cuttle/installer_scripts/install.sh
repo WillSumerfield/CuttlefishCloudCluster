@@ -27,7 +27,7 @@ wheel=$(ls "$here"/cuttle-*.whl 2>/dev/null | head -n1)
 echo "cuttle: installing $(basename "$wheel") ..."
 uv tool install --force "$wheel"
 
-# 3. If head credentials were baked in, pre-point + pre-pin this client. build-installer laid the
+# 3. If head credentials were baked in, pre-point + pre-trust this client. build-installer laid the
 #    files out at exactly their destination names, so this is a copy — no URL parsing in shell.
 if [ -d "$here/head" ]; then
     mkdir -p "$HOME/.ccc/config" "$HOME/.ccc/pins"
@@ -37,7 +37,44 @@ if [ -d "$here/head" ]; then
         cp "$here"/head/pins/*.pem "$HOME/.ccc/pins/"
         chmod 600 "$HOME"/.ccc/pins/*.pem
     fi
-    echo "cuttle: installed, pointed at the Head, certificate pre-pinned."
+    # 3a. The cluster name. The baked config points cuttle at a name, and nothing in CCC resolves
+    #     names — so without this line the client is pointed somewhere it cannot reach. This is the
+    #     one part of installing that needs root; it is also why a baked bundle asks for sudo at all.
+    #     build-installer baked the finished line, marker and all, so nothing is reconstructed here.
+    if [ -f "$here/head/hosts" ]; then
+        echo "cuttle: adding the cluster name to /etc/hosts (needs sudo) ..."
+        sudo sh -c "sed -i '/# cuttle\$/d' /etc/hosts && cat '$here/head/hosts' >> /etc/hosts"
+    fi
+    # 3b. Trust the cluster's CA, so the Dashboard loads without "your connection is not private".
+    #     Three stores, because Linux has no one store every browser reads: the OS store (curl,
+    #     python), a per-user NSS db (Chrome, Chromium, Edge, Brave), and a Firefox policy pointing
+    #     back at the OS store. Mirrors system.trust_ccc_ca / trust_ccc_ca_browsers.
+    if [ -f "$here/head/ccc-ca.crt" ]; then
+        sudo install -D -m 644 "$here/head/ccc-ca.crt" /usr/local/share/ca-certificates/ccc-head.crt
+        sudo update-ca-certificates >/dev/null
+        nick=$(cat "$here/head/ca-nickname")
+        if command -v certutil >/dev/null 2>&1; then
+            mkdir -p "$HOME/.pki/nssdb"
+            certutil -d "sql:$HOME/.pki/nssdb" -D -n "$nick" 2>/dev/null || true
+            certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n "$nick" -i "$here/head/ccc-ca.crt"
+        else
+            echo "cuttle: no certutil — Chrome/Edge will keep warning until you run:"
+            echo "cuttle:   sudo apt install libnss3-tools && cuttle setup --client"
+        fi
+        # Only when there is no policy file at all. This is a shared file that may already carry an
+        # organisation's own settings, and a shell script has no business merging JSON — cuttle's own
+        # path (system._firefox_enterprise_roots) does that properly, and `setup --client` will.
+        if [ ! -e /etc/firefox/policies/policies.json ]; then
+            sudo install -d /etc/firefox/policies
+            sudo sh -c 'cat > /etc/firefox/policies/policies.json' <<'POLICY'
+{"policies": {"Certificates": {"ImportEnterpriseRoots": true, "ccc": true}}}
+POLICY
+        else
+            echo "cuttle: /etc/firefox/policies/policies.json already exists — left alone."
+            echo "cuttle: run 'cuttle setup --client' if you want Firefox to trust the cluster too."
+        fi
+    fi
+    echo "cuttle: installed, pointed at the cluster, its authority trusted."
     echo "cuttle: next -> cuttle login"
 else
     # No baked address, so this box does not know a Head yet. Donating a GPU is `setup --arm`, which

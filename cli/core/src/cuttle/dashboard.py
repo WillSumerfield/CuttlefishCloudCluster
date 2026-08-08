@@ -9,6 +9,11 @@ tool knows.
 WSL is the one place the saved URL is the wrong answer: the CCC mesh lives inside WSL and the Windows
 browser has no route to the Head's mesh IP, so `setup` installs a localhost forward
 (`setup.install_wsl_dashboard_forward`) and the address to hand the browser is that instead.
+
+It is also the one place the certificate warning survives. Everywhere else CCC installs, setup puts
+the cluster's CA in the box's trust stores and the Dashboard loads clean — but here the browser is on
+the *Windows* side, which shares neither the Linux trust store nor the /etc/hosts entry carrying the
+**Cluster name**. Hence localhost, and hence one click-through per Windows browser.
 """
 
 import subprocess
@@ -22,7 +27,7 @@ def url() -> str:
     head = settings.load().get("head")
     if not head:
         raise ui.abort("this box is not pointed at a Head",
-                       next_step="cuttle login --head https://<head-ip>:8082")
+                       next_step="cuttle setup --client")
     # Only when the forward is actually installed: a WSL *client* (no `setup --arm`) has no proxy
     # listening on localhost, and its saved URL already reaches the Head over the LAN.
     if system.is_wsl() and config.DASH_FORWARD_SOCKET_UNIT.exists():
@@ -58,4 +63,3 @@ def open_dashboard(print_only: bool = False) -> None:
         ui.hint("no browser here — open that address yourself")
         return
     ui.ok(f"opened the dashboard in your browser to: {target}")
-    ui.say("  [muted]self-signed certificate — click through the warning once[/muted]")

@@ -123,7 +123,7 @@ def setup(
         False, "--arm", help="Enroll this box as a remote Arm (needs --token)."
     ),
     client: bool = typer.Option(
-        False, "--client", help="Submitter's box: dirs + login only. No apt, mesh, Slurm or sudo."
+        False, "--client", help="Submitter's box: dirs, the cluster name + CA, login. No mesh or Slurm."
     ),
     address: str = typer.Option(
         None, "--address",
@@ -714,7 +714,7 @@ def teardown(
         False, "--arm", help="This box's Arm role (reverse `setup --arm`)."
     ),
     client: bool = typer.Option(
-        False, "--client", help="This box's client state only — removes ~/.ccc, no sudo."
+        False, "--client", help="This box's client state only — ~/.ccc, the cluster name, the CA."
     ),
     keep_packages: bool = typer.Option(
         False, "--keep-packages", help="Leave apt packages + repos installed (fast config reset)."
