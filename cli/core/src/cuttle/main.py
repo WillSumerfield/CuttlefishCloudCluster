@@ -303,13 +303,16 @@ def login(
         # Only asked when no Head is configured yet — `cuttle login` on a set-up box should not
         # re-interrogate you about a URL it already knows.
         if head is None and not settings.load().get("head") and ui.interactive():
-            # A default only when we ARE the Head — there we know our own reachable address. On a
-            # client the operator must supply the Head's URL; never prefill a `<host>` placeholder,
-            # which the moment it is accepted saves as an unresolvable name and wedges every login.
-            default = headapi_mod.head_url(system.primary_ip()) if menu_mod.is_head() else ""
+            # A default only when we ARE the Head — there the Cluster name resolves (setup wrote the
+            # hosts entry) and the cert covers it. On a client that name means nothing until
+            # `setup --client` writes its own entry, so never prefill it: accepted, it saves as an
+            # unresolvable name and wedges every login.
+            default = headapi_mod.head_url(config.DOMAIN) if menu_mod.is_head() else ""
             head = ui.ask_text("Head API URL?", default=default)
             if not head.strip():
-                raise ui.abort("no Head URL given — e.g. cuttle login --head https://<head-ip>:8082")
+                raise ui.abort("no Head URL given",
+                               next_step="`cuttle setup --client` — it asks for the address, then "
+                                         "points this box at the cluster by name")
         who["as"] = auth_mod.login(head)
 
 
@@ -681,8 +684,8 @@ def build_installer(
     ),
     head_url: str = typer.Option(
         None, "--head-url",
-        help="Head URL to bake in (default: https://<this box's LAN IP>:8082). Only used when "
-             "built on a Head — the client comes pre-pointed at this address.",
+        help="Head URL to bake in (default: https://ccc.glados:8082). Only used when built on a "
+             "Head — the client comes pre-pointed at this address.",
     ),
     generic: bool = typer.Option(
         False, "--generic",
@@ -692,13 +695,13 @@ def build_installer(
 ):
     """Package a portable client installer (wheel + install.sh + uninstall.sh) as a .tar.gz.
 
-    Run on a Head, it bakes that Head's address + pinned certificate in, so the installed client is
-    pre-pointed and pre-pinned. Run elsewhere — or with --generic — it produces a bundle that points
-    itself.
+    Run on a Head, it bakes the Cluster name + this cluster's certificate authority in, so the
+    installed client is pre-pointed and already trusts the cluster. Run elsewhere — or with --generic
+    — it produces a bundle that points itself.
 
-    The baked address is the Head's LAN IP, so a baked bundle is for boxes ON that LAN. A remote box
-    reaches this Head over the CCC mesh, and it is not on the mesh until it enrolls — so build it a
-    --generic bundle and let `setup --arm` point it.
+    The baked bundle resolves that name to the Head's LAN IP, so it is for boxes ON that LAN. A remote
+    box reaches this Head over the CCC mesh, and it is not on the mesh until it enrolls — so build it
+    a --generic bundle and let `setup --arm` point it.
     """
     if generic and head_url:
         raise typer.BadParameter("--generic bakes no address; drop --head-url")
