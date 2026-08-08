@@ -523,9 +523,23 @@ def _benchmark_arm(name: str) -> dict:
                     break
                 time.sleep(3)
             else:
+                # The job's own output cannot be shown here: `JobContainerType=job_container/tmpfs`
+                # gives every job a PRIVATE /tmp, so the sink the benchmark writes dies with it and no
+                # later job — not even on the same node — can read it. So this names the one cause the
+                # operator cannot otherwise guess.
+                #
+                # The Head renders this job (templates.BENCH_SBATCH_TMPL) and binds the node's own
+                # benchmark **Environment** at config.BENCH_ENV_DIR. A box set up by a `cuttle` older
+                # than that env — one that still expected to pull the env over the mesh — has no such
+                # directory, apptainer fails on a bind source that does not exist, and the job dies in
+                # seconds while this loop waits out the full timeout with nothing to report. That is a
+                # version skew between the Head and the Arm, and it looks exactly like a hung job.
                 raise ui.abort(f"{name}'s benchmark produced no result within "
                                f"{config.BENCH_TIMEOUT_S}s",
-                               next_step=f"retry with `cuttle arm benchmark {name}`")
+                               next_step=f"check `{config.BENCH_ENV_DIR}` exists on {name} — an Arm "
+                                         f"set up with an older cuttle has not got it, and must "
+                                         f"re-run `cuttle setup --arm`. Then `cuttle arm benchmark "
+                                         f"{name}`")
         except KeyboardInterrupt:
             run(["scancel", bench_job], sudo=True, check=False)
             raise
