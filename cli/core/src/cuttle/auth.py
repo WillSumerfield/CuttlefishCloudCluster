@@ -94,9 +94,9 @@ def login(head: str | None = None) -> str:
     """Prompt for credentials, mint a session. Returns the logged-in display name (with an admin
     marker) — the caller frames the flow and uses it as the box's summary line."""
     _set_head(head)
-    # Pin BEFORE prompting: the password is the thing we are protecting, so the operator must have
+    # Trust BEFORE prompting: the password is the thing we are protecting, so the operator must have
     # accepted the Head's identity before it is ever typed, let alone sent.
-    tls.ensure_pinned(_head_url())
+    tls.ensure_ca(_head_url())
     username = ui.ask_text("Username")
     password = ui.ask_password("Password")
     resp = _api("POST", "/login", token="", body={"username": username, "password": password})

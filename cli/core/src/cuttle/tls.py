@@ -1,22 +1,30 @@
-"""Trust-on-first-use pinning of the Head's TLS certificate.
+"""Trust-on-first-use pinning of the cluster's certificate authority.
 
-No public domain -> no CA-signed cert, so the Head self-signs. Self-signed gives encryption but not
-identity, so we do it SSH-`known_hosts` style: first connection, operator confirms the fingerprint;
-every later connection must present that exact cert or is refused. Weak point same as SSH's: an
-attacker present at the very first connection gets pinned instead. Acceptable on a trusted LAN only.
+No public domain -> no CA-signed cert, so the Head is its OWN CA and signs its serving cert with it
+(setup.install_tls). What a client stores is that CA, never the serving cert: the leaf is reissued
+whenever it stops covering an address, and a client that had pinned the leaf would break every time.
 
-Pin the PEM and hand it to `ssl` as the CA rather than hand-rolling a fingerprint compare: stdlib then
-does signature + hostname checks, and a bug in a hand-rolled check would fail open instead of closed.
+Pinning at all, rather than leaning on the OS trust store the CA is also installed into: `cafile=<the
+CA>` means cuttle verifies the Head against this one authority and nothing else, so a public CA that
+mis-issues for `ccc.glados` — or any other root the box has been talked into trusting — still cannot
+impersonate the Head to the CLI. The browser gets the weaker, ordinary guarantee; the CLI does not
+have to.
+
+First contact is the weak point, exactly as with SSH's known_hosts: an attacker present at the very
+first connection gets their CA pinned instead. Acceptable on a trusted LAN only — and it is the
+narrowest of the three ways in, since an Arm receives the CA over the token-authenticated /enroll and
+an installed client receives it in the bundle. Only a generic `setup --client` ever has to ask.
 """
 
 import hashlib
 import ssl
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
 import typer
 
-from . import config, ui
+from . import config, system, ui
 
 
 def _host_port(url: str) -> tuple[str, int]:
@@ -38,41 +46,81 @@ def fingerprint(pem: str) -> str:
     return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
 
 
-def ensure_pinned(url: str) -> None:
-    """Pin the Head's cert if we haven't already. Interactive: the operator confirms the fingerprint
-    once. No-op for a plain-HTTP Head (nothing to pin) or when a pin already exists."""
-    if not url.startswith("https://"):
-        return
-    pin = _pin_path(url)
-    if pin.exists():
-        return
+def fetch_ca(url: str) -> str:
+    """GET /ca.pem with verification off. Unavoidable and, on its own, worth nothing: this is the first
+    look at a Head we have no way to check yet. `signs_leaf` below is what turns it into a fact."""
+    ctx = ssl._create_unverified_context()
+    with urllib.request.urlopen(f"{url.rstrip('/')}/ca.pem", context=ctx, timeout=15) as r:
+        return r.read().decode()
+
+
+def signs_leaf(url: str, ca_pem: str) -> bool:
+    """Did this CA actually sign the certificate that host is serving?
+
+    Done by dialling the Head again with `cafile=<the fetched CA>` rather than by comparing issuers by
+    hand: stdlib then checks the signature AND that the name we dialled is in the leaf's SANs, and a
+    hand-rolled version of either would fail open. It does not prove the CA is the *right* one — only
+    the operator confirming the fingerprint can do that — but it does prove we were handed a coherent
+    pair rather than a stray certificate, so the fingerprint on screen is the one actually in use.
+    """
     host, port = _host_port(url)
-    # No verification possible here by definition — this IS the first look at the cert.
-    pem = ssl.get_server_certificate((host, port))
-    # ui, not print: this runs inside `login`'s box, and the fingerprint is the one thing the
-    # operator has to read before answering — it cannot be held back with captured stdout.
-    ui.warn(f"{host} presented a certificate this machine has never seen.")
-    ui.hint("The Head signs its own certificate, so nothing can vouch for it but you.")
-    ui.say(f"  SHA-256  {fingerprint(pem)}")
-    if not ui.ask_confirm("Trust this Head from now on?"):
-        raise ui.abort("not trusted — nothing was sent")
+    ctx = ssl.create_default_context(cadata=ca_pem)
+    try:
+        with ssl.create_connection((host, port), timeout=15) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host):
+                return True
+    except (ssl.SSLError, OSError):
+        return False
+
+
+def install_ca(url: str, pem: str) -> None:
+    """Record this CA as the one cuttle verifies `url` against, and trust it box-wide so browsers stop
+    warning. No confirmation: every caller of this has already established the CA's provenance some
+    other way (the bundle baked it, /enroll handed it over, or `ensure_ca` asked)."""
     config.PINS_DIR.mkdir(parents=True, exist_ok=True)
+    pin = _pin_path(url)
     pin.write_text(pem)
     pin.chmod(0o600)
-    print(f"cuttle: pinned → {pin} (a different certificate will now be refused)")
+    system.trust_ccc_ca(pem)
+    system.trust_ccc_ca_browsers(pem)
+
+
+def ensure_ca(url: str) -> None:
+    """Obtain and trust this cluster's CA if we haven't already. Interactive: the operator confirms the
+    fingerprint once. No-op for a plain-HTTP Head (nothing to verify) or when a pin already exists."""
+    if not url.startswith("https://"):
+        return
+    if _pin_path(url).exists():
+        return
+    host, _ = _host_port(url)
+    pem = fetch_ca(url)
+    if not signs_leaf(url, pem):
+        raise ui.abort(f"{host} served a CA certificate that did not sign the certificate it is "
+                       f"actually presenting — nothing was trusted",
+                       next_step="check you are talking to the Head you think you are")
+    ui.warn(f"{host} presented a certificate authority this machine has never seen.")
+    ui.hint("The Head signs its own certificates, so nothing can vouch for it but you. Trusting it "
+            "installs it into this box's certificate stores — your browser will stop warning about "
+            "the Dashboard, and cuttle will refuse any Head that cannot prove it holds this CA.")
+    ui.say(f"  SHA-256  {fingerprint(pem)}")
+    if not ui.ask_confirm("Trust this cluster's certificate authority from now on?"):
+        raise ui.abort("not trusted — nothing was sent")
+    install_ca(url, pem)
+    print(f"cuttle: trusted → {_pin_path(url)} (a Head that cannot prove it holds this CA is refused)")
 
 
 def context(url: str) -> ssl.SSLContext | None:
-    """The SSL context for talking to this Head: verify against the pinned cert and nothing else.
+    """The SSL context for talking to this Head: verify against the pinned CA and nothing else.
 
-    `cafile=<the pinned cert>` makes the Head its own certificate authority, so stdlib ssl checks both
-    the signature and that the hostname we dialed is in the cert's SANs — which is why setup puts the
-    LAN IP, mesh IP, hostname and localhost in there. None for a plain-HTTP Head.
+    `cafile=<the pinned CA>` makes this cluster its own certificate authority, so stdlib ssl checks both
+    the signature chain and that the hostname we dialed is in the serving cert's SANs — which is why
+    setup puts the Cluster name, LAN IP, mesh IP, hostname and localhost in there (setup.required_sans).
+    None for a plain-HTTP Head.
     """
     if not url.startswith("https://"):
         return None
     pin = _pin_path(url)
     if not pin.exists():
         raise typer.BadParameter(
-            f"no pinned certificate for {url} — run `cuttle login --head {url}` first")
+            f"no trusted certificate authority for {url} — run `cuttle login --head {url}` first")
     return ssl.create_default_context(cafile=str(pin))

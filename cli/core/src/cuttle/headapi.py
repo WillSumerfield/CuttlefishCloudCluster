@@ -39,6 +39,8 @@ User={config.ENROLL_API_USER}
 Environment=CCC_CTLD_ADDR={ctld}
 Environment=CCC_CLUSTER={config.CLUSTER_NAME}
 Environment=CCC_PARTITION={config.PARTITION}
+# Handed to the Arm in /enroll's response, so it trusts the Head with no fingerprint ceremony.
+Environment=CCC_CA_CERT={config.HEAD_CA_CERT}
 ExecStart={config.API_VENV}/bin/uvicorn ccc_head_api.enroll:app \
 --host {mesh_ip} --port {config.ENROLL_API_PORT}
 Restart=on-failure
@@ -133,6 +135,9 @@ User={config.HEAD_API_USER}
 Environment=CCC_PARTITION={config.PARTITION}
 Environment=CCC_WEB_DIR={config.HEAD_API_WEB_DIR}
 Environment=CCC_HEAD_DB={config.HEAD_DB}
+# Served open at GET /ca.pem: the public half of the CA, so a box can trust this Head instead of
+# clicking through a warning. The key beside it is 0600 {config.HEAD_API_USER}-owned and stays here.
+Environment=CCC_CA_CERT={config.HEAD_CA_CERT}
 # Submission: the Head's mesh IP is baked into each rendered job script so a remote Arm can rsync
 # results home. Fixed submission paths (state dir, sif) match cuttle.config defaults. CCC_SIF is the
 # cluster-wide image path — the same on every node, so the script names it once.

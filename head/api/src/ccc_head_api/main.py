@@ -42,6 +42,11 @@ from . import tidepool as tidepool_mod
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
 WEB_DIR = Path(os.environ.get("CCC_WEB_DIR", "/opt/ccc/head-api/web"))
 
+# This cluster's CA certificate — the public half only; the key beside it is 0600 and this process is
+# the only account that can read it, which is exactly the asymmetry that makes serving this one safe.
+# Mirrors cuttle.config.HEAD_CA_CERT.
+CA_CERT = Path(os.environ.get("CCC_CA_CERT", "/opt/ccc/tls/ccc-ca.crt"))
+
 # Cap the upload instead of trusting whatever arrives. The body is streamed to disk (never buffered in
 # this process): the Head is the one box that must stay up, and a browser folder-picker makes a huge
 # accidental selection a single click. Mirrors cuttle.config.MAX_UPLOAD_BYTES.
@@ -181,6 +186,23 @@ def healthz() -> dict:
     200 while slurmctld restarts or head.db is briefly locked, so a monitor never bounces a healthy API
     for a downstream blip. Readiness is `/readyz`."""
     return {"ok": True}
+
+
+@app.get("/ca.pem", response_class=PlainTextResponse)
+def ca_pem() -> str:
+    """This cluster's CA certificate, so a box can trust the Head instead of clicking through a
+    warning. Open, like /healthz: it is a public key, and a trust anchor nobody can fetch is one
+    nobody installs.
+
+    Serving it is not what makes it trustworthy — a caller has no reason to believe an unverified
+    connection. What the caller does with it is (see cuttle/tls.ensure_ca): check that this CA actually
+    signed the certificate just presented, show the operator its fingerprint, and only then install it.
+    This route just has to be reachable before any of that is possible, which is why it sits on the
+    main API rather than the mesh-only Enroll API — a client on the LAN has no mesh to reach.
+    """
+    if not CA_CERT.exists():
+        raise HTTPException(status_code=503, detail="this Head has no CA certificate")
+    return CA_CERT.read_text()
 
 
 def _db_ok() -> bool:

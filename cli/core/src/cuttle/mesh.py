@@ -302,7 +302,7 @@ def trust_own_headscale_cert() -> None:
 
 
 def ensure_headscale_trusted(coordinator: str) -> None:
-    """TOFU for an Arm's FIRST contact with a coordinator, mirroring cuttle/tls.py's ensure_pinned —
+    """TOFU for an Arm's FIRST contact with a coordinator, mirroring cuttle/tls.py's ensure_ca —
     except what gets trusted differs (see the module note above): this installs into the OS CA store,
     the one thing tailscaled actually reads, not cuttle/tls.py's PINS_DIR.
 
@@ -314,7 +314,7 @@ def ensure_headscale_trusted(coordinator: str) -> None:
     host = urlparse(coordinator).hostname
     port = urlparse(coordinator).port or 443
     # No verification possible here by definition — this IS the first look at the cert, same as
-    # tls.ensure_pinned's identical line for the Head API.
+    # tls.fetch_ca's identical position for the Head API.
     pem = ssl.get_server_certificate((host, port))
     ui.warn(f"{host} presented a certificate this machine has never seen — it's the CCC mesh "
            f"coordinator, self-signed (no public CA will sign a cert for a box with no public "

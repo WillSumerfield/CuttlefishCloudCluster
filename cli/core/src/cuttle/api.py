@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import typer
 
-from . import settings, tls
+from . import config, settings, tls
 
 # Timeouts by call shape. An upload is slow (a project tar over a LAN), a log read is not.
 TIMEOUT_JSON = 15
@@ -34,19 +34,19 @@ TIMEOUT_RAW = 30
 TIMEOUT_UPLOAD = 120
 
 CERT_MISMATCH = (
-    "{url} presented a certificate that does not match the one pinned on this machine.\n"
-    "Either the Head was rebuilt with a new certificate, or something is impersonating it.\n"
-    "If you rebuilt it: delete the pin and log in again.")
+    "{url} presented a certificate this machine's pinned authority did not sign.\n"
+    "Either the Head was rebuilt with a new authority, or something is impersonating it.\n"
+    "If you rebuilt it: delete {pin} and log in again.")
 
 # The Head's cert is genuine but doesn't *list* the address we dialled — a different fault from a
-# swap, must not borrow its alarm. setup.install_tls's SANs cover LAN IP, mesh IP, hostname, localhost;
-# anything else trips this. Told apart via verify_code: HOSTNAME/IP_ADDRESS_MISMATCH here vs a
-# signature/issuer error on a real swap.
+# swap, must not borrow its alarm. setup.required_sans covers the Cluster name, LAN IP, mesh IP,
+# hostname and localhost; anything else trips this. Told apart via verify_code: HOSTNAME/
+# IP_ADDRESS_MISMATCH here vs a signature/issuer error on a real swap.
 CERT_WRONG_ADDRESS = (
     "{url} is not an address the Head's certificate covers.\n"
     "The certificate is the right one — it just does not list this address, so TLS refuses it.\n"
-    "Point this box at an address the Head serves (its LAN IP, or its mesh IP once you are on the "
-    "CCC mesh).")
+    "Point this box at an address the Head serves: " + config.DOMAIN + " if this machine has a hosts "
+    "entry for it, otherwise the Head's LAN IP, or its mesh IP once you are on the CCC mesh.")
 # X509_V_ERR_HOSTNAME_MISMATCH / X509_V_ERR_IP_ADDRESS_MISMATCH.
 _NAME_MISMATCH_CODES = {62, 64}
 
@@ -165,7 +165,10 @@ class Api:
                 where = self.url or "the Head"
                 template = (CERT_WRONG_ADDRESS
                             if e.__cause__.verify_code in _NAME_MISMATCH_CODES else CERT_MISMATCH)
-                raise ApiError(path, template.format(url=where)) from None
+                # Name the pin file rather than saying "the pin": after a rebuild this is the one
+                # thing the user has to delete, and PINS_DIR holds one per Head they have ever met.
+                raise ApiError(path, template.format(
+                    url=where, pin=tls._pin_path(self.url) if self.url else config.PINS_DIR)) from None
             where = self.url or "the Head"
             # No httpx class name (`ConnectTimeout`, `ReadError`) in the user's face — it names a
             # library, not a fix. The cause is always the same one thing to check; say that. The raw

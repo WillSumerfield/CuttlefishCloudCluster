@@ -61,6 +61,9 @@ REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 # Both live under /var/lib/ccc because this service runs as `munge` and that is the tree it can read.
 DEBS_DIR = Path(os.environ.get("CCC_DEBS_DIR", "/var/lib/ccc/debs"))
 APPTAINER_RECORD = Path(os.environ.get("CCC_APPTAINER_RECORD", "/var/lib/ccc/apptainer.json"))
+# This cluster's CA (public half), handed to an Arm as part of enrolling. Mirrors
+# cuttle.config.HEAD_CA_CERT and ccc_head_api.main.CA_CERT.
+CA_CERT = Path(os.environ.get("CCC_CA_CERT", "/opt/ccc/tls/ccc-ca.crt"))
 SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
 # The catalog of Arm Features. Built into CCC, not curated and not state — CCC ships the runtime for
 # each one, so a name outside it could only ever be a Slurm token with nothing behind it. A donor's
@@ -215,7 +218,8 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     it.
 
     The response also carries the apptainer pin, so the Arm knows what `/apptainer.deb` should hand it
-    before it downloads it.
+    before it downloads it, and this cluster's CA, so the Arm trusts the Head without a fingerprint
+    ceremony it has already earned the right to skip.
     """
     if not NODE_NAME_RE.match(req.node_name):
         raise HTTPException(422, f"invalid Arm name {req.node_name!r} — must be 1-32 characters, "
@@ -292,4 +296,9 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         "partition": os.environ["CCC_PARTITION"],
         "admitted": entry["admitted"],
         "apptainer": pin,  # {version, filename, sha256} — what GET /apptainer.deb will hand over
+        # The cluster's CA, so the Arm's owner never sees a fingerprint prompt: this response already
+        # crossed a channel authenticated by the join token and checked against Headscale's own view of
+        # the caller, which is a far stronger thing than the trust-on-first-use ceremony a client with
+        # nothing but an address has to fall back on.
+        "ca_pem": CA_CERT.read_text() if CA_CERT.exists() else None,
     }
