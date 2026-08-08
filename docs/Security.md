@@ -97,10 +97,24 @@ login. Nothing in CCC ever prints or stores a reusable password.
 Nodes talk over the [mesh](elements/mesh.md): one flat encrypted WireGuard network containing the
 cluster and nothing else. Two clusters' meshes never see each other.
 
-The human-facing surface is TLS with a **self-signed** certificate. No CA will sign a certificate for
-a box with no public domain name, so the Head signs its own and clients pin it on first use, the way
-`ssh` pins a host key. A client installed from a Head-built bundle has the pin baked in and never
-sees a warning; a browser shows one once.
+The human-facing surface is TLS, under a certificate authority the cluster mints for itself. No public
+CA will sign for a box with no public domain name, so the Head is its own: it mints a root once at
+`setup --head` and signs the certificate it serves with it. Every machine CCC installs on is told to
+trust that root — the OS store, and the separate stores Chromium-family browsers and Firefox read — so
+the Dashboard loads at `ccc.glados` with no warning. A device CCC never installed on gets neither the
+name nor the trust, and sees the warning as before.
+
+The CLI does not settle for that. It verifies the Head against this one authority and **nothing else**,
+so a public CA that mis-issued for `ccc.glados` still could not impersonate the Head to `cuttle`. The
+authority is pinned on first contact the way `ssh` pins a host key, and an attacker present at that
+exact moment is the standing weak point — the same one `ssh` has. Two of the three ways in avoid it
+entirely: an Arm receives the authority inside `/enroll`'s token-authenticated response, and a
+bundle-installed client receives it in the bundle. Only a generic `cuttle setup --client` has to ask a
+human to confirm a fingerprint.
+
+Serving certificates are reissued freely under that root — a new address, a changed LAN IP — and no
+client notices, because what it pinned was the authority. Replacing the **authority** is the breaking
+change, and only `teardown --all` does it.
 
 ## What is not defended
 
@@ -109,8 +123,12 @@ Stated so nobody assumes otherwise:
 - **A hostile Arm owner.** They control the hardware. See the trust model above.
 - **A compromised Head.** It holds everything and decrypts unattended by design.
 - **Public exposure.** The Head is assumed reachable over the LAN or the CCC mesh. There is no
-  public tunnel, no real certificate, and no hardening for an internet-facing deployment. See
-  [TODO](TODO.md).
+  public tunnel, no publicly-trusted certificate, and no hardening for an internet-facing deployment.
+  `ccc.glados` is a private name carried in `/etc/hosts`, not a domain; nothing outside the cluster
+  resolves it. See [TODO](TODO.md).
+- **A stolen Head.** The authority's private key lives on the Head, so whoever holds that box can mint
+  a certificate for any name in the cluster and every other box will trust it. This is the price of
+  the browser no longer warning, and it is the same box that already holds every account and secret.
 - **Denial of service by a legitimate User.** Karma makes queue-flooding self-punishing — an Escrow
   suppresses your standing the moment you queue, so flooding immediately costs you your own position
   — but it is an economic disincentive, not a rate limit.

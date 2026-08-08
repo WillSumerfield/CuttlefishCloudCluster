@@ -22,7 +22,7 @@ import pytest
 import typer
 from rich.console import Console
 
-from cuttle import auth, main, menu, settings, system, ui
+from cuttle import auth, config, main, menu, settings, system, ui
 from cuttle import setup as setup_mod
 
 
@@ -92,40 +92,82 @@ class TestTheClientWizardPointsTheBoxItself:
     """A **generic** bundle leaves the box knowing no Head, and `cuttle setup --client` is what
     install.sh tells you to run next. Handing straight to `auth.login` would abort with "run
     `cuttle login --head …`" the moment it found no stored Head URL — the wizard refusing to ask
-    the one question it exists to ask."""
+    the one question it exists to ask.
+
+    What is ASKED for is an address; what is STORED is the **Cluster name**. The address becomes this
+    box's `/etc/hosts` line and is never seen again — so every box in the cluster says `ccc.glados`,
+    and the pin, the config and `cuttle dashboard` all agree on one spelling.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_host_mutations(self, monkeypatch):
+        """`point_at_head` writes /etc/hosts and resolves the answer. Both are real mutations of the
+        test box; captured here so the tests can assert on WHAT would have been written."""
+        self.hosts = []
+        monkeypatch.setattr(setup_mod.system, "write_hosts_entry",
+                            lambda addr, name=None: self.hosts.append(addr))
+        monkeypatch.setattr(setup_mod.socket, "gethostbyname",
+                            lambda host: "172.30.26.166" if host == "head.lan" else host)
 
     def test_an_unpointed_box_is_asked_which_head(self, answers, ccc_home, monkeypatch):
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
+        monkeypatch.setattr(setup_mod, "install_client_packages", lambda: None)
+        monkeypatch.setattr(setup_mod.tls, "ensure_ca", lambda url: None)
         answers("172.30.26.166")
         setup_mod.setup_client()
-        assert settings.load()["head"] == "https://172.30.26.166:8082"
+        assert settings.load()["head"] == f"https://{config.DOMAIN}:8082"
+
+    def test_the_address_typed_becomes_the_hosts_entry(self, answers, ccc_home):
+        """The name is useless without it: nothing in CCC resolves `ccc.glados`, so a box pointed at
+        the name with no hosts line is pointed nowhere."""
+        answers("172.30.26.166")
+        setup_mod.point_at_head()
+        assert self.hosts == ["172.30.26.166"]
+
+    def test_a_hostname_is_resolved_before_it_is_written(self, answers, ccc_home):
+        """/etc/hosts maps an ADDRESS to a name. Writing `head.lan ccc.glados` would parse fine and
+        never resolve anything."""
+        answers("http://head.lan:8082")
+        setup_mod.point_at_head()
+        assert self.hosts == ["172.30.26.166"]
+
+    def test_answering_with_the_name_writes_nothing(self, answers, ccc_home):
+        """On a box that already has the entry — a re-run, or an Arm — the existing line is the only
+        thing that could have resolved the answer. Rewriting it from itself would be circular."""
+        answers(f"https://{config.DOMAIN}:8082")
+        setup_mod.point_at_head()
+        assert self.hosts == []
 
     def test_a_baked_box_offers_what_the_installer_wrote(self, answers, ccc_home, monkeypatch):
         """install.sh already wrote config.yaml, so the prompt arrives pre-filled and accepting it is
         one Enter — which must not corrupt the URL the bundle baked in. (`_prompt_line` pre-fills its
         buffer with the default, so the scripted human accepts it by supplying it.)"""
-        settings.save({"head": "https://172.30.26.166:8082"})
+        baked = f"https://{config.DOMAIN}:8082"
+        settings.save({"head": baked})
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
-        a = answers("https://172.30.26.166:8082")
+        monkeypatch.setattr(setup_mod, "install_client_packages", lambda: None)
+        monkeypatch.setattr(setup_mod.tls, "ensure_ca", lambda url: None)
+        a = answers(baked)
         setup_mod.setup_client()
-        assert settings.load()["head"] == "https://172.30.26.166:8082"
+        assert settings.load()["head"] == baked
         assert a.asked, "the box was never asked which Head it talks to"
 
     def test_a_cleared_field_is_re_asked_not_stored(self, answers, ccc_home):
         """The prompt is pre-filled, so "" means the field was cleared — and every normalising branch
         would turn it into a valid-looking `https://:8082` that fails at the next login instead."""
         answers("", "172.30.26.166")
-        assert setup_mod.point_at_head() == "https://172.30.26.166:8082"
+        assert setup_mod.point_at_head() == f"https://{config.DOMAIN}:8082"
 
     @pytest.mark.parametrize("typed,url", [
-        ("172.30.26.166", "https://172.30.26.166:8082"),          # bare host -> scheme + default port
-        ("172.30.26.166:9000", "https://172.30.26.166:9000"),     # host:port -> scheme only
-        ("http://head.lan:8082", "http://head.lan:8082"),         # a deliberate http:// survives
-        ("https://head.lan:8082/", "https://head.lan:8082"),      # trailing slash dropped
+        ("172.30.26.166", f"https://{config.DOMAIN}:8082"),        # bare host -> scheme + default port
+        ("172.30.26.166:9000", f"https://{config.DOMAIN}:9000"),   # a non-default port survives
+        ("http://head.lan:8082", f"http://{config.DOMAIN}:8082"),  # a deliberate http:// survives
+        ("https://head.lan:8082/", f"https://{config.DOMAIN}:8082"),  # trailing slash dropped
     ])
     def test_an_address_is_accepted_however_it_is_typed(self, answers, ccc_home, typed, url):
         """`--head` takes a URL because it is a flag. A person answering "which Head?" types an
-        address, and a wizard that only accepts a full URL is a trap."""
+        address, and a wizard that only accepts a full URL is a trap. The host they gave becomes the
+        hosts entry; their scheme and port are theirs and survive into what is stored."""
         answers(typed)
         assert setup_mod.point_at_head() == url
 

@@ -62,10 +62,12 @@ certificate — is deferred; the Head is assumed reachable over the LAN or the m
 Authentication is **built into the Head**: its own user table, argon2 hashes, sessions. There is no
 external identity provider, and no sign-up — the Admin provisions accounts.
 
-TLS for the human surface is self-signed. No CA will sign a certificate for a box with no public
-domain name, so the Head signs its own and the CLI and browser pin it on first use,
-`known_hosts`-style. A bundle built on a Head bakes that pin in, so a client installed from it is
-pre-pointed and pre-pinned.
+TLS for the human surface runs under an authority the cluster mints for itself. No public CA will sign
+for a box with no public domain name, so the Head is its own: every machine CCC installs on trusts that
+root, which is why the Dashboard loads at `ccc.glados` — the cluster's name, carried in `/etc/hosts`
+because CCC runs no DNS — without a browser warning. The CLI additionally pins the authority
+`known_hosts`-style and accepts no other. A bundle built on a Head carries both, so a client installed
+from it is pre-pointed and already trusting the cluster.
 
 **The Head API has no administrative writes.** Every privileged operation — minting tokens, creating
 Users, Karma override, queue bump, backup, munge rotation — runs on the Head, as the `ccc` account,

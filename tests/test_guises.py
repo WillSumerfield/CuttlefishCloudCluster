@@ -9,6 +9,7 @@ See temp/spawn-isolation.md.
 """
 
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -235,37 +236,92 @@ class TestTheStoreIsNotReadableByAGuise:
             held.close()
 
 
-class TestTheTlsKeyStaysMantleOnly:
-    """`head.key` is the private half of the cert every client pins, so a Guise that can read it
-    can impersonate the Head to any of them.
+class TestTheTlsKeysStayMantleOnly:
+    """`head.key` is the private half of the cert the Head serves; `ccc-ca.key` signs it. A Guise that
+    can read either can impersonate the Head — the second one to *every* name in the cluster, and to
+    every box that installed the CA, which is worse.
 
-    The generating branch always chmod's it correctly, but that runs once in a Head's life — the
-    cert is kept deliberately (a new one invalidates every pin) and teardown clears it only under
-    `--all`. So the mode has to be re-asserted on the keep path too, or a box that drifts stays
-    drifted forever."""
+    The generating branch always chmod's them correctly, but the CA branch runs once in a Head's life
+    (a new CA un-trusts the whole fleet) and teardown clears it only under `--all`. So the modes have
+    to be re-asserted on the keep path too, or a box that drifts stays drifted forever.
+    """
 
-    def _install(self, monkeypatch, tmp_path, cert_exists: bool) -> list[list[str]]:
+    def _install(self, monkeypatch, tmp_path, *, leaf_sans: str | None,
+                 chains: bool = True) -> list[list[str]]:
+        """Run install_tls with every `run` captured. `leaf_sans` None means no leaf on disk yet;
+        otherwise it is what `openssl x509 -ext subjectAltName` will be made to report."""
         calls: list[list[str]] = []
-        monkeypatch.setattr(setup, "run", lambda argv, **kw: calls.append(argv))
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            if argv[:2] == ["openssl", "x509"]:
+                return SimpleNamespace(stdout=leaf_sans or "", returncode=0)
+            if argv[:2] == ["openssl", "verify"]:
+                return SimpleNamespace(stdout="", returncode=0 if chains else 2)
+            return SimpleNamespace(stdout="", returncode=0)
+
+        monkeypatch.setattr(setup, "run", fake_run)
+        monkeypatch.setattr(setup, "sh", lambda script, **kw: calls.append(["sh", script]))
+        monkeypatch.setattr(config, "CCC_TLS_DIR", tmp_path)
         monkeypatch.setattr(config, "HEAD_CERT", tmp_path / "head.crt")
         monkeypatch.setattr(config, "HEAD_KEY", tmp_path / "head.key")
-        if cert_exists:
-            (tmp_path / "head.crt").write_text("a cert every client has pinned")
-        else:
-            monkeypatch.setattr(setup.system, "hostname", lambda: "head")
-            monkeypatch.setattr(setup.system, "primary_ip", lambda: "192.168.1.2")
+        monkeypatch.setattr(config, "HEAD_CA_CERT", tmp_path / "ccc-ca.crt")
+        monkeypatch.setattr(config, "HEAD_CA_KEY", tmp_path / "ccc-ca.key")
+        monkeypatch.setattr(setup.system, "hostname", lambda: "head")
+        monkeypatch.setattr(setup.system, "primary_ip", lambda: "192.168.1.2")
+        (tmp_path / "ccc-ca.crt").write_text("the authority every box in this cluster trusts")
+        if leaf_sans is not None:
+            (tmp_path / "head.crt").write_text("a serving cert")
         setup.install_tls("100.99.0.1")
         return calls
 
-    def test_a_rerun_re_asserts_the_mode_on_a_cert_it_keeps(self, monkeypatch, tmp_path):
-        calls = self._install(monkeypatch, tmp_path, cert_exists=True)
-        assert not [c for c in calls if c[0] == "openssl"], "a kept cert must never be regenerated"
-        assert ["chmod", "0600", str(tmp_path / "head.key")] in calls
-        assert ["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}",
-                str(tmp_path / "head.key")] in calls
+    def _covering_sans(self) -> str:
+        # What openssl actually prints, IP SANs spelled its way — the exact shape _cert_sans has to
+        # normalise, so a covering cert here proves the normalisation as well as the keep path.
+        return ("X509v3 Subject Alternative Name:\n"
+                f"    DNS:{config.DOMAIN}, DNS:head, DNS:localhost, "
+                "IP Address:192.168.1.2, IP Address:100.99.0.1, IP Address:127.0.0.1\n")
 
-    def test_a_freshly_minted_key_gets_it_too(self, monkeypatch, tmp_path):
-        calls = self._install(monkeypatch, tmp_path, cert_exists=False)
-        assert [c for c in calls if c[0] == "openssl"], "no cert was generated"
-        assert ["chmod", "0600", str(tmp_path / "head.key")] in calls
-        assert ["chmod", "0644", str(tmp_path / "head.crt")] in calls
+    def test_a_rerun_re_asserts_the_modes_on_a_cert_it_keeps(self, monkeypatch, tmp_path):
+        calls = self._install(monkeypatch, tmp_path, leaf_sans=self._covering_sans())
+        assert not [c for c in calls if c[0] == "sh"], "a covering cert must not be reissued"
+        assert not [c for c in calls if c[:2] == ["openssl", "req"]], "the CA must never be re-minted"
+        for key in ("head.key", "ccc-ca.key"):
+            assert ["chmod", "0600", str(tmp_path / key)] in calls
+            assert ["chown", f"{config.HEAD_API_USER}:{config.HEAD_API_USER}",
+                    str(tmp_path / key)] in calls
+
+    def test_freshly_minted_keys_get_them_too(self, monkeypatch, tmp_path):
+        calls = self._install(monkeypatch, tmp_path, leaf_sans=None)
+        assert [c for c in calls if c[0] == "sh"], "no leaf was issued"
+        for name in ("head.key", "ccc-ca.key"):
+            assert ["chmod", "0600", str(tmp_path / name)] in calls
+        for name in ("head.crt", "ccc-ca.crt"):
+            assert ["chmod", "0644", str(tmp_path / name)] in calls
+
+
+class TestTheLeafIsReissuedWhenItStopsCovering:
+    """The leaf is cheap and the CA is not: clients pin the CA, so reissuing under it costs them
+    nothing. That is what lets an already-deployed Head gain the Cluster name without a teardown — and
+    what self-heals a changed LAN IP, which used to leave TLS quietly broken with no path back."""
+
+    def _install(self, monkeypatch, tmp_path, **kw):
+        return TestTheTlsKeysStayMantleOnly()._install(monkeypatch, tmp_path, **kw)
+
+    def test_a_cert_missing_the_cluster_name_is_reissued(self, monkeypatch, tmp_path):
+        # Exactly what a Head set up before this change has: correct in every way but the new name.
+        before = ("X509v3 Subject Alternative Name:\n"
+                  "    DNS:head, DNS:localhost, IP Address:192.168.1.2, "
+                  "IP Address:100.99.0.1, IP Address:127.0.0.1\n")
+        calls = self._install(monkeypatch, tmp_path, leaf_sans=before)
+        issued = [c for c in calls if c[0] == "sh"]
+        assert issued, "a cert that does not cover the Cluster name must be reissued"
+        assert f"DNS:{config.DOMAIN}" in issued[0][1]
+        assert not [c for c in calls if c[:2] == ["openssl", "req"]], "the CA must survive a reissue"
+
+    def test_a_cert_the_ca_did_not_sign_is_reissued(self, monkeypatch, tmp_path):
+        # SANs are perfect, but it is the old self-signed cert — nothing that trusts the CA accepts it.
+        calls = self._install(monkeypatch, tmp_path,
+                              leaf_sans=TestTheTlsKeysStayMantleOnly()._covering_sans(),
+                              chains=False)
+        assert [c for c in calls if c[0] == "sh"], "a cert outside the CA's chain must be reissued"

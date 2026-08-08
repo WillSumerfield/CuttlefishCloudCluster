@@ -135,8 +135,21 @@ Check the address with the operator. A Head advertising a LAN IP is reachable on
 
 ### A certificate error
 
-A bundle-installed client is pinned to the certificate of the Head it was built on,
-`known_hosts`-style. If that Head was rebuilt, the pin no longer matches and you need a fresh bundle.
+A client trusts exactly one certificate authority — the cluster's — `known_hosts`-style. If the Head
+was rebuilt from scratch (`teardown --all`), it minted a new one and nothing recognises it: re-run
+`cuttle setup --client`, or take a fresh bundle.
+
+### `ccc.glados` does not resolve
+
+Nothing outside the cluster resolves that name; each box gets an `/etc/hosts` line from `cuttle setup`.
+Re-run `setup` for the box's role to rewrite it. The Head's IP works for everything in the meantime.
+
+### The browser still warns about the Dashboard
+
+Expected on a device CCC never installed on — a phone, a borrowed laptop, or a Windows browser reaching
+a WSL Arm's forward. On a box CCC did set up: check `libnss3-tools` is installed (Chrome, Chromium,
+Edge and Brave read a separate store that needs `certutil`), then restart the browser. Snap-packaged
+Firefox and Chromium may not read the files `setup` writes.
 
 ### `cuttle` opens a menu when I wanted help
 

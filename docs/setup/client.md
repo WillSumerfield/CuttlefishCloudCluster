@@ -2,17 +2,24 @@
 
 A **client** is a box you submit work *from* and donate nothing. Your laptop, usually.
 
-No `sudo`, no packages, no scheduler, no mesh. It creates a couple of directories and logs you in.
+No scheduler, no mesh. It creates a couple of directories, teaches this box the cluster's name and
+certificate, and logs you in.
+
+It does need `sudo` once, and installs one package (`libnss3-tools`). Both are for the same thing: the
+cluster is reachable at **`ccc.glados`** on every machine CCC installs on, and that name — plus the
+certificate authority that makes it load without a browser warning — has to be written outside your
+home directory. A box where you have no `sudo` cannot be set up as a client.
 
 ## Before you start
 
 - An account on the cluster. The admin creates it and gives you a username and a one-time password.
+- `sudo` on this box.
 - The Head's address, if you are not installing from a bundle.
 
 ## 1. Install `cuttle`
 
-**From a bundle** — if the admin built one on the Head, it comes pre-pointed at that Head and
-pre-pinned to its certificate:
+**From a bundle** — if the admin built one on the Head, it comes pre-pointed at the cluster and
+carries its certificate authority:
 
 ```sh
 tar xzf cuttle-installer.tar.gz
@@ -20,8 +27,9 @@ cuttle-installer/install.sh
 cuttle login
 ```
 
-That is the whole of it. `install.sh` installs `uv` if you do not have it, installs `cuttle`, and
-writes the config and certificate pin.
+That is the whole of it. `install.sh` installs `uv` if you do not have it, installs `cuttle`, writes
+the config, and asks for `sudo` once — to add `ccc.glados` to `/etc/hosts` and to trust the cluster's
+certificate authority. A bundle carries the Head's LAN address, so it only works on that LAN.
 
 **From the repo:**
 
@@ -46,8 +54,11 @@ Typed out, the same two steps are:
 
 ```sh
 cuttle setup --client
-cuttle login --head http://<head-address>:8082
+cuttle login
 ```
+
+`setup --client` asks for the Head's address, points this box at it, and then everything afterwards
+says `ccc.glados` — that is the name in your config, in `cuttle dashboard`, and in the certificate.
 
 After the first time, both the menu and a bare `cuttle login` remember where to go.
 
@@ -118,7 +129,7 @@ It knows the address, so you never have to. See [Dashboard](../Dashboard.md).
 ## Uninstalling
 
 ```sh
-cuttle teardown --client        # removes ~/.ccc. No sudo, nothing else touched.
+cuttle teardown --client        # ~/.ccc, the cluster name, the trusted CA. Asks for sudo.
 uv tool uninstall cuttle        # removes the tool and its Python deps
 ```
 
@@ -129,7 +140,15 @@ From a bundle, `cuttle-installer/uninstall.sh` does both.
 **`cuttle login` cannot reach the Head.** Check the address with the admin — a Head advertising a LAN
 IP is only reachable from that LAN.
 
-**A certificate error.** A bundle-installed client is pinned to the certificate of the Head it was
-built on. If that Head was rebuilt, you need a fresh bundle.
+**A certificate error.** This box trusts one certificate authority — the cluster's. If the Head was
+rebuilt from scratch (`teardown --all`), it minted a new one and nothing here recognises it: run
+`cuttle setup --client` again, or take a fresh bundle.
+
+**`ccc.glados` does not resolve.** The `/etc/hosts` line is missing — re-run `cuttle setup --client`.
+The Head's IP still works for everything, so this never blocks you.
+
+**The browser still says "not private".** The name and the certificate are per-machine, and a phone or
+a borrowed laptop gets neither. On a box CCC did set up, check that `libnss3-tools` installed (Chrome
+and Edge need it) and restart the browser.
 
 More at [Troubleshooting](../Troubleshooting.md).

@@ -1,0 +1,200 @@
+"""The **Cluster name** and the trust that makes it usable.
+
+Two changes that only work together. The name (`ccc.glados`) is carried by /etc/hosts because CCC has
+no DNS, and the cluster's CA is installed into every box's trust stores so the Dashboard loads without
+a warning. Each failure here is silent on the box that works: a hosts line that accumulates duplicates
+resolves to whichever came first, a teardown that leaves the CA behind leaves a machine trusting an
+authority it no longer talks to, and a CA served without checking it signed anything is a stranger's
+certificate installed as a root.
+"""
+
+import json
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from ccc_head_api import main as head_main
+from cuttle import config, system, teardown, tls
+
+
+@pytest.fixture
+def hosts(monkeypatch, tmp_path):
+    """A writable stand-in for /etc/hosts. `install_file` normally goes through sudo; here it just
+    writes, so the line-management logic is what is under test rather than the privilege dance."""
+    path = tmp_path / "hosts"
+    path.write_text("127.0.0.1\tlocalhost\n127.0.1.1\tthis-box\n")
+    real = system.install_file
+    monkeypatch.setattr(system, "install_file",
+                        lambda content, dest, mode="644", **kw: dest.write_text(content))
+    monkeypatch.setattr(system, "Path", lambda p: path if str(p) == "/etc/hosts" else __import__(
+        "pathlib").Path(p))
+    yield path
+    monkeypatch.setattr(system, "install_file", real)
+
+
+class TestTheHostsLine:
+    def test_the_name_resolves_to_the_address_it_was_given(self, hosts):
+        system.write_hosts_entry("10.0.0.5")
+        assert f"10.0.0.5\t{config.DOMAIN} {config.HOSTS_MARKER}" in hosts.read_text().splitlines()
+
+    def test_the_box_s_own_entries_survive(self, hosts):
+        system.write_hosts_entry("10.0.0.5")
+        assert "127.0.0.1\tlocalhost" in hosts.read_text()
+        assert "127.0.1.1\tthis-box" in hosts.read_text()
+
+    def test_re_pointing_rewrites_rather_than_appends(self, hosts):
+        """A full teardown+setup is the normal redeploy here, and the Head's address can change
+        between them. Appending would leave the box resolving the name to whichever line came first —
+        the old address — with the new one below it and no symptom but a timeout."""
+        system.write_hosts_entry("10.0.0.5")
+        system.write_hosts_entry("10.0.0.9")
+        lines = [ln for ln in hosts.read_text().splitlines() if config.DOMAIN in ln]
+        assert lines == [f"10.0.0.9\t{config.DOMAIN} {config.HOSTS_MARKER}"]
+
+    def test_writing_the_same_line_twice_touches_nothing(self, hosts, monkeypatch):
+        """setup runs this on every invocation. Rewriting an unchanged root-owned file is a mutation
+        with nothing to show for it."""
+        system.write_hosts_entry("10.0.0.5")
+        writes = []
+        monkeypatch.setattr(system, "install_file",
+                            lambda *a, **kw: writes.append(a))
+        system.write_hosts_entry("10.0.0.5")
+        assert writes == []
+
+    def test_teardown_takes_our_line_and_only_ours(self, hosts):
+        system.write_hosts_entry("10.0.0.5")
+        system.remove_hosts_entry()
+        text = hosts.read_text()
+        assert config.DOMAIN not in text
+        assert "127.0.0.1\tlocalhost" in text and "127.0.1.1\tthis-box" in text
+
+
+class TestFirefoxPolicy:
+    """The policy file is shared: Firefox reads exactly one, and an organisation may already be using
+    it for something else. Cuttle merges in and unwinds only what it put there."""
+
+    @pytest.fixture
+    def policies(self, monkeypatch, tmp_path):
+        path = tmp_path / "policies.json"
+        monkeypatch.setattr(config, "FIREFOX_POLICIES", path)
+        monkeypatch.setattr(system, "install_file",
+                            lambda content, dest, mode="644", **kw: dest.write_text(content))
+        monkeypatch.setattr(system, "run", lambda argv, **kw: (
+            path.unlink(missing_ok=True) if argv[:2] == ["rm", "-f"] else None))
+        return path
+
+    def test_it_turns_on_enterprise_roots(self, policies):
+        system._firefox_enterprise_roots(True)
+        assert json.loads(policies.read_text())["policies"]["Certificates"]["ImportEnterpriseRoots"]
+
+    def test_an_existing_policy_file_keeps_its_other_settings(self, policies):
+        policies.write_text(json.dumps({"policies": {"DisableTelemetry": True}}))
+        system._firefox_enterprise_roots(True)
+        doc = json.loads(policies.read_text())
+        assert doc["policies"]["DisableTelemetry"] is True
+        assert doc["policies"]["Certificates"]["ImportEnterpriseRoots"] is True
+
+    def test_teardown_leaves_the_other_settings_behind(self, policies):
+        policies.write_text(json.dumps({"policies": {"DisableTelemetry": True}}))
+        system._firefox_enterprise_roots(True)
+        system._firefox_enterprise_roots(False)
+        doc = json.loads(policies.read_text())
+        assert doc["policies"] == {"DisableTelemetry": True}
+
+    def test_teardown_removes_a_file_that_was_only_ever_ours(self, policies):
+        system._firefox_enterprise_roots(True)
+        system._firefox_enterprise_roots(False)
+        assert not policies.exists()
+
+    def test_teardown_does_not_disturb_an_admin_s_own_enterprise_roots(self, policies):
+        """Someone may have turned this on for their own CA. A CCC teardown turning it back off
+        would break a trust decision that was never ours to make."""
+        policies.write_text(json.dumps(
+            {"policies": {"Certificates": {"ImportEnterpriseRoots": True}}}))
+        system._firefox_enterprise_roots(False)
+        doc = json.loads(policies.read_text())
+        assert doc["policies"]["Certificates"]["ImportEnterpriseRoots"] is True
+
+
+class TestServingTheCa:
+    """`GET /ca.pem` is open on purpose — it is a public key, and a trust anchor nobody can fetch is
+    one nobody installs. It sits on the main API rather than the mesh-only Enroll API because a LAN
+    client has no mesh to reach."""
+
+    @pytest.fixture
+    def client(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(head_main, "CA_CERT", tmp_path / "ccc-ca.crt")
+        return TestClient(head_main.app)
+
+    def test_it_needs_no_session(self, client):
+        head_main.CA_CERT.write_text("-----BEGIN CERTIFICATE-----\nca\n")
+        r = client.get("/ca.pem")
+        assert r.status_code == 200
+        assert r.text.startswith("-----BEGIN CERTIFICATE-----")
+
+    def test_a_head_with_no_ca_says_so(self, client):
+        assert client.get("/ca.pem").status_code == 503
+
+
+class TestTrustOnFirstUse:
+    """Fetching the CA over an unverified connection proves nothing by itself. What makes it a fact is
+    checking that this CA actually signed the certificate the Head is serving — done by dialling back
+    with it as the trust anchor, so stdlib checks the signature chain AND the name, where a hand-rolled
+    issuer comparison would fail open."""
+
+    def test_a_ca_that_signed_nothing_here_is_refused(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "PINS_DIR", tmp_path / "pins")
+        monkeypatch.setattr(tls, "fetch_ca", lambda url: "-----BEGIN CERTIFICATE-----\nstranger\n")
+        monkeypatch.setattr(tls, "signs_leaf", lambda url, pem: False)
+        installed = []
+        monkeypatch.setattr(tls, "install_ca", lambda url, pem: installed.append(pem))
+        with pytest.raises(Exception):
+            tls.ensure_ca(f"https://{config.DOMAIN}:8082")
+        assert installed == [], "a CA that did not sign the served cert must never be installed"
+
+    def test_an_existing_pin_asks_nothing(self, monkeypatch, tmp_path):
+        pins = tmp_path / "pins"
+        pins.mkdir()
+        monkeypatch.setattr(config, "PINS_DIR", pins)
+        url = f"https://{config.DOMAIN}:8082"
+        tls._pin_path(url).write_text("already trusted")
+        monkeypatch.setattr(tls, "fetch_ca", lambda url: pytest.fail("re-fetched a known CA"))
+        tls.ensure_ca(url)
+
+    def test_a_plain_http_head_has_nothing_to_trust(self, monkeypatch):
+        monkeypatch.setattr(tls, "fetch_ca", lambda url: pytest.fail("fetched over http"))
+        tls.ensure_ca("http://ccc.glados:8082")
+
+    def test_the_pin_is_the_same_filename_on_every_client(self):
+        """Every box in the cluster dials the same name now, so every box's pin has one name. It is
+        also what build-installer bakes into a bundle, so the two must agree by construction."""
+        assert tls._pin_path(f"https://{config.DOMAIN}:8082").name == f"{config.DOMAIN}_8082.pem"
+
+
+class TestTeardownUndoesTheHostMutations:
+    """Unconditionally, on every role — unlike the Head's own keypair, which `--all` gates so that a
+    routine redeploy does not un-trust the fleet. A box that has LEFT is a different case: resolving
+    the name to a Head it no longer talks to, and trusting a CA whose private key lives there, is
+    exactly the residue a teardown exists to remove."""
+
+    def test_it_removes_both(self, monkeypatch):
+        done = []
+        monkeypatch.setattr(teardown.system, "remove_hosts_entry", lambda: done.append("hosts"))
+        monkeypatch.setattr(teardown.system, "untrust_ccc_ca", lambda: done.append("ca"))
+        teardown.untrust_and_unname()
+        assert done == ["hosts", "ca"]
+
+    def test_it_runs_before_packages_are_purged(self):
+        """`untrust_ccc_ca` needs `certutil`, which lives in libnss3-tools — and the purge takes that
+        with it. Ordered the other way round, the NSS entry survives every teardown, silently."""
+        import inspect
+        for flow in (teardown._teardown_arm, teardown._teardown_local, teardown.teardown_full):
+            src = inspect.getsource(flow)
+            assert src.index("untrust_and_unname") < src.index("purge_packages()"), flow.__name__
+
+    def test_every_role_does_it(self):
+        import inspect
+        for flow in (teardown._teardown_arm, teardown._teardown_local,
+                     teardown.teardown_client, teardown.teardown_full):
+            assert "untrust_and_unname" in inspect.getsource(flow), flow.__name__

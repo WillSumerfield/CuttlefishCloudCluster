@@ -135,10 +135,11 @@ Build a portable bundle so donors and clients do not need the repo:
 cuttle build-installer                 # -> ./cuttle-installer.tar.gz
 ```
 
-Run on a Head, it bakes in that Head's address and pinned certificate, so the installed client comes
-pre-pointed and pre-pinned — `cuttle login` and nothing else.
+Run on a Head, it bakes in the cluster's name and certificate authority, so the installed client
+comes pre-pointed and already trusting this cluster — `cuttle login` and nothing else. `install.sh`
+asks for `sudo` once, to write the name into `/etc/hosts` and install the authority.
 
-The baked address is this Head's LAN IP, so a baked bundle is for boxes **on that LAN**. A remote box
+The baked bundle resolves that name to this Head's LAN IP, so it is for boxes **on that LAN**. A remote box
 reaches this Head over the CCC mesh and is not on the mesh until it enrolls, so build that one a
 generic bundle and let `setup --arm` point it:
 
@@ -151,8 +152,9 @@ removes the tool.
 
 ## The dashboard
 
-`setup --head` builds and serves it, at `https://<head-address>:8082/`. The certificate is
-self-signed, so you click through the browser warning once.
+`setup --head` builds and serves it, at `https://ccc.glados:8082/` — the cluster's name, which every
+machine CCC installs on resolves and trusts. No browser warning on any of them; a phone or a borrowed
+laptop has neither, and reaches it by IP with the warning.
 
 You do not have to hand that address to anyone, or remember it yourself: `cuttle dashboard` opens it
 from any box that is set up or logged in. See [Dashboard](../Dashboard.md).
@@ -181,8 +183,9 @@ cuttle teardown --local
 Reverses `setup --head`: services, mesh, packages, `head.db`, `~/.ccc`. It makes you type the
 hostname first, because it destroys every account, Balance and ledger row.
 
-`--all` also removes the Pod image and the TLS certificate, forcing an image rebuild and a client
-re-pin next time. `--full` sweeps everything `cuttle` ever installed, for a box in an unknown or
+`--all` also removes the Pod image and the cluster's certificate authority, forcing an image rebuild
+and — because a new authority is a new trust decision — a re-run of `setup` on every other box in the
+cluster before any of them can reach this Head again. `--full` sweeps everything `cuttle` ever installed, for a box in an unknown or
 half-broken state.
 
 Teardown-then-setup is the **normal redeploy** here, not a disaster. If you want the state back
