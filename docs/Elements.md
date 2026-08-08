@@ -11,7 +11,8 @@ A Spawn is one run of your code on the cluster. You upload a directory, say how 
 how much GPU memory, and name the folders your results land in; CCC finds a machine, runs it in a
 sandbox, and pulls the results back down to you when it finishes — whether or not you were still
 watching. A Spawn runs *once*: if it fails, or the machine it was on is reclaimed, it does not
-quietly start again somewhere else.
+quietly start again somewhere else. It can hold several cards at a time, but always on one
+machine — never spread across two donors.
 
 ### [Recipes](elements/recipes.md)
 
@@ -41,7 +42,7 @@ all. **admin:** `override`, `bump`.
 ### [Storage](elements/storage.md)
 
 Where your things live and how long they last: uploaded projects (until the Spawn starts), results
-(7 days, 8 GB), Recipes (indefinitely, 32 GB), and the 30-minute Recovery Window that catches what you
+(7 days, 8 GB), Recipes (indefinitely, 32 GB), and the one-day Recovery Window that catches what you
 forgot to declare.
 
 ## Donating a machine

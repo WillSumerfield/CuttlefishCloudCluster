@@ -187,7 +187,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   and a full Allowance never affects who wins **Contention**. Which is why the two kinds behave
   differently at the ceiling: a **Recipe** is something a User deliberately saves, so saving past the
   wall simply fails and they delete one; an output arrives on its own from work already done, so it is
-  always accepted and the oldest are dropped to fit. A **Workspace** takes the Recipe's rule — nothing
+  always accepted and the oldest are dropped to fit. A **Recovery Window** copy takes the output's rule,
+  and is the one Allowance its holder is never shown — a ceiling a User is told about is a ceiling they
+  would plan around, which that window must never be — so it is named only once it has already taken
+  something. A **Workspace** takes the Recipe's rule — nothing
   a User deliberately keeps is ever destroyed to make room — but it is the one told *during* the live
   session that filled it, while its owner is still there to make room. An Allowance is not the only thing that ends a
   held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
@@ -200,7 +203,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   of degree rather than kind: a week for what the User asked to keep, a day for what they did not.
   It exists for a mistake the **User** by definition did not know they were making, so it is
   never opt-in and never something to plan around: it is capped in size, expires on its own, and a
-  Spawn whose work exceeds the cap simply never gets one. Distinct from an output (declared, kept) and
+  Spawn whose work exceeds the cap simply never gets one. It is capped twice over — once at what a
+  single Spawn may copy at all, and again at an **Allowance** spanning every window that User has open,
+  so what displaces a User's older copy is only ever their own newer one. Distinct from an output (declared, kept) and
   from **Escrow** — "hold" means Escrow in this cluster, and never this. A **Workspace** visit has none
   and needs none: nothing it wrote was going to be destroyed.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
@@ -281,6 +286,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Device** — the unit a **Spawn** actually holds, and the thing **Power**, **Demand**, **Eligibility**
   and **Settlement** are all reckoned per. A Device is either a whole GPU or a **Slice** of one; nothing
   else in the economy needs to know which.
+  Every Spawn holds **at least one**: there is no Device-less work on this cluster, and work that needs
+  no GPU is simply work that belongs somewhere else. A Spawn may hold **several**, but never across two
+  **Arm**s — the Devices one Spawn holds are always on a single machine, so "several Devices" never
+  means several donors.
 - **Slice** — a division of one **carvable** GPU into several Devices, each holding its own memory and
   its own share of the card, isolated *by the hardware* rather than by agreement. Several Spawns can
   therefore hold one card at once without being able to reach — or starve — each other. A Slice is a
@@ -324,9 +333,15 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   carved can never move its price — size is carried by **Power**, scarcity by Demand, and the two
   multiply out at **Settlement**.
 - **Eligibility** — the set of devices a Spawn may run on, derived from what it *declares it needs*
-  (VRAM, **Feature**s) rather than which machine it wants. A queued Spawn adds **Demand**
+  (how many **Device**s, how much VRAM across them, **Feature**s) rather than which machine it wants.
+  A queued Spawn adds **Demand**
   to every device it is eligible for — so scarce big-VRAM cards, wanted by big jobs *and* small ones,
   price highest. Users declare needs; only the **Admin** may name a machine outright.
+  VRAM is declared as a **total**, not per-Device: a Spawn wanting more than one card holds is asking to
+  be spread over several, and says so by naming the count. The cluster never picks that number on a
+  Spawn's behalf — a second Device given silently would double what its submitter pays while their code
+  went on using one, so the count is always the User's word. The two needs are satisfied **together** or
+  not at all: enough Devices *and* enough VRAM on the same **Arm**, since a Spawn never spans two.
   On a **carvable** card what a Spawn declares stops merely *filtering* and starts *shaping*: it is
   eligible for **Slice**s that do not exist yet but that the **Beak** could carve for it. Eligibility
   is therefore about what the fleet *could* offer, not only what it happens to be offering now.
