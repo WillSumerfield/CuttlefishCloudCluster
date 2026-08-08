@@ -240,6 +240,33 @@ def _declared(**kw):
     return _script(**kw)
 
 
+def test_the_build_block_appears_exactly_once():
+    """Substitution is a plain `.replace()`, which does not know a comment from code. Naming the build
+    block's token in JOB_SCRIPT's own PROSE therefore splices a whole extra copy in wherever it is
+    mentioned — with that copy's first line commented out by the `# ` in front of it and every later
+    line live.
+
+    That shipped. The commented-out line was the `mkdir` that creates `$scratch/env`, so every declared
+    Spawn reached `apptainer --bind` with a source that did not exist and died on
+    `mount source ... doesn't exist`. Found on hardware 2026-08-08 (Spawn 2, the vlearn activation)."""
+    body = _declared()
+    assert body.count('mkdir -p "$scratch/env"') == 1
+    assert body.count("ccc_build() {") == 1
+    # And the mkdir is LIVE, not commented — the exact shape of the bug.
+    assert any(ln.startswith('mkdir -p "$scratch/env"') for ln in body.splitlines())
+
+
+def test_no_substitution_token_survives_rendering():
+    """A token left in the script is a literal `%%NAME%%` reaching bash. The build block is the risky
+    one — it is spliced in before the main pass, so anything it introduces must be substituted by a
+    later key rather than left behind."""
+    import re
+    for body in (_script(), _declared(),
+                 _script(tidepool_port=22001, tidepool_pubkey="k",
+                         declared=env.Manifest("conda", "environment.yml"))):
+        assert re.findall(r"%%[A-Z_]+%%", body) == []
+
+
 def test_a_spawn_that_declared_nothing_renders_no_build_at_all():
     """The Head knows at submit whether there is anything to build, so the no-env case is ABSENT rather
     than an inert run-time branch. `$py` stays empty and there is nothing to degrade to — the image has
@@ -473,11 +500,11 @@ class TestTheBuildScratchIsOnDisk:
         assert "$scratch/tmp" in _block()
 
     def test_the_scratch_is_not_inside_the_cache(self, with_tools):
-        """The prune empties the WHOLE cache at the cap. With one Spawn's scratch inside it, another
-        Spawn hitting the cap would delete a half-downloaded wheel out from under a live build."""
+        """The prune empties the WHOLE cache subtree at the cap. With this Spawn's scratch inside it, a
+        later build of the same User's would delete a half-downloaded wheel out from under it."""
         assert not str(env.CACHE_DIR).startswith("$scratch")
         assert f"$scratch/tmp:{env.POD_TMP}" in _pod_binds(_block())
-        assert f"{env.CACHE_DIR}:{env.POD_CACHE}" in _pod_binds(_block())
+        assert f"$ccc_cache:{env.POD_CACHE}" in _pod_binds(_block())
 
 
 class TestTheNodeCacheIsWhatMakesThisAffordable:
@@ -485,7 +512,7 @@ class TestTheNodeCacheIsWhatMakesThisAffordable:
     hard-link out of this tree, so the second Spawn to want a given torch fetches nothing."""
 
     def test_the_cache_is_bound_into_every_build(self, with_tools):
-        assert f"{env.CACHE_DIR}:{env.POD_CACHE}" in _pod_binds(_block())
+        assert f"$ccc_cache:{env.POD_CACHE}" in _pod_binds(_block())
 
     def test_every_tool_is_pointed_at_it(self, with_tools):
         block = _block()
@@ -496,12 +523,34 @@ class TestTheNodeCacheIsWhatMakesThisAffordable:
 
     def test_it_is_pruned_before_the_build_not_after(self, with_tools):
         """After would throw away exactly what this Spawn just downloaded, on the Spawn that paid for
-        it. Whole-cache rather than per-entry: both tools hard-link out, so evicting one entry safely
+        it. Whole-subtree rather than per-entry: both tools hard-link out, so evicting one entry safely
         would need their own bookkeeping."""
         block = _block()
-        prune = block.index(f'rm -rf "{env.CACHE_DIR}"/*')
+        prune = block.index('rm -rf "$ccc_cache"/*')
         assert prune < block.index("ccc_build_or_die")
         assert str(env.CACHE_MAX_GB * 1024**3) in block
+
+    def test_each_guise_gets_its_own_subtree(self, with_tools):
+        """One shared cache fails twice. uv builds its tree with the CREATOR's ownership and a 0755
+        umask, so the first uid to build locks every later one out — that shipped, and every declared
+        Spawn on the box died with "failed to open file `/ccc-cache/uv/sdists-v9/.git`: Permission
+        denied" (hardware, 2026-08-08). And a cache two Users can both write is a route for one to
+        plant a wheel the other's build hard-links into their Environment.
+
+        `id -un`, not a name rendered by the Head: the job already RUNS as the Guise, so the directory
+        cannot disagree with the uid writing into it."""
+        block = _block()
+        assert f'ccc_cache="{env.CACHE_DIR}/$(id -un)"' in block
+        assert 'mkdir -p "$ccc_cache"' in block
+        # The bare parent is never handed to a build — only the per-Guise subtree under it.
+        assert f"{env.CACHE_DIR}:{env.POD_CACHE}" not in block
+
+    def test_the_prune_only_ever_touches_this_guises_own_cache(self, with_tools):
+        """A prune reaching the shared parent would let one User empty everyone else's cache on that
+        box — costing them nothing and every other User a cold rebuild."""
+        block = _block()
+        assert f'rm -rf "{env.CACHE_DIR}"' not in block
+        assert f'rm -rf "{env.CACHE_DIR}/' not in block
 
 
 def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools):

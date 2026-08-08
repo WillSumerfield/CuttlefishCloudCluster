@@ -106,9 +106,13 @@ TOOLS_DIR = Path(os.environ.get("CCC_TOOLS_DIR", "/opt/ccc/tools"))
 UV_BIN = TOOLS_DIR / "uv"
 MICROMAMBA_BIN = TOOLS_DIR / "micromamba"
 
-# The node-local package download cache — NOT an env cache. Shared by every Guise on the box, size-capped
-# by the job script, swept by teardown. Mirrors cuttle.config.NODE_ENV_CACHE_DIR, the same duplication
-# TOOLS_DIR already carries across two packages that do not import each other.
+# The PARENT of the node-local package download caches — one subtree per **Guise**, never one shared
+# tree (cuttle.config.NODE_ENV_CACHE_DIR says why: ownership does not propagate, and a shared writable
+# cache is a supply chain between Users). Each is made by its own Guise in the job script, capped there,
+# and swept wholesale by teardown. The cap is PER GUISE.
+#
+# Mirrors cuttle.config.NODE_ENV_CACHE_DIR — the same duplication TOOLS_DIR already carries across two
+# packages that do not import each other.
 CACHE_DIR = Path(os.environ.get("CCC_ENV_CACHE", "/var/lib/ccc/envcache"))
 CACHE_MAX_GB = int(os.environ.get("CCC_ENV_CACHE_MAX_GB", 20))
 

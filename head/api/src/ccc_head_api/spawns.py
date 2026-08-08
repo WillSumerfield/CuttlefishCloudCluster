@@ -353,7 +353,7 @@ cd "$proj"
 mkdir -p "$scratch/tmp/pip"
 # The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one — built HERE,
 # now, out of this box's own bandwidth. The Head decided what to build and rendered the commands into
-# %%ENV_BUILD%% below; running them is all that happens on this side.
+# the build block below; running them is all that happens on this side.
 #
 # It is built into $scratch, NOT into $proj, and that is not tidiness: $proj is what recover_scratch()
 # copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so a multi-GB env in there
@@ -371,15 +371,15 @@ mkdir -p "$scratch/tmp/pip"
 # Environment's own lib dir) and those blocks arrive already substituted — see _render.
 #
 # `$py` starts EMPTY and there is no fallback, because there is nothing to fall back to: the Pod image
-# carries no interpreter at all (cuttle.templates.BASE_DEF_TMPL). %%ENV_BUILD%% is empty for exactly one
-# kind of Spawn now that declaring is mandatory — a **Tide Pool**, which may decline — and it never uses
+# carries no interpreter at all (cuttle.templates.BASE_DEF_TMPL). The build block is empty for exactly
+# one kind of Spawn now that declaring is mandatory — a **Tide Pool**, which may decline — and it never uses
 # `$py`: its payload boots a login daemon rather than an interpreter. So what it leaves behind is
 # `$envbind`/`$envmount`, which correctly stay empty. An **Arm Feature**'s probe is the one other reader,
 # and it fails loudly on an empty `$py` rather than silently (features.PREAMBLE).
 #
 # `featbind`/`featenv` are the Arm **Feature** runtime accumulators (ccc_head_api.features), appended to
 # the payload's bind and env lists. Empty for almost every Spawn: only a Feature with a runtime *profile*
-# renders anything into them. %%ENV_BUILD%% seeds `featbind` with the Feature library prefix it built,
+# renders anything into them. The build block seeds `featbind` with the Feature library prefix it built,
 # read-only — nothing writes to it, and each profile's block below puts it on LD_LIBRARY_PATH.
 py=""; envbind=""; envmount=""; featbind=""; featenv=""
 %%ENV_BUILD%%
@@ -435,20 +435,29 @@ exit $rc
 # already streams it, live, on both branches.
 ENV_BUILD = """\
 mkdir -p "$scratch/env" "$scratch/tmp"%%FEATLIB_MKDIR%%
-# The node's shared package download cache (cuttle.config.NODE_ENV_CACHE_DIR). Emptied WHOLE at the cap
-# rather than evicted per entry: uv and micromamba both hard-link out of it, so evicting one entry needs
-# their own bookkeeping to be safe. Costs re-downloads and nothing else — no Spawn depends on it. Checked
-# before the build so this Spawn's own downloads are never the ones thrown away.
-if [ -d "%%ENV_CACHE%%" ]; then
-    csz=$(du -sb "%%ENV_CACHE%%" 2>/dev/null | cut -f1)
-    if [ -n "$csz" ] && [ "$csz" -gt %%ENV_CACHE_MAX%% ]; then
-        echo "ccc: the node's package cache passed %%ENV_CACHE_MAX_GB%%GB — emptying it" >> "$err"
-        rm -rf "%%ENV_CACHE%%"/* 2>/dev/null
-    fi
+# THIS Guise's package download cache, under the 0777 parent `cuttle setup` made
+# (cuttle.config.NODE_ENV_CACHE_DIR). One subtree per Guise, created here by the Guise that owns it,
+# because a single shared cache fails twice over: uv builds its tree with the CREATOR's ownership and
+# 0755 umask, so the first uid to build locks every later one out (hardware, 2026-08-08) — and a cache
+# two Users can both write is a route for one to plant a wheel the other's build installs.
+#
+# `id -un` rather than a rendered name: the job already RUNS as the Guise, so this cannot disagree with
+# the uid doing the writing. mkdir is unconditional and -p, so a first build and a warm one are the
+# same line.
+ccc_cache="%%ENV_CACHE_ROOT%%/$(id -un)"
+mkdir -p "$ccc_cache"
+# Emptied WHOLE at the cap rather than evicted per entry: uv and micromamba both hard-link out of it,
+# so evicting one entry needs their own bookkeeping to be safe. Costs re-downloads and nothing else —
+# no Spawn depends on it. Checked BEFORE the build, so this Spawn's own downloads are never the ones
+# thrown away, and only ever this Guise's own subtree, so no User can cost another their cache.
+csz=$(du -sb "$ccc_cache" 2>/dev/null | cut -f1)
+if [ -n "$csz" ] && [ "$csz" -gt %%ENV_CACHE_MAX%% ]; then
+    echo "ccc: your package cache on this node passed %%ENV_CACHE_MAX_GB%%GB — emptying it" >> "$err"
+    rm -rf "$ccc_cache"/* 2>/dev/null
 fi
 ccc_build() {
     apptainer exec --contain --pid --pwd "$proj" \\
-      --bind "$proj,$scratch/env:%%ENV_MOUNT%%,%%ENV_CACHE%%:%%POD_CACHE%%,\
+      --bind "$proj,$scratch/env:%%ENV_MOUNT%%,$ccc_cache:%%POD_CACHE%%,\
 $scratch/tmp:%%POD_TMP%%,%%TOOLS_DIR%%:%%TOOLS_DIR%%:ro%%FEATLIB_BUILD_BIND%%%%STUB_BINDS%%" \\
       --env "%%BUILD_POD_ENV%%" \\
       "$sif" "$@" >> "$err" 2>&1
@@ -690,7 +699,7 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
         "%%STUB_BINDS%%": "".join(f",$proj/{b}" for b in stub_binds),
         "%%STUB_LOG%%": "".join(f'echo {shlex.quote(line)} >> "$err"\n' for line in stub_log),
         "%%BUILD_CMDS%%": "\n".join(cmds),
-        "%%ENV_CACHE%%": str(environments.CACHE_DIR),
+        "%%ENV_CACHE_ROOT%%": str(environments.CACHE_DIR),
         "%%ENV_CACHE_MAX%%": str(environments.CACHE_MAX_GB * 1024**3),
         "%%ENV_CACHE_MAX_GB%%": str(environments.CACHE_MAX_GB),
         "%%POD_CACHE%%": environments.POD_CACHE,
@@ -716,9 +725,15 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # depending which payload this is), and every token below is a plain single-pass `.replace()`.
     # Doing it here rather than relying on dict order keeps that dependency from being invisible.
     body = JOB_SCRIPT.replace("%%PAYLOAD%%", payload)
-    # %%ENV_BUILD%% is substituted here for the same reason as %%PAYLOAD%% above and not the one below:
+    # The build block is substituted here for the same reason as %%PAYLOAD%% above and not the one below:
     # its replacement text DOES contain tokens (%%ENV_MOUNT%%, %%ENV_INTERPRETER%%, %%FEATLIB_MOUNT%%),
     # deliberately, so that the mount point is written down once for the whole script rather than twice.
+    #
+    # NOTE the token is NEVER named in JOB_SCRIPT's own prose. `.replace()` does not know a comment from
+    # code, so a mention inside the template would take a full copy of this block too — the copy's first
+    # line commented out by the `# ` in front of it and the rest live. That shipped once: the `mkdir` that
+    # creates $scratch/env was the commented line, and every declared Spawn died on a bind whose source
+    # did not exist. `test_the_build_block_appears_exactly_once` is the guard.
     body = body.replace("%%ENV_BUILD%%",
                         _render_env_build(declared, staging, features or [],
                                           stub_binds or [], stub_log or []))

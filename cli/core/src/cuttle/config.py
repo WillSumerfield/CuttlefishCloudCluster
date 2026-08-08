@@ -271,16 +271,28 @@ SUDOERS_MUNGE_HEADSCALE = Path("/etc/sudoers.d/ccc-munge-headscale")
 ENROLL_API_USER = "munge"
 CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only writable location
 # The package download cache that makes a per-Spawn build affordable — NOT an env cache. Node-local,
-# never staged anywhere, shared by every Guise on the box (0777, like the Head's own build dirs: the
-# Mantle owns them and a Guise is a separate uid in a shared group).
+# never staged anywhere. Without it every Spawn re-downloads its whole dependency set; with it, uv and
+# micromamba hard-link a rebuild out of what is already on disk. Under CCC_LIB so both teardowns already
+# sweep it (remove_arm_state on an Arm, remove_enroll_api on the Head).
 #
-# Without it every Spawn re-downloads its whole dependency set; with it, uv and micromamba hard-link a
-# rebuild out of what is already on disk. Under CCC_LIB so both teardowns already sweep it
-# (remove_arm_state on an Arm, remove_enroll_api on the Head).
+# **A PARENT, not the cache.** Each **Guise** gets its own subtree, created by the job script as that
+# Guise (ccc_head_api.spawns.ENV_BUILD). Only this directory is 0777, and that is all it is for: a
+# mkdir point. Two reasons it is not one shared tree:
 #
-# Whole-cache pruning at the cap, not per-entry LRU: both tools hard-link OUT of these trees, so
+#   * Permissions do not work. uv creates its whole subtree with the CREATOR's ownership and umask
+#     (0755), so the first uid to build owns it and every later one gets EACCES. 0777 here does not
+#     propagate. Found on hardware 2026-08-08: `cuttle setup` built the benchmark env as the operator
+#     and locked every Guise out of `uv/sdists-v9`.
+#   * A shared writable cache is a supply chain between Users. One could plant a tampered wheel that
+#     another's build hard-links straight into their Environment. Donors are trusted (they own the
+#     hardware); two Users of the same cluster are not each other's.
+#
+# The cap below is therefore PER GUISE. A box's total is that times the number of Users who have ever
+# built here, which on a donated box is a handful — the honest trade for isolation.
+#
+# Whole-subtree pruning at the cap, not per-entry LRU: both tools hard-link OUT of these trees, so
 # evicting one entry needs their own bookkeeping to be safe. Emptying costs re-downloads and nothing
-# else — it holds no state any Spawn depends on. Mirrors ccc_head_api.environments.prune_cache.
+# else — it holds no state any Spawn depends on.
 NODE_ENV_CACHE_DIR = CCC_LIB / "envcache"
 NODE_ENV_CACHE_MAX_GB = 20
 # The Arm registry. `cuttle arm authorize` CREATES each row (owner + name) before the donor's token is

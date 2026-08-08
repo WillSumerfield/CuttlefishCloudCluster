@@ -544,24 +544,25 @@ def install_env_tools() -> None:
 
 
 def provision_env_cache() -> None:
-    """The node-local package download cache every Environment build on this box shares
+    """The parent of every per-**Guise** package download cache on this box
     (config.NODE_ENV_CACHE_DIR). **Every node**, for the same reason as `install_env_tools`.
 
-    This is what makes building per-Spawn affordable rather than merely possible: uv and micromamba
-    hard-link out of it, so the second Spawn to declare a given torch pays no download at all. Without
-    it an Arm re-fetches several GB every time.
+    Those caches are what make building per-Spawn affordable rather than merely possible: uv and
+    micromamba hard-link out of them, so the second Spawn from one User to declare a given torch pays
+    no download. Without them an Arm re-fetches several GB every time.
 
-    0777 and NOT sticky. Every build on this box runs as a different **Guise**, they must all write
-    here, and the pruning below is done by whichever Guise happens to find the cache over its cap — a
-    sticky bit would leave it unable to evict anyone else's entries and the cap unenforceable. Nothing
-    in here is secret (public wheels) and nothing depends on it (see NODE_ENV_CACHE_DIR).
+    Only the PARENT is made here, and only so a Guise can mkdir inside it — one shared cache does not
+    work and should not be wanted; see config.NODE_ENV_CACHE_DIR for both reasons.
 
-    The parent is created without -o/-g so an existing munge-owned CCC_LIB on the Head keeps its owner.
+    0777 and not sticky. A Guise creates its own subtree here on its first build and owns it outright,
+    so nothing in this directory is ever written by a uid that does not own it.
+
+    CCC_LIB is created without -o/-g so an existing munge-owned one on the Head keeps its owner.
     """
     run(["install", "-d", "-m", "0755", str(config.CCC_LIB)], sudo=True)
     run(["install", "-d", "-m", "0777", str(config.NODE_ENV_CACHE_DIR)], sudo=True)
-    ui.say(f"  [muted]environment build cache → {config.NODE_ENV_CACHE_DIR} "
-           f"(pruned past {config.NODE_ENV_CACHE_MAX_GB}GB)[/muted]")
+    ui.say(f"  [muted]environment build caches → {config.NODE_ENV_CACHE_DIR}/<guise> "
+           f"(each pruned past {config.NODE_ENV_CACHE_MAX_GB}GB)[/muted]")
 
 
 def build_bench_env() -> None:
@@ -595,8 +596,8 @@ def build_bench_env() -> None:
     uv = str(config.ENV_TOOLS_DIR / "uv")
     venv = f"{config.BENCH_ENV_MOUNT}/venv"
     with tempfile.TemporaryDirectory() as tmp:
-        build = Path(tmp) / "env"
-        build.mkdir()
+        build, cache = Path(tmp) / "env", Path(tmp) / "cache"
+        build.mkdir(), cache.mkdir()
         for argv in ([uv, "venv", "--python", config.BENCH_ENV_PYTHON, venv],
                      [uv, "pip", "install", "--python", f"{venv}/bin/python",
                       config.BENCH_TORCH_PKG]):
@@ -605,11 +606,13 @@ def build_bench_env() -> None:
             # not install — a system python this box happens to have and the Pod does not — and
             # INSTALL_DIR puts the one it downloads inside the tree that is kept.
             #
-            # The node's shared download cache, not a throwaway: the first Spawn here to declare this
-            # same torch then hard-links it instead of re-fetching several GB.
+            # A THROWAWAY cache, deliberately not the node's (config.NODE_ENV_CACHE_DIR). This runs as
+            # the operator, and every Spawn runs as a **Guise** — different uids, so nothing written
+            # here could ever be reused, and writing it into the shared parent would leave an
+            # operator-owned `uv/` tree that locks every Guise out of its own cache. That is exactly
+            # what shipped and broke on hardware 2026-08-08.
             run(["apptainer", "exec", "--contain", "--pwd", "/",
-                 "--bind", f"{build}:{config.BENCH_ENV_MOUNT},"
-                           f"{config.NODE_ENV_CACHE_DIR}:/ccc-cache,"
+                 "--bind", f"{build}:{config.BENCH_ENV_MOUNT},{cache}:/ccc-cache,"
                            f"{config.ENV_TOOLS_DIR}:{config.ENV_TOOLS_DIR}:ro",
                  "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PYTHON_PREFERENCE=only-managed,"
                           f"UV_PYTHON_INSTALL_DIR={config.BENCH_ENV_MOUNT}/py,"
