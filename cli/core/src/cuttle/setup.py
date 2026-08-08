@@ -17,12 +17,15 @@ import os
 import platform
 import re
 import secrets
+import socket
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
-from . import auth, backup, config, enroll, headapi, mesh, monitor, settings, system, templates, ui
+from . import (auth, backup, config, enroll, headapi, mesh, monitor, settings, system, templates,
+               tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -159,12 +162,28 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     `head` adds `acl`, which only the Head can use: it is what lets the Mantle hand ONE Guise read
     access to ONE uploaded project (see temp/spawn-isolation.md), and the uploads only ever exist
     here. A donor's box gains nothing it cannot use.
+
+    `libnss3-tools` is on every role, this one included: it carries `certutil`, and without it the
+    Chromium-family browsers on this box go on warning about the Dashboard however well the OS trust
+    store is set up (see system.trust_ccc_ca_browsers).
     """
     run(["apt-get", "update"], sudo=True)
     before = system.installed_packages()
-    _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG,
+    _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
                   *([config.ACL_PKG] if head else [])])
     return before
+
+
+def install_client_packages() -> None:
+    """The client role's whole apt footprint: `certutil`, so this box's browsers can be told to trust
+    the cluster. Deliberately not `install_packages` — a submitter's box has no business gaining Slurm.
+
+    Unrecorded, so teardown leaves it: there is no manifest on a client (record_installed is a Head/Arm
+    step), and libnss3-tools is a general-purpose tool that another application may since have come to
+    rely on. Removing a shared package we cannot prove we alone added is the worse mistake.
+    """
+    run(["apt-get", "update"], sudo=True)
+    _apt_install([config.NSS_TOOLS_PKG])
 
 
 def install_apptainer(deb: Path) -> None:
@@ -733,6 +752,18 @@ rm -f {d}/head.csr {d}/head.ext
 """, sudo=True)
 
 
+def trust_own_ca() -> None:
+    """The Head trusting the CA it just minted. Not a TOFU moment — setup wrote these exact bytes to
+    disk a few lines ago — so there is nothing to confirm, only to announce, exactly as
+    mesh.trust_own_headscale_cert argues for the coordinator's cert.
+
+    Worth doing even though nothing on the Head strictly needs it: the Head box is where the Admin
+    actually opens the Dashboard, so it is the first browser that would otherwise warn.
+    """
+    system.trust_ccc_ca(config.HEAD_CA_CERT.read_text())
+    system.trust_ccc_ca_browsers(config.HEAD_CA_CERT.read_text())
+
+
 def _secure_tls() -> None:
     """Owner and modes on both keypairs, re-asserted on EVERY `setup --head` — not only the run that
     minted them.
@@ -982,6 +1013,10 @@ def _setup_head(address: str | None = None) -> None:
         build_spa()                              # build + stage the Dashboard SPA (Node, Head-only)
     with ui.step("Issuing the Head certificate"):
         install_tls(mesh_ip)                     # must exist before uvicorn starts
+        trust_own_ca()                           # so this box's own browser trusts the Dashboard
+        # The Head answers on itself. Written after the cert, so the name and the SAN that covers it
+        # arrive together and the Dashboard is never briefly resolvable but untrusted.
+        system.write_hosts_entry("127.0.0.1")
     with ui.step("Starting the Head API and the Karma tick"):
         headapi.install_head(_write_root_file, mesh_ip)  # board + SPA + auth + submit, LAN+mesh
         headapi.install_karma(_write_root_file)  # ranks the queue by standing (same venv)
@@ -1006,15 +1041,16 @@ def _setup_head(address: str | None = None) -> None:
     lan = system.primary_ip()
     # Results, not `ui.kv` — kv writes straight to stdout, which inside a box is both uncounted (so
     # the erase lands in the wrong place) and unreadable by the time eleven phases have scrolled by.
-    ui.result("dashboard (LAN)", headapi.head_url(lan))
-    ui.result("dashboard (mesh)", headapi.head_url(mesh_ip))
+    ui.result("dashboard", headapi.head_url(config.DOMAIN))
+    ui.result("dashboard (by IP)", f"{headapi.head_url(lan)} · {headapi.head_url(mesh_ip)}")
     ui.result("coordinator", mesh_ip)
     ui.result("add an Arm", "cuttle arm authorize <name> --user <owner>")
-    print("\ncuttle: the Head signs its own TLS certificate (no public domain = no CA can sign it).\n"
-          "        BROWSER — the first visit warns 'your connection is not private'. That is EXPECTED.\n"
-          "        Click Advanced -> Proceed; the browser remembers, and you see it once per browser.\n"
-          "        CLI     — `cuttle login` shows the certificate's fingerprint once and asks you to\n"
-          "        confirm it. After that it is pinned, and a changed certificate is refused.")
+    print(f"\ncuttle: this cluster signs its own certificates (no public domain = no CA can sign for\n"
+          f"        it), and every box CCC installs on is told to trust the one authority that does.\n"
+          f"        So {config.DOMAIN} loads clean on this box, on every Arm, and on any client set up\n"
+          f"        with `cuttle setup --client` — no 'your connection is not private'.\n"
+          f"        A phone or a borrowed laptop gets neither the name nor the trust: reach the\n"
+          f"        Dashboard at the IP above and expect the warning there.")
 
 
 def point_at_head() -> str:
@@ -1028,6 +1064,11 @@ def point_at_head() -> str:
 
     Accepts a bare host as well as a full URL: `--head` takes a URL because it is a flag, but a person
     answering "which Head?" types an address.
+
+    What is ASKED for is an address; what is STORED is always the **Cluster name**. The answer becomes
+    this box's /etc/hosts entry, and from then on every surface — settings, the cert pin's filename,
+    what `cuttle dashboard` opens — says `ccc.glados` on every box in the cluster. Answering with the
+    name itself is fine on a box that already has the entry; the hosts write is then a no-op.
     """
     data = settings.load()
     # Re-ask on blank rather than storing it: the prompt is pre-filled with the baked URL, so an empty
@@ -1046,22 +1087,43 @@ def point_at_head() -> str:
         url = f"https://{answer}"
     else:
         url = headapi.head_url(answer)
-    data["head"] = url
+    u = urlparse(url)
+    # Point the name at whatever they gave us, unless they gave us the name — in which case this box
+    # already has an entry, and it is the only thing that could have resolved the answer they typed.
+    # A hostname is resolved first: /etc/hosts maps an ADDRESS to a name, so `myhead` would be a line
+    # that parses and never works.
+    if u.hostname and u.hostname != config.DOMAIN:
+        system.write_hosts_entry(socket.gethostbyname(u.hostname))
+    # Swap the host for the name, keeping their scheme and port: a deliberate `http://` or a
+    # non-default port is a choice this has no business overriding.
+    data["head"] = url = u._replace(
+        netloc=config.DOMAIN + (f":{u.port}" if u.port else "")).geturl()
     settings.save(data)
     return url
 
 
 def setup_client() -> None:
-    """A submitter's box: point it at a Head, then log in. Nothing else.
+    """A submitter's box: point it at a Head, trust the cluster, then log in. Nothing else.
 
-    No apt, no mesh, no Slurm, no sudo — a client only ever talks to the Head API over HTTP. Kept
-    separate from `setup --head/--arm` precisely so that submitting from a laptop never requires
-    provisioning it.
+    No mesh and no Slurm — a client only ever talks to the Head API over HTTPS. It does now need sudo
+    and one package, which it did not before: the **Cluster name** goes in /etc/hosts, and trusting the
+    cluster's CA (so the Dashboard loads without a warning) means writing the OS trust store and, for
+    Chromium-family browsers, importing with `certutil`. Still kept separate from `setup --head/--arm`,
+    because the gap between "one hosts line and a trusted CA" and "provision this machine" is the
+    whole point of the role.
+
+    No sudo on the box means this fails, and is meant to: a client that could not be given the name is
+    a client on a different configuration from every other, and finding that out here beats finding it
+    out at the first `cuttle run`.
     """
     pointed: dict[str, str] = {}
     with ui.section("Set up this client", lambda: pointed.get("head", "")):
         make_user_dirs()
+        install_client_packages()  # certutil, for the browser trust below
         pointed["head"] = point_at_head()
+        # Before login, which is what would otherwise ask: `auth.login` calls tls.ensure_ca itself, so
+        # this is only the difference between confirming a fingerprint inside the wizard and outside it.
+        tls.ensure_ca(pointed["head"])
     who: dict[str, str] = {}
     with ui.section("Log in", lambda: who.get("as", "")):
         who["as"] = auth.login(None)
@@ -1277,6 +1339,14 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
 
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)
+        # The name can only be written now: it points at the Head's MESH address, which did not exist
+        # until the join a few steps ago. Enrollment itself dialled the admin-supplied `--address`, so
+        # the Cluster name is never on the bootstrap path — it only has to work from here on.
+        system.write_hosts_entry(t["mesh_ip"])
+        # The CA rode in on /enroll, over a channel the join token and Headscale's own view of the
+        # caller already authenticated — so this box is spared the fingerprint ceremony entirely.
+        if info.get("ca_pem"):
+            tls.install_ca(headapi.head_url(config.DOMAIN), info["ca_pem"])
 
     # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
     # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
@@ -1303,14 +1373,15 @@ def _setup_arm(token: str, re_enroll: bool = False) -> None:
     data["arm"] = {"node_name": node_name, "mesh_ip": mesh_ip, "head_mesh_ip": t["mesh_ip"],
                    "ctld_addr": info["ctld_addr"], "gpu_devices": system.gpu_devices(),
                    "features": features, "licence_home": licence_home}
-    # Point the box at the Head over the MESH — an Arm's owner is a User too, and until now enrolling
-    # left them with no Head URL at all, so `cuttle login` on their own Arm said "no Head URL set".
+    # Point the box at the Head by NAME — an Arm's owner is a User too, and until now enrolling left
+    # them with no Head URL at all, so `cuttle login` on their own Arm said "no Head URL set".
     #
-    # The mesh address, not whatever was here before: a remote Arm is off the Head's LAN by definition,
-    # and a bundle built on the Head bakes that LAN IP (installer.py). Overwriting is the point — the
-    # baked address is the one that cannot work from here, and the mesh IP is in the cert's SANs, so
-    # `login` can pin it. On the co-located/LAN case the mesh address works just as well.
-    data["head"] = headapi.head_url(t["mesh_ip"])
+    # The name, not whatever was here before: a remote Arm is off the Head's LAN by definition, and a
+    # bundle built on the Head bakes that LAN IP (installer.py). Overwriting is the point — the baked
+    # address is the one that cannot work from here. The hosts entry written during enrollment resolves
+    # the name to the Head's mesh IP, so this reaches the same place the old literal did, under the one
+    # spelling every other box in the cluster also uses.
+    data["head"] = headapi.head_url(config.DOMAIN)
     settings.save(data)
 
     # The Mantle must exist here BEFORE slurmd can accept a Spawn: slurmd setuid()s to the submitting
