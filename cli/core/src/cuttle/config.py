@@ -375,7 +375,12 @@ GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
 # the Enroll API on purpose: /enroll hands out the munge key and MUST stay mesh-only, but the Head
 # API must reach the LAN too. Bound 0.0.0.0. Reuses API_VENV (same package, different app object). A
 # remote Arm sees it over the mesh; a LAN box sees it too (needs a ufw port rule — system.allow_tcp_port).
-HEAD_API_PORT = 8082  # 8080 = headscale, 8081 = enroll API
+# 443, so the **Cluster name** is the whole address: `https://ccc.glados`, nothing to append. The CLI
+# could always default a port (it takes a bare host and fills one in); a browser cannot be taught one,
+# and the Dashboard is a browser surface. Costs a capability — the Head API runs as HEAD_API_USER, and
+# a non-root process cannot bind <1024 without CAP_NET_BIND_SERVICE (see headapi._head_unit) — and
+# claims the box's one 443, which is why the Head is a box CCC owns outright.
+HEAD_API_PORT = 443  # 8080 = headscale, 8081 = enroll API
 HEAD_API_SERVICE = "ccc-head-api"
 HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
 # The **Mantle** (glossary): the single service identity every Spawn executes as, on every node. On the
@@ -530,9 +535,10 @@ TIDEPOOL_PORT_RANGE = 200
 # --- WSL Arm dashboard forward (⑥ convenience) ---
 # A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
 # Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head
-# API — WSL2's localhost-forwarding then surfaces it at http://localhost:HEAD_API_PORT/ in the
-# Windows browser. Socket-activated proxy: no extra package (systemd-socket-proxyd ships with
-# systemd). WSL-only — a native-Linux Arm reaches the mesh Dashboard directly.
+# API — WSL2's localhost-forwarding then surfaces it at https://localhost/ in the Windows browser.
+# Socket-activated proxy: no extra package (systemd-socket-proxyd ships with systemd), and systemd
+# binds the socket itself, as root, so the privileged HEAD_API_PORT needs no capability on this side.
+# WSL-only — a native-Linux Arm reaches the mesh Dashboard directly.
 DASH_FORWARD_SERVICE = "ccc-dash-forward"  # the .socket/.service basename (they must match to pair)
 DASH_FORWARD_SOCKET_UNIT = Path("/etc/systemd/system/ccc-dash-forward.socket")
 DASH_FORWARD_SERVICE_UNIT = Path("/etc/systemd/system/ccc-dash-forward.service")

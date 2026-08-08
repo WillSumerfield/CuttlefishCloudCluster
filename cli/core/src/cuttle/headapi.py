@@ -141,6 +141,13 @@ Wants=slurmctld.service
 
 [Service]
 User={config.HEAD_API_USER}
+# {config.HEAD_API_PORT} is privileged (<1024) and this service is not root, so without this the bind
+# fails outright with EACCES. Ambient, not a setuid binary or a root process that drops: uvicorn
+# inherits the one capability and nothing else. It does permit binding ANY low port, not just
+# {config.HEAD_API_PORT} — accepted because the alternatives (socket activation, an nftables redirect)
+# each add a moving part to setup and teardown to save an account that already holds head.db and the
+# TLS key from a privilege it has no way to use.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Environment=CCC_PARTITION={config.PARTITION}
 Environment=CCC_WEB_DIR={config.HEAD_API_WEB_DIR}
 Environment=CCC_HEAD_DB={config.HEAD_DB}
@@ -179,8 +186,13 @@ def install_head(write_unit, mesh_ip: str) -> None:
 
 def head_url(host: str) -> str:
     """https: the Head API carries passwords + session tokens (the Enroll API stays plain HTTP — it's
-    mesh-only, and WireGuard already encrypts that path)."""
-    return f"https://{host}:{config.HEAD_API_PORT}"
+    mesh-only, and WireGuard already encrypts that path).
+
+    The port is left off when it is https's own default, so every surface that shows an address —
+    settings, `cuttle dashboard`, the closing summary, a baked bundle — reads `https://ccc.glados`
+    and not `https://ccc.glados:443`. Same URL either way; only one of them is worth typing."""
+    port = "" if config.HEAD_API_PORT == 443 else f":{config.HEAD_API_PORT}"
+    return f"https://{host}{port}"
 
 
 # --- Karma tick: the queue's ranking loop ------------------------------------
