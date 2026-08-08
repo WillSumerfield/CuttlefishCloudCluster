@@ -381,31 +381,50 @@ def trust_ccc_ca_browsers(pem: str) -> None:
              "-n", config.HEAD_CA_NICKNAME, "-i", tmp])
     finally:
         Path(tmp).unlink(missing_ok=True)
-    _firefox_enterprise_roots(True)
+    _firefox_trust(True, pem)
     print(f"cuttle: trusted the CCC CA in this user's browsers ({db}) and in Firefox")
 
 
-def _firefox_enterprise_roots(on: bool) -> None:
-    """Flip `ImportEnterpriseRoots` in Firefox's policy file, creating or removing it as needed.
+def _firefox_trust(on: bool, pem: str | None = None) -> None:
+    """Install the CA into Firefox's own store via its enterprise policy, or take it back out.
 
-    Ubuntu ships Firefox as a snap, whose confinement may or may not let it read /etc/firefox. Written
-    anyway: it is one small file, it is correct for a deb Firefox, and a snap that ignores it is no
-    worse off than before.
+    Two things have to be true at once, and each fails silently on its own:
+
+      * the policy must be `Certificates.Install`, not `ImportEnterpriseRoots`. The latter is a
+        Windows/macOS policy — on Linux it is accepted, applied, and trusts nothing.
+      * the path it names must be readable by Firefox. Ubuntu ships it as a snap confined to one host
+        tree, `/etc/firefox` (the `etc-firefox` system-files plug), so the copy under
+        /usr/local/share/ca-certificates that every other tool reads is invisible to it. Hence
+        config.FIREFOX_CA, which is inside that tree and beside the policy file itself.
+
+    Firefox reads policies at STARTUP, so a running instance keeps warning until it fully exits — and
+    "fully" means every process, not just the window.
     """
     path = config.FIREFOX_POLICIES
     doc = json.loads(path.read_text()) if path.exists() else {}
     certs = doc.setdefault("policies", {}).setdefault("Certificates", {})
-    ours = {"ccc": True}
+    install = [p for p in certs.get("Install", []) if p != str(config.FIREFOX_CA)]
     if on:
-        certs["ImportEnterpriseRoots"] = True
-        certs.update(ours)
+        install_file(pem, config.FIREFOX_CA, "644")
+        # Drop ImportEnterpriseRoots if it is OURS — earlier versions of this function wrote it, and a
+        # box upgrading would otherwise keep a key we authored, no longer write, and know does nothing
+        # here. Guarded on the marker so an admin who set it for their own CA keeps it.
+        if certs.get("ccc"):
+            certs.pop("ImportEnterpriseRoots", None)
+        certs["Install"] = [*install, str(config.FIREFOX_CA)]
+        certs["ccc"] = True
     else:
         # Only unwind what we put there. A policies.json that carried other settings keeps them, and
-        # ImportEnterpriseRoots survives if it was not ours to begin with — an admin who turned it on
-        # for their own reasons should not have it turned off by a CCC teardown.
+        # so does anyone else's entry in Install — an admin trusting their own CA through this file
+        # should not lose it to a CCC teardown.
         if not certs.pop("ccc", False):
             return
-        certs.pop("ImportEnterpriseRoots", None)
+        run(["rm", "-f", str(config.FIREFOX_CA)], sudo=True)
+        certs.pop("ImportEnterpriseRoots", None)  # written by earlier versions of this function
+        if install:
+            certs["Install"] = install
+        else:
+            certs.pop("Install", None)
         if not certs:
             doc["policies"].pop("Certificates", None)
         if not doc.get("policies"):
@@ -422,7 +441,7 @@ def untrust_ccc_ca() -> None:
         run(["update-ca-certificates"], sudo=True, check=False)
     if _nssdb().exists() and shutil.which("certutil"):
         run(["certutil", "-d", f"sql:{_nssdb()}", "-D", "-n", config.HEAD_CA_NICKNAME], check=False)
-    _firefox_enterprise_roots(False)
+    _firefox_trust(False)
 
 
 # --- firewall ---------------------------------------------------------------

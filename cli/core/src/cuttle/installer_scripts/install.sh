@@ -61,13 +61,18 @@ if [ -d "$here/head" ]; then
             echo "cuttle: no certutil — Chrome/Edge will keep warning until you run:"
             echo "cuttle:   sudo apt install libnss3-tools && cuttle setup --client"
         fi
+        # Certificates.Install pointing INTO /etc/firefox: that is the only host tree Ubuntu's
+        # snap-confined Firefox may read, and ImportEnterpriseRoots is a Windows/macOS policy that
+        # trusts nothing here. See system._firefox_trust.
+        #
         # Only when there is no policy file at all. This is a shared file that may already carry an
         # organisation's own settings, and a shell script has no business merging JSON — cuttle's own
-        # path (system._firefox_enterprise_roots) does that properly, and `setup --client` will.
+        # path does that properly, and `setup --client` will.
         if [ ! -e /etc/firefox/policies/policies.json ]; then
+            sudo install -D -m 644 "$here/head/ccc-ca.crt" /etc/firefox/ccc-head.crt
             sudo install -d /etc/firefox/policies
             sudo sh -c 'cat > /etc/firefox/policies/policies.json' <<'POLICY'
-{"policies": {"Certificates": {"ImportEnterpriseRoots": true, "ccc": true}}}
+{"policies": {"Certificates": {"Install": ["/etc/firefox/ccc-head.crt"], "ccc": true}}}
 POLICY
         else
             echo "cuttle: /etc/firefox/policies/policies.json already exists — left alone."

@@ -467,10 +467,17 @@ HEAD_CA_NICKNAME = "CCC Head CA"       # the name it goes in (and comes out) of 
 # Per-user by construction: a second login account on the same box does its own import.
 NSSDB_DIR = ".pki/nssdb"               # relative to $HOME
 NSS_TOOLS_PKG = "libnss3-tools"        # provides `certutil`
-# Firefox ignores both stores, but reads an enterprise policy that tells it to honour the OS store —
-# which is why it needs no package. Cuttle merges its key into an existing file rather than clobbering
-# whatever else is configured there.
+# Firefox ignores both stores above and reads an enterprise policy file instead. Cuttle merges its
+# keys into an existing file rather than clobbering whatever else is configured there.
 FIREFOX_POLICIES = Path("/etc/firefox/policies/policies.json")
+# The CA, copied where FIREFOX CAN READ IT. `Certificates.Install` takes absolute paths, but Ubuntu
+# ships Firefox as a snap whose confinement grants read on exactly one host tree — `/etc/firefox`
+# (`snap connections firefox` -> the etc-firefox system-files plug). HEAD_CA_TRUST_PATH is outside it,
+# so pointing the policy at that path silently installs nothing.
+#
+# `Certificates.Install` rather than `ImportEnterpriseRoots`: the latter is a Windows/macOS policy —
+# on Linux it parses, applies, and trusts nothing, which looks exactly like success.
+FIREFOX_CA = Path("/etc/firefox/ccc-head.crt")
 # Cap an upload rather than buffering whatever arrives: the Head API streams the body to disk, and the
 # Head is the one box that must stay up. A browser folder-picker makes a huge accidental selection easy.
 MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB

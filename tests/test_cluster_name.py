@@ -9,6 +9,7 @@ certificate installed as a root.
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -71,40 +72,80 @@ class TestTheHostsLine:
 
 
 class TestFirefoxPolicy:
-    """The policy file is shared: Firefox reads exactly one, and an organisation may already be using
-    it for something else. Cuttle merges in and unwinds only what it put there."""
+    """Firefox reads neither the OS store nor the NSS db the Chromium family shares, so it gets its
+    own enterprise policy. Two things have to be right at once and each fails *silently*: the policy
+    has to be one Linux honours, and it has to name a path Firefox can actually read.
+
+    The policy file is also shared — Firefox reads exactly one, and an organisation may already be
+    using it — so cuttle merges in and unwinds only what it put there.
+    """
+
+    PEM = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"
 
     @pytest.fixture
     def policies(self, monkeypatch, tmp_path):
         path = tmp_path / "policies.json"
         monkeypatch.setattr(config, "FIREFOX_POLICIES", path)
+        monkeypatch.setattr(config, "FIREFOX_CA", tmp_path / "ccc-head.crt")
         monkeypatch.setattr(system, "install_file",
                             lambda content, dest, mode="644", **kw: dest.write_text(content))
         monkeypatch.setattr(system, "run", lambda argv, **kw: (
-            path.unlink(missing_ok=True) if argv[:2] == ["rm", "-f"] else None))
+            Path(argv[2]).unlink(missing_ok=True) if argv[:2] == ["rm", "-f"] else None))
         return path
 
-    def test_it_turns_on_enterprise_roots(self, policies):
-        system._firefox_enterprise_roots(True)
-        assert json.loads(policies.read_text())["policies"]["Certificates"]["ImportEnterpriseRoots"]
+    def test_it_installs_the_certificate_rather_than_importing_roots(self, policies):
+        """`ImportEnterpriseRoots` is a Windows/macOS policy. On Linux it is accepted, applied, and
+        trusts nothing — which is indistinguishable from working until a page loads."""
+        system._firefox_trust(True, self.PEM)
+        certs = json.loads(policies.read_text())["policies"]["Certificates"]
+        assert certs["Install"] == [str(config.FIREFOX_CA)]
+        assert "ImportEnterpriseRoots" not in certs
+
+    def test_the_certificate_lands_where_a_confined_firefox_can_read_it(self, policies):
+        """Ubuntu's Firefox is a snap that can read `/etc/firefox` and nothing else of the host's.
+        Pointing the policy at the copy under /usr/local/share/ca-certificates installs nothing."""
+        system._firefox_trust(True, self.PEM)
+        assert config.FIREFOX_CA.read_text() == self.PEM
+        installed = json.loads(policies.read_text())["policies"]["Certificates"]["Install"][0]
+        assert Path(installed).read_text() == self.PEM, "the policy names a path with no cert at it"
+
+    def test_the_shipped_path_is_inside_firefox_s_readable_tree(self):
+        """Guards the constant itself: /etc/firefox is the one host tree the snap is granted."""
+        assert str(config.FIREFOX_CA).startswith("/etc/firefox/")
 
     def test_an_existing_policy_file_keeps_its_other_settings(self, policies):
         policies.write_text(json.dumps({"policies": {"DisableTelemetry": True}}))
-        system._firefox_enterprise_roots(True)
+        system._firefox_trust(True, self.PEM)
         doc = json.loads(policies.read_text())
         assert doc["policies"]["DisableTelemetry"] is True
-        assert doc["policies"]["Certificates"]["ImportEnterpriseRoots"] is True
+        assert doc["policies"]["Certificates"]["Install"] == [str(config.FIREFOX_CA)]
+
+    def test_someone_else_s_certificate_survives_both_ways(self, policies):
+        """Install is a list, and an admin may already be trusting their own CA through it."""
+        policies.write_text(json.dumps(
+            {"policies": {"Certificates": {"Install": ["/etc/firefox/theirs.crt"]}}}))
+        system._firefox_trust(True, self.PEM)
+        assert json.loads(policies.read_text())["policies"]["Certificates"]["Install"] == [
+            "/etc/firefox/theirs.crt", str(config.FIREFOX_CA)]
+        system._firefox_trust(False)
+        assert json.loads(policies.read_text())["policies"]["Certificates"]["Install"] == [
+            "/etc/firefox/theirs.crt"]
+
+    def test_teardown_takes_the_certificate_with_it(self, policies):
+        system._firefox_trust(True, self.PEM)
+        system._firefox_trust(False)
+        assert not config.FIREFOX_CA.exists()
 
     def test_teardown_leaves_the_other_settings_behind(self, policies):
         policies.write_text(json.dumps({"policies": {"DisableTelemetry": True}}))
-        system._firefox_enterprise_roots(True)
-        system._firefox_enterprise_roots(False)
+        system._firefox_trust(True, self.PEM)
+        system._firefox_trust(False)
         doc = json.loads(policies.read_text())
         assert doc["policies"] == {"DisableTelemetry": True}
 
     def test_teardown_removes_a_file_that_was_only_ever_ours(self, policies):
-        system._firefox_enterprise_roots(True)
-        system._firefox_enterprise_roots(False)
+        system._firefox_trust(True, self.PEM)
+        system._firefox_trust(False)
         assert not policies.exists()
 
     def test_teardown_does_not_disturb_an_admin_s_own_enterprise_roots(self, policies):
@@ -112,7 +153,7 @@ class TestFirefoxPolicy:
         would break a trust decision that was never ours to make."""
         policies.write_text(json.dumps(
             {"policies": {"Certificates": {"ImportEnterpriseRoots": True}}}))
-        system._firefox_enterprise_roots(False)
+        system._firefox_trust(False)
         doc = json.loads(policies.read_text())
         assert doc["policies"]["Certificates"]["ImportEnterpriseRoots"] is True
 
