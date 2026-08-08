@@ -292,7 +292,7 @@ def arm_remove(
 @app.command()
 def login(
     head: str = typer.Option(
-        None, "--head", help="Head API URL (e.g. http://<host>:8082); saved for next time."),
+        None, "--head", help="Head address or URL (e.g. ccc.glados); saved for next time."),
 ):
     """Log in to the Head and store a session token (~/.ccc/credentials). Forces a password change on
     first login."""
@@ -684,7 +684,7 @@ def build_installer(
     ),
     head_url: str = typer.Option(
         None, "--head-url",
-        help="Head URL to bake in (default: https://ccc.glados:8082). Only used when built on a "
+        help="Head URL to bake in (default: https://ccc.glados). Only used when built on a "
              "Head — the client comes pre-pointed at this address.",
     ),
     generic: bool = typer.Option(

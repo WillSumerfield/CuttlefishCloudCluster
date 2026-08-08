@@ -191,7 +191,7 @@ def _detail(r: httpx.Response) -> str:
 def _head_url() -> str:
     url = settings.load().get("head")
     if not url:
-        raise ApiError("config", "no Head URL set — run `cuttle login --head http://<host>:8082`")
+        raise ApiError("config", "no Head URL set — run `cuttle login --head <host>`")
     return url
 
 

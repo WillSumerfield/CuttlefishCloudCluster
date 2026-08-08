@@ -11,7 +11,7 @@ Two halves with different trust models:
 
 import typer
 
-from . import api, config, settings, tls, ui, watch
+from . import api, config, headapi, settings, tls, ui, watch
 from .system import run
 
 
@@ -66,9 +66,14 @@ def _head_url() -> str:
 
 
 def _set_head(head: str | None) -> None:
+    """Record which Head this box talks to. Accepts a bare address as well as a URL — `--head` is a
+    flag, but what a person has to hand is an address, and the Head API's port is https's own default
+    now (config.HEAD_API_PORT), so there is nothing left worth making them type. Stored without the
+    scheme it would be parsed with, `urlparse` reads the whole thing as a path and every later use —
+    the pin's filename, the dial — gets an empty hostname."""
     if head:
         data = settings.load()
-        data["head"] = head.rstrip("/")
+        data["head"] = head.rstrip("/") if "://" in head else headapi.head_url(head.rstrip("/"))
         settings.save(data)
 
 
