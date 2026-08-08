@@ -19,7 +19,7 @@ browser and want to paste it into one that has.
 The address it opens is:
 
 ```
-https://ccc.glados:8082/
+https://ccc.glados
 ```
 
 That name is the cluster's, on every machine CCC installs on — Head, Arms and clients alike. Nothing
@@ -35,7 +35,7 @@ certificate authority, so use the Head's IP — `setup --head` prints it — and
 
 Log in with the account the Admin created for you. First login forces a password change.
 
-**On a WSL Arm**, `cuttle dashboard` opens `https://localhost:8082/` instead. The CCC mesh lives
+**On a WSL Arm**, `cuttle dashboard` opens `https://localhost/` instead. The CCC mesh lives
 inside WSL and your Windows browser has no route to the Head's mesh IP, so `setup --arm` installs a
 local forward and this command hands the browser that rather than an address that could never load.
 This is also the one place the certificate warning survives: the browser is on the Windows side, which

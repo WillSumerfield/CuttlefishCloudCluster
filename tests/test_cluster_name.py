@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ccc_head_api import main as head_main
-from cuttle import config, system, teardown, tls
+from cuttle import config, headapi, system, teardown, tls
 
 
 @pytest.fixture
@@ -191,26 +191,26 @@ class TestTrustOnFirstUse:
         installed = []
         monkeypatch.setattr(tls, "install_ca", lambda url, pem: installed.append(pem))
         with pytest.raises(Exception):
-            tls.ensure_ca(f"https://{config.DOMAIN}:8082")
+            tls.ensure_ca(headapi.head_url(config.DOMAIN))
         assert installed == [], "a CA that did not sign the served cert must never be installed"
 
     def test_an_existing_pin_asks_nothing(self, monkeypatch, tmp_path):
         pins = tmp_path / "pins"
         pins.mkdir()
         monkeypatch.setattr(config, "PINS_DIR", pins)
-        url = f"https://{config.DOMAIN}:8082"
+        url = headapi.head_url(config.DOMAIN)
         tls._pin_path(url).write_text("already trusted")
         monkeypatch.setattr(tls, "fetch_ca", lambda url: pytest.fail("re-fetched a known CA"))
         tls.ensure_ca(url)
 
     def test_a_plain_http_head_has_nothing_to_trust(self, monkeypatch):
         monkeypatch.setattr(tls, "fetch_ca", lambda url: pytest.fail("fetched over http"))
-        tls.ensure_ca("http://ccc.glados:8082")
+        tls.ensure_ca("http://ccc.glados")
 
     def test_the_pin_is_the_same_filename_on_every_client(self):
         """Every box in the cluster dials the same name now, so every box's pin has one name. It is
         also what build-installer bakes into a bundle, so the two must agree by construction."""
-        assert tls._pin_path(f"https://{config.DOMAIN}:8082").name == f"{config.DOMAIN}_8082.pem"
+        assert tls._pin_path(headapi.head_url(config.DOMAIN)).name == f"{config.DOMAIN}_443.pem"
 
 
 class TestTeardownUndoesTheHostMutations:
@@ -239,3 +239,37 @@ class TestTeardownUndoesTheHostMutations:
         for flow in (teardown._teardown_arm, teardown._teardown_local,
                      teardown.teardown_client, teardown.teardown_full):
             assert "untrust_and_unname" in inspect.getsource(flow), flow.__name__
+
+
+class TestTheNameIsTheWholeAddress:
+    """`https://ccc.glados`, with no port to remember or type. The CLI could always fill a port in
+    for a bare host; a browser cannot be taught one, and the Dashboard is a browser surface — so the
+    Head API serves https's own default instead."""
+
+    def test_the_head_api_serves_the_default_https_port(self):
+        assert config.HEAD_API_PORT == 443
+
+    def test_the_unit_may_bind_a_privileged_port(self):
+        """The Head API runs as the Mantle, not root, and nothing but this capability lets a non-root
+        process bind below 1024. Without it the service does not misbehave — it never starts, with an
+        EACCES buried in journalctl."""
+        unit = headapi._head_unit("100.64.0.1")
+        assert "AmbientCapabilities=CAP_NET_BIND_SERVICE" in unit
+        assert f"--port {config.HEAD_API_PORT}" in unit
+
+    def test_no_surface_shows_the_default_port(self):
+        """`https://ccc.glados:443` is the same URL and half the point of the change."""
+        assert headapi.head_url(config.DOMAIN) == f"https://{config.DOMAIN}"
+
+    def test_a_bare_address_is_enough_for_login(self, ccc_home):
+        """`--head` is a flag, so it takes a URL — but what a person has to hand is an address, and
+        storing that verbatim leaves `urlparse` reading the whole thing as a path: empty hostname,
+        a pin filename of `_443.pem`, and a dial that goes nowhere."""
+        from cuttle import auth, settings
+        auth._set_head(config.DOMAIN)
+        assert settings.load()["head"] == f"https://{config.DOMAIN}"
+
+    def test_a_deliberate_port_still_survives(self, ccc_home):
+        from cuttle import auth, settings
+        auth._set_head("https://head.lan:9000")
+        assert settings.load()["head"] == "https://head.lan:9000"

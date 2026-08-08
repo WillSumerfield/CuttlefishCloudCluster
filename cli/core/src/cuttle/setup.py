@@ -667,7 +667,7 @@ def required_sans(mesh_ip: str) -> list[str]:
       - the LAN IP + hostname  — a browser or CLI on the local network, or a device with no hosts entry,
       - the mesh IP            — a remote Arm's owner browsing over the mesh,
       - localhost/127.0.0.1    — a WSL Arm's dashboard forward, which surfaces the Head at
-                                 https://localhost:8082 in the Windows browser.
+                                 https://localhost in the Windows browser.
     """
     return [f"DNS:{config.DOMAIN}", f"DNS:{system.hostname()}", "DNS:localhost",
             f"IP:{system.primary_ip()}", f"IP:{mesh_ip}", "IP:127.0.0.1"]
@@ -805,7 +805,7 @@ def build_spa() -> None:
 
 def install_wsl_dashboard_forward(head_mesh_ip: str) -> None:
     """WSL-only: forward a local port to the Head API so the Arm's owner can open the Dashboard from
-    their Windows browser at https://localhost:<HEAD_API_PORT>/. The CCC mesh lives inside WSL and
+    their Windows browser at https://localhost/. The CCC mesh lives inside WSL and
     Windows can't reach the Head's mesh IP, but WSL2 forwards Windows localhost to WSL listeners —
     so a listener here bridges the gap. Socket-activated proxy (systemd-socket-proxyd, no package).
     Idempotent: `enable --now` on re-run is a no-op.
@@ -836,7 +836,7 @@ ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
     _write_root_file(config.DASH_FORWARD_SERVICE_UNIT, service_unit)
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
-    ui.result("dashboard (Windows)", f"https://localhost:{config.HEAD_API_PORT}/")
+    ui.result("dashboard (Windows)", headapi.head_url("localhost") + "/")
     ui.say("  [muted]self-signed cert — click through the browser warning once[/muted]")
 
 
@@ -1073,14 +1073,14 @@ def point_at_head() -> str:
     data = settings.load()
     # Re-ask on blank rather than storing it: the prompt is pre-filled with the baked URL, so an empty
     # answer means the field was cleared — and every branch below would turn "" into a syntactically
-    # valid, permanently broken URL (`https://:8082`) that only surfaces at the next login.
+    # valid, permanently broken URL (`https://`) that only surfaces at the next login.
     while True:
         answer = ui.ask_text("Head address?", default=data.get("head") or "").strip().rstrip("/")
         if answer:
             break
         ui.warn("a Head address is required — the host this cluster's Head API answers on")
     # A scheme means they gave a URL and we take it as given (including a deliberate http://). A bare
-    # `host:port` only needs the scheme; a bare host gets the Head API's default form, port and all.
+    # `host:port` only needs the scheme; a bare host gets the Head API's default form.
     if "://" in answer:
         url = answer
     elif ":" in answer:

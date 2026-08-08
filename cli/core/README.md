@@ -85,7 +85,7 @@ submit from any box, whether or not it ever ran `setup`.
   `add` prints a one-time temp password; the operator never learns a reusable one.
 
 ## Dashboard
-`cuttle setup --head` serves the web Dashboard (Vite/React) at `https://<head>:8082/`, reachable over
+`cuttle setup --head` serves the web Dashboard (Vite/React) at `https://<head>/`, reachable over
 the LAN and the CCC mesh. It is the **primary** surface: log in, drop a project folder, and submit a
 Spawn; then watch the queue, tail a Spawn's log, and download its outputs. Enrollment stays on a
 separate **mesh-only** API (`:8081`) so the munge-key handout never touches the LAN.

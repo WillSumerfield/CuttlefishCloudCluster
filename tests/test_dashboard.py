@@ -42,7 +42,7 @@ class TestTheAddressItOpens:
         Handing it the saved URL opens a page that can never load."""
         wsl(forwarded=True)
         settings.save({"head": "https://100.64.0.1:8082"})
-        assert dashboard.url() == f"https://localhost:{config.HEAD_API_PORT}/"
+        assert dashboard.url() == "https://localhost/"
 
     def test_a_wsl_client_keeps_its_saved_url(self, ccc_home, wsl):
         """No `setup --arm` there, so no proxy is listening on localhost — the forward's URL would be

@@ -2,9 +2,8 @@
 
 The Dashboard is served by the Head API itself (`ccc_head_api.main` mounts the SPA at `/`), so its
 URL is exactly the one this box already logs in to. That is the whole point of this module: the
-address is *already on disk* in `~/.ccc/config.yaml`, and asking a User to recall the Head's IP
-weeks after `setup` — or to know that the port is 8082 — is asking them to remember something the
-tool knows.
+address is *already on disk* in `~/.ccc/config.yaml`, and asking a User to recall the Head's IP weeks
+after `setup` is asking them to remember something the tool knows.
 
 WSL is the one place the saved URL is the wrong answer: the CCC mesh lives inside WSL and the Windows
 browser has no route to the Head's mesh IP, so `setup` installs a localhost forward
@@ -19,7 +18,7 @@ the *Windows* side, which shares neither the Linux trust store nor the /etc/host
 import subprocess
 import webbrowser
 
-from . import config, settings, system, ui
+from . import config, headapi, settings, system, ui
 
 
 def url() -> str:
@@ -31,7 +30,7 @@ def url() -> str:
     # Only when the forward is actually installed: a WSL *client* (no `setup --arm`) has no proxy
     # listening on localhost, and its saved URL already reaches the Head over the LAN.
     if system.is_wsl() and config.DASH_FORWARD_SOCKET_UNIT.exists():
-        return f"https://localhost:{config.HEAD_API_PORT}/"
+        return headapi.head_url("localhost") + "/"
     return head.rstrip("/") + "/"
 
 

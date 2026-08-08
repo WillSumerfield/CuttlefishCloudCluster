@@ -67,7 +67,7 @@ That is it. The machine donates itself whenever it is switched on, and **Pause y
 in. Or:
 
 ```sh
-cuttle login --head http://<head-address>:8082
+cuttle login --head <head-address>
 ```
 
 Your first login forces a password change.

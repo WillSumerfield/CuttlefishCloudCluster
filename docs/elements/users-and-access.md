@@ -18,7 +18,7 @@ which authorizes *machines*.
 **Log in** — the first time, tell it where the Head is:
 
 ```sh
-cuttle login --head http://<head-address>:8082
+cuttle login --head <head-address>
 ```
 
 After that, just:

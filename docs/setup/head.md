@@ -152,7 +152,7 @@ removes the tool.
 
 ## The dashboard
 
-`setup --head` builds and serves it, at `https://ccc.glados:8082/` — the cluster's name, which every
+`setup --head` builds and serves it, at `https://ccc.glados` — the cluster's name, which every
 machine CCC installs on resolves and trusts. No browser warning on any of them; a phone or a borrowed
 laptop has neither, and reaches it by IP with the warning.
 

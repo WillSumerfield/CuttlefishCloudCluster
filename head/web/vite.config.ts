@@ -33,7 +33,7 @@ function devHttps() {
 
 // The dashboard service serves the built SPA and the API on ONE origin, so every API call is
 // same-origin in production. In `npm run dev` the SPA is on :5173, so proxy the API to the local
-// dashboard service (:8082). Every endpoint lives under `/api` (see api.ts), so one prefix covers the
+// dashboard service (:443). Every endpoint lives under `/api` (see api.ts), so one prefix covers the
 // whole API — and, crucially, `/api/*` can never shadow a client route like `/karma`, so a hard reload
 // there falls through to Vite's SPA index.html instead of proxying to the Head and rendering JSON.
 //
@@ -49,7 +49,7 @@ export default defineConfig(({ command }) => ({
   server: {
     https: command === 'serve' ? devHttps() : undefined,
     proxy: {
-      '/api': { target: 'https://localhost:8082', changeOrigin: true, secure: false },
+      '/api': { target: 'https://localhost', changeOrigin: true, secure: false },
     },
   },
 }))

@@ -23,7 +23,7 @@ sinfo -N -o "%N %t %C %G"
 - [ ] The Head's own node is `idle` with its GPUs listed.
 - [ ] The Feature prompts offer what this box declared last time (on a re-run).
 - [ ] The LAN-only warning fires if and only if the address is LAN-only.
-- [ ] `https://<head>:8082/` serves the dashboard behind one certificate warning.
+- [ ] `https://<head>/` serves the dashboard behind one certificate warning.
 
 ## 2. An Arm enrolls
 
