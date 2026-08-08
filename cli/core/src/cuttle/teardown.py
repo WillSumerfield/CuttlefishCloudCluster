@@ -284,10 +284,25 @@ def remove_bench_env() -> None:
 
 
 def remove_tls() -> None:
-    """The Head's self-signed cert. Head-only, and --all only: every client has PINNED this cert, so
-    dropping it means the next setup mints a different one and every client refuses to connect until
-    it re-pins. Same preserve-unless--all rule as base.sif, for a different reason."""
+    """The Head's CA and serving cert. Head-only, and --all only: every client has PINNED that CA and
+    every box in the cluster has installed it, so dropping it means the next setup mints a different
+    one and nothing trusts this Head until each of them is re-trusted. Same preserve-unless--all rule
+    as base.sif, for a different reason."""
     run(["rm", "-rf", str(config.CCC_TLS_DIR)], sudo=True, check=False)
+
+
+def untrust_and_unname() -> None:
+    """Undo what setup did to this box's *host* on behalf of the cluster: the /etc/hosts line carrying
+    the **Cluster name**, and the CA in all three trust stores.
+
+    Every role, every teardown, `--all` or not — deliberately unlike `remove_tls` above. That one keeps
+    the Head's own keypair so a redeploy does not un-trust the fleet; this one is about a box that has
+    left. A machine still resolving `ccc.glados` to a Head it no longer talks to, and still trusting a
+    CA whose private key lives there, is exactly the residue a teardown exists to remove. Same
+    reasoning, and the same unconditional placement, as the headscale CA in `_leave_ccc_mesh`.
+    """
+    system.remove_hosts_entry()
+    system.untrust_ccc_ca()
 
 
 def _summarise(what: str, keep_packages: bool, kept_images: bool = True,
@@ -298,17 +313,19 @@ def _summarise(what: str, keep_packages: bool, kept_images: bool = True,
     alternate screen) held back and replayed detached from the thing it described. Results are the
     mechanism for outliving the box: they are printed in a panel once the terminal is handed back.
 
-    `kept_tls=None` means this role never had a cert to keep — only the Head mints one.
+    `kept_tls=None` means this role never had an authority to keep — only the Head mints one.
     """
     ui.result("torn down", what)
     kept = [label for label, keep in (("packages + repos", keep_packages),
                                       ("base.sif + the benchmark env", kept_images),
-                                      ("the Head's TLS cert", kept_tls)) if keep]
+                                      ("the cluster's certificate authority", kept_tls)) if keep]
     ui.result("kept", ", ".join(kept) if kept else "nothing — this box is clean")
     if kept_tls is False:
-        # Every client PINNED that cert. The next setup mints a different one and every client
-        # refuses to connect until it re-pins — worth saying at the moment it becomes true.
-        ui.result("clients", "must re-pin: the TLS cert is gone, so the next setup mints a new one")
+        # Every box in the cluster INSTALLED that CA and every client PINNED it. The next setup mints
+        # a different one and none of them trusts this Head until each is re-trusted — worth saying at
+        # the moment it becomes true, because nothing else will say it.
+        ui.result("every other box", "must re-trust: the CA is gone, so the next setup mints a new "
+                                     "one. `cuttle setup --client` (or --arm) on each of them")
 
 
 # --- Arm-only teardown -------------------------------------------------------
@@ -427,6 +444,8 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         remove_mantle()  # created by setup_arm.provision_mantle
         remove_licence_account()  # before remove_guises: it is in GUISE_GROUP
         remove_guises()  # one per User whose Spawn ever landed here — created by the Slurm prolog
+    with ui.step("Removing the cluster name and its certificate authority"):
+        untrust_and_unname()    # BEFORE the purge below — it needs certutil, which the purge takes
     if not keep_packages:
         with ui.step("Purging packages and repositories"):
             purge_packages()
@@ -462,6 +481,8 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
         remove_mesh(keep_packages=keep_packages)
     with ui.step("Removing Slurm's config and state"):
         remove_slurm_config()
+    with ui.step("Removing the cluster name and its certificate authority"):
+        untrust_and_unname()    # BEFORE the purge below — it needs certutil, which the purge takes
     if not keep_packages:
         with ui.step("Purging packages and repositories"):
             purge_packages()
@@ -480,15 +501,23 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
 # --- client-only teardown ----------------------------------------------------
 
 def teardown_client() -> None:
-    """Reverse `setup --client`. A client only ever got ~/.ccc (config, credentials, cert pins) — no
-    apt, no mesh, no Slurm, no sudo — so removing that dir is the whole job."""
+    """Reverse `setup --client`: ~/.ccc (config, credentials, the pinned CA), plus the two things setup
+    put outside it — the **Cluster name** in /etc/hosts and the CA in this box's trust stores.
+
+    Those two are why this now primes sudo, which a client teardown never used to need. `libnss3-tools`
+    is deliberately left: nothing records that CCC installed it, and it is a general-purpose package
+    something else may since have come to depend on.
+    """
     with ui.section("Removing client state", lambda: "removed"):
+        system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
         with ui.step("Removing this box's CCC state"):
+            untrust_and_unname()
             remove_user_dirs()
         # Inside the box, deliberately: `_release` drains the facts when the section closes, so a
         # result registered after it is never printed at all.
-        ui.result("removed", f"{config.CCC_HOME} — config, credentials, cert pins")
-        ui.result("this box", "is a plain machine again; `cuttle login` sets it up")
+        ui.result("removed", f"{config.CCC_HOME}, the cluster name, and the trusted CA")
+        ui.result("kept", f"{config.NSS_TOOLS_PKG} — unrecorded, and shared with anything else here")
+        ui.result("this box", "is a plain machine again; `cuttle setup --client` sets it up")
 
 
 # --- full sweep (any role, unknown/partial state) ----------------------------
@@ -517,6 +546,8 @@ def teardown_full(keep_packages: bool = False) -> None:
             remove_mantle()
             remove_licence_account()  # before remove_guises: it is in GUISE_GROUP
             remove_guises()
+        with ui.step("Removing the cluster name and its certificate authority"):
+            untrust_and_unname()  # BEFORE the purge — it needs certutil, which the purge takes
         if not keep_packages:
             with ui.step("Purging packages and repositories"):
                 purge_packages()
