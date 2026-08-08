@@ -29,6 +29,12 @@
   Mesh, then registers with the scheduler.
 - **Registration** — an Arm's node agent announcing its own hardware to the scheduler at runtime,
   rather than being declared in advance by the Head.
+- **Cluster name** — the one name every machine CCC installs on uses to reach the **Head**, in place of
+  an address. It is not a public domain and nothing outside the cluster resolves it; a machine simply
+  learns it when CCC is installed there. The name means whichever address that machine can actually
+  reach the Head on, so a **Client** on the LAN and an Arm on the **Mesh** dial the same name and land
+  on the same Head. A borrowed device CCC was never installed on has no way to learn the name, and
+  reaches the **Dashboard** by address instead.
 - **Enrollment token** — a one-time, single-Arm, short-lived credential the **Admin** mints to
   authorize one machine's enrollment. It also names the Arm's **owner** (a User, chosen by the Admin at
   mint), so the donor redeems it and declares nothing while the Head **auto-accepts** (no manual
@@ -105,7 +111,26 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Tide Pool** — an interactive/testing session: an allocation that attaches a live shell inside a
   **Pod** on an **eligible** Arm, for debugging against real hardware. Bills Karma for as long as it is
   held. Like a **Spawn**, it declares *needs* and is *placed* — a User cannot name the machine
-  (see **Eligibility**); it is told which Arm it got.
+  (see **Eligibility**); it is told which Arm it got. On its own it keeps nothing: what it wrote dies
+  with it. A Tide Pool opened on a **Workspace** is the one that does not.
+- **Workspace** — a **User**'s durable interactive place on the cluster: a working directory that
+  outlives the session that made it, so opening one resumes where the last visit left off instead of
+  starting bare. Private to its owner. It is the **Recipe**'s opposite in the one respect that matters —
+  a Recipe is *frozen* and re-runs what it captured; a Workspace is *mutable* and is simply whatever its
+  last session left behind. Seeded once from the machine that created it and never uploaded to again:
+  after that, only a session inside it can change what it holds. It keeps a *declaration* alongside the
+  tree (what a visit needs — VRAM, **Feature**s, duration, which dependency file), which its owner may
+  change without touching the tree, and which any single visit may depart from without changing.
+  A Workspace is held by the **Head**, so it is a claim on no **Arm**: a visit is **placed** like any
+  other work and may land anywhere **eligible**, and the **Environment** it builds dies with the visit as
+  every Environment does. What persists is the *files* — never the machine, never the built Environment.
+  It declares no outputs and has none: everything a session writes simply *is* the Workspace, so there is
+  nothing to keep separately and no **Recovery Window** to open — what that window exists to rescue is,
+  here, the thing that was already saved.
+  Holding one costs no **Karma** (storage never does); it holds bytes against its own **Allowance**.
+  *Visiting* one costs Karma exactly as a **Tide Pool** does, because a visit is one. Only its owner ever
+  removes it. And it has a single writer by construction: opening a Workspace that is already live joins
+  the session that exists rather than starting a second beside it.
 - **Mantle** — the cluster's *own* identity: who the **Head** is, to itself and to every **Arm**. It
   owns what the cluster owns — the account records, the Head's key, every **User**'s uploaded work and
   every **Spawn**'s results — and it is what the Head acts as when it does work of its own rather than
@@ -162,7 +187,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   and a full Allowance never affects who wins **Contention**. Which is why the two kinds behave
   differently at the ceiling: a **Recipe** is something a User deliberately saves, so saving past the
   wall simply fails and they delete one; an output arrives on its own from work already done, so it is
-  always accepted and the oldest are dropped to fit. An Allowance is not the only thing that ends a
+  always accepted and the oldest are dropped to fit. A **Workspace** takes the Recipe's rule — nothing
+  a User deliberately keeps is ever destroyed to make room — but it is the one told *during* the live
+  session that filled it, while its owner is still there to make room. An Allowance is not the only thing that ends a
   held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
   even when there is room to spare. Uploaded projects belong to no Allowance at all — the Head keeps
   them only while a Spawn is starting.
@@ -170,11 +197,12 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   writes can still be retrieved. A Spawn's declared outputs are kept for as long as its submitter's
   **Allowance** allows; everything else it wrote — the working directory it ran in — is destroyed when
   it ends, and this is the window between those two facts. Both are finite, and the difference is one
-  of order rather than kind: days for what the User asked to keep, minutes for what they did not.
+  of degree rather than kind: a week for what the User asked to keep, a day for what they did not.
   It exists for a mistake the **User** by definition did not know they were making, so it is
   never opt-in and never something to plan around: it is capped in size, expires on its own, and a
   Spawn whose work exceeds the cap simply never gets one. Distinct from an output (declared, kept) and
-  from **Escrow** — "hold" means Escrow in this cluster, and never this.
+  from **Escrow** — "hold" means Escrow in this cluster, and never this. A **Workspace** visit has none
+  and needs none: nothing it wrote was going to be destroyed.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the

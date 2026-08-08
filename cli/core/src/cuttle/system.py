@@ -1,5 +1,6 @@
 """Shell + host-detection helpers."""
 
+import json
 import os
 import platform
 import shutil
@@ -298,6 +299,130 @@ def is_wsl() -> bool:
     release is the giveaway: `...-microsoft-standard-WSL2`."""
     with open("/proc/sys/kernel/osrelease") as f:
         return "microsoft" in f.read().lower()
+
+
+# --- the Cluster name -------------------------------------------------------
+# CCC has no DNS — the mesh runs no resolver and there is no router to configure — so the **Cluster
+# name** is carried by /etc/hosts on every box `setup` touches. One managed line, marked with
+# config.HOSTS_MARKER, rewritten in place rather than appended to: setup is re-run routinely (a full
+# teardown+setup is the normal redeploy here) and a box that accumulated one stale line per run would
+# resolve the name to whichever address happened to be listed first.
+
+def write_hosts_entry(addr: str, name: str = config.DOMAIN) -> None:
+    """Point `name` at `addr` in /etc/hosts. Idempotent, and a no-op when the line is already right —
+    setup writes this on every run, and rewriting an unchanged file for nothing is a root mutation
+    with nothing to show for it."""
+    want = f"{addr}\t{name} {config.HOSTS_MARKER}"
+    current = Path("/etc/hosts").read_text().splitlines()
+    if want in current:
+        return
+    kept = [ln for ln in current if not ln.rstrip().endswith(config.HOSTS_MARKER)]
+    install_file("\n".join([*kept, want]) + "\n", Path("/etc/hosts"), "644")
+    print(f"cuttle: {name} → {addr} (/etc/hosts)")
+
+
+def remove_hosts_entry() -> None:
+    """Drop our managed line. Every teardown, every role: the name is cuttle's own state, and a box
+    that has left the cluster resolving it to a machine it no longer talks to is worse than one that
+    does not resolve it at all."""
+    path = Path("/etc/hosts")
+    if not path.exists():
+        return
+    lines = [ln for ln in path.read_text().splitlines()
+             if not ln.rstrip().endswith(config.HOSTS_MARKER)]
+    install_file("\n".join(lines) + "\n", path, "644")
+
+
+# --- trusting the CCC CA ----------------------------------------------------
+# The Head is its own CA (see config.HEAD_CA_CERT). Trusting it is what makes the Dashboard load
+# without "your connection is not private" — but on Linux there is no single store that does it:
+#
+#   * the OS store (`update-ca-certificates`) is read by curl, python, wget — and by nothing with a
+#     window. This is the same store, and the same mechanism, mesh.trust_headscale_cert uses.
+#   * Chromium-family browsers (Chrome, Chromium, Edge, Brave) ignore the OS store entirely and read
+#     a per-user NSS database. One import covers all four; a second login account on the box does its
+#     own.
+#   * Firefox ignores both, but honours an enterprise policy telling it to read the OS store — so it
+#     needs a file, not a package, and picks up anything installed there later for free.
+#
+# All three are host mutations that teardown undoes unconditionally (see teardown.untrust_ccc_ca):
+# a box that has left the cluster must not keep trusting a CA whose private key is on a machine it
+# no longer talks to.
+
+def trust_ccc_ca(pem: str) -> None:
+    """Install the CCC CA into this box's OS trust store. Idempotent in effect."""
+    install_file(pem, config.HEAD_CA_TRUST_PATH, "644")
+    run(["update-ca-certificates"], sudo=True)
+
+
+def _nssdb() -> Path:
+    return Path.home() / config.NSSDB_DIR
+
+
+def trust_ccc_ca_browsers(pem: str) -> None:
+    """Trust the CA in this user's Chromium-family NSS db and, box-wide, in Firefox.
+
+    `-t C,,` — trusted to issue *server* certs, and nothing else. Delete-then-add rather than add
+    alone: certutil happily stores a second entry under the same nickname, and after a CA reissue the
+    browser would then be choosing between two.
+
+    Firefox's `policies.json` is MERGED, not written: it is a shared file that may already carry an
+    organisation's own settings, and clobbering those to add one key would be a poor trade. We record
+    whether it was ours to begin with so teardown knows whether to delete the file or just our key.
+    """
+    db = _nssdb()
+    db.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", suffix=".crt", delete=False) as f:
+        f.write(pem)
+        tmp = f.name
+    try:
+        run(["certutil", "-d", f"sql:{db}", "-D", "-n", config.HEAD_CA_NICKNAME], check=False)
+        run(["certutil", "-d", f"sql:{db}", "-A", "-t", "C,,",
+             "-n", config.HEAD_CA_NICKNAME, "-i", tmp])
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    _firefox_enterprise_roots(True)
+    print(f"cuttle: trusted the CCC CA in this user's browsers ({db}) and in Firefox")
+
+
+def _firefox_enterprise_roots(on: bool) -> None:
+    """Flip `ImportEnterpriseRoots` in Firefox's policy file, creating or removing it as needed.
+
+    Ubuntu ships Firefox as a snap, whose confinement may or may not let it read /etc/firefox. Written
+    anyway: it is one small file, it is correct for a deb Firefox, and a snap that ignores it is no
+    worse off than before.
+    """
+    path = config.FIREFOX_POLICIES
+    doc = json.loads(path.read_text()) if path.exists() else {}
+    certs = doc.setdefault("policies", {}).setdefault("Certificates", {})
+    ours = {"ccc": True}
+    if on:
+        certs["ImportEnterpriseRoots"] = True
+        certs.update(ours)
+    else:
+        # Only unwind what we put there. A policies.json that carried other settings keeps them, and
+        # ImportEnterpriseRoots survives if it was not ours to begin with — an admin who turned it on
+        # for their own reasons should not have it turned off by a CCC teardown.
+        if not certs.pop("ccc", False):
+            return
+        certs.pop("ImportEnterpriseRoots", None)
+        if not certs:
+            doc["policies"].pop("Certificates", None)
+        if not doc.get("policies"):
+            run(["rm", "-f", str(path)], sudo=True)
+            return
+    install_file(json.dumps(doc, indent=2) + "\n", path, "644")
+
+
+def untrust_ccc_ca() -> None:
+    """Reverse all three trust installs. Tolerant throughout: this runs on every teardown of every
+    role, including boxes that never got as far as trusting anything."""
+    if config.HEAD_CA_TRUST_PATH.exists():
+        run(["rm", "-f", str(config.HEAD_CA_TRUST_PATH)], sudo=True)
+        run(["update-ca-certificates"], sudo=True, check=False)
+    if _nssdb().exists() and shutil.which("certutil"):
+        run(["certutil", "-d", f"sql:{_nssdb()}", "-D", "-n", config.HEAD_CA_NICKNAME], check=False)
+    _firefox_enterprise_roots(False)
 
 
 # --- firewall ---------------------------------------------------------------
