@@ -1,6 +1,11 @@
-"""Recovery Window: a 30-minute, size-capped safety net for a Spawn's UNDECLARED writes (anything outside
+"""Recovery Window: a one-day, size-capped safety net for a Spawn's UNDECLARED writes (anything outside
 `$CCC_OUT`). `recover_scratch` (spawns' JOB_SCRIPT) copies `$proj` to `SPAWNS_DIR/<id>/recovery/` before
 the EXIT trap deletes it; this module registers, caps, and expires that copy.
+
+A day rather than the half hour this started as: a User discovers a wrong `--output` the next morning,
+not the same half hour. The window length alone would only have moved which cap ends a window, though —
+at a day's retention the pool fills, so eviction rather than expiry would have become the thing that
+closes one. Hence MAX_USER_BYTES below.
 
 "Hold" is avoided as a name — it already means Escrow in this codebase.
 
@@ -11,9 +16,15 @@ gets a marker, so it's silently never registered.
 Polling means a copy can land without a marker ever following (Arm dropped mid-copy) — `sweep_orphans`
 deletes those, since no ledger row will ever claim them.
 
-Two caps, enforced here rather than in bash (a script can't see what the Head holds for other Spawns):
-`MAX_SPAWN_BYTES` is baked into the rendered JOB_SCRIPT; `MAX_POOL_BYTES` is enforced at registration by
-evicting the oldest copy first, so the pool never even briefly overshoots.
+Three caps, enforced here rather than in bash (a script can't see what the Head holds for other Spawns):
+`MAX_SPAWN_BYTES` is baked into the rendered JOB_SCRIPT; `MAX_USER_BYTES` and `MAX_POOL_BYTES` are both
+enforced at registration by evicting first, so neither ever even briefly overshoots.
+
+`MAX_USER_BYTES` is an **Allowance** (CONTEXT.md) and behaves like the output one in retention.py — a
+copy is always accepted and the holder's own oldest are dropped to fit, since the Spawn has already run.
+It is the one Allowance a User is never shown: a ceiling they are told about is a ceiling they would
+plan around, and this window must never be planned around. So it is named only once it has taken
+something (main.py's 404 detail), never in advance.
 """
 
 import os
@@ -22,9 +33,10 @@ from datetime import datetime, timedelta, timezone
 
 from . import db
 
-WINDOW_MINUTES = int(os.environ.get("CCC_RECOVERY_MINUTES", 30))
+WINDOW_MINUTES = int(os.environ.get("CCC_RECOVERY_MINUTES", 24 * 60))
 MAX_SPAWN_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_SPAWN", 16 * 1024**3))
-MAX_POOL_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_POOL", 50 * 1024**3))
+MAX_USER_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_USER", 32 * 1024**3))
+MAX_POOL_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_POOL", 128 * 1024**3))
 
 # How far back `register_new` looks for a still-landing copy. Comfortably longer than any transfer up to
 # MAX_SPAWN_BYTES; a marker that still hasn't shown by then is treated as never coming (dropped Arm).
@@ -55,14 +67,33 @@ def _evict(conn, job_id: int) -> None:
     db.delete_recovery(conn, job_id)
 
 
-def _make_room(conn, incoming_bytes: int) -> None:
-    """Evict the oldest held copies until `incoming_bytes` more would fit under MAX_POOL_BYTES.
+def _make_room(conn, user_id: int | None, incoming_bytes: int) -> None:
+    """Evict until `incoming_bytes` more would fit under BOTH caps: the submitter's own Allowance first,
+    then the pool.
 
-    Called right before a new copy is registered, not left to the next sweep — a pool cap that could
-    overshoot until the next tick pass would not really be a cap. `oldest_recovery` is re-queried each
-    loop (not cached) since the row just evicted changes what's oldest next."""
+    Called right before a new copy is registered, not left to the next sweep — a cap that could overshoot
+    until the next tick pass would not really be a cap. Each `oldest` is re-queried per loop (not cached)
+    since the row just evicted changes what's oldest next.
+
+    Both passes reach for the arriving User's own oldest copy first, and the pool pass falls through to
+    the global oldest only once that User has nothing left to give up. So a User arriving under their own
+    Allowance never destroys a stranger's copy while still holding one of their own — which is the whole
+    point of having a per-User cap, and would be given straight back at the pool wall otherwise (four
+    Users at 32GiB exactly fill 128GiB, so the fifth would land there immediately).
+
+    A None `user_id` (their account was deleted) has no Allowance to charge and no copies findable as
+    theirs — the join goes through `spawns.user_id`, which is now NULL — so it skips to the pool pass and
+    evicts globally. Same reasoning as retention.py's: there is no Allowance left to hold it under, and
+    the window still bounds it."""
+    while user_id is not None and db.user_recovery_bytes(conn, user_id) + incoming_bytes > MAX_USER_BYTES:
+        oldest = db.oldest_user_recovery(conn, user_id)
+        if oldest is None:
+            break  # nothing of theirs left and one copy still wouldn't fit — it lands anyway
+        _evict(conn, oldest["job_id"])
     while db.recovery_pool_bytes(conn) + incoming_bytes > MAX_POOL_BYTES:
-        oldest = db.oldest_recovery(conn)
+        oldest = db.oldest_user_recovery(conn, user_id) if user_id is not None else None
+        if oldest is None:
+            oldest = db.oldest_recovery(conn)  # they hold nothing of their own; disk is still finite
         if oldest is None:
             return  # pool is empty and a single copy still wouldn't fit — nothing left to evict
         _evict(conn, oldest["job_id"])
@@ -82,7 +113,8 @@ def register_new(conn, now: datetime | None = None) -> int:
     now = now or _now()
     since = (now - timedelta(minutes=_REGISTRATION_WINDOW_MINUTES)).strftime(_TS)
     registered = 0
-    for job_id in db.recently_finished_without_recovery(conn, since):
+    for row in db.recently_finished_without_recovery(conn, since):
+        job_id = row["job_id"]
         marker = _spawn_dir(job_id) / "recovery.size"
         try:
             if not marker.exists():
@@ -90,7 +122,7 @@ def register_new(conn, now: datetime | None = None) -> int:
             size = int(marker.read_text().strip())
         except (OSError, ValueError):
             continue  # unreadable, or a marker mid-write reading as garbage — try again next pass
-        _make_room(conn, size)
+        _make_room(conn, row["user_id"], size)
         db.add_recovery(conn, job_id, size, at=now.strftime(_TS))
         registered += 1
     return registered
@@ -124,7 +156,7 @@ def sweep_orphans(conn, now: datetime | None = None) -> int:
 
 
 def reap_expired(conn, now: datetime | None = None) -> int:
-    """Delete every recovery copy whose 30-minute window has closed. Returns how many."""
+    """Delete every recovery copy whose window has closed. Returns how many."""
     now = now or _now()
     cutoff = (now - timedelta(minutes=WINDOW_MINUTES)).strftime(_TS)
     expired = db.expired_recoveries(conn, cutoff)

@@ -307,7 +307,7 @@ def _download_now(spawn_id: int) -> None:
         # The moment a User learns `--output` was wrong or incomplete — and the only moment the
         # Recovery Window is still open. Same reasoning as `outputs()`, and it only reaches a person
         # on this path: the sweeper has no terminal to say it on, and by the time they read its log
-        # the 30 minutes are long gone.
+        # the day is long gone.
         _hint_recovery(spawn_id)
 
 
@@ -556,9 +556,9 @@ def _recovery_status(spawn_id: int) -> dict | None:
         return None
 
 
-def _minutes_left(expires_at: str) -> int:
+def _hours_left(expires_at: str) -> float:
     expires = datetime.strptime(expires_at, _TS).replace(tzinfo=timezone.utc)
-    return int((expires - datetime.now(timezone.utc)).total_seconds() // 60)
+    return (expires - datetime.now(timezone.utc)).total_seconds() / 3600
 
 
 def _hint_recovery(spawn_id: int) -> None:
@@ -566,14 +566,19 @@ def _hint_recovery(spawn_id: int) -> None:
     wrong or incomplete — right here, at the "no outputs" miss — is exactly when they need to know the
     rest of the Spawn's working dir might still be recoverable. Silent when it isn't (closed, skipped
     for size, or none was ever made): there's nothing more honest to say than what `outputs()` already
-    said above."""
+    said above.
+
+    Hours, and `<1h` at the end — the Dashboard's `recoveryLabel` shape (web/src/queue/format.ts), so
+    both clients say the same thing about the same window. Never rounded up to "1 day": what makes this
+    hint worth printing is that it is running out."""
     st = _recovery_status(spawn_id)
     if st is None:
         return
-    left = _minutes_left(st["expires_at"])
-    if left <= 0:
+    hours = _hours_left(st["expires_at"])
+    if hours <= 0:
         return
-    ui.hint(f"the Recovery Window is still open ({left}m left) — `cuttle recover {spawn_id}` grabs "
+    left = "<1h" if hours < 1 else f"{round(hours)}h"
+    ui.hint(f"the Recovery Window is still open ({left} left) — `cuttle recover {spawn_id}` grabs "
             f"everything else the Spawn wrote, not just $CCC_OUT")
 
 
@@ -604,7 +609,7 @@ def outputs(spawn_id: int) -> None:
 
 def recover(spawn_id: int) -> None:
     """Download a Spawn's Recovery Window copy — its whole working dir as it stood when
-    the Spawn ended, not just what it wrote to $CCC_OUT — for as long as the 30-minute window is open.
+    the Spawn ended, not just what it wrote to $CCC_OUT — for as long as the day-long window is open.
 
     A separate artifact from `outputs()` on purpose: the declared $CCC_OUT tar is permanent and never
     changes shape; this one expires, so the two are never merged into one download whose contents would

@@ -243,9 +243,11 @@ CREATE TABLE tidepools (
 """
 
 # Recovery Window: one row per Spawn currently holding a copy of its undeclared working dir on the Head
-# (ccc_head_api.recovery). `bytes` feeds the 50GB pool cap (SUM across every row); `created_at` is both
-# the 30-minute expiry clock AND the oldest-first eviction order — the same column does both jobs
-# because they're the same question ("how long has this been held?") asked two ways. A row here always
+# (ccc_head_api.recovery). `bytes` feeds both caps — SUM across every row for the pool, SUM joined
+# through `spawns.user_id` for one User's Allowance (no user_id column here, for _SCHEMA_V11's reason:
+# the Attribution row already answers whose it is, and a copy of the answer could only drift from it).
+# `created_at` is both the expiry clock AND the oldest-first eviction order — the same column does both
+# jobs because they're the same question ("how long has this been held?") asked two ways. A row here always
 # has a matching `SPAWNS_DIR/<id>/recovery/` dir on disk; recovery.py's `_evict` deletes both together.
 _SCHEMA_V9 = """
 CREATE TABLE recovery_copies (
@@ -1121,16 +1123,21 @@ def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
 # See _SCHEMA_V9's comment for the table shape. All of this is driven by ccc_head_api.recovery, from the
 # karma tick — nothing here decides policy (window length, size caps), it just reads/writes the ledger.
 
-def recently_finished_without_recovery(conn: sqlite3.Connection, since: str) -> list[int]:
-    """Spawns that finished at or after `since` and have no recovery_copies row yet — register_new's
-    candidates each pass. Bounded to a recent window on purpose: a Spawn whose copy never lands (skipped
-    for size, or the Arm dropped mid-transfer) must not be re-checked forever, or this list only grows."""
-    return [r["job_id"] for r in conn.execute(
-        """SELECT s.job_id FROM spawns s
+def recently_finished_without_recovery(conn: sqlite3.Connection, since: str) -> list[sqlite3.Row]:
+    """`(job_id, user_id)` per Spawn that finished at or after `since` and has no recovery_copies row yet
+    — register_new's candidates each pass. Bounded to a recent window on purpose: a Spawn whose copy
+    never lands (skipped for size, or the Arm dropped mid-transfer) must not be re-checked forever, or
+    this list only grows.
+
+    `user_id` rides along because charging the per-User Allowance needs it before the row exists, so
+    there is nothing to join through yet — the same reason `output_registration_rows` carries one. It is
+    NULL for a Spawn whose submitter was deleted (see the Attribution ledger's ON DELETE SET NULL)."""
+    return conn.execute(
+        """SELECT s.job_id, s.user_id FROM spawns s
            LEFT JOIN recovery_copies r ON r.job_id = s.job_id
            WHERE s.finished_at >= ? AND r.job_id IS NULL""",
         (since,),
-    ).fetchall()]
+    ).fetchall()
 
 
 def claimable_recovery_ids(conn: sqlite3.Connection, since: str) -> set[int]:
@@ -1175,9 +1182,28 @@ def recovery_pool_bytes(conn: sqlite3.Connection) -> int:
 
 
 def oldest_recovery(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """The longest-held copy — `_make_room`'s eviction candidate when a new one would blow the pool cap."""
+    """The longest-held copy anywhere in the pool — `_make_room`'s last-resort eviction candidate, once
+    the arriving User has nothing of their own left to give up."""
     return conn.execute(
         "SELECT job_id, bytes FROM recovery_copies ORDER BY created_at LIMIT 1").fetchone()
+
+
+def user_recovery_bytes(conn: sqlite3.Connection, user_id: int) -> int:
+    """What one User's open Recovery Windows currently hold, against their Allowance. Scoped through
+    `spawns.user_id` rather than a column here, exactly as `user_output_bytes` is."""
+    (total,) = conn.execute(
+        """SELECT COALESCE(SUM(r.bytes), 0) FROM recovery_copies r
+           JOIN spawns s ON s.job_id = r.job_id WHERE s.user_id = ?""", (user_id,)).fetchone()
+    return total
+
+
+def oldest_user_recovery(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
+    """That User's longest-held copy — `_make_room`'s candidate for both of its passes. Theirs alone, so
+    what displaces a User's older copy is only ever their own newer one (CONTEXT.md, **Allowance**)."""
+    return conn.execute(
+        """SELECT r.job_id, r.bytes FROM recovery_copies r
+           JOIN spawns s ON s.job_id = r.job_id WHERE s.user_id = ?
+           ORDER BY r.created_at LIMIT 1""", (user_id,)).fetchone()
 
 
 # --- Output retention -------------------------------------------------------------

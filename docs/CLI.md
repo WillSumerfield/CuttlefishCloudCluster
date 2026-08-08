@@ -61,7 +61,7 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle history` | Past Spawns, with their cost and outcome. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle cancel` | End a Spawn early. Yours from anywhere; **admin** `--any`, on the Head. | [Spawns](elements/spawns.md#ending-one-early) |
 | `cuttle outputs` | Download a finished Spawn's declared results again. | [Storage](elements/storage.md) |
-| `cuttle recover` | Download what a Spawn wrote *outside* its declared outputs. 30-minute window. | [Storage](elements/storage.md#the-recovery-window) |
+| `cuttle recover` | Download what a Spawn wrote *outside* its declared outputs. One-day window. | [Storage](elements/storage.md#the-recovery-window) |
 | `cuttle dashboard` | Open the web Dashboard in a browser. `--print` gives the URL instead. | [Dashboard](Dashboard.md#getting-to-it) |
 
 ## Recipes

@@ -45,22 +45,25 @@ function RecoveryPanel({ id }: { id: string }) {
       return;
     }
     const tick = () =>
-      setLeft(Math.max(0, Math.round((new Date(status.expires_at).getTime() - Date.now()) / 60_000)));
+      setLeft(Math.max(0, (new Date(status.expires_at).getTime() - Date.now()) / 3_600_000));
     tick();
     const timer = setInterval(tick, 15_000); // coarse — this is a courtesy countdown, not a live clock
     return () => clearInterval(timer);
   }, [status]);
 
   if (!status || left === null || left <= 0) return null;
+  // Hours, and "<1h" for the last one — `recoveryLabel`'s shape (queue/format.ts) and the CLI hint's,
+  // so all three surfaces describe one window identically. Never "1 day": see the Tip below.
+  const remaining = left < 1 ? "<1h" : `${Math.round(left)}h`;
 
   return (
     <div className="shard mb-4 flex flex-wrap items-center justify-between gap-3">
       <div>
         <Tip
           className="block text-[14px] text-ink"
-          text="Everything this run wrote outside the folders it declared, kept for 30 minutes and then gone. It exists for a mistake you didn't know you were making, so it's small, brief, and not something to plan around."
+          text="Everything this run wrote outside the folders it declared, recoverable for a day after it ends and then gone. It exists for a mistake you didn't know you were making, so it's capped in size and not something to plan around."
         >
-          Recovery Window open — <span className="num">{left}m</span> left
+          Recovery Window open — <span className="num">{remaining}</span> left
         </Tip>
         <p className="mt-0.5 text-[12px] text-ink-mute">
           <span className="num">{human(status.bytes)}</span> this Spawn wrote outside its declared
@@ -319,8 +322,12 @@ export function SpawnPage({ id }: { id: string }) {
                   : armLabel(detail.placed_node ?? detail.node ?? null)
               }
             />
-            <Fact label="GPUs" value={detail.gpus} />
-            <Fact label="VRAM" value={detail.vram_gb ? `${detail.vram_gb} GB` : null} />
+            <Fact label="GPUs" help="Cards held at once, always on the one machine." value={detail.gpus} />
+            <Fact
+              label="VRAM"
+              help="What was asked for — the total across those cards, not the size of each."
+              value={detail.vram_gb ? `${detail.vram_gb} GB` : null}
+            />
             <Fact label="Declared" help="The time limit you asked for at submit, not how long it actually ran." value={duration(detail.minutes ?? null)} />
             <Fact
               label="Submitted"

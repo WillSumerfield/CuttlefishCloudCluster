@@ -74,7 +74,7 @@ You cannot name the Arm you want. You are told which one you were given.
 
 `--output` is required for an ordinary Spawn and merely offered for a Tide Pool, with a warning if
 you decline. Anything you leave behind in the working directory is still covered by the
-[Recovery Window](storage.md#the-recovery-window) for 30 minutes after the session ends — but if you
+[Recovery Window](storage.md#the-recovery-window) for a day after the session ends — but if you
 made something you want to keep, declare it.
 
 ### If it never gets placed

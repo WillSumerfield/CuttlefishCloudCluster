@@ -1,11 +1,12 @@
-"""Recovery Window (docs/TODO.md) — a 30-min, size-capped safety net for whatever a Spawn wrote OUTSIDE
+"""Recovery Window (docs/TODO.md) — a one-day, size-capped safety net for whatever a Spawn wrote OUTSIDE
 its declared $CCC_OUT, which the JOB_SCRIPT's EXIT trap would otherwise destroy instantly.
 
 What's tested here: the rendered JOB_SCRIPT's `recover_scratch` (both branches — Head-local same-
-filesystem `mv`, remote `rsync`), the DB ledger (recovery_copies), recovery.py's registration/pool-
-eviction/expiry logic, the two new API routes, and the CLI (`cuttle recover`, and `cuttle outputs`'s
-miss-hint). NOT tested: an actual rsync transfer, or a live karma-tick loop — same hardware carve-out
-the rest of this suite already draws for anything that needs a real Arm.
+filesystem `mv`, remote `rsync`), the DB ledger (recovery_copies), recovery.py's registration, both
+eviction passes (per-User Allowance and the pool backstop) and expiry, the two API routes, and the CLI
+(`cuttle recover`, and `cuttle outputs`'s miss-hint). NOT tested: an actual rsync transfer, or a live
+karma-tick loop — same hardware carve-out the rest of this suite already draws for anything that needs
+a real Arm.
 """
 
 import io
@@ -25,6 +26,15 @@ _TS = "%Y-%m-%dT%H:%M:%SZ"
 
 def _iso(dt: datetime) -> str:
     return dt.strftime(_TS)
+
+
+def _expiry(created_at: str) -> str:
+    """When a copy registered at `created_at` closes. Derived from WINDOW_MINUTES rather than written
+    out, so these assertions bind to "created_at plus the window" and not to today's window length —
+    they were `T00:{WINDOW_MINUTES:02d}:00Z` when it was 30 minutes, which quietly stopped being a
+    timestamp at all the moment the window outgrew the minutes field."""
+    return _iso(datetime.strptime(created_at, _TS).replace(tzinfo=timezone.utc)
+                + timedelta(minutes=recovery.WINDOW_MINUTES))
 
 
 # --- the rendered JOB_SCRIPT --------------------------------------------------
@@ -146,7 +156,8 @@ class TestDbLedger:
             now = _iso(datetime.now(timezone.utc))
             self._spawn(conn, 3, finished_at=now)
             since = _iso(datetime.now(timezone.utc) - timedelta(minutes=5))
-            assert db.recently_finished_without_recovery(conn, since) == [3]
+            rows = db.recently_finished_without_recovery(conn, since)
+            assert [(r["job_id"], r["user_id"]) for r in rows] == [(3, 1)]
 
     def test_pool_bytes_sums_every_row(self):
         with db.connect() as conn:
@@ -250,17 +261,21 @@ class TestRegisterNew:
 
 
 class TestPoolEviction:
+    """The pool backstop, in isolation: MAX_USER_BYTES is left effectively infinite here so nothing but
+    the pool cap can fire. The Allowance is TestUserAllowanceEviction's, below."""
+
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
         db.ensure_schema()
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
         monkeypatch.setattr(recovery, "MAX_POOL_BYTES", 1000)
+        monkeypatch.setattr(recovery, "MAX_USER_BYTES", 10**9)
         with db.connect() as conn:
             db.add_user(conn, "alice")
 
-    def _seed_copy(self, conn, job_id: int, size: int, at: str) -> None:
-        db.record_spawn(conn, job_id, 1, "train.py", "uuid", minutes=10, gpus=1)
+    def _seed_copy(self, conn, job_id: int, size: int, at: str, user_id: int = 1) -> None:
+        db.record_spawn(conn, job_id, user_id, "train.py", "uuid", minutes=10, gpus=1)
         db.mark_finished(conn, job_id, 0, at)
         db.add_recovery(conn, job_id, size, at=at)
         d = head_spawns.SPAWNS_DIR / str(job_id) / "recovery"
@@ -271,7 +286,7 @@ class TestPoolEviction:
         with db.connect() as conn:
             self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z")
             self._seed_copy(conn, 2, 400, "2026-01-02T00:00:00Z")
-            recovery._make_room(conn, 400)  # 400+400+400 > 1000 -> the oldest (1) goes
+            recovery._make_room(conn, 1, 400)  # 400+400+400 > 1000 -> the oldest (1) goes
             assert db.get_recovery(conn, 1) is None
             assert db.get_recovery(conn, 2) is not None
             assert not (head_spawns.SPAWNS_DIR / "1" / "recovery").exists()
@@ -281,7 +296,7 @@ class TestPoolEviction:
             self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z")
             self._seed_copy(conn, 2, 400, "2026-01-02T00:00:00Z")
             self._seed_copy(conn, 3, 400, "2026-01-03T00:00:00Z")
-            recovery._make_room(conn, 400)  # 1200+400 > 1000 -> evict 1, still 800+400>1000 -> evict 2
+            recovery._make_room(conn, 1, 400)  # 1200+400 > 1000 -> evict 1, still 800+400>1000 -> evict 2
             assert db.get_recovery(conn, 1) is None
             assert db.get_recovery(conn, 2) is None
             assert db.get_recovery(conn, 3) is not None
@@ -290,9 +305,104 @@ class TestPoolEviction:
         with db.connect() as conn:
             self._seed_copy(conn, 1, 100, "2026-01-01T00:00:00Z")
             self._seed_copy(conn, 2, 100, "2026-01-02T00:00:00Z")
-            recovery._make_room(conn, 100)  # 200+100 <= 1000
+            recovery._make_room(conn, 1, 100)  # 200+100 <= 1000
             assert db.get_recovery(conn, 1) is not None
             assert db.get_recovery(conn, 2) is not None
+
+    def test_the_arriving_user_gives_up_their_own_before_a_strangers(self):
+        """The pool wall, with the arriving User still holding copies of their own. Four Users at their
+        Allowance exactly fill the pool, so the fifth arrival hits this immediately — evicting globally
+        here would hand back the very protection the Allowance exists to give."""
+        with db.connect() as conn:
+            db.add_user(conn, "bob")
+            self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z", user_id=2)   # bob's, and the oldest
+            self._seed_copy(conn, 2, 400, "2026-01-02T00:00:00Z", user_id=1)   # alice's
+            recovery._make_room(conn, 1, 400)  # 800+400 > 1000
+            assert db.get_recovery(conn, 1) is not None   # bob keeps his, though he is older
+            assert db.get_recovery(conn, 2) is None       # alice pays for her own arrival
+
+    def test_the_pool_falls_through_to_a_stranger_once_the_arrival_has_nothing_left(self):
+        """Disk is finite: a User with no copies of their own to surrender cannot be let past the cap,
+        so the global oldest goes. The fallback, not the rule."""
+        with db.connect() as conn:
+            db.add_user(conn, "bob")
+            self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z", user_id=2)
+            self._seed_copy(conn, 2, 400, "2026-01-02T00:00:00Z", user_id=2)
+            recovery._make_room(conn, 1, 400)  # alice arrives holding nothing
+            assert db.get_recovery(conn, 1) is None       # bob's oldest
+            assert db.get_recovery(conn, 2) is not None
+
+    def test_a_deleted_submitter_evicts_globally(self):
+        """user_id NULL (ON DELETE SET NULL): no Allowance to charge and nothing findable as theirs, so
+        the pool pass is the only one that runs."""
+        with db.connect() as conn:
+            self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z")
+            self._seed_copy(conn, 2, 400, "2026-01-02T00:00:00Z")
+            recovery._make_room(conn, None, 400)
+            assert db.get_recovery(conn, 1) is None
+            assert db.get_recovery(conn, 2) is not None
+
+
+class TestUserAllowanceEviction:
+    """The per-User Allowance — the cap that makes a day-long window survivable. Pool left effectively
+    infinite so only the Allowance can fire."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        monkeypatch.setattr(recovery, "MAX_USER_BYTES", 1000)
+        monkeypatch.setattr(recovery, "MAX_POOL_BYTES", 10**9)
+        with db.connect() as conn:
+            db.add_user(conn, "alice")
+            db.add_user(conn, "bob")
+
+    def _seed_copy(self, conn, job_id: int, size: int, at: str, user_id: int) -> None:
+        db.record_spawn(conn, job_id, user_id, "train.py", "uuid", minutes=10, gpus=1)
+        db.mark_finished(conn, job_id, 0, at)
+        db.add_recovery(conn, job_id, size, at=at)
+        d = head_spawns.SPAWNS_DIR / str(job_id) / "recovery"
+        d.mkdir(parents=True)
+        (d / "f.bin").write_bytes(b"x" * min(size, 16))
+
+    def test_a_users_flood_never_touches_another_users_copies(self):
+        """The point of the whole cap. Bob holds one old copy; alice blows through her Allowance twice
+        over. Bob's must still be there — under the old single pool cap it would not be."""
+        with db.connect() as conn:
+            self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z", user_id=2)   # bob's, oldest of all
+            for job_id, day in ((2, "02"), (3, "03"), (4, "04")):
+                self._seed_copy(conn, job_id, 400, f"2026-01-{day}T00:00:00Z", user_id=1)
+                recovery._make_room(conn, 1, 400)
+            assert db.get_recovery(conn, 1) is not None
+            assert db.user_recovery_bytes(conn, 2) == 400
+
+    def test_a_users_own_oldest_goes_first(self):
+        with db.connect() as conn:
+            self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z", user_id=1)
+            self._seed_copy(conn, 2, 400, "2026-01-02T00:00:00Z", user_id=1)
+            recovery._make_room(conn, 1, 400)  # 800+400 > 1000
+            assert db.get_recovery(conn, 1) is None
+            assert db.get_recovery(conn, 2) is not None
+            assert not (head_spawns.SPAWNS_DIR / "1" / "recovery").exists()
+
+    def test_several_users_each_under_their_ceiling_evict_nothing(self):
+        """Independent ceilings, not shares of one: bob being full has no bearing on alice's room."""
+        with db.connect() as conn:
+            self._seed_copy(conn, 1, 900, "2026-01-01T00:00:00Z", user_id=2)
+            self._seed_copy(conn, 2, 100, "2026-01-02T00:00:00Z", user_id=1)
+            recovery._make_room(conn, 1, 400)  # alice: 100+400 <= 1000, though the pool holds 1400
+            assert db.get_recovery(conn, 1) is not None
+            assert db.get_recovery(conn, 2) is not None
+
+    def test_a_copy_larger_than_the_whole_allowance_still_lands(self):
+        """An output's rule, and a recovery copy's: the Spawn has already run and the Karma is spent, so
+        the copy is accepted and their own older ones are simply gone. MAX_SPAWN_BYTES is what stops a
+        genuinely huge one, and it is enforced in bash before any of this."""
+        with db.connect() as conn:
+            self._seed_copy(conn, 1, 400, "2026-01-01T00:00:00Z", user_id=1)
+            recovery._make_room(conn, 1, 5000)
+            assert db.get_recovery(conn, 1) is None  # everything of theirs went, and it lands anyway
 
 
 class TestExpiry:
@@ -381,8 +491,8 @@ class TestOrphanSweep:
             assert d.exists()
 
     def test_a_registered_copy_is_left_to_expire_on_schedule(self):
-        """Registered and long past the registration window, but well inside its 30 minutes: this is
-        the ordinary open Recovery Window, and the sweep must not shorten it."""
+        """Registered and long past the registration window, but well inside its day: this is the
+        ordinary open Recovery Window, and the sweep must not shorten it."""
         now = datetime.now(timezone.utc)
         landed = now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1)
         with db.connect() as conn:
@@ -395,7 +505,7 @@ class TestOrphanSweep:
 
     def test_a_swept_dir_stops_counting_against_the_pool(self):
         """The point of sweeping, not a side effect: an orphan is invisible to `recovery_pool_bytes`
-        while it sits there, so the only way it stops eating the 50GB budget is being deleted."""
+        while it sits there, so the only way it stops eating the pool budget is being deleted."""
         now = datetime.now(timezone.utc)
         old = _iso(now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1))
         with db.connect() as conn:
@@ -444,7 +554,7 @@ class TestOrphanSweep:
             self._spawn(conn, 7, _iso(now - timedelta(minutes=1)))                # inside
             self._spawn(conn, 8, _iso(now - timedelta(
                 minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1)))              # outside
-            candidates = set(db.recently_finished_without_recovery(conn, since))
+            candidates = {r["job_id"] for r in db.recently_finished_without_recovery(conn, since)}
             claimable = db.claimable_recovery_ids(conn, since)
             assert candidates <= claimable
             assert 8 not in claimable and 8 not in candidates
@@ -499,7 +609,7 @@ class TestStatus:
             db.record_spawn(conn, 1, 1, "train.py", "uuid", minutes=10, gpus=1)
             db.add_recovery(conn, 1, 555, at="2026-01-01T00:00:00Z")
             st = recovery.status(conn, 1)
-            assert st == {"bytes": 555, "expires_at": f"2026-01-01T00:{recovery.WINDOW_MINUTES:02d}:00Z"}
+            assert st == {"bytes": 555, "expires_at": _expiry("2026-01-01T00:00:00Z")}
 
 
 class TestTarBytes:
@@ -559,7 +669,7 @@ class TestRecoveryStatusRoute:
             db.add_recovery(conn, 1, 4096, at="2026-01-01T00:00:00Z")
         r = c.get("/api/spawns/1/recovery")
         assert r.status_code == 200
-        assert r.json() == {"bytes": 4096, "expires_at": f"2026-01-01T00:{recovery.WINDOW_MINUTES:02d}:00Z"}
+        assert r.json() == {"bytes": 4096, "expires_at": _expiry("2026-01-01T00:00:00Z")}
 
     def test_401_without_a_session(self, tmp_path):
         # No dependency_overrides, no monkeypatched user — the real auth dependency runs and refuses.
@@ -597,7 +707,7 @@ class TestHistoryCarriesRecoveryExpiry:
         assert r.status_code == 200
         row = next(row for row in r.json() if row["job_id"] == 1)
         assert row["recovery_bytes"] == 4096
-        assert row["recovery_expires_at"] == f"2026-01-01T00:{recovery.WINDOW_MINUTES:02d}:00Z"
+        assert row["recovery_expires_at"] == _expiry("2026-01-01T00:00:00Z")
         assert "recovery_created_at" not in row  # internal column, not for the wire
 
     def test_a_row_with_no_copy_carries_null(self, monkeypatch, tmp_path):

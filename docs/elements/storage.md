@@ -10,7 +10,7 @@ the whole of it:
 | An uploaded project | Until the Spawn stages it in | 4 GB per upload |
 | A Spawn's declared results | 7 days from when it ended | 8 GB, all yours together |
 | A [Recipe](recipes.md) | Forever, until you delete it | 32 GB, all yours together |
-| The Recovery Window copy | 30 minutes from when the Spawn ended | 16 GB per Spawn |
+| The Recovery Window copy | A day from when the Spawn ended | 16 GB per Spawn |
 
 Each ceiling is its own. Filling one never costs you any of another.
 
@@ -32,7 +32,7 @@ automatically, as each Spawn ends, and that is what makes the 7-day expiry safe.
 cuttle outputs 412
 ```
 
-**Get back something you forgot to declare** — within 30 minutes of the Spawn ending:
+**Get back something you forgot to declare** — within a day of the Spawn ending:
 
 ```sh
 cuttle recover 412
@@ -49,7 +49,7 @@ cuttle recipe list
 | | |
 |---|---|
 | `cuttle outputs <id>` | Download a Spawn's declared results as a tar, into the current directory. |
-| `cuttle recover <id>` | Download what it wrote *outside* those. 30-minute window. |
+| `cuttle recover <id>` | Download what it wrote *outside* those. One-day window. |
 
 ## Behavior
 
@@ -89,8 +89,11 @@ Your 8 GB is yours. Filling it cannot evict anybody else's results.
 Your script wrote a checkpoint to `./out/` and you declared `--output results`. The Spawn ends. What
 now?
 
-You have **30 minutes**. `cuttle recover <id>` pulls down the entire working directory the Spawn ran
+You have **a day**. `cuttle recover <id>` pulls down the entire working directory the Spawn ran
 in — everything outside your declared outputs — up to 16 GB.
+
+Long enough to be worth having: you find a wrong `--output` the next morning, not within the same half
+hour. Not long enough to be a place to keep things.
 
 It exists for a mistake you did not know you were making, so it is never opt-in and never something
 to plan around:
@@ -98,6 +101,10 @@ to plan around:
 - it is capped, and a Spawn whose working directory exceeds the cap simply never gets one;
 - it expires on its own;
 - past the window it is gone, with nothing to appeal to.
+
+One more way a copy can end early: if you finish a great many Spawns in a day, your newest copies
+displace your oldest. Only ever your own — another User's flood can never cost you a window, and yours
+can never cost them one.
 
 Declare `--output` correctly. This is a net, not a floor.
 

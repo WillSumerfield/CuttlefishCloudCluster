@@ -105,14 +105,14 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
     nothing here weakens that gate; `--output` and `--manifest` alone are optional, the first gated
     behind a confirm instead and the second simply absent when nobody asked for one."""
     minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
-    vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB)"))
+    vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
     outputs = list(outputs) if outputs else []
     if not outputs:
-        # Not permanently lost — the 30-minute recovery window rsyncs the whole scratch dir home
+        # Not permanently lost — the day-long recovery window rsyncs the whole scratch dir home
         # regardless of what was declared. But once that window closes nothing here is retrievable
         # through the normal $CCC_OUT/outputs path, so still worth a warning, just not "lost forever".
         warning = ("no --output declared — anything this Tide Pool writes OUTSIDE a declared output "
-                   "dir is only recoverable for 30 minutes after it ends, then gone (only $CCC_OUT is "
+                   "dir is only recoverable for a day after it ends, then gone (only $CCC_OUT is "
                    "staged back to the Head as a normal output)")
         if ui.interactive():
             ui.warn(warning)

@@ -68,7 +68,7 @@ export type ArchivedSpawn = Spawn & {
   // Epoch ms it finished — the sort key. History is one flat stream, newest first.
   finished_at: number
   // Recovery Window (docs/TODO.md): null/absent once it's closed (or was never made) — everything else
-  // the Spawn wrote outside its declared outputs, held on the Head for 30 min. bytes rides alongside for
+  // the Spawn wrote outside its declared outputs, held on the Head for a day. bytes rides alongside for
   // the same reason it does on RecoveryStatus: a size worth showing, not just a countdown.
   recovery_bytes?: number | null
   recovery_expires_at?: string | null
@@ -113,7 +113,7 @@ export type SpawnDetail = {
   output_expires_at?: string | null
 }
 
-// Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever a Spawn wrote OUTSIDE
+// Recovery Window (docs/TODO.md): a one-day, 16GB-capped safety net for whatever a Spawn wrote OUTSIDE
 // its declared $CCC_OUT — separate from (and never merged with) the permanent outputs tar. `expires_at`
 // is an ISO timestamp; callers compute their own remaining-time countdown from it rather than a
 // server-computed "seconds left" that would go stale the moment it's rendered.
@@ -238,8 +238,9 @@ export const getSpawn = (id: number) => json<SpawnDetail>(`/spawns/${id}`)
 export const getStderr = (id: number) => req(`/spawns/${id}/stderr`).then((r) => r.text())
 /** The Environment build's output — empty string for a Spawn that declared none. The Head's work, not
  *  the Spawn's, which is why it is its own stream rather than the head of stdout. */
-// null = no open Recovery Window (never made, over the 16GB cap, evicted for the 50GB pool cap, or its
-// 30 min are up) — a normal outcome for a finished Spawn, not surfaced as an error to the caller.
+// null = no open Recovery Window (never made, over the 16GB per-Spawn cap, evicted to make room for a
+// newer copy of the submitter's own, or its day is up) — a normal outcome for a finished Spawn, not
+// surfaced as an error to the caller.
 export async function getRecovery(id: number): Promise<RecoveryStatus | null> {
   try {
     return await json<RecoveryStatus>(`/spawns/${id}/recovery`)
