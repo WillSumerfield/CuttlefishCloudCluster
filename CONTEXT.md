@@ -124,10 +124,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   A Workspace is held by the **Head**, so it is a claim on no **Arm**: a visit is **placed** like any
   other work and may land anywhere **eligible**, and the **Environment** it builds dies with the visit as
   every Environment does. What persists is the *files* — never the machine, never the built Environment.
-  It declares no outputs and has none: everything a session writes simply *is* the Workspace, so there is
-  nothing to keep separately and no **Recovery Window** to open — what that window exists to rescue is,
-  here, the thing that was already saved.
-  Holding one costs no **Karma** (storage never does); it holds bytes against its own **Allowance**.
+  Declaring an output is optional here, exactly as it is for a **Tide Pool**, and declaring one keeps
+  nothing extra: an output is an ordinary folder *inside* the tree, which the session's end also sends
+  home so it can be fetched like any **Spawn**'s results instead of only through the Workspace itself.
+  So nothing a session writes is ever held apart from the Workspace, and there is no **Recovery Window**
+  to open — what that window exists to rescue is, here, the thing that was already saved.
+  Holding one costs no **Karma** (holding bytes never does); what it may hold is its **Storage**,
+  reserved out of its owner's **Allowance** when they create it.
   *Visiting* one costs Karma exactly as a **Tide Pool** does, because a visit is one. Only its owner ever
   removes it. And it has a single writer by construction: opening a Workspace that is already live joins
   the session that exists rather than starting a second beside it.
@@ -192,10 +195,22 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   would plan around, which that window must never be — so it is named only once it has already taken
   something. A **Workspace** takes the Recipe's rule — nothing
   a User deliberately keeps is ever destroyed to make room — but it is the one told *during* the live
-  session that filled it, while its owner is still there to make room. An Allowance is not the only thing that ends a
+  session that filled it, while its owner is still there to make room. It is also the only Allowance its
+  holder **divides up themselves**: each Workspace reserves a **Storage** out of it at creation, so what
+  a session runs out of is that one Workspace's Storage and never a pool shared with the rest.
+  An Allowance is not the only thing that ends a
   held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
   even when there is room to spare. Uploaded projects belong to no Allowance at all — the Head keeps
   them only while a Spawn is starting.
+- **Storage** — how much one **Workspace** may hold, chosen by its owner as they create it and reserved
+  out of their Workspace **Allowance** there and then, so the bytes are spoken for whether or not the tree
+  ever fills them and a User's Workspaces can never together outgrow what they are allowed. It is the
+  ceiling a live session actually meets, which is why it is the User's to set rather than CCC's to
+  apportion: the cluster enforces the division and never guesses it. Changeable afterwards, but never
+  below what the tree already holds — an Allowance destroys nothing to make room, so a Storage smaller
+  than its own contents would be a ceiling nothing could bring the Workspace back under.
+  The word names one Workspace's share and never the cluster's disk in general: what a Head holds
+  altogether has no name here, only the **Allowance**es that divide it.
 - **Recovery Window** — the brief, always-on grace period in which a finished **Spawn**'s *undeclared*
   writes can still be retrieved. A Spawn's declared outputs are kept for as long as its submitter's
   **Allowance** allows; everything else it wrote — the working directory it ran in — is destroyed when

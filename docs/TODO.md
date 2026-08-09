@@ -102,6 +102,3 @@ Notably, only the head is planned to have multi-gpus. Could we instead make mult
 
 ## IsaacSim feature implementation
 Currently, the isaacsim arm feature is not implemented. We should fix that.
-
-## Tidepool recipes should now be "Workspaces"
-Workspaces that can be revisted anytime (at the cost of karma, of course).

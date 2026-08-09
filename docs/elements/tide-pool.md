@@ -14,6 +14,10 @@ waits.
 
 **It bills for as long as you hold it.** Closing your laptop does not end it.
 
+**It keeps nothing.** When the session ends, the directory you were working in is gone — only the
+day-long [Recovery Window](storage.md#the-recovery-window) stands between you and losing it. If you
+want a shell over a folder that is still there next time, that is a [Workspace](workspaces.md).
+
 ## Typical use
 
 **Get a shell on a machine with a 24 GB card, for half an hour:**
@@ -76,6 +80,9 @@ You cannot name the Arm you want. You are told which one you were given.
 you decline. Anything you leave behind in the working directory is still covered by the
 [Recovery Window](storage.md#the-recovery-window) for a day after the session ends — but if you
 made something you want to keep, declare it.
+
+If you are reaching for the Recovery Window more than once, you want a [Workspace](workspaces.md)
+instead: it keeps the whole directory, permanently, with no window to miss.
 
 ### If it never gets placed
 

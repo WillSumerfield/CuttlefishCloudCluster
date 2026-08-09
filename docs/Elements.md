@@ -30,7 +30,15 @@ and the build costs you nothing.
 ### [Tide Pool](elements/tide-pool.md)
 
 An interactive shell on real cluster hardware, for when you need to poke at something rather than run
-it. It bills Karma for as long as you hold it, and closing your laptop does not end it.
+it. It bills Karma for as long as you hold it, and closing your laptop does not end it. It keeps
+nothing when the session ends.
+
+### [Workspaces](elements/workspaces.md)
+
+A working directory the cluster keeps — the Tide Pool's durable form. Open it and you are where you
+left off; what you install, download or half-finish is still there next time. Holding one is free;
+visiting one costs Karma like any Spawn. Each reserves a **Storage** out of a 32 GB allowance you divide
+up yourself.
 
 ### [Karma](elements/karma.md)
 
@@ -42,7 +50,7 @@ all. **admin:** `override`, `bump`.
 ### [Storage](elements/storage.md)
 
 Where your things live and how long they last: uploaded projects (until the Spawn starts), results
-(7 days, 8 GB), Recipes (indefinitely, 32 GB), and the one-day Recovery Window that catches what you
+(7 days, 32 GB), Recipes and Workspaces (indefinitely, 32 GB each), and the one-day Recovery Window that catches what you
 forgot to declare.
 
 ## Donating a machine

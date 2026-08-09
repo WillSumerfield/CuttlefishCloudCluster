@@ -2,14 +2,15 @@
 
 ## What it is
 
-Four different things of yours can be sitting on the Head, and they behave differently. This page is
+Five different things of yours can be sitting on the Head, and they behave differently. This page is
 the whole of it:
 
 | Thing | Kept for | Ceiling |
 |---|---|---|
 | An uploaded project | Until the Spawn stages it in | 4 GB per upload |
-| A Spawn's declared results | 7 days from when it ended | 8 GB, all yours together |
+| A Spawn's declared results | 7 days from when it ended | 32 GB, all yours together |
 | A [Recipe](recipes.md) | Forever, until you delete it | 32 GB, all yours together |
+| A [Workspace](workspaces.md) | Forever, until you delete it | 32 GB, **divided into a Storage each** |
 | The Recovery Window copy | A day from when the Spawn ended | 16 GB per Spawn |
 
 Each ceiling is its own. Filling one never costs you any of another.
@@ -17,6 +18,8 @@ Each ceiling is its own. Filling one never costs you any of another.
 A Recipe holds the code you uploaded and the declaration that goes with it — nothing else. Its
 [Environment](environments.md) is built fresh on whichever machine runs it and belongs to no
 allowance. `cuttle recipe list` shows what each one weighs.
+
+The Workspace allowance is the one you divide up yourself — see [Storage](#workspace-storage) below.
 
 None of this is priced. Storage is never contended for, never costs [Karma](karma.md), and a full
 allowance never affects who wins the queue.
@@ -68,21 +71,39 @@ When a Spawn finishes, its declared outputs are downloaded into `~/ccc/outputs/s
 on your machine, whether or not you are watching — see [Spawns](spawns.md#where-your-results-go).
 
 The Head's copy lives **7 days from when the Spawn ended**, not from when it was registered, and only
-while your 8 GB has room. Past either, `cuttle outputs <id>` tells you so rather than pretending the
+while your 32 GB has room. Past either, `cuttle outputs <id>` tells you so rather than pretending the
 Spawn never existed.
 
 ### The two ceilings behave differently, on purpose
 
 **A result is always accepted.** The Karma is already spent and the work is already done, so refusing
 to store the output would be pointless cruelty. If it does not fit, your *other, older* outputs are
-evicted to make room — oldest first, silently. Even a single result larger than the whole 8 GB still
+evicted to make room — oldest first, silently. Even a single result larger than the whole 32 GB still
 lands.
 
 **A Recipe save is refused.** Saving past the wall fails and you delete one and try again. The
 difference is that a Recipe is something you deliberately chose to keep, whereas an output arrives on
-its own from work already done.
+its own from work already done. Creating a Workspace is refused for the same reason.
 
-Your 8 GB is yours. Filling it cannot evict anybody else's results.
+Your 32 GB is yours. Filling it cannot evict anybody else's results.
+
+### Workspace Storage
+
+The Workspace allowance is the only one you divide up yourself. Every other ceiling on this page is a
+single pool your things fill until it is full; a [Workspace](workspaces.md) instead reserves a
+**Storage** out of yours when you create it:
+
+```sh
+cuttle workspace new scratch --storage 16    # 16 GB of your 32, spent the moment it exists
+```
+
+Reserved, not used — an empty 16 GB Workspace costs you the whole 16 GB. That is the point of it:
+what a session runs out of is that one Workspace's Storage, and never a pool it shares with everything
+else you keep.
+
+Creating one past the allowance is refused, like a Recipe save. Filling one is not: nothing is
+evicted, the Workspace simply stops being saved and says so inside the session. You can resize at any
+time, and never below what the tree already holds.
 
 ### The Recovery Window
 
