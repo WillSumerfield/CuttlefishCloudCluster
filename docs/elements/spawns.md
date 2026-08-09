@@ -116,6 +116,8 @@ mundane: a browser cannot write into a folder on a machine with nobody sitting a
 ### What gets uploaded
 
 The working directory you run from, honouring `.gitignore`. `--no-gitignore` uploads everything.
+`--dir <path>` uploads a different directory instead — the script, `--manifest` and `--output` paths
+are then all relative to *it*, while results still download to where you are.
 
 The Head keeps that upload only while the Spawn is *starting* — it is deleted the moment it has
 staged in. It is not backed by any allowance, and it is not recoverable. This is why a

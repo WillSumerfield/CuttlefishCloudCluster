@@ -37,9 +37,8 @@ def _upload(path: str, tar_bytes: bytes, meta: dict, what: str) -> dict:
         raise ui.abort(f"could not {what}: {e.user_message()}") from None
 
 
-def _pack(no_gitignore: bool) -> tuple[bytes, int, int]:
-    """The working dir as a gzip-tar, plus (files, bytes) for the preview. Same set `cuttle run` sends."""
-    root = Path.cwd()
+def _pack(root: Path, no_gitignore: bool) -> tuple[bytes, int, int]:
+    """The project dir as a gzip-tar, plus (files, bytes) for the preview. Same set `cuttle run` sends."""
     files = None if no_gitignore else spawns._project_files(root)
     paths = [root / f for f in files] if files is not None else [p for p in root.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in paths if p.exists())
@@ -57,7 +56,7 @@ def _meta(name: str, script: str, args: list[str], minutes: int, vram: int, gpu:
             "wandb_entity": wandb_env.get("WANDB_ENTITY", "")}
 
 
-def _validate(script: str, outputs: list[str], manifest: str) -> None:
+def _validate(root: Path, script: str, outputs: list[str], manifest: str) -> None:
     """The gates `cuttle run` applies before uploading, applied here for the same reasons — and they
     matter MORE here. A Spawn with a missing script or manifest fails now; a Recipe with one fails
     every time it is ever run, discovered long after the folder that would have fixed it is gone."""
@@ -68,21 +67,23 @@ def _validate(script: str, outputs: list[str], manifest: str) -> None:
         raise ui.abort("--manifest is required — a Recipe freezes the environment its work runs in, "
                        "not just the code (e.g. `--manifest pyproject.toml`)")
     for label, rel in (("script", script), ("manifest", manifest)):
-        if not (Path.cwd() / rel).is_file():
-            raise ui.abort(f"{label} {rel!r} was not found (looked for it relative to the current "
-                           f"directory, {Path.cwd()})")
+        if not (root / rel).is_file():
+            raise ui.abort(f"{label} {rel!r} was not found (looked for it relative to the project "
+                           f"directory, {root})")
 
 
 def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[str],
          outputs: list[str], manifest: str, project: str | None = None, entity: str | None = None,
-         no_gitignore: bool = False, yes: bool = False) -> None:
-    """Freeze the working dir into a new Recipe."""
-    _validate(script, outputs, manifest)
-    tar_bytes, count, total = _pack(no_gitignore)
+         no_gitignore: bool = False, yes: bool = False, root: Path | None = None) -> None:
+    """Freeze a project dir into a new Recipe."""
+    root = root or Path.cwd()
+    _validate(root, script, outputs, manifest)
+    tar_bytes, count, total = _pack(root, no_gitignore)
     if not yes:
         ui.kv([
             ("recipe", name),
             ("script", script),
+            ("directory", str(root)),
             # A Recipe freezes the **Environment** as well as the code, so this line is as much part of
             # "what am I about to freeze" as the script is.
             ("environment", manifest),
@@ -108,18 +109,19 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
 def update(name: str, script: str | None = None, minutes: int | None = None, vram: int | None = None,
            gpu: int | None = None, args: list[str] | None = None, outputs: list[str] | None = None,
            manifest: str | None = None, project: str | None = None, entity: str | None = None,
-           no_gitignore: bool = False, yes: bool = False) -> None:
-    """Re-capture the working dir into an existing Recipe.
+           no_gitignore: bool = False, yes: bool = False, root: Path | None = None) -> None:
+    """Re-capture a project dir into an existing Recipe.
 
     Every setting defaults to what the Recipe already holds, so `cuttle recipe update foo` in a changed
     directory refreshes the CODE and nothing else — the common case, and the one where re-typing
     --time/--vram/--output would be a chance to silently change them. Fetched first for exactly that.
     """
+    root = root or Path.cwd()
     current = _find(name)
     script = script or current["script"]
     manifest = manifest or current["manifest"]
-    _validate(script, list(outputs) if outputs else current["outputs"], manifest)
-    tar_bytes, count, total = _pack(no_gitignore)
+    _validate(root, script, list(outputs) if outputs else current["outputs"], manifest)
+    tar_bytes, count, total = _pack(root, no_gitignore)
     meta = _meta(name, script,
                  list(args) if args else current["args"],
                  minutes or current["minutes"],
@@ -136,6 +138,7 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
         ui.kv([
             ("recipe", name),
             ("script", script),
+            ("directory", str(root)),
             ("environment", manifest),
             ("upload", f"{count} files, {total / 1_048_576:.1f} MB"),
             ("replaces", _human(current["size_bytes"])),

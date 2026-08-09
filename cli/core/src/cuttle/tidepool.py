@@ -67,7 +67,8 @@ def _cancel_hint(spawn_id: int) -> str:
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
         node: str | None, outputs: list[str], features: list[str], follow: bool,
-        download: bool = True, manifest: str | None = None, no_gitignore: bool = False) -> None:
+        download: bool = True, manifest: str | None = None, no_gitignore: bool = False,
+        root: Path | None = None) -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
     Spawn) unless `script_or_id` resolves to an existing one, then attaches either way.
 
@@ -85,7 +86,7 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
         spawn_id = _request(minutes, vram, gpu, node, outputs, features, manifest=manifest,
-                            no_gitignore=no_gitignore)
+                            no_gitignore=no_gitignore, root=root)
         # Only when it declared somewhere for results to land. A Tide Pool with no --output has
         # nothing to auto-download by construction — everything it wrote lives and dies in the
         # Recovery Window, which is deliberately not something to plan around (CONTEXT.md).
@@ -100,7 +101,7 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
 
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
             outputs: list[str], features: list[str], manifest: str | None = None,
-            no_gitignore: bool = False) -> int:
+            no_gitignore: bool = False, root: Path | None = None) -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
     nothing here weakens that gate; `--output` and `--manifest` alone are optional, the first gated
     behind a confirm instead and the second simply absent when nobody asked for one."""
@@ -123,7 +124,7 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
             # scripted request proceeds; it just cannot be asked first.
             ui.warn(warning)
     spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, outputs, node=node, features=features,
-                                          manifest=manifest, no_gitignore=no_gitignore)
+                                          manifest=manifest, no_gitignore=no_gitignore, root=root)
     ui.ok(f"requested tide pool {spawn_id}")
     return spawn_id
 

@@ -15,6 +15,10 @@ not care.
 
 Recipes are private to you. Nobody else can see or run yours.
 
+A [Workspace](workspaces.md) is the sibling of this and the opposite of it: mutable where a Recipe is
+frozen, visited interactively where a Recipe is run in batch. Reach for a Recipe when the work is
+settled; reach for a Workspace when it is not.
+
 ## Typical use
 
 **Save the thing you keep re-running:**
@@ -54,6 +58,9 @@ cuttle recipe save
 | `cuttle recipe update <name>` | Re-freeze around this directory's current code. |
 | `cuttle recipe run <name>` | Run the snapshot as a Spawn. **Not wired up yet** — see below. |
 | `cuttle recipe delete <name>` | Delete it and free the bytes. |
+
+`save` and `update` freeze the directory you run them from; `--dir <path>` freezes a different one,
+with the script and `--manifest` paths relative to it.
 
 ## Behavior
 

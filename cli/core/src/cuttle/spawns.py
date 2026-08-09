@@ -33,6 +33,21 @@ from .system import run
 _TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
 
 
+def project_root(path: str | Path | None) -> Path:
+    """Which directory gets uploaded: `--dir`, or the cwd when nobody said.
+
+    Resolved once per command so the script/manifest paths it validates are resolved against the same
+    directory that is actually tarred. It says where the project IS, not where you are — anything a
+    command WRITES (downloaded results) still lands relative to the real cwd.
+    """
+    if path is None:
+        return Path.cwd()
+    root = Path(path).expanduser().resolve()
+    if not root.is_dir():
+        raise ui.abort(f"--dir {str(path)!r} is not a directory")
+    return root
+
+
 def _project_files(root: Path) -> list[str]:
     """The gitignore-aware transfer set, computed where the repo lives. git itself is the only thing
     that gets gitignore semantics exactly right — tracked plus untracked-but-not-ignored. A non-git
@@ -192,7 +207,8 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
 
 
 def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
-           outputs: list[str], features: list[str] | None = None, manifest: str | None = None) -> None:
+           outputs: list[str], features: list[str] | None = None, manifest: str | None = None,
+           root: Path | None = None) -> None:
     """Show what is about to be uploaded, before it is.
 
     The Dashboard gates submission behind a preview; the CLI has never had one, so `cuttle run` in
@@ -202,12 +218,15 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
     No Karma estimate: pricing a Spawn needs a Tide quote from the Head, and a number shown here that
     disagreed with what is actually escrowed would be worse than showing nothing.
     """
-    root = Path.cwd()
+    root = root or Path.cwd()
     files = _project_files(root) if not no_gitignore else None
-    paths = files if files is not None else [p for p in root.rglob("*") if p.is_file()]
+    paths = [root / f for f in files] if files is not None else [p for p in root.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in paths if p.exists())
     ui.kv([
         ("script", script),
+        # Named for the same reason as the manifest: the preview's whole job is "is this the directory
+        # you meant", and with --dir that is no longer answerable from the shell prompt.
+        ("directory", str(root)),
         # Named here because the preview's whole job is "is this the directory you meant" — and the
         # manifest is the one line that says what the work will run against, not merely what ships.
         ("environment", manifest or "—"),
@@ -224,8 +243,8 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
            outputs: list[str], project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, node: str | None = None,
            features: list[str] | None = None, manifest: str | None = None,
-           download: bool = True, dest: Path | None = None) -> None:
-    root = Path.cwd()
+           download: bool = True, dest: Path | None = None, root: Path | None = None) -> None:
+    root = root or Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
     features = features or []
@@ -313,7 +332,7 @@ def _download_now(spawn_id: int) -> None:
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
                     features: list[str] | None = None, manifest: str | None = None,
-                    no_gitignore: bool = False) -> int:
+                    no_gitignore: bool = False, root: Path | None = None) -> int:
     """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
     tidepool.py, owns the UI from here, since it still has to poll for placement and attach).
 
@@ -329,10 +348,11 @@ def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node:
     sends the same wire shape whether or not there is a project behind it.
     """
     features = features or []
+    root = root or Path.cwd()
     if manifest:
-        tar = _make_tar(Path.cwd(), None if no_gitignore else _project_files(Path.cwd()))
+        tar = _make_tar(root, None if no_gitignore else _project_files(root))
     else:
-        tar = _make_tar(Path.cwd(), [])
+        tar = _make_tar(root, [])
     if node:
         return _submit_pinned(tar, "", [], minutes, vram, gpu, node, {}, outputs,
                               features=features, tidepool=True, manifest=manifest)[0]
@@ -588,7 +608,7 @@ def outputs(spawn_id: int) -> None:
     Two different misses, and the Head is the one that can tell them apart (see main.spawn_outputs), so
     its 404 detail is printed verbatim rather than replaced by a guess here: a Spawn that WROTE nothing,
     versus one whose results were held and are now gone — 7 days elapsed, or evicted for the submitter's
-    8GB Allowance. Telling a User their Spawn produced nothing when it produced 3GB they simply came
+    32GB Allowance. Telling a User their Spawn produced nothing when it produced 3GB they simply came
     back too late for is the one answer worse than saying neither."""
     client = auth._client()
     client.token = auth._load_token()
