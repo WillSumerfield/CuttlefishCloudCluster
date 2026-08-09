@@ -826,7 +826,9 @@ function TidepoolPopup({ id, onClose }: { id: number; onClose: () => void }) {
   );
 }
 
-function Labeled({ label, help, className, children }: { label: string; help?: string; className?: string; children: React.ReactNode }) {
+/** A field's label, and its explanation on hover. Exported so the Workspace composer asks its questions
+ *  in the same shape as this one rather than growing a third `variant` through all 800 lines above. */
+export function Labeled({ label, help, className, children }: { label: string; help?: string; className?: string; children: React.ReactNode }) {
   return (
     <div className={`block ${className ?? ""}`}>
       <span className="label mb-1.5 block">{label}</span>

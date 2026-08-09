@@ -20,6 +20,7 @@ const DESTINATIONS: Dest[] = [
   { to: "/", label: "Queue" },
   { to: "/history", label: "History" },
   { to: "/arms", label: "Arms" },
+  { to: "/workspaces", label: "Workspaces" },
   { to: "/recipes", label: "Recipes" },
   { to: "/karma", label: "Karma" },
   { to: "/tide", label: "Tide" },

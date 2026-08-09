@@ -73,7 +73,7 @@ export type ArchivedSpawn = Spawn & {
   recovery_bytes?: number | null
   recovery_expires_at?: string | null
   // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are deleted
-  // — 7 days after it ended, or sooner if the submitter's 8GB Allowance needed the room. The more
+  // — 7 days after it ended, or sooner if the submitter's 32GB Allowance needed the room. The more
   // consequential sibling of the pair above (these are the results the Spawn was submitted to produce).
   // Null once gone, or before the tick has registered them.
   output_bytes?: number | null
@@ -120,7 +120,7 @@ export type SpawnDetail = {
 export type RecoveryStatus = { bytes: number; expires_at: string }
 
 // Output retention (docs/TODO.md "Storage retention"): the same two fields on the same terms, for the
-// Spawn's DECLARED results — held 7 days from its end, and only while the submitter's 8GB Allowance has
+// Spawn's DECLARED results — held 7 days from its end, and only while the submitter's 32GB Allowance has
 // room. Identical shape to RecoveryStatus on purpose: the two panels render the same way, and a User
 // learns one countdown rather than two.
 export type RetentionStatus = { bytes: number; expires_at: string }
@@ -413,6 +413,137 @@ export const runRecipe = (name: string) =>
     .then((r) => r.id)
 /** Delete a Recipe, freeing its bytes back to the allowance. */
 export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
+
+// A Workspace: a working directory the Head KEEPS, so opening it again resumes where the last visit
+// stopped. The Tide Pool's durable form, and the sibling of a Recipe — a Recipe is frozen and re-run in
+// batch, a Workspace is mutable and visited interactively.
+//
+// `storage_bytes` is its **Storage**: what it may hold, carved out of the 32 GB workspace allowance by its
+// owner when they created it. `used_bytes` is measured off the Head's disk on every read, never cached —
+// a Workspace's tree changes every 60 seconds from inside a live session, over rsync, with nothing on
+// the Head watching it happen.
+//
+// `live` is the Spawn id of the visit in progress, or null. `starting` covers the moment between the
+// claim and sbatch answering, when a visit is live but has no id to show yet.
+export type Workspace = {
+  name: string
+  storage_bytes: number     // its Storage — what it may hold
+  used_bytes: number      // what it holds right now, off the disk
+  gpus: number
+  vram_mb: number
+  minutes: number         // per-VISIT wall clock; the workspace itself never expires
+  manifest: string        // optional here, unlike a Recipe's — a visit is a shell, not a run
+  outputs: string[]       // optional too. $CCC_OUT is a folder INSIDE the tree
+  features: string[]
+  created_at: number | null
+  last_visited_at: number | null
+  live: number | null     // the Spawn id visiting it right now
+  starting: boolean       // claimed, but sbatch has not answered yet
+}
+
+// Per-User: 32 GB, and the only allowance its holder divides up themselves — each Workspace reserves a
+// Storage out of it at creation. Mirrors the Head's workspaces.py MAX_USER_BYTES, the actual authority.
+export const WORKSPACE_ALLOWANCE_BYTES = 32 * 1024 ** 3
+
+export const getWorkspaces = () => json<Workspace[]>('/workspaces')
+
+// Seed a directory into a new Workspace — the ONLY upload one ever takes. Everything after this is
+// written from inside the Workspace's own sessions and mirrored home, which is what makes it durable
+// rather than a Recipe you re-freeze. Same wire shape as createRecipe: tar+gzip body, meta in the header.
+export type NewWorkspace = {
+  picked: Picked
+  name: string
+  storage_bytes: number
+  gpus: number
+  vram_mb: number
+  minutes: number
+  manifest: string
+  outputs: string[]
+  features: string[]
+}
+
+export async function createWorkspace(w: NewWorkspace): Promise<Workspace> {
+  const entries: TarEntry[] = []
+  for (const f of w.picked.files) {
+    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
+  }
+  const body = await gzip(makeTar(entries))
+  const meta = {
+    name: w.name, storage_bytes: w.storage_bytes, gpus: w.gpus, vram_mb: w.vram_mb,
+    minutes: w.minutes, manifest: w.manifest.trim(), outputs: w.outputs, features: w.features,
+  }
+  const res = await req('/workspaces', {
+    method: 'POST',
+    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
+    body,
+  })
+  return res.json() as Promise<Workspace>
+}
+
+// Everything a visit asks for, plus the Storage the tree may fill. There is no code half of this: a
+// Workspace is seeded once and written to from inside its own sessions after that, so unlike a Recipe
+// there is nothing to re-capture and no upload sibling of this call.
+export type WorkspaceSettings = {
+  storage_bytes: number
+  gpus: number
+  vram_mb: number
+  minutes: number
+  manifest: string
+  outputs: string[]
+  features: string[]
+}
+
+/**
+ * Resize a Workspace, and change what its visits ask for. Never the files.
+ *
+ * The Head refuses a shrink below what the tree already holds (422, with the real number) and a grow
+ * past the allowance (413) — a resize is weighed on what it GROWS BY, this Workspace's own reservation
+ * coming off the pool first. A resize while a visit is live is accepted and takes effect on the NEXT
+ * one: the running session's Storage is a constant baked into its job script.
+ */
+export const updateWorkspace = (name: string, w: WorkspaceSettings) =>
+  req(`/workspaces/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(w),
+  }).then((res) => res.json() as Promise<Workspace>)
+
+/**
+ * Open a Workspace: start a visit, or attach to the one already running.
+ *
+ * A visit is a Tide Pool bound to the tree — same queue, same wait for a card, same Karma — so the
+ * connection details come back through the ordinary Tide Pool route once it is placed. A Workspace
+ * holds ONE visit at a time, so this never queues a second behind a live one: `attached` says which of
+ * the two happened.
+ */
+export const openWorkspace = (name: string) =>
+  req(`/workspaces/${encodeURIComponent(name)}/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then((r) => r.json() as Promise<{ id: number; attached: boolean }>)
+
+/**
+ * Whether the live visit's last mirror found the tree over its Storage, and by how much.
+ *
+ * The Head cannot see what the Arm is holding — only what the session's 60s mirror reports — so this is
+ * a marker read, not a measurement. Worth surfacing because nothing fails loudly when a Workspace fills:
+ * the session simply stops being saved.
+ */
+export const getWorkspaceFull = (name: string) =>
+  json<{ live: number | null; full: boolean; bytes: number; storage_bytes: number }>(
+    `/workspaces/${encodeURIComponent(name)}/full`)
+
+/** Where the browser fetches a Workspace (or one folder inside it) as a tar. A plain link, not a fetch:
+ *  a Storage runs to 16 GB and up, and the Head streams it rather than buffering — so the download belongs
+ *  to the browser's own download manager, not to this tab's memory. */
+export const workspaceDownloadUrl = (name: string, path?: string) =>
+  `${API}/workspaces/${encodeURIComponent(name)}/download` +
+  (path ? `?path=${encodeURIComponent(path)}` : '')
+
+/** Delete a Workspace, freeing its Storage. Refused (409) while a visit is live. */
+export const deleteWorkspace = (name: string) =>
+  req(`/workspaces/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
 // The W&B key the Head injects into every Spawn you submit (from either client). Held ENCRYPTED at rest —
 // a third-party secret the Head keeps on your behalf, and unlike a password it must be recoverable in
