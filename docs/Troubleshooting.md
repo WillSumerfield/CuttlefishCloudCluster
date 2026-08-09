@@ -42,7 +42,7 @@ They download automatically to `~/ccc/outputs/spawn-<id>-outputs/`. If they are 
 
 ### `cuttle outputs` says the results are gone
 
-Seven days from when the Spawn ended, or your 8 GB filled up and older outputs were evicted to make
+Seven days from when the Spawn ended, or your 32 GB filled up and older outputs were evicted to make
 room. Nothing on the Head is an archive — the automatic download is what makes that safe. See
 [Storage](elements/storage.md).
 

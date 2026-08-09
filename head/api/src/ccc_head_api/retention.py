@@ -1,5 +1,5 @@
 """Output retention: a Spawn's declared `$CCC_OUT` results live **7 days**, and a User holds at most
-**8GB** of them at once.
+**32GB** of them at once.
 
 TTL runs from the Spawn's END, not registration: `created_at` is copied from `finished_at`, so a Spawn
 registered late (tick was down) still expires 7 days after it ran, not 7 days after registration. No
@@ -9,7 +9,7 @@ An output is always accepted — Karma's already spent, the work's already done 
 User's OTHER, older outputs instead, oldest-first and silent. A single result bigger than the whole
 Allowance still lands; there's no per-Spawn cap.
 
-The Allowance is per User, not global (see CONTEXT.md, **Allowance**): filling your 8GB can't evict
+The Allowance is per User, not global (see CONTEXT.md, **Allowance**): filling your 32GB can't evict
 anyone else's results. An Attribution row whose User was deleted has no Allowance to charge and is
 registered anyway; TTL still reaps it.
 
@@ -26,7 +26,7 @@ from . import db
 
 TTL_DAYS = int(os.environ.get("CCC_OUTPUT_TTL_DAYS", 7))
 # Per-User, independent of every other Allowance (e.g. Recipe space).
-MAX_USER_BYTES = int(os.environ.get("CCC_OUTPUT_MAX_USER", 8 * 1024**3))
+MAX_USER_BYTES = int(os.environ.get("CCC_OUTPUT_MAX_USER", 32 * 1024**3))
 
 # A `spawns/<id>/` dir with no Attribution row yet — submission raised between sbatch returning and
 # `db.record_spawn`. Young ones look identical to that in-flight race, so don't touch them.

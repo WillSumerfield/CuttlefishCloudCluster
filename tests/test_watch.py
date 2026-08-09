@@ -1,7 +1,7 @@
 """Auto-download (`cuttle.watch`) — a Spawn's results arrive without anyone asking for them.
 
 The sweeper has no terminal, runs after `cuttle run` returns, and races a Head that deletes
-results after 7 days (sooner if the submitter's 8GB **Allowance** fills). Every failure mode
+results after 7 days (sooner if the submitter's 32GB **Allowance** fills). Every failure mode
 here is silent by construction: results that never arrive, an obligation dropped for a
 *different* still-running Spawn, a logout that permanently strands everything, or extraction
 that writes outside its destination.

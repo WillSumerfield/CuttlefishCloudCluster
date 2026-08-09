@@ -1,7 +1,7 @@
 """Auto-download: a **Spawn**'s results arrive on the submitter's disk without anyone asking.
 
 `cuttle run` returns the moment the Head accepts a Spawn, hours before it ends, so `cuttle outputs
-<id>` is easy to forget — against a Head that deletes results after 7 days or sooner if the 8GB
+<id>` is easy to forget — against a Head that deletes results after 7 days or sooner if the 32GB
 **Allowance** fills (`ccc_head_api.retention`). This module removes the step.
 
 The file is the intent, the process only the current attempt: every armed Spawn gets

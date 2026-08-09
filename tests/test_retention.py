@@ -1,5 +1,5 @@
 """Output retention (docs/TODO.md "Storage retention") — declared `$CCC_OUT` results live 7
-days, and a User holds at most 8GB of them at once.
+days, and a User holds at most 32GB of them at once.
 
 What's tested here: registration off the tick's own signal (no marker of its own), the TTL running from
 the Spawn's END rather than from registration, per-User oldest-first eviction, the two API surfaces (the
@@ -190,7 +190,7 @@ class TestExpiry(_Base):
 
 
 class TestAllowance(_Base):
-    """8GB per User, and an output is ALWAYS accepted — the Karma is already spent and the Arm already
+    """32GB per User, and an output is ALWAYS accepted — the Karma is already spent and the Arm already
     did the work, so the eviction lands on that User's own older results instead."""
 
     @pytest.fixture(autouse=True)
