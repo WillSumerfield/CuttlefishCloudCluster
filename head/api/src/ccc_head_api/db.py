@@ -31,7 +31,7 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers (the API: submit→escrow, override→ledger; the Karma tick: settle→ledger).
 # WAL permits that, but a writer that collides with another gets SQLITE_BUSY back *immediately* unless
@@ -288,7 +288,7 @@ INSERT INTO guises (uid, user_id)
 # (see retention.py). A row here always has a matching `SPAWNS_DIR/<id>/outputs/` dir on disk;
 # `retention._evict` deletes both together.
 #
-# No user_id column: the 8GB Allowance is per User, but `spawns.user_id` already says whose a Spawn is,
+# No user_id column: the 32GB Allowance is per User, but `spawns.user_id` already says whose a Spawn is,
 # and duplicating it here would be a second answer that could disagree with the first — including after
 # `remove_user` NULLs the original.
 _SCHEMA_V11 = """
@@ -385,10 +385,47 @@ DROP INDEX IF EXISTS idx_spawns_build;
 ALTER TABLE spawns DROP COLUMN build_state;
 """
 
+# Workspaces: the Tide Pool's durable form. This row is the DECLARATION (what a visit asks for) and
+# `workspaces/<user_id>/<name>/` on disk is the tree itself — the same split as `recipes`, and the same
+# `<user_id>/<name>` layout so `workspaces.sweep_orphans` can tell whose a directory is without the DB.
+#
+# **No `bytes` column, unlike `recipes`.** A Recipe's tree only changes when its owner uploads, so a
+# stored figure is exact; a Workspace's changes every 60 seconds from inside a live session, over rsyncd,
+# with nothing on the Head watching. A cached number would be stale the moment a visit started, and it
+# is the number that decides whether a shrink is refused — so usage is measured off the disk instead
+# (`workspaces.usage`) and the only thing stored is what was RESERVED.
+#
+# `storage_bytes` is this Workspace's **Storage**: what it may hold, carved out of its owner's Workspace
+# Allowance when they created it (CONTEXT.md, **Storage**). The Allowance is the sum of these, so the pool
+# is a query rather than a column.
+#
+# `live_job_id` is the current visit's Spawn, claimed transactionally before sbatch so two simultaneous
+# opens cannot both submit, and cleared by the karma tick when that Spawn leaves the queue. Not a foreign
+# key: `spawns` rows outlive nothing here, and a claim must be clearable even if the Spawn row is gone.
+# NULL means idle, which is also what a Head that crashed mid-visit will show once the tick catches up.
+_SCHEMA_V17 = """
+CREATE TABLE workspaces (
+  id              INTEGER PRIMARY KEY,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name            TEXT    NOT NULL,
+  storage_bytes     INTEGER NOT NULL,
+  gpus            INTEGER NOT NULL,
+  vram_mb         INTEGER NOT NULL,
+  minutes         INTEGER NOT NULL,
+  manifest        TEXT    NOT NULL DEFAULT '',
+  outputs         TEXT    NOT NULL DEFAULT '[]',
+  features        TEXT    NOT NULL DEFAULT '[]',
+  created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  last_visited_at TEXT,
+  live_job_id     INTEGER,
+  UNIQUE (user_id, name)
+);
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
               _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
-              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16]
+              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17]
 
 
 # --- connection + schema ----------------------------------------------------
@@ -1253,7 +1290,7 @@ def expired_outputs(conn: sqlite3.Connection, cutoff: str) -> list[int]:
 
 
 def user_output_bytes(conn: sqlite3.Connection, user_id: int) -> int:
-    """What one User currently holds, against their 8GB Allowance. Scoped through `spawns.user_id`
+    """What one User currently holds, against their 32GB Allowance. Scoped through `spawns.user_id`
     rather than a column here — see _SCHEMA_V11 for why there isn't one."""
     (total,) = conn.execute(
         """SELECT COALESCE(SUM(o.bytes), 0) FROM output_copies o
@@ -1350,5 +1387,146 @@ def running_recipe_names(conn: sqlite3.Connection, user_id: int, live_job_ids: l
 def recipe_owner_ids(conn: sqlite3.Connection) -> set[int]:
     """Every User id that still exists — what `recipes.sweep_orphans` checks the directories against.
     Read from `users`, not from `recipes`: the CASCADE has already taken the rows of a deleted User by
-    the time the sweep runs, so asking `recipes` would say every directory is legitimate."""
+    the time the sweep runs, so asking `recipes` would say every directory is legitimate.
+
+    `workspaces.sweep_orphans` asks the same question of its own directories, and reuses this."""
     return {r["id"] for r in conn.execute("SELECT id FROM users").fetchall()}
+
+
+# --- workspaces -------------------------------------------------------------
+# Deliberately shaped like the Recipe accessors above — same owner-scoped lookups, same "the name is
+# the handle" rule — because the two are siblings (CONTEXT.md: a Recipe is frozen and batch, a
+# Workspace mutable and interactive). The claim helpers at the bottom have no Recipe counterpart: a
+# Recipe can be run twice at once and a Workspace cannot.
+
+def workspaces_for(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    """One User's Workspaces, oldest first. Private to their owner, exactly like a shelf of Recipes."""
+    return conn.execute("SELECT * FROM workspaces WHERE user_id=? ORDER BY created_at, id",
+                        (user_id,)).fetchall()
+
+
+def get_workspace(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row | None:
+    """Scoped by owner, never by name alone — two Users may both keep a "scratch"."""
+    return conn.execute("SELECT * FROM workspaces WHERE user_id=? AND name=?",
+                        (user_id, name)).fetchone()
+
+
+def get_workspace_by_id(conn: sqlite3.Connection, ws_id: int) -> sqlite3.Row | None:
+    """By row id, for the paths that hold one already — the submit path, and the tick reconciling
+    claims. Unscoped on purpose: the caller reached an id by way of an owner check, or is the tick,
+    which is nobody's."""
+    return conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
+
+
+def add_workspace(conn: sqlite3.Connection, user_id: int, name: str, storage_bytes: int, gpus: int,
+                  vram_mb: int, minutes: int, manifest: str, outputs: list[str],
+                  features: list[str]) -> sqlite3.Row:
+    conn.execute(
+        """INSERT INTO workspaces (user_id, name, storage_bytes, gpus, vram_mb, minutes, manifest,
+                                   outputs, features)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (user_id, name, storage_bytes, gpus, vram_mb, minutes, manifest,
+         json.dumps(outputs), json.dumps(features)))
+    conn.commit()
+    return get_workspace(conn, user_id, name)
+
+
+def update_workspace_meta(conn: sqlite3.Connection, user_id: int, name: str, storage_bytes: int,
+                          gpus: int, vram_mb: int, minutes: int, manifest: str, outputs: list[str],
+                          features: list[str]) -> sqlite3.Row:
+    """Change what a visit asks for, and the **Storage** reserved for the tree — never the tree itself.
+    There is no upload sibling of this: a Workspace is seeded once and written to from inside its own
+    sessions thereafter."""
+    conn.execute(
+        """UPDATE workspaces SET storage_bytes=?, gpus=?, vram_mb=?, minutes=?, manifest=?,
+                                 outputs=?, features=?
+           WHERE user_id=? AND name=?""",
+        (storage_bytes, gpus, vram_mb, minutes, manifest, json.dumps(outputs), json.dumps(features),
+         user_id, name))
+    conn.commit()
+    return get_workspace(conn, user_id, name)
+
+
+def delete_workspace(conn: sqlite3.Connection, user_id: int, name: str) -> bool:
+    cur = conn.execute("DELETE FROM workspaces WHERE user_id=? AND name=?", (user_id, name))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def user_workspace_storage(conn: sqlite3.Connection, user_id: int, excluding: int | None = None) -> int:
+    """What this User has already RESERVED across their Workspaces — the left side of the pool's
+    arithmetic. Reserved, not used: the Allowance is divided up at creation (CONTEXT.md, **Storage**), so
+    an empty 16 GiB Workspace costs its owner the whole 16 GiB of their pool. `excluding` drops one
+    Workspace's own reservation, which is how a resize is weighed on what it GROWS BY."""
+    (total,) = conn.execute(
+        "SELECT COALESCE(SUM(storage_bytes), 0) FROM workspaces WHERE user_id=? AND id IS NOT ?",
+        (user_id, excluding)).fetchone()
+    return total
+
+
+# The claim a visit holds while its `sbatch` is still in flight. A real job id cannot be the claim
+# value here, because sbatch is what MINTS one — and claiming only after it returned would let two
+# simultaneous opens both submit before either could lose, which is the exact failure the claim exists
+# to prevent (two Arms `--delete`-mirroring one tree). So the claim is taken first with this, and
+# rebound to the real id the moment sbatch answers.
+#
+# `last_visited_at` is stamped in the same statement so the tick can tell a submit in flight from one
+# that died between the claim and sbatch — see `stale_workspace_claims`.
+SUBMITTING = -1
+
+
+def claim_workspace(conn: sqlite3.Connection, ws_id: int, job_id: int = SUBMITTING) -> bool:
+    """Take the visit claim, or say it is already held. One statement, so two simultaneous `open`s
+    cannot both win it and then both `--delete`-mirror the same tree from different Arms — the loser
+    reads the winner's `live_job_id` back and attaches to that session instead."""
+    cur = conn.execute(
+        "UPDATE workspaces SET live_job_id=?, last_visited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+        "WHERE id=? AND live_job_id IS NULL", (job_id, ws_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def rebind_workspace_claim(conn: sqlite3.Connection, ws_id: int, job_id: int) -> None:
+    """Point a held claim at the Spawn sbatch just returned. Scoped to `SUBMITTING` so this can only
+    ever move a claim out of the in-flight state, never steal a live one."""
+    conn.execute("UPDATE workspaces SET live_job_id=? WHERE id=? AND live_job_id=?",
+                 (job_id, ws_id, SUBMITTING))
+    conn.commit()
+
+
+def release_workspace(conn: sqlite3.Connection, ws_id: int, job_id: int) -> None:
+    """Drop a claim this exact Spawn holds. `job_id` is in the WHERE so a stale release — a submit that
+    failed after the claim, racing a tick that already cleared it and an open that already re-claimed —
+    cannot free somebody else's live visit."""
+    conn.execute("UPDATE workspaces SET live_job_id=NULL WHERE id=? AND live_job_id=?", (ws_id, job_id))
+    conn.commit()
+
+
+def visited_workspace(conn: sqlite3.Connection, ws_id: int) -> None:
+    conn.execute("UPDATE workspaces SET last_visited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+                 "WHERE id=?", (ws_id,))
+    conn.commit()
+
+
+def stale_workspace_claims(conn: sqlite3.Connection, live_job_ids: list[int],
+                           grace_minutes: int = 5) -> list[sqlite3.Row]:
+    """Every Workspace whose claimed Spawn is no longer on the queue — what the karma tick clears.
+    Reconciled rather than released by the session itself, because the ways a visit ends that nothing
+    on the Head sees (a crashed Arm, a killed job, a Head restart) are exactly the ones that would
+    otherwise strand a Workspace as permanently live and unopenable.
+
+    A `SUBMITTING` claim is by definition not on the queue yet, so it is spared for `grace_minutes` —
+    otherwise a tick landing between the claim and sbatch would free a Workspace out from under a
+    submission about to succeed. Past the grace it IS collected: that is a submit which died holding
+    the claim, and nothing else will ever release it.
+    """
+    stale = "live_job_id IS NOT NULL"
+    args: tuple = ()
+    if live_job_ids:
+        stale += f" AND live_job_id NOT IN ({','.join('?' * len(live_job_ids))})"
+        args = tuple(live_job_ids)
+    return conn.execute(
+        f"""SELECT * FROM workspaces WHERE {stale}
+            AND (live_job_id <> ? OR last_visited_at IS NULL
+                 OR last_visited_at < strftime('%Y-%m-%dT%H:%M:%SZ','now',?))""",
+        (*args, SUBMITTING, f"-{grace_minutes} minutes")).fetchall()

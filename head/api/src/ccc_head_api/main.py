@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -37,6 +37,7 @@ from . import recovery as recovery_mod
 from . import retention as retention_mod
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod
+from . import workspaces as workspaces_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
@@ -436,7 +437,7 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back.
 
     Results are not permanent: 7 days from the Spawn's end,
-    or sooner if the submitter's 8GB Allowance evicted them to make room for newer ones. Both read as
+    or sooner if the submitter's 32GB Allowance evicted them to make room for newer ones. Both read as
     404 here, and the detail says which of the two applies where the ledger still knows — a Spawn that
     produced nothing and one whose results were deleted are very different things to be told."""
     data = spawns_mod.outputs_tar(job_id)
@@ -457,7 +458,7 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
 def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
     """How much of Spawn `job_id`'s declared results the Head still holds, and when it deletes them.
     404 means nothing held: the Spawn produced nothing, the tick has
-    not registered it yet, its 7 days are up, or the submitter's 8GB Allowance evicted it.
+    not registered it yet, its 7 days are up, or the submitter's 32GB Allowance evicted it.
 
     Named for the policy rather than `/outputs/…` because `/spawns/{id}/outputs` is already the tar
     itself, and one path returning metadata for a GET and bytes for a sibling GET is the kind of shape
@@ -959,6 +960,170 @@ def delete_recipe(name: str, user: dict = Depends(current_user)) -> Response:
             raise HTTPException(404, f"you have no recipe named {name!r}")
     log.info("recipe delete %r by %s", name, user["username"])
     return Response(status_code=204)
+
+
+# --- workspaces (authed) ----------------------------------------------------
+# A **Workspace** is a durable working directory — the Tide Pool's persistent form. These routes are its
+# whole lifecycle except the visit itself (`open`, which submits a Tide Pool bound to it). Scoped to the
+# caller like the Recipe routes above and for the same reason: a Workspace holds a User's actual files,
+# so there is no roster read and no `user_id` any client can name.
+#
+# The seed upload is spooled against the Workspace **Allowance** rather than `MAX_UPLOAD_BYTES`: the 4GB
+# cap is a Spawn's, and a Workspace is bounded by the Storage it is about to be weighed against.
+
+@api.get("/workspaces")
+def workspaces(user: dict = Depends(current_user)) -> list[dict]:
+    """The caller's own Workspaces, with what each holds against its **Storage**.
+
+    `used_bytes` is measured off the disk here and now — see workspaces.usage for why nothing caches
+    it. One walk per Workspace, on a shelf that is a handful of entries.
+    """
+    with db.connect() as conn:
+        rows = db.workspaces_for(conn, user["id"])
+    return [workspaces_mod.to_json(r, workspaces_mod.usage(user["id"], r["name"])) for r in rows]
+
+
+@api.post("/workspaces", status_code=201)
+async def create_workspace(request: Request, user: dict = Depends(current_user)) -> dict:
+    """Seed a directory into a new Workspace — the only upload one ever takes. Same wire shape as
+    `/submit` and `/recipes`: gzip-tar body, `X-CCC-Meta` header.
+
+    Runs nothing and costs no Karma. Storage never does; the visits do."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before creating a workspace (run `cuttle passwd`)")
+    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
+    tar_path = await _spool_upload(request, limit=workspaces_mod.MAX_USER_BYTES)
+    try:
+        with db.connect() as conn:
+            made = workspaces_mod.create(conn, user["id"], meta, tar_path)
+    except workspaces_mod.PoolExceeded as e:
+        raise HTTPException(413, _pool_message(e))
+    except workspaces_mod.SeedTooBig as e:
+        raise HTTPException(413, f"this directory is {_human(e.size)} but the workspace reserves a "
+                                 f"{_human(e.storage)} storage — ask for a bigger --storage, or seed less")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    finally:
+        tar_path.unlink(missing_ok=True)
+    log.info("workspace create %r by %s (%s storage)", made["name"], user["username"],
+             _human(made["storage_bytes"]))
+    return made
+
+
+@api.patch("/workspaces/{name}")
+async def update_workspace(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
+    """Change what a visit asks for, and the **Storage** the tree may fill. Never the files: a Workspace is
+    seeded once and written to from inside its own sessions thereafter.
+
+    A resize while a visit is live is accepted and takes effect on the next one — the running session's
+    gate is baked into its job script (see workspaces.update_meta)."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before editing a workspace (run `cuttle passwd`)")
+    meta = await request.json()
+    try:
+        with db.connect() as conn:
+            saved = workspaces_mod.update_meta(conn, user["id"], name, meta)
+    except workspaces_mod.PoolExceeded as e:
+        raise HTTPException(413, _pool_message(e))
+    except workspaces_mod.StorageTooSmall as e:
+        raise HTTPException(422, f"this workspace already holds {_human(e.used)}, so its storage cannot "
+                                 f"be set to {_human(e.asked)} — free space inside it first "
+                                 f"(`cuttle workspace open`), or ask for more")
+    except ValueError as e:
+        raise HTTPException(404 if str(e).startswith("no workspace named") else 422, str(e))
+    log.info("workspace edit %r by %s", name, user["username"])
+    return saved
+
+
+@api.post("/workspaces/{name}/open")
+async def open_workspace(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
+    """Start a visit, or hand back the one already running.
+
+    A visit is a **Tide Pool** bound to this Workspace — same queue, same Eligibility, same Escrow — so
+    the client attaches to it through `GET /spawns/{id}/tidepool` exactly as it would any other. What
+    differs is that the session starts from the durable tree and mirrors back into it.
+
+    A Workspace holds ONE visit at a time, so this never queues a second Spawn behind a live one: it
+    returns that one's id with `attached: true`. The body is optional per-visit overrides (vram, time,
+    gpus, features, outputs, manifest) — they change this session only and are never written back."""
+    if user["must_change_password"]:
+        raise HTTPException(403, "change your password before opening a workspace (run `cuttle passwd`)")
+    try:
+        overrides = await request.json()
+    except Exception:
+        overrides = {}   # no body at all is the ordinary case: open it as it was declared
+    try:
+        with db.connect() as conn:
+            job_id, attached = workspaces_mod.visit(conn, user["id"], name, user["is_admin"],
+                                                    overrides if isinstance(overrides, dict) else {})
+    except ValueError as e:
+        raise HTTPException(404 if str(e).startswith("no workspace named") else 422, str(e))
+    log.info("workspace open %r by %s -> spawn %s%s", name, user["username"], job_id,
+             " (attached)" if attached else "")
+    return {"id": job_id, "attached": attached}
+
+
+@api.get("/workspaces/{name}/full")
+def workspace_full(name: str, user: dict = Depends(current_user)) -> dict:
+    """Whether the live visit's last mirror found the tree over its **Storage**, and by how much.
+
+    The Head cannot see what the Arm is holding — only what the session's 60s mirror tells it — so this
+    reads the marker that comes home through `[out-…]`. `bytes` is 0 when the visit is under its Storage,
+    which is what makes recovering from full visible rather than merely the absence of a warning. The
+    CLI polls it during a session to warn without ending it (nothing is ever evicted)."""
+    with db.connect() as conn:
+        row = db.get_workspace(conn, user["id"], name)
+    if row is None:
+        raise HTTPException(404, f"you have no workspace named {name!r}")
+    job_id = row["live_job_id"] if (row["live_job_id"] or 0) > 0 else None
+    over = workspaces_mod.full_marker(job_id) if job_id else 0
+    return {"live": job_id, "full": over > 0, "bytes": over, "storage_bytes": row["storage_bytes"]}
+
+
+@api.get("/workspaces/{name}/download")
+def download_workspace(name: str, path: str | None = None,
+                       user: dict = Depends(current_user)) -> Response:
+    """The whole tree as a gzip-tar, or the subtree named by `?path=`. Live or idle — a Workspace being
+    visited is still readable, it is just a moment older than what the session sees.
+
+    Streamed, never buffered (`workspaces.tar_stream`): a Storage runs to 16GB and up, so the in-memory
+    shape `/spawns/{id}/outputs` uses would put the whole tree in this process."""
+    with db.connect() as conn:
+        row = db.get_workspace(conn, user["id"], name)
+    if row is None:
+        raise HTTPException(404, f"you have no workspace named {name!r}")
+    try:
+        target = workspaces_mod.resolve(user["id"], name, path)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    stem = f"workspace-{name}" + (f"-{Path(path).name}" if path else "")
+    return StreamingResponse(
+        workspaces_mod.tar_stream(target, stem), media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.tar.gz"'})
+
+
+@api.delete("/workspaces/{name}", status_code=204)
+def delete_workspace(name: str, user: dict = Depends(current_user)) -> Response:
+    """Delete a Workspace and free its **Storage**. The only thing that ever removes one — no TTL, no
+    eviction. Refused while a visit is live: the tree is what that session is mirroring into."""
+    try:
+        with db.connect() as conn:
+            if not workspaces_mod.delete(conn, user["id"], name):
+                raise HTTPException(404, f"you have no workspace named {name!r}")
+    except workspaces_mod.Live as e:
+        raise HTTPException(409, f"workspace {name!r} is being visited by spawn {e.job_id} — end that "
+                                 f"session first (`cuttle cancel {e.job_id}`)")
+    log.info("workspace delete %r by %s", name, user["username"])
+    return Response(status_code=204)
+
+
+def _pool_message(e: "workspaces_mod.PoolExceeded") -> str:
+    """The Workspace Allowance is the one its holder divides up themselves (CONTEXT.md, **Storage**), so
+    the refusal has to say what is left of the pool as well as what was asked for."""
+    return (f"this workspace asks for {_human(e.incoming)} but only "
+            f"{_human(max(workspaces_mod.MAX_USER_BYTES - e.used, 0))} of your "
+            f"{_human(workspaces_mod.MAX_USER_BYTES)} workspace allowance is free — delete a workspace, "
+            f"or ask for a smaller storage")
 
 
 def _wall_message(e: "recipes_mod.WallExceeded") -> str:

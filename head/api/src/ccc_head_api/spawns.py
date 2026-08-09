@@ -168,7 +168,15 @@ sink="/tmp/ccc-$jid-%%SINK_TAG%%.slurm"
 # "Permission denied" is written into $sink — which makes the sink non-empty, which defeats the "keep
 # only if non-empty" rule below, which leaves a file in /tmp for every Spawn ever run. That litter is
 # what poisoned later job ids (see the `sink=` line above); this is where the litter was made.
-cleanup() { kill "$loop_pid" 2>/dev/null; recover_scratch; rm -rf "$scratch" 2>/dev/null; [ -s "$sink" ] || rm -f "$sink"; }
+#
+# `ws_mirror` is the **Workspace** visit's sync home, and it is defined as a no-op HERE rather than left
+# undefined for the same reason `recover_scratch` is not: an undefined function writes bash's own
+# "command not found" into $sink, which makes the sink non-empty, which defeats the keep-only-if-
+# non-empty rule and leaves a file in /tmp for every Spawn ever run (see the `sink=` note above). The
+# Workspace block redefines it after a successful stage-in; every other Spawn keeps this.
+ws_mirror() { :; }
+ws_loop_pid=""
+cleanup() { kill "$loop_pid" 2>/dev/null; kill "$ws_loop_pid" 2>/dev/null; ws_mirror; recover_scratch; rm -rf "$scratch" 2>/dev/null; [ -s "$sink" ] || rm -f "$sink"; }
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
@@ -314,9 +322,15 @@ CCC_FILELIST
     # bound over %%ENV_MOUNT%%, and the Spawn died on `stat /opt/ccc/env/bin/python` after a build that
     # had succeeded. Found on hardware 2026-08-02 (Spawn 16); Head-local Spawns never saw it, that
     # branch is a `cp -a`.
-    if ! rsync -a -r --files-from="$scratch/filelist" \
-            "rsync://%%TOKEN%%@%%HEAD_IP%%/proj-%%TOKEN%%/" "$proj/" 2>>"$err"; then
-        echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/proj-%%TOKEN%%/ —" >> "$err"
+    #
+    # The rsync below is rendered whole by the Head (see _render), because a **Workspace** visit's is a
+    # different command against a different module: `rsync -a --delete` from its `[ws-…]`, whole-module,
+    # with no file list at all — the durable tree already IS exactly what is kept, so there is no
+    # gitignore filtering left to honour. Everything around it, including this failure branch, is
+    # identical either way. The token is not named here: `.replace()` cannot tell a comment from code,
+    # and this one's replacement is a full command line.
+    if ! %%STAGE_IN%% 2>>"$err"; then
+        echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/%%STAGE_MOD%%/ —" >> "$err"
         echo "ccc: this Spawn never started. Is the Head's rsync daemon up, and is this Arm on the mesh?" >> "$err"
         echo 1 > "$exitf"
         kill "$loop_pid" 2>/dev/null  # stop the periodic pusher first — it can't race the sync below
@@ -330,6 +344,7 @@ CCC_FILELIST
     # the Spawn to END before being swept, which is the fallback that path is there for.
     : > "$scratch/staged"
     rsync -a "$scratch/staged" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
+%%WS_BLOCK%%
 fi
 
 # Declared output subdirs, under the ONE $ccc_out root — made before the payload runs so the script can
@@ -646,6 +661,57 @@ apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
+# What fills `%%WS_BLOCK%%` for a **Workspace** visit, and nothing at all for every other Spawn. Spliced
+# in at the end of the remote branch's stage-in, which is where a visit's two differences begin: where
+# `$CCC_OUT` lives, and that everything written is mirrored back into durable storage.
+#
+# **The gate is `ws_staged`, and deliberately nothing else.** Not "and the tree is non-empty": emptying
+# a Workspace from inside a session has to reach the stored tree, or `rm -rf *` silently does nothing
+# and the files are all back on the next visit. What it does guard against is the one case where an
+# empty `$proj` means the opposite — a stage-in that failed — because the EXIT trap fires then too and
+# would otherwise mirror emptiness over everything its owner had.
+#
+# **No Recovery Window.** `recover_scratch` is redefined away: `$proj` here IS the durable tree, already
+# mirrored home, so the day-long copy that exists to rescue what a Tide Pool wrote outside its outputs
+# would be a second copy of the thing that was already saved.
+WS_BLOCK = """\
+    ws_staged=1
+    ws_storage=%%WS_STORAGE%%
+    # $CCC_OUT lives INSIDE the tree (CONTEXT.md, **Workspace**): declaring an output keeps nothing
+    # extra, it just names a folder whose contents the session's end ALSO sends home through [out-…] so
+    # they can be fetched like any Spawn's results rather than only through the Workspace itself.
+    ccc_out="$proj/outputs"
+    mkdir -p "$ccc_out"
+    # Restarted, not left running: `push_periodic &` forked before $ccc_out was reassigned, and a
+    # subshell keeps the value it was forked with — the old loop would spend the whole session pushing
+    # the empty $scratch/outputs it captured.
+    kill "$loop_pid" 2>/dev/null
+    push_periodic &
+    loop_pid=$!
+    recover_scratch() { :; }
+    ws_mirror() {
+        [ "$ws_staged" = 1 ] || return 0
+        sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
+        # Over its **Storage**: skip the sync and say so, rather than evicting anything. Self-healing —
+        # freeing space inside the session brings the next pass back under and it simply succeeds. The
+        # marker is written every pass (0 = under) so the Head never reads a stale "full" back.
+        over=0
+        [ -n "$sz" ] && [ "$sz" -gt "$ws_storage" ] && over=$sz
+        echo "$over" > "$scratch/workspace.full"
+        rsync -a "$scratch/workspace.full" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
+        [ "$over" = 0 ] || return 0
+        rsync -a --delete "$proj/" "rsync://%%TOKEN%%@%%HEAD_IP%%/ws-%%TOKEN%%/" 2>/dev/null
+    }
+    # Separate from push_periodic's 5s log push, and started only AFTER stage-in: that loop is forked
+    # before the project arrives, and a mirror running then would send an empty tree over a full one.
+    # 60s covers only what the EXIT trap cannot — SIGKILL at Slurm's KillWait, a crashed Arm, a mesh
+    # drop. The trap itself covers --time expiry, `cuttle cancel` and Retract's grace, because bash runs
+    # an EXIT trap on SIGTERM (verified 2026-08-08, plain and process-group).
+    ws_loop() { while true; do sleep 60; ws_mirror; done; }
+    ws_loop &
+    ws_loop_pid=$!"""
+
+
 def _render_env_build(declared: environments.Manifest | None, staging: Path,
                       feature_names: list[str], stub_binds: list[str],
                       stub_log: list[str]) -> str:
@@ -718,7 +784,8 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
             features: list[str] | None = None, activation: bool = False,
             declared: environments.Manifest | None = None,
-            stub_binds: list[str] | None = None, stub_log: list[str] | None = None) -> str:
+            stub_binds: list[str] | None = None, stub_log: list[str] | None = None,
+            workspace: Path | None = None, workspace_storage: int = 0) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
@@ -734,8 +801,11 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # line commented out by the `# ` in front of it and the rest live. That shipped once: the `mkdir` that
     # creates $scratch/env was the commented line, and every declared Spawn died on a bind whose source
     # did not exist. `test_the_build_block_appears_exactly_once` is the guard.
+    # `workspace or staging` — the directory the declaration was read from, which for a visit is the
+    # durable tree itself. `render_build` consults it for one thing (a `.python-version` beside the
+    # manifest), and a visit has no staging copy to find one in.
     body = body.replace("%%ENV_BUILD%%",
-                        _render_env_build(declared, staging, features or [],
+                        _render_env_build(declared, workspace or staging, features or [],
                                           stub_binds or [], stub_log or []))
     # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
     # tokens, deliberately. A Feature profile (ccc_head_api.features) is bash the Head splices in
@@ -743,6 +813,10 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # script, including the Environment's mount point, it takes from a shell variable set above.
     body = body.replace("%%FEATURE_SETUP%%",
                         features_mod.setup_snippet(features or [], activation=activation))
+    # Third of the same kind: WS_BLOCK's text carries %%TOKEN%%/%%HEAD_IP%%/%%WS_STORAGE%%, so it has to
+    # be spliced before the single-pass loop below rather than inside it. Empty for every Spawn that is
+    # not a Workspace visit, which is the whole of the ordinary case.
+    body = body.replace("%%WS_BLOCK%%", WS_BLOCK if workspace else "")
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -758,7 +832,26 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # alongside %%NODELIST%% — submit_checked refuses a pinned Spawn aimed at a retracted Arm
         # outright rather than silently excluding the one node the operator explicitly named.
         "%%EXCLUDE%%": f"#SBATCH --exclude={exclude}" if exclude else "",
-        "%%STAGING_DIR%%": str(staging),
+        # EMPTY for a **Workspace** visit, and that emptiness is load-bearing: `[ -d "" ]` is false, so
+        # the job script takes its REMOTE branch even when Slurm places the visit on the Head's own
+        # co-located Arm. One mirror implementation instead of two, and every byte that lands in durable
+        # storage lands through an authenticated module as the **Mantle** rather than as a **Guise**
+        # writing straight into the tree (which would need `setfacl -R` over a directory that may run to
+        # 16GB). The cost is that out/err ride the 5s pusher instead of being written into the Spawn dir,
+        # so `cuttle logs -f` is ~5s behind on the Head's Arm — and for a Tide Pool payload out/err is
+        # only sshd's own stderr.
+        "%%STAGING_DIR%%": "" if workspace else str(staging),
+        # The stage-in itself, rendered here because a visit's is a different command against a
+        # different module. Token and address are interpolated NOW rather than left as tokens: this
+        # string is substituted in the same single pass as %%TOKEN%%, so a nested token would survive it.
+        "%%STAGE_MOD%%": f"ws-{token}" if workspace else f"proj-{token}",
+        "%%STAGE_IN%%": (
+            f'rsync -a --delete "rsync://{token}@{MESH_IP}/ws-{token}/" "$proj/"' if workspace
+            else f'rsync -a -r --files-from="$scratch/filelist" '
+                 f'"rsync://{token}@{MESH_IP}/proj-{token}/" "$proj/"'),
+        # This Workspace's own **Storage**, baked in as a constant — no cross-Workspace interaction to get
+        # wrong, and a resize mid-visit cannot move it under a session that is already writing.
+        "%%WS_STORAGE%%": str(workspace_storage),
         # What makes the sbatch sink's path unique per SUBMISSION rather than per job id — see the
         # `sink=` line in JOB_SCRIPT for why that distinction is the difference between a Spawn running
         # and a Spawn dying before its first line. The staging uuid is already unique per submission and
@@ -855,7 +948,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None,
            features: list[str] | None = None, source_dir: Path | None = None,
-           activation: bool = False, recipe_name: str | None = None) -> int:
+           activation: bool = False, recipe_name: str | None = None,
+           workspace: Path | None = None, workspace_storage: int = 0) -> int:
     """Unpack an uploaded project (or copy an already-on-disk one), render + sbatch it **as the
     submitter's Guise**, and record the Attribution row + the Karma Escrow. Returns the Slurm job id
     (== the Spawn id). `node` pins the Spawn to one Arm.
@@ -885,7 +979,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
 
     """
-    assert (tar_path is None) != (source_dir is None), "submit() needs exactly one of tar_path/source_dir"
+    assert (tar_path is None) != (source_dir is None) or workspace is not None, \
+        "submit() needs exactly one of tar_path/source_dir (or a workspace)"
     # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
     # Arm, and only discoverable minutes later, on another machine, as a Spawn that "vanished". We
@@ -904,7 +999,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
 
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
-    if source_dir is not None:
+    if workspace is not None:
+        # A **Workspace** visit stages nothing. The Siphon is rooted AT the durable tree, so there is no
+        # upload to unpack and no copy to make — the cost of a `copytree` here would scale with exactly
+        # the thing a Workspace exists to hold. The uuid is still minted (it names the sbatch sink and
+        # goes into the Attribution row) but names no directory, which is safe: `projects.sweep` is
+        # disk-first over PROJECTS_DIR and simply never sees a visit at all.
+        pass
+    elif source_dir is not None:
         # The `source_dir` path in: a Recipe's code, already extracted and sitting in ITS OWN durable
         # directory. Checked against the disk directly, same reasoning as the tar member check below —
         # refusing before staging.mkdir() means a bad run leaves nothing behind.
@@ -939,7 +1041,11 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # ACL is what lets the Guise read it.
     with db.connect() as conn:
         guise = guises.name(db.allocate_guise(conn, user_id))
-    _lend_project(staging, guise)
+    # Not for a **Workspace** visit: there is no staging directory to lend, and the tree it would
+    # otherwise name must NOT be opened to a Guise. Every write into durable storage goes through the
+    # `[ws-…]` module as the Mantle instead — which is also what spares a 16GB tree a recursive setfacl.
+    if workspace is None:
+        _lend_project(staging, guise)
 
     # What the declaration MEANS is decided here, synchronously; the build itself happens on the Arm.
     # Detection is a couple of stat calls, and everything it and `require_tool` can raise is a REJECTION
@@ -953,17 +1059,27 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     declared = None
     stub_binds: list[str] = []
     stub_log: list[str] = []
+    # The tree the declaration is read out of. For a visit that is the Workspace itself — direct-serve
+    # means the durable tree IS the directory `detect` would have inspected, so it works unchanged.
+    project = workspace if workspace is not None else staging
     if manifest or not tidepool:
-        declared = environments.detect(staging, manifest)
+        declared = environments.detect(project, manifest)
         environments.require_tool(declared, features or [])
         # Anything the project declares that an **Arm Feature** supplies instead. A rejection for the
         # same reason as the two above — asking for a Feature's package without asking for the Feature
         # is decided here, in stat calls, and would otherwise be an ImportError after a GPU was held.
-        environments.check_supplied(staging, declared, features or [])
+        environments.check_supplied(project, declared, features or [])
         # BEFORE the file list below, because it WRITES INTO the project: each Feature-supplied wheel is
         # replaced by an empty stub of the same name and version, and `uv.lock` repointed at it. Those
         # stubs have to be in the walk, or the Arm's build looks for a wheel that never transferred.
-        stub_binds, stub_log = environments.substitute_supplied(staging, declared)
+        #
+        # **Never for a Workspace visit**, and this is the load-bearing carve-out of the whole direct-
+        # serve design: `project` there is the User's own durable tree, so rewriting a wheel in place
+        # would destroy a real one they keep — permanently, with the mirror carrying the damage back
+        # over the only copy. A visit that asks for a Feature-supplied package simply builds it from
+        # the tree as written; `check_supplied` above still refuses the combinations that cannot work.
+        if workspace is None:
+            stub_binds, stub_log = environments.substitute_supplied(staging, declared)
 
     # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
     # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
@@ -975,8 +1091,13 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # made on the Arm, in node-local scratch, and never cross the mesh in either direction. What DOES
     # ride along is the stub wheels written just above, which are ordinary files inside the project and
     # are picked up by this walk like any other.
-    files = [rel.as_posix() for rel in (p.relative_to(staging) for p in staging.rglob("*"))
-             if (staging / rel).is_symlink() or (staging / rel).is_file()]
+    #
+    # EMPTY for a Workspace visit: its stage-in is a whole-module `rsync -a --delete`, because the tree
+    # already IS exactly what is kept and there is no gitignore filtering left to honour. Walking a 16GB
+    # tree to build a list nothing reads would be pure cost.
+    files = [] if workspace is not None else [
+        rel.as_posix() for rel in (p.relative_to(staging) for p in staging.rglob("*"))
+        if (staging / rel).is_symlink() or (staging / rel).is_file()]
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -991,11 +1112,12 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # Opened BEFORE the render that bakes it in, and before sbatch — the Spawn stages in within
     # milliseconds of starting, and sbatch returning the id is the same instant it becomes runnable, so
     # a module named for the id could not exist in time. See ccc_head_api.siphons.
-    token, secret = siphons.open(uuid)
+    token, secret = (siphons.open_ws(workspace) if workspace is not None else siphons.open(uuid))
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
                    wants_licence=bool(features), features=features, activation=activation,
-                   declared=declared, stub_binds=stub_binds, stub_log=stub_log)
+                   declared=declared, stub_binds=stub_binds, stub_log=stub_log,
+                   workspace=workspace, workspace_storage=workspace_storage)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -1107,7 +1229,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    outputs: list[str], node: str | None = None, wandb: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, activation: bool = False,
-                   source_dir: Path | None = None, recipe_name: str | None = None) -> int:
+                   source_dir: Path | None = None, recipe_name: str | None = None,
+                   workspace: Path | None = None, workspace_storage: int = 0) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
@@ -1147,6 +1270,12 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     `source_dir`/`recipe_name` are `recipes.run`'s pair — a pre-staged directory instead of an upload,
     and the name that links the resulting Spawn back to it (see `submit`, `db.record_spawn`). Every
     other caller leaves both None.
+
+    `workspace`/`workspace_storage` are `workspaces.visit`'s equivalent, and they are NOT a third
+    `source_dir`: that one is COPIED into a disposable staging dir, while this one is served in place
+    and written back to. It always arrives with `tidepool=True` — a visit is a Tide Pool bound to a
+    durable tree — and it makes a visit cost Karma exactly like any other Spawn, which is the point:
+    holding a Workspace is free and visiting one is not.
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
@@ -1196,7 +1325,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, features=features, activation=activation,
-                  source_dir=source_dir, recipe_name=recipe_name)
+                  source_dir=source_dir, recipe_name=recipe_name,
+                  workspace=workspace, workspace_storage=workspace_storage)
 
 
 # --- reads ---------------------------------------------------------------------

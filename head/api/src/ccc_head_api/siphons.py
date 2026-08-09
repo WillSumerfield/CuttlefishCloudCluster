@@ -7,6 +7,10 @@ Spawn's `exit` marker. A Siphon replaces both with a pair of modules that exist 
     [proj-<tok>]  read-only, rooted at that Spawn's own projects/<uuid>
     [out-<tok>]   writable, rooted at that Spawn's own spawns/<jid>
 
+A **Workspace** visit swaps the first for `[ws-<tok>]` — writable, rooted at the durable tree — because
+its stage-in and its mirror home are the same directory in both directions. `[out-<tok>]` is unchanged
+and still needed: out/err/exit and the `workspace.full` marker go home through it.
+
 `auth users` alone isn't enough: rsyncd auth is per-module, so isolation has to come from the module
 ROOT, not just a password — and the unguessable token stops a Spawn from naming another's module, since
 `hosts allow` can't tell two Spawns on the same Arm apart.
@@ -68,6 +72,22 @@ _OUT_MOD = """\
     secrets file = {secrets}
 """
 
+# A **Workspace** visit's module, in place of `[proj-…]`. Rooted AT the durable tree and WRITABLE, so one
+# module serves the stage-in and the mirror back — the root is the same directory in both directions,
+# which is the whole reason a visit needs no staging copy of a tree that may run to 16GB.
+#
+# Writable to the Spawn but written as the **Mantle**: rsyncd's `uid = ccc` (cuttle.templates) means
+# every byte that lands in a Workspace lands owned by the account that owns Head storage, and no
+# **Guise** ever touches it directly. That is also why a visit is forced down the job script's REMOTE
+# branch even on the Head's own co-located Arm — see spawns._render's %%STAGING_DIR%%.
+_WS_MOD = """\
+[ws-{tok}]
+    path = {path}
+    read only = false
+    auth users = {tok}
+    secrets file = {secrets}
+"""
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -113,37 +133,61 @@ def open(uuid: str) -> tuple[str, str]:
     return tok, secret
 
 
+def open_ws(tree: Path) -> tuple[str, str]:
+    """Mint a Siphon for a **Workspace** visit. Returns `(token, secret)`.
+
+    The sibling of `open()`, and the only difference is which module is written: `[ws-<tok>]`, writable
+    and rooted at the durable tree, instead of the read-only `[proj-<tok>]` rooted at a disposable
+    upload. Everything downstream — `bind`, `close`, `sweep` — treats the two identically."""
+    RSYNCD_DIR.mkdir(parents=True, exist_ok=True)
+    tok = uuid4().hex
+    secret = secrets.token_urlsafe(32)
+    _write(_secrets_file(tok), f"{tok}:{secret}\n", 0o600)
+    _write(_conf(tok), _WS_MOD.format(tok=tok, path=tree, secrets=_secrets_file(tok)), 0o644)
+    return tok, secret
+
+
 def bind(tok: str, job_id: int) -> None:
     """Add `[out-<tok>]` now that the Spawn has an id, and move the pair to that id.
 
     The move IS the bookkeeping: `close()` unlinks by job id, no token→jid mapping needed anywhere.
 
     New files first, old ones dropped after — never a rename in place. rsyncd re-reads the directory on
-    every connection: unlinking first would leave a window with no `[proj-<tok>]`, and moving the
+    every connection: unlinking first would leave a window with no source module, and moving the
     secrets file first would leave the old conf pointing at a path that's gone (an auth failure, not a
-    missing file). This does leave `[proj-<tok>]` defined in two files briefly — rsync 3.2.7 serves that
-    without complaint."""
+    missing file). This does leave the source module defined in two files briefly — rsync 3.2.7 serves
+    that without complaint."""
     from . import spawns
     name = str(job_id)
     sec = _secrets_file(name)
     _write(sec, _secrets_file(tok).read_text(), 0o600)
+    kind, path = _source_of(tok)
     _write(_conf(name),
-           _PROJ_MOD.format(tok=tok, path=spawns.PROJECTS_DIR / _uuid_of(tok), secrets=sec)
+           (_WS_MOD if kind == "ws" else _PROJ_MOD).format(tok=tok, path=path, secrets=sec)
            + _OUT_MOD.format(tok=tok, path=spawns.SPAWNS_DIR / name, secrets=sec), 0o644)
     _conf(tok).unlink(missing_ok=True)
     _secrets_file(tok).unlink(missing_ok=True)
 
 
-def _uuid_of(tok: str) -> str:
-    """The project uuid `open()` wrote into the proj module, read back rather than passed down again.
+def _source_of(tok: str) -> tuple[str, str]:
+    """Which module `open()`/`open_ws()` wrote, and the path it points at — read back off disk rather
+    than passed down again.
 
     Reading it back (rather than threading it through the call) means the rewritten file can't disagree
-    with what's already on disk — which is the failure that would silently point a Spawn at another
-    User's upload."""
+    with what's already there — the failure that would silently point a Spawn at another User's upload,
+    or a visit at another User's Workspace. Returns `("proj"|"ws", path)`; the kind decides which
+    template `bind` re-renders from, so a writable module can never come back read-only or vice versa.
+    """
+    kind = path = ""
     for line in _conf(tok).read_text().splitlines():
-        if line.strip().startswith("path ="):
-            return line.split("=", 1)[1].strip().rsplit("/", 1)[1]
-    raise ValueError(f"siphon {tok} has no path line")
+        stripped = line.strip()
+        if stripped.startswith("[") and "-" in stripped:
+            kind = stripped[1:].split("-", 1)[0]
+        elif stripped.startswith("path ="):
+            path = stripped.split("=", 1)[1].strip()
+    if not kind or not path:
+        raise ValueError(f"siphon {tok} has no source module")
+    return kind, path
 
 
 def discard(tok: str) -> None:
@@ -160,7 +204,12 @@ def close_proj(job_id: int) -> None:
     Spawn hasn't written anything yet.
 
     Rewritten from `_OUT_MOD` template rather than by editing the text, so it can't drift from what
-    `bind()` wrote. Token is read back off disk for the same reason as `_uuid_of`."""
+    `bind()` wrote. Token is read back off disk for the same reason as `_source_of`.
+
+    A **Workspace** visit's conf has no `[proj-` in it, so this returns at the check below and leaves
+    `[ws-…]` standing — which is required, not incidental: that module is what the session mirrors
+    into for its whole life, and nothing stages in from a Workspace visit's upload because there
+    isn't one."""
     name = str(job_id)
     conf = _conf(name)
     try:
