@@ -602,7 +602,7 @@ def test_the_library_prefix_is_built_outside_the_project():
     asked for a Feature. Built straight into $scratch, so there is nothing to move."""
     body = _script(features=["vlearn"])
     assert 'mkdir -p "$scratch/env" "$scratch/tmp" "$scratch/featlibs"' in body
-    assert f"$proj/{env.STUB_DIRNAME}" not in body, "no Feature library ever lands in the project"
+    assert f"$proj/{env.STUB_ROOT}" not in body, "no Feature library ever lands in the project"
 
 
 def test_a_spawn_that_asked_for_no_feature_never_mounts_one():

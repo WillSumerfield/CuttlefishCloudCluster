@@ -29,9 +29,11 @@ Paths are fixed (defaults below match cuttle.config; this package never imports 
 Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a remote Arm can rsync home.
 """
 
+import base64
 import io
 import logging
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -470,7 +472,7 @@ if [ -n "$csz" ] && [ "$csz" -gt %%ENV_CACHE_MAX%% ]; then
     echo "ccc: your package cache on this node passed %%ENV_CACHE_MAX_GB%%GB — emptying it" >> "$err"
     rm -rf "$ccc_cache"/* 2>/dev/null
 fi
-ccc_build() {
+%%STUB_FILES%%ccc_build() {
     apptainer exec --contain --pid --pwd "$proj" \\
       --bind "$proj,$scratch/env:%%ENV_MOUNT%%,$ccc_cache:%%POD_CACHE%%,\
 $scratch/tmp:%%POD_TMP%%,%%TOOLS_DIR%%:%%TOOLS_DIR%%:ro%%FEATLIB_BUILD_BIND%%%%STUB_BINDS%%" \\
@@ -495,7 +497,7 @@ ccc_build_or_die() {
         exit 1
     fi
 }
-%%STUB_LOG%%%%BUILD_CMDS%%
+%%STUB_LOG%%%%BUILD_CMDS%%%%STUB_POST%%
 %%POST%%"""
 
 # The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
@@ -712,9 +714,30 @@ WS_BLOCK = """\
     ws_loop_pid=$!"""
 
 
+def _stub_files_sh(files: list[environments.StubFile]) -> str:
+    """The shell that puts each placeholder on the Arm's own disk, before the build reads it.
+
+    base64 in a quoted heredoc, so arbitrary zip bytes survive a job script that is otherwise text — and
+    so the whole of a stub travels by the route the declaration already travels, rather than needing a
+    transfer of its own. Each is ~1KB.
+
+    Under `$scratch`, never `$proj`: see `environments.STUB_ROOT`.
+    """
+    root = f"$scratch/{environments.STUB_ROOT}"
+    out = []
+    for f in files:
+        where = posixpath.dirname(f.rel)
+        out.append(f'mkdir -p "{root}/{where}"' if where else f'mkdir -p "{root}"')
+        out.append(f"base64 -d > \"{root}/{f.rel}\" <<'CCC_STUB'")
+        out.append(base64.encodebytes(f.data).decode().rstrip("\n"))
+        out.append("CCC_STUB")
+    return "\n".join(out) + "\n" if out else ""
+
+
 def _render_env_build(declared: environments.Manifest | None, staging: Path,
-                      feature_names: list[str], stub_binds: list[str],
-                      stub_log: list[str]) -> str:
+                      feature_names: list[str], stub_files: list[environments.StubFile],
+                      stub_binds: list[environments.StubBind],
+                      stub_log: list[str], drop_lock: str = "") -> str:
     """Fill ENV_BUILD for this Spawn, or return "" when it has nothing to build at all.
 
     Everything decided here is decided ONCE, on the Head, at submit: which commands build this manifest
@@ -760,10 +783,22 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
         # env mount — which is what keeps `$py` empty for a Tide Pool that asked for a Feature and
         # nothing else, exactly as it was before any of this was built here.
         "%%POST%%": "\n".join(post),
-        # Project-relative on the wire (environments.substitute_supplied), because only this side knows
-        # where the project landed. Almost always empty — see that function.
-        "%%STUB_BINDS%%": "".join(f",$proj/{b}" for b in stub_binds),
+        # Written by the Arm into its own scratch, then mounted where the declaration points. The
+        # DESTINATION is project-relative (environments.substitute_supplied) because only this side
+        # knows where the project landed, and `$proj/../x` is `$scratch/x` on both branches — the Head's
+        # co-located Arm copies into node-local scratch, a remote one rsyncs into /tmp, and `proj` is
+        # `$scratch/proj` either way. Almost always empty — see that function.
+        "%%STUB_FILES%%": _stub_files_sh(stub_files),
+        "%%STUB_BINDS%%": "".join(
+            f",$scratch/{environments.STUB_ROOT}/{b.src}:$proj/{b.dest}" for b in stub_binds),
         "%%STUB_LOG%%": "".join(f'echo {shlex.quote(line)} >> "$err"\n' for line in stub_log),
+        # A **Workspace** visit whose owner keeps no lock. `uv sync` writes one as a matter of course,
+        # and there is no flag that stops it — but the one it would leave behind records the stub's hash
+        # rather than the wheel its owner actually holds, in a tree that outlives the visit. So it is
+        # removed the moment the build is done. `ws_mirror` is `rsync -a --delete`, so a mirror tick that
+        # caught it mid-build is undone by the next one and by the EXIT trap's final pass. Empty for
+        # every other Spawn, including a visit whose lock is real — that one is bound over instead.
+        "%%STUB_POST%%": f'\nrm -f "$proj/{drop_lock}"' if drop_lock else "",
         "%%BUILD_CMDS%%": "\n".join(cmds),
         "%%ENV_CACHE_ROOT%%": str(environments.CACHE_DIR),
         "%%ENV_CACHE_MAX%%": str(environments.CACHE_MAX_GB * 1024**3),
@@ -784,7 +819,9 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
             features: list[str] | None = None, activation: bool = False,
             declared: environments.Manifest | None = None,
-            stub_binds: list[str] | None = None, stub_log: list[str] | None = None,
+            stub_files: list[environments.StubFile] | None = None,
+            stub_binds: list[environments.StubBind] | None = None,
+            stub_log: list[str] | None = None, drop_lock: str = "",
             workspace: Path | None = None, workspace_storage: int = 0) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
@@ -806,7 +843,8 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # manifest), and a visit has no staging copy to find one in.
     body = body.replace("%%ENV_BUILD%%",
                         _render_env_build(declared, workspace or staging, features or [],
-                                          stub_binds or [], stub_log or []))
+                                          stub_files or [], stub_binds or [], stub_log or [],
+                                          drop_lock))
     # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
     # tokens, deliberately. A Feature profile (ccc_head_api.features) is bash the Head splices in
     # verbatim, so it reads as bash rather than as a second template — everything it needs from this
@@ -1057,8 +1095,10 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # an empty tar with no file in it to name. Declaring is still allowed there and still builds — the
     # exemption is from the requirement, not from the feature.
     declared = None
-    stub_binds: list[str] = []
+    stub_files: list[environments.StubFile] = []
+    stub_binds: list[environments.StubBind] = []
     stub_log: list[str] = []
+    drop_lock = ""
     # The tree the declaration is read out of. For a visit that is the Workspace itself — direct-serve
     # means the durable tree IS the directory `detect` would have inspected, so it works unchanged.
     project = workspace if workspace is not None else staging
@@ -1069,17 +1109,18 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # same reason as the two above — asking for a Feature's package without asking for the Feature
         # is decided here, in stat calls, and would otherwise be an ImportError after a GPU was held.
         environments.check_supplied(project, declared, features or [])
-        # BEFORE the file list below, because it WRITES INTO the project: each Feature-supplied wheel is
-        # replaced by an empty stub of the same name and version, and `uv.lock` repointed at it. Those
-        # stubs have to be in the walk, or the Arm's build looks for a wheel that never transferred.
-        #
-        # **Never for a Workspace visit**, and this is the load-bearing carve-out of the whole direct-
-        # serve design: `project` there is the User's own durable tree, so rewriting a wheel in place
-        # would destroy a real one they keep — permanently, with the mirror carrying the damage back
-        # over the only copy. A visit that asks for a Feature-supplied package simply builds it from
-        # the tree as written; `check_supplied` above still refuses the combinations that cannot work.
-        if workspace is None:
-            stub_binds, stub_log = environments.substitute_supplied(staging, declared)
+        # Each Feature-supplied wheel gets an empty placeholder of the same name and version, mounted
+        # over what the declaration points at. **For a visit too**, which it did not used to be: this
+        # wrote into the project once, and a **Workspace**'s project is the User's own durable tree, so
+        # the carve-out that protected it also left an out-of-tree source with nothing to resolve to —
+        # the file was never uploaded and never existed on the Head, and the build died looking for it.
+        # Nothing is written now (`environments.substitute_supplied`), so there is nothing to carve out.
+        stub_files, stub_binds, stub_log = environments.substitute_supplied(project, declared)
+        # `uv sync` writes a lock whether or not one was there, and for a visit that lands in the tree.
+        # Whether it is the User's or the build's is decided HERE, before the build can blur the two.
+        if workspace is not None and stub_files:
+            rel = environments.lock_rel(project, declared)
+            drop_lock = rel if not (project / rel).is_file() else ""
 
     # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
     # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
@@ -1087,17 +1128,24 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # upload was already gitignore-filtered client-side, so every file here is meant to transfer.
     #
     # Symlinks are listed too: a project can legitimately contain one, and rsync -a copies a symlink AS a
-    # symlink. Nothing built appears here any more — the Environment and the Feature library prefix are
-    # made on the Arm, in node-local scratch, and never cross the mesh in either direction. What DOES
-    # ride along is the stub wheels written just above, which are ordinary files inside the project and
-    # are picked up by this walk like any other.
+    # symlink. Nothing built appears here any more — the Environment, the Feature library prefix and now
+    # the stub wheels are all made on the Arm, in node-local scratch, and never cross the mesh in either
+    # direction.
+    #
+    # What a stub bind COVERS is left out, which is the one thing this walk decides rather than reports.
+    # A Feature's package is licensed to the machine that runs it, so a submitter's real wheel has no
+    # business on a donor's disk — it used to be overwritten before the walk ever saw it, and leaving it
+    # in the transfer now that nothing is overwritten would ship the licensed build the placeholder
+    # exists to avoid. The bind hides it on every node either way, so nothing needs it there.
     #
     # EMPTY for a Workspace visit: its stage-in is a whole-module `rsync -a --delete`, because the tree
     # already IS exactly what is kept and there is no gitignore filtering left to honour. Walking a 16GB
     # tree to build a list nothing reads would be pure cost.
+    covered = {b.dest for b in stub_binds if b.over_project}
     files = [] if workspace is not None else [
         rel.as_posix() for rel in (p.relative_to(staging) for p in staging.rglob("*"))
-        if (staging / rel).is_symlink() or (staging / rel).is_file()]
+        if (staging / rel).is_symlink() or (staging / rel).is_file()
+        if rel.as_posix() not in covered]
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -1116,7 +1164,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
                    wants_licence=bool(features), features=features, activation=activation,
-                   declared=declared, stub_binds=stub_binds, stub_log=stub_log,
+                   declared=declared, stub_files=stub_files, stub_binds=stub_binds,
+                   stub_log=stub_log, drop_lock=drop_lock,
                    workspace=workspace, workspace_storage=workspace_storage)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's

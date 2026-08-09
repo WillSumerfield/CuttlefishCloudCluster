@@ -65,7 +65,9 @@ A **Tide Pool** is the sole exception — it is a shell, not a run, and may decl
 """
 
 import hashlib
+import io
 import os
+import posixpath
 import re
 import tomllib
 import zipfile
@@ -92,11 +94,15 @@ PY_INSTALL_DIR = f"{ENV_MOUNT}/py"
 DEFAULT_PYTHON = "3.12"
 
 # Where the stub wheels an **Arm Feature** substitutes for a submitter's declared path source are
-# written, INSIDE the uploaded project so they ride the transfer that already exists (`cp -a` on the
-# Head's co-located Arm, the Siphon's `[proj-…]` module on a remote one). Kilobytes: each is an empty
-# wheel of the right name and version. Only ever non-empty for a project whose `[tool.uv.sources]`
-# points OUTSIDE its own upload — see `substitute_supplied`.
-STUB_DIRNAME = ".ccc-stubs"
+# written: the Spawn's own node-local scratch, NEVER inside the project. The bytes ride the job script
+# (kilobytes — each is an empty wheel of the right name and version), the Arm writes them out before the
+# build, and each is BOUND over whatever the declaration points at.
+#
+# Outside `$proj` on purpose, and that is the whole reason this moved out of the upload. For a
+# **Workspace** visit `$proj` IS the User's durable tree: anything written there is mirrored back over
+# the only copy that exists. A bind is visible to the build and invisible to the tree, so one mechanism
+# now serves a visit and an ordinary Spawn without either having to write where it must not.
+STUB_ROOT = "stubs"
 
 # uv and micromamba are single static binaries, installed on EVERY node (cuttle.setup.install_env_tools)
 # and bound into the build Pod read-only. Deliberately not baked into BASE_DEF_TMPL: `base.sif` is built
@@ -331,17 +337,40 @@ def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
 class Supplied:
     """One dependency the submitter declared that an **Arm Feature** supplies instead.
 
-    `declared` is the path exactly as written in `[tool.uv.sources]`; `pod_dir` is the directory it
-    resolves to as the build Pod will see it, which is where a stub of that wheel has to appear.
-    `inside_project` means the upload already carries that directory, so the stub overwrites what was
-    uploaded and needs no bind of its own.
+    `declared` is the path exactly as written in `[tool.uv.sources]`. `pod_rel` is the same file
+    expressed relative to the PROJECT ROOT — the only form that means anything on the Arm, since the
+    project lands in node-local scratch under a name no Head path predicts. It may begin `../`, which is
+    the ordinary `../my-wheels/x.whl` layout and resolves into the Spawn's own scratch beside `$proj`.
+
+    `inside_project` says only where the stub is bound — over a file the project carries, or into a
+    directory beside it. Neither one is written into the project any more.
     """
     package: str
     feature: str
     declared: str
-    pod_dir: Path
+    pod_rel: str
     filename: str
     inside_project: bool
+
+
+@dataclass(frozen=True)
+class StubFile:
+    """One file the Arm writes into `$scratch/STUB_ROOT` before the build. `rel` is under that root."""
+    rel: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class StubBind:
+    """One bind into the build Pod: `$scratch/STUB_ROOT/<src>` over `$proj/<dest>`.
+
+    `dest` is project-relative and may begin `../`. `over_project` marks a bind that covers a file the
+    project itself carries — which is also why that file need not ride the transfer at all, since the
+    bind hides it on every node.
+    """
+    src: str
+    dest: str
+    over_project: bool
 
 
 def _uv_sources(project: Path, m: Manifest) -> tuple[Path, dict]:
@@ -385,19 +414,33 @@ def supplied(project: Path, m: Manifest) -> list[Supplied]:
             if not isinstance(one, dict) or not isinstance(one.get("path"), str):
                 continue
             declared = one["path"]
+            # Resolved so a `sub/../wheels/x.whl` says what it means, then re-expressed against the
+            # project root — the manifest may sit in a subdirectory, and the Arm knows only `$proj`.
             target = (root / declared).resolve()
+            rel = os.path.relpath(target, project.resolve())
             out.append(Supplied(
                 package=pkg, feature=feat, declared=declared,
-                pod_dir=target.parent, filename=target.name,
-                inside_project=str(target).startswith(str(project.resolve()) + os.sep),
+                pod_rel=Path(rel).as_posix(), filename=target.name,
+                inside_project=not rel.startswith(".." + os.sep) and rel != "..",
             ))
     return out
+
+
+def lock_rel(project: Path, m: Manifest) -> str:
+    """Where uv keeps this declaration's lock, relative to the project root.
+
+    Beside the manifest, wherever that is — uv's own rule, not CCC's. Named here because a **Workspace**
+    visit has to know whether one existed BEFORE the build, to tell a lock its owner keeps from one the
+    build invented.
+    """
+    root, _ = _uv_sources(project, m)
+    return Path(os.path.relpath(root / "uv.lock", project.resolve())).as_posix()
 
 
 def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Supplied]:
     """Validate every Feature-supplied dependency at SUBMIT time, and return them. Raises BuildError.
 
-    All three checks are refusals rather than build failures, and that is the point of doing them here:
+    Every check is a refusal rather than a build failure, and that is the point of doing them here:
     each one is certain before the Spawn exists, and each would otherwise surface as an ImportError
     after the User has paid Karma to hold a GPU.
     """
@@ -422,23 +465,38 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
                 f"package is replaced by a placeholder before the build, and CCC can only do that for "
                 f"a `.whl` — point the path at one."
             )
-        # The same containment rule `detect` applies to the manifest itself. The stub's directory is
-        # BOUND into the build Pod at the path the source resolves to, so without this a `path` of
-        # `../../../etc` would name a system directory as the mountpoint. One `..` reaches the staging
-        # root, which is what the ordinary `../my-wheels/x.whl` layout needs and as far as anyone gets.
-        limit = project.resolve().parent
-        if not str(s.pod_dir).startswith(str(limit) + os.sep) and s.pod_dir != limit:
+        # The declared path is rendered into the job script's `--bind` list, inside a double-quoted
+        # shell string. It is User text, so it is held to an alphabet rather than escaped: a `$`, a
+        # backtick or a quote in a wheel's path would otherwise be shell the submitter wrote and the
+        # Head ran. A comma would be no safer — that is the separator apptainer's own bind list uses.
+        if not re.fullmatch(r"[A-Za-z0-9._+/-]+", s.declared):
+            raise BuildError(
+                f"{m.path} points '{s.package}' at {s.declared}, which CCC will not use as a path. "
+                f"Name it with letters, digits and `. _ + - /` only — the path is handed to the "
+                f"build's own mounts, and anything else there could not be told from an instruction."
+            )
+        # The same containment rule `detect` applies to the manifest itself, stated against what the
+        # USER WROTE rather than against a path on the Head. The stub is bound into the build Pod at
+        # `$proj/<pod_rel>`, and `$proj`'s parent is the Spawn's own node-local scratch: one `..`
+        # reaches that scratch, which is what the ordinary `../my-wheels/x.whl` layout needs, and two
+        # would name a directory outside the Spawn altogether. Saying it this way makes it mean the
+        # same thing on the Head, on a **Workspace** visit and on the Arm — where the old form named
+        # `projects/` for one and the directory holding a User's OTHER Workspaces for the next.
+        if os.path.isabs(s.declared) or s.pod_rel.startswith("../../"):
             raise BuildError(
                 f"{m.path} points '{s.package}' at {s.declared}, which reaches outside the directory "
-                f"CCC unpacked this project into. A path source may name a file in the project or in "
+                f"CCC runs this project in. A path source may name a file in the project or in "
                 f"a sibling directory beside it, and no further up than that."
             )
     return found
 
 
-def _stub_wheel(dest: Path, package: str, filename: str) -> str:
-    """Write an empty wheel at `dest` and return its sha256. Enough to satisfy a resolver and nothing
-    more: name, version, the compatibility tag, and a package directory with nothing in it.
+def _stub_wheel(package: str, filename: str) -> bytes:
+    """An empty wheel, as bytes. Enough to satisfy a resolver and nothing more: name, version, the
+    compatibility tag, and a package directory with nothing in it.
+
+    Bytes rather than a file, because there is nowhere on the Head this belongs. It is written by the
+    ARM, into that Spawn's own scratch, out of the job script it already received.
 
     Name, version and tag are read out of the FILENAME the User declared, never out of the real wheel —
     the Head has never seen that file. It is on the submitter's own machine (`../vlearn-main/...`) and
@@ -459,31 +517,34 @@ def _stub_wheel(dest: Path, package: str, filename: str) -> str:
          f"Wheel-Version: 1.0\nGenerator: ccc\nRoot-Is-Purelib: false\nTag: {tag}\n"),
         (f"{dist}/RECORD", ""),
     ]
-    with zipfile.ZipFile(dest, "w") as z:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
         for name, body in entries:
             # A FIXED timestamp, so the same declaration always produces the same bytes and therefore
             # the same hash. zipfile stamps the current time by default, which would give every rebuild
             # of an unchanged project a different sha256 and make `_relock` rewrite the lock every time
-            # — churn in a file the User can read, for no reason. 1980-01-01 is the zip epoch.
+            # — and a **Workspace** visit re-bind a lock that had not changed. 1980-01-01 is the zip
+            # epoch.
             z.writestr(zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)), body)
-    return hashlib.sha256(dest.read_bytes()).hexdigest()
+    return buf.getvalue()
 
 
-def _relock(lock: Path, package: str, digest: str) -> bool:
-    """Point `package`'s recorded hash in `uv.lock` at the stub. Returns whether anything changed.
+def _relock(text: str, package: str, digest: str) -> str:
+    """`uv.lock` with `package`'s recorded hash pointed at the stub. Unchanged if it says nothing.
 
     Not an optimisation — without it the build cannot succeed. uv records a sha256 of a path-sourced
     wheel in the lock and verifies it on EVERY sync, plain or `--locked`; there is no re-resolve escape
     from a mismatch. The stub is a different file, so its hash has to be the one in the lock.
+
+    Text in, text out, and the User's own file is never the thing edited: the result is bound over the
+    lock for the build alone. A **Workspace**'s lock is its owner's — it describes the wheel they
+    actually hold, and a Head that rewrote it would leave them a hash matching nothing on their machine.
 
     A targeted text edit rather than a TOML round-trip: `uv.lock` is uv's file, written in its own
     style, and rewriting the whole thing to change one string would hand back a file it has to accept
     in full. Only the `hash` inside this package's own `[[package]]` block moves; every other package
     stays frozen at exactly what it was resolved to.
     """
-    if not lock.is_file():
-        return False
-    text = lock.read_text(encoding="utf-8", errors="replace")
     # The block runs from its own `[[package]]` header to the next one (or the end of the file).
     block = re.compile(
         r'\[\[package\]\]\nname = "' + re.escape(package) + r'"\n(?:(?!\n\[\[package\]\]).)*',
@@ -491,64 +552,78 @@ def _relock(lock: Path, package: str, digest: str) -> bool:
     )
     hit = block.search(text)
     if not hit:
-        return False
+        return text
     fixed = re.sub(r'hash = "sha256:[0-9a-f]+"', f'hash = "sha256:{digest}"', hit.group(0))
-    if fixed == hit.group(0):
-        return False
-    lock.write_text(text[:hit.start()] + fixed + text[hit.end():], encoding="utf-8")
-    return True
+    return text[:hit.start()] + fixed + text[hit.end():]
 
 
-def substitute_supplied(project: Path, m: Manifest) -> tuple[list[str], list[str]]:
-    """Replace every Feature-supplied wheel with a stub. Returns `(extra binds, log lines)`.
+def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], list[StubBind], list[str]]:
+    """Stand a placeholder in for every Feature-supplied wheel. `(files, binds, log lines)`.
 
-    Done HERE, at submit, even though the build runs on the Arm: it is pure file-writing — a synthesized
-    wheel and a one-line edit to `uv.lock` — and it is the same class of decision as `detect`. The Arm
-    runs commands, it does not reason about manifests.
+    **PURE — nothing is written, and that is the point.** It used to write into the project: a stub over
+    the real wheel, a directory of stubs under a dot-name, an edit to `uv.lock`. All three are fine
+    against a disposable upload and none of them are fine against a **Workspace**, whose `project` is
+    the User's own durable tree — a rewritten wheel would be a real file destroyed, permanently, with
+    the mirror carrying the damage back over the only copy. So the placeholder stopped being something
+    the Head writes and became something the Arm *mounts*, and one mechanism now serves both.
 
-    Two shapes, and the difference is only where the stub is written:
+    Decided HERE, at submit, even so: it is the same class of decision as `detect`, and it is where the
+    manifest is understood. The Arm receives bytes and binds and reasons about neither.
 
-    * **Inside the project** — the User's real wheel rode the upload, and the stub overwrites it in
-      place. No bind: the project is already mounted at its own path on the Arm.
-    * **Outside it** (`../vlearn-main/...`, the ordinary layout) — the file was never uploaded and does
-      not exist on the Head at all. A directory is made under STUB_DIRNAME *inside the project*, so it
-      rides the transfer, and BOUND on the Arm at the path the source resolves to. Apptainer creates the
-      mountpoint even though its parent is not itself bound, which is what makes this work under
-      `--contain`.
+    Three shapes, all of them binds:
 
-    Each returned bind is `<project-relative dir>:<pod path>`. Project-relative because the host path
-    differs per node and only the Arm knows its own — `spawns._render` prefixes `$proj`.
+    * **A wheel outside the project** (`../vlearn-main/...`, the ordinary layout) — never uploaded, and
+      never on the Head at all. Its stubs go in one directory per destination, bound at `$proj/../…`,
+      which resolves into the Spawn's own scratch. Apptainer creates that mountpoint even though its
+      parent is not itself bound, which is what makes it work under `--contain`.
+    * **A wheel inside it** — bound over as a single FILE. The project's own copy is untouched on the
+      host, so a Workspace mirrors home exactly what its owner left there, and `spawns.submit` need not
+      transfer a licensed wheel to a donor at all (`StubBind.over_project`).
+    * **`uv.lock`** — rewritten in memory and bound over, when it records a hash for one of them. uv
+      verifies that hash on EVERY sync, so a stub the lock does not know about fails the build outright.
 
-    Either way `uv.lock`'s recorded hash for that package is repointed at the stub, or the sync fails
-    on a mismatch it has no way to resolve past.
+    Each bind's `dest` is project-relative; only the Arm knows where the project landed, and
+    `spawns._render_env_build` prefixes `$proj`.
     """
     root, _ = _uv_sources(project, m)
-    binds, log, dirs = [], [], {}
-    for s in supplied(project, m):
+    files: list[StubFile] = []
+    binds: list[StubBind] = []
+    log: list[str] = []
+    dirs: dict[str, str] = {}
+    digests: dict[str, str] = {}
+    for i, s in enumerate(supplied(project, m)):
+        data = _stub_wheel(s.package, s.filename)
+        digests[s.package] = hashlib.sha256(data).hexdigest()
         if s.inside_project:
-            host_dir = s.pod_dir
-            host_dir.mkdir(parents=True, exist_ok=True)
+            # One directory per bind rather than a shared one: this is a FILE bind over the User's own
+            # copy, and two of them could name the same basename in different directories.
+            files.append(StubFile(f"at{i}/{s.filename}", data))
+            binds.append(StubBind(f"at{i}/{s.filename}", s.pod_rel, over_project=True))
         else:
-            host_dir = dirs.get(s.pod_dir)
-            if host_dir is None:
+            where = posixpath.dirname(s.pod_rel)
+            src = dirs.get(where)
+            if src is None:
                 # Named by index, not by the declared basename: two sources could name directories with
-                # the same basename at different depths, and one dir per POD path keeps them apart.
-                rel = f"{STUB_DIRNAME}/src{len(dirs)}"
-                host_dir = project / rel
-                host_dir.mkdir(parents=True)
-                # 0777 for the same reason every other build directory is: the Guise writes nothing here
-                # but has to read it, and on the Head branch it is copied as that Guise.
-                os.chmod(host_dir, 0o777)
-                dirs[s.pod_dir] = host_dir
-                binds.append(f"{rel}:{s.pod_dir}")
-        dest = host_dir / s.filename
-        digest = _stub_wheel(dest, s.package, s.filename)
-        os.chmod(dest, 0o644)
-        relocked = _relock(root / "uv.lock", s.package, digest)
-        log.append(f"ccc: '{s.package}' comes from the '{s.feature}' Arm Feature — replaced "
-                   f"{s.declared} with an empty placeholder for the build"
-                   + (" (and repointed uv.lock at it)" if relocked else ""))
-    return binds, log
+                # the same basename at different depths, and one dir per DESTINATION keeps them apart.
+                src = f"src{len(dirs)}"
+                dirs[where] = src
+                binds.append(StubBind(src, where, over_project=False))
+            files.append(StubFile(f"{src}/{s.filename}", data))
+        log.append(f"ccc: '{s.package}' comes from the '{s.feature}' Arm Feature — {s.declared} is an "
+                   f"empty placeholder for this build, and your own copy is untouched")
+    lock = root / "uv.lock"
+    if digests and lock.is_file():
+        text = lock.read_text(encoding="utf-8", errors="replace")
+        fixed = text
+        for pkg, digest in digests.items():
+            fixed = _relock(fixed, pkg, digest)
+        if fixed != text:
+            rel = lock_rel(project, m)
+            files.append(StubFile("uv.lock", fixed.encode()))
+            binds.append(StubBind("uv.lock", rel, over_project=True))
+            log.append(f"ccc: the copy of {rel} this build reads is repointed at that placeholder — "
+                       f"the one you keep still records your own wheel")
+    return files, binds, log
 
 
 def render_featlib_build(specs: dict[str, list[str]]) -> list[list[str]]:

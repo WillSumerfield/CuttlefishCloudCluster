@@ -12,6 +12,7 @@ released or failed. Worth pinning: every exit from a build reaches ONE of those 
 Spawn left held keeps its submitter's Escrow forever, with no thread left to come back for it.
 """
 
+import base64
 import io
 import shlex
 import tarfile
@@ -427,8 +428,8 @@ def test_an_equipped_head_refuses_nothing(with_tools, tmp_path):
 # The build runs on the ARM now, inside the Spawn's own job, so what there is to check is the shell the
 # Head renders — not a subprocess it launches. Nothing here executes anything.
 
-def _block(kind="uv-requirements", path="requirements.txt", features=(), stubs=(), log=(),
-           declared=...):
+def _block(kind="uv-requirements", path="requirements.txt", features=(), files=(), binds=(), log=(),
+           drop_lock="", declared=...):
     """The %%ENV_BUILD%% text for one declaration.
 
     The three script-wide tokens are substituted here the way `_render`'s own pass does a moment later —
@@ -436,7 +437,8 @@ def _block(kind="uv-requirements", path="requirements.txt", features=(), stubs=(
     pinning the seam rather than the behaviour."""
     from ccc_head_api import features as _hf
     m = env.Manifest(kind, path) if declared is ... else declared
-    text = spawns._render_env_build(m, Path("/tmp/u"), list(features), list(stubs), list(log))
+    text = spawns._render_env_build(m, Path("/tmp/u"), list(features), list(files), list(binds),
+                                    list(log), drop_lock)
     for tok, val in (("%%ENV_MOUNT%%", env.ENV_MOUNT),
                      ("%%FEATLIB_MOUNT%%", _hf.FEATLIB_MOUNT),
                      ("%%ENV_INTERPRETER%%", m.interpreter if m else "")):
@@ -846,13 +848,55 @@ def test_declaring_a_features_package_without_the_feature_is_refused(tmp_path):
     assert env.check_supplied(proj, m, requested=["vlearn"])
 
 
-def test_a_path_source_may_not_reach_out_of_the_staging_root(tmp_path):
-    """The stub's directory is BOUND into the build Pod at the path the source resolves to. Without
-    this rule a `path` of `../../../etc` would name a system directory as the mountpoint."""
+def test_a_path_source_may_not_reach_out_of_the_spawns_own_scratch(tmp_path):
+    """The stub is BOUND at `$proj/<pod_rel>`, and `$proj`'s parent is the Spawn's node-local scratch.
+    One `..` reaches that scratch; without this rule a `path` of `../../../etc` would name a directory
+    outside the Spawn altogether as the mountpoint."""
     proj = _sourced(tmp_path, path="../../../../etc/vlearn-0.3.9-py3-none-any.whl")
     with pytest.raises(env.BuildError) as e:
         env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
     assert "outside" in str(e.value)
+
+
+def test_the_depth_rule_is_read_off_the_declaration_not_off_the_head(tmp_path):
+    """Stated against what the User wrote, so it means the same thing for a staging dir and for a
+    **Workspace** — where the old resolved-path form said 'no further up than the directory holding
+    your other Workspaces', which is not a property anyone should rely on."""
+    proj = _sourced(tmp_path, path="../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
+    m = env.Manifest(kind="uv-project", path="pyproject.toml")
+    assert env.supplied(proj, m)[0].pod_rel == "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
+    # The same declaration, read out of a tree at a completely different depth, says the same thing.
+    ws = tmp_path / "workspaces" / "3" / "transformerrl"
+    ws.mkdir(parents=True)
+    (ws / "pyproject.toml").write_text((proj / "pyproject.toml").read_text())
+    assert env.supplied(ws, m)[0].pod_rel == env.supplied(proj, m)[0].pod_rel
+    env.check_supplied(ws, m, ["vlearn"])
+
+
+def test_an_absolute_path_source_is_refused(tmp_path):
+    """`$proj` is the only root the Arm has. An absolute path names the Head's disk, or the donor's."""
+    proj = _sourced(tmp_path, path="/opt/vlearn/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
+    with pytest.raises(env.BuildError) as e:
+        env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+    assert "outside" in str(e.value)
+
+
+def test_a_path_source_that_could_be_shell_is_refused(tmp_path):
+    """The declared path is rendered into the job script's `--bind` list, inside a double-quoted shell
+    string. It is User text, so it is held to an alphabet — a `$` or a backtick there would be shell
+    the submitter wrote and the Head ran, and a comma is apptainer's own bind separator.
+
+    A quote is not in the list because it never gets this far: it makes the inline table unparseable,
+    and `_uv_sources` leaves a broken `pyproject.toml` to uv, which says something far better about it
+    than this could."""
+    for i, bad in enumerate(("../$(id)/vlearn-0.3.9-py3-none-any.whl",
+                             "../a,b/vlearn-0.3.9-py3-none-any.whl",
+                             "../a`id`b/vlearn-0.3.9-py3-none-any.whl")):
+        proj = _sourced(tmp_path / str(i), path=bad)
+        with pytest.raises(env.BuildError) as e:
+            env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"),
+                               ["vlearn"])
+        assert "will not use as a path" in str(e.value)
 
 
 def test_a_sibling_directory_is_as_far_as_a_path_source_reaches(tmp_path):
@@ -875,14 +919,14 @@ class TestTheStubIsNotAWorkingPackage:
 
     def _built(self, tmp_path):
         proj = _sourced(tmp_path)
-        binds, log = env.substitute_supplied(
+        files, binds, log = env.substitute_supplied(
             proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
-        wheel = next((proj / env.STUB_DIRNAME).rglob("*.whl"))
-        return proj, binds, log, wheel
+        wheel = next(f for f in files if f.rel.endswith(".whl"))
+        return proj, files, binds, log, wheel
 
     def test_the_package_it_installs_is_empty(self, tmp_path):
-        _, _, _, wheel = self._built(tmp_path)
-        with zipfile.ZipFile(wheel) as z:
+        *_, wheel = self._built(tmp_path)
+        with zipfile.ZipFile(io.BytesIO(wheel.data)) as z:
             assert z.read("vlearn/__init__.py") == b""
             assert not any(n.endswith(".so") for n in z.namelist())
 
@@ -890,49 +934,70 @@ class TestTheStubIsNotAWorkingPackage:
         """Read out of the FILENAME, never out of the real wheel — the Head has never seen that file.
         It is on the submitter's own machine and is not uploaded, which is why this is synthesized
         rather than emptied."""
-        _, _, _, wheel = self._built(tmp_path)
-        with zipfile.ZipFile(wheel) as z:
+        *_, wheel = self._built(tmp_path)
+        with zipfile.ZipFile(io.BytesIO(wheel.data)) as z:
             meta = z.read("vlearn-0.3.9.dist-info/METADATA").decode()
             assert "Name: vlearn" in meta and "Version: 0.3.9" in meta
             # The compatibility tag has to match too, or uv rejects the wheel as unusable here.
             assert "Tag: cp311-cp311-linux_x86_64" in z.read("vlearn-0.3.9.dist-info/WHEEL").decode()
 
-    def test_a_wheel_outside_the_project_is_bound_in_at_the_path_it_resolves_to(self, tmp_path):
-        """The stub is written INSIDE the project so it rides the transfer that already exists, and the
-        bind is PROJECT-RELATIVE — only the Arm knows where the project landed on its own disk."""
-        proj, binds, _, wheel = self._built(tmp_path)
-        rel = wheel.parent.relative_to(proj).as_posix()
-        assert binds == [f"{rel}:{(proj / '../wheels').resolve()}"]
-        assert rel.startswith(env.STUB_DIRNAME + "/")
+    def test_nothing_is_written_into_the_project(self, tmp_path):
+        """The whole reason this is bytes and binds rather than files. `project` is the User's own
+        durable tree for a **Workspace** visit, and a Head that wrote there would be editing the only
+        copy of something its owner keeps."""
+        proj, *_ = self._built(tmp_path)
+        assert [p.name for p in proj.iterdir()] == ["pyproject.toml"]
+
+    def test_a_wheel_outside_the_project_is_bound_in_at_the_path_the_declaration_names(self, tmp_path):
+        """PROJECT-RELATIVE, because only the Arm knows where the project landed on its own disk — and
+        `$proj/../wheels` is the Spawn's own scratch on both branches. The old form recorded the HEAD's
+        resolved path, which named a directory no Arm has."""
+        _, _, binds, _, wheel = self._built(tmp_path)
+        assert [(b.src, b.dest, b.over_project) for b in binds] == [("src0", "../wheels", False)]
+        assert wheel.rel == "src0/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
 
     def test_the_bind_is_rendered_against_the_arms_own_project(self, tmp_path):
         """`$proj` is the only name for it that is true on both branches — the Head's co-located Arm
-        copies into node-local scratch, a remote one rsyncs into /tmp."""
-        proj, binds, _, _ = self._built(tmp_path)
-        assert f"$proj/{binds[0]}" in _block("uv-project", "pyproject.toml", stubs=binds)
+        copies into node-local scratch, a remote one rsyncs into /tmp. `proj` is `$scratch/proj` in
+        both, so `$proj/../wheels` is this Spawn's scratch and nothing else's."""
+        _, files, binds, _, _ = self._built(tmp_path)
+        block = _block("uv-project", "pyproject.toml", files=files, binds=binds)
+        assert f"$scratch/{env.STUB_ROOT}/src0:$proj/../wheels" in block
+
+    def test_the_arm_writes_it_out_before_the_build_reads_it(self, tmp_path):
+        """The bytes travel in the job script itself — there is no transfer of a stub any more, because
+        there is no file on the Head to transfer."""
+        _, files, binds, _, wheel = self._built(tmp_path)
+        block = _block("uv-project", "pyproject.toml", files=files, binds=binds)
+        assert f'base64 -d > "$scratch/{env.STUB_ROOT}/{wheel.rel}"' in block
+        assert base64.b64encode(wheel.data)[:32].decode() in block.replace("\n", "")
+        assert block.index("base64 -d") < block.index("ccc_build_or_die /")
 
     def test_the_substitution_is_said_out_loud_where_the_user_will_see_it(self, tmp_path):
         """A User who declared a wheel and got someone else's build has to be able to find out why. It
         is decided on the Head and SAID on the Arm, in the Spawn's own `err`, beside the build it
         changed — there is no separate build log to go looking in."""
-        _, _, log, _ = self._built(tmp_path)
+        _, _, _, log, _ = self._built(tmp_path)
         assert any("vlearn" in ln and "Arm Feature" in ln for ln in log)
         block = _block("uv-project", "pyproject.toml", log=log)
         assert all(shlex.quote(ln) in block for ln in log)
         assert block.index(shlex.quote(log[0])) < block.index("ccc_build_or_die /")
 
 
-def test_a_wheel_inside_the_project_is_overwritten_where_it_lies(tmp_path):
-    """The upload carried a real wheel. It needs no bind — the project is already mounted — and the
-    stub replaces it, so what gets installed is the same either way."""
+def test_a_wheel_inside_the_project_is_bound_over_not_overwritten(tmp_path):
+    """The project carried a real wheel. It is covered by a FILE bind, and the copy on disk is left
+    exactly as its owner wrote it — for a **Workspace** that copy is the only one there is, and the
+    mirror would carry any edit straight back over it."""
     proj = _sourced(tmp_path, path="wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
     real = proj / "wheels" / "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
     real.parent.mkdir()
     real.write_bytes(b"the user's real, licensed wheel")
-    binds, _ = env.substitute_supplied(
+    files, binds, _ = env.substitute_supplied(
         proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
-    assert binds == []
-    assert zipfile.is_zipfile(real), "the real wheel was replaced by the stub in place"
+    assert [(b.dest, b.over_project) for b in binds] == [
+        ("wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", True)]
+    assert zipfile.is_zipfile(io.BytesIO(files[0].data))
+    assert real.read_bytes() == b"the user's real, licensed wheel"
 
 
 def test_the_lock_is_repointed_at_the_stub(tmp_path):
@@ -950,13 +1015,31 @@ def test_the_lock_is_repointed_at_the_stub(tmp_path):
         'wheels = [{ filename = "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", '
         'hash = "sha256:' + "b" * 64 + '" }]\n'
     )
-    env.substitute_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
-    stub = next((proj / env.STUB_DIRNAME).rglob("*.whl"))
-    text = (proj / "uv.lock").read_text()
-    assert f"sha256:{hashlib.sha256(stub.read_bytes()).hexdigest()}" in text
+    before = (proj / "uv.lock").read_text()
+    files, binds, _ = env.substitute_supplied(proj, env.Manifest(kind="uv-project",
+                                                                 path="pyproject.toml"))
+    stub = next(f for f in files if f.rel.endswith(".whl"))
+    lock = next(f for f in files if f.rel == "uv.lock")
+    text = lock.data.decode()
+    assert f"sha256:{hashlib.sha256(stub.data).hexdigest()}" in text
     # Every OTHER package stays frozen at exactly what it was resolved to.
     assert "sha256:" + "a" * 64 in text
     assert "sha256:" + "b" * 64 not in text
+    # Bound over the User's own lock for the build, never written to it. Theirs still records the wheel
+    # they actually hold — a Head that rewrote it would leave them a hash matching nothing they have.
+    assert (proj / "uv.lock").read_text() == before
+    assert env.StubBind("uv.lock", "uv.lock", over_project=True) in binds
+
+
+def test_a_lock_that_names_no_supplied_package_is_left_alone(tmp_path):
+    """No bind, no copy, nothing shipped. The lock only enters this at all because uv verifies a
+    path-sourced wheel's hash — a lock that records none has nothing to disagree with."""
+    proj = _sourced(tmp_path)
+    (proj / "uv.lock").write_text('version = 1\n\n[[package]]\nname = "pyfiglet"\nversion = "1.0.4"\n')
+    files, binds, _ = env.substitute_supplied(proj, env.Manifest(kind="uv-project",
+                                                                 path="pyproject.toml"))
+    assert not any(f.rel == "uv.lock" for f in files)
+    assert not any(b.dest == "uv.lock" for b in binds)
 
 
 # --- the Feature's own system libraries -------------------------------------

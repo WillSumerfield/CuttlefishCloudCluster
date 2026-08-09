@@ -19,10 +19,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ccc_head_api import db, slurm, workspaces
+from ccc_head_api import environments as env
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
 
 GIB = 1024 ** 3
+
+
+def _env_block(drop_lock=""):
+    """The %%ENV_BUILD%% text a visit's job script carries, for the parts that depend on the lock."""
+    m = env.Manifest(kind="uv-project", path="pyproject.toml")
+    return head_spawns._render_env_build(m, Path("/tmp/ws"), [], [], [], [], drop_lock)
 
 _META = {"name": "scratch", "storage_bytes": 4 * GIB, "gpus": 1, "vram_mb": 24576, "minutes": 120,
          # Both optional for a Workspace, exactly as they are for the Tide Pool a visit is — carried in
@@ -757,3 +764,77 @@ class TestApi:
     def test_the_routes_need_a_session(self, tmp_path):
         head_main.app.dependency_overrides.clear()
         assert TestClient(head_main.app).get("/api/workspaces").status_code == 401
+
+
+class TestAVisitsFeatureSuppliedWheel:
+    """The one that did not work. A **Workspace** is seeded from a single directory, so a project
+    pointing `[tool.uv.sources]` at `../vlearn-main/…whl` — the layout that makes it resolve on its
+    owner's own machine — points at a file the cluster has never had a copy of. The placeholder used to
+    be skipped for a visit outright, to keep the Head from rewriting a durable tree, and the build died
+    looking in the Spawn's scratch for a wheel nothing had put there:
+
+        error: Distribution not found at: file:///tmp/ccc-3/vlearn-main/vlearn-0.3.9-…whl
+
+    Nothing is written any more (`environments.substitute_supplied`), so the tree needs no protecting
+    from it and a visit is served by the same mechanism as every other Spawn.
+    """
+
+    M = env.Manifest(kind="uv-project", path="pyproject.toml")
+
+    def _tree(self, tmp_path, path="../vlearn-main/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl",
+              lock=None):
+        """A Workspace's durable tree — nested the way `workspaces/<uid>/<name>` really is."""
+        ws = tmp_path / "workspaces" / "3" / "transformerrl"
+        ws.mkdir(parents=True)
+        (ws / "pyproject.toml").write_text(
+            '[project]\nname = "transformerrl"\nversion = "0.1.0"\n'
+            'requires-python = "==3.11.14"\ndependencies = ["vlearn"]\n\n'
+            f'[tool.uv.sources]\nvlearn = {{ path = "{path}" }}\n')
+        if lock is not None:
+            (ws / "uv.lock").write_text(lock)
+        return ws
+
+    def test_the_wheel_that_was_never_uploaded_gets_one_anyway(self, tmp_path):
+        """Bound beside the project, in the Spawn's own scratch, at exactly the path the declaration
+        resolves to from `$proj`."""
+        ws = self._tree(tmp_path)
+        files, binds, _ = env.substitute_supplied(ws, self.M)
+        assert [(b.src, b.dest) for b in binds] == [("src0", "../vlearn-main")]
+        assert [f.rel for f in files] == ["src0/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"]
+
+    def test_the_durable_tree_is_left_exactly_as_its_owner_left_it(self, tmp_path):
+        """The reason the carve-out existed. It is now a property of the mechanism rather than of a
+        branch that had to remember to skip — there is no write to skip."""
+        ws = self._tree(tmp_path)
+        before = {p.name: p.read_bytes() for p in ws.rglob("*") if p.is_file()}
+        env.substitute_supplied(ws, self.M)
+        assert {p.name: p.read_bytes() for p in ws.rglob("*") if p.is_file()} == before
+
+    def test_a_lock_its_owner_keeps_is_bound_over_and_never_edited(self, tmp_path):
+        """Their lock records the wheel they actually hold. A Head that rewrote it in place would hand
+        back a tree whose lock matches nothing on their machine — and the mirror carries that home."""
+        ws = self._tree(tmp_path, lock=(
+            'version = 1\n\n[[package]]\nname = "vlearn"\nversion = "0.3.9"\n'
+            'source = { path = "../vlearn-main/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl" }\n'
+            'wheels = [{ filename = "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", '
+            'hash = "sha256:' + "e" * 64 + '" }]\n'))
+        before = (ws / "uv.lock").read_text()
+        files, binds, _ = env.substitute_supplied(ws, self.M)
+        assert env.StubBind("uv.lock", "uv.lock", over_project=True) in binds
+        assert "sha256:" + "e" * 64 not in next(f for f in files if f.rel == "uv.lock").data.decode()
+        assert (ws / "uv.lock").read_text() == before
+
+    def test_the_lock_uv_invents_does_not_outlive_the_visit(self, tmp_path):
+        """`uv sync` writes one whether or not the owner keeps one, and for a visit that lands in the
+        durable tree. The one it would leave records the placeholder's hash rather than the wheel its
+        owner holds, so it is removed as soon as the build is done."""
+        ws = self._tree(tmp_path)
+        assert not (ws / "uv.lock").exists()
+        block = _env_block(drop_lock=env.lock_rel(ws, self.M))
+        assert 'rm -f "$proj/uv.lock"' in block
+        assert block.index("ccc_build_or_die") < block.index('rm -f "$proj/uv.lock"')
+
+    def test_a_lock_the_owner_keeps_is_never_removed(self, tmp_path):
+        """The other half of the same decision — that one is bound over, and deleting it would destroy
+        something its owner deliberately keeps."""
+        assert 'rm -f' not in _env_block(drop_lock="")
