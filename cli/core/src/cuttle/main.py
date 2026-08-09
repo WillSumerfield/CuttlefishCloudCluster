@@ -24,6 +24,7 @@ from . import teardown as teardown_mod
 from . import tidepool as tidepool_mod
 from . import ui
 from . import watch as watch_mod
+from . import workspaces as workspaces_mod
 
 # pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
 # --debug); two competing renderers would be unpredictable.
@@ -52,6 +53,10 @@ app.add_typer(feature_app, name="feature")
 recipe_app = typer.Typer(no_args_is_help=True,
                          help="Recipes: frozen, re-runnable snapshots of a project (32GB allowance).")
 app.add_typer(recipe_app, name="recipe")
+workspace_app = typer.Typer(no_args_is_help=True,
+                            help="Workspaces: working directories that survive the session (32GB "
+                                 "allowance, divided into a Storage per workspace).")
+app.add_typer(workspace_app, name="workspace")
 
 
 def _version(value: bool) -> None:
@@ -583,9 +588,12 @@ def recipe_save(
     entity: str = typer.Option(None, "--entity", help="W&B entity/slug, frozen with the code."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
+    directory: Path = typer.Option(
+        None, "--dir", help="Project directory to freeze (default: the current one). The script and "
+                            "--manifest paths are relative to it."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the preview and confirmation."),
 ):
-    """Freeze this directory into a Recipe: the code, plus how to run it.
+    """Freeze a directory into a Recipe: the code, plus how to run it.
 
     Saving RUNS NOTHING — no Spawn, no Karma, no queue place. It uploads the working dir and keeps it,
     so the Recipe can be re-run later from any machine with nothing to hand.
@@ -620,7 +628,7 @@ def recipe_save(
                     ui.warn("at least one output folder is required")
     recipes_mod.save(name, script, minutes=time, vram=vram, gpu=gpu, args=ctx.args, outputs=output,
                      manifest=manifest, project=project, entity=entity, no_gitignore=no_gitignore,
-                     yes=yes)
+                     yes=yes, root=spawns_mod.project_root(directory))
 
 
 @recipe_app.command("update", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -641,9 +649,11 @@ def recipe_update(
     entity: str = typer.Option(None, "--entity", help="Change the W&B entity (default: keep)."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
+    directory: Path = typer.Option(
+        None, "--dir", help="Project directory to re-capture (default: the current one)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the preview and confirmation."),
 ):
-    """Re-freeze a Recipe around this directory's current code.
+    """Re-freeze a Recipe around a directory's current code.
 
     Every setting keeps what the Recipe already holds unless you pass a flag, so a bare
     `cuttle recipe update nightly` refreshes the CODE and changes nothing else.
@@ -656,7 +666,8 @@ def recipe_update(
     recipes_mod.update(name, script=script, minutes=time, vram=vram, gpu=gpu,
                        args=ctx.args or None, outputs=list(output) if output else None,
                        manifest=manifest, project=project, entity=entity,
-                       no_gitignore=no_gitignore, yes=yes)
+                       no_gitignore=no_gitignore, yes=yes,
+                       root=spawns_mod.project_root(directory))
 
 
 @recipe_app.command("run")
@@ -678,6 +689,155 @@ def recipe_delete(
     and are never evicted, so your shelf only shrinks when you say so."""
     name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to delete?"))
     recipes_mod.delete(name, yes=yes)
+
+
+# --- workspaces ---------------------------------------------------------------
+# A **Workspace** is the durable form of a Tide Pool: a working directory the Head keeps, so opening it
+# again resumes where the last visit stopped. Sibling of `recipe` above — a Recipe is frozen and re-run
+# in batch, a Workspace is mutable and visited interactively. See cuttle.workspaces.
+
+@workspace_app.command("list")
+def workspace_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+    """Your workspaces: what each holds against its space, when you last visited, and which is live."""
+    workspaces_mod.listing(as_json=as_json)
+
+
+@workspace_app.command("new")
+def workspace_new(
+    name: str = typer.Argument(None, help="Name for the workspace — how you open it later. Yours "
+                                          "only, so it need only be unique among your own."),
+    storage: int = typer.Option(None, "--storage", help="How much this workspace may hold, in GB, taken "
+                                                    "out of your 32GB workspace allowance when you "
+                                                    "create it. Required — nobody else can guess it."),
+    time: int = typer.Option(None, "--time", help="Wall-clock limit for a VISIT, in minutes. The "
+                                                  "workspace persists; a session does not."),
+    vram: int = typer.Option(None, "--vram", help="TOTAL GPU memory a visit needs, in GB."),
+    gpu: int = typer.Option(1, "--gpus", "--gpu", help="GPUs a visit holds at once, all on one "
+                                                      "machine."),
+    directory: Path = typer.Option(
+        None, "--dir", help="Directory to seed it with (default: the current one). This is the ONLY "
+                            "upload — after it, the workspace changes from inside its own sessions."),
+    manifest: str = typer.Option(
+        None, "--manifest", help="Dependency file a visit builds its environment from. Optional, like "
+                                 "a tide pool's — a workspace opened to poke at a box declares none."),
+    output: list[str] = typer.Option(
+        None, "--output", "-o", help="Folder under $CCC_OUT a visit writes results to (repeatable). "
+                                     "Optional. $CCC_OUT is a folder INSIDE the workspace, so an "
+                                     "output is kept like everything else AND sent home at the end of "
+                                     "the session for `cuttle outputs` to fetch."),
+    feature: list[str] = typer.Option(
+        None, "--feature", help="Require an Arm Feature for visits (repeatable)."),
+    no_gitignore: bool = typer.Option(
+        False, "--no-gitignore", help="Seed with the whole directory (default: honor .gitignore)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the preview and confirmation."),
+):
+    """Make a directory into a workspace: a working dir the Head keeps between sessions.
+
+    Unlike `cuttle run --tidepool`, nothing here is thrown away when the session ends. The tree is
+    mirrored back to the Head as you work and again when you leave, so `cuttle workspace open` picks up
+    exactly where you stopped — including anything you installed, downloaded or half-finished.
+
+    Creating one costs no Karma; VISITING one does, exactly like any other Spawn. What it costs instead
+    is storage: `--storage` is carved out of your 32GB workspace allowance the moment you create it, and
+    it is yours to divide up. A session that fills its storage stops being saved and says so — nothing
+    is ever evicted to make room.
+    """
+    output = list(output) if output else []
+    feature = list(feature) if feature else []
+    with ui.section("New workspace", lambda: f"{name}  {storage}GB"):
+        name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Name for this workspace?"))
+        # No default, deliberately, and it is the one field only its owner can answer: this Allowance
+        # is the one CCC hands over to be divided up, so a default would be CCC dividing it for them.
+        storage = ui.need(storage, "--storage",
+                          lambda: ui.ask_int("How much storage? (GB, out of your 32GB)"))
+        time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit per visit? (minutes)"))
+        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
+    workspaces_mod.new(name, storage_gb=storage, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
+                       outputs=output, features=feature,
+                       root=spawns_mod.project_root(directory), no_gitignore=no_gitignore, yes=yes)
+
+
+@workspace_app.command("open")
+def workspace_open(
+    name: str = typer.Argument(None, help="Workspace to open."),
+    time: int = typer.Option(None, "--time", help="Override the wall-clock limit for THIS visit."),
+    vram: int = typer.Option(None, "--vram", help="Override the VRAM need for THIS visit."),
+    gpu: int = typer.Option(None, "--gpus", "--gpu", help="Override the GPU count for THIS visit."),
+    manifest: str = typer.Option(None, "--manifest", help="Override the dependency file for THIS visit."),
+    output: list[str] = typer.Option(None, "--output", "-o", help="Override the outputs for THIS visit."),
+    feature: list[str] = typer.Option(None, "--feature", help="Override required Features for THIS visit."),
+):
+    """Open a workspace and drop into its shell, resuming where the last visit left off.
+
+    A visit is a Tide Pool bound to the workspace: same queue, same wait for a card, same Karma. What
+    differs is that everything you leave behind is still there next time.
+
+    A workspace holds ONE visit at a time. Opening one that is already live ATTACHES to that session
+    rather than starting a second — two sessions writing one tree would each overwrite the other.
+
+    Flags here override the workspace's own declaration for this session only; `cuttle workspace
+    update` is what changes it for good.
+    """
+    name = ui.need(name, "the workspace's name",
+                   lambda: ui.ask_text("Which workspace to open?"))
+    workspaces_mod.open_(name, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
+                         outputs=list(output) if output else None,
+                         features=list(feature) if feature else None)
+
+
+@workspace_app.command("update")
+def workspace_update(
+    name: str = typer.Argument(None, help="Workspace to change."),
+    storage: int = typer.Option(None, "--storage", help="Resize it, in GB. Grows if your allowance has "
+                                                        "room; never shrinks below what the tree holds."),
+    time: int = typer.Option(None, "--time", help="Change the per-visit wall-clock limit."),
+    vram: int = typer.Option(None, "--vram", help="Change the per-visit VRAM need."),
+    gpu: int = typer.Option(None, "--gpus", "--gpu", help="Change how many GPUs a visit holds."),
+    manifest: str = typer.Option(None, "--manifest", help="Change the dependency file visits build "
+                                                          "from (pass '' to declare none)."),
+    output: list[str] = typer.Option(None, "--output", "-o", help="REPLACE the declared outputs."),
+    feature: list[str] = typer.Option(None, "--feature", help="REPLACE the required Features."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+):
+    """Change what a visit asks for, and how much the workspace may hold.
+
+    This never touches the files — a workspace is seeded once and written to from inside its own
+    sessions after that. Every setting keeps what it already holds unless you pass a flag.
+    """
+    name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to update?"))
+    workspaces_mod.update(name, storage_gb=storage, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
+                          outputs=list(output) if output else None,
+                          features=list(feature) if feature else None, yes=yes)
+
+
+@workspace_app.command("download")
+def workspace_download(
+    name: str = typer.Argument(None, help="Workspace to download."),
+    subpath: str = typer.Argument(None, help="A folder inside it (default: the whole tree)."),
+    dest: Path = typer.Option(None, "--dest", help="Where to write the tar (default: here)."),
+):
+    """Download a workspace, or one folder inside it, as a tar.
+
+    Works while a visit is live — you just get the tree as of the last mirror rather than the instant
+    the session is at.
+    """
+    name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to download?"))
+    workspaces_mod.download(name, subpath, dest=dest)
+
+
+@workspace_app.command("delete")
+def workspace_delete(
+    name: str = typer.Argument(None, help="Workspace to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the typed confirmation."),
+):
+    """Delete a workspace and free its space. The only thing that ever removes one — workspaces never
+    expire and are never evicted.
+
+    You have to type the name back rather than answering y/N: this is the one thing CCC holds that has
+    no expiry, no eviction and no second copy anywhere.
+    """
+    name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to delete?"))
+    workspaces_mod.delete(name, yes=yes)
 
 
 @app.command("build-installer")
@@ -804,6 +964,10 @@ def run(
         None, "--entity", help="W&B entity/slug for this Spawn (default: config, then account default)."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
+    directory: Path = typer.Option(
+        None, "--dir", help="Project directory to upload (default: the current one). The script, "
+                            "--manifest and --output paths are all relative to it. Results still "
+                            "download to where you are, not to it."),
     node: str = typer.Option(
         None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
                              "need (--vram), never which machine they want."),
@@ -856,7 +1020,7 @@ def run(
     have this machine switched on at the time (it resumes next time you run `cuttle`). `--no-download`
     turns that off for one Spawn.
 
-    On the Head that same copy is kept 7 days, and only while your 8GB of output space has room for
+    On the Head that same copy is kept 7 days, and only while your 32GB of output space has room for
     it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/elements/storage.md).
     Nothing on the Head is an archive; the automatic download is what makes that safe.
 
@@ -865,16 +1029,18 @@ def run(
     """
     output = list(output) if output else []
     feature = list(feature) if feature else []
+    # Resolved once, before anything is validated or packed, so every path below means the same thing.
+    root = spawns_mod.project_root(directory)
     if tidepool:
         # --manifest is OPTIONAL here and nowhere else, so it is passed through rather than prompted
         # for: a Tide Pool opened to poke at a box has no project behind it to name a file in. Naming
-        # one uploads the working directory and builds that Environment into the shell.
-        if manifest and not (Path.cwd() / manifest).is_file():
+        # one uploads the project directory and builds that Environment into the shell.
+        if manifest and not (root / manifest).is_file():
             raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the "
-                           f"current directory, {Path.cwd()})")
+                           f"project directory, {root})")
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
                                 features=feature, follow=follow, download=not no_download,
-                                manifest=manifest, no_gitignore=no_gitignore)
+                                manifest=manifest, no_gitignore=no_gitignore, root=root)
     wizard = script is None
     # The card count shows only past one: at a single Device it is what every Spawn does, and `24G`
     # already IS the per-card figure, so printing it would add a word and say nothing.
@@ -927,23 +1093,24 @@ def run(
     if not output:
         raise ui.abort("at least one --output/-o is required — name the folder(s) under $CCC_OUT your "
                        "script writes results to (e.g. `--output checkpoints`)")
-    if not (Path.cwd() / script).is_file():
-        raise ui.abort(f"script {script!r} was not found (looked for it relative to the current "
-                       f"directory, {Path.cwd()})")
+    if not (root / script).is_file():
+        raise ui.abort(f"script {script!r} was not found (looked for it relative to the project "
+                       f"directory, {root})")
     # Same shape as the script check, and for the same reason: caught here rather than as a 422 after
-    # the whole working directory has been uploaded. The Head re-checks it against what actually
+    # the whole project directory has been uploaded. The Head re-checks it against what actually
     # arrived, which is the check that counts — .gitignore can drop a file that is right here.
-    if not (Path.cwd() / manifest).is_file():
-        raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the current "
-                       f"directory, {Path.cwd()})")
+    if not (root / manifest).is_file():
+        raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the project "
+                       f"directory, {root})")
     if wizard:
         spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore,
-                          outputs=output, features=feature, manifest=manifest)
+                          outputs=output, features=feature, manifest=manifest, root=root)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
-                      features=feature, manifest=manifest, download=not no_download, dest=dest)
+                      features=feature, manifest=manifest, download=not no_download, dest=dest,
+                      root=root)
 
 
 @app.command()

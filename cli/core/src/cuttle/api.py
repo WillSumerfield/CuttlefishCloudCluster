@@ -21,6 +21,7 @@ to guess and the command layer translates.
 
 import json
 import ssl
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -139,6 +140,40 @@ class Api:
                 return None
             raise
         return r.content
+
+    def download(self, path: str, dest: Path) -> int:
+        """GET a raw body straight to a file, in chunks. Returns the bytes written.
+
+        `raw()` above is fine for a log or an outputs tar, both bounded by an **Allowance** — it holds
+        the whole body in this process. A **Workspace** is not bounded that way: its **Space** runs to
+        16GB and up, and the Head streams it for exactly that reason (workspaces.tar_stream), which
+        buys nothing if the client turns it back into one buffer on arrival.
+
+        Written to a `.part` beside the target and renamed on success, so an interrupted download never
+        leaves a truncated tar sitting under the name of a complete one.
+        """
+        part = dest.with_suffix(dest.suffix + ".part")
+        written = 0
+        try:
+            with self._client.stream("GET", path, headers=self._headers(True, None),
+                                     timeout=TIMEOUT_RAW) as r:
+                if r.is_error:
+                    # The body has not been read yet on a streamed response, and `_detail` needs it.
+                    r.read()
+                    raise ApiError(path, _detail(r), r.status_code)
+                with part.open("wb") as f:
+                    for chunk in r.iter_bytes():
+                        written += f.write(chunk)
+        except httpx.RequestError:
+            part.unlink(missing_ok=True)
+            where = self.url or "the Head"
+            raise ApiError(path, f"cannot reach the Head at {where} — is it running, and are you on "
+                                 f"the same LAN or the CCC mesh?") from None
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
+        part.replace(dest)
+        return written
 
     def upload(self, path: str, data: bytes, meta: dict) -> Any:
         """POST a gzip body with its metadata in a header — the `cuttle run` project upload."""

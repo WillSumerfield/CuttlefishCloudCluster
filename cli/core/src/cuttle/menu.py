@@ -43,7 +43,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
-                  "tide", "account", "logout", "whoami", "passwd", "wandb", "recipe"}
+                  "tide", "account", "logout", "whoami", "passwd", "wandb", "recipe", "workspace"}
 
 # How long the session probe (GET /me) may take before we give up and show the offline safe-set.
 # Short on purpose: this runs every time bare `cuttle` opens a menu, and a menu must never hang.
@@ -69,6 +69,13 @@ LABELS = {
     "recipe run": "Run a recipe",
     "recipe update": "Re-capture a recipe's code",
     "recipe delete": "Delete a recipe",
+    "workspace": "My workspaces",
+    "workspace list": "List my workspaces",
+    "workspace new": "Make this folder into a workspace",
+    "workspace open": "Open a workspace",
+    "workspace update": "Change a workspace's settings",
+    "workspace download": "Download a workspace",
+    "workspace delete": "Delete a workspace",
     "queue": "See the queue",
     "history": "Spawn history",
     "status": "Check a Spawn",
@@ -136,8 +143,8 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # only ever shows when logged out, so this costs the everyday menu nothing.
 # `dashboard` sits *after* login for the same reason: it shows on any pointed box, including the
 # logged-out one, and must not displace "Log in" as the pre-selected row there.
-ORDER = ["run", "recipe", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
-         "tide", "account", "login", "dashboard"]
+ORDER = ["run", "workspace", "recipe", "queue", "history", "status", "logs", "outputs", "recover",
+         "cancel", "karma", "tide", "account", "login", "dashboard"]
 
 
 def is_head() -> bool:
