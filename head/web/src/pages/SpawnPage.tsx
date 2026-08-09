@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
 import {
   downloadOutputs,
@@ -79,7 +79,7 @@ function RecoveryPanel({ id }: { id: string }) {
 
 /**
  * The declared results, and how long the Head keeps them (docs/TODO.md "Storage retention"): 7 days
- * from the Spawn's end, or until the submitter's 8GB Allowance needs the room for newer ones.
+ * from the Spawn's end, or until the submitter's 32GB Allowance needs the room for newer ones.
  *
  * Deliberately the same panel shape as RecoveryPanel above (countdown, button) — different artifacts,
  * different deadlines, but one learned reading pattern. What differs is tone: this is what the Spawn was
@@ -138,6 +138,16 @@ function verdict(d: SpawnDetail): { word: string; color: string; live: boolean }
   return { word: `failed · exit ${rc}`, color: "var(--alarm)", live: false };
 }
 
+/**
+ * Has this Spawn been placed on a machine — i.e. can a log file exist at all? Deliberately NOT
+ * `verdict().live`, which tests /run|complet/ and so misses CONFIGURING: a Spawn whose nodes are booting
+ * is allocated and about to write. This is `LiveQueue.isRunning`'s predicate, so a Spawn the queue calls
+ * Running never tells its own page it has not started. A finished Spawn started by definition.
+ */
+function hasStarted(d: SpawnDetail): boolean {
+  return d.done || /running|completing|configuring/i.test(d.state);
+}
+
 /** A fact and its name, in the column of them. `—` for what the Head does not know rather than a gap:
  *  an absent row would leave the reader wondering whether the fact exists or merely wasn't fetched. */
 function Fact({ label, value, help }: { label: string; value: React.ReactNode; help?: string }) {
@@ -186,9 +196,51 @@ const LOG_PANE = {
  * output is not a third pane: the Arm builds it inside the job now, so it IS this Spawn's stderr.
  *
  * Empty is stated, not blank: "nothing on stderr" is good news on a Spawn that ran fine; an empty black
- * box says nothing at all.
+ * box says nothing at all. But it is only good news once something HAS run — a Spawn still waiting for a
+ * machine returns the same "" from `/logs` (the sbatch file does not exist yet), and reading that as
+ * "nothing on stdout" claims it ran and printed nothing. `started` tells the two apart. It is the third
+ * collision on this empty string; main.py's `_SWEPT` is the Head's answer to the second.
+ *
+ * While unfinished the pane FOLLOWS: pinned to the newest line as each poll appends, like `cuttle logs -f`.
+ * Scrolling up releases it and it holds still — a log that kept yanking you back would make a long
+ * traceback unreadable — and scrolling back to the bottom re-arms it. A finished pane never follows and
+ * opens at the top: it is a record, read from the start. A Spawn that finishes while you are watching
+ * keeps whatever scroll position it had rather than jumping anywhere.
  */
-function LogPane({ title, text, note }: { title: string; text: string | null; note?: string }) {
+function LogPane({
+  title,
+  text,
+  live,
+  started,
+}: {
+  title: string;
+  text: string | null;
+  live: boolean;
+  started: boolean;
+}) {
+  const pane = useRef<HTMLPreElement | null>(null);
+  const [following, setFollowing] = useState(true);
+
+  // Layout effect, not effect: pin before the browser paints, or every poll flashes the old scroll
+  // position for a frame. `live` gates it so a finished Spawn is never scrolled for you.
+  useLayoutEffect(() => {
+    const el = pane.current;
+    if (!el || !live || !following) return;
+    el.scrollTop = el.scrollHeight;
+  }, [text, live, following]);
+
+  // 8px of slack: a pane scrolled to the bottom can sit a subpixel short of it, and demanding exact
+  // equality would drop you out of following the moment you touched the wheel.
+  const onScroll = () => {
+    const el = pane.current;
+    if (el) setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 8);
+  };
+
+  // Only a live pane has a state worth naming. The note used to read "updating every 3s", which said
+  // what the PAGE does rather than what you are looking at — and overstated freshness besides, since a
+  // remote Arm's out/err ride a 5s rsync (spawns.py push_periodic) on top of the 3s poll.
+  const note = live ? (following ? "following" : "paused — scroll down to resume") : undefined;
+
   return (
     <div className="min-w-0">
       <div className="mb-2 flex items-baseline justify-between gap-3">
@@ -205,6 +257,8 @@ function LogPane({ title, text, note }: { title: string; text: string | null; no
           `&:hover { --fill: … }` and hold the colour still: a log is not a control, so lighting up under
           the pointer would promise an interaction that doesn't exist. */}
       <pre
+        ref={pane}
+        onScroll={onScroll}
         className="field num overflow-auto text-[12px] whitespace-pre"
         style={{
           color: "var(--ink-soft)",
@@ -216,7 +270,13 @@ function LogPane({ title, text, note }: { title: string; text: string | null; no
           lineHeight: LOG_PANE.lineHeight,
         } as React.CSSProperties}
       >
-        {text === null ? "…" : text.trim() === "" ? `nothing on ${title.toLowerCase()}` : text}
+        {text === null
+          ? "…"
+          : text.trim() !== ""
+            ? text
+            : started
+              ? `nothing on ${title.toLowerCase()}`
+              : "not started — no output yet"}
       </pre>
     </div>
   );
@@ -355,12 +415,8 @@ export function SpawnPage({ id }: { id: string }) {
           </section>
 
           <section className="min-w-0 space-y-8">
-            <LogPane
-              title="stdout"
-              text={out}
-              note={detail.done ? undefined : "updating every 3s"}
-            />
-            <LogPane title="stderr" text={err} />
+            <LogPane title="stdout" text={out} live={!detail.done} started={hasStarted(detail)} />
+            <LogPane title="stderr" text={err} live={!detail.done} started={hasStarted(detail)} />
           </section>
         </div>
       )}

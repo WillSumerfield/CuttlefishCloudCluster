@@ -34,11 +34,15 @@ export function Link({
   className,
   style,
   children,
+  "aria-label": ariaLabel,
 }: {
   to: string;
   className?: string;
   style?: React.CSSProperties;
-  children: ReactNode;
+  /** Optional: a stretched link (one absolutely positioned over a row) paints no text of its own. */
+  children?: ReactNode;
+  /** Required when there are no `children`, or the link reads as empty to a screen reader. */
+  "aria-label"?: string;
 }) {
   const onClick = useCallback(
     (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -50,7 +54,7 @@ export function Link({
     [to],
   );
   return (
-    <a href={to} onClick={onClick} className={className} style={style}>
+    <a href={to} onClick={onClick} className={className} style={style} aria-label={ariaLabel}>
       {children}
     </a>
   );

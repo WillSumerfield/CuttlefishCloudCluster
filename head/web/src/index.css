@@ -491,6 +491,16 @@ input[type="number"].field::-webkit-inner-spin-button {
   &:hover { opacity: 1; filter: brightness(1.14); }
 }
 
+/* Queue row: a `shard` (its own plate) that is ALSO a link, so it borrows `history-row`'s hover and
+ * nothing else — the same 1.14 lift for the same meaning, so the live board and the archive teach one
+ * gesture. It lifts the row's motion canvas (CloudDrift/IridBloom) along with the plate, which brings
+ * the pattern forward under the pointer rather than altering it. */
+@utility queue-row {
+  transition: filter 150ms var(--ease-swim);
+
+  &:hover { filter: brightness(1.14); }
+}
+
 /* Roster row — Arms table's flush line, not a card (no own plate): lives inside the roster's single
  * surface, lifting on hover via a faint shoal wash — no rule, no box. Passing cloud (on an allocated
  * row) rides above this. */

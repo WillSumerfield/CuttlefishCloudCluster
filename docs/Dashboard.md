@@ -48,6 +48,7 @@ shares neither the Linux trust store nor the `/etc/hosts` entry. Click through i
 | **Queue** | The live cluster: everything pending or running, and whose it is. Also where you submit. |
 | **History** | Past Spawns, with cost and outcome. |
 | **Arms** | The fleet — who owns what, and its state. Retract and Return your own. |
+| **Workspaces** | Your working directories the cluster keeps. Create, resize, open, download. |
 | **Recipes** | Your saved projects. |
 | **Karma** | Everyone's standing, and your own ledger. |
 | **Tide** | How badly each Arm has been wanted, hour by hour. |
