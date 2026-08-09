@@ -106,8 +106,9 @@ stop working and forces every Arm to re-register.
 
 > **Caveat.** This requires the donor's box to be on your personal tailnet too — which is exactly the
 > grant the CCC mesh exists to avoid asking a donor for. It is fine for machines you own, and it is
-> how remote enrollment is tested today. A real public route (a tunnel, or port-forward + DDNS +
-> TLS) is still open. See [TODO](../TODO.md).
+> how remote enrollment is done. CCC offers no public route — no tunnel, no port-forward + DDNS, no
+> publicly-trusted certificate — so a donor CCC cannot reach on the LAN is reached this way or not at
+> all. See [Security](../Security.md#what-is-not-defended).
 
 ## Adding an Arm
 

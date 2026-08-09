@@ -9,12 +9,10 @@
 
 - **Head** — the cluster control plane. One logical role. Runs the scheduler/control plane and
   hosts the head-side of other domains (Karma, telemetry).
-- **Arm** — a compute node that donates resources to the cluster. Single role with a
-  **volatility** flag (`--volatile`):
-  - *permanent* (default) — always-on, never reclaims.
-  - *volatile* — reclaimable at any time by its owner; adds preemption. (**Retract**, the reclaim
-    panic-switch, is available on every Arm regardless of volatility.)
-  Arms run on **Ubuntu 24.04** — natively or under **WSL2** on Windows.
+- **Arm** — a compute node that donates resources to the cluster. One role, with no permanent/
+  reclaimable distinction to declare: every Arm is its owner's to reclaim at any moment, through
+  **Retract**, so there is no kind of Arm that is more lent than another. Arms run on
+  **Ubuntu 24.04** — natively or under **WSL2** on Windows.
 - **Gateway** — the authenticated network entryway that fronts all access to the cluster.
   Distinct from the **Mesh**: the Gateway fronts human/CLI access, the Mesh is node-to-node.
 
@@ -387,10 +385,12 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Over-reserving therefore costs a User nothing but queue position; under-reserving costs them
   nothing at all.
 - **Retract** — an Arm owner's instant reclaim of their own machine (the panic-switch): the Arm stops
-  accepting new work and running work is signalled, with a short grace period to exit. Available on
-  every Arm, not only a **volatile** one. A Spawn a Retract destroys **settles at zero** — its
-  submitter pays nothing for work someone else killed, and the owner earns nothing for having killed
-  it. Reclaiming is paid for by whoever chose to reclaim.
+  accepting new work and running work is signalled, with a short grace period to exit. It is the
+  cluster's *only* reclaim mechanism, and it is available on every Arm because there is no other kind
+  of Arm: nothing is ever suspended in place or restarted elsewhere instead, since a **Spawn** runs
+  once. A Spawn a Retract destroys **settles at zero** — its submitter pays nothing for work someone
+  else killed, and the owner earns nothing for having killed it. Reclaiming is paid for by whoever
+  chose to reclaim.
 - **Return** — the counterpart of **Retract**: the owner giving a retracted Arm back to the cluster.
   A retracted Arm never leaves — it stays **enrolled** and on the **Mesh**, it simply stops accepting
   work — so returning it is the owner's to do, needs no **Admin**, and costs no new **enrollment token**.

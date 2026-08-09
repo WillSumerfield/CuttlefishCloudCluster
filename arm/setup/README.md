@@ -5,4 +5,5 @@ Provisioning for the Arm role, composed by `cuttle setup --arm --token <blob>`: 
 fetch, and a dynamic `slurmd -Z` that fetches its config from the Head (configless). Apptainer +
 `base.sif` for Pods.
 
-The `--volatile` flag and Retract/preemption hooks are planned for the hardening phase — not yet built.
+Every Arm is the same kind of Arm; its owner reclaims it with **Retract**, which needs nothing
+declared at setup.

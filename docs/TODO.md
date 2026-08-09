@@ -3,45 +3,6 @@
 Designed but not built. Everything in [`Architecture.md`](Architecture.md) exists; everything here
 does not.
 
-## Volatile Arms and preemption — [effort: medium]
-
-**Every enrolled Arm is a permanent one today.** The `--volatile` flag and Slurm preemption
-(`PreemptMode=REQUEUE`/`SUSPEND`) are design only, waiting on the hardening phase.
-
-The gap matters less than it looks: **Retract/Return is built and applies to every Arm**, so an owner
-can already reclaim their machine instantly without the volatility flag existing. What volatility
-would add is the *scheduler* knowing a machine is reclaimable — placing shorter work there, and
-preempting rather than killing.
-
-## Public reachability — [effort: medium]
-
-The Head is assumed reachable over the LAN or the CCC mesh. There is no public route.
-
-Two things are missing and they are separable: a **route** (a tunnel, or port-forward + DDNS) and a
-**real certificate**. Today the Head signs its own and clients pin it on first use, which is
-sufficient on a LAN and not sufficient on the internet.
-
-The current workaround for remote donors — advertising the Head's personal-tailnet address — requires
-the donor's box to join that tailnet, which is exactly the grant the CCC mesh exists to avoid asking
-for. It is fine for machines the operator owns. It is not a general answer.
-
-Nothing else is hardened for an internet-facing deployment either; see
-[`Security.md`](Security.md#what-is-not-defended).
-
-## Fleet-wide telemetry — [effort: medium]
-
-Rogue-actor detection is scoped to the **Head's own box**. Watching a donor's machine the way the
-Head watches itself is a separate, deliberate call that has not been made — an Arm is a machine CCC
-does not own, and building the monitor generic now would decide that by accident.
-
-Also unbuilt: per-Arm Prometheus/Grafana, per-user alerting, and W&B-triggered NaN/freeze pings.
-
-## Staging: dedup and live logs — [effort: low]
-
-Every Spawn stages a fresh copy of its project; there is no persistent cache. A parameter sweep
-re-uploads the same tree N times. Open: dedup/caching for sweeps, and live log streaming for remote
-Arms.
-
 ## Feature: Automatic GPU partitioning — the Beak — [effort: high]
 
 **Not built — blocked on hardware, not on decisions.** Today a Spawn holds a
@@ -98,7 +59,20 @@ one free action in the economy.
   `MultipleFiles` lets MIG instances be hand-declared, and `enroll.render_gres` already hand-writes
   `gres.conf` from what each node reports.
 
-Notably, only the head is planned to have multi-gpus. Could we instead make multi-gpu setup manually defined?
+## A runtime profile for `isaaclab` — [effort: medium]
 
-## IsaacSim feature implementation
-Currently, the isaacsim arm feature is not implemented. We should fix that.
+`isaaclab` is catalogued and placed, and that is all: an Arm declaring it gets a Slurm constraint and
+`$ISAACLAB_PATH`, and the submitter's script does the rest. It has no **Profile**
+(`ccc_head_api.features`) the way `vlearn` does — no env vars, binds, working directory, cache, or
+system libraries arranged on the Spawn's behalf.
+
+That is what is missing. A Feature carrying a profile is the difference between CCC knowing what a
+name *means* and CCC merely placing on it, and the parts a submitter cannot do for themselves are
+exactly the parts a profile exists for: `LD_LIBRARY_PATH` is read by the loader at `exec`, so nothing
+inside the **Pod** can set it for itself, and the system libraries Isaac links against are not Python
+packages that any **Environment** could install.
+
+Blocked on having the software to probe — the profile has to state real ABI tags, real library paths
+and real cache locations, and none of those can be guessed. Note that `features.py:239-242` and
+`test_features.py:41` currently record placement-only as the *finished* answer for `isaaclab`; both say
+so deliberately and both change when this is built.

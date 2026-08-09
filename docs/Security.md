@@ -122,18 +122,18 @@ Stated so nobody assumes otherwise:
 
 - **A hostile Arm owner.** They control the hardware. See the trust model above.
 - **A compromised Head.** It holds everything and decrypts unattended by design.
-- **Public exposure.** The Head is assumed reachable over the LAN or the CCC mesh. There is no
-  public tunnel, no publicly-trusted certificate, and no hardening for an internet-facing deployment.
-  `ccc.glados` is a private name carried in `/etc/hosts`, not a domain; nothing outside the cluster
-  resolves it. See [TODO](TODO.md).
+- **Public exposure.** The Head is reachable over the LAN or the CCC mesh, and CCC is built for
+  nothing wider. There is no public tunnel, no publicly-trusted certificate, and no hardening for an
+  internet-facing deployment — the Head signs its own certificate and clients pin it on first use,
+  which is sufficient on a LAN and is not sufficient on the internet. `ccc.glados` is a private name
+  carried in `/etc/hosts`, not a domain; nothing outside the cluster resolves it. Put this cluster on
+  the open internet and none of the above becomes true by itself.
 - **A stolen Head.** The authority's private key lives on the Head, so whoever holds that box can mint
   a certificate for any name in the cluster and every other box will trust it. This is the price of
   the browser no longer warning, and it is the same box that already holds every account and secret.
 - **Denial of service by a legitimate User.** Karma makes queue-flooding self-punishing — an Escrow
   suppresses your standing the moment you queue, so flooding immediately costs you your own position
   — but it is an economic disincentive, not a rate limit.
-- **Preemption of volatile Arms.** Not built. Every enrolled Arm is treated as permanent; Retract is
-  what an owner has, and it is available everywhere.
 
 ## Reporting something
 

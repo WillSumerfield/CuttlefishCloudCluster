@@ -91,7 +91,5 @@ SMTP credentials are asked for during `cuttle setup --head` and can be skipped â
 and print to `journalctl -u ccc-monitor`, they just cannot email. Fill them in later by re-running
 setup. See the [SMTP runbook](../SMTP-Runbook.md).
 
-Rogue detection is scoped to the **Head's own machine** and deliberately not extended to donors'
-boxes. An Arm is a machine CCC does not own, and watching one the way the Head watches itself is a
-separate decision that has not been made. Fleet-wide per-Arm telemetry is not built â€” see
-[TODO](../TODO.md).
+Rogue detection watches the **Head's own machine**. It does not watch donors' boxes: an Arm is a
+machine CCC does not own, and watching one the way the Head watches itself is not something CCC does.
