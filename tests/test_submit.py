@@ -992,6 +992,49 @@ class TestFeatureRequirement:
         assert "isaacsim" in r.json()["detail"]
 
 
+class TestAProfiledFeatureNeedsAnEnvironment:
+    """A **Feature** carrying a runtime profile attaches its software to the Spawn's **Environment** —
+    it probes the interpreter for its ABI, its nvidia lib dirs and its site-packages. A Spawn that
+    declared none has nothing to attach to.
+
+    Decidable without building, so refused at submit (CONTEXT.md). It used to be found on the Arm,
+    after a Device was already held, and reported as `FATAL: "-c": executable file not found in $PATH`
+    — apptainer's complaint about the flag that followed the empty `$py`.
+
+    Only a **Tide Pool** can reach this gate: every other Spawn is already refused for naming no
+    manifest at all."""
+
+    def _tidepool(self, monkeypatch, **meta):
+        c = client(monkeypatch, is_admin=False)
+        monkeypatch.setattr(slurm, "arms_with_features", lambda feats: ["gpu-box"])
+        monkeypatch.setattr(slurm, "feature_constraint", lambda feats: "&".join(sorted(feats)))
+        return c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(
+            {"minutes": 60, "vram": 24, "tidepool": True, "name": "a pool", **meta})})
+
+    def test_a_bare_tide_pool_asking_for_a_profiled_feature_is_refused(self, monkeypatch):
+        r = self._tidepool(monkeypatch, features=["vlearn"])
+        assert r.status_code == 422
+        assert "vlearn" in r.json()["detail"]
+
+    def test_the_refusal_names_the_flag_that_fixes_it(self, monkeypatch):
+        """The remedy is to declare an Environment, not to drop the Feature — the User asked for that
+        Feature on purpose."""
+        r = self._tidepool(monkeypatch, features=["vlearn"])
+        assert "--manifest" in r.json()["detail"]
+
+    def test_declaring_one_makes_it_fine(self, monkeypatch):
+        assert self._tidepool(monkeypatch, features=["vlearn"],
+                              manifest="requirements.txt").status_code == 200
+
+    def test_an_unprofiled_feature_still_needs_nothing(self, monkeypatch):
+        """`isaaclab` is placement plus `$ISAACLAB_PATH` — no interpreter is involved, so a Tide Pool
+        opened to poke at a box may still ask for it with no project in hand."""
+        assert self._tidepool(monkeypatch, features=["isaaclab"]).status_code == 200
+
+    def test_a_bare_tide_pool_with_no_features_is_untouched(self, monkeypatch):
+        assert self._tidepool(monkeypatch).status_code == 200
+
+
 class TestCliRequiresTimeAndVram:
     """No defaults, and no autofill. A `--vram` that defaulted to the fleet's biggest card would make
     every untouched field eligible for that one GPU alone — queued behind everything, at the highest

@@ -196,6 +196,42 @@ def test_a_feature_failure_ends_the_spawn_the_way_every_other_failure_does():
     assert "exit 1" in fail
 
 
+def test_an_absent_interpreter_is_caught_before_apptainer_sees_it():
+    """`$py` is unquoted in the probe — it has to be, so an empty interpreter vanishes rather than
+    becoming an empty argument. With no Environment declared it expands to NOTHING, apptainer takes
+    the next word as the command, and the Spawn's `err` opens with
+
+        FATAL:   "-c": executable file not found in $PATH
+
+    an error about a flag, printed above the one line that explains what actually happened. So the
+    emptiness is tested for first, and the probe is never reached with nothing to run."""
+    body = _script(features=["vlearn"])
+    guard = '[ -n "$py" ] || feature_fail'
+    assert guard in body
+    assert body.index(guard) < body.index("feature_probe=$(apptainer")
+
+
+def test_the_two_interpreter_failures_say_different_things():
+    """"There is no interpreter" and "the interpreter said nothing useful" are different faults with
+    different remedies — declare one, versus go and read the build's output. One message for both sent
+    a User who HAD declared an Environment off looking for a --manifest they had already passed."""
+    body = _script(features=["vlearn"])
+    absent = body.split('[ -n "$py" ] || feature_fail', 1)[1].split("\n", 2)[1]
+    unusable = body.split('[ -n "$feature_abi" ] || feature_fail', 1)[1].split("\n", 2)[1]
+    assert "declared no Environment" in absent and "--manifest" in absent
+    assert "ran but could not be identified" in unusable
+    assert "Environment build is the place to look" in unusable
+
+
+def test_only_a_profiled_feature_needs_an_environment():
+    """`profiled()` is what the submit-time gate asks. An unprofiled Feature is placement plus
+    `$<NAME>_PATH` — it attaches to no interpreter, so a bare Tide Pool may still ask for one."""
+    assert hf.profiled(["vlearn"]) == ["vlearn"]
+    assert hf.profiled(["isaaclab"]) == []
+    assert hf.profiled(["isaaclab", "vlearn"]) == ["vlearn"]
+    assert hf.profiled([]) == []
+
+
 def test_the_abi_is_asked_of_the_interpreter_rather_than_assumed():
     """vlearn ships binary wheels only, so the Environment's Python has to match one the Arm holds. Both
     halves of that comparison exist only on the Arm — so the check runs there, at job start, and names

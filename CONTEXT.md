@@ -254,6 +254,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   by the loader at `exec`, so nothing running inside the **Pod** can set it for itself. Without a
   profile a Feature is placement plus `$<NAME>_PATH`, which is a complete answer for software a
   submitter drives directly.
+  A profiled Feature therefore **requires an Environment**, and a Spawn that requests one while
+  declaring none is refused at submit like any other unsatisfiable ask: the profile attaches its
+  software *to* the declaration — matching its interpreter, extending its library path — so with
+  nothing declared there is nothing for it to attach to. This falls on the **Tide Pool** alone, since
+  every other Spawn must declare anyway; a Tide Pool's freedom to decline is freedom from declaring
+  for *itself*, not from what a Feature it asked for needs. An unprofiled Feature asks for none of
+  this and stays available to a Tide Pool opened with nothing in hand.
   A profiled Feature also brings the **system libraries** its software links against. Those are CCC's
   to supply rather than the submitter's, because they are not Python packages and no **Environment**
   could install them — so a Spawn that requests the Feature gets them without declaring anything.

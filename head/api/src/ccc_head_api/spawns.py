@@ -1425,6 +1425,22 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
             known = ", ".join(slurm.all_feature_names()) or "(none)"
             raise ValueError(f"no Arm has every requested feature ({', '.join(wanted)}) — Arm "
                              f"Features currently in the cluster: {known}")
+        # A **Feature** carrying a runtime profile attaches its software to this Spawn's
+        # **Environment** — it probes the interpreter for its ABI, its nvidia lib dirs and its
+        # site-packages (features.PREAMBLE). With no Environment declared there is nothing to attach
+        # to, and the Spawn could only fail on the Arm after holding a Device to find out.
+        #
+        # Decidable here, so refused here: CONTEXT.md's rule is that everything knowable without
+        # building is settled before the Spawn exists. Only a **Tide Pool** can reach this — every
+        # other Spawn is already refused for naming no manifest — which is why the remedy names
+        # --manifest rather than suggesting the Feature be dropped.
+        if not (manifest or "").strip():
+            needs_env = features_mod.profiled(wanted)
+            if needs_env:
+                raise ValueError(
+                    f"{', '.join(needs_env)} needs an environment to attach to, and this Spawn "
+                    f"declared none — pass --manifest naming the dependency file to build. (A Tide "
+                    f"Pool may skip --manifest only when it asks for no such Feature.)")
         # AND onto the vram OR-expansion — parenthesized so `(vram24|vram48)&vsim` reads unambiguously
         # rather than relying on Slurm's own operator precedence.
         constraint = f"({constraint})&{slurm.feature_constraint(wanted)}" if constraint \

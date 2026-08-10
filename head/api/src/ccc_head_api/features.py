@@ -242,6 +242,18 @@ VLEARN = Profile(
 PROFILES: dict[str, Profile] = {VLEARN.name: VLEARN}
 
 
+def profiled(features: list[str]) -> list[str]:
+    """Which of `features` carry a **runtime profile** — the ones whose setup needs an interpreter.
+
+    A profiled Feature attaches its software to the Spawn's **Environment**: PREAMBLE probes `$py` for
+    the ABI to match, the nvidia lib dirs to put on LD_LIBRARY_PATH, and where site-packages is. So one
+    requested by a Spawn that declared no Environment has nothing to attach to, and cannot work.
+
+    Sorted, so a refusal names them the same way however the User typed the request.
+    """
+    return sorted({f for f in features if f in PROFILES})
+
+
 # The preamble every profiled Spawn gets, once, before the individual blocks. Rendered only when at
 # least one requested Feature HAS a profile — an ordinary Spawn's script doesn't contain it at all.
 #
@@ -262,6 +274,14 @@ feature_fail() {
     stage_out
     exit 1
 }
+# Checked BEFORE the probe, because `$py` is unquoted below (it has to be — an empty interpreter must
+# vanish rather than become an empty argument). With no Environment declared it expands to NOTHING, so
+# apptainer takes the next word as the command and answers `FATAL: "-c": executable file not found in
+# $PATH` — an error about a flag, logged above the one line that explains what actually went wrong.
+# `submit_checked` refuses this at submit now (a profiled Feature needs an Environment to attach to),
+# so reaching here means that gate was bypassed rather than that a User did something ordinary.
+[ -n "$py" ] || feature_fail \
+  "could not run this Spawn's interpreter () to identify it, which every Feature below needs. The Pod image supplies none, so this is a Spawn that declared no Environment -- a Tide Pool opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to."
 feature_probe=$(apptainer exec --contain $dxg --bind "$proj$envbind" "$sif" $py -c '
 import glob, os, sys, sysconfig
 print("cp%d%d" % sys.version_info[:2])
@@ -272,8 +292,10 @@ feature_abi=$(printf %s "$feature_probe" | sed -n 1p)
 feature_nvlibs=$(printf %s "$feature_probe" | sed -n 2p)
 # Pod-side, so it starts with $envmount; a profile that needs the ARM-side path rewrites the prefix.
 feature_purelib=$(printf %s "$feature_probe" | sed -n 3p)
+# A DIFFERENT failure from the one above, now that an absent interpreter is caught before the probe:
+# `$py` exists and ran, but said nothing useful. That is the declared Environment's build to look at.
 [ -n "$feature_abi" ] || feature_fail \
-  "could not run this Spawn's interpreter ($py) to identify it, which every Feature below needs. The Pod image supplies none, so this is a Spawn that declared no Environment -- a Tide Pool opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to. If an Environment WAS declared, its build is the place to look."
+  "this Spawn's interpreter ($py) ran but could not be identified, which every Feature below needs. Its Environment build is the place to look -- the output above is the whole story."
 """
 
 
