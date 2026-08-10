@@ -1031,6 +1031,26 @@ def _lend_project(staging: Path, guise: str) -> None:
                     "able to read its project", staging, guise, (r.stderr or "").strip())
 
 
+def _said(e: subprocess.CalledProcessError) -> str:
+    """What a failed command actually printed, flattened to ONE line.
+
+    One line because of where this ends up. A pinned submit runs the admin tool under sudo in a
+    subprocess (cuttle.spawns._submit_pinned) and reports back the LAST line of its stderr and nothing
+    else — so a three-line sbatch error crossing that boundary arrives as its third line, which is
+    rarely the one naming the fault. Joined rather than truncated: sbatch says "error: Batch job
+    submission failed: ..." across two lines about as often as one.
+
+    stdout is the fallback because a command that failed while writing its diagnosis to the wrong
+    stream is still telling us why, and an empty message here would send the operator back to a bare
+    exit code — the state this helper exists to end.
+    """
+    for stream in (e.stderr, e.stdout):
+        lines = [ln.strip() for ln in (stream or "").splitlines() if ln.strip()]
+        if lines:
+            return " ".join(lines)
+    return f"it printed nothing at all, and exited {e.returncode}"
+
+
 def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
            tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
@@ -1246,8 +1266,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # traversable by everyone and the job script uses absolute paths throughout.
         r = subprocess.run(guises.as_owner(argv, guise), input=body, cwd="/",
                            capture_output=True, text=True, check=True, env=env)
-    except Exception:
+    except Exception as e:
         siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it
+        # `capture_output` means sbatch's refusal goes into the exception and nowhere else, and
+        # CalledProcessError's own str() is the argv again — so a submission that Slurm rejected
+        # reported the command that failed and never the reason, which is the only part nobody could
+        # have guessed. Re-raise carrying what sbatch said.
+        if isinstance(e, subprocess.CalledProcessError):
+            raise RuntimeError(f"sbatch refused this Spawn: {_said(e)}") from e
         raise
     job_id = int(r.stdout.strip())
     # Everything from here to the `spawns` row is the window where a real, running job exists that

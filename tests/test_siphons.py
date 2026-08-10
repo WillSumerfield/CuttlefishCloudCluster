@@ -456,7 +456,10 @@ class TestSubmitOpensAndBindsOne:
                 tf.addfile(info, io.BytesIO(b""))
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
-        with pytest.raises(subprocess.CalledProcessError):
+        # RuntimeError, not the CalledProcessError raised above: the same handler that discards the
+        # Siphon re-raises sbatch's refusal carrying what it said (head_spawns._said). The type is
+        # incidental here — what this test is about is the module not surviving the failure.
+        with pytest.raises(RuntimeError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
                                tar_path=tar, minutes=60, constraint="vram24", outputs=["outputs"],
                                manifest="requirements.txt")

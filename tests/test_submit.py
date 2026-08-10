@@ -7,11 +7,13 @@ whose needs nobody declared). `--node` is refused over the API for everyone — 
 import asyncio
 import io
 import json
+import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 
 import pytest
+import typer
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -19,6 +21,7 @@ from ccc_head_api import db
 from ccc_head_api import main as head_main
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
+from cuttle import spawns as cli_spawns
 from cuttle import teardown
 from cuttle.main import app as cli_app
 
@@ -382,6 +385,140 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
                                     outputs=["out"], manifest="requirements.txt")
         assert job_id == 9001
         assert rig == []
+
+
+class TestSbatchsRefusalReachesTheOperator:
+    """Why Slurm rejected a submission lives in sbatch's stderr and nowhere else: `capture_output`
+    takes it off the terminal, and `CalledProcessError.__str__` is only the argv again. Untranslated,
+    a refused Spawn is reported as the command that ran — the one part of the failure nobody needed
+    to be told — and the operator is left with a bare exit status.
+    """
+
+    def _err(self, stderr="", stdout="", code=1) -> subprocess.CalledProcessError:
+        return subprocess.CalledProcessError(code, ["sbatch"], output=stdout, stderr=stderr)
+
+    def _only_sbatch_fails(self, monkeypatch, exc: Exception) -> None:
+        """Fail the sbatch call and nothing else. `submit` shells out before it too — `_lend_project`
+        runs setfacl — and a blanket patch would break at the earlier one, testing nothing."""
+        def fake(argv, *a, **kw):
+            if "sbatch" in argv:
+                raise exc
+            return type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+        monkeypatch.setattr(head_spawns.subprocess, "run", fake)
+
+    def test_what_sbatch_said_is_what_comes_back(self):
+        said = head_spawns._said(self._err(stderr="sbatch: error: Invalid account\n"))
+        assert said == "sbatch: error: Invalid account"
+
+    def test_a_multi_line_refusal_arrives_whole(self):
+        """Flattened, not truncated. `cuttle.spawns._submit_pinned` reports the LAST line of the admin
+        tool's stderr and nothing else, so a refusal split over two lines would cross that boundary as
+        its second — and sbatch habitually puts the verb on one line and the reason on the next."""
+        said = head_spawns._said(self._err(
+            stderr="sbatch: error: Batch job submission failed:\nRequested node configuration is not "
+                   "available\n"))
+        assert said == ("sbatch: error: Batch job submission failed: Requested node configuration "
+                        "is not available")
+        assert "\n" not in said
+
+    def test_blank_lines_do_not_become_the_answer(self):
+        assert head_spawns._said(self._err(stderr="\n\n  \nreal reason\n")) == "real reason"
+
+    def test_stdout_is_read_when_stderr_is_empty(self):
+        """A command that wrote its diagnosis to the wrong stream is still telling us why."""
+        assert head_spawns._said(self._err(stdout="permission denied")) == "permission denied"
+
+    def test_a_silent_failure_still_says_something_checkable(self):
+        """The one case with no message to surface. Naming the exit status beats the empty string,
+        which would render as `couldn't submit to Arm 'x': ` and read like a truncated log line."""
+        assert "exited 7" in head_spawns._said(self._err(code=7))
+
+    def test_the_submission_path_raises_it(self, monkeypatch, tmp_path):
+        """End to end: the refusal has to survive `submit`'s cleanup handler, which used to re-raise
+        the CalledProcessError untouched."""
+        rig = _submit_rig(monkeypatch, tmp_path)
+        self._only_sbatch_fails(monkeypatch, self._err(stderr="sbatch: error: Invalid user id 60002"))
+        with pytest.raises(RuntimeError, match="Invalid user id 60002"):
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                               tar_path=rig, minutes=60, constraint="", outputs=["out"],
+                               manifest="requirements.txt")
+
+    def test_the_siphon_is_still_closed_on_the_way_out(self, monkeypatch, tmp_path):
+        """The translation sits inside the handler that discards the Siphon. No job id will ever
+        exist for this submission, so nothing else would ever close it — a nicer error message is not
+        worth leaking an rsync module for."""
+        rig = _submit_rig(monkeypatch, tmp_path)
+        discarded = []
+        monkeypatch.setattr(head_spawns.siphons, "discard", lambda tok: discarded.append(tok))
+        self._only_sbatch_fails(monkeypatch, self._err(stderr="nope"))
+        with pytest.raises(RuntimeError):
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                               tar_path=rig, minutes=60, constraint="", outputs=["out"],
+                               manifest="requirements.txt")
+        assert len(discarded) == 1
+
+    def test_a_failure_that_is_not_sbatch_is_left_alone(self, monkeypatch, tmp_path):
+        """Only a failed *command* has stderr to surface. Everything else keeps its own type, so the
+        callers that catch specific exceptions still see them."""
+        rig = _submit_rig(monkeypatch, tmp_path)
+        self._only_sbatch_fails(monkeypatch, OSError("disk gone"))
+        with pytest.raises(OSError, match="disk gone"):
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                               tar_path=rig, minutes=60, constraint="", outputs=["out"],
+                               manifest="requirements.txt")
+
+    def _pinned_failure(self, monkeypatch, stderr: str) -> str:
+        """What `cuttle run --node` puts in front of the operator when the admin tool dies."""
+        said = []
+        monkeypatch.setattr(cli_spawns.auth, "_api", lambda *a, **kw: {"username": "alice"})
+        monkeypatch.setattr(cli_spawns.mesh, "tailscale_ip", lambda: "100.99.0.1")
+        monkeypatch.setattr(cli_spawns.ui, "abort",
+                            lambda msg, **kw: said.append(msg) or typer.Exit(1))
+        monkeypatch.setattr(cli_spawns, "run", lambda a, **kw: type("R", (), {
+            "returncode": 1, "stdout": "", "stderr": stderr})())
+        with pytest.raises(typer.Exit):
+            cli_spawns._submit_pinned(b"", "train.py", [], 60, 24, 1, "gpu-box", {}, ["out"])
+        return said[0]
+
+    def test_the_cli_drops_the_exception_class_from_the_line_it_prints(self, monkeypatch):
+        """`_submit_pinned` reads the last line of a Python traceback, so the message arrives
+        class-first — "RuntimeError: sbatch refused...". The class name is the only part of that line
+        which tells an operator nothing."""
+        msg = self._pinned_failure(monkeypatch,
+                                   "Traceback (most recent call last):\n  File \"x\", line 1\n"
+                                   "RuntimeError: sbatch refused this Spawn: sbatch: error: "
+                                   "Invalid account\n")
+        assert "sbatch refused this Spawn: sbatch: error: Invalid account" in msg
+        assert "RuntimeError" not in msg
+
+    def test_a_line_that_is_not_an_exception_is_printed_as_it_stands(self, monkeypatch):
+        """The strip is anchored to a leading class name so it cannot eat a real message. sudo's own
+        refusals arrive here too, and they are not tracebacks."""
+        msg = self._pinned_failure(monkeypatch, "sudo: a password is required\n")
+        assert "sudo: a password is required" in msg
+
+
+def _submit_rig(monkeypatch, tmp_path) -> Path:
+    """A Head with just enough around it for `submit` to reach sbatch, returning the project tar."""
+    monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
+    monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+    db.ensure_schema()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
+                     "VALUES (1,'alice',0,'x',0)")
+        conn.commit()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name in ("train.py", "requirements.txt"):
+            data = b"print('hi')\n"
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    path = tmp_path / "project.tar.gz"
+    path.write_bytes(buf.getvalue())
+    return path
 
 
 class TestSubmitFromAnAlreadyStagedDirectory:

@@ -20,6 +20,7 @@ pinned on this machine (see tls.py).
 
 import io
 import json
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -197,6 +198,10 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         # last line as the cause and name the check that resolves it.
         why = (r.stderr or "").strip()
         detail = why.splitlines()[-1] if why else "the pinned submit failed"
+        # That last line is the last line of a Python traceback, so it arrives class-first —
+        # "RuntimeError: sbatch refused this Spawn: ...". The class name is the one part of it that
+        # tells an operator nothing; strip it and keep the sentence it was prefixing.
+        detail = re.sub(r"^[A-Za-z_][\w.]*(Error|Exception): ", "", detail)
         raise ui.abort(f"couldn't submit to Arm {node!r}: {detail} "
                        f"(is it admitted? see `cuttle arm list`)")
     # The Environment echo rides back on stderr (see ccc_head_api.admin._submit) — stdout is the id and
