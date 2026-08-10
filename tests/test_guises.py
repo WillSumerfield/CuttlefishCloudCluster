@@ -190,6 +190,7 @@ class TestTheSlurmOpsBecomeTheOwner:
         calls = []
         monkeypatch.setattr(teardown, "run", lambda argv, **kw: calls.append(list(argv)) or
                             type("R", (), {"stdout": passwd, "returncode": 0})())
+        monkeypatch.setattr(teardown.time, "sleep", lambda s: None)
         teardown.remove_guises()
         deleted = [c[1] for c in calls if c[0] == "userdel"]
         assert deleted == ["ccc-u60002", "ccc-u60007"]
@@ -203,6 +204,150 @@ class TestTheSlurmOpsBecomeTheOwner:
         from ccc_head_api import slurm
         slurm.cancel(7)
         assert ran[0][:3] == ["squeue", "-h", "-j"]
+
+
+class TestAGuiseIsAlwaysInTheSharedGroup:
+    """GUISE_GROUP is the Runas list on the Head's one sudoers rule
+    (headapi._SUDOERS_CCC_SLURM: `ccc ALL=(%ccc-guises) NOPASSWD: sbatch, scancel, scontrol`). A Guise
+    outside it cannot be sudo'd into at all, so every Spawn that User owns dies at submission with
+    "sudo: a password is required" — naming a command that is not the problem, on a box where every
+    other User works fine.
+    """
+
+    def calls(self, monkeypatch, uid: int = 60002) -> list[list[str]]:
+        from cuttle import auth
+        seen = []
+        monkeypatch.setattr(auth, "run", lambda argv, **kw: seen.append(list(argv)) or
+                            type("R", (), {"returncode": 0, "stdout": ""})())
+        auth.provision_guise(uid)
+        return seen
+
+    def test_a_new_account_is_created_in_it(self, monkeypatch):
+        useradd = [c for c in self.calls(monkeypatch) if c[0] == "useradd"][0]
+        assert useradd[useradd.index("--groups") + 1] == config.GUISE_GROUP
+
+    def test_the_membership_is_re_asserted_even_so(self, monkeypatch):
+        """`useradd --groups` applies only when useradd CREATES the account. On a re-run — or on an
+        account that outlived a teardown because a Spawn was still running as it — useradd does
+        nothing and exits non-zero, which provision_guise deliberately tolerates. Without a separate
+        usermod the Guise never rejoins the group that a fresh teardown+setup just re-made."""
+        usermod = [c for c in self.calls(monkeypatch) if c[0] == "usermod"]
+        assert usermod == [["usermod", "--append", "--groups", config.GUISE_GROUP, "ccc-u60002"]]
+
+    def test_it_appends_rather_than_replacing(self, monkeypatch):
+        """`--append`, so this never becomes the thing that strips a Guise of some other membership a
+        future version of CCC (or a donor's own box) gave it."""
+        usermod = [c for c in self.calls(monkeypatch) if c[0] == "usermod"][0]
+        assert "--append" in usermod
+
+    def test_it_comes_after_the_group_exists(self, monkeypatch):
+        calls = self.calls(monkeypatch)
+        names = [c[0] for c in calls]
+        assert names.index("groupadd") < names.index("usermod")
+
+    def test_a_failure_here_stops_setup(self, monkeypatch):
+        """The one call on this path that is NOT tolerated. Every other step is check=False because
+        "already there" is the normal case; a Guise that cannot be put in the group is not a re-run,
+        it is a User who will be unable to run anything, and the failure has to land here rather than
+        at their first Spawn."""
+        from cuttle import auth
+        import subprocess as sp
+
+        def fake(argv, **kw):
+            if argv[0] == "usermod":
+                raise sp.CalledProcessError(1, argv)
+            return type("R", (), {"returncode": 0, "stdout": ""})()
+
+        monkeypatch.setattr(auth, "run", fake)
+        with pytest.raises(sp.CalledProcessError):
+            auth.provision_guise(60002)
+
+    def test_the_cluster_guise_gets_one_too(self, monkeypatch):
+        """The enrollment benchmark's Guise belongs to no User but is submitted the same way, so it
+        needs the same grant."""
+        usermod = [c for c in self.calls(monkeypatch, config.GUISE_CLUSTER_UID) if c[0] == "usermod"]
+        assert usermod[0][-1] == config.guise_name(config.GUISE_CLUSTER_UID)
+
+
+class TestATeardownLeavesNoSpawnRunning:
+    """Stopping slurmd does NOT end a running batch step — its process tree detaches and survives, so
+    a Tide Pool's sshd was still listening on its port hours after the cluster was torn down. That
+    orphan then blocked `userdel` on its **Guise**, whose failure is swallowed, and the next setup
+    found the account already there and left it out of the re-created GUISE_GROUP. One silent failure
+    at teardown surfacing days later as one User who cannot submit.
+    """
+
+    def teardown_calls(self, monkeypatch, passwd: str = "", killed: bool = True) -> list[list[str]]:
+        from cuttle import teardown
+        calls = []
+        monkeypatch.setattr(teardown, "run", lambda argv, **kw: calls.append(list(argv)) or
+                            type("R", (), {"stdout": passwd,
+                                           "returncode": 0 if killed else 1})())
+        monkeypatch.setattr(teardown.time, "sleep", lambda s: None)
+        return calls
+
+    def _passwd(self, *names: str) -> str:
+        return "".join(f"{n}:x:60002:60002:{config.GUISE_GECOS}:/nonexistent:/usr/sbin/nologin\n"
+                       for n in names)
+
+    def test_the_queue_is_emptied_before_the_controller_stops(self, monkeypatch):
+        """scancel asks slurmctld, so once stop_daemons has run there is nothing left to ask."""
+        from cuttle import teardown
+        calls = self.teardown_calls(monkeypatch)
+        teardown.cancel_spawns()
+        assert calls == [["scancel", "--all"]]
+
+    def test_stragglers_are_signalled_before_userdel(self, monkeypatch):
+        """`userdel` refuses an account with a live process, and every call here is check=False — so
+        the account survives the teardown in silence unless nothing is running as it."""
+        from cuttle import teardown
+        calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002"))
+        teardown.remove_guises()
+        names = [c[0] for c in calls]
+        assert names.index("pkill") < names.index("userdel")
+
+    def test_term_comes_before_kill(self, monkeypatch):
+        """apptainer's own children (squashfuse, fuse-overlayfs) need a moment to unmount the Pod;
+        killed outright they leave mounts behind under /var/lib/apptainer."""
+        from cuttle import teardown
+        calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002"))
+        teardown.end_guise_processes()
+        assert [c[1] for c in calls if c[0] == "pkill"] == ["-TERM", "-KILL"]
+
+    def test_every_guise_is_swept_not_just_the_first(self, monkeypatch):
+        from cuttle import teardown
+        calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002", "ccc-u60007"))
+        teardown.end_guise_processes()
+        assert [c[3] for c in calls if c[0] == "pkill" and c[1] == "-TERM"] == \
+            ["ccc-u60002", "ccc-u60007"]
+
+    def test_a_clean_box_does_not_wait(self, monkeypatch):
+        """pkill exits non-zero when it signalled nothing, which is the normal case — a cleanly
+        stopped cluster. An unconditional grace period would spend it on every teardown."""
+        from cuttle import teardown
+        slept = []
+        calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002"), killed=False)
+        monkeypatch.setattr(teardown.time, "sleep", lambda s: slept.append(s))
+        teardown.end_guise_processes()
+        assert slept == []
+        assert not any(c[1] == "-KILL" for c in calls if c[0] == "pkill")
+
+    def test_a_box_with_no_guises_signals_nothing(self, monkeypatch):
+        from cuttle import teardown
+        calls = self.teardown_calls(monkeypatch, "root:x:0:0:root:/root:/bin/bash\n")
+        teardown.end_guise_processes()
+        assert not any(c[0] == "pkill" for c in calls)
+
+    def test_the_guise_sweep_is_local_not_cluster_wide(self, monkeypatch):
+        """This is the whole of an Arm teardown's job-ending, and it must stay that way: scancel asks
+        the CONTROLLER, so a donor taking their own box back would end Spawns running on everyone
+        else's machines too. It ends the ones running here; the Head marks the node down like any
+        other that went away."""
+        from cuttle import teardown
+        calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002"))
+        teardown.remove_guises()
+        assert any(c[0] == "pkill" for c in calls)
+        assert not any(c[0] == "scancel" for c in calls)
 
 
 class TestTheStoreIsNotReadableByAGuise:

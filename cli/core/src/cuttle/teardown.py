@@ -9,6 +9,7 @@ safe to re-run, and every removal step no-ops on a box that never had it.
 
 import glob
 import shutil
+import time
 
 from . import config, menu, settings, system, ui
 from .system import run
@@ -36,6 +37,21 @@ _APT_SOURCE_FILES = [
     "/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
     str(config.UBUNTU_SNAPSHOT_LIST),
 ]
+
+
+def cancel_spawns() -> None:
+    """End every Spawn still queued or running, BEFORE the services that own them are stopped.
+
+    Head only, and necessarily first: `scancel` asks slurmctld, so once `stop_daemons` has run there
+    is nothing left to ask. Slurm gets to end its own jobs — epilogs run, allocations are released —
+    rather than having the tree shot out from under it.
+
+    Nothing did this before, and stopping slurmd does NOT end a running batch step: its process tree
+    detaches and survives, so a Tide Pool's sshd was still listening on its port hours after the
+    cluster it belonged to had been torn down. `end_guise_processes` is the backstop that guarantees
+    the ones this misses are gone — this is the graceful half.
+    """
+    run(["scancel", "--all"], sudo=True, check=False)
 
 
 def stop_daemons() -> None:
@@ -387,12 +403,57 @@ def remove_guises() -> None:
     removes a group that matches the user's name and has no other members); the shared group is dropped
     once explicitly, after the last member is gone.
     """
+    end_guise_processes()   # userdel refuses an account something is still running as
+    for name in guise_names():
+        run(["userdel", name], sudo=True, check=False)
+    run(["groupdel", config.GUISE_GROUP], sudo=True, check=False)
+
+
+def guise_names() -> list[str]:
+    """Every **Guise** account on this box, by name.
+
+    Found by their GECOS tag, which is the only reason it exists: the accounts are named after uids,
+    not people, so nothing else on a donor's box distinguishes them from the box's own users. That
+    matters most on the machine we care about most — a donor's — where the whole promise is that CCC
+    leaves nothing behind.
+    """
     r = run(["getent", "passwd"], sudo=True, capture_output=True, text=True, check=False)
+    names = []
     for line in (r.stdout or "").splitlines():
         f = line.split(":")
         if len(f) > 4 and f[0].startswith(config.GUISE_PREFIX) and f[4].startswith(config.GUISE_GECOS):
-            run(["userdel", f[0]], sudo=True, check=False)
-    run(["groupdel", config.GUISE_GROUP], sudo=True, check=False)
+            names.append(f[0])
+    return names
+
+
+def end_guise_processes(grace: float = 5.0) -> None:
+    """Make sure nothing is still running as a **Guise**, so the `userdel` above can remove one.
+
+    `userdel` REFUSES an account with a live process ("currently used by process") and every call in
+    this module is check=False, so a surviving Spawn used to make its Guise silently outlive the
+    teardown. The next `setup` then found that account already there, `useradd --groups` no-opped on
+    it, and the freshly re-created GUISE_GROUP came back WITHOUT it — leaving that one Guise off the
+    Runas list of the Head's sudoers rule, so every Spawn it submitted was refused by sudo. The whole
+    chain is silent, and surfaces days later as one User who cannot run anything.
+
+    TERM, then KILL after a grace period: apptainer's own children (squashfuse, fuse-overlayfs) need a
+    moment to unmount the Pod cleanly, and killing them outright leaves mounts behind under
+    /var/lib/apptainer. `cancel_spawns` has usually already done this the polite way — what reaches
+    here is what Slurm no longer knows about.
+    """
+    names = guise_names()
+    if not names:
+        return
+    # pkill exits 0 only if it actually signalled something. Waiting is conditional on that: a cleanly
+    # stopped cluster has nothing running as a Guise, which is the common case, and an unconditional
+    # grace period would spend it doing nothing on every teardown.
+    signalled = [run(["pkill", "-TERM", "-u", name], sudo=True, check=False).returncode == 0
+                 for name in names]
+    if not any(signalled):
+        return
+    time.sleep(grace)
+    for name in names:
+        run(["pkill", "-KILL", "-u", name], sudo=True, check=False)
 
 
 def remove_licence_account() -> None:
@@ -424,7 +485,11 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     stale node blocks re-enrolling this box entirely. It also still holds the address that authorizes
     fetching the munge key.
 
-    No Headscale/head-api/rsyncd here; an Arm runs none."""
+    No Headscale/head-api/rsyncd here; an Arm runs none.
+
+    And no `cancel_spawns`, deliberately: scancel asks the CONTROLLER, so a donor taking their own box
+    back would end Spawns running on everyone else's machines too. `remove_guises` ends the ones
+    running HERE, and the Head marks this node down like any other that went away."""
     with ui.section("Tearing down this Arm", lambda: "removed"):
         system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
         _teardown_arm(keep_packages=keep_packages, all_=all_)
@@ -473,6 +538,8 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
 
 
 def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
+    with ui.step("Ending any Spawns still running"):
+        cancel_spawns()   # before stop_daemons: scancel needs slurmctld
     with ui.step("Stopping the cluster's services"):
         stop_daemons()
     with ui.step("Removing the Head's services"):
@@ -532,6 +599,7 @@ def teardown_full(keep_packages: bool = False) -> None:
     with ui.section("Removing everything CCC", lambda: "removed"):
         system.prime_sudo()     # sudo as the box's first row, before any step rows grow the frame
         with ui.step("Stopping every CCC service"):
+            cancel_spawns()     # first: scancel needs the slurmctld the next line stops
             stop_daemons()      # Head services (no-ops where the units never existed)
             stop_arm_daemons()  # Arm bits
         with ui.step("Removing the Head's services"):

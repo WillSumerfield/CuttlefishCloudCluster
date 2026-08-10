@@ -185,6 +185,11 @@ class TestHeadLocalOutputSurvivesQuietMode:
         """
         monkeypatch.setattr(auth, "_admin_argv", lambda args: [sys.executable, "-c", script])
         monkeypatch.setattr(system, "prime_sudo", lambda: None)
+        # `user_add` provisions the new User's Guise afterwards. With sudo neutralised below that
+        # would run real groupadd/useradd/usermod against the test machine — accidental, and harmless
+        # only while every one of them was check=False. The account plumbing has its own tests
+        # (test_guises.TestAGuiseIsAlwaysInTheSharedGroup); this class is about stdout.
+        monkeypatch.setattr(auth, "ensure_guise_accounts", lambda: None)
         real = subprocess.run
         monkeypatch.setattr(subprocess, "run",
                             lambda cmd, **kw: real(cmd[1:] if cmd[:1] == ["sudo"] else cmd, **kw))

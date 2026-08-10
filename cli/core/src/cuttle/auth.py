@@ -311,7 +311,7 @@ def ensure_guise_accounts() -> None:
 
 
 def provision_guise(uid: int) -> None:
-    """One Guise account, at exactly `uid`. Non-fatal if it is already there (a re-run).
+    """One Guise account, at exactly `uid`, in GUISE_GROUP. Non-fatal if it is already there (a re-run).
 
     The same account the Slurm prolog creates on a donor's Arm, by the same rules — this is just the
     path for the two boxes where an account is needed BEFORE any Spawn has landed: the Head (which
@@ -335,6 +335,17 @@ def provision_guise(uid: int) -> None:
     run(["useradd", "--uid", str(uid), "--gid", str(uid), "--groups", config.GUISE_GROUP,
          "--no-create-home", "--shell", "/usr/sbin/nologin", "--comment", config.GUISE_GECOS, name],
         sudo=True, check=False)
+    # The shared group, asserted separately and every run, because `--groups` above applies only when
+    # useradd CREATES the account: on one that already exists useradd does nothing at all and exits
+    # non-zero, which the check=False swallows. An account can survive a teardown (a Spawn still
+    # running holds `userdel` off — see teardown.end_guise_processes), and the next setup then rebuilds
+    # GUISE_GROUP without it.
+    #
+    # `check=True`, alone on this path: GUISE_GROUP is the Runas list on the Head's one sudoers rule
+    # (headapi._SUDOERS_CCC_SLURM), so a Guise outside it cannot be sudo'd into at all and every Spawn
+    # it owns dies at sbatch with "sudo: a password is required" — a failure that surfaces nowhere near
+    # here, and only for the User unlucky enough to own that uid.
+    run(["usermod", "--append", "--groups", config.GUISE_GROUP, name], sudo=True, check=True)
 
 
 def user_list() -> None:
