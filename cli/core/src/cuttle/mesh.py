@@ -13,14 +13,15 @@ import json
 import shutil
 import ssl
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from . import config, tls, ui
-from .system import hostname, run, sh
+# `_dump` is reached across the module boundary on purpose: join_mesh cannot go through `run`
+# (see its docstring) but must still report a failure the way every other command does.
+from .system import _dump, hostname, prime_sudo, run, sh
 
 
 # --- install ---------------------------------------------------------------
@@ -126,8 +127,12 @@ def start_ccc_tailscaled(write_unit) -> None:
     time.sleep(2)
     if run(["systemctl", "is-active", config.CCC_TS_SERVICE],
            sudo=True, check=False, capture_output=True, text=True).stdout.strip() != "active":
-        run(["systemctl", "status", config.CCC_TS_SERVICE, "--no-pager", "-l"],
-            sudo=True, check=False)
+        # Captured and printed, not left to `run`'s default: `run` captures whenever the caller asks
+        # for neither stream, and `check=False` means its own failure dump never fires — so this
+        # status was being collected and discarded, under an error telling the operator to read it.
+        status = run(["systemctl", "status", config.CCC_TS_SERVICE, "--no-pager", "-l"],
+                     sudo=True, check=False, capture_output=True, text=True)
+        ui.data((status.stdout + status.stderr).rstrip())
         raise ui.abort(f"{config.CCC_TS_SERVICE} died on startup — see the status above",
                        next_step=f"re-run setup, or inspect with `journalctl -u {config.CCC_TS_SERVICE}`")
 
@@ -379,12 +384,33 @@ def join_mesh(login_server: str, hostname: str, authkey: str) -> None:
       subnet router or exit node, so it needs no firewall rules.
     - `--accept-routes=false`: no subnet routers here; keeps CCC out of the host route table.
     CCC addresses Arms by mesh IP, so it loses nothing.
+
+    **Hand-rolled rather than `run`, and quiet like it.** The authkey is an argument, and `run` echoes
+    the command it is about to spawn under `--verbose` — through `ui.say`, which also writes the run
+    log. So this is the one command whose echo has to be redacted by hand, which is why it does its
+    own `subprocess.run` and its own `_dump`.
+    Capture is the other half, and it is what keeps `setup`'s box intact: `section` redirects Python's
+    `sys.stdout`, but a *child process* inherits the real fd 1/2 and writes straight onto the alternate
+    screen underneath. `tailscale up` was the only command on the setup path still doing that, so the
+    frame tore on every join and was repaired a fraction of a second later by the repaint tick.
+    Nothing is lost by holding it: this join is always unattended (the caller presents a preauth key,
+    so there is no auth URL to watch), and a failure still prints everything the command said.
     """
     cmd = ["sudo", "tailscale", f"--socket={config.CCC_TS_SOCKET}", "up", "--reset",
            "--login-server", login_server, "--hostname", hostname,
            "--accept-dns=false", "--accept-routes=false", "--netfilter-mode=off"]
-    print(f"$ {' '.join(cmd)} --authkey <redacted>", file=sys.stderr)  # never echo the key
-    subprocess.run(cmd + ["--authkey", authkey], check=True)
+    # `cmd` carries its own `sudo`, so `run`'s priming never happens here. A no-op once the enclosing
+    # flow has primed — but if it ever did prompt, capture would swallow the prompt and the join
+    # would look like a hang with nothing on screen to explain it.
+    prime_sudo()
+    if ui.VERBOSE:
+        ui.say(f"[muted]$ {' '.join(cmd)} --authkey <redacted>[/muted]")   # never echo the key
+    kw = {} if ui.VERBOSE else {"capture_output": True, "text": True}
+    try:
+        subprocess.run(cmd + ["--authkey", authkey], check=True, **kw)
+    except subprocess.CalledProcessError as e:
+        _dump(e)
+        raise
 
 
 def tailscale_ip() -> str:
