@@ -780,9 +780,25 @@ _TICK_STOP = None
 # results) would corrupt the session rather than merely look wrong.
 STREAMING = False
 
+# Flags that mark a command as streaming, and — separately — whole SUBCOMMANDS that are.
+#
+# `workspace open` is the second kind and needs to be, because it hands the terminal to the very same
+# `ssh` (`tidepool._wait_and_attach`) while carrying no flag that says so: a visit IS a Tide Pool, and
+# it declares that by which command it is rather than by an option. Left out of this list, the canvas
+# was claimed and `_tick_start`'s ~12×/s re-assert painted straight over the live shell — the session
+# was fine underneath, and nothing could be read on top of it.
+_STREAMING_FLAGS = ("--follow", "-f", "--tidepool")
+_STREAMING_COMMANDS = (("workspace", "open"),)
+
 
 def _detect_streaming() -> bool:
-    return any(a in ("--follow", "-f", "--tidepool") for a in sys.argv[1:])
+    if any(a in _STREAMING_FLAGS for a in sys.argv[1:]):
+        return True
+    # The subcommand path is the leading non-flag words. Safe to read this way because every GLOBAL
+    # option is a boolean switch (main._root) — none consumes a value, so nothing can shift the
+    # command name out of position. Options belonging to the subcommand sit after it and cannot.
+    words = tuple(a for a in sys.argv[1:] if not a.startswith("-"))
+    return any(words[:len(cmd)] == cmd for cmd in _STREAMING_COMMANDS)
 
 
 @contextmanager
