@@ -171,8 +171,9 @@ const LOG_PANE = {
   fill: "color-mix(in oklab, var(--well) 92%, var(--shoal))",
 
   /**
-   * Edge feather, px — how far the fill dissolves at every rim before it is gone. This is `.field`'s
-   * `--ff` (default 7). Raise it for a softer melt; past ~24 on a short pane the two opposing ramps
+   * Edge feather, px — how far the fill dissolves at every rim before it is gone. Overrides the root
+   * `--feather` (7, what every control shares) for this pane alone: a log is a wide reading surface, not
+   * a control in a row of controls, so it melts further. Past ~24 on a short pane the two opposing ramps
    * start meeting in the middle and the whole fill goes translucent.
    */
   feather: 16,
@@ -265,7 +266,7 @@ function LogPane({
         style={{
           color: "var(--ink-soft)",
           "--fill": LOG_PANE.fill,
-          "--ff": `${LOG_PANE.feather}px`,
+          "--feather": `${LOG_PANE.feather}px`,
           "--frad": `${LOG_PANE.radius}px`,
           maxHeight: LOG_PANE.maxHeight,
           padding: `${LOG_PANE.padY}px ${LOG_PANE.padX}px`,

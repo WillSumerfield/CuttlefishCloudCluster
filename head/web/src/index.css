@@ -73,6 +73,18 @@
    * above the surface, not melt into it. Select control + menu share this colour so they read as one
    * raised surface. */
   --field-open: oklch(0.41 0.05 198);
+
+  /* THE feather: how far an edge ramps to transparent. One value for every control, because two widths
+   * don't read as "one edge softer than the other" — they read as two different WIDTHS, the eye putting
+   * the boundary where the ramp hits half. A Select whose fade grew when it opened looked like it resized.
+   *
+   * A surface may still override it deliberately (the log pane melts at 16, SpawnPage.tsx) — what must
+   * never happen again is two parts of ONE control disagreeing by accident.
+   *
+   * At :root rather than on `field` because a Select's menu is the control's SIBLING (Select.tsx), not
+   * its descendant — it cannot inherit a value declared on the field, and a `var()` that resolves to
+   * nothing takes every calc() in the mask down with it. */
+  --feather: 7px;
 }
 
 @layer base {
@@ -262,11 +274,11 @@
    * mask-composite: add — overlapping pieces would double-sum feathers at the corners (source-over),
    * pushing the opaque region out unevenly and making rounded ends read taller than straight edges.
    *
-   * Only the FILL is masked; text sits in the solid centre (alpha 1) so glyphs stay crisp. Tune with
-   * `--frad` (corner radius) and `--ff` (edge feather).
+   * Only the FILL is masked; text sits in the solid centre (alpha 1) so glyphs stay crisp. Tune the
+   * corner radius with `--frad`; the edge feather is `--feather`, the root token, shared with the
+   * Select's open bar and menu so all three dissolve over the same distance.
    */
   --frad: 12px;
-  --ff: 7px;
   /* Tiles OVERLAP inside each other's opaque plateau rather than abutting: an exact abutment shows a
      subpixel seam when the field's px size is odd (tiles land on a half-pixel, mask alpha dips <1).
      Overlapping #000-over-#000 closes the gap with no alpha compounding — no seam, no corner bulge. */
@@ -277,15 +289,15 @@
      ramps (0.5+0.5→0.75) into a brighter sliver at each corner. */
   --fmid-o: calc(var(--fmid) + var(--fo) * 2);
   /* Corner quadrant = one quarter of a feathered disk whose centre sits at the quadrant's INNER corner. */
-  --fc-tl: radial-gradient(circle var(--frad) at bottom right, #000 calc(var(--frad) - var(--ff)), transparent var(--frad));
-  --fc-tr: radial-gradient(circle var(--frad) at bottom left,  #000 calc(var(--frad) - var(--ff)), transparent var(--frad));
-  --fc-bl: radial-gradient(circle var(--frad) at top right,    #000 calc(var(--frad) - var(--ff)), transparent var(--frad));
-  --fc-br: radial-gradient(circle var(--frad) at top left,     #000 calc(var(--frad) - var(--ff)), transparent var(--frad));
+  --fc-tl: radial-gradient(circle var(--frad) at bottom right, #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  --fc-tr: radial-gradient(circle var(--frad) at bottom left,  #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  --fc-bl: radial-gradient(circle var(--frad) at top right,    #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  --fc-br: radial-gradient(circle var(--frad) at top left,     #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
   /* Edge strips feather on the OUTER side only; the inner side abuts the opaque centre. */
-  --fe-t: linear-gradient(to bottom, transparent 0, #000 var(--ff), #000 100%);
-  --fe-b: linear-gradient(to top,    transparent 0, #000 var(--ff), #000 100%);
-  --fe-l: linear-gradient(to right,  transparent 0, #000 var(--ff), #000 100%);
-  --fe-r: linear-gradient(to left,   transparent 0, #000 var(--ff), #000 100%);
+  --fe-t: linear-gradient(to bottom, transparent 0, #000 var(--feather), #000 100%);
+  --fe-b: linear-gradient(to top,    transparent 0, #000 var(--feather), #000 100%);
+  --fe-l: linear-gradient(to right,  transparent 0, #000 var(--feather), #000 100%);
+  --fe-r: linear-gradient(to left,   transparent 0, #000 var(--feather), #000 100%);
   --fcenter: linear-gradient(#000, #000);
   --field-mask:
     var(--fc-tl) top left / var(--frad) var(--frad) no-repeat,
@@ -324,24 +336,19 @@
      square to butt flat against the menu's flat top — together they form one rounded outline. */
   &[aria-expanded="true"] {
     --fill: var(--field-open);
-    /* Become the list's top row: match the menu's side fade (--fex) and indent the value to the item text
-       position (menu padding 8 + item padding 16 = 24), so the value sits in the same column as the
-       options below it. */
-    --fex: 12px;
-    --fey: 5px;
-    padding-left: 24px;
-    padding-right: 24px;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     /* Bottom edge SOLID (only top fades) so control butts flat against the menu, forming one shape. Needs
        its own full crossed-linear INTERSECT mask — a squared bottom can't reuse the base field's tiled
-       rounded-rect union. Sides feather (--fex), continuous with the menu. */
+       rounded-rect union. Different SHAPE, same WIDTH: the ramps run over --feather, exactly as the closed
+       field's do, so opening changes which edges dissolve and never how far. Padding is untouched for the
+       same reason — the value must not shift sideways when the menu appears. */
     -webkit-mask:
-      linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--fex)*.5), rgba(0,0,0,.5) var(--fex), rgba(0,0,0,.844) calc(var(--fex)*1.5), #000 calc(var(--fex)*2), #000 calc(100% - var(--fex)*2), rgba(0,0,0,.844) calc(100% - var(--fex)*1.5), rgba(0,0,0,.5) calc(100% - var(--fex)), rgba(0,0,0,.156) calc(100% - var(--fex)*.5), transparent 100%) center / 100% 100% no-repeat,
-      linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--fey)*.5), rgba(0,0,0,.5) var(--fey), rgba(0,0,0,.844) calc(var(--fey)*1.5), #000 calc(var(--fey)*2), #000 100%) center / 100% 100% no-repeat;
+      linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%) center / 100% 100% no-repeat,
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 100%) center / 100% 100% no-repeat;
     mask:
-      linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--fex)*.5), rgba(0,0,0,.5) var(--fex), rgba(0,0,0,.844) calc(var(--fex)*1.5), #000 calc(var(--fex)*2), #000 calc(100% - var(--fex)*2), rgba(0,0,0,.844) calc(100% - var(--fex)*1.5), rgba(0,0,0,.5) calc(100% - var(--fex)), rgba(0,0,0,.156) calc(100% - var(--fex)*.5), transparent 100%) center / 100% 100% no-repeat,
-      linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--fey)*.5), rgba(0,0,0,.5) var(--fey), rgba(0,0,0,.844) calc(var(--fey)*1.5), #000 calc(var(--fey)*2), #000 100%) center / 100% 100% no-repeat;
+      linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%) center / 100% 100% no-repeat,
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 100%) center / 100% 100% no-repeat;
     -webkit-mask-composite: source-in;
     mask-composite: intersect;
   }
@@ -398,15 +405,6 @@ input[type="number"].field::-webkit-inner-spin-button {
   height: 11px;
 }
 
-/* Select control sized like its OPEN state by default so opening the menu doesn't resize the bar: the
- * menu's side fade and 24px indent apply even while closed. Open state adds solid bottom + square
- * corners. Double class to beat the base `.field`. */
-.field.select-field {
-  --fex: 12px;
-  padding-left: 24px;
-  padding-right: 24px;
-}
-
 /* Open menu of the custom `Select` (never native <select>'s OS popup, unstyleable). Raised by LUMINANCE not
  * a drop shadow; edges feather to transparent like a field, no border. Item padding insets text past the
  * feather. */
@@ -423,22 +421,25 @@ input[type="number"].field::-webkit-inner-spin-button {
   max-height: 260px;
   overflow-y: auto;
   /* No top padding: the menu butts the control at top:100%, so the first item is already one row below it
-     and shares the rhythm. Sides 8 + item 16 = 24, the same indent the open control uses. */
+     and shares the rhythm. Sides 8 + item 20 = 28, the same indent EVERY field uses — so an option sits in
+     the same column as the value above it, and as the text input above that. */
   padding: 0 8px 8px;
   /* Flat where it meets the control (top), rounded where it's free (bottom) — so bar + menu read as one
      shape with a single rounded outline, not two stacked pills. */
   border-radius: 0 0 var(--radius-control) var(--radius-control);
   /* One colour with the open control (--field-open), so the bar and its menu read as a single surface. */
   background: var(--field-open);
-  /* Sides feather like a field; the TOP is solid (it butts the control) and only the BOTTOM fades. */
-  --fex: 12px;
-  --fey: 10px;
+  /* Sides feather like a field; the TOP is solid (it butts the control) and only the BOTTOM fades. All of
+     them over --feather, the same distance the control above uses — a menu that dissolved further than its
+     control would read as a narrower panel hanging off a wider bar, not as a softer one. It also keeps the
+     bottom fade off the rows: this element is the scroll container (max-height above), and the mask is
+     anchored to the padding box, so whatever ramp is set here sits permanently over the last visible row. */
   -webkit-mask-image:
-    linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--fex)*.5), rgba(0,0,0,.5) var(--fex), rgba(0,0,0,.844) calc(var(--fex)*1.5), #000 calc(var(--fex)*2), #000 calc(100% - var(--fex)*2), rgba(0,0,0,.844) calc(100% - var(--fex)*1.5), rgba(0,0,0,.5) calc(100% - var(--fex)), rgba(0,0,0,.156) calc(100% - var(--fex)*.5), transparent 100%),
-    linear-gradient(to bottom, #000 0, #000 calc(100% - var(--fey)*2), rgba(0,0,0,.844) calc(100% - var(--fey)*1.5), rgba(0,0,0,.5) calc(100% - var(--fey)), rgba(0,0,0,.156) calc(100% - var(--fey)*.5), transparent 100%);
+    linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%),
+    linear-gradient(to bottom, #000 0, #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%);
   mask-image:
-    linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--fex)*.5), rgba(0,0,0,.5) var(--fex), rgba(0,0,0,.844) calc(var(--fex)*1.5), #000 calc(var(--fex)*2), #000 calc(100% - var(--fex)*2), rgba(0,0,0,.844) calc(100% - var(--fex)*1.5), rgba(0,0,0,.5) calc(100% - var(--fex)), rgba(0,0,0,.156) calc(100% - var(--fex)*.5), transparent 100%),
-    linear-gradient(to bottom, #000 0, #000 calc(100% - var(--fey)*2), rgba(0,0,0,.844) calc(100% - var(--fey)*1.5), rgba(0,0,0,.5) calc(100% - var(--fey)), rgba(0,0,0,.156) calc(100% - var(--fey)*.5), transparent 100%);
+    linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%),
+    linear-gradient(to bottom, #000 0, #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%);
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
 }
@@ -446,8 +447,9 @@ input[type="number"].field::-webkit-inner-spin-button {
 @utility menu-item {
   border-radius: 7px;
   /* Vertical padding matches the control's (11px) so every row — control included — is the same height;
-     horizontal 16 + menu's 8 = 24, aligning item text under the open control's value. */
-  padding: 11px 16px;
+     horizontal 20 + menu's 8 = 28, the base field's indent, so an option lines up under the control's
+     value AND under the text inputs stacked above it. */
+  padding: 11px 20px;
   font-size: 14px;
   color: var(--ink); /* white, like the value shown in the closed control */
   cursor: pointer;

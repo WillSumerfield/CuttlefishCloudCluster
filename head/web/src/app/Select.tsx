@@ -85,7 +85,7 @@ export function Select({
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        className="field select-field flex items-center justify-between gap-2 text-left"
+        className="field flex items-center justify-between gap-2 text-left"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
