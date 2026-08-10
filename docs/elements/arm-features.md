@@ -96,6 +96,11 @@ not in the folder you uploaded. So your own `assets/` or `cache/` is yours: a Fe
 or deletes it, and a [Workspace](workspaces.md)'s tree is exactly what you last left in it whether or
 not a visit asked for a Feature.
 
+**In a [Tide Pool](tide-pool.md) or Workspace session the Feature's package is on your `PYTHONPATH`**,
+ahead of your Environment — so `pip list` shows it, and what it shows is the Arm's own build rather
+than anything installed. Installing another copy yourself does not replace it: the Arm's is what
+`import` finds, and it is the one its licence covers.
+
 Not every Feature has a profile — a Feature can be nothing but placement plus an install path, which
 needs no runtime arranged at all.
 

@@ -679,6 +679,22 @@ echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" >> /etc/profile.d/ccc-tidepool.sh
 for v in WANDB_API_KEY WANDB_PROJECT WANDB_ENTITY WANDB_MODE WANDB_NAME; do
   if [ -n "${!v-}" ]; then echo "export $v='${!v}'" >> /etc/profile.d/ccc-tidepool.sh; fi
 done
+# The Arm **Feature** runtime, which was the other half sshd was silently eating — found the same way as
+# W&B above, one Feature later. `$featenv` (ccc_head_api.features) is handed to this Pod through --env
+# and stops at this script, so a **Tide Pool** or **Workspace** visit that asked for a profiled Feature
+# had its package bound, its system libraries built and its working directory arranged, and then got a
+# shell with none of the three variables that make any of that reachable: `import vlearn` was a
+# ModuleNotFoundError and `pip list` showed nothing, on the one Spawn whose entire point was the Feature.
+# LD_LIBRARY_PATH especially cannot be recovered from inside — the loader reads it at `exec`, which is
+# the whole reason a profile exists.
+#
+# The NAMES arrive as one more --env entry (CCC_FEATURE_VARS, derived from `$featenv` below) rather than
+# being listed here: a profile that introduces a variable then needs no edit in this file, and the
+# symptom of forgetting one would be exactly this bug again. Unquoted for the word split, which is what
+# it is for. Values are read back out of this script's own environment and never re-parsed.
+for v in $CCC_FEATURE_VARS; do
+  if [ -n "${!v-}" ]; then echo "export $v='${!v}'" >> /etc/profile.d/ccc-tidepool.sh; fi
+done
 # The Pod's own /tmp is a RAM tmpfs sharing 64MB with the --writable-tmpfs overlay (see the mkdir in
 # JOB_SCRIPT). Point the shell at the bound disk scratch instead, or `pip install` at a Tide Pool —
 # the thing a Tide Pool is most used for — dies on any wheel bigger than what is left of that 64MB,
@@ -706,10 +722,16 @@ exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no \\
   -o AuthorizedKeysFile=/ccc_authorized_keys -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8"
 CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
+# Which variables the boot script above has to re-export past sshd — DERIVED from `$featenv` rather than
+# listed anywhere, since that string is the one authority on what this Spawn's profiles actually set.
+# Empty for every Spawn that asked for no profiled Feature, which makes the loop a no-op rather than a
+# special case. Splitting on commas is exactly as safe as the `--env` list below, which already does.
+featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' ' ')
+featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$featenv" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,CCC_FEATURE_VARS=$featnames$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 

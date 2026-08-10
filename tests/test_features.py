@@ -87,6 +87,44 @@ def _env_line(script: str) -> str:
     return next(ln for ln in script.splitlines() if ln.strip().startswith('--env "$wenv'))
 
 
+def _pool(**kw):
+    return _script(tidepool_port=2222, tidepool_pubkey="ssh-ed25519 AAAA", **kw)
+
+
+def test_a_tide_pool_shell_gets_the_features_environment_past_sshd():
+    """sshd builds a FRESH environment for every session and does not pass its own down, so everything
+    apptainer hands the Pod through `--env` reaches the boot script and stops there. W&B was the half of
+    that found first; this is the other one. A **Tide Pool** or **Workspace** visit that asked for a
+    profiled Feature had its package bound, its system libraries built and its working directory
+    arranged, and then got a shell where `import vlearn` was a ModuleNotFoundError and `pip list` showed
+    nothing — the one Spawn whose entire point was the Feature."""
+    pool = _pool(features=["vlearn"])
+    assert "CCC_FEATURE_VARS=$featnames" in _env_line(pool)
+    assert "for v in $CCC_FEATURE_VARS; do" in pool
+    # A Script Spawn runs `$py` directly under apptainer with no sshd in between, so it has no
+    # profile.d to write and nothing to re-export.
+    assert "CCC_FEATURE_VARS" not in _script(features=["vlearn"])
+
+
+def test_the_re_exported_names_are_derived_from_what_the_profile_set():
+    """Derived from `$featenv`, never listed: a profile that introduces a variable then needs no edit
+    in spawns.py, and the symptom of forgetting one would be exactly the bug above. Run for real,
+    because the derivation is the part that could be quietly wrong."""
+    lines = [ln for ln in _pool(features=["vlearn"]).splitlines() if ln.startswith("featnames=")]
+    assert len(lines) == 2, "the derivation and its trailing-space strip"
+
+    def names(featenv: str) -> str:
+        r = subprocess.run(["bash", "-c", "\n".join([f"featenv={featenv!r}", *lines,
+                                                     'printf %s "$featnames"'])],
+                           capture_output=True, text=True, check=True)
+        return r.stdout
+
+    assert names(",PYTHONPATH=/ccc/feature/vlearn,VL_WORKING_DIRECTORY=/ccc/vlwd,"
+                 "LD_LIBRARY_PATH=/a:/b") == "PYTHONPATH VL_WORKING_DIRECTORY LD_LIBRARY_PATH"
+    # No profiled Feature: an empty list, so the loop is a no-op rather than a case anyone branches on.
+    assert names("") == ""
+
+
 def test_the_arm_package_wins_over_anything_the_submitter_installed():
     """The point of the whole profile. vlearn is licensed per machine and its activation state is tied
     to a release, so the copy that runs has to be the Arm's — PYTHONPATH, ahead of the Environment's
