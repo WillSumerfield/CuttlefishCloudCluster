@@ -390,6 +390,10 @@ class TestRunRoute:
         assert captured["outputs"] == ["checkpoints"]
         assert captured["features"] == ["vlearn"]
         assert captured["manifest"] == "requirements.txt"
+        # The Spawn's **Name** is INHERITED from the Recipe, never asked for again: a person chose it
+        # when they saved the Recipe, so the "every Spawn is named by a human" rule is already met and
+        # `POST /recipes/{name}/run` stays a call that sends nothing but the name.
+        assert captured["name"] == "resnet"
 
     def test_running_a_missing_recipe_404s(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)

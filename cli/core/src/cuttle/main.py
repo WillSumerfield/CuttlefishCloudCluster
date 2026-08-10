@@ -958,6 +958,11 @@ def run(
     gpu: int = typer.Option(
         1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. --vram is the total "
                                    "across them. Refused if no Arm has this many."),
+    name: str = typer.Option(
+        None, "--name", help="What to call this Spawn in the queue and the archive. Required — CCC "
+                             "never invents one. Free text (48 chars): \"lr sweep 3e-4\" is as valid "
+                             "as \"sweep3\". A Recipe run or a Workspace visit needs none; it takes "
+                             "the name you already gave that Recipe or Workspace."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
     project: str = typer.Option(None, "--project", help="W&B project for this Spawn (default: config)."),
     entity: str = typer.Option(
@@ -1040,7 +1045,7 @@ def run(
                            f"project directory, {root})")
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
                                 features=feature, follow=follow, download=not no_download,
-                                manifest=manifest, no_gitignore=no_gitignore, root=root)
+                                manifest=manifest, no_gitignore=no_gitignore, root=root, name=name)
     wizard = script is None
     # The card count shows only past one: at a single Device it is what every Spawn does, and `24G`
     # already IS the per-card figure, so printing it would add a word and say nothing.
@@ -1049,6 +1054,10 @@ def run(
         # No file picker: you pass the path. Prompting through a directory listing is slower than
         # typing a name you already know, and wrong the moment the script lives in a subdirectory.
         script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
+        # Required exactly as --time and --vram are, and asked the same way: a person types it, or a
+        # scripted run that gave none is refused. CCC has nothing to fall back to — a Name it chose
+        # would be a Name nobody chose, which is the whole point of requiring one.
+        name = ui.need(name, "--name", lambda: ui.ask_text("What should this Spawn be called?"))
         # --time and --vram get no pre-filled default, deliberately: a default --vram of the
         # biggest card would make every untouched field eligible for it alone — queued at the
         # highest Demand for work that may need 2 GB.
@@ -1069,23 +1078,25 @@ def run(
             # Collected here, like every other wizard field — but never pre-filled, and the hard gate
             # below still runs regardless of how these were collected. At least one is required before
             # the loop lets you move on; blank only ends it once you have one.
+            # `folder`/`feat`, not `name`: that is this command's own --name parameter now, and a loop
+            # variable would quietly overwrite the Spawn's Name with the last output folder typed.
             while not output:
-                name = ui.ask_text("Output folder name (--output) — where your script writes results")
-                if name:
-                    output.append(name)
+                folder = ui.ask_text("Output folder name (--output) — where your script writes results")
+                if folder:
+                    output.append(folder)
                 else:
                     ui.warn("at least one output folder is required")
             while ui.ask_confirm("Add another output folder?", False):
-                name = ui.ask_text("Output folder name")
-                if name:
-                    output.append(name)
+                folder = ui.ask_text("Output folder name")
+                if folder:
+                    output.append(folder)
             # Optional, never gates submission. Offered from the built-in catalog
             # (config.FEATURE_NAMES) — a constant, so no Head call and no failure mode here. Whether
             # an Arm actually carries a Feature is checked at submit, not here.
             if not feature and ui.ask_confirm("Require any Arm Features?", False):
-                for name in config.FEATURE_NAMES:
-                    if ui.ask_confirm(f"Require {name!r}?", False):
-                        feature.append(name)
+                for feat in config.FEATURE_NAMES:
+                    if ui.ask_confirm(f"Require {feat!r}?", False):
+                        feature.append(feat)
     # Hard validation, unconditional — NOT gated on `wizard`. A flag-driven `cuttle run` never passes
     # through the wizard block above, so this is the only gate a direct invocation ever sees. No y/n
     # override for either: a Spawn with no output declared or a script that isn't there is refused, not
@@ -1110,7 +1121,7 @@ def run(
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
                       features=feature, manifest=manifest, download=not no_download, dest=dest,
-                      root=root)
+                      root=root, name=name)
 
 
 @app.command()

@@ -129,7 +129,7 @@ class TestPinnedSubmit:
         return tar
 
     def test_a_pinned_spawn_is_recorded_and_attributed(self, rig, capsys):
-        rc = admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
+        rc = admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
                          "--minutes", "60", "--vram", "24", "--node", "gpu-box",
                          "--output", "out", "--manifest", "requirements.txt"])
         assert rc == 0
@@ -144,7 +144,7 @@ class TestPinnedSubmit:
     def test_a_pinned_spawn_still_holds_escrow(self, rig, capsys):
         """The whole reason this path reuses submit_checked. A Spawn submitted around the pricing
         code would occupy a donated card that nobody is charged for."""
-        admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
+        admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
                     "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out",
                     "--manifest", "requirements.txt"])
         job_id = int(capsys.readouterr().out.strip())
@@ -152,19 +152,19 @@ class TestPinnedSubmit:
             assert job_id in {e["job_id"] for e in db.live_escrows(conn)}
 
     def test_an_unknown_arm_is_refused(self, rig, capsys):
-        assert admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
+        assert admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
                            "--minutes", "60", "--vram", "24", "--node", "typo",
                            "--output", "out"]) == 1
         assert "unknown Arm" in capsys.readouterr().err
 
     def test_an_unknown_user_is_refused(self, rig, capsys):
-        assert admin.main(["submit", "--user", "nobody", "--script", "train.py", "--tar", str(rig),
+        assert admin.main(["submit", "--user", "nobody", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
                            "--minutes", "60", "--vram", "24", "--node", "gpu-box"]) == 1
         assert "no such user" in capsys.readouterr().err
 
     def test_a_pinned_submit_to_a_retracted_arm_is_refused(self, rig, capsys):
         with db.connect() as conn:
             db.mark_arm_retracted(conn, "gpu-box")
-        assert admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(rig),
+        assert admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
                            "--minutes", "60", "--vram", "24", "--node", "gpu-box"]) == 1
         assert "retracted" in capsys.readouterr().err

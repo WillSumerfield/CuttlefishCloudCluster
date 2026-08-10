@@ -94,7 +94,11 @@ export type SpawnDetail = {
   submitted_at?: string
   finished_at?: string | null
   exit_code?: number | null
+  /** What RAN. Kept beside the Name rather than replaced by it — the page has room to say both, and
+   *  "which script was this?" is a real question a queue row has no space to answer. */
   script?: string
+  /** What a person CALLED it (CONTEXT.md, **Name**). What titles this page and every list row. */
+  name?: string
   gpus?: number | null
   vram_gb?: number | null
   minutes?: number | null
@@ -185,7 +189,10 @@ type HistoryRow = {
   finished_at: string | null
   exit_code: number | null
   cancelled: boolean
+  // The entry script (what RAN) and the **Name** (what a person called it). Two different facts: the
+  // list is titled by the Name, and the script stays visible on the Spawn's own page.
   script: string
+  name: string
   // What the submitter DEMANDED (Admin-only `--node`), which is null for almost every Spawn — never
   // where it ran. `placed_node` is that, recorded by the meter; null when the Spawn ended too fast to
   // be metered at all, or predates the column.
@@ -212,7 +219,9 @@ export const getHistory = () =>
     rows.map(
       (r): ArchivedSpawn => ({
         id: r.job_id,
-        name: r.script,
+        // The **Name** its submitter gave it — not the script, which is what this used to show and is
+        // why a Recipe run read `train.py` and a Workspace visit read nothing at all.
+        name: r.name,
         state: r.cancelled ? 'cancelled' : 'finished',
         // For a FINISHED Spawn "the arm" means the one it ran on. The declared node is the fallback
         // only because when it is set at all, an Admin named it and the Spawn went there.
@@ -669,7 +678,10 @@ export async function downloadRecovery(id: number): Promise<void> {
 
 export type SubmitOpts = {
   picked: Picked
-  name: string | null // optional label for the run; the Head falls back to the script name when unset
+  /** What this run is called in the queue and the archive. REQUIRED — the Head refuses a nameless
+   *  Spawn, and falls back to nothing (CONTEXT.md, **Name**). A label, not a key: two Spawns may
+   *  share one, and the id is what tells them apart. */
+  name: string
   script: string
   gpu: number
   // Wall-clock minutes, and GPU memory in GB. Both required by the Head — a Spawn with no declared
@@ -757,7 +769,9 @@ export type SubmitTidepoolOpts = {
   node: string | null
   features: string[]
   picked: Picked | null
-  name: string | null
+  /** Required, exactly as it is for an ordinary Spawn: a Tide Pool may decline to declare an
+   *  Environment, and may not decline to be named. */
+  name: string
   /** OPTIONAL here and only here — a Tide Pool may decline to declare an Environment. Blank gives a
    *  bare shell; a name builds that env into it, and needs `picked` to resolve against. */
   manifest?: string

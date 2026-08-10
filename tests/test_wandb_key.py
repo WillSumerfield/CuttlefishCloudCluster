@@ -257,7 +257,7 @@ class TestTheCliCommands:
             return real(user_id, script, gpu, args, wandb_env, *a, **kw)
 
         monkeypatch.setattr(head_spawns, "submit", spy)
-        r = signed_in("run", "train.py", "--time", "60", "--vram", "24", "--output", "out",
+        r = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
                           "--manifest", "requirements.txt",
                       "--project", "vision")
         assert r.exit_code == 0, r.output
@@ -304,7 +304,7 @@ class TestThePinnedPath:
         from ccc_head_api import admin
 
         _store("wandb_deadbeef")
-        rc = admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(tar),
+        rc = admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(tar),
                          "--minutes", "60", "--vram", "24", "--node", "gpu-box",
                          "--wandb-env", '{"WANDB_PROJECT": "X", "WANDB_ENTITY": "Y"}'])
         assert rc == 0, capsys.readouterr().err
@@ -320,7 +320,7 @@ class TestThePinnedPath:
         _store("wandb_deadbeef")
         from ccc_head_api import admin
 
-        admin.main(["submit", "--user", "alice", "--script", "train.py", "--tar", str(tar),
+        admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(tar),
                     "--minutes", "60", "--vram", "24", "--node", "gpu-box",
                     "--wandb-env", '{"WANDB_PROJECT": "X"}'])
         assert "WANDB_ENTITY" not in hint
@@ -452,7 +452,7 @@ class TestItReachesSbatch:
         tar_path = tmp_path / "upload.tar.gz"
         tar_path.write_bytes(buf.getvalue())
         head_spawns.submit_checked(1, False, "train.py", 1, [], client_env, tar_path, 60, 24, ["out"],
-                                   wandb=wandb, manifest="requirements.txt")
+                                   wandb=wandb, manifest="requirements.txt", name="a spawn")
 
     def test_the_stored_key_reaches_sbatch(self, sbatch_env, tmp_path):
         _store("wandb_deadbeef")

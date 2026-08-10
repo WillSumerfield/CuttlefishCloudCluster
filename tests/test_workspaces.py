@@ -527,6 +527,9 @@ class TestOpening(_Base):
         assert kw["tidepool"] is True
         assert kw["workspace"] == workspaces.dir_of(1, "scratch")
         assert kw["workspace_storage"] == 4 * GIB
+        # INHERITED from the Workspace, like a Recipe run's. A visit carries no script either, so
+        # without this it was the one Spawn the archive had nothing at all to title its row with.
+        assert kw["name"] == "scratch"
 
     def test_the_declaration_is_what_a_visit_asks_for(self):
         self._create()

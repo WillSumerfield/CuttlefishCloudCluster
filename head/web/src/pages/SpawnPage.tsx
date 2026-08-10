@@ -342,7 +342,10 @@ export function SpawnPage({ id }: { id: string }) {
 
   return (
     <Page
-      title={detail?.script ?? id}
+      // Titled by its **Name**, like every list that links here — a Spawn page headed by the entry
+      // script disagreed with the queue row you clicked to reach it, and said nothing at all for a
+      // Workspace visit, which has no script.
+      title={detail?.name || detail?.script || id}
       actions={
         v ? (
           <span className="flex items-center gap-2 text-[13px]">

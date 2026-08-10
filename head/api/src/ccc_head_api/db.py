@@ -31,7 +31,6 @@ from . import guises
 # imports the CLI's config. Default matches cuttle.config.HEAD_DB.
 DB_PATH = Path(os.environ.get("CCC_HEAD_DB", "/var/lib/ccc/head/head.db"))
 
-SCHEMA_VERSION = 17
 SESSION_TTL_DAYS = 30
 # head.db has TWO writers (the API: submit→escrow, override→ledger; the Karma tick: settle→ledger).
 # WAL permits that, but a writer that collides with another gets SQLITE_BUSY back *immediately* unless
@@ -422,10 +421,35 @@ CREATE TABLE workspaces (
 );
 """
 
+# A Spawn's **Name** (CONTEXT.md): what a person calls it in the queue and the archive, and the one
+# thing about a Spawn that CCC never invents. Required at `/submit` exactly as `minutes`/`vram`/the
+# **Environment** declaration are — refused before the Spawn exists rather than filed under something
+# made up for it — so nothing reaching this insert is nameless.
+#
+# NOT the Slurm job name. That string is `.replace()`d into a bash job script (`spawns.JOB_SCRIPT`),
+# where a User's own words would be a shell injection; `--job-name` stays the constant `ccc-spawn` and
+# the Name lives here, served by the same DB join `/spawns` already does for Attribution.
+#
+# `DEFAULT ''` is a migration artifact and nothing else: an empty Name is unreachable through either
+# client, and no row that predates this column survives the teardown that ships it. It exists because
+# SQLite cannot ADD a NOT NULL column without one.
+#
+# A label, never a key — no UNIQUE here, deliberately. Two Spawns may share a Name (running one Recipe
+# twice is the ordinary case, and both visits inherit it); the job_id is what tells them apart.
+_SCHEMA_V18 = """
+ALTER TABLE spawns ADD COLUMN name TEXT NOT NULL DEFAULT '';
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
               _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
-              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17]
+              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18]
+
+# DERIVED from the ladder, never written by hand. It was a standalone constant until it fell one behind
+# the list it describes: `init_schema` stamps this AFTER running `_MIGRATIONS[ver:]`, so a version that
+# undercounts re-runs the last step on the very next call and dies on whatever it already did ("duplicate
+# column name"). Every future migration is now one append with nothing to remember.
+SCHEMA_VERSION = len(_MIGRATIONS)
 
 
 # --- connection + schema ----------------------------------------------------
@@ -674,7 +698,8 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
                  staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
                  node: str | None = None, hold: float | None = None,
-                 tidepool: bool = False, recipe_name: str | None = None) -> None:
+                 tidepool: bool = False, recipe_name: str | None = None,
+                 name: str = "") -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
     ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
     submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
@@ -683,14 +708,16 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
     Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
 
     `recipe_name` is set only for a Spawn made by `recipes.run` — it's what `running_recipe_names`
-    reads back to tell a Recipe's card it has a live Spawn on the queue right now.
+    reads back to tell a Recipe's card it has a live Spawn on the queue right now. `name` is a
+    different thing entirely and both can be set at once: the **Name** a person reads, which a Spawn
+    from a Recipe *inherits* from that Recipe. One badges a card, the other titles a row.
     """
     conn.execute(
         """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
-                              tidepool, recipe_name)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                              tidepool, recipe_name, name)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool),
-         recipe_name),
+         recipe_name, name),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -717,18 +744,28 @@ def spawns_by_staging_uuid(conn: sqlite3.Connection, uuids: list[str]) -> dict[s
     return {r["staging_uuid"]: r for r in rows}
 
 
-def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str | None]:
-    """Map job_id -> submitter username for the given ids (None if the user was since deleted).
-    Used to enrich the live `GET /spawns` queue with app-level attribution."""
+def spawn_labels(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, dict]:
+    """Map job_id -> the two things the live `GET /spawns` queue cannot learn from Slurm: who submitted
+    it (**Attribution** — Slurm says `ccc` for every Spawn, so only this ledger knows) and what it is
+    **Name**d.
+
+    The Name is here rather than on the Slurm job because it cannot safely be there: `--job-name` is
+    substituted into a bash job script, so a User's own words in it would be a shell injection. The
+    queue reads it back over the same join Attribution already needed, which is why this answers both
+    at once instead of costing a second query per poll.
+
+    A job id with no row (submitted outside CCC, or already reaped) is simply absent — the caller fills
+    in its own default rather than being handed a fabricated one.
+    """
     if not job_ids:
         return {}
     marks = ",".join("?" * len(job_ids))
     rows = conn.execute(
-        f"""SELECT s.job_id, u.username FROM spawns s
+        f"""SELECT s.job_id, s.name, u.username FROM spawns s
             LEFT JOIN users u ON u.id = s.user_id WHERE s.job_id IN ({marks})""",
         job_ids,
     ).fetchall()
-    return {r["job_id"]: r["username"] for r in rows}
+    return {r["job_id"]: {"submitted_by": r["username"], "name": r["name"]} for r in rows}
 
 
 def spawn_owners(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, int]:
@@ -802,7 +839,7 @@ def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, 
 # (recovery.WINDOW_MINUTES) is that module's constant, not this one's business. output_copies rides
 # alongside it on exactly the same terms (retention.TTL_DAYS), so a row carries both countdowns or
 # neither, and the Dashboard renders the pair the same way.
-_SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
+_SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script, s.name,
                        s.gpus, s.vram_gb, s.minutes, s.node, s.placed_node,
                        u.username AS submitted_by,
                        l.amount AS cost, r.bytes AS recovery_bytes, r.created_at AS recovery_created_at,

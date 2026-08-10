@@ -319,9 +319,14 @@ def spawns(limit: int | None = None, user: dict = Depends(current_user)) -> list
         rows = rows[:limit]
     ids = [r["id"] for r in rows if r["id"] is not None]
     with db.connect() as conn:
-        submitters = db.spawn_submitters(conn, ids)
+        labels = db.spawn_labels(conn, ids)
     for r in rows:
-        r["submitted_by"] = submitters.get(r["id"])
+        label = labels.get(r["id"]) or {}
+        r["submitted_by"] = label.get("submitted_by")
+        # The Slurm job name is the constant `ccc-spawn` for every Spawn (spawns.JOB_SCRIPT) and is
+        # deliberately NOT the **Name** — see db.spawn_labels. Overwritten here rather than merged, so
+        # the queue and the archive title a Spawn identically instead of reading two different fields.
+        r["name"] = label.get("name") or ""
     return rows
 
 
@@ -789,6 +794,14 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     for field in ("minutes", "vram"):
         if not meta.get(field):
             raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
+    # The Spawn's **Name** (CONTEXT.md). Gated here as well as in `submit_checked` — which is the real
+    # authority, and covers the Head-local admin path this route cannot — so a nameless submit is
+    # refused BEFORE its project is spooled to disk rather than after. `clean_name` owns what makes a
+    # Name acceptable; this only relays its reason.
+    try:
+        spawns_mod.clean_name(meta.get("name"))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     # At least one declared output subdir: a Spawn nobody named an output for is one whose results have
     # nowhere retrievable to land, which is worse discovered after the fact than refused up front.
     # `outputs` also gets the shell-injection check (OUTPUT_NAME_RE) in spawns.submit — this is only the
@@ -825,7 +838,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
             wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [],
-            tidepool=tidepool, manifest=meta.get("manifest"))
+            tidepool=tidepool, manifest=meta.get("manifest"), name=meta.get("name") or "")
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:

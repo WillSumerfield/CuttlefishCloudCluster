@@ -358,6 +358,12 @@ LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
 # state, written into the Arm's own Licence directory and left there. So the directory is real, empty,
 # and named once here rather than as a string in the middle of the admit path.
 ACTIVATION_OUTPUT_DIR = "activation"
+# What an **Activation Spawn** is called in the queue and the archive. Every Spawn carries a **Name** a
+# person chose (CONTEXT.md) — and this one is no exception, it just has no submitter standing there to
+# be asked: it is CCC's own work, run during an admit. So the name is chosen once, here, by whoever
+# writes this line, rather than made up per-Spawn at submit time. `%s` is the Feature being activated,
+# which is the only thing that differs between two of them.
+ACTIVATION_SPAWN_NAME = "activate %s licence"
 # The apptainer .deb the Head serves to every Arm, and the record that pins it:
 # {version, filename, sha256}. Under CCC_LIB rather than HEAD_STATE_DIR because the Enroll API is what
 # serves the file, and it runs as `munge` — HEAD_STATE_DIR is 0700 ccc and it could not even traverse

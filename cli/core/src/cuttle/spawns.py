@@ -143,7 +143,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
                    gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, activation: bool = False,
-                   user: str | None = None) -> tuple[int, str | None]:
+                   user: str | None = None, name: str = "") -> tuple[int, str | None]:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and the Head API has none — so this does not travel over HTTP at all.
@@ -171,7 +171,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         r = run(auth._admin_argv([
             "submit", "--user", me, "--script", script, "--tar", tar_path,
             "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-            "--node", node, "--wandb-env", json.dumps(wandb_env),
+            "--node", node, "--wandb-env", json.dumps(wandb_env), "--name", name,
             # Repeatable, one `--output NAME` / `--feature NAME` per declared name — placed before the
             # trailing `*args` positional (the admin parser's `nargs="*"`) so argparse never mistakes a
             # script argument for another output/feature name.
@@ -243,7 +243,8 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
            outputs: list[str], project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, node: str | None = None,
            features: list[str] | None = None, manifest: str | None = None,
-           download: bool = True, dest: Path | None = None, root: Path | None = None) -> None:
+           download: bool = True, dest: Path | None = None, root: Path | None = None,
+           name: str = "") -> None:
     root = root or Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
@@ -260,9 +261,10 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     env_note = None
     if node:
         spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
-                                            wandb_env, outputs, features=features, manifest=manifest)
+                                            wandb_env, outputs, features=features, manifest=manifest,
+                                            name=name)
     else:
-        meta = {"script": script, "gpu": gpu, "args": args,
+        meta = {"script": script, "gpu": gpu, "args": args, "name": name,
                 "minutes": minutes, "vram": vram, "wandb_env": wandb_env, "outputs": outputs,
                 # Omitted rather than sent empty, matching the rest of this dict's optional fields —
                 # most Spawns declare none, and the Head reads an absent key as "no requirement".
@@ -332,7 +334,7 @@ def _download_now(spawn_id: int) -> None:
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
                     features: list[str] | None = None, manifest: str | None = None,
-                    no_gitignore: bool = False, root: Path | None = None) -> int:
+                    no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
     """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
     tidepool.py, owns the UI from here, since it still has to poll for placement and attach).
 
@@ -355,8 +357,9 @@ def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node:
         tar = _make_tar(root, [])
     if node:
         return _submit_pinned(tar, "", [], minutes, vram, gpu, node, {}, outputs,
-                              features=features, tidepool=True, manifest=manifest)[0]
+                              features=features, tidepool=True, manifest=manifest, name=name)[0]
     meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,
+           "name": name,
            **({"features": features} if features else {}),
            # Absent means "no Environment", which for a Tide Pool alone is legal — so unlike an
            # ordinary Spawn this is omitted rather than sent empty.
@@ -507,9 +510,14 @@ def history(days: int = 30, as_json: bool = False, limit: int = 0) -> None:
         if not rows:
             ui.say(f"no Spawns in the last {days} days")
             return
+        # SPAWN, not SCRIPT: the column carries the **Name** its submitter gave it, matching `queue`'s
+        # own SPAWN column so the live board and the archive title one Spawn identically. The script
+        # is what RAN and is still on `cuttle status <id>`; it is not what a person scans a list by —
+        # and for a Workspace visit there is no script at all.
         ui.table(
-            ["SUBMITTED", "FINISHED", "ID", "SCRIPT", "WHO", "GPU", "MIN", "COST", "OUTCOME"],
-            [[_short(r["submitted_at"]), _short(r.get("finished_at")), r["job_id"], r["script"],
+            ["SUBMITTED", "FINISHED", "ID", "SPAWN", "WHO", "GPU", "MIN", "COST", "OUTCOME"],
+            [[_short(r["submitted_at"]), _short(r.get("finished_at")), r["job_id"],
+              r.get("name") or "-",
               r.get("submitted_by") or "-", r.get("gpus"), r.get("minutes"),
               f"{r['cost']:.1f}" if r.get("cost") is not None else "—", _history_outcome(r)]
              for r in rows])

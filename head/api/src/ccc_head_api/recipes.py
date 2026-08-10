@@ -264,7 +264,11 @@ def run(conn, user_id: int, name: str, is_admin: bool) -> int:
         user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]), wandb_env,
         None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
         wandb=bool(row["wandb"]), features=json.loads(row["features"]), manifest=row["manifest"],
-        source_dir=_dir(user_id, name), recipe_name=name,
+        # The Recipe's own name is the Spawn's **Name**, INHERITED rather than asked for again: it was
+        # chosen by a person when the Recipe was saved, so the rule that a human names every Spawn is
+        # already satisfied and there is nothing left to prompt for. Running one Recipe ten times gives
+        # ten rows reading the same thing, which is exactly what re-running one piece of work looks like.
+        source_dir=_dir(user_id, name), recipe_name=name, name=name,
     )
 
 

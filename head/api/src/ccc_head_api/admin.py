@@ -145,7 +145,7 @@ def _return(node: str) -> int:
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
             node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
             features: list[str] | None = None, tidepool: bool = False,
-            manifest: str | None = None, activation: bool = False) -> int:
+            manifest: str | None = None, activation: bool = False, name: str = "") -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
     Authorization is being the operator on the Head; attribution is the account named here. Goes through
@@ -173,7 +173,7 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
-                                       activation=activation)
+                                       activation=activation, name=name)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -231,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="the project that activates a Feature's licence on an Arm (JSON).")
     fa.add_argument("name")
     s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
+    s.add_argument("--name", required=True,
+                   help="what to call this Spawn in the queue and the archive. Required, like every "
+                        "other Spawn's — CCC never invents one.")
     s.add_argument("--script", default=None, help="omit only for --tidepool.")
     s.add_argument("--tar", required=True, help="gzip-tar of the project tree (empty for --tidepool).")
     s.add_argument("--minutes", type=int, required=True)
@@ -278,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
                        args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features,
                        tidepool=args.tidepool, manifest=args.manifest,
-                       activation=args.activation)
+                       activation=args.activation, name=args.name)
     if args.cmd == "feature-activation":
         return _feature_activation(args.name)
     return 2

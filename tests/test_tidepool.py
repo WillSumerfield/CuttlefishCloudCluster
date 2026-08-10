@@ -321,7 +321,7 @@ class TestSubmitRouteAcceptsTidepool:
     def test_no_script_no_outputs_is_accepted(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)
         monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
-        meta = {"minutes": 60, "vram": 24, "tidepool": True}
+        meta = {"minutes": 60, "vram": 24, "tidepool": True, "name": "a pool"}
         r = c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
         assert r.status_code == 200, r.text
         # `environment` is the Environment echo every submit carries (docs/TODO.md "Python
@@ -639,7 +639,7 @@ class TestCliTidepoolFlagWiring:
 
     def test_output_optional_but_confirmed(self, signed_in, fake_slurm):
         """Declining the confirm aborts before anything is submitted."""
-        r = signed_in("run", "--tidepool", "--time", "10", "--vram", "4", input="n\n")
+        r = signed_in("run", "--tidepool", "--name", "a pool", "--time", "10", "--vram", "4", input="n\n")
         assert r.exit_code != 0
         with db.connect() as conn:
             assert conn.execute("SELECT COUNT(*) c FROM spawns").fetchone()["c"] == 0
@@ -648,7 +648,7 @@ class TestCliTidepoolFlagWiring:
         """Accepted -> a real submission happens (tidepool=1 in the ledger), even though this fake
         cluster can never actually place it (no real Slurm, so attach then fails loudly — that failure
         is expected and not what this test is about)."""
-        signed_in("run", "--tidepool", "--time", "10", "--vram", "4", input="y\n")
+        signed_in("run", "--tidepool", "--name", "a pool", "--time", "10", "--vram", "4", input="y\n")
         with db.connect() as conn:
             row = conn.execute("SELECT tidepool FROM spawns").fetchone()
         assert row is not None

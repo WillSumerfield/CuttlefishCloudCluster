@@ -286,6 +286,11 @@ def visit(conn, user_id: int, name: str, is_admin: bool, overrides: dict | None 
             or None,
             features=list(over.get("features") or json.loads(row["features"])),
             workspace=dir_of(user_id, name), workspace_storage=row["storage_bytes"],
+            # Inherited, exactly as a Recipe's is: the Workspace was named by its owner when they
+            # created it, so a visit needs no name of its own. Without this a visit was the one Spawn
+            # with nothing in its Name at all — it carries no script either, so the archive had nothing
+            # whatsoever to title the row with.
+            name=name,
         )
     except BaseException:
         db.release_workspace(conn, row["id"], db.SUBMITTING)

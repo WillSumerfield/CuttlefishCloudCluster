@@ -15,8 +15,11 @@ import { ALLOWANCE, size } from "../recipes/format";
  * `queue/SubmitComposer.tsx` and `recipes/RecipeComposer.tsx` are thin wrappers over this.
  *
  * What actually differs, and why it stays branched rather than unified further:
- *   · Name — optional for a Spawn (falls back to the script's name); required, unique, and fixed once
- *     `editing`, for a Recipe (it's the key you Run it by later).
+ *   · Name — required for BOTH, but for different reasons and with different rules. A Spawn's is a
+ *     label (CONTEXT.md, **Name**): free text, capped, and two Spawns may share one. A Recipe's is a
+ *     key — unique among yours, and fixed once `editing`, because it is what you Run it by later.
+ *     A Spawn's used to be optional here and to fall back to the script's name; it no longer falls
+ *     back to anything, because CCC names nothing.
  *   · Tide Pool mode and admin node-targeting exist for a Spawn only — neither means anything for a
  *     Recipe (CONTEXT.md: it runs from any machine with nothing to hand, so pinning a node contradicts
  *     the point, and there is no "live shell" to freeze).
@@ -34,6 +37,19 @@ const GB = 1024 ** 3;
 // interpolated `mkdir -p "$ccc_out/<name>"`. A client-side reject is instant; the Head's is the one
 // that actually matters (it never trusts this one).
 const OUTPUT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+// Mirrors the Head's MAX_SPAWN_NAME (ccc_head_api.spawns), and only as a typing limit — the Head is
+// what enforces it. Deliberately NOT paired with a charset check the way outputs are: a Spawn's
+// **Name** is a label rather than a path segment, so there is nothing to escape and nothing to reject
+// beyond the length and the control characters the Head strips out.
+const MAX_SPAWN_NAME = 48;
+
+// How many whole GB a card counts as — ROUNDED UP, mirroring `ccc_head_api.slurm.card_gb` and
+// `cuttle.config.card_gb`. A card almost never reports the number it is sold as (ECC and
+// virtualization both take a bite), so a 16 GB card can report 15.4 and must still answer `--vram 16`
+// or a User is refused against hardware they can see. All three copies must agree: this one only
+// decides what to grey out, but greying out what the Head would accept is the same bug seen earlier.
+const cardGb = (vramMb: number) => Math.ceil(vramMb / 1024);
 
 // The recipe composer card's own corner radius and alpha edge-fade depth (px) — tune these, not
 // `.shard`'s global --radius-surface/--fade-x/--fade-y, to change this card without touching every other
@@ -320,17 +336,22 @@ export function Composer(props: ComposerProps) {
   // A count past the end of the list is unplaceable too, not merely unlisted — an old Recipe frozen at
   // 4 cards, opened after the 4-card Arm left, has no row here at all.
   const placeable = !known || !!gpuOptions[gpu - 1] && !gpuOptions[gpu - 1].disabled;
+  // Every Spawn carries a **Name** a person chose (CONTEXT.md) — the Head refuses a nameless one, so
+  // both Spawn branches gate on it exactly as they gate on --time and --vram. A Tide Pool is no
+  // exception: it may decline to declare an Environment, and it may not decline to be named.
+  // A Recipe already required its own (it is the key you run it by), which is why this is not a third
+  // condition there.
   const ready = placeable && (
     variant === "spawn" && mode === "tidepool"
       // A named manifest needs the folder that holds it — the Head builds from the upload, and there
       // is nothing to resolve the name against otherwise.
-      ? Number(minutes) > 0 && Number(vram) > 0 && (!named || !!picked)
+      ? !!trimmed && Number(minutes) > 0 && Number(vram) > 0 && (!named || !!picked)
       : variant === "recipe"
         ? metaOnly && !picked
           ? !!script.trim() && named && Number(minutes) > 0 && Number(vram) > 0 && outputs.length > 0
           : !!picked && !!trimmed && !dup && !!script && named && Number(minutes) > 0 &&
             Number(vram) > 0 && outputs.length > 0 && !over
-        : !!picked && !!script && named && Number(minutes) > 0 && Number(vram) > 0 &&
+        : !!picked && !!trimmed && !!script && named && Number(minutes) > 0 && Number(vram) > 0 &&
           outputs.length > 0);
 
   const go = async () => {
@@ -342,12 +363,15 @@ export function Composer(props: ComposerProps) {
       if (mode === "tidepool") {
         const id = await submitTidepool({
           minutes: Number(minutes), vram: Number(vram), gpu, node: node || null, features, picked,
-          name: name.trim() || null, manifest: manifest.trim(),
+          // `trimmed`, never `|| null`: a Name is required now, and `ready` above has already refused
+          // to enable the button without one. Sending null could only ever produce a 422 for a field
+          // the form itself just guaranteed.
+          name: trimmed, manifest: manifest.trim(),
         });
         setTidepoolId(id);
       } else {
         const res = await submit({
-          picked: picked as Picked, name: name.trim() || null, script, gpu, minutes: Number(minutes),
+          picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
           wandb: wandbLog, wandbProject, wandbEntity, outputs, features, manifest,
         });
@@ -442,10 +466,13 @@ export function Composer(props: ComposerProps) {
       <div className={variant === "recipe" ? "grid gap-3" : "grid gap-3 sm:grid-cols-2"}>
         <Labeled label="Name" className="sm:col-span-2" help={variant === "recipe"
           ? "What you'll call this Recipe when you run it later. It has to be unique among yours."
-          : "An optional label so you can recognise this run in the queue later. Leave it blank and the script's name is used."}>
+          : "What this run is called in the queue and the archive. Required — CCC won't name it for you, and a queue of jobs all called train.py is one nobody can read. Two runs may share a name."}>
           <input
             className="field"
-            placeholder="optional"
+            // MAX_SPAWN_NAME (ccc_head_api.spawns) for a Spawn. The Head is the one that enforces it;
+            // this only stops you typing past the limit and meeting a 422 for it.
+            maxLength={variant === "spawn" ? MAX_SPAWN_NAME : undefined}
+            placeholder={variant === "spawn" ? "lr sweep, 3e-4" : "name it"}
             value={name}
             readOnly={variant === "recipe" && !!editing}
             onChange={(e) => setName(e.target.value)}
