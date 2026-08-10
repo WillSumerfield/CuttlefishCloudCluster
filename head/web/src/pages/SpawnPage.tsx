@@ -15,8 +15,10 @@ import {
   type SpawnDetail,
 } from "../api";
 import { useAuth } from "../app/auth";
+import { session } from "../app/session";
 import { Tip } from "../app/Tip";
 import { human } from "../project";
+import { CancelSpawn } from "../queue/CancelSpawn";
 import { duration, armLabel, placedLabel } from "../queue/format";
 
 /**
@@ -297,6 +299,7 @@ export function SpawnPage({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [out, setOut] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const timer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -332,6 +335,10 @@ export function SpawnPage({ id }: { id: string }) {
   }, [jobId, refresh]);
 
   const v = detail ? verdict(detail) : null;
+  // Cancel is for an OUTSTANDING Spawn — queued or running, `done` says which. You may end your own; an
+  // Admin may end anyone's. The row you clicked in from can still be stopped from here.
+  const canCancel =
+    !!detail && !detail.done && (session.isAdmin || detail.submitted_by === session.username);
 
   return (
     <Page
@@ -352,6 +359,16 @@ export function SpawnPage({ id }: { id: string }) {
               <span style={{ color: v.color }}>{v.word}</span>
             </Tip>
             <span className="num text-ink-mute">#{id}</span>
+            {/* No optimistic state here: the page is already polling itself, so one extra read is enough
+                to turn the verdict to "cancelled" and take this away with it. */}
+            {canCancel && (
+              <CancelSpawn
+                id={jobId}
+                confirming={confirming}
+                setConfirming={setConfirming}
+                onCancelled={() => void refresh()}
+              />
+            )}
           </span>
         ) : null
       }

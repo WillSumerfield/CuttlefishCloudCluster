@@ -1,10 +1,10 @@
 import { useState } from "react";
 import type { Spawn } from "../api";
-import { cancelSpawn } from "../api";
 import { Link } from "../app/router";
 import { duration, armLabel } from "./format";
 import { IridBloom } from "./IridBloom";
 import { CloudDrift } from "./CloudDrift";
+import { CancelSpawn } from "./CancelSpawn";
 
 /**
  * One Spawn in the live queue. Two variants, and the difference between them is the whole point of the
@@ -21,8 +21,18 @@ import { CloudDrift } from "./CloudDrift";
  * honoured and this did not. It is a STRETCHED `<a>` — absolutely positioned over the row — rather than a
  * wrapper, because this row has a button in it and History does not. A wrapper would nest a `<button>`
  * inside an `<a>` (invalid, and one click would both cancel and navigate); an onClick on the `<li>` would
- * work but stop being a real link, losing middle-click and new-tab. The overlay keeps both: Cancel simply
- * sits ABOVE it on z-30 and swallows its own clicks, so no stopPropagation is needed anywhere.
+ * work but stop being a real link, losing middle-click and new-tab. The overlay keeps both: Cancel sits
+ * ABOVE it on z-30 and swallows its own clicks, so no stopPropagation is needed anywhere.
+ *
+ * That last part only works because Cancel is a child of the `<li>`, which is why the `<li>` is the flex
+ * row rather than a wrapper inside it. Cancel used to live in the `relative z-10` content lift, and a
+ * numeric z-index on a positioned element opens a STACKING CONTEXT — so its z-30 ranked only against its
+ * siblings inside that lift, and the whole lift (Cancel included) painted at z-10, under the overlay. The
+ * button was unclickable: every press landed on the link. Ordering across the two therefore has to happen
+ * in the `<li>`'s context, where 30 genuinely beats 20.
+ *
+ * The overlay is also dropped entirely while a confirmation is open, so a click that misses Keep/Cancel
+ * spawn does nothing rather than navigating away and discarding the question.
  */
 
 export function SpawnRow({
@@ -39,21 +49,6 @@ export function SpawnRow({
   onCancelled: (id: number) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const doCancel = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await cancelSpawn(spawn.id);
-      onCancelled(spawn.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-      setConfirming(false);
-    }
-  };
 
   const running = variant === "running";
 
@@ -62,16 +57,18 @@ export function SpawnRow({
     // bands drifting across (this machine is working); waiting → `IridBloom`, a screen-blended WebGL current
     // (waiting, no known end). Content lives in an inner lifted div so it sits above whichever layer the card
     // carries. `shard` carries the plate + sink/fade/radius/padding.
-    <li className="shard queue-row relative">
+    <li className="shard queue-row relative flex items-center gap-4">
       {running ? <CloudDrift /> : <IridBloom />}
       {/* Above the motion layers and the content (z-10), below the Cancel cluster (z-30). Labelled
-          because it has no text of its own — the row's name is painted by the div underneath it. */}
-      <Link
-        to={`/spawn/${spawn.id}`}
-        className="absolute inset-0 z-20"
-        aria-label={`Open spawn ${spawn.id}`}
-      />
-      <div className="relative z-10 flex items-center gap-4">
+          because it has no text of its own — the row's name is painted by the div beside it. */}
+      {!confirming && (
+        <Link
+          to={`/spawn/${spawn.id}`}
+          className="absolute inset-0 z-20"
+          aria-label={`Open spawn ${spawn.id}`}
+        />
+      )}
+      <div className="relative z-10 flex min-w-0 flex-1 items-center gap-4">
       {/* Position — waiting only. The one place a number is structural: it IS the queue. */}
       {variant === "waiting" && (
         <span
@@ -121,35 +118,19 @@ export function SpawnRow({
             </>
           )}
         </div>
-        {error && <p className="mt-1 text-[12px] text-[var(--alarm)]">{error}</p>}
+      </div>
       </div>
 
-      {/* Cancel — confirms inline, never a browser dialog. Settles for the seconds actually held. */}
+      {/* Sibling of the overlay, not of the content — see the note above. */}
       {canCancel && (
-        <div className="relative z-30 shrink-0">
-          {!confirming ? (
-            <button className="btn-ghost" onClick={() => setConfirming(true)} disabled={busy}>
-              Cancel
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="hidden text-[12px] text-ink-mute sm:inline">Settles for time held.</span>
-              <button className="btn-ghost" onClick={() => setConfirming(false)} disabled={busy}>
-                Keep
-              </button>
-              <button
-                className="btn-ghost"
-                onClick={doCancel}
-                disabled={busy}
-                style={{ color: "var(--alarm)" }}
-              >
-                {busy ? "Cancelling…" : "Cancel spawn"}
-              </button>
-            </div>
-          )}
-        </div>
+        <CancelSpawn
+          id={spawn.id}
+          confirming={confirming}
+          setConfirming={setConfirming}
+          onCancelled={onCancelled}
+          className="relative z-30 shrink-0"
+        />
       )}
-      </div>
     </li>
   );
 }
