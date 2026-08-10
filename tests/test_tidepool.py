@@ -653,3 +653,136 @@ class TestCliTidepoolFlagWiring:
             row = conn.execute("SELECT tidepool FROM spawns").fetchone()
         assert row is not None
         assert row["tidepool"] == 1
+
+
+class TestHowASessionSaysItEnded:
+    """`_report_ending` — the three ways out of an attached shell, and what each may truthfully claim.
+
+    The bug pinned here: a Workspace visit thrown out at `--time` announced that it was "still running
+    and still billing Karma". Both halves were false. Slurm had already TERM'd the job, so it sat in
+    COMPLETING draining its EXIT trap, and the tick only accrues onto RUNNING Spawns — but the CLI read
+    the Head's `done`, which stays False through COMPLETING (deliberately: `watch` gates the output
+    download on it). At the 600s KillWait a Tide Pool needs, that lie would last ten minutes.
+    """
+
+    @pytest.fixture
+    def said(self, monkeypatch):
+        """Every ui line this produces, captured before Rich can wrap it to the console width."""
+        lines: list[str] = []
+        for name in ("ok", "warn", "hint"):
+            monkeypatch.setattr(cli_tidepool.ui, name,
+                                lambda m, _n=name: lines.append(f"{_n}: {m}"))
+        return lines
+
+    @pytest.fixture
+    def head_says(self, monkeypatch):
+        def _set(payload):
+            monkeypatch.setattr(cli_tidepool.auth, "_api", lambda *a, **kw: payload)
+        return _set
+
+    def test_completing_is_neither_running_nor_billing(self, head_says, said):
+        head_says({"id": 3, "done": False, "state": "COMPLETING"})
+        cli_tidepool._report_ending(3, None)
+        text = "\n".join(said)
+        assert "still running" not in text
+        assert "still billing" not in text
+        assert "stopped billing" in text
+
+    def test_a_completing_tide_pool_points_at_the_recovery_window(self, head_says, said):
+        """Its scratch is being copied home right now — named, but not waited for: the User was just
+        thrown out of a shell and wants their prompt back."""
+        head_says({"id": 3, "done": False, "state": "COMPLETING"})
+        cli_tidepool._report_ending(3, None)
+        assert "cuttle recover 3" in "\n".join(said)
+
+    def test_a_completing_visit_points_at_the_workspace_not_recovery(self, head_says, said):
+        """A Workspace visit has no Recovery Window and needs none (CONTEXT.md, **Workspace**) — the
+        tree it wrote is the thing that was already being saved."""
+        head_says({"id": 3, "done": False, "state": "COMPLETING"})
+        cli_tidepool._report_ending(3, "TransformerRL")
+        text = "\n".join(said)
+        assert "cuttle recover" not in text
+        assert "cuttle workspace open TransformerRL" in text
+
+    def test_a_genuinely_running_spawn_still_gets_the_billing_warning(self, head_says, said):
+        """`exit` typed, or the connection dropped. This ending was never wrong and must survive."""
+        head_says({"id": 3, "done": False, "state": "RUNNING"})
+        cli_tidepool._report_ending(3, None)
+        text = "\n".join(said)
+        assert text.startswith("warn:")
+        assert "still running and still billing Karma" in text
+        assert "cuttle cancel 3" in text
+
+    def test_a_running_visit_is_reattached_by_name(self, head_says, said):
+        """Opening a live Workspace joins the visit that exists, so its name is the way back in — a
+        `--tidepool <id>` here would be a second route its owner never learned."""
+        head_says({"id": 3, "done": False, "state": "RUNNING"})
+        cli_tidepool._report_ending(3, "TransformerRL")
+        text = "\n".join(said)
+        assert "cuttle workspace open TransformerRL" in text
+        assert "--tidepool" not in text
+
+    def test_a_settled_spawn_has_simply_ended(self, head_says, said):
+        head_says({"id": 3, "done": True, "state": "done", "exit": 0})
+        cli_tidepool._report_ending(3, None)
+        text = "\n".join(said)
+        assert text.startswith("ok:")
+        assert "has ended" in text
+
+    def test_a_settled_visit_says_the_tree_survived_it(self, head_says, said):
+        head_says({"id": 3, "done": True, "state": "done", "exit": 0})
+        cli_tidepool._report_ending(3, "TransformerRL")
+        text = "\n".join(said)
+        assert "everything under this workspace is saved" in text
+        assert "cuttle workspace open TransformerRL" in text
+
+    def test_an_unreachable_head_says_the_costly_thing(self, monkeypatch, said):
+        """Can't ask -> assume it is still holding a card. The wrong guess here costs Karma; the wrong
+        guess the other way costs nothing."""
+        def _boom(*a, **kw):
+            raise RuntimeError("no head")
+        monkeypatch.setattr(cli_tidepool.auth, "_api", _boom)
+        cli_tidepool._report_ending(3, None)
+        assert "still running and still billing Karma" in "\n".join(said)
+
+
+class TestTheTimeWarningSaysWhatBecomesOfTheFiles:
+    """`_warn_text` — what the mid-session `--time` warning may claim.
+
+    It used to claim Slurm gives an interactive Spawn NO grace period. There is one: TERM, then KILL
+    after `KillWait`, and bash runs the job script's EXIT trap on TERM — which is exactly when a
+    Workspace's tree is mirrored home and a Tide Pool's Recovery Window copy is made.
+    """
+
+    def test_no_warning_claims_there_is_no_grace_period(self):
+        for workspace in (None, "TransformerRL"):
+            text = cli_tidepool._warn_text(3, 300, workspace)
+            assert "NO grace period" not in text
+            assert "no grace period" not in text
+
+    def test_a_visit_is_told_there_is_nothing_to_do(self):
+        """Its tree was mirrored home every 60s all session and once more by the trap. Telling its
+        owner to save would be telling them to save what is already saved."""
+        text = cli_tidepool._warn_text(3, 300, "TransformerRL")
+        assert "already saved" in text
+        assert "Nothing to do" in text
+        assert "save now" not in text
+
+    def test_a_tide_pool_is_told_where_its_scratch_goes(self):
+        text = cli_tidepool._warn_text(3, 300, None)
+        assert "recoverable for a day" in text
+        assert "cuttle recover 3" in text
+
+    def test_both_say_outputs_come_home_as_normal(self):
+        for workspace in (None, "TransformerRL"):
+            assert "outputs come home as normal" in cli_tidepool._warn_text(3, 300, workspace)
+
+    def test_it_is_framed_for_a_terminal_ssh_holds_in_raw_mode(self):
+        """A bare \\n leaves the next line indented by however far the cursor had got."""
+        text = cli_tidepool._warn_text(3, 300, None)
+        assert text.startswith("\r\n")
+        assert text.endswith("\r\n")
+
+    def test_the_remaining_time_is_rendered_as_minutes_and_seconds(self):
+        assert "~5m0s" in cli_tidepool._warn_text(3, 300, None)
+        assert "~0m30s" in cli_tidepool._warn_text(3, 30, None)

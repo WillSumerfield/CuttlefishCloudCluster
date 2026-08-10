@@ -10,8 +10,14 @@ like any other `ssh -p <port> <host>`.
 
 **Disconnecting never ends the Spawn.** A clean `exit`, a dropped connection, Ctrl-C — none of them
 cancel it, exactly like Ctrl-C on `cuttle run --follow`'s log stream does not cancel the Spawn it is
-following. It keeps billing Karma until `--time` runs out or `cuttle cancel <id>`, which is why every
-exit path below prints the same reminder with the exact command to stop it.
+following. It keeps billing Karma until `--time` runs out or `cuttle cancel <id>`, which is why leaving
+the shell says so with the exact command to stop it.
+
+**Being thrown out at `--time` is a different ending and says a different thing.** There the Spawn is
+already over — the shell died under us, the job is COMPLETING, and nothing is billing — so repeating
+"still running, still billing" would be false twice over. Every message here also splits on Workspace
+visit vs bare Tide Pool, because what becomes of the files differs: a visit's tree is mirrored home all
+session, a Tide Pool's scratch gets one copy into the day-long Recovery Window.
 """
 
 import os
@@ -27,10 +33,13 @@ from . import auth, config, settings, spawns as spawns_mod, ui, watch
 _POLL_S = 1.0
 _PLACEMENT_TIMEOUT_S = 3600     # an hour queued is already a long wait; fail loud rather than hang forever
 _RELAY_TIMEOUT_S = 30           # the relay is brought up synchronously by the poll itself — this is slack
-# How long before `--time` expires to interrupt the live session with a warning. Slurm gives an
-# interactive Spawn zero grace at the limit (unlike a batch one, there is no save-and-exit moment), so
-# this has to fire well before the cutoff — but not so early that a short Tide Pool never sees the
-# session start. A quarter of the total, capped at 5 minutes and floored at 30s, is not exact science;
+# How long before `--time` expires to interrupt the live session with a warning. Nothing is LOST at the
+# limit: Slurm sends TERM and waits `KillWait` (600s — cli.templates) before KILL, and bash runs the job
+# script's EXIT trap on TERM, which mirrors a Workspace's tree home and makes a bare Tide Pool's
+# Recovery Window copy (ccc_head_api.spawns). What the User loses is the *shell* — it closes mid-keystroke
+# with nothing they can do about it — which is the whole of what this warns about, and why the warning
+# says what happens to the files rather than "save now".
+# A quarter of the total, capped at 5 minutes and floored at 30s, is not exact science;
 # it just has to exist (this feature's own spec is explicit that the threshold is an engineering call).
 _WARN_MAX_S = 5 * 60
 _WARN_MIN_S = 30
@@ -63,6 +72,18 @@ def _head_host() -> str:
 
 def _cancel_hint(spawn_id: int) -> str:
     return f"cuttle cancel {spawn_id}"
+
+
+def _reattach_hint(spawn_id: int, workspace: str | None) -> str:
+    """How to get back into this session. A Workspace visit is reattached BY NAME — `cuttle workspace
+    open` joins the live visit rather than starting a second one (CONTEXT.md, **Workspace**) — so
+    handing out `--tidepool <id>` here would be a second way to say the same thing, and the one its
+    owner never learned."""
+    return f"cuttle workspace open {workspace}" if workspace else f"cuttle run --tidepool {spawn_id}"
+
+
+def _noun(spawn_id: int, workspace: str | None) -> str:
+    return f"workspace visit {spawn_id}" if workspace else f"tide pool {spawn_id}"
 
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
@@ -185,7 +206,25 @@ def _deadline(spawn_id: int) -> float | None:
     return time.monotonic() + (wall_deadline - time.time())
 
 
-def _warn_thread(spawn_id: int, deadline: float | None, stop: threading.Event) -> threading.Thread | None:
+def _warn_text(spawn_id: int, left: int, workspace: str | None) -> str:
+    """The `--time` warning, `\\r\\n`-framed for a terminal `ssh` has in raw mode.
+
+    What each half is TRUE of differs, which is why this splits. A Workspace visit has nothing to
+    rescue — `ws_loop` mirrored the tree every 60s all session and the EXIT trap does one more — so
+    telling its owner to "save now" would be telling them to save what is already saved. A bare Tide
+    Pool's scratch is copied ONCE, at the limit, into the day-long Recovery Window.
+    """
+    if workspace:
+        what = ("the shell closes with no warning, but everything under this workspace is "
+                "already saved and your outputs come home as normal. Nothing to do")
+    else:
+        what = ("the shell closes with no warning. Declared outputs come home as normal; "
+                f"everything else is recoverable for a day with `cuttle recover {spawn_id}`")
+    return f"\r\n*** ccc: --time runs out in ~{left // 60}m{left % 60}s — {what} ***\r\n"
+
+
+def _warn_thread(spawn_id: int, deadline: float | None, stop: threading.Event,
+                 workspace: str | None = None) -> threading.Thread | None:
     if deadline is None:
         return None
     remaining = deadline - time.monotonic()
@@ -200,15 +239,22 @@ def _warn_thread(spawn_id: int, deadline: float | None, stop: threading.Event) -
         # this fires, and this is a second thread writing beside it — interleaved, not framed. That is
         # an accepted cosmetic cost; the alternative is no warning at all inside a live session.
         left = max(0, round(deadline - time.monotonic()))
-        os.write(2, f"\r\n*** ccc: this Tide Pool's --time runs out in ~{left // 60}m{left % 60}s — "
-                    f"Slurm gives an interactive Spawn NO grace period, save now ***\r\n".encode())
+        os.write(2, _warn_text(spawn_id, left, workspace).encode())
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
     return t
 
 
-def _wait_and_attach(spawn_id: int) -> None:
+def _wait_and_attach(spawn_id: int, workspace: str | None = None) -> None:
+    """Attach to a placed Spawn's shell and hold the terminal until it detaches.
+
+    `workspace` is the visited **Workspace**'s name when this is a visit (workspaces.open_) and None for
+    a bare Tide Pool. It is not decoration: the two differ in *what happens to the files* at every exit
+    — a visit's tree is mirrored home continuously and a Tide Pool's scratch gets one copy into the
+    Recovery Window — and every message below turns on that difference. It doubles as the reattach
+    hint, since a visit is rejoined by name (`_reattach_hint`).
+    """
     _wait_for_running(spawn_id)
     port, private_key, login = _wait_for_relay(spawn_id)
     deadline = _deadline(spawn_id)
@@ -221,9 +267,19 @@ def _wait_and_attach(spawn_id: int) -> None:
 
         ui.warn(f"this GPU is yours until you cancel it — `{_cancel_hint(spawn_id)}` — or --time runs "
                 f"out. Disconnecting (closing this terminal, a dropped connection) does NOT free it.")
-        ui.hint("type `exit` to leave the shell — the Tide Pool itself keeps running either way")
+        # Said up front, not only at the limit: where the files go is what a User plans the session
+        # around, and learning it five minutes before the cutoff is learning it too late to act on.
+        if workspace:
+            ui.hint(f"everything under this workspace is mirrored home as you work and again when the "
+                    f"session ends; declared outputs come home as normal (`cuttle outputs {spawn_id}`)")
+        else:
+            ui.hint(f"declared outputs come home as normal (`cuttle outputs {spawn_id}`); everything "
+                    f"else is copied when it ends and recoverable for a day "
+                    f"(`cuttle recover {spawn_id}`)")
+        ui.hint(f"type `exit` to leave the shell — the {'visit' if workspace else 'Tide Pool'} itself "
+                f"keeps running either way")
         stop = threading.Event()
-        _warn_thread(spawn_id, deadline, stop)
+        _warn_thread(spawn_id, deadline, stop, workspace)
         try:
             # Real ssh, real protocol — the relay is a pure byte pipe underneath (relay.py); nothing
             # about the session is aware it exists. Host-key checking is off deliberately: the Pod mints
@@ -248,17 +304,44 @@ def _wait_and_attach(spawn_id: int) -> None:
     finally:
         Path(keypath).unlink(missing_ok=True)
 
-    # Whether `exit` was typed or the connection just dropped, the Spawn itself is likely still running
-    # — say so again, with the exact command, rather than leaving the User to wonder why it is not in
-    # `cuttle queue` anymore (it still would be) or why Karma is still moving.
+    _report_ending(spawn_id, workspace)
+
+
+def _report_ending(spawn_id: int, workspace: str | None) -> None:
+    """Say how the session ended, once the shell has let go of the terminal.
+
+    Three endings, not two, because there are three ways to arrive here.
+
+    `exit` was typed or the connection dropped -> the Spawn is genuinely RUNNING and genuinely
+    billing, which is the warning that has to be repeated with the command to stop it.
+
+    `--time` ran out -> Slurm TERM'd the job and the shell died under us. The job is now COMPLETING
+    while its EXIT trap sends the work home, for up to `KillWait` (600s — cli.templates). It is NOT
+    running and it is NOT billing — the tick only accrues onto RUNNING Spawns (ccc_head_api.tick) — so
+    the running-and-billing warning is false in both halves, and at a 10-minute KillWait it would stay
+    false for ten minutes. `done` cannot tell us this: it stays False through COMPLETING on purpose,
+    because `watch` gates the output download on it and a download fired mid-stage-out fetches nothing.
+
+    Already settled -> plain end.
+    """
     try:
         st = auth._api("GET", f"/spawns/{spawn_id}")
-        still_running = not st.get("done")
+        state = None if st.get("done") else (st.get("state") or "RUNNING")
     except Exception:
-        still_running = True   # can't check — say the safe thing
-    if still_running:
-        ui.warn(f"tide pool {spawn_id} is still running and still billing Karma — "
-                f"`{_cancel_hint(spawn_id)}` to end it, or `cuttle run --tidepool {spawn_id}` to "
-                f"reattach")
+        state = "RUNNING"   # can't check — say the thing with a cost attached
+    noun = _noun(spawn_id, workspace)
+    if state == "COMPLETING":
+        if workspace:
+            ui.ok(f"{noun} hit its --time limit and has stopped billing — the last of your work is "
+                  f"being mirrored home now; `{_reattach_hint(spawn_id, workspace)}` resumes it")
+        else:
+            ui.ok(f"{noun} hit its --time limit and has stopped billing — your files are being "
+                  f"copied home now, `cuttle recover {spawn_id}` once it settles")
+    elif state is not None:
+        ui.warn(f"{noun} is still running and still billing Karma — `{_cancel_hint(spawn_id)}` to end "
+                f"it, or `{_reattach_hint(spawn_id, workspace)}` to reattach")
+    elif workspace:
+        ui.ok(f"{noun} has ended — everything under this workspace is saved, "
+              f"`{_reattach_hint(spawn_id, workspace)}` resumes it")
     else:
-        ui.ok(f"tide pool {spawn_id} has ended")
+        ui.ok(f"{noun} has ended")

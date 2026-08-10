@@ -218,7 +218,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   than its own contents would be a ceiling nothing could bring the Workspace back under.
   The word names one Workspace's share and never the cluster's disk in general: what a Head holds
   altogether has no name here, only the **Allowance**es that divide it.
-- **Recovery Window** — the brief, always-on grace period in which a finished **Spawn**'s *undeclared*
+- **Recovery Window** — the brief, always-on window in which a finished **Spawn**'s *undeclared*
   writes can still be retrieved. A Spawn's declared outputs are kept for as long as its submitter's
   **Allowance** allows; everything else it wrote — the working directory it ran in — is destroyed when
   it ends, and this is the window between those two facts. Both are finite, and the difference is one
@@ -228,7 +228,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Spawn whose work exceeds the cap simply never gets one. It is capped twice over — once at what a
   single Spawn may copy at all, and again at an **Allowance** spanning every window that User has open,
   so what displaces a User's older copy is only ever their own newer one. Distinct from an output (declared, kept) and
-  from **Escrow** — "hold" means Escrow in this cluster, and never this. A **Workspace** visit has none
+  from **Escrow** — "hold" means Escrow in this cluster, and never this. It is also not a **grace
+  period**: that word names the interval a *dying* Spawn gets to send its work home, and this window
+  opens only once that interval is over and the Spawn is already gone. A **Workspace** visit has none
   and needs none: nothing it wrote was going to be destroyed.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the

@@ -358,10 +358,16 @@ class TestWorkspaces:
         self._new(signed_in)
         monkeypatch.setattr(head_spawns, "submit_checked", lambda *a, **kw: 4242)
         # The attach itself is the Tide Pool path (a real ssh); stop after the Head has answered.
-        monkeypatch.setattr(tidepool_mod, "_wait_and_attach", lambda spawn_id: None)
+        attached: list[tuple] = []
+        monkeypatch.setattr(tidepool_mod, "_wait_and_attach",
+                            lambda *a, **kw: attached.append((a, kw)))
         first = signed_in("workspace", "open", "scratch")
         assert first.exit_code == 0, first.output
         assert "opening workspace 'scratch' as spawn 4242" in first.output
+        # The name goes with it, and that is not decoration: every message the attach prints — what
+        # becomes of the files, how to get back in, how the session ended — is wrong for a visit
+        # without it. A visit carrying no flag saying it was one is exactly how this was missed.
+        assert attached[0][1]["workspace"] == "scratch"
         second = signed_in("workspace", "open", "scratch")
         assert "already open" in second.output
 

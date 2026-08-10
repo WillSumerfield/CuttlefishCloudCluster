@@ -62,12 +62,20 @@ like Ctrl-C on `cuttle run --follow`, which stops the log stream and not the Spa
 It keeps billing Karma until either `--time` runs out or you run `cuttle cancel <id>`. Every way out
 of the session prints that command on the way past.
 
-### It ends abruptly at `--time`
+### The shell ends abruptly at `--time` — your work does not
 
-An interactive Spawn gets **no grace period** at the limit — unlike a batch job, there is no
-save-and-exit moment. So CCC interrupts your session with a warning before the cutoff (a quarter of
-the total, at most 5 minutes and at least 30 seconds ahead) to give you time to get anything you care
-about out.
+At the limit your shell closes mid-keystroke, with no chance to finish what you were doing. So CCC
+interrupts the session with a warning before the cutoff (a quarter of the total, at most 5 minutes and
+at least 30 seconds ahead), so the ending is not a surprise.
+
+**Nothing you wrote is lost, though.** The Tide Pool gets a **grace period** at the limit — ten
+minutes between the signal that ends it and the kill that enforces it — and it spends that window
+sending your work home. Declared outputs come back as any Spawn's do; everything else goes into the
+[Recovery Window](storage.md#the-recovery-window), so `cuttle recover <id>` gets it for a day
+afterwards.
+
+A [Workspace](workspaces.md) visit has even less to worry about: its tree is mirrored home all session
+and once more at the end, so there is nothing to rescue and no window to miss.
 
 ### You are told which machine you got
 

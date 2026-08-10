@@ -169,10 +169,14 @@ def open_(name: str, vram: int | None = None, minutes: int | None = None, gpu: i
     stop = threading.Event()
     _storage_warner(name, stop)
     try:
-        tidepool_mod._wait_and_attach(spawn_id)
+        # The name, not just the id: every message the attach prints — what becomes of the files, how
+        # to get back in, how the session ended — differs for a visit, and this is what tells it so.
+        # It also owns the ending now. Saying "everything is saved" here as well would have collided
+        # with the `--time` ending's "being mirrored home now" and reproduced, in two lines, exactly
+        # the contradiction that made a timed-out visit read as a disaster.
+        tidepool_mod._wait_and_attach(spawn_id, workspace=name)
     finally:
         stop.set()
-    ui.hint(f"everything under this workspace is saved — `cuttle workspace open {name}` resumes it")
 
 
 def _storage_warner(name: str, stop: threading.Event) -> threading.Thread:
