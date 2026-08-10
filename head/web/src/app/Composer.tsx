@@ -219,7 +219,11 @@ export function Composer(props: ComposerProps) {
     return {
       value: String(n),
       label: String(n),
-      disabled: known && !arms.some((a) => a.gpus >= n && (a.vram_mb ?? 0) / 1024 >= need),
+      // `cardGb`, not a raw divide: this greys out the counts the Head would refuse, so it has to
+      // measure a card exactly as the Head does (ccc_head_api.slurm.card_gb). Dividing exactly made a
+      // 16 GB card reporting 15.4 fail `>= 16` here while the Head accepted it — a row greyed out over
+      // a Spawn that would have run.
+      disabled: known && !arms.some((a) => a.gpus >= n && cardGb(a.vram_mb ?? 0) >= need),
     };
   });
 

@@ -169,6 +169,22 @@ def max_devices() -> int:
     return max((_devices(e) for e in load_registry().values() if e.get("admitted")), default=0)
 
 
+def card_gb(vram_mb: int) -> int:
+    """How many whole GB a card counts as — **rounded up**.
+
+    Mirrors `cuttle.config.card_gb`, which is what an Arm advertises its Slurm feature with; the two
+    packages do not import each other (same reason FEATURE_NAMES is duplicated) and MUST agree. This
+    side selects, that side advertises: a card the Head calls 16 GB and the Arm labels `vram15` is one
+    no eligible Spawn can ever be placed on.
+
+    Up rather than nearest, because a card almost never reports the number it is sold as — ECC and
+    virtualization both take a bite, so a 16 GB card can report under 15.5 and be advertised `vram15`,
+    refusing `--vram 16` on hardware a User can see is 16 GB. The bounded cost is that a card counts as
+    up to 1 GB larger than it is.
+    """
+    return -(-vram_mb // 1024)
+
+
 def vram_constraint(vram_gb: int, gpus: int = 1) -> str:
     """Turn `--vram 20 --gpus 2` into a Slurm constraint over the fleet's actual cards:
     `vram24|vram48|vram80`.
@@ -193,7 +209,7 @@ def vram_constraint(vram_gb: int, gpus: int = 1) -> str:
         most = max((_devices(e) for e in admitted), default=0)
         raise HTTPException(422, f"no Arm has {gpus} GPUs — the largest has {most}")
     per_card = -(-vram_gb // gpus)  # ceil
-    sizes = sorted({round(e["vram_mb"] / 1024) for e in roomy})
+    sizes = sorted({card_gb(e["vram_mb"]) for e in roomy})
     eligible = [g for g in sizes if g >= per_card]
     if not eligible:
         # What a User can act on: the per-card figure their own two numbers imply, the card sizes that
@@ -201,7 +217,7 @@ def vram_constraint(vram_gb: int, gpus: int = 1) -> str:
         # make the same total fit. WHICH machine has what is the Admin's business and stays out.
         have = ", ".join(f"{g}GB" for g in sizes) or "none"
         fix = next((n for n in range(gpus + 1, max_devices() + 1)
-                    if any(round(e["vram_mb"] / 1024) >= -(-vram_gb // n)
+                    if any(card_gb(e["vram_mb"]) >= -(-vram_gb // n)
                            for e in admitted if _devices(e) >= n)), None)
         hint = f" — try --gpus {fix}" if fix else ""
         asked = (f"no Arm has {vram_gb}GB of VRAM" if gpus == 1 else

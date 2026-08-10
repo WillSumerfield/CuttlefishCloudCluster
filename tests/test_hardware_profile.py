@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from ccc_head_api import karma
+from ccc_head_api import karma, slurm
 from cuttle import config, system
 
 
@@ -30,6 +30,20 @@ class TestVramFeature:
         `--vram 24` would find no card, on a cluster that plainly has a 24 GB GPU in it."""
         assert config.vram_feature(24564) == "vram24"
 
+    def test_a_card_short_of_its_own_label_still_answers_that_label(self):
+        """The reason it is CEIL and not nearest. A card reports what the driver leaves usable, which is
+        under the number on the box — ECC and virtualization each take a bite — so 15.4 GiB of a 16 GB
+        card must still advertise `vram16`. Rounding to nearest calls anything below 15.5 a 15 GB card,
+        and `--vram 16` is then refused against hardware the User can see is 16 GB."""
+        assert config.vram_feature(15753) == "vram16"   # 15.38 GiB — round() would say vram15
+        assert config.vram_feature(15872) == "vram16"   # 15.50 GiB, the old boundary
+
+    def test_a_card_that_really_is_smaller_is_not_inflated(self):
+        """Ceil rounds up to the next whole GB, it does not add one. An exactly-15 GiB card is a 15 GB
+        card, and a Spawn asking for 16 must still be refused it."""
+        assert config.vram_feature(15360) == "vram15"   # exactly 15.00 GiB
+        assert config.vram_feature(81920) == "vram80"   # exactly 80.00 GiB
+
     def test_real_cards(self):
         for vram_mb, expected in [
             (16303, "vram16"),  # the Head box (measured)
@@ -38,6 +52,14 @@ class TestVramFeature:
             (81920, "vram80"),  # A100/H100 80GB
         ]:
             assert config.vram_feature(vram_mb) == expected
+
+    def test_the_arm_and_the_head_measure_a_card_identically(self):
+        """The Arm ADVERTISES with `cuttle.config.card_gb` and the Head SELECTS with
+        `ccc_head_api.slurm.card_gb`. The two packages cannot import each other, so the rule is written
+        twice — and a card the Head calls 16 GB while the Arm labels it `vram15` is one no eligible
+        Spawn can ever be placed on."""
+        for mb in (0, 1, 1023, 8000, 8192, 15360, 15753, 16303, 16384, 24564, 49140, 81920):
+            assert config.card_gb(mb) == slurm.card_gb(mb), mb
 
 
 class TestNodeWeight:

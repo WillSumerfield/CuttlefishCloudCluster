@@ -29,7 +29,7 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import db
+from . import db, slurm
 
 # Decay: a Balance drifts back to 0 within a month. Debt forgiven, hoards evaporate, standing reflects
 # recent conduct not history. Also makes the economy self-healing — Karma conjured by an Override or
@@ -122,8 +122,11 @@ def eligible(arms: list[dict], need) -> list[dict]:
         return [a for a in arms if a["name"] == need["node"]]
     gpus = max(1, need["gpus"] or 1)
     per_card = -(-(need["vram_gb"] or 0) // gpus)  # ceil; --vram is the total across the Devices
+    # `slurm.card_gb`, not a rounding of its own: this decides which Arms a queued Spawn adds Demand
+    # to, and Slurm decides which it may actually land on. Two different answers to "is this card big
+    # enough" would price a Spawn against Arms it can never reach, and vice versa.
     return [a for a in arms if _up(a) and a["vram_mb"] and (a["gpus"] or 0) >= gpus
-            and round(a["vram_mb"] / 1024) >= per_card]
+            and slurm.card_gb(a["vram_mb"]) >= per_card]
 
 
 def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, float]:

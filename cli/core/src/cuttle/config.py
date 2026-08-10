@@ -195,13 +195,30 @@ def node_weight(powers: list[float]) -> int:
     return max(1, round(WEIGHT_SCALE / (sum(powers) / len(powers))))
 
 
-def vram_feature(vram_mb: int) -> str:
-    """The Slurm feature a device advertises: `vram24` for a 24 GB card.
+def card_gb(vram_mb: int) -> int:
+    """How many whole GB a card counts as — **rounded up**.
 
-    Rounded, not floored: a 4090 reports 24564 MiB, and flooring would advertise it as `vram23` — so
-    `--vram 24` would find no card that plainly has 24 GB.
+    A card almost never reports the round number it is sold as. A 4090 reports 24564 MiB (over), and a
+    16 GB card with ECC on, or one handed through a virtualization layer, reports well under 16384
+    (under) — ECC alone reserves several percent. Flooring advertises the second as `vram15`; rounding
+    advertises anything below 15.5 GB the same way. Either leaves a User looking at a 16 GB card that
+    refuses `--vram 16`, which is the confusion this exists to stop.
+
+    The cost is real and bounded: a card counts as up to 1 GB larger than it is, so a Spawn that asks
+    for exactly what the card claims may OOM instead of being refused at submit. That is the trade
+    deliberately made — a number a User can predict from the box's spec sheet beats a number only the
+    driver knows.
+
+    **Mirrored in `ccc_head_api.slurm.card_gb`**, which cannot import this module (see the note at the
+    bottom of this file). The Arm advertises with this one and the Head selects with that one, so the
+    two must agree exactly or a Spawn is placed on a card the Head never priced.
     """
-    return f"vram{round(vram_mb / 1024)}"
+    return -(-vram_mb // 1024)
+
+
+def vram_feature(vram_mb: int) -> str:
+    """The Slurm feature a device advertises: `vram24` for a 24 GB card."""
+    return f"vram{card_gb(vram_mb)}"
 
 
 # --- Slurm dynamic nodes (donor Arms self-register via `slurmd -Z`) ---

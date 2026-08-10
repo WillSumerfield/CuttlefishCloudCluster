@@ -45,6 +45,25 @@ class TestVramConstraint:
         registry(monkeypatch, {"a": arm(24576)})
         assert slurm.vram_constraint(24) == "vram24"
 
+    def test_a_card_short_of_its_own_label_satisfies_that_label(self, monkeypatch):
+        """The Head box measures 16303 MiB — 15.92 GiB of a 16 GB card, because what a driver leaves
+        usable is under the number on the box. `--vram 16` has to be satisfied by it, or a User is
+        refused against a GPU sitting in front of them.
+
+        `card_gb` is CEIL for exactly this, and the Arm advertises with the same rule
+        (`cuttle.config.card_gb`), so the constraint rendered here names a feature that card really
+        carries."""
+        registry(monkeypatch, {"head": arm(16303)})
+        assert slurm.vram_constraint(16) == "vram16"
+
+    def test_a_card_that_really_is_smaller_is_still_refused(self, monkeypatch):
+        """Rounding up must not become rounding away. A card with exactly 15 GiB is a 15 GB card, and
+        asking it for 16 is a request nothing in the cluster can host."""
+        registry(monkeypatch, {"small": arm(15360)})
+        with pytest.raises(HTTPException) as e:
+            slurm.vram_constraint(16)
+        assert "15GB" in e.value.detail
+
     def test_identical_cards_collapse_to_one_feature(self, monkeypatch):
         """Three 24 GB boxes are one *feature*, not three. Slurm matches the feature; which of the
         three actually runs it is Slurm's business (it takes the fastest free one, by Weight)."""
