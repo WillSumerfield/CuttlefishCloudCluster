@@ -41,6 +41,19 @@ FEATURE_MOUNT = "/ccc/feature"
 # submitter never has to discover by watching `import` fail that `libgym.so` wanted SDL2.
 FEATLIB_MOUNT = "/ccc/featlibs"
 
+# Where a profile's own WORKING DIRECTORY is bound — the directory a Feature's software resolves its
+# vendor data against, built per Spawn on the Arm and writable, since that is the one of these three
+# mounts something inside the Pod writes to.
+#
+# A fourth mount for a fourth owner, and the reason is the same rule that separated the first three: it
+# is CCC's, not the submitter's. It used to be `$proj` itself, which was wrong twice over. On a
+# **Workspace** visit `$proj` is the User's durable tree, mirrored home by `rsync -a --delete` every
+# 60s — so a profile planting four names in it deleted whatever the owner already kept under those
+# names, permanently, and left Arm-local symlinks in stored **Storage** that dangle on the next visit
+# and on `workspace download`. On every other Spawn it put a real cache/ inside what the **Recovery
+# Window** measures. Sited here, a Feature's runtime touches no part of anyone's project.
+VLWD_MOUNT = "/ccc/vlwd"
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -116,31 +129,37 @@ if [ -n "$envmount" ] && [ -n "$feature_purelib" ]; then
     rm -rf "$vl_site/vlearn" "$vl_site"/vlearn-*.dist-info "$vl_site"/vlearn_bindings*.so \
            "$vl_site"/*vlearn*.pth
 fi
-# vlearn resolves assets/, shaders/, cache/ and TurboActivate.dat against VL_WORKING_DIRECTORY, which
-# is this Spawn's own directory -- so those four names have to exist in it. Three come from the Arm's
-# install, and the install always wins: an upload that carried its own assets/ or shaders/ is replaced,
-# not merged. They are ~1 GB and ~24 KB of vendor data; nobody uploads the first, and one predictable
-# behaviour beats a partial-merge trap.
+# vlearn resolves assets/, shaders/, cache/ and TurboActivate.dat against VL_WORKING_DIRECTORY -- so
+# those four names have to exist in whatever that points at. Three come from the Arm's install.
 #
-# SYMLINKS, not copies or binds, and that is load-bearing rather than tidy. $proj is what
-# recover_scratch() measures against RECOVERY_MAX_BYTES and then rsyncs home for the Recovery Window;
-# a real 1 GB assets/ inside it would silently disable recovery for every vlearn Spawn -- precisely the
-# bug the Environment's `mv` out of $proj (above) records having already fixed once. `du` does not
-# follow symlinks and `rsync -a` copies them as links, so the window still sees the upload.
-rm -rf "$proj/assets" "$proj/shaders" "$proj/TurboActivate.dat" "$proj/cache"
-ln -s "$VLEARN_PATH/assets" "$proj/assets"
-ln -s "$VLEARN_PATH/shaders" "$proj/shaders"
-ln -s "$VLEARN_PATH/TurboActivate.dat" "$proj/TurboActivate.dat"
+# A directory of CCC's OWN (VLWD_MOUNT), never `$proj`. It was `$proj` until the four names were found
+# sitting in a live **Workspace** tree next to its owner's real work, mirrored home and charged to their
+# **Storage** -- see VLWD_MOUNT for why that is worse than untidy. Nothing here is the submitter's, so
+# nothing here belongs in the directory that is.
+#
+# That also settles what "the install always wins" used to have to argue: an upload carrying its own
+# assets/ is no longer replaced, because the two are not in the same directory any more.
+vlwd="$scratch/vlwd"
+rm -rf "$vlwd"
+mkdir -p "$vlwd"
+# SYMLINKS, not copies or binds, and still load-bearing rather than tidy: ~1 GB of assets/ COPIED per
+# Spawn would be a minute of disk per run for vendor data that has not changed since setup.
+ln -s "$VLEARN_PATH/assets" "$vlwd/assets"
+ln -s "$VLEARN_PATH/shaders" "$vlwd/shaders"
+ln -s "$VLEARN_PATH/TurboActivate.dat" "$vlwd/TurboActivate.dat"
 # cache/ is the one of the four vlearn WRITES (compiled assets, content-addressed), so it cannot be a
 # symlink into a read-only bind -- that is an EROFS the first time a Spawn meets an asset the Arm's
 # owner never opened. Copied per Spawn instead: ~1 MB, warm from whatever they did generate, with no
 # shared writers and nothing written back into their tree.
-cp -r "$VLEARN_PATH/cache" "$proj/cache" 2>/dev/null || mkdir -p "$proj/cache"
+cp -r "$VLEARN_PATH/cache" "$vlwd/cache" 2>/dev/null || mkdir -p "$vlwd/cache"
 # Only those three paths are bound, never the install root. The vendor's README puts the **Licence**
 # key at the checkout root, and an ordinary Spawn has no business seeing it (Phase 3's activation Spawn
 # is the one thing that does). Bound at their OWN host paths, so the symlinks just made resolve to the
 # same files inside the Pod as outside.
-featbind="$featbind,$VLEARN_PATH/assets:$VLEARN_PATH/assets:ro,$VLEARN_PATH/shaders:$VLEARN_PATH/shaders:ro,$VLEARN_PATH/TurboActivate.dat:$VLEARN_PATH/TurboActivate.dat:ro,$vl_pkg:%%FEATURE_MOUNT%%/vlearn:ro"
+#
+# $vlwd itself is bound WRITABLE -- it is the only one of CCC's four mounts something inside the Pod
+# writes to, and cache/ is what writes to it.
+featbind="$featbind,$VLEARN_PATH/assets:$VLEARN_PATH/assets:ro,$VLEARN_PATH/shaders:$VLEARN_PATH/shaders:ro,$VLEARN_PATH/TurboActivate.dat:$VLEARN_PATH/TurboActivate.dat:ro,$vl_pkg:%%FEATURE_MOUNT%%/vlearn:ro,$vlwd:%%VLWD_MOUNT%%"
 # The WHOLE unpacked wheel goes on PYTHONPATH, not its `vlearn/` subdirectory: a wheel unpacks to three
 # top-level entries -- `vlearn/`, its `.dist-info`, and a sibling `vlearn_bindings.<abi>.so` -- and the
 # bindings module is the one `import vlearn` fails without.
@@ -157,7 +176,7 @@ featbind="$featbind,$VLEARN_PATH/assets:$VLEARN_PATH/assets:ro,$VLEARN_PATH/shad
 vl_ld="%%FEATURE_MOUNT%%/vlearn/vlearn/lib:%%FEATLIB_MOUNT%%/vlearn/lib"
 [ -n "$envbind" ] && vl_ld="$vl_ld:$envmount/lib"
 [ -n "$feature_nvlibs" ] && vl_ld="$vl_ld:$feature_nvlibs"
-featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=$proj,LD_LIBRARY_PATH=$vl_ld"
+featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=%%VLWD_MOUNT%%,LD_LIBRARY_PATH=$vl_ld"
 """
 
 # The extra an ACTIVATION Spawn gets, and nothing else does. An ordinary Spawn runs against activation
@@ -176,7 +195,11 @@ VLEARN_ACTIVATION = r"""
 # Both, deliberately. VL_LICENSE_KEY_PATH is the documented override, and License.key beside the
 # working directory is where the vendor's own instructions put it -- an activation that failed because
 # only one of the two was honoured would be a very expensive thing to debug once per donated box.
-ln -sf "$VLEARN_LICENCE_KEY" "$proj/License.key"
+#
+# `$vlwd`, set by VLEARN_SETUP above (this block is only ever appended to it): "beside the working
+# directory" has to mean the directory vlearn is actually told to resolve against, and that is no
+# longer `$proj`.
+ln -sf "$VLEARN_LICENCE_KEY" "$vlwd/License.key"
 featbind="$featbind,$VLEARN_LICENCE_KEY:$VLEARN_LICENCE_KEY:ro"
 featenv="$featenv,VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY"
 """
@@ -319,7 +342,8 @@ def setup_snippet(features: list[str], activation: bool = False) -> str:
     if not blocks:
         return ""
     return (PREAMBLE + "".join(blocks)).replace("%%FEATURE_MOUNT%%", FEATURE_MOUNT) \
-                                       .replace("%%FEATLIB_MOUNT%%", FEATLIB_MOUNT)
+                                       .replace("%%FEATLIB_MOUNT%%", FEATLIB_MOUNT) \
+                                       .replace("%%VLWD_MOUNT%%", VLWD_MOUNT)
 
 
 # Which Feature supplies a package the submitter must therefore not install: `{package: feature}`.

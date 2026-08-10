@@ -105,60 +105,83 @@ def test_the_whole_unpacked_wheel_goes_on_the_path_not_the_package_dir():
     assert f"PYTHONPATH={hf.FEATURE_MOUNT}/vlearn/vlearn" not in body
 
 
+def _run_vlwd(install: Path, scratch: Path) -> None:
+    """The profile's working-directory commands, lifted out and run for real against a fake install.
+
+    Prefix-matched rather than copied into the test, so the commands exercised are the ones that ship.
+    The `rm -rf "$vl_site/..."` above them is indented (it lives inside an `if`) and so is excluded."""
+    lines = [ln for ln in hf.VLEARN_SETUP.splitlines()
+             if ln.startswith(("vlwd=", "rm -rf ", "mkdir -p ", "ln -s ", "cp -r "))]
+    subprocess.run(["bash", "-e", "-c", "\n".join(lines)], check=True,
+                   env={"VLEARN_PATH": str(install), "scratch": str(scratch),
+                        "PATH": "/usr/bin:/bin"})
+
+
+def _fake_vlearn_install(root: Path) -> Path:
+    for d in ("assets", "shaders", "cache"):
+        (root / d).mkdir(parents=True)
+    (root / "assets" / "big.bin").write_bytes(b"x" * 4096)
+    (root / "TurboActivate.dat").write_text("dat")
+    (root / "cache" / "warm.bin").write_bytes(b"c")
+    return root
+
+
+def test_the_working_directory_is_ccc_s_own_and_never_the_project(tmp_path):
+    """The four names vlearn resolves against VL_WORKING_DIRECTORY are CCC's to site, and `$proj` is
+    the one place they must not be sited. On a **Workspace** visit `$proj` is the User's durable tree,
+    mirrored home by `rsync -a --delete` — so planting them there deleted whatever its owner already
+    kept under those names, permanently, and left Arm-local symlinks in stored **Storage**."""
+    body = _script(features=["vlearn"])
+    assert f"VL_WORKING_DIRECTORY={hf.VLWD_MOUNT}" in body
+    assert f"$vlwd:{hf.VLWD_MOUNT}" in body, "and it is bound, writable — cache/ is written"
+    for name in ("assets", "shaders", "TurboActivate.dat", "cache"):
+        assert f'"$proj/{name}"' not in body
+
+
+def test_a_project_that_carried_its_own_vendor_names_is_left_alone(tmp_path):
+    """The case that named the bug. A Workspace holding its own `assets/` — or `cache/`, which is an
+    ordinary enough name for anyone's tree — used to lose it to the profile's `rm -rf` the moment a
+    visit asked for the Feature, with the mirror carrying the deletion home."""
+    install = _fake_vlearn_install(tmp_path / "vlearn")
+    scratch = tmp_path / "scratch"
+    proj = scratch / "proj"
+    (proj / "assets").mkdir(parents=True)
+    (proj / "assets" / "mine.bin").write_text("theirs to keep")
+    (proj / "cache").mkdir()
+    _run_vlwd(install, scratch)
+    assert (proj / "assets" / "mine.bin").read_text() == "theirs to keep"
+    assert not (proj / "assets").is_symlink()
+    assert (proj / "cache").is_dir()
+
+
 def test_the_working_directory_entries_are_symlinks(tmp_path):
-    """Load-bearing, not tidy. $proj is what recover_scratch measures against RECOVERY_MAX_BYTES and
-    then rsyncs home; vlearn's assets/ alone is ~1 GB, so a real directory here would silently disable
-    the Recovery Window for every vlearn Spawn — the same bug moving the Environment out of $proj
-    already fixed once. `du` does not follow symlinks and `rsync -a` copies them as links.
+    """Load-bearing, not tidy: assets/ alone is ~1 GB, and copying it per Spawn would be a minute of
+    disk for vendor data that has not changed since the Arm's setup.
 
     Run for real rather than asserted as a string: what matters is that the result is a link."""
-    body = _script(features=["vlearn"])
-    assert 'ln -s "$VLEARN_PATH/assets" "$proj/assets"' in body
-    assert 'ln -s "$VLEARN_PATH/shaders" "$proj/shaders"' in body
-    assert 'ln -s "$VLEARN_PATH/TurboActivate.dat" "$proj/TurboActivate.dat"' in body
-
-    install = tmp_path / "vlearn"
-    (install / "assets").mkdir(parents=True)
-    (install / "assets" / "big.bin").write_bytes(b"x" * 4096)
-    (install / "shaders").mkdir()
-    (install / "TurboActivate.dat").write_text("dat")
-    (install / "cache").mkdir()
-    (install / "cache" / "warm.bin").write_bytes(b"c")
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    # The three ln lines and the cp, lifted out of the profile so this exercises the real commands.
-    lines = [ln for ln in hf.VLEARN_SETUP.splitlines()
-             if ln.startswith(("ln -s ", "cp -r ", "rm -rf "))]
-    subprocess.run(["bash", "-e", "-c", "\n".join(lines)], check=True,
-                   env={"VLEARN_PATH": str(install), "proj": str(proj), "PATH": "/usr/bin:/bin"})
-    assert (proj / "assets").is_symlink()
-    assert (proj / "TurboActivate.dat").is_symlink()
+    install = _fake_vlearn_install(tmp_path / "vlearn")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    _run_vlwd(install, scratch)
+    vlwd = scratch / "vlwd"
+    assert (vlwd / "assets").is_symlink()
+    assert (vlwd / "shaders").is_symlink()
+    assert (vlwd / "TurboActivate.dat").is_symlink()
     # ...and cache is the one real directory, because it is the one vlearn writes.
-    assert (proj / "cache").is_dir() and not (proj / "cache").is_symlink()
-    assert (proj / "cache" / "warm.bin").exists()
-    du = subprocess.run(["du", "-sb", str(proj)], capture_output=True, text=True).stdout.split()[0]
-    assert int(du) < 4096, "the symlinked assets must not count against the Recovery Window"
+    assert (vlwd / "cache").is_dir() and not (vlwd / "cache").is_symlink()
+    assert (vlwd / "cache" / "warm.bin").exists()
 
 
-def test_the_install_wins_over_an_upload_that_carried_its_own(tmp_path):
-    """One behaviour, not a merge. A submitter who uploaded their own assets/ gets the Arm's — they are
-    a gigabyte of vendor data nobody uploads on purpose, and a partial merge is a trap that surfaces as
-    a missing scene deep inside a run."""
-    install = tmp_path / "vlearn"
-    for d in ("assets", "shaders", "cache"):
-        (install / d).mkdir(parents=True)
-    (install / "assets" / "theirs.bin").write_text("arm")
-    (install / "TurboActivate.dat").write_text("dat")
-    proj = tmp_path / "proj"
-    (proj / "assets").mkdir(parents=True)
-    (proj / "assets" / "mine.bin").write_text("upload")
-    lines = [ln for ln in hf.VLEARN_SETUP.splitlines()
-             if ln.startswith(("ln -s ", "cp -r ", "rm -rf "))]
-    subprocess.run(["bash", "-e", "-c", "\n".join(lines)], check=True,
-                   env={"VLEARN_PATH": str(install), "proj": str(proj), "PATH": "/usr/bin:/bin"})
-    assert (proj / "assets").is_symlink()
-    assert (proj / "assets" / "theirs.bin").exists()
-    assert not (proj / "assets" / "mine.bin").exists()
+def test_the_working_directory_is_rebuilt_rather_than_reused(tmp_path):
+    """`$scratch` outlives a Workspace visit's stage-in, and an Arm reuses its scratch root. A stale
+    entry from a previous release's install must not survive into the next Spawn's working directory —
+    the same rule `unpack_packages` follows on the Arm."""
+    install = _fake_vlearn_install(tmp_path / "vlearn")
+    scratch = tmp_path / "scratch"
+    (scratch / "vlwd").mkdir(parents=True)
+    (scratch / "vlwd" / "stale.bin").write_text("last release")
+    _run_vlwd(install, scratch)
+    assert not (scratch / "vlwd" / "stale.bin").exists()
 
 
 def test_the_licence_key_is_never_bound_into_an_ordinary_spawn():
@@ -497,9 +520,9 @@ def test_the_licence_key_is_bound_only_for_an_activation_spawn():
     assert "$VLEARN_LICENCE_KEY:$VLEARN_LICENCE_KEY:ro" in activating
     assert "VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY" in activating
     # Everything the ordinary Spawn got, it still gets — activation is an addition, not a variant.
-    base = (hf.VLEARN_SETUP.replace("%%FEATURE_MOUNT%%", hf.FEATURE_MOUNT)
-                           .replace("%%FEATLIB_MOUNT%%", hf.FEATLIB_MOUNT).strip())
-    assert base in activating
+    # Through `setup_snippet` rather than substituting the tokens here: a second copy of that list is a
+    # second place to forget a mount, and forgetting one makes this pass for the wrong reason.
+    assert hf.setup_snippet(["vlearn"]).strip() in activating
 
 
 def test_an_activation_spawn_is_still_valid_bash():

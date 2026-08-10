@@ -90,6 +90,12 @@ with an empty placeholder before building, and delete that again on the Arm. Wha
 Arm's build, which is the one its licence covers. A path source may name a file inside your project
 or in a directory beside it; anything further up is refused, since CCC only unpacks your project.
 
+**Nothing a Feature arranges lands in your project.** The vendor data its software resolves against —
+vlearn's `assets/`, `shaders/`, `cache/` and `TurboActivate.dat` — lives in a directory of CCC's own,
+not in the folder you uploaded. So your own `assets/` or `cache/` is yours: a Feature never replaces
+or deletes it, and a [Workspace](workspaces.md)'s tree is exactly what you last left in it whether or
+not a visit asked for a Feature.
+
 Not every Feature has a profile — a Feature can be nothing but placement plus an install path, which
 needs no runtime arranged at all.
 

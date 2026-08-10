@@ -268,11 +268,14 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   at a local copy is often what makes their project resolve on their own machine — but what runs is
   always the Arm's: CCC replaces the declaration with an empty placeholder before building and removes
   it again on the Arm. Declaring such a package without also requesting its Feature is refused, since
-  no placeholder would ever be replaced and the Spawn could only fail at `import`. The placeholder is
-  put there for the build alone and never over what the **User** keeps: their declared copy is left as
-  they wrote it, so a **Workspace**'s tree is exactly what its owner last left in it whether or not a
-  Feature stood in for something inside it. Nor does it matter where they pointed — a copy beside the
-  project is stood in for as readily as one within it, since the Arm's is what runs either way.
+  no placeholder would ever be replaced and the Spawn could only fail at `import`. Nor does it matter
+  where they pointed — a copy beside the project is stood in for as readily as one within it, since the
+  Arm's is what runs either way.
+  A Feature's runtime is arranged in a place of CCC's own and never inside the Spawn's project — the
+  working directory its software resolves its data against is CCC's to site, not the project directory
+  it happened to be. So a **Workspace**'s tree is exactly what its owner last left in it: neither the
+  runtime nor the placeholder that stands in for a supplied package writes over what the **User**
+  keeps, and their declared copy is left as they wrote it.
 - **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm

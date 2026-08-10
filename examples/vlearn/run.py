@@ -18,8 +18,8 @@ TRAINER = ROOT / "train" / "rl_games_train.py"
 # args to the Spawn, which CCC forwards here verbatim.
 argv = sys.argv[1:] or ["ant_custom", "train", "--max_epochs", "50"]
 
-# Everything the trainer READS is resolved against VL_WORKING_DIRECTORY (the project dir), which CCC
-# sets and which stays put — so moving the CWD only moves the output.
+# Everything the trainer READS is resolved against VL_WORKING_DIRECTORY — a directory of CCC's own,
+# outside this project, which CCC sets and which stays put — so moving the CWD only moves the output.
 out = os.environ.get("CCC_OUT")
 if out:
     os.chdir(out)
