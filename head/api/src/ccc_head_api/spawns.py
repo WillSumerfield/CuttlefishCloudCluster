@@ -568,13 +568,27 @@ PAYLOAD_TIDEPOOL = """\
 cat > "$scratch/tp_boot.sh" <<'CCC_TP_BOOT'
 #!/bin/bash
 set -e
-home=$(getent passwd "$(id -u)" | cut -d: -f6)
-mkdir -p /run/sshd "$home/.ssh"
-cat > "$home/.ssh/authorized_keys" <<'CCC_TP_PUBKEY'
+mkdir -p /run/sshd
+# NOT in the Guise's ~/.ssh, and this is load-bearing rather than tidiness. A Spawn that requests an Arm
+# **Feature** has the Arm's **Licence** directory bound OVER that home (see `licbind` in JOB_SCRIPT), and
+# that directory is `2770 ccc-licence:ccc-guises` (cuttle.setup._licence_dir) — group-writable, and owned
+# by neither the Guise nor root. sshd's StrictModes (on by default) refuses an authorized_keys under a
+# home like that, so pubkey auth was silently skipped and the User got a password prompt for an account
+# that has no password. Every Tide Pool with a --feature was unreachable; without one the bind is absent
+# and the same code worked, which is why this survived.
+#
+# StrictModes is emphatically NOT the thing to turn off. That directory is the shared home of EVERY
+# feature-requesting Pod on the Arm, and every Guise is in `ccc-guises` — so an honoured authorized_keys
+# there would let one User write their own key into another User's Tide Pool. StrictModes refusing it is
+# the only reason that isn't already possible. The file belongs outside the home instead.
+#
+# A Pod-absolute path, under `/` (root-owned 0755 in the image) with the file 0600 and owned by the Guise
+# that writes it, which is what sshd's own path check wants. `--writable-tmpfs` is what makes `/` writable
+# here, the same overlay /etc/passwd and /etc/profile.d are patched through below.
+cat > /ccc_authorized_keys <<'CCC_TP_PUBKEY'
 %%TIDEPOOL_PUBKEY%%
 CCC_TP_PUBKEY
-chmod 700 "$home/.ssh"
-chmod 600 "$home/.ssh/authorized_keys"
+chmod 600 /ccc_authorized_keys
 ssh-keygen -A >/dev/null 2>&1
 # apptainer runs unprivileged (a user namespace, not setuid-root), and its gid_map does not cover the
 # container's `tty` group (gid 5) — so when sshd allocates a pty, glibc's grantpt() tries to chown it to
@@ -653,7 +667,12 @@ chmod 600 /etc/profile.d/ccc-tidepool.sh
 # a random User's machine happens to use — bash's very first line is then a "cannot change locale"
 # warning. SetEnv overrides whatever AcceptEnv would otherwise apply (man sshd_config), forcing a locale
 # every Debian/Ubuntu image ships pre-generated, without needing to know or match the User's own.
-exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8"
+#
+# AuthorizedKeysFile: the ephemeral key lives outside the Guise's home — see the note at the top of this
+# script for why it has to. An absolute path with no %u/%h token, because there is exactly one account
+# that ever logs into a Pod.
+exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no \\
+  -o AuthorizedKeysFile=/ccc_authorized_keys -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8"
 CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\

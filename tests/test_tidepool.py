@@ -195,6 +195,27 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         assert "%%TIDEPOOL_PORT%%" not in body
         assert "%%TIDEPOOL_PUBKEY%%" not in body
 
+    def test_the_ephemeral_key_is_not_written_into_the_guises_home(self, tmp_path):
+        """A Spawn that requests an Arm **Feature** gets the Arm's **Licence** directory bound OVER the
+        Guise's home (`licbind`), and that directory is `2770 ccc-licence:ccc-guises`. sshd's StrictModes
+        refuses an authorized_keys under a home that is group-writable and owned by someone else, so
+        pubkey auth was skipped and the User met a password prompt for an account with no password —
+        every Tide Pool with a --feature was unreachable, and every Workspace visit declaring one with it.
+
+        Turning StrictModes off is the wrong repair and must stay wrong: that directory is the shared
+        home of every feature-requesting Pod on the Arm and every Guise is in `ccc-guises`, so an
+        honoured authorized_keys there lets one User write their key into another User's Tide Pool.
+        """
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        boot = body[body.index("tp_boot.sh"):]
+        code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
+        assert "AuthorizedKeysFile=/ccc_authorized_keys" in code
+        assert "chmod 600 /ccc_authorized_keys" in code
+        # The home is never resolved, let alone written into — no ~/.ssh, and no `home=` to build one from.
+        assert ".ssh" not in code
+        assert "StrictModes" not in code
+
     def test_the_pod_repairs_its_own_passwd_before_sshd_starts(self, tmp_path):
         """A **Guise** is `nologin` on the host, and apptainer patches the Pod's /etc/passwd with
         that host entry verbatim — shell field included. sshd then execs nologin and the User
