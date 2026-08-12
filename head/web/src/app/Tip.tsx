@@ -179,6 +179,12 @@ export function Tip({
         className={className}
         tabIndex={focusable ? 0 : undefined}
         aria-describedby={pos ? id : undefined}
+        // A trigger IS an event target by definition, so it claims its own hits no matter what it sits
+        // inside: `pointer-events` inherits, and a Tip under an inert overlay (TidePage's z-10 wrapper,
+        // which lets the pointer fall through to the water) would otherwise go quietly dead — a hover
+        // explanation that never explains, with nothing on screen to say so. Inline rather than a class:
+        // `className` is the caller's, and two competing Tailwind utilities resolve by stylesheet order.
+        style={{ pointerEvents: "auto" }}
         // Pointer, not mouse: a pen hovers, and `pointerenter` on a touch tap would open a panel the
         // User cannot dismiss by moving away. `pointerType` is what tells them apart.
         onPointerEnter={(e) => e.pointerType !== "touch" && open(TIP.openDelay)}

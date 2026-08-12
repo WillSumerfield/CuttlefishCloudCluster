@@ -31,7 +31,10 @@ export function TidePage() {
   return (
     <Page title="Tide">
       {/* pointer-events-none: this full-width z-10 wrapper sits over the pulled-up horizon, so it must let
-          the pointer fall through to the water's hover — NowCard is display-only and needs no events. */}
+          the pointer fall through to the water's hover — the card is mostly empty space, and a User aiming
+          at an Arm line shouldn't hit an invisible box instead. Its two Tip triggers claim their own hits
+          back (Tip.tsx), which is what the wrapper must NOT be read as overriding: hovering the number
+          explains the number, and the water's readout clears while you're on it. */}
       <div className="relative z-10 pointer-events-none">
         <NowCard fold={folded} />
       </div>

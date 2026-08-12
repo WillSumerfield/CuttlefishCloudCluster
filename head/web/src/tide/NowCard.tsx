@@ -21,8 +21,12 @@ export function NowCard({ fold }: { fold: Fold }) {
       <div className="flex h-full flex-wrap items-baseline justify-center gap-x-6 gap-y-2">
         {/* The multiplier IS a Demand ratio, and the level word IS the Tide — so the two terms land on
             the two marks that actually mean them, rather than both on the card. */}
+        {/* py-3 -my-3: `lineHeight: 0.7` on an 88px glyph leaves a line box shorter than the ink, so the
+            top and bottom of the digits would sit outside the hover target. The padding grows the target
+            to the glyph; the negative margin hands the space back, and baseline alignment keeps the number
+            where it was. Tight to the ink deliberately — the trigger covers the horizon's own hover. */}
         <Tip
-          className="mx-auto"
+          className="mx-auto py-3 -my-3"
           text="An estimate of the karma cost multiplier based on previous demand. The multiplier is the ratio of the current hour's demand to a typical hour's demand. Real spawns may cost more or less than this estimate, and the multiplier is not a quote or a guarantee."
         >
           <span
