@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { edgeFade } from "../app/edgeFade";
 import { useReducedMotion } from "../app/useReducedMotion";
 import type { Fold } from "./fold";
-import { tideOklch } from "./fold";
+import { ratioOf, tideOklch } from "./fold";
 
 /**
  * The Tide — the page's signature, the water the whole metaphor points at. A day of mean Demand across
@@ -292,7 +292,9 @@ export function TideHorizon({ fold }: { fold: Fold }) {
     hoverArmRef.current = best;
 
     const val = best >= 0 ? geom.sampleAt(fold.perArm[best].hours, hf) : geom.sampleAt(fold.mean, hf);
-    const ratio = val / fold.dayMean;
+    // Same helper the card's multiplier goes through — hovering the now-hour must not read a different
+    // number than the card printing that same hour.
+    const ratio = ratioOf(val, fold.dayMean);
     setTip({
       x, y,
       title: best >= 0 ? fold.perArm[best].node : `${ratio.toFixed(1)}×`,

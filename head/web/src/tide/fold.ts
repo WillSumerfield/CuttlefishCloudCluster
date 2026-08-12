@@ -19,11 +19,28 @@ export type Fold = {
   dayMean: number; // the 24h average of `mean` — the "typical hour" the multiplier divides by
   peak: number; // max over mean + all Arms, for scaling the panel
   nowHour: number; // the viewer's local hour, where the now-marker sits
-  multiplier: number; // mean[nowHour] / dayMean — cost now vs a typical hour
+  multiplier: number; // mean[nowHour] / dayMean, bounded by TIDE_MAX — cost now vs a typical hour
 };
 
 const HOURS = 24;
 const COLD = 1.0; // the honest cold-start Demand: no history forecasts nothing but "ordinary" (karma.tide)
+
+/**
+ * Ceiling on a displayed ratio. Matches `karma.DEMAND_MAX` by value, NOT by kind — that caps one Arm's
+ * Demand, this caps a ratio of two Demands, and nothing makes them the same bound. Shared anyway because
+ * the reason is shared: past ~8× the signal is saturated and the number has stopped carrying information.
+ *
+ * It bites on a cluster that is idle most of the time. Demand on an unwanted Arm is exactly 0 and the tick
+ * records that zero every 30s, so a fleet that runs in bursts has a `dayMean` near zero — and a ratio
+ * against near-zero runs away. The cap bounds what gets PRINTED; it does not make the denominator mean
+ * more than it does. Colour is unaffected either way: `tideOklch` saturates at 1.7×.
+ */
+export const TIDE_MAX = 8;
+
+/** A Demand ratio for display: `value` against the typical hour, bounded. `|| 1` catches 0/0 on a cold
+ *  cluster, where "ordinary" is the only honest reading. */
+export const ratioOf = (value: number, dayMean: number): number =>
+  Math.min(TIDE_MAX, value / dayMean || 1);
 
 /** Fold a clock-time series into the typical-day Tide. `nowHour` is injectable for tests. */
 export function fold(samples: DemandSample[], nowHour = new Date().getHours()): Fold {
@@ -62,7 +79,7 @@ export function fold(samples: DemandSample[], nowHour = new Date().getHours()): 
 
   const dayMean = mean.reduce((n, v) => n + v, 0) / HOURS || COLD;
   const peak = Math.max(...mean, ...perArm.flatMap((a) => a.hours), dayMean * 1.15);
-  const multiplier = mean[nowHour] / dayMean || 1;
+  const multiplier = ratioOf(mean[nowHour], dayMean);
 
   return { mean, perArm, dayMean, peak, nowHour, multiplier };
 }
