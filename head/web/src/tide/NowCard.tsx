@@ -14,13 +14,16 @@ export function NowCard({ fold }: { fold: Fold }) {
   const tint = tideOklch(multiplier);
 
   return (
-    <section className="surface [--sink:40%] px-12 py-8 pb-10 md:px-22 md:py-22 md:pb-12 w-full md:w-1/5 h-64">
-      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+    <section className="px-12 py-8 pb-10 md:px-22 md:py-22 md:pb-12 w-full md:w-1/5 h-64">
+      {/* No plate under this one: the reading floats on the water it's describing, so the card is the
+          number rather than a box holding it. Centred on both axes because there's no plate edge left to
+          align against — `h-full` gives the row the section's height to centre within. */}
+      <div className="flex h-full flex-wrap items-baseline justify-center gap-x-6 gap-y-2">
         {/* The multiplier IS a Demand ratio, and the level word IS the Tide — so the two terms land on
             the two marks that actually mean them, rather than both on the card. */}
         <Tip
           className="mx-auto"
-          text="How badly a card is wanted: the time being asked for, running and queued, against the time that exists. A card busy for an hour with someone waiting behind it the whole time was wanted for two."
+          text="An estimate of the karma cost multiplier based on previous demand. The multiplier is the ratio of the current hour's demand to a typical hour's demand. Real spawns may cost more or less than this estimate, and the multiplier is not a quote or a guarantee."
         >
           <span
             className="num"
@@ -37,10 +40,13 @@ export function NowCard({ fold }: { fold: Fold }) {
           </span>
         </Tip>
         <Tip
-          className="label pl-3.5"
+          className="label"
           text="What an hour on the cluster has typically cost, by hour of day. It's a shape to plan around, not a quote — nothing here will warn you or ask you to confirm before you submit."
         >
-          <span style={{ color: tint, letterSpacing: "0.28em", fontSize: 14 }}>
+          {/* Tracking puts a full letter-space after the last letter and none before the first, so a
+              centred box centres the word plus its trailing gap — the word itself lands left of true
+              centre. The matching padding on the near side is the counterweight. */}
+          <span style={{ color: tint, letterSpacing: "0.28em", fontSize: 14, paddingLeft: "0.28em" }}>
             {LEVEL_LABEL[level]}
           </span>
         </Tip>
