@@ -10,7 +10,7 @@ from pathlib import Path
 SLURM_VERSION = "23.11.4-1.2ubuntu5"
 SLURM_PKG = f"slurm-wlm={SLURM_VERSION}"
 SLURMD_PKG = f"slurmd={SLURM_VERSION}"
-NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.19.1-1"  # NVIDIA's repo retains old versions — safe
+NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.20.0-1"  # NVIDIA's repo retains old versions — safe
 MUNGE_PKG = "munge"  # auth; distro version fine
 # HEAD ONLY. `setfacl` is how the Mantle lends ONE **Guise** read access to ONE uploaded project
 # without any privilege at all (it already owns the directory) — see ccc_head_api.spawns.submit. Distro
