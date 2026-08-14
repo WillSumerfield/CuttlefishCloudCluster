@@ -470,3 +470,27 @@ class TestTheLeafIsReissuedWhenItStopsCovering:
                               leaf_sans=TestTheTlsKeysStayMantleOnly()._covering_sans(),
                               chains=False)
         assert [c for c in calls if c[0] == "sh"], "a cert outside the CA's chain must be reissued"
+
+
+class TestTheOperatorNeedNotHaveAGroupOfTheirOwn:
+    """A user-private group (`whs24:whs24`) is an Ubuntu default, not a rule. An operator whose
+    account comes from a directory — LDAP on a university box, say — has a shared primary group
+    (`ldapusers`) and NO group of their own name, so `install -g <username>` is `invalid group` and
+    setup dies two thirds of the way in, at the Pod image, on a Head where everything else worked.
+    """
+
+    def calls(self, monkeypatch, tmp_path) -> list[list[str]]:
+        seen = []
+        monkeypatch.setattr(setup, "run", lambda argv, **kw: seen.append([str(a) for a in argv]))
+        monkeypatch.setattr(setup.getpass, "getuser", lambda: "whs24")
+        monkeypatch.setattr(setup.os, "getgid", lambda: 1002)   # ldapusers; no `whs24` group exists
+        sif = tmp_path / "base.sif"
+        sif.touch()                                             # skip the build; the mkdir is the test
+        monkeypatch.setattr(config, "CCC_SIF", sif)
+        setup.build_base_sif()
+        return seen
+
+    def test_the_image_dir_is_grouped_by_gid_not_by_username(self, monkeypatch, tmp_path):
+        mkdir = [c for c in self.calls(monkeypatch, tmp_path) if c[:2] == ["install", "-d"]][0]
+        assert mkdir[mkdir.index("-o") + 1] == "whs24"           # owner is still the operator
+        assert mkdir[mkdir.index("-g") + 1] == "1002"            # group is resolved, not guessed

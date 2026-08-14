@@ -515,7 +515,10 @@ def build_base_sif() -> None:
     fleet-wide teardown --all + setup, not a re-run.
     """
     # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
-    run(["install", "-d", "-o", getpass.getuser(), "-g", getpass.getuser(),
+    # The group is the operator's real primary gid, NOT their username: a user-private group is an
+    # Ubuntu default, not a rule, and a directory-managed operator (LDAP/AD) has no group of their own
+    # name — `-g <username>` there is `install: invalid group`, and setup dies before the Pod image.
+    run(["install", "-d", "-o", getpass.getuser(), "-g", str(os.getgid()),
          str(config.CCC_IMAGES_DIR)], sudo=True)
     if config.CCC_SIF.exists():
         ui.say(f"  [muted]base.sif exists ({config.CCC_SIF}) — skipping build. `cuttle teardown "
