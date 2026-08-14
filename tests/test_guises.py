@@ -484,6 +484,7 @@ class TestTheOperatorNeedNotHaveAGroupOfTheirOwn:
         monkeypatch.setattr(setup, "run", lambda argv, **kw: seen.append([str(a) for a in argv]))
         monkeypatch.setattr(setup.getpass, "getuser", lambda: "whs24")
         monkeypatch.setattr(setup.os, "getgid", lambda: 1002)   # ldapusers; no `whs24` group exists
+        monkeypatch.setattr(setup, "ensure_subid_range", lambda: None)   # pinned by its own class
         sif = tmp_path / "base.sif"
         sif.touch()                                             # skip the build; the mkdir is the test
         monkeypatch.setattr(config, "CCC_SIF", sif)
@@ -494,3 +495,45 @@ class TestTheOperatorNeedNotHaveAGroupOfTheirOwn:
         mkdir = [c for c in self.calls(monkeypatch, tmp_path) if c[:2] == ["install", "-d"]][0]
         assert mkdir[mkdir.index("-o") + 1] == "whs24"           # owner is still the operator
         assert mkdir[mkdir.index("-g") + 1] == "1002"            # group is resolved, not guessed
+
+
+class TestAnOperatorWithNoSubordinateIds:
+    """`apptainer build` runs unprivileged and maps its fakeroot namespace out of the operator's
+    /etc/subuid range. `adduser` writes one for a LOCAL account only, so a directory-managed operator
+    has none and the build dies on `setgroups: Permission denied` — 20 minutes in, naming neither
+    subuid nor the user. Every node builds this image, so this is not a Head-only failure.
+    """
+
+    def run(self, monkeypatch, tmp_path, subuid: str = "", subgid: str = "") -> list[str]:
+        (tmp_path / "subuid").write_text(subuid)
+        (tmp_path / "subgid").write_text(subgid)
+        monkeypatch.setattr(config, "SUBUID_FILE", tmp_path / "subuid")
+        monkeypatch.setattr(config, "SUBGID_FILE", tmp_path / "subgid")
+        monkeypatch.setattr(setup.getpass, "getuser", lambda: "whs24")
+        monkeypatch.setattr(setup.ui, "say", lambda *a, **kw: None)
+        seen = []
+        monkeypatch.setattr(setup, "sh", lambda script, **kw: seen.append(script))
+        setup.ensure_subid_range()
+        return seen
+
+    def test_a_range_is_granted_when_there_is_none(self, monkeypatch, tmp_path):
+        appended = self.run(monkeypatch, tmp_path)
+        assert len(appended) == 2, "uid and gid ranges are granted together or not at all"
+        assert all(f"whs24:{config.SUBID_BASE}:{config.SUBID_COUNT}" in a for a in appended)
+
+    def test_an_existing_range_is_never_moved(self, monkeypatch, tmp_path):
+        """A range already handed out is one some namespace may already own files under."""
+        line = "whs24:100000:65536"
+        assert self.run(monkeypatch, tmp_path, subuid=line + "\n", subgid=line + "\n") == []
+
+    def test_a_new_range_starts_past_every_allocated_one(self, monkeypatch, tmp_path):
+        """Two users sharing subids means one can act as the other inside a namespace."""
+        appended = self.run(monkeypatch, tmp_path, subuid="ubuntu:100000000:65536\n")
+        assert all(f"whs24:{100_000_000 + 65_536}:{config.SUBID_COUNT}" in a for a in appended)
+
+    def test_the_uid_range_is_filled_in_even_if_only_the_gid_one_is_missing(self, monkeypatch,
+                                                                           tmp_path):
+        """Half a grant is no grant: newuidmap and newgidmap both have to resolve."""
+        appended = self.run(monkeypatch, tmp_path, subuid="whs24:100000:65536\n")
+        assert len(appended) == 1, "only the file actually missing the operator is appended to"
+        assert str(config.SUBGID_FILE) in appended[0] and "whs24" in appended[0]

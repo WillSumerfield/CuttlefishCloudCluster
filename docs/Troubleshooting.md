@@ -170,6 +170,18 @@ It is telling you that remote donors will hang at `setup --arm`. Fine if every d
 If not, re-run with `--address=<reachable-address>`. See
 [Making the Head reachable](setup/head.md#making-the-head-reachable).
 
+### The Pod image build fails with `setgroups: Permission denied`
+
+The build is unprivileged and maps a fakeroot namespace out of the operator's `/etc/subuid` range.
+Setup grants one to an operator who has none — a directory-managed account (LDAP/AD) never went
+through `adduser`, so it has none — and installs `uidmap` for the `newuidmap` that applies it. If it
+still fails, the earlier `User not listed in /etc/subuid` line says the grant did not take:
+
+```sh
+grep "$(id -un)" /etc/subuid /etc/subgid   # a range should be there
+command -v newuidmap                       # apt-get install uidmap if absent
+```
+
 ### Re-pointing the coordinator
 
 Confirmed rather than announced, because it invalidates every enrollment token already handed out and

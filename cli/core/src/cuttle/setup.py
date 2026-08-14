@@ -179,10 +179,15 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     `libnss3-tools` is on every role, this one included: it carries `certutil`, and without it the
     Chromium-family browsers on this box go on warning about the Dashboard however well the OS trust
     store is set up (see system.trust_ccc_ca_browsers).
+
+    `uidmap` likewise, and for the same shape of reason: newuidmap/newgidmap are what an unprivileged
+    `apptainer build` uses to map its fakeroot namespace (see ensure_subid_range), and every node
+    builds the Pod image.
     """
     run(["apt-get", "update"], sudo=True)
     before = system.installed_packages()
     _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
+                  config.UIDMAP_PKG,
                   *([config.ACL_PKG, config.NODE_PKG] if head else [])])
     return before
 
@@ -498,6 +503,51 @@ def install_rsyncd(mesh_ip: str) -> None:
     run(["systemctl", "restart", config.RSYNCD_SERVICE], sudo=True)
 
 
+def _next_subid_base() -> int:
+    """The first subid past every range already allocated on this box, floored at SUBID_BASE.
+
+    Overlapping ranges are not rejected by anything — shadow writes what it is told — and two users
+    sharing subids means one can act as the other inside a namespace. So this reads BOTH files and
+    starts after the highest end in either, keeping the uid and gid ranges identical as well.
+    """
+    end = config.SUBID_BASE
+    for path in (config.SUBUID_FILE, config.SUBGID_FILE):
+        for line in path.read_text().splitlines() if path.exists() else []:
+            parts = line.split(":")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                end = max(end, int(parts[1]) + int(parts[2]))
+    return end
+
+
+def ensure_subid_range() -> None:
+    """Give the operator subordinate uids/gids if they have none. **Every node** — an Arm builds the
+    Pod image too.
+
+    `apptainer build` runs unprivileged, and its fakeroot namespace is exactly a mapping of the
+    operator's subuid range. `adduser` writes that range for a local account; an LDAP or AD account
+    never passed through adduser, so it has none, and the build fails 20 minutes in with
+    `Could not write info to setgroups: Permission denied` — an error that names neither subuid nor
+    the operator.
+
+    Append-only, and only when the operator is absent from the file: these files are the box's own,
+    may already describe other users, and a range once handed out must not move under anyone. For the
+    same reason teardown leaves what this wrote — two lines naming a user, harmless where they sit,
+    and rewriting a shared system file on the way out is the worse trade.
+    """
+    user = getpass.getuser()
+    have = {p: any(line.startswith(f"{user}:") for line in p.read_text().splitlines())
+            for p in (config.SUBUID_FILE, config.SUBGID_FILE) if p.exists()}
+    if all(have.get(p) for p in (config.SUBUID_FILE, config.SUBGID_FILE)):
+        return
+    base = _next_subid_base()
+    for path in (config.SUBUID_FILE, config.SUBGID_FILE):
+        if have.get(path):
+            continue
+        sh(f"echo '{user}:{base}:{config.SUBID_COUNT}' >> {path}", sudo=True)
+    ui.say(f"  [muted]{user} had no subordinate ids — granted {base}+{config.SUBID_COUNT} so the "
+           f"unprivileged image build can map a fakeroot namespace[/muted]")
+
+
 def build_base_sif() -> None:
     """Build the base Pod image at CCC_SIF — the SAME path on every node, Head or Arm.
 
@@ -514,6 +564,7 @@ def build_base_sif() -> None:
     one keeps whatever it built, however old. So changing BASE_DEF_TMPL or its pinned digest is a
     fleet-wide teardown --all + setup, not a re-run.
     """
+    ensure_subid_range()   # the build maps a fakeroot namespace out of these; before anything else
     # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
     # The group is the operator's real primary gid, NOT their username: a user-private group is an
     # Ubuntu default, not a rule, and a directory-managed operator (LDAP/AD) has no group of their own

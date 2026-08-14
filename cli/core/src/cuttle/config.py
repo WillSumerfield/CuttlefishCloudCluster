@@ -12,6 +12,10 @@ SLURM_PKG = f"slurm-wlm={SLURM_VERSION}"
 SLURMD_PKG = f"slurmd={SLURM_VERSION}"
 NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.20.0-1"  # NVIDIA's repo retains old versions — safe
 MUNGE_PKG = "munge"  # auth; distro version fine
+# EVERY node: `apptainer build` runs unprivileged and needs newuidmap/newgidmap to map its fakeroot
+# namespace. Present on most desktops (podman and rootless docker pull it in), absent often enough on
+# a fresh server that assuming it is how a Head gets all the way to the Pod image and then dies.
+UIDMAP_PKG = "uidmap"
 # HEAD ONLY. `setfacl` is how the Mantle lends ONE **Guise** read access to ONE uploaded project
 # without any privilege at all (it already owns the directory) — see ccc_head_api.spawns.submit. Distro
 # version: the ACL syscalls are kernel/ext4, and this package is just the CLI over them.
@@ -507,6 +511,17 @@ HEAD_CA_NICKNAME = "CCC Head CA"       # the name it goes in (and comes out) of 
 # Per-user by construction: a second login account on the same box does its own import.
 NSSDB_DIR = ".pki/nssdb"               # relative to $HOME
 NSS_TOOLS_PKG = "libnss3-tools"        # provides `certutil`
+
+# --- subordinate ids: what lets an unprivileged `apptainer build` map a fakeroot namespace ---
+# `adduser` writes a range here for a LOCAL account and for nothing else, so a directory-managed
+# operator (LDAP/AD) has none — apptainer then says "User not listed in /etc/subuid", falls back to a
+# root-mapped namespace, and dies on setgroups. setup.ensure_subid_range fills the gap.
+SUBUID_FILE = Path("/etc/subuid")
+SUBGID_FILE = Path("/etc/subgid")
+# Well clear of real uids: a directory hands out uids in the millions (1809654 on the box that forced
+# this), and shadow's own 100000 default would sit underneath them. The count is the conventional one.
+SUBID_BASE = 100_000_000
+SUBID_COUNT = 65_536
 # Firefox ignores both stores above and reads an enterprise policy file instead. Cuttle merges its
 # keys into an existing file rather than clobbering whatever else is configured there.
 FIREFOX_POLICIES = Path("/etc/firefox/policies/policies.json")
