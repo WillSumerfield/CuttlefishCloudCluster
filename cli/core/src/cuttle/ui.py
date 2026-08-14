@@ -22,6 +22,7 @@ output can stay pretty without anyone having to parse it.
 
 import contextlib
 import io
+import base64
 import json
 import os
 import select
@@ -958,8 +959,40 @@ def _clipboard_cmd() -> list[str] | None:
     return next((cmd for cmd in _CLIPBOARD_CMDS if shutil.which(cmd[0])), None)
 
 
-def _copy_to_clipboard(text: str) -> bool:
-    """DEVNULL, never a pipe — capturing this output DEADLOCKS the caller.
+def _osc52(text: str) -> None:
+    """Hand `text` to the TERMINAL's clipboard, not this box's.
+
+    OSC 52 is a request the terminal emulator itself answers, so the bytes travel back up the ssh
+    connection and land on the clipboard of the machine the operator is sitting at. That is the whole
+    reason it is here: a Head is a server, administered over ssh, with no X server, no Wayland and no
+    clipboard tool — and `xclip` on such a box would copy to a selection nobody is looking at.
+
+    Written straight to stderr rather than through Rich: this is a control sequence, not a cell, and
+    the canvas would otherwise repaint over it 12×/s.
+
+    Multiplexers eat unknown sequences, so both are asked to pass it through (ESC doubled inside a DCS
+    string, which is how tmux and screen quote it). tmux additionally needs `set -g set-clipboard on`
+    — nothing here can check that, which is why the caller's wording never promises a copy landed.
+    """
+    seq = f"\033]52;c;{base64.b64encode(text.encode()).decode()}\a"
+    if os.environ.get("TMUX"):
+        seq = "\033Ptmux;" + seq.replace("\033", "\033\033") + "\033\\"
+    elif os.environ.get("TERM", "").startswith("screen"):
+        seq = "\033P" + seq.replace("\033", "\033\033") + "\033\\"
+    sys.stderr.write(seq)
+    sys.stderr.flush()
+
+
+def _copy_to_clipboard(text: str) -> str:
+    """Put `text` on a clipboard by whatever route this box has. Returns which one was taken:
+    `"clipboard"` (a local tool confirmed it), `"terminal"` (asked the terminal over OSC 52, which
+    answers nothing), or `""` (a tool was there and refused).
+
+    A local tool is preferred where one exists because its exit code is *evidence*. OSC 52 is the
+    fallback rather than the default for the same reason — it is fire-and-forget, and a terminal that
+    ignores it looks exactly like one that obeyed.
+
+    DEVNULL, never a pipe — capturing this output DEADLOCKS the caller.
 
     An X11/Wayland selection is owned by a live process, so xclip/wl-copy fork a background copy that
     holds the clipboard and keeps whatever fds it inherited. Given pipes, that copy holds the read
@@ -970,12 +1003,19 @@ def _copy_to_clipboard(text: str) -> bool:
     """
     cmd = _clipboard_cmd()
     if cmd is None:
-        return False
+        _osc52(text)
+        return "terminal"
     try:
-        return subprocess.run(cmd, input=text.encode(),
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        ok = subprocess.run(cmd, input=text.encode(),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except OSError:
-        return False
+        ok = False
+    if ok:
+        return "clipboard"
+    # The tool was there and failed — an X11 tool with no display, typically, which is exactly the
+    # remote case. The terminal is still worth asking; it is a different machine's clipboard.
+    _osc52(text)
+    return "terminal"
 
 
 @contextmanager
@@ -997,12 +1037,17 @@ def copy_hotkey(text: str):
     Not automatic: the caller is handing over a *secret*, and a secret that lands on the clipboard
     because a command decided to put it there is a surprise, not a convenience.
 
-    Inert with no terminal, no human, or no clipboard tool — `wait` is then plain `time.sleep`, and a
-    script's polling loop is untouched. (Headless boxes have no clipboard tool at all, which is why
-    the offer is conditional rather than a keystroke that silently does nothing.)
+    Inert with no terminal and no human — `wait` is then plain `time.sleep`, and a script's polling
+    loop is untouched.
+
+    A missing clipboard tool is NOT one of those conditions, though it used to be. A Head is a server
+    reached over ssh: it has no clipboard tool, the offer therefore never appeared, and the operator
+    was left with a secret on an alternate screen that the terminal discards on exit — unselectable
+    while it repaints, absent from scrollback afterwards, and deliberately absent from the run log.
+    `_copy_to_clipboard` falls back to OSC 52, which the operator's OWN terminal answers, so the
+    hotkey is offered wherever there is a terminal at all.
     """
-    if not _tty() or NO_INPUT or _ANSWERS is not None or _SCREEN is None \
-            or _clipboard_cmd() is None:
+    if not _tty() or NO_INPUT or _ANSWERS is not None or _SCREEN is None:
         yield time.sleep
         return
     _emit("  [muted]press c to copy it to the clipboard[/muted]")
@@ -1020,8 +1065,14 @@ def copy_hotkey(text: str):
                 if key in ("\x03", "\x04"):
                     raise KeyboardInterrupt
                 if key in ("c", "C"):
-                    _emit("  [ok]✓[/ok] copied to the clipboard" if _copy_to_clipboard(text)
-                          else "  [warn]![/warn] the clipboard tool refused it — copy it by hand")
+                    # Three outcomes, three sentences: a confirmed copy, a copy this box CANNOT
+                    # confirm (the terminal never answers OSC 52), and a refusal. Saying "copied" for
+                    # the middle one would send the operator to paste something that may not be there.
+                    _emit({"clipboard": "  [ok]✓[/ok] copied to the clipboard",
+                           "terminal": "  [ok]✓[/ok] sent to your terminal's clipboard — paste to "
+                                       "check; if it is empty your terminal ignores OSC 52",
+                           "": "  [warn]![/warn] the clipboard tool refused it — copy it by hand",
+                           }[_copy_to_clipboard(text)])
         yield wait
 
 

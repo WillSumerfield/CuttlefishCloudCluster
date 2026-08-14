@@ -268,3 +268,47 @@ class TestTheRunLogKeepsNoSecrets:
         ui.secret("  tok-abc123")
         ui.data("tok-abc123", log=False)
         assert logged == []
+
+
+class TestASecretCanBeTakenOffARemoteHead:
+    """`arm authorize` prints a token onto the alternate screen and then blocks for five minutes
+    waiting for the donor to redeem it. The screen repaints ~12×/s (unselectable), is discarded on
+    exit (no scrollback), and the token is kept out of the run log on purpose — so `c` is the only
+    way off the box. It used to be offered only where a local clipboard tool existed, which a Head
+    reached over ssh never has.
+    """
+
+    def test_a_box_with_no_clipboard_tool_asks_the_terminal(self, monkeypatch, capsys):
+        monkeypatch.setattr(ui, "_clipboard_cmd", lambda: None)
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.setenv("TERM", "xterm-256color")
+
+        assert ui._copy_to_clipboard("tok-123") == "terminal"
+        written = capsys.readouterr().err
+        assert written == "\033]52;c;dG9rLTEyMw==\a", "OSC 52 carries base64, to the terminal's clip"
+
+    def test_a_local_tool_is_preferred_because_it_answers(self, monkeypatch, capsys):
+        """Its exit code is evidence; OSC 52 is fire-and-forget."""
+        monkeypatch.setattr(ui, "_clipboard_cmd", lambda: ["wl-copy"])
+        monkeypatch.setattr(ui.subprocess, "run",
+                            lambda *a, **kw: type("R", (), {"returncode": 0})())
+        assert ui._copy_to_clipboard("tok-123") == "clipboard"
+        assert capsys.readouterr().err == "", "no escape sequence when a tool took it"
+
+    def test_a_tool_that_fails_still_falls_back_to_the_terminal(self, monkeypatch, capsys):
+        """An X11 tool with no display is exactly the remote case that broke."""
+        monkeypatch.setattr(ui, "_clipboard_cmd", lambda: ["xclip", "-selection", "clipboard"])
+        monkeypatch.setattr(ui.subprocess, "run",
+                            lambda *a, **kw: type("R", (), {"returncode": 1})())
+        monkeypatch.delenv("TMUX", raising=False)
+        assert ui._copy_to_clipboard("tok-123") == "terminal"
+        assert "\033]52;c;" in capsys.readouterr().err
+
+    def test_tmux_is_asked_to_pass_the_sequence_through(self, monkeypatch, capsys):
+        """A multiplexer eats sequences it does not know, and this is one of them."""
+        monkeypatch.setattr(ui, "_clipboard_cmd", lambda: None)
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+        ui._copy_to_clipboard("tok-123")
+        written = capsys.readouterr().err
+        assert written.startswith("\033Ptmux;") and written.endswith("\033\\")
+        assert "\033\033]52;c;" in written, "ESC is doubled inside a DCS string"
