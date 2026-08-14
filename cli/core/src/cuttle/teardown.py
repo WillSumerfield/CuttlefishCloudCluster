@@ -36,6 +36,10 @@ _APT_SOURCE_FILES = [
     "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
     "/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
     str(config.UBUNTU_SNAPSHOT_LIST),
+    # Head-only, but removed unconditionally — rm -f no-ops where it was never added. Both carry the
+    # ccc- prefix setup gave them, so a box that had its own NodeSource repo before CCC keeps it.
+    str(config.NODESOURCE_LIST),
+    config.NODESOURCE_KEYRING,
 ]
 
 

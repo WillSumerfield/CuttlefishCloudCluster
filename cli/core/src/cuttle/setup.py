@@ -97,13 +97,22 @@ def add_repos(head: bool = False) -> None:
     """Add the apt sources CCC's pins need. Every one of them is an EXTRA file under
     sources.list.d — this box's own sources are never rewritten (see the snapshot template).
 
-    The apptainer PPA is added on the **Head only**. An Arm installs the Head's pinned .deb by path
-    (install_apptainer), so a donor's machine gains no third-party repo at all — which is both the
-    hygiene win and the reason two Arms set up months apart now run the same apptainer.
+    The apptainer PPA and NodeSource are added on the **Head only**. An Arm installs the Head's pinned
+    .deb by path (install_apptainer) and never builds the Dashboard, so a donor's machine gains no
+    third-party repo at all — which is both the hygiene win and the reason two Arms set up months
+    apart now run the same apptainer.
     """
     _write_root_file(config.UBUNTU_SNAPSHOT_LIST, templates.render_ubuntu_snapshot_list())
     if head:
         run(["add-apt-repository", "-y", config.APPTAINER_PPA], sudo=True)
+        # Written ourselves rather than by piping NodeSource's setup script to a root shell: the
+        # script also apt-get updates, installs, and rewrites sources of its own choosing. Two lines
+        # is the whole repo. --yes: clobber on re-run instead of prompting, as above.
+        sh(f"curl -fsSL {config.NODESOURCE_KEY_URL} "
+           f"| gpg --yes --dearmor -o {config.NODESOURCE_KEYRING}", sudo=True)
+        _write_root_file(config.NODESOURCE_LIST,
+                         f"deb [signed-by={config.NODESOURCE_KEYRING}] "
+                         f"{config.NODESOURCE_REPO} nodistro main\n")
     sh(
         # --yes: clobber the keyring on re-run instead of prompting (public repo key; setup is idempotent).
         "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey "
@@ -163,6 +172,10 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     access to ONE uploaded project (see temp/spawn-isolation.md), and the uploads only ever exist
     here. A donor's box gains nothing it cannot use.
 
+    `head` also adds Node, and for the same reason: `build_spa` runs `npm` some twenty minutes later,
+    and a Head with no Node used to get that far and then fail on `No such file or directory: 'npm'`
+    with the Dashboard — the primary surface — never built.
+
     `libnss3-tools` is on every role, this one included: it carries `certutil`, and without it the
     Chromium-family browsers on this box go on warning about the Dashboard however well the OS trust
     store is set up (see system.trust_ccc_ca_browsers).
@@ -170,7 +183,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     run(["apt-get", "update"], sudo=True)
     before = system.installed_packages()
     _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
-                  *([config.ACL_PKG] if head else [])])
+                  *([config.ACL_PKG, config.NODE_PKG] if head else [])])
     return before
 
 
@@ -786,8 +799,9 @@ def _secure_tls() -> None:
 
 def build_spa() -> None:
     """Build the Dashboard SPA and stage it where the Head API service reads it. Node is needed only
-    on the Head; a donor Arm never builds this. Staged OUTSIDE the user's 0750 home — the service
-    user can't traverse there — into a world-readable /opt path."""
+    on the Head — install_packages(head=True) put it there; a donor Arm never builds this. Staged
+    OUTSIDE the user's 0750 home — the service user can't traverse there — into a world-readable
+    /opt path."""
     web_src = headapi.REPO_ROOT / "head" / "web"
     run(["npm", "ci"], cwd=str(web_src))
     run(["npm", "run", "build"], cwd=str(web_src))
@@ -965,7 +979,7 @@ def _setup_head(address: str | None = None) -> None:
         system.allow_mesh_iface(config.CCC_TS_TUN)
     with ui.step("Adding package repositories"):
         add_repos(head=True)  # the apptainer PPA is added HERE and nowhere else in the fleet
-    with ui.step("Installing Slurm, munge and Apptainer"):
+    with ui.step("Installing Slurm, munge, Apptainer and Node"):
         before = install_packages(head=True)
         # /var/lib/ccc must exist before the .deb can be stored under it, and it is munge-owned — so
         # this waits until apt has created the `munge` user, i.e. until just now.

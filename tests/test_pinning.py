@@ -71,6 +71,37 @@ class TestUbuntuSnapshot:
         setup.add_repos(head=True)
         assert any(config.APPTAINER_PPA in c for c in ran)
 
+    def test_only_the_head_gains_node(self, monkeypatch):
+        """Node builds the Dashboard, which only the Head does — so NodeSource, like the apptainer
+        PPA, never reaches a donor's box. The install list follows the repo: pinning Node into an
+        Arm's apt run would add a repo an Arm has no source for."""
+        written, ran = [], []
+        monkeypatch.setattr(setup, "_write_root_file", lambda path, content, mode="644":
+                            written.append((path, content)))
+        monkeypatch.setattr(setup, "run", lambda cmd, **kw: ran.append(" ".join(cmd)))
+        monkeypatch.setattr(setup, "sh", lambda script, **kw: ran.append(script))
+        installed = []
+        monkeypatch.setattr(setup, "_apt_install", lambda pkgs: installed.extend(pkgs))
+        monkeypatch.setattr(setup.system, "installed_packages", lambda: set())
+
+        setup.add_repos()
+        setup.install_packages(config.SLURMD_PKG)
+        assert config.NODESOURCE_LIST not in [p for p, _ in written]
+        assert config.NODE_PKG not in installed
+
+        setup.add_repos(head=True)
+        setup.install_packages(head=True)
+        assert config.NODESOURCE_LIST in [p for p, _ in written]
+        assert any(config.NODESOURCE_KEY_URL in c and config.NODESOURCE_KEYRING in c for c in ran)
+        assert config.NODE_PKG in installed
+
+    def test_node_repo_is_signed_and_pinned(self):
+        """An unsigned source, or a floating `nodejs`, and the Dashboard build stops being the thing
+        that was tested. node_22.x retains its old builds, so the exact pin stays fetchable."""
+        assert config.NODE_PKG.startswith("nodejs=")
+        assert config.NODESOURCE_KEYRING.endswith(".gpg")
+        assert config.NODESOURCE_REPO.startswith("https://")
+
 
 class TestBaseImageDigest:
     """`ubuntu:24.04` is a MUTABLE tag — Canonical re-pushes it monthly — so two nodes building
