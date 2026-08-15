@@ -301,7 +301,7 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     file-not-found the User cannot act on."""
     body = _script()
     assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind"' in body
+    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind"' in body
 
 
 @pytest.mark.parametrize("kind,expect", [

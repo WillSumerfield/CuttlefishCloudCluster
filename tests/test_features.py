@@ -72,7 +72,7 @@ def test_the_payload_gets_the_features_binds_and_env():
     if the payload appends them. Both payload shapes: a Tide Pool on a vlearn Arm is how someone
     debugs a vlearn Spawn, and it is useless if the runtime is not the same one."""
     script = _script(features=["vlearn"])
-    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind"' in script
+    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind"' in script
     # `$featenv` stays LAST in the --env list, whatever else is added before it — it accumulates
     # `,NAME=value` fragments, so anything appended after it would land inside the last value.
     assert _env_line(script).endswith('$featenv" \\')

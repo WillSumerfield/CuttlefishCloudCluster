@@ -307,6 +307,68 @@ class TestGuiseProlog:
         assert epilog.rstrip().endswith("exit 0")
 
 
+class TestMigHooks:
+    """A MIG-mode card's resting state is ONE full-size instance, because CCC prices whole cards and
+    has no **Beak** to carve for placement (CONTEXT.md, "Slice"). The prolog hands a Spawn that state;
+    the epilog puts it back after whatever the Spawn did to it.
+
+    Measured on hardware: MIG mode `Enabled` with nothing carved is a GPU with *no CUDA device at all*,
+    which is what dex's benchmark died of — an assert in the Pod, five seconds in, with the traceback
+    destroyed alongside the job's private /tmp.
+    """
+
+    def test_the_epilog_resets_and_the_prolog_only_repairs(self):
+        """Two different jobs. Resetting at the end is what keeps an *idle* box honest about what it
+        holds; repairing at the start is only for the times the epilog never ran — a rebooted node, a
+        killed slurmd — and for the first Spawn onto a card whose owner enabled MIG and never carved."""
+        prolog, epilog = templates.render_prolog(), templates.render_epilog()
+        assert '[ "$(ccc_mig_count "$uuid")" = 1 ] || ccc_mig_reset "$uuid"' in prolog
+        assert 'ccc_mig_enabled "$uuid" && ccc_mig_reset "$uuid"' in epilog
+
+    def test_the_caps_are_opened_for_the_held_cards_and_closed_again(self):
+        """Creating an instance as root leaves its capability node 0400 root — so a **Guise** cannot
+        open the MIG device Slurm just allocated it. Opening these is not the carving feature, it is
+        what makes MIG work at all. Held cards only, and given back at the end like the Spawn dir."""
+        assert 'ccc_mig_caps "$minor" 0440' in templates.render_prolog()
+        assert 'ccc_mig_caps "$minor" 0400' in templates.render_epilog()
+        for script in (templates.render_prolog(), templates.render_epilog()):
+            assert 'for minor in $(ccc_held_minors); do' in script
+            assert f'CCC_GUISE_GROUP={config.GUISE_GROUP}' in script
+
+    def test_the_global_config_cap_is_opened_but_never_closed(self):
+        """`nvidia-cap1` is ONE node for the whole box, not one per card. Closing it when a Spawn ends
+        would take carving away from a concurrent Spawn still running on the other card — a bug two
+        cards make reachable and a one-card box hides. Safe to leave: config alone reaches no card,
+        since the per-GPU access caps are what a MIG device is opened through and ConstrainDevices
+        still decides which /dev/nvidiaN a Pod may touch."""
+        assert "ccc_mig_cap_config" in templates.render_prolog()
+        epilog = templates.render_epilog()
+        # Defined (it rides the shared block) but never CALLED there.
+        assert "ccc_mig_cap_config()" in epilog
+        assert not re.search(r"^\s*ccc_mig_cap_config$", epilog, re.M)
+
+    def test_a_whole_card_arm_is_untouched(self):
+        """The fleet is mixed and always will be. Every branch here hangs off `ccc_mig_enabled`, so a
+        node with no MIG-capable card runs the hooks exactly as it did before any of this existed."""
+        for script in (templates.render_prolog(), templates.render_epilog()):
+            assert "ccc_mig_enabled" in script
+            assert "[ -d /proc/driver/nvidia-caps ] || return 0" in script
+        assert 'ccc_mig_enabled "$uuid" || continue' in templates.render_prolog()
+
+    def test_neither_hook_can_drain_a_node_over_a_card(self):
+        """A non-zero prolog drains the node, and a drained node stays drained across a slurmd restart.
+        A stale MIG instance must never cost the cluster the whole Arm."""
+        for script in (templates.render_prolog(), templates.render_epilog()):
+            assert script.rstrip().endswith("exit 0")
+
+    def test_the_full_card_profile_is_named_once(self):
+        """`4g.96gb` is ID 0 on an RTX PRO 6000. The `+me`/`-me`/`+gfx` spellings exist only on the 1g
+        and 2g profiles, so there is no suffixed variant of the full card to pick between."""
+        for script in (templates.render_prolog(), templates.render_epilog()):
+            assert "CCC_MIG_FULL_PROFILE=0" in script
+            assert '-cgi $CCC_MIG_FULL_PROFILE -C' in script
+
+
 class TestPrologRollout:
     """`Prolog=` is the one fleet-wide setting that punishes being early: an Arm named by it without
     the script fails its jobs and drains, and *stays* drained across a slurmd restart — so putting the
@@ -711,11 +773,39 @@ class TestBenchmarkSbatch:
 
     def test_it_measures_each_visible_device(self):
         """Identical models still differ in practice — an x4 slot, the card that throttles under the
-        other — so every card is timed, not one and multiplied."""
-        body = bench_body(templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4))
-        assert "torch.cuda.device_count()" in body
-        assert "for i in range(ndev)" in body
-        assert '"powers": powers' in body
+        other — so every card is timed, not one and multiplied.
+
+        The loop is in the SHELL, not in the Python: a MIG instance is the only device its process can
+        address, so a single interpreter could never reach a second card on a MIG-mode Arm. One
+        `apptainer exec` per Device, one measurement each, merged at the end.
+        """
+        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
+        assert 'for g in "${held[@]}"; do' in job
+        assert job.count("bench.py") == 3      # the heredoc that writes it, then measure, then merge
+        assert 'bench.py" measure' in job and 'bench.py" merge' in job
+        body = bench_body(job)
+        assert '"power": round(' in body       # one Power per process...
+        assert '"powers": [p["power"] for p in parts]' in body   # ...folded in gres.conf order
+
+    def test_a_mig_card_is_named_by_uuid_and_a_whole_card_is_not(self):
+        """CUDA_VISIBLE_DEVICES cannot name a MIG device by index — only a MIG-<uuid> reaches one. But
+        a whole-card Arm must keep Slurm's own value untouched, because that is what made torch's
+        device i mean GRES index i, which is what Settlement bills against.
+        """
+        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
+        assert 'if [ -n "$uuid" ]; then cvd="$uuid"; tdev=0; ' \
+               'else cvd="$CUDA_VISIBLE_DEVICES"; tdev="$g"; fi' in job
+
+    def test_the_card_is_resolved_by_device_minor_not_by_enumeration_order(self):
+        """gres.conf is written from /dev/nvidiaN in numeric order; nvidia-smi enumerates by PCI bus.
+        Where they disagree, pairing a card with the wrong Power is invisible on a box whose cards are
+        identical — every Spawn still runs, and Settlement quietly bills one card at the other's rate.
+        So the minor resolves through /proc, which carries the minor and the GPU UUID in one file.
+        """
+        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
+        assert "/proc/driver/nvidia/gpus/*/information" in job
+        assert "/^Device Minor:/" in job and "/^GPU UUID:/" in job
+        assert "sort -V" in job    # nvidia10 after nvidia2, matching system.gpu_devices()
 
 
 class TestFeaturesEnv:

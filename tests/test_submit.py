@@ -732,6 +732,43 @@ class TestPodContainment:
         assert "/dev/dxg" not in payload      # the path appears only in the guarded assignment above
         assert '"$dxg"' not in payload        # quoted, an empty var is an empty ARGUMENT, not nothing
 
+    @pytest.mark.parametrize("what", ["script", "tidepool"])
+    def test_a_mig_card_reaches_the_pod_as_a_uuid(self, what):
+        """CUDA cannot name a MIG device by index — only a `MIG-<uuid>` reaches one. A card in MIG mode
+        with Slurm's own CUDA_VISIBLE_DEVICES left on it presents the Pod with NO GPU at all: not a
+        slower one, none. That is what dex's benchmark died of, and it is what every Spawn on that box
+        would die of next.
+
+        The capability nodes ride along for the same reason /dev/dxg does: `--contain` cuts /dev down,
+        `--nv` restores the `nvidia*` nodes, and the nodes a MIG device is opened through live in a
+        SUBDIRECTORY that neither puts back. Making them readable is the Arm prolog's job; this only
+        carries them across the Pod wall.
+
+        Decided on the NODE, like $dxg: whether an Arm carves its cards is a fact about the Arm, and
+        the Head renders one script for a fleet it does not survey."""
+        script = self.render() if what == "script" else self.tidepool()
+        assert '[ -n "$ccc_uuid" ] && migbind=",/dev/nvidia-caps" && ' \
+               'migenv=",CUDA_VISIBLE_DEVICES=$ccc_uuid"' in script
+        payload = script[script.index("apptainer exec"):]
+        assert "$migbind" in payload and "$migenv" in payload
+
+    def test_a_whole_card_arm_adds_no_mig_argument(self):
+        """The other half of the $dxg rule: both accumulators are empty on a card that is not carved,
+        and they are appended INSIDE existing quoted strings, so an empty one adds nothing at all
+        rather than an empty bind or a stray comma."""
+        script = self.render()
+        payload = script[script.index("apptainer exec"):]
+        assert "/dev/nvidia-caps" not in payload   # only in the guarded assignment above
+        assert '"$migbind"' not in payload and '"$migenv"' not in payload
+
+    def test_the_feature_env_stays_last(self):
+        """`$featenv` accumulates `,NAME=value` fragments and must stay at the end of the --env list,
+        so $migenv goes BEFORE it rather than after — the invariant is the Feature profile's, and MIG
+        does not get to weaken it just because it arrived later."""
+        for script in (self.render(), self.tidepool()):
+            payload = script[script.index("apptainer exec"):]
+            assert payload.index("$migenv") < payload.index("$featenv")
+
     def test_the_pod_keeps_the_host_network(self):
         """--net is deliberately NOT here: the payload needs W&B egress, and the Tide Pool's sshd has to
         be reachable at its port on the Arm's own address for the Head-side relay to reach it."""
