@@ -132,7 +132,7 @@ class Api:
 
     def raw(self, path: str, missing_ok: bool = False) -> bytes | None:
         """A GET of a raw body (log text, outputs tar). `missing_ok` turns a 404 into None — a Spawn
-        that wrote nothing to $CCC_OUT is a normal outcome, not a malformed command."""
+        that wrote nothing to its declared outputs is a normal outcome, not a malformed command."""
         try:
             r = self._send("GET", path, headers=self._headers(True, None), timeout=TIMEOUT_RAW)
         except ApiError as e:

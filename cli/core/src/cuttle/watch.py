@@ -268,7 +268,7 @@ def drain_one(spawn_id: int, token: str | None = None) -> bool:
     """Advance one entry. Returns True if it is settled (nothing more to do), False to try again later.
 
     The Spawn's *ending* is irrelevant here — exit 0, non-zero, FAILED, CANCELLED all download the
-    same way. A run killed at its `--time` limit with six hours of checkpoints in `$CCC_OUT` is
+    same way. A run killed at its `--time` limit with six hours of checkpoints in a declared output is
     precisely the case where the results matter most, and gating on a clean exit would throw it away.
     """
     entry = read(spawn_id)

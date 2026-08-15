@@ -205,7 +205,7 @@ json.dump({{
     "powers": powers,
     "vram_mb": props.total_memory // 1024**2,
     "gpu": props.name,
-}}, open(os.environ["CCC_OUT"] + "/power", "w"))
+}}, open(os.environ["CCC_BENCH_OUT"] + "/power", "w"))
 """
 
 # Submitted as the **cluster's own Guise** (`sudo -u ccc-u60001 sbatch`), like every Spawn is submitted
@@ -242,10 +242,14 @@ export RSYNC_PASSWORD={bench_secret}
 # `cuttle setup` (setup.build_bench_env) into config.BENCH_ENV_DIR, so nothing is fetched here — the
 # env was 4.6 GB and pulling it from the Head measured 29 minutes against this job's 10-minute wall.
 #
-# /tmp is auto-mounted by Apptainer, so $CCC_OUT needs no explicit --bind (unlike a Spawn's, which
-# lives under /var/lib/ccc). The env is bound at the ONE path it was built at and cannot be moved from
+# CCC_BENCH_OUT is the benchmark's OWN channel and has nothing to do with a Spawn's declared outputs
+# (there is no CCC_OUT in a Spawn's Pod any more — see ccc_head_api.spawns' PAYLOAD_SCRIPT). This is
+# CCC's own script writing to CCC's own path, so it may name it whatever it likes.
+#
+# /tmp is auto-mounted by Apptainer, so it needs no explicit --bind (unlike a Spawn's, which lives
+# under /var/lib/ccc). The env is bound at the ONE path it was built at and cannot be moved from
 # (config.BENCH_ENV_MOUNT), and its own interpreter is what runs — the image has none.
-apptainer exec --nv --env CCC_OUT="$out" --bind "{bench_env_dir}:{env_mount}" \\
+apptainer exec --nv --env CCC_BENCH_OUT="$out" --bind "{bench_env_dir}:{env_mount}" \\
   {sif} {env_mount}/venv/bin/python "$out/bench.py"
 rsync -a "$out/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """

@@ -76,7 +76,7 @@ submit from any box, whether or not it ever ran `setup`.
   Arm dropped before staging results home — no exit code was ever recorded).
 - `cuttle logs <id> [-f]` — print/tail the Spawn's stdout. A co-located Spawn streams live; a remote
   Arm's output arrives at stage-out, so `-f` there is post-hoc.
-- `cuttle outputs <id>` — download the Spawn's `$CCC_OUT` dir as a tar.
+- `cuttle outputs <id>` — download the Spawn's declared outputs as a tar.
 
 ### Accounts
 - `cuttle login [--head <url>]` / `logout` / `whoami` / `passwd` — session lives in `~/.ccc/credentials`

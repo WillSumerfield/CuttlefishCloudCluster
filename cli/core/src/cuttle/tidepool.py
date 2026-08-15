@@ -135,11 +135,12 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
     outputs = list(outputs) if outputs else []
     if not outputs:
         # Not permanently lost — the day-long recovery window rsyncs the whole scratch dir home
-        # regardless of what was declared. But once that window closes nothing here is retrievable
-        # through the normal $CCC_OUT/outputs path, so still worth a warning, just not "lost forever".
-        warning = ("no --output declared — anything this Tide Pool writes OUTSIDE a declared output "
-                   "dir is only recoverable for a day after it ends, then gone (only $CCC_OUT is "
-                   "staged back to the Head as a normal output)")
+        # regardless of what was declared. But once that window closes nothing here is retrievable as a
+        # normal output, so still worth a warning, just not "lost forever". Sharper than it used to be:
+        # there is no longer a catch-all directory that is staged home whether or not anything was
+        # declared, so with no --output there is nowhere in this Pod whose contents outlive it.
+        warning = ("no --output declared — nothing this Tide Pool writes is kept as a result. It is "
+                   "recoverable for a day after the session ends (`cuttle recover`), then gone")
         if ui.interactive():
             ui.warn(warning)
             if not ui.ask_confirm("Continue with no declared output dir?", False):

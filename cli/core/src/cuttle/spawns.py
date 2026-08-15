@@ -11,7 +11,7 @@ server-side in `ccc_head_api.spawns`.
                 checkpoints); `--no-gitignore` uploads the whole tree.
   * results   — out/err/exit/outputs live on the Head under ccc; read them back over the API
                 (`status`/`logs`/`outputs`), never off local disk. A remote submitter who never ran
-                setup gets results the same way — `cuttle outputs <id>` downloads the $CCC_OUT tar.
+                setup gets results the same way — `cuttle outputs <id>` downloads the outputs tar.
 
 Auth: every call carries the bearer token from `~/.ccc/credentials`; the Head URL comes from
 ~/.ccc/config. Every route needs it. Transport is HTTPS, verified against the Head's certificate
@@ -80,7 +80,7 @@ def _make_tar(root: Path, files: list[str] | None) -> bytes:
 def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
     """Authed GET of a raw body (logs text / outputs tar) — carries the bearer like every other call.
 
-    `missing_ok` returns None on a 404 instead of raising: a Spawn that wrote nothing to $CCC_OUT is a
+    `missing_ok` returns None on a 404 instead of raising: a Spawn that wrote nothing to its outputs is a
     normal outcome, not a malformed command.
     """
     client = auth._client()
@@ -612,11 +612,11 @@ def _hint_recovery(spawn_id: int) -> None:
         return
     left = "<1h" if hours < 1 else f"{round(hours)}h"
     ui.hint(f"the Recovery Window is still open ({left} left) — `cuttle recover {spawn_id}` grabs "
-            f"everything else the Spawn wrote, not just $CCC_OUT")
+            f"everything else the Spawn wrote, not just its declared outputs")
 
 
 def outputs(spawn_id: int) -> None:
-    """Download a Spawn's $CCC_OUT dir as a tar into the cwd.
+    """Download a Spawn's declared outputs as a tar into the cwd.
 
     Two different misses, and the Head is the one that can tell them apart (see main.spawn_outputs), so
     its 404 detail is printed verbatim rather than replaced by a guess here: a Spawn that WROTE nothing,
@@ -642,9 +642,9 @@ def outputs(spawn_id: int) -> None:
 
 def recover(spawn_id: int) -> None:
     """Download a Spawn's Recovery Window copy — its whole working dir as it stood when
-    the Spawn ended, not just what it wrote to $CCC_OUT — for as long as the day-long window is open.
+    the Spawn ended, not just what it wrote to its declared outputs — for as long as the window is open.
 
-    A separate artifact from `outputs()` on purpose: the declared $CCC_OUT tar is permanent and never
+    A separate artifact from `outputs()` on purpose: the declared outputs tar is permanent and never
     changes shape; this one expires, so the two are never merged into one download whose contents would
     otherwise silently change once the window closes.
     """

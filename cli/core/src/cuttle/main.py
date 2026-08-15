@@ -578,7 +578,8 @@ def recipe_save(
     gpu: int = typer.Option(1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. "
                                                       "--vram is the total across them."),
     output: list[str] = typer.Option(
-        None, "--output", "-o", help="Subdir under $CCC_OUT the script writes results to (repeatable). "
+        None, "--output", "-o", help="Folder in the project the script writes results to, relative to "
+                                     "the project root (repeatable). "
                                      "Required — a Recipe with none could never be run."),
     manifest: str = typer.Option(
         None, "--manifest", help="REQUIRED. Dependency file the Recipe's Python environment is built "
@@ -721,10 +722,10 @@ def workspace_new(
         None, "--manifest", help="Dependency file a visit builds its environment from. Optional, like "
                                  "a tide pool's — a workspace opened to poke at a box declares none."),
     output: list[str] = typer.Option(
-        None, "--output", "-o", help="Folder under $CCC_OUT a visit writes results to (repeatable). "
-                                     "Optional. $CCC_OUT is a folder INSIDE the workspace, so an "
-                                     "output is kept like everything else AND sent home at the end of "
-                                     "the session for `cuttle outputs` to fetch."),
+        None, "--output", "-o", help="Folder in the workspace tree a visit writes results to "
+                                     "(repeatable). Optional — everything in the tree is kept either "
+                                     "way; naming one ALSO sends it home at the end of the session for "
+                                     "`cuttle outputs` to fetch."),
     feature: list[str] = typer.Option(
         None, "--feature", help="Require an Arm Feature for visits (repeatable)."),
     no_gitignore: bool = typer.Option(
@@ -977,12 +978,14 @@ def run(
         None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
                              "need (--vram), never which machine they want."),
     output: list[str] = typer.Option(
-        None, "--output", "-o", help="Name of a subdir under $CCC_OUT your script writes results to "
-                                     "(repeatable). Required — at least one (optional, with a y/n "
-                                     "warning, for --tidepool). Anything your script writes OUTSIDE "
-                                     "these dirs is still recoverable for a day after the Spawn ends "
-                                     "(`cuttle recover`) — but declare the right dirs here rather than "
-                                     "relying on it."),
+        None, "--output", "-o", help="A folder IN YOUR PROJECT your script writes results to, relative "
+                                     "to the project root (e.g. `-o runs`, `-o out/ckpt`); repeatable. "
+                                     "Start it with `/` for a path absolute inside the Pod instead. "
+                                     "Required — at least one (optional, with a y/n warning, for "
+                                     "--tidepool). Anything your script writes OUTSIDE these folders is "
+                                     "still recoverable for a day after the Spawn ends (`cuttle "
+                                     "recover`) — but declare the right ones here rather than relying "
+                                     "on it."),
     feature: list[str] = typer.Option(
         # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
@@ -1012,8 +1015,15 @@ def run(
     that may need 2 GB.
 
     --output/-o has no default either, and none is offered anywhere: a Spawn nobody named an output
-    for is one whose results (docs/elements/spawns.md) have nowhere
-    retrievable to land — `mkdir -p "$CCC_OUT/<name>"` runs before your script does, once per name.
+    for is one whose results (docs/elements/spawns.md) have nowhere retrievable to land.
+
+    An output is a path in YOUR OWN project — `-o runs` is the `runs/` your script already writes to,
+    relative to the project root, and CCC keeps whatever is in it when the Spawn ends. Your code needs
+    no changes and no knowledge of CCC to work here. A path starting with `/` is absolute inside the
+    Pod instead, for keeping something an Arm Feature writes outside your project entirely.
+
+    Whatever you uploaded at that path is still there when the run starts — declaring `-o checkpoints`
+    never hides a checkpoint you sent along to resume from.
 
     A wrong or incomplete --output isn't fatal the instant the Spawn ends: the Recovery Window
     (docs/elements/storage.md) keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
@@ -1102,7 +1112,7 @@ def run(
     # override for either: a Spawn with no output declared or a script that isn't there is refused, not
     # warned about.
     if not output:
-        raise ui.abort("at least one --output/-o is required — name the folder(s) under $CCC_OUT your "
+        raise ui.abort("at least one --output/-o is required — name the folder(s) in your project your "
                        "script writes results to (e.g. `--output checkpoints`)")
     if not (root / script).is_file():
         raise ui.abort(f"script {script!r} was not found (looked for it relative to the project "
@@ -1200,16 +1210,16 @@ def logs(
 
 @app.command()
 def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
-    """Download a Spawn's $CCC_OUT dir as a tar into the current directory."""
+    """Download a Spawn's declared outputs as a tar into the current directory."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Download which Spawn?"))
     spawns_mod.outputs(spawn_id)
 
 
 @app.command()
 def recover(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
-    """Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared $CCC_OUT,
+    """Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared outputs,
     while the day-long window since it ended is still open. See `--output`'s help on `cuttle run` for
-    what this is a safety net for; `cuttle outputs` is the separate, permanent $CCC_OUT download."""
+    what this is a safety net for; `cuttle outputs` is the separate, permanent outputs download."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Recover which Spawn?"))
     spawns_mod.recover(spawn_id)
 
