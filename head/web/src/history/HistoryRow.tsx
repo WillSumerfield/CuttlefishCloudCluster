@@ -15,7 +15,15 @@ import { duration, placedLabel, recoveryLabel, outputsLabel } from "../queue/for
  * The whole row is a link to the Spawn's detail (verdict, logs, outputs); there are no per-row buttons.
  */
 
-const LOUD: Record<Outcome, boolean> = { done: false, cancelled: false, failed: true, retracted: true };
+const LOUD: Record<Outcome, boolean> = {
+  done: false,
+  cancelled: false,
+  failed: true,
+  retracted: true,
+  // Emphatically quiet. `settling` is the ≤30s before the tick stamps an outcome (api.ts's outcomeOf),
+  // and colouring a Spawn that has not been judged yet is exactly the bug it was added to fix.
+  settling: false,
+};
 
 // What each ending actually means for what you were charged — the part the word alone never says.
 const WHY: Record<Outcome, string> = {
@@ -26,6 +34,8 @@ const WHY: Record<Outcome, string> = {
     "The run ended without a clean exit — a crash, or the machine going away underneath it. It's settled for what it used and is never silently retried.",
   retracted:
     "The machine's owner took it back mid-run. This is the one ending that costs the submitter nothing.",
+  settling:
+    "This run has just ended and the cluster is still working out what it did and what it cost. Its outcome appears within about half a minute.",
 };
 
 function Verdict({ outcome, exit }: { outcome: Outcome; exit: number | null }) {

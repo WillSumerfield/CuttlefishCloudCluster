@@ -24,6 +24,8 @@ export type Filter = {
 export const EMPTY_FILTER: Filter = { query: "", who: "everyone", outcomes: new Set(), arm: "" };
 
 // Two rows of two: the quiet outcomes (done, cancelled) on top, the loud ones (failed, retracted) below.
+// `settling` is deliberately NOT offered: it is a ≤30s transient (api.ts's outcomeOf), so a facet for it
+// would be a filter whose results emptied while you looked at them.
 const OUTCOMES: Outcome[] = ["done", "cancelled", "failed", "retracted"];
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {

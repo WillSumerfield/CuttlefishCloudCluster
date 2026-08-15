@@ -51,7 +51,11 @@ export type Spawn = {
 // How a Spawn ended. `retracted` = its Arm was reclaimed (Owner hit Retract); it settles at zero and
 // carries no exit code. `failed` carries the process exit code. done/cancelled are the quiet outcomes;
 // failed/retracted are the loud ones (drawn in --alarm) — see temp/DESIGN.md §State colour.
-export type Outcome = 'done' | 'failed' | 'cancelled' | 'retracted'
+//
+// `settling` is not an ending at all: it is the ≤30s in which a Spawn has left the queue and the karma
+// tick has not yet stamped what it did (see outcomeOf). It exists so that gap has a word of its own —
+// the alternative is reading an absent exit code as a failure, which is what it used to do.
+export type Outcome = 'done' | 'failed' | 'cancelled' | 'retracted' | 'settling'
 
 // A finished Spawn, as History serves it. Extends the live Spawn with its verdict and what it settled
 // at. Served by GET /spawns/history — getHistory() above adapts that wire shape into this one.
@@ -208,7 +212,19 @@ type HistoryRow = {
   output_expires_at: string | null
 }
 
+// The `finished_at` guard is FIRST, and it is the whole reason this function is not two lines. A Spawn
+// leaves squeue the moment it ends, and `/spawns/history` excludes only what is still live — so it lands
+// in the archive immediately, while its outcome is stamped by the karma tick up to TICK_SECONDS (30s)
+// later. db.mark_finished writes `exit_code` and `finished_at` TOGETHER, so an unstamped row is exactly
+// "ended, not yet settled" and has a null exit code for a reason that has nothing to do with failing.
+//
+// Without this guard that row read `failed`, in --alarm red, for a Spawn that had just exited 0.
+// Observed on hardware 2026-08-15 (Spawn 5): History does not poll, so whoever had the page open when a
+// Spawn finished kept the red verdict until they reloaded — hours, in that case. The CLI got this right
+// all along (cuttle/spawns.py's _history_outcome checks finished_at first); the comment above this type
+// claimed to mirror it and did not.
 function outcomeOf(r: HistoryRow): Outcome {
+  if (r.finished_at === null) return 'settling'
   if (r.exit_code === null) return r.cancelled ? 'cancelled' : 'failed'
   return r.exit_code === 0 ? 'done' : 'failed'
 }
