@@ -296,20 +296,26 @@ def render_ubuntu_snapshot_list() -> str:
 #   (and the standalone CPython itself) over TLS. A stock Ubuntu image carries no trust store, so
 #   without this every build fails at the first HTTPS connection. The PyTorch image happened to have
 #   one; nothing here may depend on happening to.
-# * `gcc` — Triton builds a C extension AT RUNTIME. The first `torch.compile`d kernel makes Inductor
-#   instantiate Triton's CUDA driver, which compiles a `cuda_utils` shim by shelling out to `$CC`, else
-#   to whatever `gcc`/`clang` is on PATH. No wheel on PyPI ships a C compiler, so an Environment cannot
-#   supply this one however it is declared, and `--contain` (spawns.PAYLOAD_SCRIPT) hides the host's —
-#   a box with gcc in /usr/bin and none in its Pods was the observed failure. Without it every Spawn
-#   that reaches torch.compile dies with "Failed to find C compiler", and dies at the WORST moment: the
-#   card is already held and the Environment already built, so it is a full-price failed Spawn rather
-#   than a refusal at submit.
-#   **`libc6-dev` is named explicitly and must stay that way.** It is a *Recommends* of `gcc` (and of
-#   `gcc-13`), never a Depends, so `--no-install-recommends` drops it — leaving a gcc that runs, finds
-#   its `cc1`, and then dies on `#include <stdio.h>`, because that header and the crt objects live in
-#   that package alone. Triton's shim includes Python.h, which includes stdio.h, so this is the very
-#   first thing it needs. `binutils` (`as`/`ld`) IS a real Depends of gcc-13 and needs no naming here.
-#   ~150 MB, the one real cost, paid in durable disk on every donated box.
+# * `build-essential` — a toolchain, because Python packages COMPILE AT RUNTIME. Triton is the case
+#   that forced it: the first `torch.compile`d kernel makes Inductor instantiate Triton's CUDA driver,
+#   which builds a `cuda_utils` C shim by shelling out to `$CC`, else to whatever `gcc`/`clang` is on
+#   PATH. No wheel on PyPI ships a compiler, so an **Environment** cannot supply one however it is
+#   declared, and `--contain` (spawns.PAYLOAD_SCRIPT) hides the host's — a box with gcc in /usr/bin and
+#   none in its Pods was the observed failure. Without it every Spawn that reaches torch.compile dies
+#   at the WORST moment: the card is already held and the Environment already built, so it is a
+#   full-price failed Spawn rather than a refusal at submit.
+#
+#   **The metapackage, deliberately, rather than the minimal closure.** Naming packages one at a time
+#   cost two fleet-wide `teardown --all` cycles to learn what a toolchain is: `gcc` alone missed
+#   `libc6-dev` (a *Recommends*, dropped by `--no-install-recommends`, and the owner of stdio.h,
+#   stdlib.h and the crt objects), and `gcc` + `libc6-dev` still had no C++ compiler for Inductor's CPU
+#   kernels, `torch.utils.cpp_extension`, or any sdist that has to build a wheel. Each wrong guess is
+#   another teardown of every enrolled box, to save ~100 MB. build-essential is what every one of those
+#   packages already expects to find, and it ends the guessing.
+#
+#   It is the single largest thing in this image — roughly +250 MB, against ~150 MB for everything else
+#   put together — and that is a real cost paid in durable disk on somebody's own machine. Named here
+#   as a deliberate trade, not an oversight.
 # * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
 #   sshd still needs that a stock image does not have: the connecting uid has to resolve via
 #   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
@@ -322,7 +328,7 @@ From: {image}
 %post
     # Runs inside the (disposable) build container only — never the host.
     apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
-      gcc libc6-dev \
+      build-essential \
       && rm -rf /var/lib/apt/lists/*
     echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
     echo "mantle:x:{gid}:" >> /etc/group

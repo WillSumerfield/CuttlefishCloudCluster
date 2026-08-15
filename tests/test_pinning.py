@@ -144,20 +144,24 @@ class TestTheImageCarriesNoRuntime:
         connection — and the PyTorch image's happening to have one is why nothing noticed before."""
         assert "ca-certificates" in templates.render_base_def()
 
-    def test_a_c_compiler_stays(self):
+    def test_a_toolchain_stays(self):
         """Triton compiles a `cuda_utils` shim at runtime, on the first torch.compile'd kernel, by
         shelling out to gcc/clang. No PyPI wheel ships a compiler, so an Environment cannot bring one,
         and `--contain` hides the host's — without this every torch.compile Spawn dies mid-run, after
         the card is held and the Environment built."""
-        assert "gcc" in templates.render_base_def()
+        assert "build-essential" in templates.render_base_def()
 
-    def test_the_libc_headers_are_named_explicitly(self):
-        """libc6-dev is a RECOMMENDS of gcc, not a Depends, so --no-install-recommends drops it — and a
-        gcc with no stdio.h compiles nothing. Triton's shim includes Python.h, which includes stdio.h,
-        so this is the first header it reaches for. Shipped once without it (2026-08-15)."""
+    def test_it_is_the_metapackage_and_not_a_hand_picked_closure(self):
+        """Two fleet-wide teardowns were spent learning what a toolchain is: `gcc` alone has no
+        libc6-dev (a RECOMMENDS, dropped by --no-install-recommends, and the owner of stdio.h and the
+        crt objects), and gcc+libc6-dev still has no C++ compiler for Inductor's CPU kernels or
+        cpp_extension. Naming the parts again would re-enter that loop, so this asserts the
+        metapackage — and that --no-install-recommends is still what makes hand-picking dangerous."""
         d = templates.render_base_def()
-        assert "libc6-dev" in d
-        assert "--no-install-recommends" in d, "if this goes, re-check what gcc pulls on its own"
+        assert "build-essential" in d
+        assert "--no-install-recommends" in d
+        for part in ("gcc ", "g++", "libc6-dev", "make "):
+            assert part not in d, f"{part!r} named by hand — build-essential already carries it"
 
     def test_the_mantle_account_is_baked_in(self):
         """Unprivileged sshd needs the connecting uid to resolve via getpwuid or it cannot find a home
