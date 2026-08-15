@@ -560,6 +560,24 @@ CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; 
 CCC_IMAGES_DIR = Path("/opt/ccc/images")
 CCC_SIF = CCC_IMAGES_DIR / "base.sif"
 
+# --- the interactive shell a Tide Pool hands its User ---
+# The oh-my-zsh tree, powerlevel10k and its plugins, vendored INTO this package so `%files` has an
+# absolute source path on whichever node is building (templates.BASE_DEF_TMPL). Every node builds its
+# own image, so the alternative — cloning upstream during `%post` — would hand two Arms enrolled a
+# month apart different oh-my-zsh, which is the drift BASE_IMAGE_DOCKER's digest pin and the
+# uv/micromamba sha256 pins above all exist to prevent. Vendored also means the build needs no egress
+# beyond the base image itself, on somebody else's donated box.
+#
+# The tree carries powerlevel10k's gitstatusd at `custom/themes/powerlevel10k/gitstatus/usrbin/`, which
+# is upstream's own slot for a prebuilt daemon and is where its installer looks first. That binary is
+# x86_64-only, deliberately: it is per-architecture and this fleet is x86_64. An aarch64 Arm would need
+# its own copy dropped in beside it under that release's name.
+ZSH_DATA_DIR = Path(__file__).resolve().parent / "zsh"
+# Where the above lands INSIDE the image. Duplicated in ccc_head_api.zshrc, which renders the rc that
+# points at it — the CLI and the head-side package do not import each other (see the Tide Pool relay
+# port note below for the same duplication and the same reason).
+POD_OMZ_DIR = "/opt/ccc/oh-my-zsh"
+
 # --- Karma tick: the service that ranks the queue by standing ---
 # A THIRD unit off the same venv and the same head.db (`ccc_head_api.tick`). Deliberately not a task
 # inside the Head API: the economy must not be able to wedge the API, nor the API the economy — and

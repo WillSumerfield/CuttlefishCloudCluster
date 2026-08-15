@@ -284,7 +284,7 @@ def render_ubuntu_snapshot_list() -> str:
     )
 
 
-# Base Pod image: plain Ubuntu and the four things a Pod cannot bring with it. NO Python, no torch, no
+# Base Pod image: plain Ubuntu and the handful of things a Pod cannot bring with it. NO Python, no torch, no
 # CUDA — every Spawn declares an **Environment** and that Environment carries its own interpreter and its
 # own torch (ccc_head_api.environments), so anything supplied here would be shadowed by what the Spawn
 # brought and paid for in durable disk on every donated box regardless. ~150 MB instead of 2.9 GB.
@@ -320,6 +320,27 @@ def render_ubuntu_snapshot_list() -> str:
 #   It is the single largest thing in this image — roughly +250 MB, against ~150 MB for everything else
 #   put together — and that is a real cost paid in durable disk on somebody's own machine. Named here
 #   as a deliberate trade, not an oversight.
+# * `zsh` plus the vendored oh-my-zsh tree and gitstatusd (config.ZSH_DATA_DIR) — the shell a **Tide
+#   Pool** hands its User. Only the *tree* is here; the two files that configure it are rendered by the
+#   Head at every session (ccc_head_api.zshrc), because a prompt is the part anybody actually iterates on
+#   and this image can only be changed by a fleet-wide teardown. Nothing else in CCC has a shell in it:
+#   PAYLOAD_SCRIPT execs the Environment's python directly and never starts one.
+# * `/etc/zsh/zprofile` gets one appended line, and it is the load-bearing half of the whole change.
+#   PAYLOAD_TIDEPOOL puts the W&B credentials, the Environment's PATH, CCC_KEPT and the `cd` into the
+#   project in `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
+#   drops apptainer's `--env`. **zsh does not read /etc/profile.d.** Debian's zprofile sources
+#   /etc/profile and Ubuntu's ships as comments only, so without this line every one of those is silently
+#   lost — the session opens, the prompt looks right, and `wandb.init()` runs unauthenticated. That exact
+#   bug was already found and fixed once on the bash path (spawns.py, 2026-08-07); this is the line that
+#   keeps switching shells from re-introducing it.
+# * `ncurses-term` — sshd forwards the connecting client's TERM, and `ncurses-base` carries 61 entries
+#   which cover xterm/screen and not tmux-256color, kitty, alacritty or wezterm. A missing terminfo entry
+#   renders as a mangled prompt, which reads to a User as "p10k is broken" rather than as a TERM problem.
+# * `man-db`, the removal of dpkg's excludes file, and a reinstall of the core tools — the
+#   `colored-man-pages` plugin is inert without a `man`, and an ubuntu image discards /usr/share/man/* on
+#   unpack. Removing the excludes only helps packages installed *after* it, so the already-unpacked core
+#   is reinstalled to get its pages back; otherwise `man zsh` works and `man ls` does not, which is a
+#   worse state than having no man at all.
 # * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
 #   sshd still needs that a stock image does not have: the connecting uid has to resolve via
 #   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
@@ -329,14 +350,33 @@ BASE_DEF_TMPL = """\
 Bootstrap: docker
 From: {image}
 
+%files
+    {zsh_src}/oh-my-zsh {omz}
+
 %post
     # Runs inside the (disposable) build container only — never the host.
+    #
+    # The excludes file goes FIRST: it is what tells dpkg to throw away /usr/share/man/* as each package
+    # unpacks, so it has to be gone before anything below is installed or their pages go with it.
+    rm -f /etc/dpkg/dpkg.cfg.d/excludes
     apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
-      build-essential \
+      build-essential zsh zoxide ncurses-term man-db \
+      && apt-get install -y --reinstall --no-install-recommends \
+      coreutils bash grep sed findutils procps tar \
       && rm -rf /var/lib/apt/lists/*
     echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
     echo "mantle:x:{gid}:" >> /etc/group
     mkdir -p /home/mantle && chown {uid}:{gid} /home/mantle
+    # The bridge. See the note above this template — without it a zsh login silently loses everything
+    # PAYLOAD_TIDEPOOL writes to /etc/profile.d, including the submitter's W&B credentials.
+    echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile
+    # %files preserves the building operator's ownership and mode. Asserted here instead, so the tree is
+    # identical whoever built the node: oh-my-zsh runs `compaudit` over its own directories at every
+    # login and warns loudly about anything group-writable or owned by a third party, and a Pod's shell
+    # is not the place to be explaining that.
+    chown -R root:root {omz}
+    chmod -R go-w {omz}
+    chmod 0755 {omz}/custom/themes/powerlevel10k/gitstatus/usrbin/gitstatusd-linux-x86_64
 """
 
 
@@ -418,7 +458,8 @@ def render_rsyncd_unit() -> str:
 
 def render_base_def() -> str:
     return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER,
-                                uid=config.CCC_UID, gid=config.CCC_GID)
+                                uid=config.CCC_UID, gid=config.CCC_GID,
+                                zsh_src=config.ZSH_DATA_DIR, omz=config.POD_OMZ_DIR)
 
 
 # The `Prolog=` line, or the reason there isn't one. Rendering the line is the moment Guises become
