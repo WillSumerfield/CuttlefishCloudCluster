@@ -55,6 +55,7 @@ from . import guises
 from . import recovery
 from . import siphons
 from . import slurm
+from . import zshrc
 
 log = logging.getLogger("ccc.api")
 
@@ -751,11 +752,19 @@ rm -f /tmp/ccc_group.new
 # nologin, which is correct (nothing should ever log into a Guise on a host, and nothing can — no
 # password, no authorized_keys); a Pod is the one place an interactive shell is the entire point.
 # Same truncate-in-place dance as the group file above, and for the same reason: no `sed -i` here.
-sed "s|^\\($(id -un):.*\\):[^:]*$|\\1:/bin/bash|" /etc/passwd > /tmp/ccc_passwd.new
+#
+# zsh, from the image (cuttle.templates.BASE_DEF_TMPL), configured by ccc_head_api.zshrc below. There is
+# deliberately no "zsh if present, else bash" here. A User cannot choose their Arm (CONTEXT.md,
+# **Eligibility**), so a fallback would make the shell they get depend on which node they were placed
+# on — silently, and differently for the same command run twice. An Arm whose image predates this dies
+# on the next line instead, loudly, which is the same bargain every other fleet-wide change makes:
+# `cuttle teardown --all` + `setup`, or the node does not serve Tide Pools.
+sed "s|^\\($(id -un):.*\\):[^:]*$|\\1:/usr/bin/zsh|" /etc/passwd > /tmp/ccc_passwd.new
 cat /tmp/ccc_passwd.new > /etc/passwd
 rm -f /tmp/ccc_passwd.new
-# An interactive login shell (sshd starts one as `-bash`, sourcing /etc/profile.d) lands in the optional
-# project a User picked (CCC_PROJ, the same $proj a Script Spawn's `cd` already puts on the host side; an
+# An interactive login shell (sshd starts one as `-zsh`, which reaches this file through the
+# /etc/profile line BASE_DEF_TMPL appends to /etc/zsh/zprofile) lands in the optional project a User
+# picked (CCC_PROJ, the same $proj a Script Spawn's `cd` already puts on the host side; an
 # explicit `--bind "$proj"` is what makes it visible in here at all, since `--contain` drops the cwd
 # auto-bind this used to lean on — see PAYLOAD_SCRIPT, which binds it the same way to find %%SCRIPT%%).
 # An EMPTY dir when no project was picked, never a missing one (both branches mkdir it) — `cd` into an
@@ -826,6 +835,25 @@ done
 echo "export TMPDIR=/ccc-tmp" >> /etc/profile.d/ccc-tidepool.sh
 echo "export PIP_CACHE_DIR=/ccc-tmp/pip" >> /etc/profile.d/ccc-tidepool.sh
 chmod 600 /etc/profile.d/ccc-tidepool.sh
+# The shell's own configuration (ccc_head_api.zshrc), which the Head renders rather than the image
+# bakes — that module's docstring says why. Everything ABOVE this point still lands in /etc/profile.d
+# and is reached through the one line BASE_DEF_TMPL appends to /etc/zsh/zprofile: there is exactly one
+# generator for the W&B key, CCC_KEPT, the Environment PATH and the `cd`, and switching shells did not
+# fork it. zprofile is read before zshrc, so by the time the rc below runs, all of it is already set.
+#
+# Both heredocs are QUOTED. The rc is full of `$ZSH_CACHE_DIR` and the p10k config is 95 KB of prompt
+# escapes — every `$` and backtick in either must reach the file exactly as written, and neither is
+# this script's to expand.
+#
+# /etc/zsh exists because the image installed zsh. If it did not, this redirect fails, `set -e` ends the
+# boot script, and the Tide Pool dies before sshd ever listens — see the note on the passwd patch above
+# for why that is the intended outcome on a stale image rather than something to guard.
+cat > /etc/zsh/zshrc <<'CCC_TP_ZSHRC'
+%%ZSHRC%%
+CCC_TP_ZSHRC
+cat > /etc/zsh/ccc-p10k.zsh <<'CCC_TP_P10K'
+%%P10K_CONFIG%%
+CCC_TP_P10K
 # UsePAM no: `ccc` is a `useradd --system` account with no /etc/shadow entry inside the Pod (the image
 # only bakes /etc/passwd + /etc/group — see BASE_DEF_TMPL), so PAM's account phase (pam_unix, checking a
 # shadow entry that doesn't exist) refuses the session even after the ephemeral keypair already
@@ -1182,6 +1210,20 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     }
     for k, v in subs.items():
         body = body.replace(k, v)
+    # The shell config, spliced AFTER the loop above rather than inside it — the third substitution
+    # order in this function, and the opposite case from %%PAYLOAD%% and %%ENV_BUILD%%. Those go FIRST
+    # because their text contains tokens that still have to be resolved. These go LAST because their text
+    # must never be SCANNED for one: the p10k config is 95 KB of prompt escapes maintained by
+    # `p10k configure` rather than by anyone reading this file, and the rc beside it is edited whenever
+    # somebody changes the prompt. Neither has any business being able to introduce a `%%…%%` that the
+    # loop would then rewrite, and a substitution that only misfires once somebody adds a segment is not
+    # a hazard worth leaving in place to save two lines.
+    #
+    # Both are empty for every Spawn that is not a Tide Pool: the tokens exist only inside
+    # PAYLOAD_TIDEPOOL, so an ordinary Spawn's rendered script never contains either string.
+    if tidepool_port is not None:
+        body = body.replace("%%ZSHRC%%", zshrc.render(workspace.name if workspace else None))
+        body = body.replace("%%P10K_CONFIG%%", zshrc.P10K_CONFIG)
     return body
 
 
