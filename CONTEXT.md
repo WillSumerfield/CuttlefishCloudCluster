@@ -191,6 +191,25 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   declaration, a named file that is not there, one nothing can classify, a node without the build tools.
   A **build** that fails is a failed Spawn — it holds a **Device** while it builds, so its **Karma** is
   spent rather than returned.
+- **Output** — a folder a **Spawn** declares as holding its results, and the only thing it produces that
+  is deliberately *kept*. Named as a path in the Spawn's **own project**, because the folder a script
+  writes to is one its author already chose: a cluster that named a second place of its own would be
+  asking every submitter to teach their code about CCC, and the ones who did not would discover the
+  omission only once the work was done and the results already destroyed. A place *outside* the project
+  is named the same way and kept on the same terms — what an **Arm Feature** sites elsewhere is as much a
+  result as what the project holds — so an Output is wherever its submitter points, and not only what
+  lies beneath their code.
+  It names a *place*, never a thing: what is kept is whatever that folder holds when the Spawn ends, so a
+  Spawn that declares one and writes nothing into it has produced nothing, and declaring one is a promise
+  about where results will be rather than a claim that there will be any. Whatever the project already
+  held there is kept too — declaring a folder an Output never hides from a Spawn what its submitter
+  uploaded into it.
+  Every ordinary Spawn declares at least one, and a Spawn with nowhere to put its results is refused
+  before it exists. A **Tide Pool** and a **Workspace** visit may decline, on the same terms they may
+  decline an **Environment** — and a Tide Pool that declines keeps nothing, because there is no other
+  place the cluster offers.
+  Distinct from a **Recovery Window**: an Output is what its submitter *asked* to keep, held for as long
+  as their **Allowance** allows; the window is the brief grace for what they did not.
 - **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
   held thing has its own, independent of the others: filling one never costs a User any of another. An
   Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
