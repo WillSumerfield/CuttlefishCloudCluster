@@ -27,6 +27,7 @@ import json
 import re
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -113,8 +114,21 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
                        "features": reported, "provides": provides or []}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.load(r)
+    # The Head's refusals are WRITTEN TO BE READ — "'willPC' is not registered to … on the mesh",
+    # "ask the Head's operator to run `cuttle arm authorize`" — and a bare urlopen throws every one of
+    # them away, leaving the donor with urllib's "HTTP Error 403: Forbidden" and nothing to act on.
+    # The body is a FastAPI error document, so `detail` is where the sentence lives; anything else that
+    # comes back is shown raw rather than swallowed a second time.
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace").strip()
+        try:
+            detail = json.loads(raw).get("detail") or raw
+        except json.JSONDecodeError:
+            detail = raw
+        raise ui.abort(f"the Head refused this Arm's enrollment ({e.code}): {detail}") from e
 
 
 def fetch_apptainer_deb(head_mesh_ip: str, pin: dict) -> Path:
