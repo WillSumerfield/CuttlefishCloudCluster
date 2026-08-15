@@ -23,7 +23,12 @@ branch is "are the files already on this node?":
     streams live).
   * remote Arm — the upload isn't here. rsync-stage the project in over this Spawn's own **Siphon**
     (siphons.py) into ephemeral /tmp scratch, run, then stage out/err/exit/outputs BACK through it.
-Either way: fresh copy in, `$CCC_OUT` out, source untouched.
+Either way: fresh copy in, the keep directory (`$ccc_out`) out, source untouched.
+
+Nothing in the Pod is ever *told* where that keep directory is. A declared **Output** names a path the
+payload already writes to — inside the project, or absolute in the Pod — and `$ccc_out/<path>` is mounted
+onto it, so the results land in what is staged home without the submitter's code knowing CCC exists.
+There is no `CCC_OUT` variable any more; see PAYLOAD_SCRIPT.
 
 Paths are fixed (defaults below match cuttle.config; this package never imports the CLI). Only the
 Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a remote Arm can rsync home.
@@ -39,6 +44,7 @@ import shlex
 import shutil
 import subprocess
 import tarfile
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -52,12 +58,89 @@ from . import slurm
 
 log = logging.getLogger("ccc.api")
 
-# A declared output name becomes a shell-interpolated path segment (`mkdir -p "$ccc_out/<name>"` in
-# JOB_SCRIPT) — anchored, no slashes, no leading dot, so neither `../../etc` nor a hidden `.` / `..`
-# can walk it outside $ccc_out. This is the ONLY thing standing between a submitted name and a shell
-# string, so it is checked here, not left to the client (the CLI validates too, but the Head never
-# trusts that a client did).
-OUTPUT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# One segment of a declared **Output** path. Anchored, no leading dot, so neither a hidden directory nor
+# `.` / `..` can appear — which is what stops a path walking out of the tree it is resolved against. Paths
+# are split on `/` and every segment is matched, rather than matching the whole path in one go, because
+# the interesting failures are all per-segment and the error should say which one.
+#
+# This is the ONLY thing standing between a submitted path and a shell string (JOB_SCRIPT interpolates it
+# inside double quotes), so it is checked here and not left to the client — the CLI validates too, but the
+# Head never trusts that a client did.
+OUTPUT_SEG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+@dataclass(frozen=True)
+class OutputPath:
+    """One declared **Output**, resolved into the two paths the job script needs.
+
+    An Output is named as a path in the submitter's own project (CONTEXT.md), so `runs/nn` is
+    `$proj/runs/nn` — the directory their script already writes to, not a second place CCC invented and
+    they would have had to teach their code about. A `/`-prefixed path is absolute *inside the Pod*
+    instead, which is the only way to keep what a profiled Arm **Feature** writes: its working directory
+    is sited at FEATURE_MOUNT-style paths of CCC's own, deliberately outside `$proj` (features.py), so
+    nothing written there is reachable as a project path — or by the **Recovery Window**, which copies
+    `$proj` and nothing else.
+
+    `dest` is where the Pod sees it; `store` is where the bytes actually live, under the one `$ccc_out`
+    root, and is what `cuttle outputs` tars. The two differ only in the leading `/`: the kept tree mirrors
+    the path that was written to, so `-o /ccc/vlwd/logs` arrives as `outputs/ccc/vlwd/logs/`. That is also
+    why `-o data/x` and `-o /data/x` cannot both be declared — see `output_plan`.
+    """
+    declared: str          # exactly what the submitter wrote, for error messages
+    store: str             # relative to $ccc_out — the declared path with any leading '/' stripped
+    absolute: bool
+
+    @property
+    def dest(self) -> str:
+        """The bind destination, as a shell expression for JOB_SCRIPT (already inside double quotes)."""
+        return self.declared if self.absolute else f"$proj/{self.store}"
+
+
+def output_plan(outputs: list[str]) -> list[OutputPath]:
+    """Validate declared **Output** paths and resolve each one. Raises ValueError naming what is wrong.
+
+    Beyond the per-segment charset, three whole-list rules — all decidable here, at submit, and all of
+    them things that would otherwise go wrong silently on the Arm:
+
+    * **No duplicate `store`.** Two declarations that keep to the same place. This is what catches
+      `-o data/x` together with `-o /data/x`: they are different directories in the Pod but one directory
+      on the Head, so one would quietly overwrite the other in the tar.
+    * **No nesting.** `-o runs` with `-o runs/nn` asks to bind `$ccc_out/runs/nn` onto a path that is
+      *inside* the `$ccc_out/runs` bind — a mount over its own source. Refused rather than reasoned about.
+    * **At least one segment.** `-o /` keeps the whole Pod.
+    """
+    plan: list[OutputPath] = []
+    for declared in outputs:
+        # Checked here rather than by each caller: this is reached from a Recipe's and a Workspace's
+        # saved metadata as well as from a submit, and all three used to spell their own type check.
+        if not isinstance(declared, str):
+            raise ValueError(f"an output must be a path, not {type(declared).__name__}")
+        absolute = declared.startswith("/")
+        # Trailing slashes only: an interior `//` leaves an empty segment, which is a typo worth naming
+        # rather than silently collapsing.
+        rel = declared.rstrip("/").lstrip("/") if absolute else declared.rstrip("/")
+        segs = rel.split("/") if rel else []
+        if not segs:
+            raise ValueError(f"invalid output path {declared!r} — it names no folder")
+        for seg in segs:
+            if not OUTPUT_SEG_RE.match(seg):
+                raise ValueError(
+                    f"invalid output path {declared!r}: the part {seg!r} must be letters/digits/'.'/"
+                    f"'_'/'-' and may not start with '.' (so no '..', and no hidden folders)")
+        plan.append(OutputPath(declared=declared, store="/".join(segs), absolute=absolute))
+
+    for i, a in enumerate(plan):
+        for b in plan[i + 1:]:
+            if a.store == b.store:
+                raise ValueError(
+                    f"outputs {a.declared!r} and {b.declared!r} would both be kept as {a.store!r} — "
+                    f"declare one of them, or point one somewhere else")
+            hi, lo = sorted((a, b), key=lambda p: len(p.store))
+            if lo.store.startswith(hi.store + "/"):
+                raise ValueError(
+                    f"output {lo.declared!r} is inside output {hi.declared!r} — declare the outer folder "
+                    f"on its own; everything under it is kept with it")
+    return plan
 
 # A Spawn's **Name** (CONTEXT.md) — deliberately NOT shaped like the two names above, or like a
 # Recipe's/Workspace's. Those are identifiers: they become path segments and are looked up by, so they
@@ -292,9 +375,11 @@ else
         rsync -a "$exitf" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/"
     }
     recover_scratch() {
-        # $proj is the whole working dir the payload ran in — everything it wrote OUTSIDE the declared
-        # $CCC_OUT subdirs (relative paths land here; see `cd "$proj"` below) is only ever here, and
-        # cleanup()'s rm -rf destroys it the instant this script exits. rsync it home first, UNLESS it's
+        # $proj is the whole working dir the payload ran in, and everything it wrote outside a declared
+        # **Output** is only ever here — cleanup()'s rm -rf destroys it the instant this script exits.
+        # The Outputs themselves are NOT duplicated into this copy: each one is a bind that exists only
+        # inside the Pod's mount namespace, so from out here the declared path is the empty mountpoint
+        # this script mkdir'd, and the bytes are already safe in $ccc_out. rsync it home first, UNLESS it's
         # over RECOVERY_MAX_BYTES (docs/TODO.md "Recovery Window") — then skip entirely, no copy
         # attempted, same as today. The size marker (recovery.size) is written and sent home LAST, after
         # the transfer lands — its presence on the Head is the karma tick's "a copy is ready to
@@ -317,7 +402,7 @@ else
     # loop pushes out/err home every 5s so `cuttle logs -f` tracks a remote run instead of staying blind
     # until stage_out() at the very end. rsync -a of a growing file needs no --append/--partial — it
     # just re-sends the file's current bytes, and the CLI's _drain() already tolerates a partial
-    # trailing line. $CCC_OUT rides the same loop, but gated on a settle check: a checkpoint caught
+    # trailing line. The keep directory rides the same loop, but gated on a settle check: a checkpoint caught
     # mid-write would land corrupted, unlike append-only log text, so only files whose mtime is older
     # than the quiet window (10s = 2x the push interval, long enough a normal write has finished) go
     # out. `-printf '%P\\n'` gives paths already relative to $ccc_out, which is what the outputs/
@@ -380,11 +465,30 @@ CCC_FILELIST
 %%WS_BLOCK%%
 fi
 
-# Declared output subdirs, under the ONE $ccc_out root — made before the payload runs so the script can
-# rely on them existing rather than having to mkdir its own. Names are validated server-side (no slashes,
-# no leading dot) before they ever reach this template, so quoting the name is enough; there is no second
-# root or env var per output — see docs/TODO.md's now-closed "Spawn Output Enforcement".
-%%MKDIR_OUTPUTS%%
+# The declared **Output**s. Each one names a path the payload ALREADY writes to — inside the project, or
+# absolute in the Pod — and what happens here is that the kept directory is mounted *onto* that path, so
+# an unmodified script writes its results straight into what gets staged home. Nothing is exported for it
+# to find and there is no second root to write to: the folder it was already using IS the output.
+#
+# Three steps per output, and the order matters:
+#   1. mkdir the KEEP side ($ccc_out/<store>), which is the bind source and what `cuttle outputs` tars.
+#   2. SEED it from whatever the upload already had at that path, so declaring a folder an output never
+#      hides from the payload what its submitter put there — `-o checkpoints` on a project that uploaded
+#      a checkpoint to resume from must not silently present an empty directory and restart training.
+#      Relative outputs only: nothing was ever uploaded to an absolute Pod path.
+#   3. mkdir the bind DESTINATION, so apptainer has a mountpoint. Free for a relative output ($proj is
+#      itself a bind, so the host directory is the mountpoint); an absolute one relies on apptainer
+#      making it, which stock `enable overlay` does.
+#
+# `outbind` accumulates the `--bind` entries, appended to both payloads' bind lists. Empty for a Spawn
+# that declared no outputs at all — every ordinary Spawn declares one, so that is a **Tide Pool** or a
+# **Workspace** visit, the two that may decline.
+#
+# A **Workspace** binds NOTHING: $proj is already the durable tree, so a bind would store the bytes
+# elsewhere and leave an empty mountpoint in what its owner gets back. WS_BLOCK pushes the declared paths
+# straight home instead, and this block renders empty for it.
+outbind=""
+%%OUTPUT_SETUP%%
 
 cd "$proj"
 # Scratch for whatever the payload runs, on DISK — the same fix `environments.py` makes for the BUILD
@@ -532,7 +636,7 @@ ccc_build_or_die() {
 %%POST%%"""
 
 # The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
-# periodic $CCC_OUT pusher — is identical either way, which is the whole point of the slot: a Tide Pool
+# periodic outputs pusher — is identical either way, which is the whole point of the slot: a Tide Pool
 # is a normal Spawn that happens to run a live shell instead of a script, not a second pipeline.
 #
 # `--contain --pid --pwd "$proj"` is the containment set (apptainer 1.5.3), and it is what makes a Pod a
@@ -558,10 +662,17 @@ ccc_build_or_die() {
 # `$py` is this Spawn's declared **Environment**'s interpreter, and there is no other kind: the image
 # has none (cuttle.templates.BASE_DEF_TMPL). It is set together with `$envbind`, which mounts it, so the
 # interpreter named here can never be one the bind did not provide.
+#
+# `$ccc_out` is NOT bound and NOT exported. It is the Head-side keep directory, reached only through the
+# `$outbind` mounts that put each declared **Output** at the path the payload already writes to. There is
+# no `CCC_OUT` in the Pod environment: a script that has to be taught a cluster-specific variable before
+# it can save anything is a script that runs everywhere except here, and the submitter who forgets finds
+# out after the GPU time is spent. What replaced it is that `-o runs` simply means the `runs/` the code
+# was already writing.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
-  --bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$featenv" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$featenv" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
@@ -643,16 +754,29 @@ rm -f /tmp/ccc_group.new
 sed "s|^\\($(id -un):.*\\):[^:]*$|\\1:/bin/bash|" /etc/passwd > /tmp/ccc_passwd.new
 cat /tmp/ccc_passwd.new > /etc/passwd
 rm -f /tmp/ccc_passwd.new
-# So an interactive login shell (sshd starts one as `-bash`, sourcing /etc/profile.d) can find where to
-# write results — the same $CCC_OUT the stage_out/EXIT-trap machinery rsyncs home either way, just not
-# under a name the Head enforced (the "at least one --output" gate is skipped for a Tide Pool) — and
-# lands in the optional project a User picked (CCC_PROJ, the same $proj a Script Spawn's `cd` already
-# puts on the host side; an explicit `--bind "$proj"` is what makes it visible in here at all, since
-# `--contain` drops the cwd auto-bind this used to lean on — see PAYLOAD_SCRIPT, which binds it the same
-# way to find %%SCRIPT%%). An EMPTY dir when no project was picked, never a missing one (both branches
-# mkdir it) — `cd` into an empty dir is a harmless no-op.
-echo "export CCC_OUT=\\"$CCC_OUT\\"" > /etc/profile.d/ccc-tidepool.sh
-echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" >> /etc/profile.d/ccc-tidepool.sh
+# An interactive login shell (sshd starts one as `-bash`, sourcing /etc/profile.d) lands in the optional
+# project a User picked (CCC_PROJ, the same $proj a Script Spawn's `cd` already puts on the host side; an
+# explicit `--bind "$proj"` is what makes it visible in here at all, since `--contain` drops the cwd
+# auto-bind this used to lean on — see PAYLOAD_SCRIPT, which binds it the same way to find %%SCRIPT%%).
+# An EMPTY dir when no project was picked, never a missing one (both branches mkdir it) — `cd` into an
+# empty dir is a harmless no-op.
+echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" > /etc/profile.d/ccc-tidepool.sh
+# There is no $CCC_OUT any more, here or anywhere (see PAYLOAD_SCRIPT). A Tide Pool's declared **Output**s
+# are bound at the paths they name, exactly as a Script Spawn's are, so saving something is `cp x results/`
+# and not a variable to remember. What a shell DOES need is to be told which folders those are — the one
+# thing a script never needs, because a script was written knowing where it writes. Printed at login
+# rather than exported, because the answer is for the person, not the process.
+#
+# A Tide Pool may decline to declare any (CONTEXT.md), and then this says so plainly. That is a real
+# warning and not a formality: with no Output there is no place in this Pod whose contents outlive it,
+# and everything written falls to the day-long **Recovery Window** or is simply gone.
+if [ -n "$CCC_KEPT" ]; then
+  echo "echo \\"ccc: kept when this session ends — \\$CCC_KEPT\\"" >> /etc/profile.d/ccc-tidepool.sh
+else
+  echo "echo 'ccc: this Tide Pool declared no output — nothing you write here is kept.'" \\
+    >> /etc/profile.d/ccc-tidepool.sh
+fi
+echo "export CCC_KEPT='$CCC_KEPT'" >> /etc/profile.d/ccc-tidepool.sh
 # A Tide Pool gets the SAME **Environment** its Spawn would get, so what you debug is what runs — put it
 # first on PATH rather than making the User type the interpreter's full path. Writable, too (it is this
 # session's own node-local copy, so read-only would buy no safety): `pip install` at the shell works and
@@ -730,14 +854,14 @@ featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' '
 featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_OUT=$ccc_out,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,CCC_FEATURE_VARS=$featnames$featenv" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,CCC_FEATURE_VARS=$featnames$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
 # What fills `%%WS_BLOCK%%` for a **Workspace** visit, and nothing at all for every other Spawn. Spliced
 # in at the end of the remote branch's stage-in, which is where a visit's two differences begin: where
-# `$CCC_OUT` lives, and that everything written is mirrored back into durable storage.
+# a declared **Output** goes, and that everything written is mirrored back into durable storage.
 #
 # **The gate is `ws_staged`, and deliberately nothing else.** Not "and the tree is non-empty": emptying
 # a Workspace from inside a session has to reach the stored tree, or `rm -rf *` silently does nothing
@@ -751,20 +875,27 @@ apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
 WS_BLOCK = """\
     ws_staged=1
     ws_storage=%%WS_STORAGE%%
-    # $CCC_OUT lives INSIDE the tree (CONTEXT.md, **Workspace**): declaring an output keeps nothing
-    # extra, it just names a folder whose contents the session's end ALSO sends home through [out-…] so
-    # they can be fetched like any Spawn's results rather than only through the Workspace itself.
-    ccc_out="$proj/outputs"
-    mkdir -p "$ccc_out"
-    # Restarted, not left running: `push_periodic &` forked before $ccc_out was reassigned, and a
-    # subshell keeps the value it was forked with — the old loop would spend the whole session pushing
-    # the empty $scratch/outputs it captured.
-    kill "$loop_pid" 2>/dev/null
-    push_periodic &
-    loop_pid=$!
+    # A declared **Output** on a visit is an ordinary folder in the tree (CONTEXT.md, **Workspace**), and
+    # keeps nothing extra — so unlike every other Spawn, NOTHING is bound here. A bind would put the bytes
+    # in a keep directory of CCC's own and leave an empty mountpoint at the declared path, which for a
+    # Workspace is not a detail: $proj is the durable tree, `ws_mirror` copies it home from the HOST (where
+    # a Pod's bind does not exist), and the owner would find that empty folder waiting on every future
+    # visit and in `workspace download`.
+    #
+    # The tree already comes home through [ws-…]. All an Output adds is that the same folder ALSO goes to
+    # [out-…], so it can be fetched like any Spawn's results rather than only through the Workspace — which
+    # is a second destination for the same bytes, not a second copy of them. `-R` with the `/./` pivot in
+    # each path (see _render) is what reproduces `outputs/<path>/…` at the far end.
+    ws_outputs=%%WS_OUT_PATHS%%
     recover_scratch() { :; }
     ws_mirror() {
         [ "$ws_staged" = 1 ] || return 0
+        # Declared Outputs go FIRST, and before the Storage gate below returns. A visit that has filled
+        # its **Storage** still gets its results home: the two ceilings are different Allowances (results
+        # are charged to the output Allowance, not to this Workspace's Storage), so the tree being too big
+        # to mirror is no reason to strand what the session was run to produce.
+        [ -n "$ws_outputs" ] && rsync -aR $ws_outputs \\
+            "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/outputs/" 2>/dev/null
         sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
         # Over its **Storage**: skip the sync and say so, rather than evicting anything. Self-healing —
         # freeing space inside the session brings the next pass back under and it simply succeeds. The
@@ -927,6 +1058,10 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # be spliced before the single-pass loop below rather than inside it. Empty for every Spawn that is
     # not a Workspace visit, which is the whole of the ordinary case.
     body = body.replace("%%WS_BLOCK%%", WS_BLOCK if workspace else "")
+    # Resolved here rather than handed in already-resolved, so this function takes what the submitter
+    # declared and nothing derived. `submit` runs the same call for its own symlink check; it is pure and
+    # costs a few string splits, and the alternative is a resolved type threaded through every caller.
+    plan = output_plan(outputs)
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -998,10 +1133,44 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         "%%FILELIST%%": "\n".join(files),
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
-        # One `mkdir -p` per declared name, all under the same $ccc_out root — validated (OUTPUT_NAME_RE)
-        # before this is ever built, so quoting is enough. Empty only for a Tide Pool: the "at least
-        # one --output" gate is skipped for it alone, so this line is simply blank there.
-        "%%MKDIR_OUTPUTS%%": "\n".join(f'mkdir -p "$ccc_out/{name}"' for name in outputs),
+        # The declared **Output**s, resolved (output_plan) before this is ever built — every segment is
+        # charset-checked, so interpolating into double quotes is enough. See the block this fills in
+        # JOB_SCRIPT for what the three lines per output are doing and why they are in that order.
+        #
+        # Empty for a **Workspace** visit (it binds nothing — WS_BLOCK pushes the paths instead) and for a
+        # Tide Pool that declared none, the two Spawns that may decline.
+        "%%OUTPUT_SETUP%%": "" if workspace else "\n".join(
+            "\n".join(filter(None, (
+                f'mkdir -p "$ccc_out/{p.store}"',
+                # Seed, and make the mountpoint — RELATIVE outputs only, and for the same reason both
+                # times: `$proj` is a host directory, and everything on these lines runs on the host as
+                # the **Guise**, outside any Pod. An absolute output names a path in the Pod's own root,
+                # where the Guise can create nothing (`mkdir -p /ccc/vlwd/logs` is EPERM at `/`) and where
+                # there was never an upload to seed from. Apptainer makes that mountpoint itself, in the
+                # overlay, which is the ordinary "bind to a path the image does not have" case.
+                #
+                # Getting this wrong is not merely a no-op: the mkdir's "Permission denied" lands in
+                # $sink, which makes the sink non-empty, which defeats the keep-only-if-non-empty rule and
+                # leaves a file in /tmp for every Spawn ever run — the litter that poisoned job ids (see
+                # the `sink=` note in JOB_SCRIPT).
+                None if p.absolute else
+                f'[ -n "$(ls -A "{p.dest}" 2>/dev/null)" ] && '
+                f'cp -a "{p.dest}/." "$ccc_out/{p.store}/"',
+                None if p.absolute else f'mkdir -p "{p.dest}"',
+                f'outbind="$outbind,$ccc_out/{p.store}:{p.dest}"',
+            ))) for p in plan),
+        # A **Workspace** visit's declared paths, as rsync `-R` sources with the `/./` pivot that makes the
+        # far end reproduce `outputs/<path>/…` rather than the whole of `$proj/`. Only relative paths can
+        # appear: an absolute one names a place inside the Pod, and ws_mirror runs on the host.
+        #
+        # DOUBLE-quoted, so `$proj` expands at assignment; the use site leaves `$ws_outputs` unquoted for
+        # the word split, which is safe because every segment is charset-validated (no spaces, no quotes).
+        "%%WS_OUT_PATHS%%": '"{}"'.format(" ".join(
+            f"$proj/./{p.store}" for p in plan if not p.absolute)) if workspace else '""',
+        # What a **Tide Pool**'s login shell tells the person sitting in it (see PAYLOAD_TIDEPOOL). The
+        # declared paths as written, since that is what they will type; empty when none were declared,
+        # which the boot script turns into the warning that nothing is kept.
+        "%%KEPT_LIST%%": " ".join(p.declared for p in plan),
         # Only ever non-empty when `payload` is PAYLOAD_TIDEPOOL, which is the only place either token
         # appears — an ordinary Spawn's rendered script never even contains the literal string.
         "%%TIDEPOOL_PORT%%": str(tidepool_port) if tidepool_port is not None else "",
@@ -1100,14 +1269,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     directory, and this Spawn needs its own disposable COPY of it (its staging dir is deleted after
     stage-in; the Recipe's is not, and must survive to be run again).
 
-    `outputs` names the subdirs made under the one `$CCC_OUT` root before the payload runs — checked
-    here, not just at the HTTP boundary, so the Head-local pinned path (`cuttle run --node`) gets the
-    identical guarantee. Both checks below (outputs
+    `outputs` names paths in the submitter's own project (or, `/`-prefixed, absolute inside the Pod) —
+    resolved and checked by `output_plan` here, not just at the HTTP boundary, so the Head-local pinned
+    path (`cuttle run --node`) gets the identical guarantee. Both checks below (outputs
     non-empty, script present in the project) are hard validation for an ORDINARY Spawn: a Spawn that
     failed either would either write nowhere retrievable or never start at all, so neither is worth a
     Spawn's Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no
-    script to find, and its `$CCC_OUT` is where a User happens to point it, not a name the Head can
-    enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
+    script to find, and where it keeps anything is where a User happens to point it, not a name the Head
+    can enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
 
     """
     assert (tar_path is None) != (source_dir is None) or workspace is not None, \
@@ -1123,10 +1292,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     if not outputs and not tidepool:
         raise ValueError("at least one output folder (--output/-o) is required — declare where your "
                          "script writes its results before submitting")
-    for name in outputs:
-        if not OUTPUT_NAME_RE.match(name):
-            raise ValueError(f"invalid output name {name!r} — letters/digits/'.'/'_'/'-' only, may not "
-                             f"start with '.' (no slashes, no '..')")
+    plan = output_plan(outputs)
 
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
@@ -1166,6 +1332,27 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
             # nothing for the Spawn that owns it.
             staging.mkdir(parents=True, mode=0o700)
             tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
+    # A declared **Output** is a path in the project, and the job script mounts the keep directory onto
+    # it — so a SYMLINK anywhere along that path would resolve the mountpoint somewhere else entirely, and
+    # the Spawn would keep whatever lives there instead of what it wrote. Refused here rather than
+    # reasoned about on the Arm: the upload is already on disk, the answer is a stat, and a Spawn cannot
+    # be given a mountpoint whose meaning depends on a link its submitter may not have known was there.
+    #
+    # `is_symlink()` per ancestor, not `resolve()`: what matters is whether a link is traversed, not
+    # whether the destination happens to land back inside the project. Nothing to check for an absolute
+    # output — no upload was ever written to a Pod path — or for a **Workspace**, which stages no upload.
+    if workspace is None:
+        for p in plan:
+            if p.absolute:
+                continue
+            walked = staging
+            for seg in p.store.split("/"):
+                walked = walked / seg
+                if walked.is_symlink():
+                    raise ValueError(
+                        f"output {p.declared!r} passes through a symlink in your project "
+                        f"({walked.relative_to(staging).as_posix()!r}) — CCC mounts the folder it keeps "
+                        f"at that path, and a link would send it somewhere else. Declare a real folder")
     # The Guise is allocated HERE rather than just before sbatch, because the **Environment** build
     # below runs as it — a manifest is code, and CCC runs no User's code as the Mantle (CONTEXT.md,
     # **Guise**). `_lend_project` comes with it: the build enters a Pod with the project bound and this
@@ -1602,7 +1789,11 @@ def err_text(job_id: int) -> str | None:
 
 
 def outputs_tar(job_id: int) -> bytes | None:
-    """gzip-tar of the Spawn's $CCC_OUT dir, for `cuttle outputs <id>`. None if it produced none.
+    """gzip-tar of the Spawn's keep directory, for `cuttle outputs <id>`. None if it produced none.
+
+    The tree inside mirrors the paths that were declared: `-o runs` arrives as `outputs/runs/…`, and an
+    absolute `-o /ccc/vlwd/logs` as `outputs/ccc/vlwd/logs/…` (the leading `/` is what is dropped, and the
+    only thing that is — see OutputPath).
 
     Emptiness — not existence — is the test: submit() pre-creates the dir for every Spawn, so its mere
     presence says nothing. An empty dir means "nothing written yet / nothing produced", not "ready".

@@ -134,14 +134,11 @@ def _needs(meta: dict) -> tuple[int, int, int, str, list[str], list[str]]:
         if not meta.get(field):
             raise ValueError(f"missing '{field}' — a Workspace carries the same declared need and "
                              f"length any Spawn does, and a visit is submitted from it")
-    from .spawns import OUTPUT_NAME_RE
+    from .spawns import output_plan
     outputs = meta.get("outputs") or []
     if not isinstance(outputs, list):
         raise ValueError("'outputs' must be a list of strings")
-    for out in outputs:
-        if not isinstance(out, str) or not OUTPUT_NAME_RE.match(out):
-            raise ValueError(f"invalid output name {out!r} — letters/digits/'.'/'_'/'-' only, may not "
-                             f"start with '.' (no slashes, no '..')")
+    output_plan(outputs)
     features = meta.get("features") or []
     if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
         raise ValueError("'features' must be a list of strings")

@@ -1,5 +1,5 @@
 """Recovery Window: a one-day, size-capped safety net for a Spawn's UNDECLARED writes (anything outside
-`$CCC_OUT`). `recover_scratch` (spawns' JOB_SCRIPT) copies `$proj` to `SPAWNS_DIR/<id>/recovery/` before
+its declared **Output**s). `recover_scratch` (spawns' JOB_SCRIPT) copies `$proj` to `SPAWNS_DIR/<id>/recovery/` before
 the EXIT trap deletes it; this module registers, caps, and expires that copy.
 
 A day rather than the half hour this started as: a User discovers a wrong `--output` the next morning,

@@ -439,7 +439,7 @@ def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
 
 @api.get("/spawns/{job_id}/outputs")
 def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
-    """gzip-tar of the Spawn's $CCC_OUT dir — a remote submitter's only way to get results back.
+    """gzip-tar of the Spawn's declared outputs — a remote submitter's only way to get results back.
 
     Results are not permanent: 7 days from the Spawn's end,
     or sooner if the submitter's 32GB Allowance evicted them to make room for newer ones. Both read as
@@ -453,8 +453,8 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
             raise HTTPException(404, f"Spawn {job_id}'s outputs are no longer held — results are kept "
                                      f"for {retention_mod.TTL_DAYS} days after a Spawn ends, and only "
                                      f"until the submitter's newer results need the room")
-        raise HTTPException(404, f"Spawn {job_id} wrote no outputs — a Spawn returns files by writing "
-                                 f"them to $CCC_OUT inside the Pod")
+        raise HTTPException(404, f"Spawn {job_id} wrote no outputs — the folders it declared with "
+                                 f"--output were empty when it ended")
     return Response(data, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
 
@@ -498,7 +498,7 @@ def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
 @api.get("/spawns/{job_id}/recovery/download")
 def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> Response:
     """gzip-tar of Spawn `job_id`'s Recovery Window copy — everything it wrote OUTSIDE its declared
-    `$CCC_OUT`, while the window is still open. Distinct download from
+    its declared outputs, while the window is still open. Distinct download from
     `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
     artifact whose contents would otherwise silently change once the window closes."""
     data = recovery_mod.tar_bytes(job_id)
@@ -756,9 +756,10 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     (`slurm.arms_with_features`); a request no Arm can satisfy is refused with 422 before ever reaching
     sbatch, same hard-validation stance as `vram`.
 
-    `outputs` is a non-empty list of subdir names made under the one `$CCC_OUT` root before the payload
-    runs — required, with no default: a Spawn nobody named an output for would produce results with
-    nowhere retrievable to land.
+    `outputs` is a non-empty list of folders the payload writes results to, each a path in the Spawn's
+    own project (or, `/`-prefixed, absolute inside the Pod) — required, with no default: a Spawn nobody
+    named an output for would produce results with nowhere retrievable to land. See
+    `spawns.output_plan` for what is and is not a legal path.
 
     `wandb_env` no longer carries a key — it never could from the browser, which is why the Dashboard
     logged no metrics at all. The caller's W&B *project/entity* are honoured and everything else in it
@@ -804,7 +805,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         raise HTTPException(422, str(e))
     # At least one declared output subdir: a Spawn nobody named an output for is one whose results have
     # nowhere retrievable to land, which is worse discovered after the fact than refused up front.
-    # `outputs` also gets the shell-injection check (OUTPUT_NAME_RE) in spawns.submit — this is only the
+    # `outputs` also gets the shell-injection check (spawns.output_plan) in spawns.submit — this is only the
     # "did the client send any" gate. Skipped for a Tide Pool alone — see submit_checked's docstring.
     outputs = meta.get("outputs") or []
     if not isinstance(outputs, list):

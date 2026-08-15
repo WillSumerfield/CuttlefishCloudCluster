@@ -228,7 +228,7 @@ def detect(project: Path, manifest: str | None) -> Manifest:
     rel = (manifest or "").strip()
     if not rel:
         raise BuildError(_NOTHING_DECLARED)
-    # The same containment rule the declared-output names get (spawns.OUTPUT_NAME_RE): a manifest
+    # The same containment rule declared output paths get (spawns.OUTPUT_SEG_RE): a manifest
     # path is joined onto a directory the Head owns, so `../../etc` must not be a way out of it.
     # Resolved against the project and required to stay inside it.
     target = (project / rel).resolve()

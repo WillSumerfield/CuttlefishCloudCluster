@@ -1,4 +1,4 @@
-"""Output retention: a Spawn's declared `$CCC_OUT` results live **7 days**, and a User holds at most
+"""Output retention: a Spawn's declared **Output**s live **7 days**, and a User holds at most
 **32GB** of them at once.
 
 TTL runs from the Spawn's END, not registration: `created_at` is copied from `finished_at`, so a Spawn

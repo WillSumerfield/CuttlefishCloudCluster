@@ -45,7 +45,7 @@ from . import db
 MAX_USER_BYTES = int(os.environ.get("CCC_RECIPE_MAX_USER", 32 * 1024**3))
 
 # A Recipe's name is a directory component and an URL path segment, so it is checked rather than escaped.
-# Same shape as spawns.OUTPUT_NAME_RE: no slashes, no '..', no leading dot.
+# Same shape as one segment of a declared output path (spawns.OUTPUT_SEG_RE): no '..', no leading dot.
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -107,16 +107,14 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
             raise ValueError(f"missing '{field}' in X-CCC-Meta — a Recipe carries the same declared "
                              f"need and length a Spawn does, frozen with the code")
     # Declared outputs, required and validated HERE: a Recipe with none could never be run (`/submit`
-    # refuses it), better caught at save time than the day it's needed. Same regex as spawns.submit_checked.
-    from .spawns import OUTPUT_NAME_RE
+    # refuses it), better caught at save time than the day it's needed. The same `output_plan` a submit
+    # runs, so a Recipe cannot freeze a declaration that would be refused the day it is used.
+    from .spawns import output_plan
     outputs = meta.get("outputs") or []
     if not isinstance(outputs, list) or not outputs:
         raise ValueError("missing 'outputs' in X-CCC-Meta — at least one output folder name is required "
                          "(a Recipe with none could never be run)")
-    for out in outputs:
-        if not isinstance(out, str) or not OUTPUT_NAME_RE.match(out):
-            raise ValueError(f"invalid output name {out!r} — letters/digits/'.'/'_'/'-' only, may not "
-                             f"start with '.' (no slashes, no '..')")
+    output_plan(outputs)
     # `features` is frozen structurally only, exactly like `vram_mb`/`gpus` above — never checked against
     # the fleet's current capability here. That check is `spawns.submit_checked`'s, and it runs for real
     # when the Recipe is actually run, not months earlier when it happened to be saved.
@@ -185,15 +183,12 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
         if not meta.get(field):
             raise ValueError(f"missing '{field}' — a Recipe carries the same declared need and length a "
                              f"Spawn does")
-    from .spawns import OUTPUT_NAME_RE
+    from .spawns import output_plan
     outputs = meta.get("outputs") or []
     if not isinstance(outputs, list) or not outputs:
-        raise ValueError("missing 'outputs' — at least one output folder name is required (a Recipe with "
+        raise ValueError("missing 'outputs' — at least one output folder is required (a Recipe with "
                          "none could never be run)")
-    for out in outputs:
-        if not isinstance(out, str) or not OUTPUT_NAME_RE.match(out):
-            raise ValueError(f"invalid output name {out!r} — letters/digits/'.'/'_'/'-' only, may not "
-                             f"start with '.' (no slashes, no '..')")
+    output_plan(outputs)
     features = meta.get("features") or []
     if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
         raise ValueError("'features' must be a list of strings")

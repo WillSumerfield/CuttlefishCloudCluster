@@ -280,7 +280,7 @@ INSERT INTO guises (uid, user_id)
   SELECT {guises.UID_BASE} + ROW_NUMBER() OVER (ORDER BY id) - 1, id FROM users;
 """
 
-# Output retention. Exactly `recovery_copies`' shape, one row per Spawn whose declared $CCC_OUT results
+# Output retention. Exactly `recovery_copies`' shape, one row per Spawn whose declared Output results
 # the Head is holding, and `created_at` again does both jobs — the 7-day expiry clock AND the
 # oldest-first eviction order. It is copied from the Spawn's `finished_at`, not stamped at
 # registration, so a Spawn registered late by a tick that was down still expires 7 days after it RAN
