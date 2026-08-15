@@ -82,6 +82,36 @@ class TestTheTickStampsOutcome:
         assert db.get_spawn(conn, 4207)["exit_code"] == 0
 
 
+class TestTheGapBeforeTheTickStamps:
+    """A Spawn leaves squeue the instant it ends, but the tick only stamps it on its next pass — up to
+    TICK_SECONDS (30s) later. `spawn_history` excludes only what is LIVE, so for that whole window the
+    row is already in the archive with a null exit code and a null finished_at.
+
+    Pinned because both clients read these rows and one of them read that gap wrong: the Dashboard's
+    outcomeOf tested exit_code first and drew the row as a red `failed` for a Spawn that had exited 0
+    (hardware, 2026-08-15, Spawn 5). `finished_at` is what tells the two apart, and it is only ever
+    written together with `exit_code` — that pairing is the guarantee a client can rely on.
+    """
+
+    def test_an_ended_but_unstamped_spawn_is_already_served_by_history(self, conn):
+        uid = _user(conn, "alice")
+        _spawn(conn, 4400, uid)
+        rows = db.spawn_history(conn, "2000-01-01T00:00:00Z", exclude=[])
+        assert [r["job_id"] for r in rows] == [4400]
+        assert rows[0]["finished_at"] is None and rows[0]["exit_code"] is None
+
+    def test_the_two_columns_are_only_ever_written_together(self, conn, monkeypatch):
+        """So "no exit code" can never mean "failed" while finished_at is still null."""
+        uid = _user(conn, "alice")
+        for job_id, code in ((4401, 0), (4402, 3), (4403, None)):
+            _spawn(conn, job_id, uid)
+            monkeypatch.setattr(head_spawns, "exit_code", lambda jid, c=code: c)
+            tick._record_endings(conn, live_ids=set(), now=_NOW)
+            row = db.get_spawn(conn, job_id)
+            assert row["finished_at"] is not None, "stamped rows always carry an end time"
+            assert row["exit_code"] == code
+
+
 class TestHistoryLimit:
     """`limit` caps the archive to the newest N — the CLI passes it so a busy cluster is not a wall of
     text; None (the Dashboard's read) returns every row."""

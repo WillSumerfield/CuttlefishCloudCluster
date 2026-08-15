@@ -123,11 +123,23 @@ class TestSaving(_Base):
         with pytest.raises(ValueError, match="at least one output folder"):
             self._save(outputs=[])
 
-    @pytest.mark.parametrize("out", ["../escape", "has/slash", ".hidden"])
-    def test_an_output_name_a_spawn_would_reject_is_refused_here_too(self, out):
-        """Same regex as spawns.submit_checked, so what freezes here is exactly what will pass there."""
-        with pytest.raises(ValueError, match="invalid output name"):
+    @pytest.mark.parametrize("out", ["../escape", ".hidden", "a/../b", ""])
+    def test_an_output_path_a_spawn_would_reject_is_refused_here_too(self, out):
+        """The same `output_plan` a submit runs, so what freezes here is exactly what will pass there."""
+        with pytest.raises(ValueError, match="invalid output path"):
             self._save(outputs=[out])
+
+    @pytest.mark.parametrize("out", ["runs", "out/ckpt", "/ccc/vlwd/logs"])
+    def test_a_nested_or_absolute_output_path_freezes_fine(self, out):
+        """An output is a PATH now — a nested one, or a `/`-prefixed absolute one for what an Arm
+        Feature writes outside the project. `has/slash` used to be a rejection here."""
+        self._save(outputs=[out])
+
+    def test_two_outputs_that_would_be_kept_in_one_place_are_refused(self):
+        """`out/x` and `/out/x` are different directories in the Pod and one directory on the Head, so
+        one would silently overwrite the other in the tar."""
+        with pytest.raises(ValueError, match="would both be kept"):
+            self._save(outputs=["out/x", "/out/x"])
 
     def test_an_entrypoint_not_in_the_upload_is_refused_before_anything_is_written(self):
         """A Recipe frozen around a missing script fails every time it is ever run — discovered long

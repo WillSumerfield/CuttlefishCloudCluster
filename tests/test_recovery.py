@@ -1,5 +1,5 @@
 """Recovery Window (docs/TODO.md) — a one-day, size-capped safety net for whatever a Spawn wrote OUTSIDE
-its declared $CCC_OUT, which the JOB_SCRIPT's EXIT trap would otherwise destroy instantly.
+its declared Outputs, which the JOB_SCRIPT's EXIT trap would otherwise destroy instantly.
 
 What's tested here: the rendered JOB_SCRIPT's `recover_scratch` (both branches — Head-local same-
 filesystem `mv`, remote `rsync`), the DB ledger (recovery_copies), recovery.py's registration, both

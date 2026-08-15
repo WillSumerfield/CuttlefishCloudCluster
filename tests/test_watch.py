@@ -102,7 +102,7 @@ class TestDraining:
         assert watch.read(3)["state"] == watch.WAITING
 
     def test_a_failed_spawn_still_downloads(self, logged_in, tmp_path):
-        """A run killed at its --time limit with six hours of checkpoints in $CCC_OUT is exactly when
+        """A run killed at its --time limit with six hours of checkpoints in a declared output is exactly when
         the results matter most. Gating on a clean exit would throw that away."""
         d = head_spawns.SPAWNS_DIR / "5"
         (d / "outputs").mkdir(parents=True)

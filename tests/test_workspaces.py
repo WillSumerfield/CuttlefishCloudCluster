@@ -139,9 +139,13 @@ class TestCreating(_Base):
             self._create(manifest="pyproject.toml")
         assert not workspaces.dir_of(1, "scratch").exists()
 
-    def test_an_output_name_a_spawn_would_reject_is_refused_here_too(self):
-        with pytest.raises(ValueError, match="invalid output name"):
+    def test_an_output_path_a_spawn_would_reject_is_refused_here_too(self):
+        with pytest.raises(ValueError, match="invalid output path"):
             self._create(outputs=["../etc"])
+
+    def test_a_nested_output_path_is_fine(self):
+        """An output is a path in the tree, so a folder inside a folder is an ordinary thing to name."""
+        self._create(outputs=["results/ckpt"])
 
 
 class TestThePool(_Base):
@@ -362,7 +366,7 @@ class TestDeletedUsers(_Base):
 
 
 class TestTheRenderedVisit:
-    """What a visit's job script says — the Siphon it draws from, where $CCC_OUT lives, and the mirror.
+    """What a visit's job script says — the Siphon it draws from, how its Outputs go home, and the mirror.
 
     Rendered directly rather than submitted: placement, pricing and sbatch are `submit_checked`'s own
     tests, and what belongs here is that a visit's script differs from an ordinary Spawn's in exactly
@@ -396,10 +400,28 @@ class TestTheRenderedVisit:
         body = self._render(tmp_path, workspace=None, workspace_storage=0)
         assert "/proj-TOK/" in body and "--files-from" in body
 
-    def test_ccc_out_lives_inside_the_tree(self, tmp_path):
-        """An output is an ordinary folder INSIDE the Workspace, so it is mirrored like everything else
-        AND staged home at session end to be fetched like any Spawn's results."""
-        assert 'ccc_out="$proj/outputs"' in self._render(tmp_path)
+    def test_a_visit_binds_nothing_and_pushes_the_declared_path_itself(self, tmp_path):
+        """$proj here IS the durable tree, so unlike every other Spawn nothing is bound over it. A bind
+        would keep the bytes in a directory of CCC's own and leave an empty mountpoint behind in what the
+        owner gets back — waiting on every future visit and in `workspace download`. The declared folder
+        goes to [out-…] as a second DESTINATION rather than a second copy, so it costs no Storage."""
+        body = self._render(tmp_path, outputs=["results"])
+        assert 'ccc_out="$proj/outputs"' not in body
+        assert 'outbind="$outbind' not in body
+        assert 'ws_outputs="$proj/./results"' in body
+        assert "rsync -aR $ws_outputs" in body
+
+    def test_a_visit_that_declared_no_output_pushes_nothing(self, tmp_path):
+        """Declaring is optional here (CONTEXT.md) — the tree is kept either way."""
+        assert 'ws_outputs=""' in self._render(tmp_path)
+
+    def test_declared_outputs_go_home_even_when_the_storage_is_full(self, tmp_path):
+        """The two ceilings are different Allowances: results are charged to the output Allowance, not to
+        this Workspace's Storage, so a tree too big to mirror is no reason to strand what the session was
+        run to produce."""
+        mirror = self._render(tmp_path, outputs=["results"]).rsplit(
+            "ws_mirror() {", 1)[1].split("\n    }", 1)[0]
+        assert mirror.index("ws_outputs") < mirror.index('[ "$over" = 0 ] || return 0')
 
     def test_the_storage_is_baked_in_as_a_constant(self, tmp_path):
         """No cross-Workspace interaction to get wrong, and a resize mid-visit cannot move it under a
@@ -450,11 +472,12 @@ class TestTheRenderedVisit:
         mirror = self._render(tmp_path).rsplit("ws_mirror() {", 1)[1].split("\n    }", 1)[0]
         assert "over=0" in mirror
 
-    def test_the_pusher_is_restarted_after_ccc_out_moves(self, tmp_path):
-        """`push_periodic &` forked before $ccc_out was reassigned, and a subshell keeps the value it
-        was forked with — the old loop would push an empty directory for the whole session."""
+    def test_the_pusher_is_never_restarted_because_ccc_out_never_moves(self, tmp_path):
+        """It used to be: WS_BLOCK reassigned $ccc_out into the tree, and `push_periodic &` had already
+        forked with the old value. A visit binds nothing now and $ccc_out is never reassigned, so the
+        original loop stays correct and the restart it needed is gone."""
         block = self._render(tmp_path).split("ws_staged=1", 1)[1]
-        assert block.index("push_periodic &") < block.index("ws_mirror() {")
+        assert "push_periodic &" not in block
 
 
 class TestTheSiphon:

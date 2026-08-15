@@ -88,7 +88,7 @@ def test_the_named_manifest_must_exist(tmp_path):
 
 
 def test_the_named_manifest_cannot_escape_the_project(tmp_path):
-    """The containment rule declared output names get (spawns.OUTPUT_NAME_RE), for the same reason: this
+    """The containment rule declared output paths get (spawns.OUTPUT_SEG_RE), for the same reason: this
     path is joined onto a directory the Head owns, and `..` must not be a way out of it."""
     (tmp_path.parent / "outside.txt").write_text("")
     with pytest.raises(env.BuildError, match="no such manifest"):
@@ -301,7 +301,7 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     file-not-found the User cannot act on."""
     body = _script()
     assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$ccc_out,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind"' in body
+    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind"' in body
 
 
 @pytest.mark.parametrize("kind,expect", [

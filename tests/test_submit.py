@@ -154,7 +154,9 @@ class TestRemoteLiveStreaming:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
+        # Deliberately not the literal name "outputs": the keep directory is itself called
+        # `outputs`, so declaring that name would make the doubling check below match its own bind.
+        kw.setdefault("outputs", ["results"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -865,11 +867,11 @@ class TestSpawnsRunAsTheirSubmitter:
         assert 'cp -a --no-preserve=ownership "$staging_dir/." "$proj/"' in script
 
 
-class TestDeclaredOutputsBecomeMkdirs:
-    """docs/TODO.md's now-closed "Spawn Output Enforcement": each declared `--output` name becomes one
-    `mkdir -p "$ccc_out/<name>"` in JOB_SCRIPT, made ONCE — after the if/else that sets `$ccc_out` in
-    EITHER branch, before the payload runs — rather than duplicated inside each branch. That single
-    placement is what makes it apply to the Head-local and remote paths alike."""
+class TestDeclaredOutputsBecomeBinds:
+    """An **Output** is a path in the submitter's OWN project, and the keep directory is mounted onto it —
+    so an unmodified script writes its results straight into what is staged home, with no `$CCC_OUT` to
+    be taught about. Set up ONCE, after the if/else that sets `$ccc_out` in EITHER branch and before the
+    payload runs, which is what makes it apply to the Head-local and remote paths alike."""
 
     def render(self, **kw):
         kw.setdefault("minutes", 60)
@@ -879,16 +881,59 @@ class TestDeclaredOutputsBecomeMkdirs:
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
 
-    def test_one_mkdir_per_declared_name(self):
-        script = self.render(outputs=["checkpoints", "logs"])
-        assert 'mkdir -p "$ccc_out/checkpoints"' in script
-        assert 'mkdir -p "$ccc_out/logs"' in script
+    def _setup_block(self, script: str) -> str:
+        """The rendered %%OUTPUT_SETUP%% block alone — between `outbind=""` and the `cd "$proj"` that
+        follows it. Scoped, because JOB_SCRIPT's prose upstream mentions `cp -a` and `$ccc_out` freely."""
+        return script[script.index('outbind=""'):script.index('\ncd "$proj"\n')]
 
-    def test_a_single_output_still_works(self):
+    def test_a_relative_output_is_bound_over_the_path_in_the_project(self):
+        """The whole point: `-o runs` is the `runs/` the code already writes to."""
+        script = self.render(outputs=["runs"])
+        assert 'outbind="$outbind,$ccc_out/runs:$proj/runs"' in script
+        assert 'mkdir -p "$ccc_out/runs"' in script
+        assert 'mkdir -p "$proj/runs"' in script
+
+    def test_a_nested_output_keeps_its_shape_on_both_sides(self):
+        script = self.render(outputs=["out/ckpt"])
+        assert 'outbind="$outbind,$ccc_out/out/ckpt:$proj/out/ckpt"' in script
+
+    def test_an_absolute_output_is_bound_at_that_pod_path_and_kept_without_the_slash(self):
+        """For what a profiled Arm Feature writes outside the project (features.VLWD_MOUNT), which no
+        project path could name and the Recovery Window never sees."""
+        script = self.render(outputs=["/ccc/vlwd/logs"])
+        assert 'outbind="$outbind,$ccc_out/ccc/vlwd/logs:/ccc/vlwd/logs"' in script
+
+    def test_an_absolute_output_is_never_mkdir_d_on_the_host(self):
+        """Everything in this block runs on the host as the Guise, where `mkdir -p /ccc/vlwd/logs` is
+        EPERM at `/` — and that error would land in $sink, making it non-empty, which leaves a file in
+        /tmp for every Spawn ever run (the litter that poisoned job ids). Apptainer makes the mountpoint."""
+        script = self.render(outputs=["/ccc/vlwd/logs"])
+        assert 'mkdir -p "/ccc/vlwd/logs"' not in script
+        assert 'mkdir -p "$ccc_out/ccc/vlwd/logs"' in script
+
+    def test_a_relative_output_is_seeded_from_whatever_the_upload_had_there(self):
+        """`-o checkpoints` on a project that uploaded a checkpoint to resume from must NOT present an
+        empty directory and silently restart training."""
         script = self.render(outputs=["checkpoints"])
-        assert script.count('mkdir -p "$ccc_out/') == 1
+        assert 'cp -a "$proj/checkpoints/." "$ccc_out/checkpoints/"' in script
 
-    def test_mkdirs_land_after_both_branches_close_and_before_the_payload_runs(self):
+    def test_an_absolute_output_is_not_seeded(self):
+        """Nothing was ever uploaded to a path inside the Pod."""
+        assert "cp -a" not in self._setup_block(self.render(outputs=["/ccc/vlwd/logs"]))
+
+    def test_one_bind_per_declared_output(self):
+        script = self.render(outputs=["checkpoints", "logs"])
+        assert script.count('outbind="$outbind,') == 2
+
+    def test_nothing_names_ccc_out_to_the_payload(self):
+        """There is no CCC_OUT in the Pod environment, and $ccc_out is not bound — the only way into the
+        keep directory is through the declared paths."""
+        script = self.render(outputs=["runs"])
+        payload = script.split("\ncd \"$proj\"\n", 1)[1]
+        assert "CCC_OUT=" not in payload
+        assert '--bind "$proj,$ccc_out' not in payload
+
+    def test_setup_lands_after_both_branches_close_and_before_the_payload_runs(self):
         script = self.render(outputs=["checkpoints"])
         mkdir_at = script.index('mkdir -p "$ccc_out/checkpoints"')
         # The LAST "\nfi\n" — the branch has its own nested if/fi (the stage-in failure check) that
@@ -1304,18 +1349,46 @@ class TestSubmitValidatesOutputsAndScript:
             self._submit(monkeypatch, tmp_path, outputs=[])
 
     def test_a_traversal_attempt_is_refused(self, monkeypatch, tmp_path):
-        with pytest.raises(ValueError, match="invalid output name"):
+        with pytest.raises(ValueError, match="invalid output path"):
             self._submit(monkeypatch, tmp_path, outputs=["../../etc"])
 
-    def test_a_slash_is_refused_even_without_dots(self, monkeypatch, tmp_path):
-        with pytest.raises(ValueError, match="invalid output name"):
-            self._submit(monkeypatch, tmp_path, outputs=["a/b"])
-
-    def test_a_bare_dot_or_dotdot_is_refused(self, monkeypatch, tmp_path):
-        """Both start with '.', which OUTPUT_NAME_RE never matches — no special-case needed."""
-        for bad in (".", ".."):
-            with pytest.raises(ValueError, match="invalid output name"):
+    def test_a_dot_segment_anywhere_in_the_path_is_refused(self, monkeypatch, tmp_path):
+        """Every segment is matched, not just the first, so `.` and `..` are unreachable at any depth
+        and no separate traversal check is needed."""
+        for bad in (".", "..", "a/../b", "a/./b", "runs/.hidden"):
+            with pytest.raises(ValueError, match="invalid output path"):
                 self._submit(monkeypatch, tmp_path, outputs=[bad])
+
+    def test_two_outputs_kept_in_the_same_place_are_refused(self, monkeypatch, tmp_path):
+        """Different directories in the Pod, one directory on the Head — one would overwrite the other
+        in the tar. Decidable here, so it is decided here."""
+        with pytest.raises(ValueError, match="would both be kept"):
+            self._submit(monkeypatch, tmp_path, outputs=["out/x", "/out/x"])
+
+    def test_an_output_nested_inside_another_is_refused(self, monkeypatch, tmp_path):
+        """Binding $ccc_out/runs/nn onto a path inside the $ccc_out/runs bind is a mount over its own
+        source."""
+        with pytest.raises(ValueError, match="is inside output"):
+            self._submit(monkeypatch, tmp_path, outputs=["runs", "runs/nn"])
+
+    def test_an_output_reached_through_a_symlink_in_the_project_is_refused(self, monkeypatch, tmp_path):
+        """CCC mounts the keep directory at that path; a link would resolve the mountpoint somewhere
+        else, and the Spawn would keep whatever lives there instead of what it wrote."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for n in ("train.py", "requirements.txt"):
+                data = b"x\n"
+                info = tarfile.TarInfo(n); info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+            # In-TREE on purpose: extractall(filter="data") already drops an absolute or escaping
+            # symlink, so the one that can actually reach this check is a link to a sibling directory —
+            # which would still make the Spawn keep the wrong folder.
+            link = tarfile.TarInfo("runs")
+            link.type, link.linkname = tarfile.SYMTYPE, "data"
+            tf.addfile(link)
+        tar = tmp_path / "linked.tar.gz"; tar.write_bytes(buf.getvalue())
+        with pytest.raises(ValueError, match="passes through a symlink"):
+            self._submit(monkeypatch, tmp_path, outputs=["runs"], tar_path=tar)
 
     def test_a_normal_name_is_accepted(self, monkeypatch, tmp_path):
         """Sanity check the regex isn't so strict it refuses ordinary names — carried all the way
@@ -1332,7 +1405,7 @@ class TestSubmitValidatesOutputsAndScript:
         monkeypatch.setattr(head_spawns.subprocess, "run",
                             lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n",
                                                             "stderr": "", "returncode": 0})())
-        for good in ("checkpoints", "run-1", "epoch_09", "v2.final"):
+        for good in ("checkpoints", "run-1", "epoch_09", "v2.final", "out/ckpt", "/ccc/vlwd/logs"):
             job_id = self._submit(monkeypatch, tmp_path, outputs=[good])
             assert job_id >= 4200
 
