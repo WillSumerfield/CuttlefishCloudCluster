@@ -356,6 +356,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   its own share of the card, isolated *by the hardware* rather than by agreement. Several Spawns can
   therefore hold one card at once without being able to reach — or starve — each other. A Slice is a
   Device in every respect: it is priced, held, and settled as one.
+  **Unbuilt.** No Slice exists in CCC today, and neither does the **Beak** that would make one: every
+  Device is a whole card, whether or not its hardware is **carvable**. What a Spawn does to the card it
+  already holds — dividing it in hardware for its own processes, inside its own allocation — is not a
+  Slice and is not this: nobody else can be placed on it, nothing is priced by it, and it is undone
+  when the Spawn ends. The word stays reserved for the day the cluster itself carves.
 - **Carvable** — a property of a GPU: whether its hardware can divide it into **Slice**s at all. Most
   cards cannot, and a GPU donated through a virtualization layer never can. So the fleet is permanently
   mixed, and a Spawn is never told which kind it got.
