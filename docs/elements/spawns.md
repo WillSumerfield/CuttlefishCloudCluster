@@ -97,9 +97,16 @@ greyed out in the dropdown.
 cuttle run train.py --time 60 --gpus 2 --vram 128 -o checkpoints --manifest pyproject.toml
 ```
 
-**`--output`/`-o`** names a folder under `$CCC_OUT` that your script writes results into. It is
-repeatable, and at least one is required. `mkdir -p "$CCC_OUT/<name>"` runs before your script does,
-once per name, so the directory is always there.
+**`--output`/`-o`** names a folder **in your own project** that your script writes results into,
+relative to the project root. `-o runs` means the `runs/` your code already writes to — it needs no
+changes, no environment variable, and no knowledge that CCC exists. Repeatable, and at least one is
+required. The folder is always there when your script starts, and whatever you uploaded in it is still
+in it, so `-o checkpoints` never hides a checkpoint you sent along to resume from.
+
+Nested paths work (`-o out/ckpt`). A path starting with `/` is absolute *inside the Pod* instead — for
+keeping something an Arm Feature writes outside your project entirely, such as under `/ccc/vlwd`. Two
+outputs may not nest inside one another, and a relative and an absolute path that would be kept in the
+same place (`out/x` and `/out/x`) are refused at submit.
 
 ### Where your results go
 

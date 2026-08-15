@@ -6,7 +6,8 @@ Symptom, cause, fix. Grouped by who you are.
 
 ### "at least one --output/-o is required"
 
-Not a bug. Name the folder(s) under `$CCC_OUT` your script writes results into:
+Not a bug. Name the folder(s) **in your project** your script writes results into — `-o runs` is the
+`runs/` your code already writes to, relative to the project root:
 
 ```sh
 cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml

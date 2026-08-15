@@ -1,7 +1,7 @@
 # Environment test projects
 
 Six one-file projects, one per path through `ccc_head_api.environments`. Each runs the same
-`check_env.py`, which prints four lines and writes them to `$CCC_OUT/env.txt`:
+`check_env.py`, which prints four lines and writes them to `results/env.txt` (submit with `-o results`):
 
 ```
 interpreter: <path>     # /opt/ccc/env/... = an Environment was built; anything else = the base image

@@ -72,7 +72,7 @@ passes. So the mount point is not something a submitter can influence; CCC binds
 
 ## Expected output
 
-`runs/Ant_<timestamp>/` under `$CCC_OUT`, holding rl_games checkpoints (`nn/*.pth`) and TensorBoard
+`runs/Ant_<timestamp>/` in the project, declared with `-o runs`, holding rl_games checkpoints (`nn/*.pth`) and TensorBoard
 event files, downloaded to your machine when the Spawn finishes.
 
 ## If it fails

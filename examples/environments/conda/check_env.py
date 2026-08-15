@@ -1,6 +1,6 @@
 """What Python did this Spawn actually get?
 
-Four lines, printed and written to $CCC_OUT/env.txt:
+Four lines, printed and written to results/env.txt:
 
   interpreter  — /opt/ccc/env/... means an Environment was built; anything else is the base
                  image's untouched Python.
@@ -15,7 +15,6 @@ Four lines, printed and written to $CCC_OUT/env.txt:
                  file declared it. That is the point: what you declared is what you get.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -30,5 +29,9 @@ for name in ("pyfiglet", "torch"):
 
 report = "\n".join(lines)
 print(report)
-# $CCC_OUT is the only path off the cluster — anything written elsewhere dies with the scratch dir.
-Path(os.environ["CCC_OUT"], "env.txt").write_text(report + "\n")
+# An ordinary relative path — the folder this script would write to anywhere. Submit with
+# `-o results` and CCC keeps exactly this directory; anything written outside a declared output
+# dies with the scratch dir. Nothing here knows it is running on a cluster.
+out = Path("results")
+out.mkdir(exist_ok=True)
+(out / "env.txt").write_text(report + "\n")

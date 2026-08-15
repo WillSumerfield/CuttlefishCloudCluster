@@ -79,7 +79,8 @@ asks before it sends anything:
 - `--time` — wall-clock minutes. Your job is killed at it.
 - `--vram` — GPU memory in GB, totalled across the cards you asked for. Every card holding its share
   becomes eligible.
-- `--output`/`-o` — a folder under `$CCC_OUT` your script writes results into. Repeatable.
+- `--output`/`-o` — a folder in your project your script writes results into, relative to the project
+  root (`/`-prefixed for a path absolute inside the Pod). Repeatable.
 
 `--gpus N` holds more than one card, all on one machine — see
 [Spawns](../elements/spawns.md#asking-for-more-than-one-card).

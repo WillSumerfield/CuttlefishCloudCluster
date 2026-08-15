@@ -92,9 +92,10 @@ effect on the **next** visit.
 
 ### Declaring outputs is optional
 
-Like a Tide Pool's, and for the same reason. `$CCC_OUT` here is a folder *inside* the Workspace, so
-anything you write is kept either way. What declaring an output buys you is that the end of each
-session also sends it home, to be downloaded like any Spawn's results:
+Like a Tide Pool's, and for the same reason. An output here is an ordinary folder in the Workspace
+tree, so anything you write is kept either way and declaring one costs you no extra Storage. What
+declaring an output buys you is that the end of each session ALSO sends it home, to be downloaded like
+any Spawn's results:
 
 ```sh
 cuttle outputs <spawn id>

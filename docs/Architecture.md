@@ -117,7 +117,7 @@ OS. Its walls enclose the whole Spawn, including the wrapper that stages files i
 There is **no NFS, no CephFS, no live mount**. Every Arm stages.
 
 A Spawn's project — gitignore-aware — is staged in over an rsync daemon bound to the Head's mesh
-address, into node-local scratch. At the end, the declared `$CCC_OUT` directories stage back. Fresh
+address, into node-local scratch. At the end, the declared output directories stage back. Fresh
 copy per Spawn; there is no persistent cache yet.
 
 **The last hop is automatic, and it does not stop at the Head.** `cuttle run` records what your box
