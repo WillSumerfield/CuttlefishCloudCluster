@@ -120,6 +120,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   held. Like a **Spawn**, it declares *needs* and is *placed* — a User cannot name the machine
   (see **Eligibility**); it is told which Arm it got. On its own it keeps nothing: what it wrote dies
   with it. A Tide Pool opened on a **Workspace** is the one that does not.
+  The shell it attaches is the **cluster's own**, and the same one for everybody: CCC ships one
+  configured shell into every Pod and carries no User's dotfiles to it. A Tide Pool is a place to debug
+  against real hardware, not a machine a User moves into — so what greets them is furniture the cluster
+  provides, and a User who wants their own arranges it within the session like anything else they write
+  there. Nothing about it survives the session, on the same terms as everything else a Tide Pool holds.
 - **Workspace** — a **User**'s durable interactive place on the cluster: a working directory that
   outlives the session that made it, so opening one resumes where the last visit left off instead of
   starting bare. Private to its owner. It is the **Recipe**'s opposite in the one respect that matters —
