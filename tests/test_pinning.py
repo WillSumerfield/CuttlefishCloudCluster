@@ -151,6 +151,14 @@ class TestTheImageCarriesNoRuntime:
         the card is held and the Environment built."""
         assert "gcc" in templates.render_base_def()
 
+    def test_the_libc_headers_are_named_explicitly(self):
+        """libc6-dev is a RECOMMENDS of gcc, not a Depends, so --no-install-recommends drops it — and a
+        gcc with no stdio.h compiles nothing. Triton's shim includes Python.h, which includes stdio.h,
+        so this is the first header it reaches for. Shipped once without it (2026-08-15)."""
+        d = templates.render_base_def()
+        assert "libc6-dev" in d
+        assert "--no-install-recommends" in d, "if this goes, re-check what gcc pulls on its own"
+
     def test_the_mantle_account_is_baked_in(self):
         """Unprivileged sshd needs the connecting uid to resolve via getpwuid or it cannot find a home
         for authorized_keys. Nothing in an Environment can supply an /etc/passwd entry."""

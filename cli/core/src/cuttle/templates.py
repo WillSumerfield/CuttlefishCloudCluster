@@ -303,8 +303,12 @@ def render_ubuntu_snapshot_list() -> str:
 #   a box with gcc in /usr/bin and none in its Pods was the observed failure. Without it every Spawn
 #   that reaches torch.compile dies with "Failed to find C compiler", and dies at the WORST moment: the
 #   card is already held and the Environment already built, so it is a full-price failed Spawn rather
-#   than a refusal at submit. --no-install-recommends gcc pulls cpp, binutils and libc6-dev, which is
-#   exactly the set Triton's builder needs (compiler, `as`/`ld`, headers, crt objects) and no more.
+#   than a refusal at submit.
+#   **`libc6-dev` is named explicitly and must stay that way.** It is a *Recommends* of `gcc` (and of
+#   `gcc-13`), never a Depends, so `--no-install-recommends` drops it — leaving a gcc that runs, finds
+#   its `cc1`, and then dies on `#include <stdio.h>`, because that header and the crt objects live in
+#   that package alone. Triton's shim includes Python.h, which includes stdio.h, so this is the very
+#   first thing it needs. `binutils` (`as`/`ld`) IS a real Depends of gcc-13 and needs no naming here.
 #   ~150 MB, the one real cost, paid in durable disk on every donated box.
 # * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
 #   sshd still needs that a stock image does not have: the connecting uid has to resolve via
@@ -317,7 +321,8 @@ From: {image}
 
 %post
     # Runs inside the (disposable) build container only — never the host.
-    apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates gcc \
+    apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
+      gcc libc6-dev \
       && rm -rf /var/lib/apt/lists/*
     echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
     echo "mantle:x:{gid}:" >> /etc/group
