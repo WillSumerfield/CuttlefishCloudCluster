@@ -253,6 +253,46 @@ sif="%%CCC_SIF%%"
 #
 # Unquoted on purpose below: empty must expand to no argument at all, not to an empty one.
 dxg=""; [ -e /dev/dxg ] && dxg="--bind /dev/dxg,/usr/lib/wsl"
+
+# This Spawn's card, when that card is in MIG mode. Resolved on the NODE for exactly the reason $dxg is:
+# the Head renders one job script for a mixed fleet and has no business knowing which of its Arms carve.
+#
+# ⚠ DUPLICATED from cuttle.templates.MIG_RESOLVER_SH — head/api depends on nothing in cli/core (separate
+# packages, separate venvs, and this one is served to Arms). Change one, change the other. See that
+# constant for why a card is keyed by its device MINOR and not by nvidia-smi's enumeration order.
+ccc_mig_uuid() {
+    local minor="${1#/dev/nvidia}" gpu_uuid
+    [ -d /proc/driver/nvidia/gpus ] || return 0
+    gpu_uuid=$(awk -v m="$minor" '
+        /^GPU UUID:/     { u = $NF }
+        /^Device Minor:/ { if ($NF == m) { print u; exit } }
+    ' /proc/driver/nvidia/gpus/*/information)
+    [ -n "$gpu_uuid" ] || return 0
+    nvidia-smi -L | awk -v g="$gpu_uuid" '
+        /^GPU /      { u = $NF; gsub(/[()]/, "", u); cur = (u == g); next }
+        cur && /MIG/ { m = $NF; gsub(/[()]/, "", m); print m; exit }
+    '
+}
+# CUDA cannot name a MIG device by index — only a MIG-<uuid> reaches one — so a card in MIG mode with
+# Slurm's own CUDA_VISIBLE_DEVICES left on it presents the Pod with NO GPU whatsoever. Not a slower one,
+# none: `torch.cuda.device_count()` is 0 and every Spawn dies at its first `.cuda()`.
+#
+# The FIRST held card only, and deliberately. CUDA takes one MIG device per process however many are
+# listed, so a multi-Device Spawn cannot be handed both — the second is reached by starting a second
+# process, which finds it in `nvidia-smi -L` inside the Pod, where the UUIDs already are. CCC exports no
+# list of its own: that is where a submitter would look anyway, and a CCC-only variable that exists on
+# some Arms and not others is its own kind of trap.
+#
+# `--bind /dev/nvidia-caps`: `--contain` cuts /dev down and `--nv` restores the `nvidia*` nodes, but the
+# capability nodes a MIG device is actually opened through live in a SUBDIRECTORY of it — without them
+# the Pod holds a device it has no way to reach. The Arm's prolog is what makes them readable to this
+# Guise; this only carries them across the Pod wall.
+# Same shape as $dxg above, deliberately: an empty expansion must add no argument at all.
+migbind=""; migenv=""; ccc_uuid=""
+mapfile -t ccc_devs < <(printf '%s\n' /dev/nvidia[0-9]* | sort -V)
+IFS=, read -ra ccc_held <<< "${CUDA_VISIBLE_DEVICES:-}"
+[ -n "${ccc_held[0]:-}" ] && ccc_uuid=$(ccc_mig_uuid "${ccc_devs[${ccc_held[0]}]}")
+[ -n "$ccc_uuid" ] && migbind=",/dev/nvidia-caps" && migenv=",CUDA_VISIBLE_DEVICES=$ccc_uuid"
 # sbatch's own stdout sink, on whichever node runs this. The wrapper redirects everything it cares
 # about into out/err, so this stays EMPTY unless the shell itself failed before those existed — which
 # is the one case worth keeping. Anything else would leave a 0-byte file per Spawn in /tmp forever.
@@ -672,8 +712,8 @@ ccc_build_or_die() {
 # was already writing.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
-  --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$featenv" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv$featenv" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
@@ -882,8 +922,8 @@ featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' '
 featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
   --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,CCC_FEATURE_VARS=$featnames$featenv" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind$migbind" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
