@@ -9,6 +9,7 @@ hardware (same carve-out the Beak/MIG work already has in docs/TODO.md).
 
 import json
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -18,10 +19,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ccc_head_api import db, guises, slurm, tick
+from ccc_head_api import db, guises, slurm, tick, zshrc
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
 from ccc_head_api import tidepool as head_tidepool
+from cuttle import config, templates
 from cuttle import tidepool as cli_tidepool
 
 
@@ -227,9 +229,26 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
                                    tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
         # The backreference is spelled `\\1` in the Python source for a reason: `"\1"` in a non-raw
         # literal is chr(1), which renders a sed expression that silently replaces the whole line.
-        assert r"\1:/bin/bash|" in body
+        assert r"\1:/usr/bin/zsh|" in body
         assert "\x01" not in body
         assert body.index("/etc/passwd") < body.index("exec /usr/sbin/sshd")
+
+    def test_the_shell_is_named_outright_with_no_fallback(self, tmp_path):
+        """One shell, chosen by the Head, on every Arm — never "zsh if this node has one, else bash".
+
+        A User cannot name the machine they land on (CONTEXT.md, **Eligibility**), so a fallback would
+        make the shell they get a property of the placement rather than of the cluster: the same command
+        run twice would behave differently, and the difference would be invisible from the client. An Arm
+        whose base.sif predates zsh is meant to fail loudly instead, which is the bargain every
+        image-level change in this project already makes (`cuttle teardown --all` + `setup`).
+        """
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        boot = body[body.index("tp_boot.sh"):]
+        code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
+        assert "/bin/bash" not in code          # not as a fallback, not as a second branch
+        assert "command -v zsh" not in code
+        assert "which zsh" not in code
 
     def test_neither_identity_file_is_edited_in_place(self, tmp_path):
         """`sed -i` writes a temp file and rename()s it over the original, which the --writable-tmpfs
@@ -786,3 +805,94 @@ class TestTheTimeWarningSaysWhatBecomesOfTheFiles:
     def test_the_remaining_time_is_rendered_as_minutes_and_seconds(self):
         assert "~5m0s" in cli_tidepool._warn_text(3, 300, None)
         assert "~0m30s" in cli_tidepool._warn_text(3, 30, None)
+
+
+class TestTheShellTheUserGets:
+    """zsh + powerlevel10k, rendered by the Head (ccc_head_api.zshrc) and written into the Pod's overlay
+    at boot. The tree it needs is baked into base.sif; only these two files come from here."""
+
+    def render(self, workspace=None):
+        return head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x",
+                                   workspace=Path("/ws/1/proj") if workspace else None)
+
+    def test_the_profile_is_bridged_into_zsh_or_the_wandb_key_is_silently_lost(self):
+        """The single line without which this whole change is a regression, and a silent one.
+
+        Everything a Tide Pool's shell needs past sshd — the submitter's W&B credentials, CCC_KEPT, the
+        Environment's PATH, the `cd` into the project — is written to /etc/profile.d/ccc-tidepool.sh,
+        because sshd builds a fresh environment per session and drops apptainer's --env. **zsh does not
+        read /etc/profile.d.** Debian's /etc/zsh/zprofile sources /etc/profile; Ubuntu's ships as
+        comments only, and BASE_IMAGE_DOCKER is Ubuntu.
+
+        So without the bridge the session opens, the prompt renders perfectly, and `wandb.init()` runs
+        unauthenticated — which is exactly the bug already found and fixed once on the bash path.
+        """
+        assert "source /etc/profile" in templates.render_base_def()
+        assert "/etc/zsh/zprofile" in templates.render_base_def()
+
+    def test_the_rc_is_written_before_sshd_starts(self):
+        body = self.render()
+        assert body.index("/etc/zsh/zshrc") < body.index("exec /usr/sbin/sshd")
+
+    def test_nothing_zsh_writes_lands_in_the_home_or_the_64mb_overlay(self):
+        """Two different hazards, one answer. The overlay and the Pod's /tmp share 64 MB of RAM; and for
+        a Spawn that requested a **Feature**, `licbind` binds the Arm's **Licence** directory over the
+        Guise's home — `2770 ccc-licence:ccc-guises`, shared by every feature Pod on that Arm. A history
+        file there is one User's keystrokes in a directory another User's Tide Pool can read."""
+        rc = zshrc.render()
+        for var in ("ZSH_CACHE_DIR", "ZSH_COMPDUMP", "HISTFILE", "_ZO_DATA_DIR",
+                    "GITSTATUS_CACHE_DIR"):
+            line = next(l for l in rc.splitlines() if l.startswith(f"export {var}="))
+            value = line.split("=", 1)[1]
+            assert value.startswith(("/ccc-tmp", "$ZSH_CACHE_DIR")), f"{var} escapes scratch: {value}"
+
+    def test_the_cache_dir_exists_before_omz_consults_it(self):
+        """oh-my-zsh tests `[[ ! -w "$ZSH_CACHE_DIR" ]]` and silently falls back to $HOME/.cache when the
+        directory is not there yet — it only mkdirs it several lines later. So setting the variable
+        without creating it first lands the cache in the shared home this all exists to avoid."""
+        rc = zshrc.render()
+        assert rc.index("mkdir -p $ZSH_CACHE_DIR") < rc.index("source $ZSH/oh-my-zsh.sh")
+
+    def test_gitstatus_is_neither_pointed_at_nor_switched_off(self):
+        """Both of the obvious spellings break it, and both were measured. GITSTATUS_DAEMON makes the
+        installer read its version from build.info (v1.5.5) rather than install.info (v1.5.4, the release
+        with an actual linux-x86_64 prebuilt), so the daemon fails its own `-G` version check.
+        GITSTATUS_AUTO_INSTALL=0 becomes the installer's `-n`, which skips the block that FINDS a daemon
+        at all. The binary is placed in upstream's own usrbin slot and found by name instead."""
+        # Comments are where both traps are written down, so they name the variables on purpose.
+        rc = "\n".join(l for l in zshrc.render().splitlines() if not l.lstrip().startswith("#"))
+        assert "GITSTATUS_DAEMON" not in rc
+        assert "GITSTATUS_AUTO_INSTALL" not in rc
+
+    def test_the_daemon_is_in_the_slot_the_installer_looks_in_first(self):
+        """A missing or renamed binary means every session downloads 2 MB from GitHub, or errors out on
+        an Arm with no egress. The name is upstream's (`gitstatusd-${uname_s}-${uname_m}`), not ours."""
+        daemon = (config.ZSH_DATA_DIR / "oh-my-zsh/custom/themes/powerlevel10k/gitstatus"
+                  / "usrbin/gitstatusd-linux-x86_64")
+        assert daemon.is_file() and os.access(daemon, os.X_OK)
+
+    def test_the_context_segment_says_which_session_kind_this_is(self):
+        """p10k's REMOTE class is what renders over SSH, and a Tide Pool is always one. Left alone it
+        reads `ccc-u60002@<arm>` — the **Guise**, a uid nobody knows for an identity that is explicitly
+        not an account. Replaced with the one fact worth the space: only a Workspace visit keeps what
+        gets written."""
+        assert "'tidepool@%m'" in zshrc.render()
+        assert "'proj@%m'" in zshrc.render(workspace="proj")
+        assert "'proj@%m'" in self.render(workspace=True)
+
+    def test_an_ordinary_spawn_carries_no_shell_config_at_all(self):
+        """PAYLOAD_SCRIPT execs the Environment's python directly and never starts a shell, so 95 KB of
+        prompt configuration has no business in its job script."""
+        body = head_spawns._render("/tmp/u", 1, "train.py", [], [], ["out"], None, 30, "vram24",
+                                   "a3f9", "s3cr3t")
+        assert "POWERLEVEL9K" not in body
+        assert "/etc/zsh/zshrc" not in body
+
+    def test_no_substitution_token_survives_into_the_rendered_script(self):
+        """The rc and the p10k config are spliced in AFTER the token loop, precisely so their contents
+        are never scanned for a `%%…%%`. This is the guard that the ordering did not get shuffled back.
+
+        A BARE `%%` is not the thing being looked for and must not be: it is zsh's escape for a literal
+        `%` and the p10k config contains ten of them. Only the token shape counts."""
+        assert re.search(r"%%[A-Z_]+%%", self.render()) is None
