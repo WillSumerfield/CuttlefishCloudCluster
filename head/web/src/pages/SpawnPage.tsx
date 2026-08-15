@@ -23,7 +23,7 @@ import { duration, armLabel, placedLabel } from "../queue/format";
 
 /**
  * Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever this Spawn wrote OUTSIDE
- * its declared $CCC_OUT. Self-contained: fetches its own status and owns its own countdown, so it neither
+ * its declared outputs. Self-contained: fetches its own status and owns its own countdown, so it neither
  * waits on nor delays the page's main read. Renders nothing while loading or once there's nothing to show
  * — no "expired" state worth a User's attention after the fact.
  */

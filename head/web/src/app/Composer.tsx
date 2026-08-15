@@ -33,10 +33,18 @@ import { ALLOWANCE, size } from "../recipes/format";
 
 const GB = 1024 ** 3;
 
-// Mirrors the Head's OUTPUT_NAME_RE (ccc_head_api.spawns) for both — an output name becomes a shell-
-// interpolated `mkdir -p "$ccc_out/<name>"`. A client-side reject is instant; the Head's is the one
-// that actually matters (it never trusts this one).
-const OUTPUT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+// Mirrors the Head's OUTPUT_SEG_RE (ccc_head_api.spawns), applied per `/`-separated segment, because an
+// output is a PATH now — `runs`, `out/ckpt`, or a `/`-prefixed absolute path inside the Pod. Every
+// segment becomes a shell-interpolated path component, which is why the charset is what it is. A
+// client-side reject is instant; the Head's output_plan is the one that actually matters (it never
+// trusts this one), and it additionally rejects the whole-list cases this does not bother with:
+// duplicates, nesting, and a relative/absolute pair that would be kept in the same place.
+const OUTPUT_SEG_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+const validOutput = (raw: string) => {
+  const segs = raw.replace(/\/+$/, "").replace(/^\//, "").split("/");
+  return segs.length > 0 && segs.every((s) => OUTPUT_SEG_RE.test(s));
+};
 
 // Mirrors the Head's MAX_SPAWN_NAME (ccc_head_api.spawns), and only as a typing limit — the Head is
 // what enforces it. Deliberately NOT paired with a charset check the way outputs are: a Spawn's
@@ -282,8 +290,8 @@ export function Composer(props: ComposerProps) {
   const addOutput = () => {
     const out = outputDraft.trim();
     if (!out) return;
-    if (!OUTPUT_NAME_RE.test(out)) {
-      setOutputError(`"${out}" isn't a valid output name — letters, digits, '.', '_', '-' only, and it can't start with '.'`);
+    if (!validOutput(out)) {
+      setOutputError(`"${out}" isn't a valid output path — letters, digits, '.', '_', '-' and '/' only, and no part may start with '.'`);
       return;
     }
     setOutputError(null);
@@ -515,7 +523,7 @@ export function Composer(props: ComposerProps) {
             <Labeled label="Arguments" className="sm:col-span-2" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
               <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
             </Labeled>
-            <Labeled label="Output folders" className="sm:col-span-2" help="Folders your results are written into. Anything written outside them is recoverable for a day after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days.">
+            <Labeled label="Output folders" className="sm:col-span-2" help="Folders in your own project that your results are written into — `runs` means the runs/ your script already writes to, so your code needs no changes. Start with / for a path absolute inside the Pod. Anything written outside them is recoverable for a day after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days.">
               <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
                 {outputs.map((o) => (
                   <span
@@ -536,7 +544,7 @@ export function Composer(props: ComposerProps) {
                 ))}
                 <input
                   className="field min-w-[140px] flex-1"
-                  placeholder={outputs.length ? "another name…" : "checkpoints, outputs, etc..."}
+                  placeholder={outputs.length ? "another folder…" : "runs, checkpoints, out/ckpt…"}
                   value={outputDraft}
                   onChange={(e) => setOutputDraft(e.target.value)}
                   onKeyDown={(e) => {

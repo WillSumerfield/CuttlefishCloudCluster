@@ -263,7 +263,7 @@ export function WorkspaceComposer({
             )}
           </Labeled>
 
-          <Labeled label="Outputs" help="Folders a visit writes results to. Optional here, unlike a Spawn's — $CCC_OUT is a folder INSIDE the workspace, so anything you write is kept either way. Naming one means the end of each session also sends it home, to be downloaded like any Spawn's results.">
+          <Labeled label="Outputs" help="Folders in the workspace tree a visit writes results to. Optional here, unlike a Spawn's — everything in the tree is kept either way. Naming one means the end of each session also sends it home, to be downloaded like any Spawn's results.">
             <div className="flex flex-wrap items-center gap-1.5">
               {outputs.map((o) => (
                 <span

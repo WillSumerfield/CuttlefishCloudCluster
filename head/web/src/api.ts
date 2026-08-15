@@ -122,7 +122,7 @@ export type SpawnDetail = {
 }
 
 // Recovery Window (docs/TODO.md): a one-day, 16GB-capped safety net for whatever a Spawn wrote OUTSIDE
-// its declared $CCC_OUT — separate from (and never merged with) the permanent outputs tar. `expires_at`
+// its declared outputs — separate from (and never merged with) the permanent outputs tar. `expires_at`
 // is an ISO timestamp; callers compute their own remaining-time countdown from it rather than a
 // server-computed "seconds left" that would go stale the moment it's rendered.
 export type RecoveryStatus = { bytes: number; expires_at: string }
@@ -458,7 +458,7 @@ export type Workspace = {
   vram_mb: number
   minutes: number         // per-VISIT wall clock; the workspace itself never expires
   manifest: string        // optional here, unlike a Recipe's — a visit is a shell, not a run
-  outputs: string[]       // optional too. $CCC_OUT is a folder INSIDE the tree
+  outputs: string[]       // optional too — everything in the tree is kept either way
   features: string[]
   created_at: number | null
   last_visited_at: number | null
@@ -679,7 +679,7 @@ export async function downloadOutputs(id: number): Promise<void> {
   URL.revokeObjectURL(url)
 }
 
-/** Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE $CCC_OUT, while the window is
+/** Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared outputs, while the window is
  *  still open. Same shape as downloadOutputs, distinct route and filename (docs/TODO.md: never merge
  *  the two into one artifact whose contents would silently change once the window closes). */
 export async function downloadRecovery(id: number): Promise<void> {
@@ -715,8 +715,8 @@ export type SubmitOpts = {
   // entity to the W&B account's own. Ignored by the Head when `wandb` is false.
   wandbProject: string
   wandbEntity: string
-  // Subdirs made under the one $CCC_OUT root before the payload runs (docs/TODO.md's now-closed "Spawn
-  // Output Enforcement") — required, non-empty; the Head 422s a Spawn that declares none.
+  // Folders the payload writes results to, each a path in the Spawn's own project (or, `/`-prefixed,
+  // absolute inside the Pod) — required, non-empty; the Head 422s a Spawn that declares none.
   outputs: string[]
   // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
   // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
