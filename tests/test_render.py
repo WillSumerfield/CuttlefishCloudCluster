@@ -760,3 +760,32 @@ class TestFeaturesEnv:
         out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}],
                                          licence_home="/opt/ccc/licence")
         assert all(ln.startswith("export ") for ln in out.splitlines() if ln and not ln.startswith("#"))
+
+
+class TestArmNameIsLowercaseOnly:
+    """Headscale normalizes a node's `given_name` to DNS rules, which lowercases it — so an uppercase
+    Arm name is one CCC writes to the registry, hands to Headscale, and then cannot recognise coming
+    back (`ccc_head_api.enroll._node_named_at`). Refused at `arm authorize`, before a single-use
+    preauth key is burned on a name that could never have worked."""
+
+    def test_an_uppercase_name_is_refused_before_anything_is_spent(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(enroll.auth, "user_exists", lambda u: called.append(u) or True)
+        with pytest.raises(Exception):
+            enroll._authorize_arm("willPC", "will", lambda *a, **k: None)
+        assert called == [], "the owner lookup ran before the name was even validated"
+
+    def test_the_lowercase_form_gets_past_the_name_check(self, monkeypatch):
+        """Past the NAME gate specifically — it still aborts on the (absent) owner, which is the next
+        check and proves this one let it through."""
+        seen = []
+        monkeypatch.setattr(enroll.auth, "user_exists", lambda u: seen.append(u) or False)
+        with pytest.raises(Exception):
+            enroll._authorize_arm("willpc", "will", lambda *a, **k: None)
+        assert seen == ["will"]
+
+    def test_the_registry_assert_still_accepts_a_legacy_uppercase_row(self):
+        """config.NODE_NAME_SAFE_RE, not NODE_NAME_RE: an Arm admitted before the rule tightened must
+        still render into gres.conf, or the upgrade breaks the very `arm remove` that retires it."""
+        assert re.match(config.NODE_NAME_SAFE_RE, "willPC")
+        assert not re.match(config.NODE_NAME_RE, "willPC")

@@ -74,7 +74,11 @@ SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
 FEATURE_NAMES = ("vlearn", "isaaclab")
 
 # Mirrors cuttle.config; re-validated root-side by `cuttle arm admit` before reaching gres.conf.
-NODE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$")
+# LOWERCASE ONLY, and the two ends must agree on that or this check is theatre: Headscale lowercases
+# the `given_name` it derives from a node's hostname, and `_node_named_at` below compares that against
+# the name the donor claims. An uppercase name therefore cannot pass `/enroll` however it got here, so
+# it is refused with an explanation rather than left to fail as an unexplained 403 two checks later.
+NODE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 GPU_DEVICE_RE = re.compile(r"^/dev/(nvidia[0-9]+|dxg)$")
 # Same shape as cuttle.config.FEATURE_NAME_RE — it also becomes a Slurm Feature= token and an env var.
 FEATURE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -223,7 +227,9 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     """
     if not NODE_NAME_RE.match(req.node_name):
         raise HTTPException(422, f"invalid Arm name {req.node_name!r} — must be 1-32 characters, "
-                                 f"letters/digits/hyphens, starting with a letter or digit")
+                                 f"LOWERCASE letters/digits/hyphens, starting with a letter or digit. "
+                                 f"Headscale lowercases every node name, so an uppercase one could "
+                                 f"never match on the mesh")
     if not req.gpu_devices:
         raise HTTPException(422, "an Arm must report at least one GPU device")
     for device in req.gpu_devices:

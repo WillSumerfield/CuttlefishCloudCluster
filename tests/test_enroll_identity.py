@@ -89,6 +89,28 @@ class TestIdentityCheck:
         assert r.status_code == 403
         assert calls == []
 
+    def test_an_uppercase_name_is_refused_as_bad_input_not_as_a_mismatch(self, app, monkeypatch):
+        """The `willPC` bug. Headscale lowercases every `given_name`, so an uppercase name is one the
+        mesh can never confirm — it enrolled five times and was refused five times, each attempt
+        stranding another mesh node. Refused 422 at the name check now, ahead of the registry and
+        Headscale gates, so the operator is told the name is wrong rather than that the box is."""
+        calls = []
+        _authorize("willPC")
+        _fake_headscale({"willpc": ["100.99.0.5"]}, monkeypatch, calls)
+        r = TestClient(app, client=("100.99.0.5", 9)).post(
+            "/enroll", json={**BODY, "node_name": "willPC"})
+        assert r.status_code == 422
+        assert "lowercase" in r.json()["detail"].lower()
+        assert calls == []  # decided on the input alone; no sudo/headscale call spent
+
+    def test_the_lowercase_form_of_that_same_name_enrolls(self, app, monkeypatch):
+        """The other half: `willpc` is what both ends call it, so it goes through."""
+        _authorize("willpc")
+        _fake_headscale({"willpc": ["100.99.0.5"]}, monkeypatch)
+        r = TestClient(app, client=("100.99.0.5", 9)).post(
+            "/enroll", json={**BODY, "node_name": "willpc"})
+        assert r.status_code == 200
+
     def test_a_broken_sudoers_rule_fails_loud_not_silent(self, app, monkeypatch):
         """`sudo -n` exits non-zero (rule missing, or headscale down) — a 503 that says so, never a
         silent bypass of the identity check."""

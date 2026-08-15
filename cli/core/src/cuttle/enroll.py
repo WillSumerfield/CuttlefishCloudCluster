@@ -353,7 +353,10 @@ def render_gres(reg: dict, write_root_file) -> None:
     for name, e in sorted(reg.items()):
         if not e["admitted"] or e.get("head"):
             continue
-        assert re.match(config.NODE_NAME_RE, name), f"bad node name in registry: {name!r}"
+        # SAFE, not the input rule: this guards what reaches a root-owned file, and a row admitted
+        # before names were forced lowercase (config.NODE_NAME_RE) is still a row this must render
+        # rather than crash on — including for the `arm remove` that would retire it.
+        assert re.match(config.NODE_NAME_SAFE_RE, name), f"bad node name in registry: {name!r}"
         for device in e["gpu_devices"]:
             assert re.match(config.GPU_DEVICE_RE, device), f"bad device: {device!r}"
         nodes.append((name, e["gpu_devices"]))
@@ -603,6 +606,20 @@ def authorize_arm(name: str, owner: str, write_root_file) -> None:
 
 
 def _authorize_arm(name: str, owner: str, write_root_file) -> None:
+    # FIRST, before the owner lookup and long before a preauth key exists: this is pure input
+    # validation with no side effect either way, and getting it wrong is expensive downstream —
+    # Headscale lowercases the name it is given (config.NODE_NAME_RE), so an uppercase Arm enrolls,
+    # joins the mesh, and is then refused the munge key by a name comparison it can never win.
+    if not re.match(config.NODE_NAME_RE, name):
+        hint = name.lower()
+        raise ui.abort(
+            f"invalid Arm name {name!r} — lowercase letters, digits and hyphens only, starting with\n"
+            f"  a letter or digit, at most 32 characters. Headscale lowercases every node name it is\n"
+            f"  given, and the mesh name and the registry name must be one string or the Arm is\n"
+            f"  refused the munge key at /enroll.",
+            next_step=(f"run `cuttle arm authorize {hint} --user {owner}`"
+                       if re.match(config.NODE_NAME_RE, hint)
+                       else "pick a name matching that rule"))
     if not auth.user_exists(owner):
         raise ui.abort(f"no such user {owner!r}",
                        next_step=f"create them first with `cuttle user add {owner}`")

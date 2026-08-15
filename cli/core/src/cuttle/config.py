@@ -608,7 +608,24 @@ WSL_EXTRA_NVLIB = "libdxcore.so"
 # non-interactive caller (an srun step, a service) can't find it by name. system.nvidia_smi() falls
 # back to this absolute path so the GPU checks don't depend on who invoked them.
 WSL_NVIDIA_SMI = f"{WSL_LIB_ROOT}/lib/nvidia-smi"
-NODE_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
+# **Lowercase only, and that is Headscale's rule rather than ours.** An Arm's name is one string in
+# three systems (`mesh.join_mesh`: the Slurm node name IS the Headscale hostname IS the registry key),
+# and Headscale normalizes a node's `given_name` to DNS rules — which lowercases it, unconditionally and
+# silently. So an uppercase name is one CCC accepts, writes to the registry, hands to Headscale, and then
+# fails to recognise coming back: `/enroll` compares the registry's spelling against Headscale's and
+# refuses the Arm 403 (ccc_head_api.enroll._node_named_at). Observed on `willPC`, which enrolled five
+# times and was refused five times, each attempt stranding another mesh node.
+#
+# Refused at INPUT rather than quietly lowercased, so the operator names the box and the cluster does not
+# rename it behind them — the same rule an Environment declaration follows (CCC never guesses which file
+# you meant either).
+NODE_NAME_RE = r"^[a-z0-9][a-z0-9-]{0,31}$"
+# What may safely be WRITTEN into root-owned gres.conf, which is a charset question and not a policy one:
+# a mixed-case name is wrong for the mesh but perfectly safe in a Slurm config file. Kept permissive so
+# tightening the rule above cannot break a cluster that admitted an uppercase-named Arm before it existed
+# — `enroll.render_gres` asserts against THIS one, and an upgrade must not turn an old row into a crash
+# in the command that would remove it.
+NODE_NAME_SAFE_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 
 # --- mesh (self-hosted Headscale coordinator + Tailscale client) ---
 # Headscale isn't in apt, so it comes from a GitHub release .deb — PINNED, like every other version
