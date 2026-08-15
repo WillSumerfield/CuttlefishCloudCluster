@@ -181,31 +181,46 @@ ConstrainDevices=yes
 # index `gres_detail` reports at Settlement. The benchmark holds every card (--gres=gpu:N), so the
 # allocation is the whole node and the two orders coincide exactly.
 BENCH_PY = """\
-import json, os, time, torch
-ndev = torch.cuda.device_count()
-assert ndev, "CUDA not visible in Pod"
-props = torch.cuda.get_device_properties(0)   # homogeneous by enrollment (system.gpu_profile)
-powers = []
-for i in range(ndev):
-    with torch.cuda.device(i):                # scopes the allocator and synchronize() to this card
-        a = torch.randn({n}, {n}, device="cuda")
-        b = torch.randn({n}, {n}, device="cuda")
-        for _ in range({warmup}):    # the first matmul pays cuBLAS init — never time it
-            c = a @ b
-        torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        for _ in range({iters}):
-            c = a @ b
-        torch.cuda.synchronize()
-        elapsed = time.perf_counter() - t0
-        powers.append(round({iters} * 2 * {n}**3 / elapsed / 1e12, 2))  # fp32 TFLOP/s
-        del a, b, c                  # a card's buffers are freed before the next one is filled
-        torch.cuda.empty_cache()
+import json, os, sys, time, torch
+
+out = os.environ["CCC_BENCH_OUT"]
+
+# `merge <gres_index>...` — fold the per-Device files into the ONE `power` file the Head polls for
+# (enroll._benchmark_arm). The indices are passed in gres.conf order, so `powers` comes out in the order
+# Settlement maps back: powers[n] is the Power of the card Slurm reports as IDX:n.
+if sys.argv[1] == "merge":
+    parts = [json.load(open("%s/power.%s" % (out, i))) for i in sys.argv[2:]]
+    json.dump({{"powers": [p["power"] for p in parts],
+               "vram_mb": parts[0]["vram_mb"], "gpu": parts[0]["gpu"]}},
+              open(out + "/power", "w"))
+    raise SystemExit
+
+# `measure <torch_index> <gres_index>` — ONE Device, in its own process.
+#
+# One process per Device is not a style choice: a MIG instance is the only device its process can ever
+# address, so a single process could not reach a second card on a MIG-mode Arm however it looped. The
+# caller runs this once per allocated Device. `torch_index` is the index within THIS process's
+# CUDA_VISIBLE_DEVICES — 0 when the caller narrowed that to one MIG UUID, the GRES index when it left
+# Slurm's own value alone on a whole-card Arm.
+dev, gres = int(sys.argv[2]), sys.argv[3]
+assert torch.cuda.device_count() > dev, "CUDA not visible in Pod"
+props = torch.cuda.get_device_properties(dev)   # under MIG this is the INSTANCE's memory, not the card's
+with torch.cuda.device(dev):                    # scopes the allocator and synchronize() to this card
+    a = torch.randn({n}, {n}, device="cuda")
+    b = torch.randn({n}, {n}, device="cuda")
+    for _ in range({warmup}):    # the first matmul pays cuBLAS init — never time it
+        c = a @ b
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range({iters}):
+        c = a @ b
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t0
 json.dump({{
-    "powers": powers,
+    "power": round({iters} * 2 * {n}**3 / elapsed / 1e12, 2),   # fp32 TFLOP/s
     "vram_mb": props.total_memory // 1024**2,
     "gpu": props.name,
-}}, open(os.environ["CCC_BENCH_OUT"] + "/power", "w"))
+}}, open("%s/power.%s" % (out, gres), "w"))
 """
 
 # Submitted as the **cluster's own Guise** (`sudo -u ccc-u60001 sbatch`), like every Spawn is submitted
@@ -215,6 +230,42 @@ json.dump({{
 # priced, and --gres=gpu:N takes ALL of its cards at once so one job measures every Device. Results come home the way every remote Spawn's do: rsync to the Head's [spawns] module, which
 # the Head then reads. That path is identical on the Head's own co-located Arm (it rsyncs to itself over
 # the mesh), so there is no is-this-the-Head branch here.
+# Resolving a card's MIG device, for the job scripts that must name one. Inserted verbatim (never
+# `.format`ed), so it is written in ordinary shell rather than doubled braces.
+#
+# **Why the device MINOR is the input.** A job knows which cards it holds as Slurm GRES indices, and a
+# GRES index is a position in gres.conf — which CCC writes from `/dev/nvidiaN` paths in numeric order
+# (system.gpu_devices). nvidia-smi enumerates by PCI bus instead, and the two orders are not guaranteed
+# to agree. On a box whose cards are identical — dex, two RTX PRO 6000s — a mismatch is *invisible*:
+# every Spawn still runs, and Settlement simply bills one card's seconds at the other card's Power,
+# forever, with nothing anywhere to notice.
+#
+# `/proc/driver/nvidia/gpus/<bdf>/information` is what makes this exact rather than assumed: it carries
+# `Device Minor` and `GPU UUID` in the SAME file, so a minor resolves to a GPU UUID with no PCI bus-id
+# reformatting in between (nvidia-smi prints `00000000:07:00.0` where /proc uses `0000:07:00.0`).
+# `nvidia-smi -L` then lists each MIG device underneath the GPU carrying that UUID.
+#
+# Prints nothing at all for a card that is not in MIG mode, which is how every caller tells the two
+# fleets apart without asking the Head anything.
+MIG_RESOLVER_SH = """\
+ccc_mig_uuid() {
+    local minor="${1#/dev/nvidia}" gpu_uuid
+    [ -d /proc/driver/nvidia/gpus ] || return 0
+    gpu_uuid=$(awk -v m="$minor" '
+        /^GPU UUID:/     { u = $NF }
+        /^Device Minor:/ { if ($NF == m) { print u; exit } }
+    ' /proc/driver/nvidia/gpus/*/information)
+    [ -n "$gpu_uuid" ] || return 0
+    # The first MIG device under this GPU is the whole card: one full-size instance is the resting state
+    # the prolog guarantees. A Spawn that re-carved its own card mid-run is on its own here, and that is
+    # the point — by then it is setting CUDA_VISIBLE_DEVICES for itself.
+    nvidia-smi -L | awk -v g="$gpu_uuid" '
+        /^GPU /      { u = $NF; gsub(/[()]/, "", u); cur = (u == g); next }
+        cur && /MIG/ { m = $NF; gsub(/[()]/, "", m); print m; exit }
+    '
+}
+"""
+
 BENCH_SBATCH_TMPL = """\
 #!/bin/bash
 #SBATCH --job-name=ccc-bench
@@ -246,11 +297,36 @@ export RSYNC_PASSWORD={bench_secret}
 # (there is no CCC_OUT in a Spawn's Pod any more — see ccc_head_api.spawns' PAYLOAD_SCRIPT). This is
 # CCC's own script writing to CCC's own path, so it may name it whatever it likes.
 #
+{mig_resolver}
+# This node's Devices in gres.conf order — the list a Slurm GRES index indexes into. `sort -V` so
+# nvidia10 follows nvidia2, matching system.gpu_devices()'s numeric sort exactly rather than by luck.
+mapfile -t devs < <(printf '%s\\n' /dev/nvidia[0-9]* | sort -V)
+# The cards Slurm gave this job. Read rather than assumed, so the merge below emits Powers in gres.conf
+# order whatever the allocation was — though this job always asks for ALL of them (--gres=gpu:N), which
+# is also why a node-global GRES index and an index within the allocation are the same number here.
+IFS=, read -ra held <<< "$CUDA_VISIBLE_DEVICES"
+#
+# ONE PROCESS PER DEVICE. A MIG instance is the only device its process can ever address, so the single
+# process that used to loop over `torch.cuda.device_count()` could not price a second card on a MIG-mode
+# Arm however it was written. The loop moved out here, where each card gets its own interpreter.
+#
 # /tmp is auto-mounted by Apptainer, so it needs no explicit --bind (unlike a Spawn's, which lives
 # under /var/lib/ccc). The env is bound at the ONE path it was built at and cannot be moved from
 # (config.BENCH_ENV_MOUNT), and its own interpreter is what runs — the image has none.
-apptainer exec --nv --env CCC_BENCH_OUT="$out" --bind "{bench_env_dir}:{env_mount}" \\
-  {sif} {env_mount}/venv/bin/python "$out/bench.py"
+for g in "${{held[@]}}"; do
+    uuid=$(ccc_mig_uuid "${{devs[$g]}}")
+    # MIG: narrow this process to the one instance it may address, which is then its torch device 0.
+    # Whole card: leave Slurm's own CUDA_VISIBLE_DEVICES exactly as it set it and index into it, which
+    # is what this benchmark did before MIG was ever on this fleet.
+    if [ -n "$uuid" ]; then cvd="$uuid"; tdev=0; else cvd="$CUDA_VISIBLE_DEVICES"; tdev="$g"; fi
+    apptainer exec --nv --env CCC_BENCH_OUT="$out" --env CUDA_VISIBLE_DEVICES="$cvd" \\
+      --bind "{bench_env_dir}:{env_mount}" \\
+      {sif} {env_mount}/venv/bin/python "$out/bench.py" measure "$tdev" "$g"
+done
+# No --nv: the merge touches no card, it only folds the per-Device files into the one `power` file the
+# Head has been polling for all along (enroll._benchmark_arm reads exactly that path).
+apptainer exec --env CCC_BENCH_OUT="$out" --bind "{bench_env_dir}:{env_mount}" \\
+  {sif} {env_mount}/venv/bin/python "$out/bench.py" merge "${{held[@]}}"
 rsync -a "$out/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """
 
@@ -838,6 +914,7 @@ def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, gpus: i
         gpus=gpus,
         minutes=config.BENCH_TIME_MINUTES,
         bench_py=bench_py,
+        mig_resolver=MIG_RESOLVER_SH,
         sif=config.CCC_SIF,
         head_ip=head_mesh_ip,
         bench_mod=config.RSYNC_MODULE_BENCH,
