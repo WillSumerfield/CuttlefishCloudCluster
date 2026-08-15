@@ -144,6 +144,13 @@ class TestTheImageCarriesNoRuntime:
         connection — and the PyTorch image's happening to have one is why nothing noticed before."""
         assert "ca-certificates" in templates.render_base_def()
 
+    def test_a_c_compiler_stays(self):
+        """Triton compiles a `cuda_utils` shim at runtime, on the first torch.compile'd kernel, by
+        shelling out to gcc/clang. No PyPI wheel ships a compiler, so an Environment cannot bring one,
+        and `--contain` hides the host's — without this every torch.compile Spawn dies mid-run, after
+        the card is held and the Environment built."""
+        assert "gcc" in templates.render_base_def()
+
     def test_the_mantle_account_is_baked_in(self):
         """Unprivileged sshd needs the connecting uid to resolve via getpwuid or it cannot find a home
         for authorized_keys. Nothing in an Environment can supply an /etc/passwd entry."""

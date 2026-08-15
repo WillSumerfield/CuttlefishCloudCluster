@@ -280,7 +280,7 @@ def render_ubuntu_snapshot_list() -> str:
     )
 
 
-# Base Pod image: plain Ubuntu and the three things a Pod cannot bring with it. NO Python, no torch, no
+# Base Pod image: plain Ubuntu and the four things a Pod cannot bring with it. NO Python, no torch, no
 # CUDA — every Spawn declares an **Environment** and that Environment carries its own interpreter and its
 # own torch (ccc_head_api.environments), so anything supplied here would be shadowed by what the Spawn
 # brought and paid for in durable disk on every donated box regardless. ~150 MB instead of 2.9 GB.
@@ -296,6 +296,16 @@ def render_ubuntu_snapshot_list() -> str:
 #   (and the standalone CPython itself) over TLS. A stock Ubuntu image carries no trust store, so
 #   without this every build fails at the first HTTPS connection. The PyTorch image happened to have
 #   one; nothing here may depend on happening to.
+# * `gcc` — Triton builds a C extension AT RUNTIME. The first `torch.compile`d kernel makes Inductor
+#   instantiate Triton's CUDA driver, which compiles a `cuda_utils` shim by shelling out to `$CC`, else
+#   to whatever `gcc`/`clang` is on PATH. No wheel on PyPI ships a C compiler, so an Environment cannot
+#   supply this one however it is declared, and `--contain` (spawns.PAYLOAD_SCRIPT) hides the host's —
+#   a box with gcc in /usr/bin and none in its Pods was the observed failure. Without it every Spawn
+#   that reaches torch.compile dies with "Failed to find C compiler", and dies at the WORST moment: the
+#   card is already held and the Environment already built, so it is a full-price failed Spawn rather
+#   than a refusal at submit. --no-install-recommends gcc pulls cpp, binutils and libc6-dev, which is
+#   exactly the set Triton's builder needs (compiler, `as`/`ld`, headers, crt objects) and no more.
+#   ~150 MB, the one real cost, paid in durable disk on every donated box.
 # * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
 #   sshd still needs that a stock image does not have: the connecting uid has to resolve via
 #   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
@@ -307,7 +317,7 @@ From: {image}
 
 %post
     # Runs inside the (disposable) build container only — never the host.
-    apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
+    apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates gcc \
       && rm -rf /var/lib/apt/lists/*
     echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
     echo "mantle:x:{gid}:" >> /etc/group
