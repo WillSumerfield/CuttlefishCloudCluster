@@ -544,6 +544,114 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
     )
 
 
+# MIG, node side — the half that needs root, so the prolog and epilog share it and nothing else does.
+# Inserted verbatim into both (never `.format`ed), hence ordinary braces; `$CCC_GUISE_GROUP` is set by
+# whichever script embeds it, since only those know the rendered group name.
+#
+# **CCC never carves for placement.** There is no Beak (CONTEXT.md, "Slice"): Slurm is told about whole
+# cards, priced per whole card, and the resting state of a MIG-mode card is therefore ONE full-size
+# instance, so that a Spawn asking for a card gets a card. What a Spawn does to the card it already
+# holds is its own business, and the epilog puts it back.
+MIG_ADMIN_SH = """\
+# `4g.96gb` on an RTX PRO 6000 — the whole card. `nvidia-smi mig -lgip` lists the profiles and their IDs;
+# the full-card one is 0 there. Note the `+me`/`-me`/`+gfx` variants exist only on the 1g and 2g
+# profiles, so there is no suffixed spelling of this one to choose between.
+CCC_MIG_FULL_PROFILE=0
+
+# The GPU UUID of a device minor, out of the one file that carries both (see MIG_RESOLVER_SH for why
+# the minor is what everything here is keyed by). Used as nvidia-smi's `-i`, so no index can drift.
+ccc_gpu_uuid() {
+    awk -v m="$1" '
+        /^GPU UUID:/     { u = $NF }
+        /^Device Minor:/ { if ($NF == m) { print u; exit } }
+    ' /proc/driver/nvidia/gpus/*/information
+}
+
+ccc_mig_enabled() {
+    [ "$(nvidia-smi -i "$1" --query-gpu=mig.mode.current --format=csv,noheader 2>/dev/null)" = Enabled ]
+}
+
+# How many MIG devices this card currently offers. The resting state is exactly 1. Zero means MIG mode
+# was switched on and nothing was ever carved, or a GPU instance exists with no compute instance under
+# it — which is what an interrupted `-cgi` leaves, and is indistinguishable from "no GPU" to CUDA.
+# Several means a Spawn carved the card and died before the epilog put it back.
+ccc_mig_count() {
+    nvidia-smi -L | awk -v g="$1" '
+        /^GPU /      { u = $NF; gsub(/[()]/, "", u); cur = (u == g); next }
+        cur && /MIG/ { n++ }
+        END          { print n + 0 }
+    '
+}
+
+# Put one card back to its resting state. Compute instances must go before the GPU instances holding
+# them, and both are no-ops on a card that has neither.
+ccc_mig_reset() {
+    nvidia-smi mig -i "$1" -dci >/dev/null 2>&1
+    nvidia-smi mig -i "$1" -dgi >/dev/null 2>&1
+    nvidia-smi mig -i "$1" -cgi $CCC_MIG_FULL_PROFILE -C >/dev/null 2>&1
+}
+
+# The capability nodes a MIG device is reached through, opened to the Guise group for the job's life.
+#
+# **This is not the carving feature — it is what makes MIG work at all.** Creating an instance as root
+# leaves its capability node 0400 root, so a Guise cannot open the very MIG device Slurm allocated it,
+# and every Spawn on a MIG-mode Arm dies with no CUDA device. Measured: as a non-root uid with
+# nvidia-cap1 readable, `-cgi` succeeds and `-C` fails "Insufficient Permissions", leaving a GPU instance
+# nothing can use.
+#
+# `/proc/driver/nvidia-caps/mig-minors` is a STATIC, complete map — gpu0..31 / gi0..14 / ci0..7, all
+# present on a box with MIG switched off entirely — so every node this card could ever need is knowable
+# before any instance exists. All of them are created, which is what lets a Spawn re-carve its own card
+# and still open what it made.
+#
+# ⚠ The per-GPU gi/ci caps are the only per-card gate here. `nvidia-cap1` (config) is global, so a Spawn
+# holding one card can still ISSUE config calls against another card on the same box. What actually
+# stops it is ConstrainDevices=yes denying the Pod that card's /dev/nvidiaN, so NVML never finds it to
+# name. UNVERIFIED on hardware: confirm `nvidia-smi -L` inside a one-card Pod on a two-card MIG Arm
+# lists only the allocated card.
+ccc_mig_cap_node() {
+    local m="$1" mode="$2" major
+    major=$(awk '$2 == "nvidia-caps" { print $1 }' /proc/devices)
+    [ -n "$major" ] || return 0
+    mkdir -p /dev/nvidia-caps
+    [ -e "/dev/nvidia-caps/nvidia-cap$m" ] || mknod "/dev/nvidia-caps/nvidia-cap$m" c "$major" "$m"
+    chgrp "$CCC_GUISE_GROUP" "/dev/nvidia-caps/nvidia-cap$m"
+    chmod "$mode" "/dev/nvidia-caps/nvidia-cap$m"
+}
+
+# `nvidia-cap1` is the *config* capability, and it is GLOBAL — one node for the whole box, not one per
+# card. So it is opened and never closed: closing it when one Spawn ends would take carving away from a
+# CONCURRENT Spawn still running on the box's other card, which is a bug two cards make reachable and a
+# one-card box hides completely.
+#
+# Safe to leave open because config alone reaches no card. A MIG device is opened through the per-GPU
+# access caps below, which ARE closed per job, and ConstrainDevices still decides which /dev/nvidiaN a
+# Pod may touch at all — so a process holding only this cannot find a card to name.
+ccc_mig_cap_config() { ccc_mig_cap_node 1 0440; }
+
+# The per-GPU access caps: what a MIG device on THIS card is actually opened through, and the only
+# per-card gate there is. Held for exactly the life of the Spawn that was allocated the card.
+ccc_mig_caps() {
+    local minor="$1" mode="$2" m
+    for m in $(awk -v g="^gpu$minor/" '$1 ~ g { print $2 }' /proc/driver/nvidia-caps/mig-minors); do
+        ccc_mig_cap_node "$m" "$mode"
+    done
+}
+
+# The cards THIS job holds, as device minors. SLURM_JOB_GPUS is the allocated GRES indices, and a GRES
+# index is a position in gres.conf — which CCC writes from /dev/nvidiaN in numeric order, so `sort -V`
+# reproduces that list exactly.
+ccc_held_minors() {
+    local devs held g
+    [ -n "${SLURM_JOB_GPUS:-}" ] || return 0
+    [ -d /proc/driver/nvidia-caps ] || return 0
+    mapfile -t devs < <(printf '%s\\n' /dev/nvidia[0-9]* | sort -V)
+    IFS=, read -ra held <<< "$SLURM_JOB_GPUS"
+    for g in "${held[@]}"; do printf '%s\\n' "${devs[$g]#/dev/nvidia}"; done
+}
+"""
+
+
 EPILOG_TMPL = """\
 #!/bin/bash
 # CCC Spawn epilog. Rendered by `cuttle setup`; slurm.conf's Epilog= points here on every node.
@@ -571,6 +679,22 @@ done
 # rewrite an earlier one's recorded `exit` code and outputs, since both run as the same Guise.
 # Head's co-located Arm only; the directory does not exist on a donor Arm, so this no-ops there.
 [ -d "{head_spawns}/$SLURM_JOB_ID" ] && chown -R {mantle}:{mantle} "{head_spawns}/$SLURM_JOB_ID"
+
+CCC_GUISE_GROUP={guise_group}
+{mig_admin}
+# Put every MIG-mode card this Spawn held back to one full-size instance. THE reset point: the prolog
+# only repairs what this never got to (a rebooted node, a killed slurmd), so a card is normally correct
+# from the moment a Spawn ends rather than from the moment the next one starts — which is what keeps an
+# idle box honest about what it holds.
+#
+# Caps are closed FIRST, so nothing left running can carve the card while it is being put back. Like
+# everything else here this must never exit non-zero: a drained node over a stale instance would cost
+# the cluster the whole Arm.
+for minor in $(ccc_held_minors); do
+    ccc_mig_caps "$minor" 0400
+    uuid=$(ccc_gpu_uuid "$minor")
+    ccc_mig_enabled "$uuid" && ccc_mig_reset "$uuid"
+done
 exit 0
 """
 
@@ -578,7 +702,9 @@ exit 0
 def render_epilog() -> str:
     return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR,
                               head_spawns=config.HEAD_SPAWNS_DIR,
-                              mantle=config.HEAD_API_USER)
+                              mantle=config.HEAD_API_USER,
+                              guise_group=config.GUISE_GROUP,
+                              mig_admin=MIG_ADMIN_SH)
 
 
 # --- the Prolog ----------------------------------------------------------------
@@ -640,6 +766,25 @@ fi
 if [ -d "{head_scratch}" ]; then
     install -d -o "$guise" -g "$guise" -m 0700 "{head_scratch}/$jid"
 fi
+
+CCC_GUISE_GROUP={group}
+{mig_admin}
+# Hand this Spawn the MIG-mode cards it was allocated, in a state it can actually use.
+#
+# REPAIR, not reset — the epilog is what normally restores a card. This catches the cases it never ran
+# for (a rebooted node, a hard-killed slurmd) and the first Spawn ever to land on a card whose owner
+# switched MIG mode on and never carved it, which is exactly the state that produces "CUDA not visible
+# in Pod" with a perfectly healthy GPU sitting there.
+#
+# The caps are opened for the allocated cards only, and the epilog closes them again, so a Guise holds
+# this for precisely the life of its own Spawn.
+for minor in $(ccc_held_minors); do
+    uuid=$(ccc_gpu_uuid "$minor")
+    ccc_mig_enabled "$uuid" || continue
+    [ "$(ccc_mig_count "$uuid")" = 1 ] || ccc_mig_reset "$uuid"
+    ccc_mig_cap_config
+    ccc_mig_caps "$minor" 0440
+done
 exit 0
 """
 
@@ -679,6 +824,7 @@ def render_prolog() -> str:
         gecos=config.GUISE_GECOS,
         head_spawns=config.HEAD_SPAWNS_DIR,
         head_scratch=config.HEAD_SCRATCH_DIR,
+        mig_admin=MIG_ADMIN_SH,
     )
 
 
