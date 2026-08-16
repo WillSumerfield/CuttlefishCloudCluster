@@ -49,6 +49,31 @@ POD_P10K = "/etc/zsh/ccc-p10k.zsh"
 # Everything zsh, oh-my-zsh, gitstatus and zoxide want to write, in one place on bound disk.
 POD_ZSH_STATE = "/ccc-tmp/zsh"
 
+# **ZDOTDIR, and why a Pod cannot do without one.** zsh runs `zsh-newuser-install` — a full-screen
+# "you have no zsh startup files" wizard — whenever NONE of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`
+# exists in `${ZDOTDIR:-$HOME}`. The file above is a *global* rc, and a global rc does not count: it is
+# read, and the wizard still fires. `--contain` gives every Pod an empty home, so without this every
+# Tide Pool opened on the wizard instead of a prompt. (Measured: setting ZDOTDIR alone does NOT
+# suppress it — only an actual file in the directory it names does, which is what the stub below is.)
+#
+# It points at this Spawn's own scratch rather than at the home, and that is the security half. zsh
+# sources `$HOME/.zshrc` after the global rc, and on a Spawn requesting an Arm **Feature** the home is
+# the Arm's **Licence** directory (`licbind` in spawns.JOB_SCRIPT) — `2770 ccc-licence:ccc-guises`,
+# shared by every feature Pod on the node, with every **Guise** in the group. A `.zshrc` left there by
+# one User would be sourced by the next User's shell. That is the hole StrictModes already closes for
+# `authorized_keys` (see the note above PAYLOAD_TIDEPOOL), reopened by the shell instead of sshd; the
+# obvious fix for the wizard — touching `$HOME/.zshrc` — would have seeded it. Pointing ZDOTDIR at
+# private, per-session scratch closes it and fixes the wizard with one file.
+POD_ZDOTDIR = POD_ZSH_STATE
+POD_USER_ZSHRC = f"{POD_ZSH_STATE}/.zshrc"
+
+# The User's own rc, which is theirs to edit and is read AFTER the rendered one below, so it still wins.
+# Its real job is to exist: see POD_ZDOTDIR.
+USER_ZSHRC_STUB = """\
+# Yours, for this session. Read after CCC's own rc (/etc/zsh/zshrc), so anything here wins.
+# This directory is your Spawn's private scratch and dies with the session — nothing here is kept.
+"""
+
 # The powerlevel10k configuration, verbatim as `p10k configure` wrote it. Kept as a data file rather
 # than a string in this module so it stays diffable against a regenerated one — it is 95 KB of wizard
 # output that nobody edits by hand. CCC's own overrides go in the rc below, AFTER this is sourced, so
@@ -74,6 +99,7 @@ def render(workspace: str | None = None) -> str:
     an ordinary **Tide Pool** — the only thing that differs between the two."""
     return _ZSHRC_TMPL.format(
         omz=OMZ_DIR, state=POD_ZSH_STATE, p10k=POD_P10K,
+        user_rc=POD_USER_ZSHRC,
         context=context_label(workspace),
     )
 
@@ -82,7 +108,8 @@ def render(workspace: str | None = None) -> str:
 _ZSHRC_TMPL = """\
 # Rendered by the Head for this session (ccc_head_api.zshrc) and written into the Pod's overlay at
 # boot. Editing it here changes nothing that outlives this shell — the file is recreated from scratch
-# every time a Tide Pool starts. Your own ~/.zshrc is read after this one and wins.
+# every time a Tide Pool starts. {user_rc} is read after this one and wins; it is yours to edit, and it
+# is not in your home on purpose (see POD_ZDOTDIR in ccc_head_api.zshrc).
 
 # Off, and load-bearing rather than a preference. /etc/profile is sourced before this file (see the
 # bridge in cuttle.templates.BASE_DEF_TMPL) and prints the "kept when this session ends" notice, which

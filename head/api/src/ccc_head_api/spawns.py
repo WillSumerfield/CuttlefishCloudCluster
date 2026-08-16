@@ -894,6 +894,22 @@ CCC_TP_ZSHRC
 cat > /etc/zsh/ccc-p10k.zsh <<'CCC_TP_P10K'
 %%P10K_CONFIG%%
 CCC_TP_P10K
+# The two files above are GLOBAL rcs, and a global rc does not satisfy zsh's new-user check: with no
+# `.zshenv`/`.zprofile`/`.zshrc`/`.zlogin` in `${ZDOTDIR:-$HOME}` — which `--contain`'s empty home
+# guarantees — every Tide Pool opened on the `zsh-newuser-install` wizard instead of a prompt.
+#
+# ZDOTDIR names this Spawn's own scratch rather than the home, which is the half that is not cosmetic:
+# see POD_ZDOTDIR in ccc_head_api.zshrc for the shared-**Licence**-home hole that `touch ~/.zshrc`
+# would have seeded instead of fixed. APPENDED, like the /etc/profile bridge in
+# cuttle.templates.BASE_DEF_TMPL, because the distro ships its own zshenv and this only adds to it —
+# and it goes in zshenv specifically because that is the one file zsh reads before it decides any of
+# this, and it is global, so sshd building a fresh environment cannot drop it (the same reason
+# everything else here lands in /etc/profile.d rather than in apptainer's --env).
+mkdir -p %%ZDOTDIR%%
+echo 'export ZDOTDIR=%%ZDOTDIR%%' >> /etc/zsh/zshenv
+cat > %%USER_ZSHRC%% <<'CCC_TP_USERRC'
+%%USER_ZSHRC_STUB%%
+CCC_TP_USERRC
 # UsePAM no: `ccc` is a `useradd --system` account with no /etc/shadow entry inside the Pod (the image
 # only bakes /etc/passwd + /etc/group — see BASE_DEF_TMPL), so PAM's account phase (pam_unix, checking a
 # shadow entry that doesn't exist) refuses the session even after the ephemeral keypair already
@@ -1259,11 +1275,17 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # loop would then rewrite, and a substitution that only misfires once somebody adds a segment is not
     # a hazard worth leaving in place to save two lines.
     #
-    # Both are empty for every Spawn that is not a Tide Pool: the tokens exist only inside
-    # PAYLOAD_TIDEPOOL, so an ordinary Spawn's rendered script never contains either string.
+    # The stub rc is spliced here for the same reason, being a file a User is invited to edit. The two
+    # paths beside it need no such care and are only kept here to sit with what they configure.
+    #
+    # All of them no-op for every Spawn that is not a Tide Pool: the tokens exist only inside
+    # PAYLOAD_TIDEPOOL, so an ordinary Spawn's rendered script never contains any of these strings.
     if tidepool_port is not None:
         body = body.replace("%%ZSHRC%%", zshrc.render(workspace.name if workspace else None))
         body = body.replace("%%P10K_CONFIG%%", zshrc.P10K_CONFIG)
+        body = body.replace("%%USER_ZSHRC_STUB%%", zshrc.USER_ZSHRC_STUB.rstrip("\n"))
+        body = body.replace("%%USER_ZSHRC%%", zshrc.POD_USER_ZSHRC)
+        body = body.replace("%%ZDOTDIR%%", zshrc.POD_ZDOTDIR)
     return body
 
 
