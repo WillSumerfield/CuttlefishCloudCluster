@@ -854,6 +854,42 @@ class TestTheShellTheUserGets:
         rc = zshrc.render()
         assert rc.index("mkdir -p $ZSH_CACHE_DIR") < rc.index("source $ZSH/oh-my-zsh.sh")
 
+    def test_a_user_startup_file_always_exists_or_the_wizard_opens_the_session(self):
+        """zsh runs `zsh-newuser-install` — a full-screen "you have no zsh startup files" wizard — when
+        NONE of .zshenv/.zprofile/.zshrc/.zlogin exists in ${ZDOTDIR:-$HOME}. A *global* rc does not
+        count: /etc/zsh/zshrc is read and the wizard fires anyway, which is what every Tide Pool opened
+        on. `--contain` guarantees the empty home that triggers it, so the file has to be created.
+
+        Measured: setting ZDOTDIR alone does NOT suppress it. Only a file in the directory it names
+        does, which is what makes these two lines one fix rather than two half-fixes."""
+        body = self.render()
+        assert f"export ZDOTDIR={zshrc.POD_ZDOTDIR}" in body
+        assert f"cat > {zshrc.POD_USER_ZSHRC} <<" in body
+        assert body.index(f"mkdir -p {zshrc.POD_ZDOTDIR}") < body.index(f"cat > {zshrc.POD_USER_ZSHRC}")
+        assert body.index("/etc/zsh/zshenv") < body.index("exec /usr/sbin/sshd")
+
+    def test_the_users_own_rc_is_not_in_the_home_another_user_can_write(self):
+        """zsh sources $ZDOTDIR/.zshrc, and for a Spawn requesting a **Feature** the home is the Arm's
+        **Licence** directory — `2770 ccc-licence:ccc-guises`, shared by every feature Pod on the node,
+        with every **Guise** in the group. Left at the default, one User's `.zshrc` would be sourced by
+        the next User's shell: the hole StrictModes already closes for authorized_keys, reopened by the
+        shell instead of sshd. The obvious fix for the wizard above — touching ~/.zshrc — would have
+        seeded it, so pointing ZDOTDIR at private per-session scratch is load-bearing, not tidiness."""
+        assert zshrc.POD_ZDOTDIR.startswith("/ccc-tmp"), zshrc.POD_ZDOTDIR
+        assert zshrc.POD_USER_ZSHRC.startswith("/ccc-tmp"), zshrc.POD_USER_ZSHRC
+        # Comments are where the trap is written down, so they name the rejected path on purpose.
+        body = "\n".join(l for l in self.render().splitlines() if not l.lstrip().startswith("#"))
+        assert "$guise_home/.zshrc" not in body and "~/.zshrc" not in body
+
+    def test_the_zshenv_line_is_appended_and_never_overwrites_the_distros(self):
+        """Same bargain as the /etc/profile bridge BASE_DEF_TMPL appends to /etc/zsh/zprofile: the image
+        is Ubuntu and ships its own zshenv. It goes in zshenv rather than anywhere else because that is
+        the one file zsh reads before it decides whether to run the wizard, and because it is global —
+        sshd builds a fresh environment per session and would drop an exported ZDOTDIR."""
+        body = self.render()
+        assert ">> /etc/zsh/zshenv" in body
+        assert "> /etc/zsh/zshenv" not in body.replace(">> /etc/zsh/zshenv", "")
+
     def test_gitstatus_is_neither_pointed_at_nor_switched_off(self):
         """Both of the obvious spellings break it, and both were measured. GITSTATUS_DAEMON makes the
         installer read its version from build.info (v1.5.5) rather than install.info (v1.5.4, the release
