@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from ccc_head_api import db, recovery
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
+from cuttle import config
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -612,26 +613,31 @@ class TestStatus:
             assert st == {"bytes": 555, "expires_at": _expiry("2026-01-01T00:00:00Z")}
 
 
-class TestTarBytes:
+class TestTarStream:
+    """The None cases are the interesting ones. They are decided BEFORE a chunk is yielded, because a
+    404 is unsendable once the 200 is committed — a nothing-to-give that arrived late would reach the
+    User as a truncated tar of a copy that does not exist."""
+
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
 
     def test_none_when_no_recovery_dir_exists(self):
-        assert recovery.tar_bytes(42) is None
+        assert recovery.tar_stream(42) is None
 
     def test_none_for_an_empty_recovery_dir(self):
         """Emptiness, not existence, is the test — mirrors spawns.outputs_tar's own rule: submit()
         pre-creates dirs, so presence alone says nothing."""
         (head_spawns.SPAWNS_DIR / "43" / "recovery").mkdir(parents=True)
-        assert recovery.tar_bytes(43) is None
+        assert recovery.tar_stream(43) is None
 
     def test_tars_the_recovery_dir(self):
         d = head_spawns.SPAWNS_DIR / "44" / "recovery"
         d.mkdir(parents=True)
         (d / "result.txt").write_text("hi")
-        data = recovery.tar_bytes(44)
-        assert data is not None
+        stream = recovery.tar_stream(44)
+        assert stream is not None
+        data = b"".join(stream)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
             names = tf.getnames()
         assert any(n.endswith("result.txt") for n in names)
@@ -727,15 +733,17 @@ class TestHistoryCarriesRecoveryExpiry:
 # patches db.DB_PATH and seeds alice/root — the same real routes tested above, invoked as a User would.
 
 class TestCliRecover:
-    def test_recover_downloads_the_tar(self, signed_in, monkeypatch, tmp_path):
+    def test_recover_unpacks_the_working_directory(self, signed_in, monkeypatch, tmp_path):
+        """Extracted, and beside the declared results rather than into the cwd: the tar is how a copy
+        travels, not what was asked for, and the `recovery/` the archive wraps it in is a word already
+        said by the directory it lands in."""
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
-        monkeypatch.chdir(tmp_path)
         d = tmp_path / "spawns" / "5" / "recovery"
         d.mkdir(parents=True)
         (d / "ckpt.pt").write_bytes(b"weights")
         r = signed_in("recover", "5")
         assert r.exit_code == 0, r.output
-        assert (tmp_path / "spawn-5-recovery.tar.gz").exists()
+        assert (config.OUTPUTS_DIR / "spawn-5-recovery" / "ckpt.pt").read_bytes() == b"weights"
 
     def test_a_miss_warns_rather_than_erroring(self, signed_in, monkeypatch, tmp_path):
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")

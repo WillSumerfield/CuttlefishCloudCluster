@@ -63,3 +63,52 @@ class TestApiErrorUserMessage:
         # status None = never got an answer (the "cannot reach the Head" message is already the fix).
         e = api.ApiError("/me", "cannot reach the Head at https://h — is it running?", status=None)
         assert e.user_message() == "cannot reach the Head at https://h — is it running?"
+
+
+class TestATransportFailureNamesThePhaseItFailedIn:
+    """The one message in this CLI with a diagnosis already attached to it.
+
+    Every `httpx.RequestError` used to say "cannot reach the Head — is it running, and are you on the
+    same LAN or the CCC mesh?". A 3GB outputs download that timed out mid-transfer said exactly that,
+    sending its User to check a mesh that was working perfectly while the Head sat there holding their
+    results. Never having reached the Head, and having reached it and lost it, are different faults
+    with different next steps, and merging them costs a whole diagnosis.
+    """
+
+    def _client(self) -> api.Api:
+        import httpx
+        return api.Api(httpx.Client(base_url="http://head/api"), url="https://head")
+
+    def test_a_connect_failure_asks_about_reachability(self):
+        import httpx
+        detail = self._client()._transport_detail(httpx.ConnectTimeout("timed out"))
+        assert "cannot reach" in detail and "mesh" in detail
+
+    def test_a_read_failure_says_it_got_there_and_lost_it(self):
+        import httpx
+        detail = self._client()._transport_detail(httpx.ReadTimeout("timed out"))
+        assert "cannot reach" not in detail
+        assert "reached the Head" in detail and "sent nothing" in detail
+
+    def test_no_httpx_class_name_reaches_the_user(self):
+        """A library's exception name is not a fix, in either branch."""
+        import httpx
+        for e in (httpx.ConnectError("x"), httpx.ReadTimeout("x"), httpx.ReadError("x")):
+            assert "httpx" not in self._client()._transport_detail(e).lower()
+            assert type(e).__name__ not in self._client()._transport_detail(e)
+
+
+class TestAStreamedDownloadIsBoundedPerChunkNotOverall:
+    """The bug itself, as a constant. `timeout=30` as a bare float bounds the WHOLE request, so a
+    transfer that takes four minutes to arrive is cancelled at thirty seconds however healthy it is.
+    Split apart, `read` bounds the gap BETWEEN chunks — a limit a 3GB download can satisfy forever."""
+
+    def test_the_read_budget_is_a_gap_not_a_deadline(self):
+        assert api.TIMEOUT_STREAM.read is not None
+        # No total/overall budget exists to cap a long transfer — httpx has no such field, and that
+        # is the point: nothing here may expire because the download is simply big.
+        assert not hasattr(api.TIMEOUT_STREAM, "total")
+
+    def test_connecting_is_bounded_far_more_tightly_than_reading(self):
+        """A Head that is off should say so in seconds; a Head that is working should be waited for."""
+        assert api.TIMEOUT_STREAM.connect < api.TIMEOUT_STREAM.read

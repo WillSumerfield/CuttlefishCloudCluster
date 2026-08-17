@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from ccc_head_api import db, retention
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
+from cuttle import config
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -367,6 +368,23 @@ class TestApi:
 # --- the CLI ------------------------------------------------------------------
 
 class TestCliOutputs:
+    def test_results_land_unpacked_where_the_auto_download_puts_them(self, signed_in, monkeypatch,
+                                                                     tmp_path):
+        """One predictable location, whichever way results were fetched, and the tree rather than the
+        tar it travelled in. Into the cwd it would land wherever the shell happened to be standing —
+        and running the command twice would leave two copies of a 3GB result in two directories."""
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+        out = tmp_path / "spawns" / "20" / "outputs" / "runs"
+        out.mkdir(parents=True)
+        (out / "ckpt.pt").write_bytes(b"weights")
+        r = signed_in("outputs", "20")
+        assert r.exit_code == 0, r.output
+        landed = config.OUTPUTS_DIR / "spawn-20-outputs"
+        assert (landed / "runs" / "ckpt.pt").read_bytes() == b"weights"
+        # Said out loud. A download whose destination is only in the docs is one the User goes looking
+        # for in the directory they ran the command from.
+        assert str(landed) in r.output.replace("\n", "")   # the console wraps long paths
+
     def test_a_miss_says_the_results_expired(self, signed_in, monkeypatch, tmp_path):
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
         with db.connect() as conn:

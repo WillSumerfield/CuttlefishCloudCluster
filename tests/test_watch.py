@@ -15,10 +15,11 @@ import io
 import pathlib
 import tarfile
 
+import httpx
 import pytest
 
 from ccc_head_api import spawns as head_spawns
-from cuttle import config, watch
+from cuttle import api, config, watch
 
 
 def _outputs_on_head(job_id: int, name: str = "ckpt.pt", data: bytes = b"weights") -> None:
@@ -157,45 +158,83 @@ class TestTheSessionIsNeverCopied:
         assert (tmp_path / "spawn-10-outputs" / "ckpt.pt").exists()
 
 
+def _tar(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _serving(body: bytes) -> api.Api:
+    """An Api whose every GET streams `body` — the Head reduced to the one thing it is here to be, a
+    source of tar bytes. Drives the real `download_extract`, filter and all: the extraction is no
+    longer a function taking a `bytes` that a test could hand it directly."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    return api.Api(httpx.Client(transport=transport, base_url="http://head/api"), token="t")
+
+
 class TestExtractionIsUnattended:
     def test_a_traversing_member_cannot_escape_the_destination(self, ccc_home, tmp_path):
         """Nobody is watching the paths go by. A member naming `../` would write outside the
-        destination silently — the one thing an unattended `extractall` can do that a human running
+        destination silently — the one thing an unattended extraction can do that a human running
         `tar xzf` would at least see."""
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            info = tarfile.TarInfo("../escaped.txt")
-            info.size = 3
-            tar.addfile(info, io.BytesIO(b"bad"))
-        dest = tmp_path / "proj"
-        dest.mkdir()
+        dest = tmp_path / "proj" / "spawn-11-outputs"
         with pytest.raises(Exception):
-            watch._extract(buf.getvalue(), dest, 11)
+            _serving(_tar({"../escaped.txt": b"bad"})).download_extract(
+                "/spawns/11/outputs", dest, member=watch._member)
         assert not (tmp_path / "escaped.txt").exists()
+        assert not (tmp_path / "proj" / "escaped.txt").exists()
+
+    def test_a_refused_download_leaves_nothing_behind(self, ccc_home, tmp_path):
+        """The rejected members were extracted somewhere before the bad one was reached. If that
+        somewhere survived, a User would find a directory of results that stopped partway through and
+        nothing saying so."""
+        dest = tmp_path / "results" / "spawn-14-outputs"
+        with pytest.raises(Exception):
+            _serving(_tar({"good.txt": b"ok", "../escaped.txt": b"bad"})).download_extract(
+                "/spawns/14/outputs", dest, member=watch._member)
+        assert list((tmp_path / "results").iterdir()) == []
+
+    def test_a_re_download_replaces_rather_than_merges(self, ccc_home, tmp_path):
+        """A result the Spawn no longer produces must not survive in the destination, where it is
+        indistinguishable from one it does. The first attempt's leftovers are exactly that."""
+        dest = tmp_path / "spawn-15-outputs"
+        dest.mkdir()
+        (dest / "stale.txt").write_bytes(b"from an older run")
+        _serving(_tar({"ckpt.pt": b"ok"})).download_extract("/spawns/15/outputs", dest,
+                                                            member=watch._member)
+        assert sorted(p.name for p in dest.iterdir()) == ["ckpt.pt"]
+
+    def test_a_truncated_stream_is_refused_rather_than_unpacked(self, ccc_home, tmp_path):
+        """A cut transfer ends mid-member and the read raises, so it cannot be mistaken for a complete
+        one and quietly land as a short tree. That is the whole integrity story here — the failure that
+        actually happens is a dropped link, not a Head lying about its own bytes."""
+        dest = tmp_path / "spawn-16-outputs"
+        whole = _tar({"ckpt.pt": b"weights" * 100})
+        with pytest.raises(api.ApiError) as caught:
+            _serving(whole[:len(whole) // 2]).download_extract("/spawns/16/outputs", dest,
+                                                               member=watch._member)
+        assert "incomplete" in caught.value.detail
+        assert not dest.exists()
 
     def test_the_default_destination_is_created_rather_than_required(self, ccc_home, tmp_path):
         """Results land in ~/ccc/outputs, which a box that has never downloaded anything does not
         have yet. Nothing may be dropped for a reason the User never sees."""
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            info = tarfile.TarInfo("ckpt.pt")
-            info.size = 2
-            tar.addfile(info, io.BytesIO(b"ok"))
         assert not config.OUTPUTS_DIR.exists()
-        out = watch._extract(buf.getvalue(), config.OUTPUTS_DIR, 12)
+        out = watch.target(config.OUTPUTS_DIR, 12)
         assert out == config.OUTPUTS_DIR / "spawn-12-outputs"
+        _serving(_tar({"ckpt.pt": b"ok"})).download_extract("/spawns/12/outputs", out,
+                                                            member=watch._member)
         assert (out / "ckpt.pt").read_bytes() == b"ok"
 
     def test_an_unreachable_dest_falls_back_rather_than_failing(self, ccc_home, tmp_path,
                                                                 monkeypatch):
         """`--dest` can name a directory that is gone by the time a long Spawn ends (deleted, an
-        unmounted share). Results still have to land somewhere."""
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            info = tarfile.TarInfo("ckpt.pt")
-            info.size = 2
-            tar.addfile(info, io.BytesIO(b"ok"))
-
+        unmounted share). Results still have to land somewhere — and the fallback is decided before
+        the transfer, not discovered with 3GB in hand."""
         bad = tmp_path / "gone"
         real_mkdir = pathlib.Path.mkdir
 
@@ -204,8 +243,7 @@ class TestExtractionIsUnattended:
                 raise OSError("read-only file system")
             return real_mkdir(self, *a, **kw)
         monkeypatch.setattr(pathlib.Path, "mkdir", refuse)
-        out = watch._extract(buf.getvalue(), bad, 13)
-        assert out == config.OUTPUTS_DIR / "spawn-13-outputs"
+        assert watch.target(bad, 13) == config.OUTPUTS_DIR / "spawn-13-outputs"
 
 
 class TestTheSweeperIsSingular:
@@ -260,3 +298,67 @@ class TestSubmitArmsIt:
         cli("run", "train.py", "--name", "a spawn", "--time", "10", "--vram", "8", "-o", "ckpt",
             "--manifest", "requirements.txt", "--no-download")
         assert watch.entries() == []
+
+
+class TestEverySessionArmsItToo:
+    """A session is where an **Output** is most often really declared — inside the shell, or on a
+    reattach, long after whatever submitted the Spawn. Arming only at submission is how a 3GB sweep
+    was left sitting on the Head until someone thought to go and ask for it by hand.
+
+    Both ends of a session, and this is the point of the pair: detach is when the picture is complete,
+    attach is what survives a crash or a dropped link before the shell ever closes.
+    """
+
+    @pytest.fixture
+    def attached(self, monkeypatch, no_real_sweeper):
+        """The session itself is a real `ssh`. Stop where the Head has answered and the shell would
+        start, and record that we got that far."""
+        from cuttle import tidepool as tidepool_mod
+        seen: list = []
+        monkeypatch.setattr(tidepool_mod, "_wait_and_attach",
+                            lambda *a, **kw: seen.append((a, kw)))
+        return seen
+
+    def test_rejoining_a_tide_pool_arms_it(self, cli, fake_slurm, project, attached, monkeypatch):
+        """The path the 3GB sweep took. Rejoining an existing Pool never armed anything — the entry
+        was written by the branch that CREATES one, which a reattach by definition does not run."""
+        from cuttle import tidepool as tidepool_mod
+        cli("login", input="alice\nhunter2\n")
+        tidepool_mod.run("4242", minutes=None, vram=None, gpu=0, node=None, outputs=[],
+                         features=[], follow=False)
+        assert attached, "the session never started"
+        assert [e["spawn_id"] for e in watch.pending()] == [4242]
+        assert watch.read(4242)["dest"] == str(config.OUTPUTS_DIR.resolve())
+
+    def test_a_pool_that_declared_nothing_is_armed_anyway(self, cli, fake_slurm, project, attached):
+        """Declaring an Output inside the session is ordinary — a `--output` on the reattach, or just
+        the folder someone decided to write to. Gating on what was declared at submission is gating on
+        the one moment that does not know."""
+        from cuttle import tidepool as tidepool_mod
+        cli("login", input="alice\nhunter2\n")
+        tidepool_mod.run("77", minutes=None, vram=None, gpu=0, node=None, outputs=[], features=[],
+                         follow=False)
+        assert [e["spawn_id"] for e in watch.pending()] == [77]
+
+    def test_a_settled_entry_is_re_armed_when_the_session_ends(self, cli, fake_slurm, project,
+                                                               attached):
+        """A Pool outlives the shell that visited it, so results can land after a session that already
+        settled EMPTY. Re-arming costs one 404; not re-arming loses everything written afterwards."""
+        from cuttle import tidepool as tidepool_mod
+        cli("login", input="alice\nhunter2\n")
+        watch._finish(88, watch.EMPTY, "wrote no outputs")
+        tidepool_mod.run("88", minutes=None, vram=None, gpu=0, node=None, outputs=[], features=[],
+                         follow=False)
+        assert watch.read(88)["state"] == watch.WAITING
+
+    def test_a_workspace_visit_arms_it(self, signed_in, fake_slurm, project, attached, monkeypatch):
+        """A visit's declared Outputs are shipped to the same `[out-…]` module as any Spawn's, "so it
+        can be fetched like any Spawn's results" — and nothing on this side ever fetched them."""
+        from ccc_head_api import spawns as head_spawns_mod
+        made = signed_in("workspace", "new", "scratch", "--storage", "4", "--time", "60", "--vram",
+                         "24", "--manifest", "requirements.txt", "--yes")
+        assert made.exit_code == 0, made.output
+        monkeypatch.setattr(head_spawns_mod, "submit_checked", lambda *a, **kw: 4242)
+        r = signed_in("workspace", "open", "scratch")
+        assert r.exit_code == 0, r.output
+        assert [e["spawn_id"] for e in watch.pending()] == [4242]
