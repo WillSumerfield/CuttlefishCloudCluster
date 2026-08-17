@@ -215,6 +215,15 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   place the cluster offers.
   Distinct from a **Recovery Window**: an Output is what its submitter *asked* to keep, held for as long
   as their **Allowance** allows; the window is the brief grace for what they did not.
+  An Output is *collected*, and what the **Head** holds is never the copy that matters. Work submitted
+  from a machine comes home to that machine on its own once the Spawn ends — not while it runs, since
+  what a folder holds mid-run is a half-written thing nobody asked for — and that collection is what
+  makes the two ceilings above safe to enforce: nothing here is an archive, so results that expire or
+  are evicted are results already elsewhere. Declaring the Output is the whole of what a submitter does
+  to arrange it, whenever it is declared — at submission, on rejoining a **Tide Pool**, or on a
+  **Workspace** visit — because an Output whose collection depended on *how* it came to be declared
+  would be one whose results quietly stayed behind. Work submitted from somewhere with nowhere to come
+  home to is collected by whoever asks for it instead.
 - **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
   held thing has its own, independent of the others: filling one never costs a User any of another. An
   Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
