@@ -702,6 +702,25 @@ def test_the_library_prefix_is_built_outside_the_project():
     assert f"$proj/{env.STUB_ROOT}" not in body, "no Feature library ever lands in the project"
 
 
+def test_the_prefix_does_not_shadow_the_images_own_terminal_library():
+    """The whole of this prefix's lib/ goes on LD_LIBRARY_PATH, so anything conda dragged in shadows the
+    image's copy for EVERY process in the Pod, not just the Feature's. ncurses is the one that shouts:
+    no profile's `libs` asks for it (it rides in under mesalib, via llvm), and the image's `tput` is
+    built against Ubuntu's libtinfo — so a Tide Pool opened on five `symbol lookup error: undefined
+    symbol: _nc_safe_fopen` lines, one per tput in oh-my-zsh's you-should-use plugin.
+
+    Deletable only because the image supplies a libtinfo.so.6 of its own for whatever in here linked it.
+    This is NOT a general prune of duplicates — libstdc++ must stay, conda's being routinely newer than
+    the image's and the Feature's own objects built against it."""
+    body = _script(features=["vlearn"])
+    prune = f"rm -f {hf.FEATLIB_MOUNT}/*/lib/libtinfo.so* {hf.FEATLIB_MOUNT}/*/lib/libncurses*.so*"
+    assert prune in body
+    # After the build that creates them, and before the bind that turns the prefix read-only.
+    assert body.index("micromamba create") < body.index(prune) < body.index(
+        f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"')
+    assert "libstdc++" not in body, "only the terminal library goes, never the C++ runtime"
+
+
 def test_a_spawn_that_asked_for_no_feature_never_mounts_one():
     """Nothing is rendered at all now — no mkdir, no build, no bind. The Head knows at submit which
     Features were asked for, so the absent case is absent rather than an inert run-time branch."""
