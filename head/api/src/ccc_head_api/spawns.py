@@ -1069,9 +1069,15 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
         # a general prune of duplicates — libstdc++ especially must stay, since conda's is routinely
         # newer than the image's and the Feature's own objects are built against it.
         #
-        # Still bound WRITABLE here; it is read-only by the time the payload reads it.
-        cmds.append("rm -f %%FEATLIB_MOUNT%%/*/lib/libtinfo.so* "
-                    "%%FEATLIB_MOUNT%%/*/lib/libncurses*.so*")
+        # **The Arm's path, not the Pod's.** These lines run in the job script, on the Arm — only what
+        # goes through `ccc_build` is inside the Pod, where %%FEATLIB_MOUNT%% is a mount that exists.
+        # Written against the mount, this deleted nothing at all on every Spawn for as long as it stood:
+        # `rm -f` on a glob matching nothing is silent and exits 0, so the prefix kept shadowing and the
+        # error it was written to stop went on printing with the fix installed and apparently applied.
+        #
+        # Still WRITABLE here; the payload gets the same directory read-only (the `featbind` below).
+        cmds.append('rm -f "$scratch"/featlibs/*/lib/libtinfo.so* '
+                    '"$scratch"/featlibs/*/lib/libncurses*.so*')
     post = []
     if declared is not None:
         post.append('py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"; '
