@@ -711,14 +711,36 @@ def test_the_prefix_does_not_shadow_the_images_own_terminal_library():
 
     Deletable only because the image supplies a libtinfo.so.6 of its own for whatever in here linked it.
     This is NOT a general prune of duplicates — libstdc++ must stay, conda's being routinely newer than
-    the image's and the Feature's own objects built against it."""
+    the image's and the Feature's own objects built against it.
+
+    **The path is the test.** This line runs in the job script, ON THE ARM — only what goes through
+    `ccc_build` is inside the Pod, where FEATLIB_MOUNT is a mount that exists. Written against the mount
+    it matched nothing, and `rm -f` on a glob matching nothing is silent and exits 0: the prune ran on
+    every Spawn, deleted nothing every time, and the error went on printing with the fix installed and
+    seemingly applied. An earlier version of this test asserted the literal line and so passed
+    throughout, which is why it now asserts where the line points instead.
+    """
     body = _script(features=["vlearn"])
-    prune = f"rm -f {hf.FEATLIB_MOUNT}/*/lib/libtinfo.so* {hf.FEATLIB_MOUNT}/*/lib/libncurses*.so*"
+    prefix = '"$scratch"/featlibs'
+    prune = f"rm -f {prefix}/*/lib/libtinfo.so* {prefix}/*/lib/libncurses*.so*"
     assert prune in body
+    # The same directory the script creates and later binds — not the Pod-side name for it, which
+    # nothing outside the Pod can resolve.
+    assert 'mkdir -p "$scratch/env" "$scratch/tmp" "$scratch/featlibs"' in body
+    assert hf.FEATLIB_MOUNT not in prune
     # After the build that creates them, and before the bind that turns the prefix read-only.
     assert body.index("micromamba create") < body.index(prune) < body.index(
         f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"')
     assert "libstdc++" not in body, "only the terminal library goes, never the C++ runtime"
+
+
+def test_the_prune_is_not_handed_to_the_pod_to_run():
+    """`ccc_build` is the only thing here that crosses into the Pod (`apptainer exec … "$@"`), and it
+    gets no shell — so a glob handed to it would arrive at `rm` as a literal `*` and match nothing.
+    Both ways of getting this wrong end identically: a silent no-op that looks like a fix."""
+    body = _script(features=["vlearn"])
+    prune_line = next(ln for ln in body.splitlines() if ln.strip().startswith("rm -f"))
+    assert "ccc_build" not in prune_line
 
 
 def test_a_spawn_that_asked_for_no_feature_never_mounts_one():
