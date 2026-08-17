@@ -144,7 +144,7 @@ def _apt_install(pkgs: list[str]) -> None:
     Anything else re-raises untouched — `run` has already printed apt's own output.
     """
     try:
-        run(["apt-get", "install", "-y", *pkgs], sudo=True)
+        run(["apt-get", *system.APT_LOCK_WAIT, "install", "-y", *pkgs], sudo=True)
     except subprocess.CalledProcessError:
         for spec in pkgs:
             if "=" not in spec or _version_available(spec):
@@ -184,7 +184,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     `apptainer build` uses to map its fakeroot namespace (see ensure_subid_range), and every node
     builds the Pod image.
     """
-    run(["apt-get", "update"], sudo=True)
+    run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
     before = system.installed_packages()
     _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
                   config.UIDMAP_PKG,
@@ -200,7 +200,7 @@ def install_client_packages() -> None:
     step), and libnss3-tools is a general-purpose tool that another application may since have come to
     rely on. Removing a shared package we cannot prove we alone added is the worse mistake.
     """
-    run(["apt-get", "update"], sudo=True)
+    run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
     _apt_install([config.NSS_TOOLS_PKG])
 
 

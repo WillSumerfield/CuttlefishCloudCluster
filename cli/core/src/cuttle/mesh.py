@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import config, tls, ui
+from . import config, system, tls, ui
 # `_dump` is reached across the module boundary on purpose: join_mesh cannot go through `run`
 # (see its docstring) but must still report a failure the way every other command does.
 from .system import _dump, hostname, prime_sudo, run, sh
@@ -39,7 +39,8 @@ def _install_deb(url: str, reinstall: bool = False) -> None:
     # Unlinked afterwards: dpkg has copied what it needs, and nothing sweeps /tmp/headscale.deb —
     # `_sweep_job_tmp` only globs /tmp/ccc-*, so it would sit on every node CCC ever touched.
     sh(f"curl -fsSL -o /tmp/headscale.deb {url} && "
-       f'apt-get install -y {opts}-o Dpkg::Options::=--force-confmiss /tmp/headscale.deb; '
+       f'apt-get {system.APT_LOCK_WAIT_SH} install -y {opts}'
+       f'-o Dpkg::Options::=--force-confmiss /tmp/headscale.deb; '
        f"rc=$?; rm -f /tmp/headscale.deb; exit $rc", sudo=True)
 
 
@@ -87,8 +88,8 @@ def install_tailscale() -> None:
         return
     sh(f"curl -fsSL {config.TAILSCALE_REPO_KEY} -o {config.TAILSCALE_KEYRING} && "
        f"curl -fsSL {config.TAILSCALE_REPO_LIST} -o {config.TAILSCALE_REPO_FILE}", sudo=True)
-    run(["apt-get", "update"], sudo=True)
-    run(["apt-get", "install", "-y", "tailscale"], sudo=True)
+    run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
+    run(["apt-get", *system.APT_LOCK_WAIT, "install", "-y", "tailscale"], sudo=True)
 
 
 # --- CCC's own isolated tailscaled instance --------------------------------

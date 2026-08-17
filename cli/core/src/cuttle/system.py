@@ -90,6 +90,15 @@ def _dump(e: subprocess.CalledProcessError) -> None:
                 ui.data(text.rstrip())
 
 
+# Wait for the dpkg lock instead of dying on it. Ubuntu runs `unattended-upgrades` shortly after
+# boot, which is exactly when a fresh donor box gets provisioned — so apt's default (fail instantly,
+# exit 100, "Could not get lock") lands mid-setup on a box that has already joined the mesh and
+# enrolled. Nothing here is wrong when that happens; it is a queue, so this waits in it.
+APT_LOCK_WAIT = ["-o", "DPkg::Lock::Timeout=600"]
+# The same, for the apt invocations that live inside a shell snippet rather than an argv list.
+APT_LOCK_WAIT_SH = "-o DPkg::Lock::Timeout=600"
+
+
 def sh(script: str, sudo: bool = False) -> subprocess.CompletedProcess:
     """Run a bash snippet (for pipes/redirects). Quiet by default; see `run`."""
     if sudo:
