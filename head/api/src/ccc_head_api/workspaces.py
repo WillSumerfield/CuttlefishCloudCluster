@@ -29,6 +29,7 @@ import tarfile
 from pathlib import Path
 
 from . import db
+from . import tarstream
 
 # Per-User, and a POOL rather than a wall: the sum of every Storage its owner has reserved. 32GiB, the
 # same figure as the Recipe Allowance — the two are independent in both directions (CONTEXT.md,
@@ -380,53 +381,13 @@ def resolve(user_id: int, name: str, subpath: str | None) -> Path:
 
 
 def tar_stream(target: Path, arcbase: str):
-    """A gzip-tar of `target`, yielded in chunks.
+    """A gzip-tar of `target`, yielded in chunks — `tarstream.chunks`, which this used to be.
 
-    Written by a background thread into a small bounded queue, rather than built in memory the way
-    `spawns.outputs_tar` does. That shape is survivable for an output ceiling and fatal here: a
-    Workspace's Storage runs to 16GB and up, and the Head is the one box that must stay up.
-
-    `tarfile` writes through `Sink.write` as it copies each file, so the queue's `maxsize` — not the
-    size of the tree — is what bounds this. A client that disconnects mid-download closes the generator,
-    which sets `stop` and lets the writer thread unwind instead of blocking on a queue nobody drains.
+    Kept as a name here because a Workspace download is what first needed it: a Storage runs to 16GB
+    and up, so building one in memory would have been fatal to the Head rather than merely slow. That
+    reasoning turned out to apply to a Spawn's results too, hence the shared module.
     """
-    import queue
-    import threading
-
-    chunks: queue.Queue = queue.Queue(maxsize=8)
-    done = object()
-    stop = threading.Event()
-
-    class Sink:
-        def write(self, data):
-            while not stop.is_set():
-                try:
-                    chunks.put(bytes(data), timeout=0.5)
-                    return len(data)
-                except queue.Full:
-                    continue
-            raise BrokenPipeError("download aborted")
-
-    def build():
-        try:
-            with tarfile.open(fileobj=Sink(), mode="w|gz") as tf:
-                tf.add(target, arcname=arcbase)
-        except BaseException as e:      # noqa: BLE001 — re-raised on the consuming side
-            chunks.put(e)
-        finally:
-            chunks.put(done)
-
-    threading.Thread(target=build, daemon=True).start()
-    try:
-        while True:
-            item = chunks.get()
-            if item is done:
-                return
-            if isinstance(item, BaseException):
-                raise item
-            yield item
-    finally:
-        stop.set()
+    return tarstream.chunks(target, arcbase)
 
 
 def to_json(row, used_bytes: int) -> dict:

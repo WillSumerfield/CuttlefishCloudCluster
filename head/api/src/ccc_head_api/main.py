@@ -444,9 +444,14 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     Results are not permanent: 7 days from the Spawn's end,
     or sooner if the submitter's 32GB Allowance evicted them to make room for newer ones. Both read as
     404 here, and the detail says which of the two applies where the ledger still knows — a Spawn that
-    produced nothing and one whose results were deleted are very different things to be told."""
-    data = spawns_mod.outputs_tar(job_id)
-    if data is None:
+    produced nothing and one whose results were deleted are very different things to be told.
+
+    **Every one of those 404s is decided before the first chunk goes out.** Streaming buys the fix this
+    route exists to have (a 3GB result no longer spends four silent minutes compressing while the client
+    times out), and costs exactly one thing: once a byte is sent the 200 is committed, and a refusal
+    after that is a truncated tar rather than a message. Hence the shape below — ask, then stream."""
+    stream = spawns_mod.outputs_tar(job_id)
+    if stream is None:
         with db.connect() as conn:
             known = db.get_spawn(conn, job_id) is not None
         if known and retention_mod.evicted(job_id):
@@ -455,7 +460,7 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
                                      f"until the submitter's newer results need the room")
         raise HTTPException(404, f"Spawn {job_id} wrote no outputs — the folders it declared with "
                                  f"--output were empty when it ended")
-    return Response(data, media_type="application/gzip", headers={
+    return StreamingResponse(stream, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
 
 
@@ -500,11 +505,14 @@ def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> 
     """gzip-tar of Spawn `job_id`'s Recovery Window copy — everything it wrote OUTSIDE its declared
     its declared outputs, while the window is still open. Distinct download from
     `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
-    artifact whose contents would otherwise silently change once the window closes."""
-    data = recovery_mod.tar_bytes(job_id)
-    if data is None:
+    artifact whose contents would otherwise silently change once the window closes.
+
+    Streamed, and the 404 settled first, for the same reasons as `/outputs` above — more so here, where
+    the per-Spawn cap admits copies up to 16GB."""
+    stream = recovery_mod.tar_stream(job_id)
+    if stream is None:
         raise HTTPException(404, f"no recovery copy for Spawn {job_id}")
-    return Response(data, media_type="application/gzip", headers={
+    return StreamingResponse(stream, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="spawn-{job_id}-recovery.tar.gz"'})
 
 

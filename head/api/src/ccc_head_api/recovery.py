@@ -32,6 +32,7 @@ import shutil
 from datetime import datetime, timedelta, timezone
 
 from . import db
+from . import tarstream
 
 WINDOW_MINUTES = int(os.environ.get("CCC_RECOVERY_MINUTES", 24 * 60))
 MAX_SPAWN_BYTES = int(os.environ.get("CCC_RECOVERY_MAX_SPAWN", 16 * 1024**3))
@@ -176,18 +177,15 @@ def status(conn, job_id: int) -> dict | None:
     return {"bytes": row["bytes"], "expires_at": expires.strftime(_TS)}
 
 
-def tar_bytes(job_id: int) -> bytes | None:
-    """gzip-tar of a Spawn's recovery copy, for `cuttle recover <id>` / the Dashboard's download button.
-    None if there is nothing on disk — the caller (main.py) is expected to have already checked
-    `status()` isn't None, but this re-checks disk directly rather than trusting the DB row alone: a race
-    between the sweep evicting it and a download landing should read as 404, not a half-written tar."""
-    import io
-    import tarfile
+def tar_stream(job_id: int):
+    """gzip-tar of a Spawn's recovery copy, for `cuttle recover <id>` / the Dashboard's download button
+    — a stream of chunks (`tarstream`), or None if there is nothing on disk.
 
+    The caller (main.py) is expected to have already checked `status()` isn't None, but this re-checks
+    disk directly rather than trusting the DB row alone: a race between the sweep evicting it and a
+    download landing should read as 404, not a half-written tar. Which is also why the check happens
+    here, before a single chunk is yielded — after that the 200 is already sent."""
     recovery_dir = _spawn_dir(job_id) / "recovery"
-    if not recovery_dir.is_dir() or not any(p.is_file() for p in recovery_dir.rglob("*")):
+    if not tarstream.has_files(recovery_dir):
         return None
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        tf.add(recovery_dir, arcname="recovery")
-    return buf.getvalue()
+    return tarstream.chunks(recovery_dir, "recovery")

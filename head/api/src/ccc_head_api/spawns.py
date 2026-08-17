@@ -35,7 +35,6 @@ Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a re
 """
 
 import base64
-import io
 import logging
 import os
 import posixpath
@@ -55,6 +54,7 @@ from . import guises
 from . import recovery
 from . import siphons
 from . import slurm
+from . import tarstream
 from . import zshrc
 
 log = logging.getLogger("ccc.api")
@@ -1910,8 +1910,9 @@ def err_text(job_id: int) -> str | None:
     return f.read_text() if f.exists() else None
 
 
-def outputs_tar(job_id: int) -> bytes | None:
-    """gzip-tar of the Spawn's keep directory, for `cuttle outputs <id>`. None if it produced none.
+def outputs_tar(job_id: int):
+    """gzip-tar of the Spawn's keep directory, for `cuttle outputs <id>` — as a stream of chunks, or
+    None if it produced none.
 
     The tree inside mirrors the paths that were declared: `-o runs` arrives as `outputs/runs/…`, and an
     absolute `-o /ccc/vlwd/logs` as `outputs/ccc/vlwd/logs/…` (the leading `/` is what is dropped, and the
@@ -1919,11 +1920,10 @@ def outputs_tar(job_id: int) -> bytes | None:
 
     Emptiness — not existence — is the test: submit() pre-creates the dir for every Spawn, so its mere
     presence says nothing. An empty dir means "nothing written yet / nothing produced", not "ready".
+    Asked here, before the generator is handed back, because the caller's 404 has to be decidable while
+    it is still possible to send one (`tarstream.has_files`).
     """
     outputs = _spawn_dir(job_id) / "outputs"
-    if not any(p.is_file() for p in outputs.rglob("*")):
+    if not tarstream.has_files(outputs):
         return None
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        tf.add(outputs, arcname="outputs")
-    return buf.getvalue()
+    return tarstream.chunks(outputs, "outputs")
