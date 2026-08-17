@@ -125,7 +125,7 @@ def setup(
         False, "--local", help="Alias for --head (single-box case)."
     ),
     arm: bool = typer.Option(
-        False, "--arm", help="Enroll this box as a remote Arm (needs --token)."
+        False, "--arm", help="Enroll this box as a remote Arm (needs --token, or --enrolled to redo)."
     ),
     client: bool = typer.Option(
         False, "--client", help="Submitter's box: dirs, the cluster name + CA, login. No mesh or Slurm."
@@ -137,6 +137,11 @@ def setup(
     ),
     token: str = typer.Option(
         None, "--token", help="Arm: the enrollment token from `cuttle arm authorize` (a SECRET)."),
+    enrolled: bool = typer.Option(
+        False, "--enrolled",
+        help="Arm: set this box up again without a token, reusing the enrollment it already has. "
+             "Only for a box still on the mesh — nothing is re-enrolled.",
+    ),
     re_enroll: bool = typer.Option(
         False, "--re-enroll",
         help="Arm: discard this box's mesh identity and re-join from scratch (needs a fresh token). "
@@ -167,9 +172,21 @@ def setup(
                 address = address or ui.ask_text("Address Arms will reach this Head on?",
                                                  default=stored or system.primary_ip())
             elif role == "arm":
-                ui.say("  [muted]Ask the cluster's admin for a token: "
-                       "cuttle arm authorize <name> --user <you>[/muted]")
-                token = token or ui.ask_text("Enrollment token?")
+                # A box that has enrolled before is offered its own enrollment back, because the
+                # answer to "Enrollment token?" for a re-setup is a secret it cannot produce — the
+                # token was printed once, deliberately never logged, and is long spent.
+                #
+                # Not offered when --re-enroll was asked for: that flag is the decision to throw this
+                # enrollment away, so offering to reuse it is offering the opposite of what was asked
+                # — and would only be refused below, after the prompts.
+                prior = None if re_enroll else (settings.load().get("arm") or {}).get("node_name")
+                enrolled = bool(prior) and ui.ask_confirm(
+                    f"This box is already enrolled as {prior} — set it up again without a token?",
+                    True)
+                if not enrolled:
+                    ui.say("  [muted]Ask the cluster's admin for a token: "
+                           "cuttle arm authorize <name> --user <you>[/muted]")
+                    token = token or ui.ask_text("Enrollment token?")
             # Prime sudo while this box is still open, so its prompt is a row of the box already on
             # screen, not the first row of the next one (a section clears the alt screen). Client
             # needs no sudo; setup_head/arm still prime as a no-op backstop for the flagless path.
@@ -183,10 +200,21 @@ def setup(
             raise typer.BadParameter("--re-enroll is an Arm flag; the Head re-registers itself")
         setup_mod.setup_head(address)
     elif arm:
-        if not token:
+        # --enrolled is the absence of a token, not a variant of one: it says "reuse what this box
+        # already redeemed". Pairing it with either of the others asks for two different identities in
+        # one run, and --re-enroll in particular is its exact opposite — that one throws the
+        # enrollment away, which is why it needs a fresh key and this one refuses to pretend it has.
+        if enrolled and token:
+            raise typer.BadParameter("--enrolled reuses this box's enrollment; drop --token to use it")
+        if enrolled and re_enroll:
+            raise typer.BadParameter(
+                "--re-enroll discards the enrollment --enrolled reuses. Re-joining needs a fresh "
+                "token: cuttle setup --arm --token <token> --re-enroll")
+        if not token and not enrolled:
             raise typer.BadParameter(
                 "`--arm` needs --token. Ask the cluster's admin to run: "
-                "cuttle arm authorize <name> --user <you>")
+                "cuttle arm authorize <name> --user <you>\n"
+                "If this box is already enrolled and you are just setting it up again: --enrolled")
         setup_mod.setup_arm(token, re_enroll=re_enroll)
 
 

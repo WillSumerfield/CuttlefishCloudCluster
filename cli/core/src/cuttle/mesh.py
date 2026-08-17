@@ -453,6 +453,16 @@ def _state_prefs() -> dict | None:
     return {"ControlURL": prefs.get("ControlURL"), "LoggedOut": prefs.get("LoggedOut", False)}
 
 
+def current_coordinator() -> str | None:
+    """Which coordinator this box is registered against, or None if it is not on the mesh.
+
+    The one fact an **enrollment token** carries that is not also written to settings, and it is on
+    disk anyway — tailscaled has to remember who it talks to. That is what lets a box that is already
+    enrolled be set up again without one (see enroll.enrollment_from_state)."""
+    prefs = _state_prefs()
+    return prefs.get("ControlURL") if prefs else None
+
+
 def joined_to(coordinator: str) -> bool:
     """Is this node already on the mesh, registered against *this* coordinator?"""
     prefs = _state_prefs()

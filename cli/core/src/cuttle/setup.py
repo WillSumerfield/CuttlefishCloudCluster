@@ -1363,12 +1363,16 @@ def _prompt_licence_home(existing: str = "") -> str:
                        existing).strip()
 
 
-def setup_arm(token: str, re_enroll: bool = False) -> None:
+def setup_arm(token: str | None, re_enroll: bool = False) -> None:
     """Enroll this box as an Arm, redeeming the **enrollment token** an Admin minted for it.
 
     The donor declares nothing. The token names the Arm and carries the one-time preauth key that
     admits it to the mesh — so there is no node-name prompt and no waiting for a human to approve a
     relayed auth-id. The Admin already decided, when they ran `cuttle arm authorize`.
+
+    A None `token` is the re-setup of a box that already enrolled: everything the token carried is
+    read back off this machine instead (enroll.enrollment_from_state), because a second setup is not
+    a second enrollment and should not need a second secret.
 
     `re_enroll` forces a fresh mesh identity even if this box looks already-joined.
     """
@@ -1377,9 +1381,11 @@ def setup_arm(token: str, re_enroll: bool = False) -> None:
         _setup_arm(token, re_enroll=re_enroll)
 
 
-def _setup_arm(token: str, re_enroll: bool = False) -> None:
+def _setup_arm(token: str | None, re_enroll: bool = False) -> None:
     make_user_dirs()
-    t = enroll.decode_token(token)
+    # prime_sudo above is what makes the state read inside enrollment_from_state possible — the
+    # coordinator lives in tailscaled's root-owned state file.
+    t = enroll.decode_token(token) if token else enroll.enrollment_from_state()
     node_name = t["node_name"]
     settings.prompt_wandb()
     preflight("arm")

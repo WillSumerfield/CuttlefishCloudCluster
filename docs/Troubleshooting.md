@@ -110,12 +110,20 @@ cuttle arm sync-key
 
 ### Setup fails partway, or the box is in a strange state
 
+If the box is still on the mesh, just run setup again — no token needed:
+
+```sh
+cuttle setup --arm --enrolled
+```
+
+If it is not, or the Head was rebuilt behind the same coordinator address:
+
 ```sh
 cuttle setup --arm --re-enroll --token <fresh-token>
 ```
 
-That discards this machine's mesh identity and joins from scratch. It is also the fix when the Head
-was rebuilt behind the same coordinator address.
+That discards this machine's mesh identity and joins from scratch, which is why it needs a token —
+the preauth key inside one is what admits a box to the mesh, and it is spent on use.
 
 For a genuinely stuck install: `cuttle teardown --full`, then start again.
 

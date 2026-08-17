@@ -85,6 +85,42 @@ def decode_token(token: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(token.encode()))
 
 
+def enrollment_from_state() -> dict:
+    """What a token would have said, recovered from a box that already redeemed one.
+
+    A re-setup is routine — new Features to declare, a rebuilt Environment, a CCC upgrade — and none
+    of it is re-enrollment. But the token is printed once and never logged (it is a secret), so
+    needing it again meant going back to the Admin to mint a second one, and minting one *revokes
+    nothing*: the old preauth key stays live for its hour. Asking for a new secret to do a job that
+    needs no secret is the wrong shape.
+
+    Everything is already here. The Head's mesh IP and this Arm's name are in settings, written at
+    enrollment; the coordinator is in tailscaled's own state, because it has to be. The preauth key is
+    the one thing that is NOT recoverable — and the one thing this path never uses, since `up_arm`
+    skips the join outright for a box already on this coordinator's mesh, leaving even a spent key
+    unspent.
+
+    Refused rather than half-attempted when this box is not on the mesh: `up_arm` would then wipe the
+    local identity before discovering it has no key to re-join with, which is strictly worse than
+    where it started. That case is what `--re-enroll` and a fresh token are for.
+    """
+    arm = (settings.load().get("arm") or {})
+    node_name, head_mesh_ip = arm.get("node_name"), arm.get("head_mesh_ip")
+    if not node_name or not head_mesh_ip:
+        raise ui.abort("this box has never enrolled as an Arm — there is nothing to reuse.\n"
+                       "  Ask the cluster's admin for a token: cuttle arm authorize <name> --user <you>")
+    coordinator = mesh.current_coordinator()
+    if not coordinator or not mesh.joined_to(coordinator):
+        raise ui.abort(
+            f"{node_name} is not on the mesh any more, so its enrollment cannot be reused.\n"
+            f"  Rejoining needs a fresh preauth key, which only a new token carries. Ask the "
+            f"cluster's admin for one:\n"
+            f"    cuttle arm authorize {node_name} --user <you>\n"
+            f"  then: cuttle setup --arm --token <token> --re-enroll")
+    return {"coordinator": coordinator, "mesh_ip": head_mesh_ip, "node_name": node_name,
+            "authkey": ""}   # never redeemed on this path — see up_arm
+
+
 # --- /enroll ----------------------------------------------------------------
 
 def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,

@@ -69,6 +69,20 @@ cuttle setup --arm --token <the-token-from-the-admin>
 This takes a while. It joins the mesh, registers your hardware with the Head, installs Slurm, munge
 and Apptainer, and runs a benchmark on your GPU to measure how fast it actually is.
 
+### Setting up again later
+
+A token is for enrolling, and you only enroll once. To run setup again on a box that is already
+enrolled — to declare a Feature you have since installed, or after a CCC upgrade — use:
+
+```sh
+cuttle setup --arm --enrolled
+```
+
+It reuses the enrollment this machine already has, so there is nothing to ask the admin for. (The
+menu offers this by itself once a box is enrolled.) It works only while the box is still on the
+mesh; if it is not, that is the `--re-enroll` case at the bottom of this page, and it does need a
+fresh token.
+
 ### It will ask what software this box has
 
 Partway through, you are asked one question per [Feature](../elements/arm-features.md) — heavy or
