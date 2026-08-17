@@ -20,7 +20,11 @@ to guess and the command layer translates.
 """
 
 import json
+import shutil
 import ssl
+import tarfile
+import zlib
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +37,22 @@ from . import config, settings, tls
 TIMEOUT_JSON = 15
 TIMEOUT_RAW = 30
 TIMEOUT_UPLOAD = 120
+
+# A streamed download's budget is per-chunk, never per-download. `timeout=30` as a bare float sets all
+# four phases at once, which on a body the Head streams means "give up 30s in" — the bug that made a
+# working 3GB transfer read as an unreachable Head. Split out, `read` is the gap BETWEEN chunks, which
+# is a correct thing to bound however long the whole transfer runs. Connect stays short: a Head that is
+# off or off-mesh should say so quickly.
+TIMEOUT_STREAM = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+
+# What a transport failure means, split by which phase it happened in. Never merged again: they have
+# different causes and different fixes, and the merged wording sent a diagnosis of the timeout above
+# looking for a network fault that was not there.
+UNREACHABLE = ("cannot reach the Head at {where} — is it running, and are you on the same LAN or the "
+               "CCC mesh?")
+WENT_QUIET = ("reached the Head at {where}, but it sent nothing for {secs:.0f}s and the transfer was "
+              "abandoned — it is up, so this is the Head struggling or the link dropping mid-transfer, "
+              "not a missing route to it")
 
 CERT_MISMATCH = (
     "{url} presented a certificate this machine's pinned authority did not sign.\n"
@@ -141,39 +161,110 @@ class Api:
             raise
         return r.content
 
-    def download(self, path: str, dest: Path) -> int:
+    @contextmanager
+    def _stream(self, path: str):
+        """The GET both streaming readers share: opened, with any refusal raised as a status.
+
+        A streamed response has not read its body yet, so an error has to be `read()` before `_detail`
+        can find the Head's own reason in it. Doing that here is what keeps a 404 arriving as a 404 on
+        a streamed route rather than as an empty download.
+        """
+        extra = {"timeout": TIMEOUT_STREAM} if self._per_request_timeout else {}
+        with self._client.stream("GET", path, headers=self._headers(True, None), **extra) as r:
+            if r.is_error:
+                r.read()
+                raise ApiError(path, _detail(r), r.status_code)
+            yield r
+
+    def download(self, path: str, dest: Path, on_progress=None) -> int:
         """GET a raw body straight to a file, in chunks. Returns the bytes written.
 
-        `raw()` above is fine for a log or an outputs tar, both bounded by an **Allowance** — it holds
-        the whole body in this process. A **Workspace** is not bounded that way: its **Space** runs to
-        16GB and up, and the Head streams it for exactly that reason (workspaces.tar_stream), which
-        buys nothing if the client turns it back into one buffer on arrival.
+        `raw()` above holds a whole body in this process, which is fine for a log and wrong for
+        anything a tree's size decides: a **Workspace**'s **Space** runs to 16GB and up, and the Head
+        streams it for exactly that reason, which buys nothing if the client turns it back into one
+        buffer on arrival.
 
         Written to a `.part` beside the target and renamed on success, so an interrupted download never
         leaves a truncated tar sitting under the name of a complete one.
+
+        `on_progress` is called with the bytes written so far. Compressed bytes here, uncompressed in
+        `download_extract` — this one never learns what is inside what it is writing.
         """
         part = dest.with_suffix(dest.suffix + ".part")
         written = 0
         try:
-            with self._client.stream("GET", path, headers=self._headers(True, None),
-                                     timeout=TIMEOUT_RAW) as r:
-                if r.is_error:
-                    # The body has not been read yet on a streamed response, and `_detail` needs it.
-                    r.read()
-                    raise ApiError(path, _detail(r), r.status_code)
-                with part.open("wb") as f:
-                    for chunk in r.iter_bytes():
-                        written += f.write(chunk)
-        except httpx.RequestError:
+            with self._stream(path) as r, part.open("wb") as f:
+                for chunk in r.iter_bytes():
+                    written += f.write(chunk)
+                    if on_progress:
+                        on_progress(written)
+        except httpx.RequestError as e:
             part.unlink(missing_ok=True)
-            where = self.url or "the Head"
-            raise ApiError(path, f"cannot reach the Head at {where} — is it running, and are you on "
-                                 f"the same LAN or the CCC mesh?") from None
+            raise ApiError(path, self._transport_detail(e)) from None
         except BaseException:
             part.unlink(missing_ok=True)
             raise
         part.replace(dest)
         return written
+
+    def download_extract(self, path: str, dest: Path, member=None, on_progress=None) -> int:
+        """GET a gzip tar and unpack it into `dest` as it arrives. Returns the uncompressed bytes.
+
+        The tar is never a file on this machine. It is a transport container — what a User asked for is
+        the tree inside it — and materialising it first would mean 1.5GB written and read again for
+        nothing, plus a second pass they wait through after the transfer already finished.
+
+        Streaming mode (`r|gz`) is the reason the loop looks like this: the archive is not seekable, so
+        each member must be extracted as it is encountered rather than picked from an index at the end.
+        That constraint and the progress reporting want the same loop, so they share one.
+
+        **Integrity comes free and is not re-implemented.** A cut transfer ends mid-member and the read
+        below raises rather than returning a short tree; corrupted bytes fail zlib's own per-block
+        checks first. Between them that covers the failure this actually has — a link that dropped —
+        and not the one a sha256 manifest would add cover for, a Head that lies about its own bytes.
+        (Note what is NOT relied on: the gzip trailer's CRC32 is never reached, because tarfile stops
+        at the archive's end-of-file blocks and never feeds the trailer through.)
+
+        `dest` is replaced, not merged: it lands in a sibling `.partial` directory and is renamed over
+        the top only once the whole stream has been read. So the destination holds exactly what the Head
+        holds or the previous attempt's contents, never a half-written mixture of the two — and a retry
+        after a failed download is a clean retry rather than an accumulation.
+        """
+        work = dest.with_name(dest.name + ".partial")
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True)
+        seen = 0
+        try:
+            with self._stream(path) as r:
+                # Called once with nothing done yet, and only now: the caller's progress line is what
+                # this fires, and a route that answered 404 must not have drawn one first.
+                if on_progress:
+                    on_progress(0)
+                reader = _ChunkReader(r.iter_bytes())
+                with tarfile.open(fileobj=reader, mode="r|gz") as tf:
+                    for m in tf:
+                        tf.extract(m, work, filter=member or tarfile.data_filter)
+                        seen += m.size
+                        if on_progress:
+                            on_progress(seen)
+        except httpx.RequestError as e:
+            shutil.rmtree(work, ignore_errors=True)
+            raise ApiError(path, self._transport_detail(e)) from None
+        except (tarfile.ReadError, EOFError, zlib.error) as e:
+            # The gzip trailer did not check out, or the archive ended mid-member. Said as truncation
+            # rather than as a corrupt file: the Head built this one member at a time and never had a
+            # bad copy to send, so what arrived short is what got cut on the way.
+            shutil.rmtree(work, ignore_errors=True)
+            raise ApiError(path, f"the download arrived incomplete and was discarded ({e}) — nothing "
+                                 f"was written; try again") from None
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+        # Only now is the old copy touched. Removed rather than merged into: a file the Spawn no longer
+        # produces would otherwise sit in the results forever, indistinguishable from one it does.
+        shutil.rmtree(dest, ignore_errors=True)
+        work.replace(dest)
+        return seen
 
     def upload(self, path: str, data: bytes, meta: dict) -> Any:
         """POST a gzip body with its metadata in a header — the `cuttle run` project upload."""
@@ -204,15 +295,48 @@ class Api:
                 # thing the user has to delete, and PINS_DIR holds one per Head they have ever met.
                 raise ApiError(path, template.format(
                     url=where, pin=tls._pin_path(self.url) if self.url else config.PINS_DIR)) from None
-            where = self.url or "the Head"
-            # No httpx class name (`ConnectTimeout`, `ReadError`) in the user's face — it names a
-            # library, not a fix. The cause is always the same one thing to check; say that. The raw
-            # exception is still one `--debug` away.
-            raise ApiError(path, f"cannot reach the Head at {where} — is it running, and are you on "
-                                 f"the same LAN or the CCC mesh?") from None
+            raise ApiError(path, self._transport_detail(e)) from None
         if r.is_error:
             raise ApiError(path, _detail(r), r.status_code)
         return r
+
+    def _transport_detail(self, e: httpx.RequestError, read_secs: float | None = None) -> str:
+        """What to tell a User about a call that never came back. Two answers, not one.
+
+        No httpx class name (`ConnectTimeout`, `ReadError`) in the user's face — it names a library,
+        not a fix. But WHICH phase failed is not library trivia, it is the whole diagnosis: never
+        having reached the Head and having reached it and lost it mid-body are different faults with
+        different things to go check. The merged wording cost exactly that once already.
+        """
+        where = self.url or "the Head"
+        if isinstance(e, (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)):
+            return WENT_QUIET.format(where=where, secs=read_secs if read_secs else TIMEOUT_STREAM.read)
+        return UNREACHABLE.format(where=where)
+
+
+class _ChunkReader:
+    """An `iter_bytes()` stream, wearing the `.read(n)` face `tarfile` expects.
+
+    `tarfile` in stream mode pulls fixed-size blocks; httpx hands over whatever chunks arrived. One
+    small buffer bridges the two — and, being the only thing between them, is also the reason nothing
+    larger than a chunk is ever held in memory on this side either.
+    """
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def read(self, n: int = -1) -> bytes:
+        while n < 0 or len(self._buf) < n:
+            try:
+                self._buf += next(self._chunks)
+            except StopIteration:
+                break
+        if n < 0:
+            out, self._buf = self._buf, b""
+            return out
+        out, self._buf = self._buf[:n], self._buf[n:]
+        return out
 
 
 def _detail(r: httpx.Response) -> str:

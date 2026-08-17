@@ -362,6 +362,80 @@ def step(label: str):
     _FRAME.replace(i, Text.from_markup(f"[ok]✓[/ok] {label}"))
 
 
+def human_bytes(n: float) -> str:
+    """Bytes → "4.0 GiB". Same shape as `workspaces._human` / `recipes._human`, deliberately: a size
+    inside a progress line and a size in a listing sit next to each other often enough to notice."""
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size} B"  # unreachable
+
+
+_BAR_WIDTH = 24
+_REPAINT_S = 0.1        # a repaint per chunk would spend more time drawing than downloading
+
+
+@contextmanager
+def progress(label: str, total: int | None = None):
+    """`step`, for a phase that knows how far along it is. Yields `update(done)` — bytes SO FAR, not a
+    delta, so a caller that recomputes rather than accumulates cannot drift.
+
+    A `total` gets a bar and a percentage; without one the line is bytes and a rate, which is the
+    honest rendering when nobody knows the denominator (a **Workspace** tree's size would cost a `du`
+    walk that delays the first byte — the very thing this exists to stop delaying).
+
+    Why this exists at all: a 3GB result is minutes of silence, and silence is exactly what a User
+    reads as a hang. It is also what made the timeout that motivated all this indistinguishable from an
+    unreachable Head — from the outside, "working" and "wedged" looked the same.
+
+    Drawn through `_Surface`, so it lands in whichever of the three places is live: a row of the open
+    box, a loose row on the canvas, or a transient Live of its own. Under `--verbose` there is no live
+    region at all — the same rule `step` follows, for the same reason.
+    """
+    if VERBOSE:
+        err.print(f"[accent]→[/accent] {label}")
+        yield lambda done: None
+        ok(label)
+        return
+    started = time.monotonic()
+    last = [0.0]
+    seen = [0]
+
+    def render(done: int) -> Text:
+        elapsed = max(time.monotonic() - started, 1e-6)
+        rate = f"{human_bytes(done / elapsed)}/s"
+        if total:
+            frac = min(done / total, 1.0)
+            filled = round(frac * _BAR_WIDTH)
+            bar = "━" * filled + "─" * (_BAR_WIDTH - filled)
+            return Text.from_markup(
+                f"{label}  [accent]{bar}[/accent] {frac * 100:3.0f}%  [muted]{rate}[/muted]")
+        return Text.from_markup(f"{label}  {human_bytes(done)}  [muted]{rate}[/muted]")
+
+    with _Surface() as surface:
+        surface.show(render(0))
+
+        def update(done: int) -> None:
+            seen[0] = done
+            now = time.monotonic()
+            if now - last[0] < _REPAINT_S:
+                return
+            last[0] = now
+            surface.show(render(done))
+
+        try:
+            yield update
+        except BaseException:
+            _log(f"FAIL {label}")
+            _TROUBLE.append(f"[err]✗[/err] {label}")
+            surface.settle(Text.from_markup(f"[err]✗[/err] {label}"))
+            raise
+        _log(f"OK   {label}")
+        surface.settle(Text.from_markup(f"[ok]✓[/ok] {label} [muted]({human_bytes(seen[0])})[/muted]"))
+
+
 # --- asking -----------------------------------------------------------------
 #
 # Every prompt in `cuttle` goes through `_ask`. Three reasons, and the last is the important one:
