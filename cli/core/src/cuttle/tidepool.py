@@ -108,16 +108,32 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
                     f"(pass a Spawn id instead to reattach to one)")
         spawn_id = _request(minutes, vram, gpu, node, outputs, features, manifest=manifest,
                             no_gitignore=no_gitignore, root=root, name=name)
-        # Only when it declared somewhere for results to land. A Tide Pool with no --output has
-        # nothing to auto-download by construction — everything it wrote lives and dies in the
-        # Recovery Window, which is deliberately not something to plan around (CONTEXT.md).
-        if download and outputs:
-            watch.arm(spawn_id, config.OUTPUTS_DIR)   # one predictable place — see config
+    if download:
+        arm(spawn_id)
     _wait_and_attach(spawn_id)
-    # After the shell detaches, not before: attaching blocks, and a sweeper forked ahead of it would
-    # spend the whole session polling a Spawn this very process is sitting inside.
-    if download and outputs:
+    # Again on the way out, and this is the arming that matters. A Tide Pool's **Output**s are most
+    # often declared by the session itself rather than at submission — a `--output` handed to a
+    # reattach, or simply the folder someone decided to write to — and the moment the shell closes is
+    # the first time the whole picture exists. Arming at attach as well is what survives a crash or a
+    # dropped link in between, and re-arming an entry that already settled costs one re-fetch of a
+    # Spawn the Head 404s in the usual case.
+    if download:
+        arm(spawn_id)
+        # After the shell detaches, not before: attaching blocks, and a sweeper forked ahead of it
+        # would spend the whole session polling a Spawn this very process is sitting inside.
         watch.ensure_sweeper()
+
+
+def arm(spawn_id: int) -> None:
+    """Record that this box is owed `spawn_id`'s results, in the one predictable place (see config).
+
+    Unconditional — never gated on whether an **Output** was declared here, because the declaration
+    can happen anywhere: at submission, on rejoining a Tide Pool, on a **Workspace** visit. An Output
+    whose collection depended on *how* it came to be declared would be one whose results quietly
+    stayed behind, which is exactly what the gate this replaces did. A Spawn that produced nothing
+    costs a 404 the sweeper settles as EMPTY.
+    """
+    watch.arm(spawn_id, config.OUTPUTS_DIR)
 
 
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,

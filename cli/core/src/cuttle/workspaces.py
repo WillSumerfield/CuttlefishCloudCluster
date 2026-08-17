@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import api, auth, spawns, tidepool as tidepool_mod, ui
+from . import api, auth, spawns, tidepool as tidepool_mod, ui, watch
 
 GIB = 1024 ** 3
 
@@ -168,6 +168,12 @@ def open_(name: str, vram: int | None = None, minutes: int | None = None, gpu: i
         ui.ok(f"opening workspace {name!r} as spawn {spawn_id}")
     stop = threading.Event()
     _storage_warner(name, stop)
+    # A visit's declared Outputs are shipped to the same `[out-…]` module as any Spawn's, "so it can be
+    # fetched like any Spawn's results" (siphons.WS_BLOCK) — but nothing here ever asked for them, so
+    # they sat on the Head until retention took them. Armed at attach and again at detach, exactly like
+    # a Tide Pool: a Workspace is where an Output is most likely to be declared mid-session, since the
+    # tree persists and the `--output` above overrides only THIS visit.
+    tidepool_mod.arm(spawn_id)
     try:
         # The name, not just the id: every message the attach prints — what becomes of the files, how
         # to get back in, how the session ended — differs for a visit, and this is what tells it so.
@@ -177,6 +183,8 @@ def open_(name: str, vram: int | None = None, minutes: int | None = None, gpu: i
         tidepool_mod._wait_and_attach(spawn_id, workspace=name)
     finally:
         stop.set()
+    tidepool_mod.arm(spawn_id)
+    watch.ensure_sweeper()
 
 
 def _storage_warner(name: str, stop: threading.Event) -> threading.Thread:
@@ -221,7 +229,13 @@ def download(name: str, subpath: str | None = None, dest: Path | None = None) ->
 
     Streamed to disk rather than fetched into memory (`api.Client.download`): the Head streams it
     precisely because a **Storage** runs to 16GB and up, and buffering it on arrival would give that
-    back."""
+    back.
+
+    Kept as a tar, unlike a Spawn's results — a Workspace is a tree someone works in and keeps working
+    in, so a download of one is a copy to put somewhere, not a set of results to open. The progress
+    line counts bytes with no percentage: what a Workspace holds is only knowable by walking it, and
+    that walk would delay the first byte for the sake of a number.
+    """
     from urllib.parse import quote
 
     _find(name)  # so a typo says "you have no workspace named" rather than a bare 404
@@ -230,7 +244,8 @@ def download(name: str, subpath: str | None = None, dest: Path | None = None) ->
     target = (Path(dest) if dest else Path.cwd()) / f"{stem}.tar.gz"
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        written = _client().download(path, target)
+        with ui.progress(f"downloading {name}") as update:
+            written = _client().download(path, target, on_progress=update)
     except api.ApiError as e:
         if ui.DEBUG:
             raise
