@@ -18,6 +18,7 @@ Auth: every call carries the bearer token from `~/.ccc/credentials`; the Head UR
 pinned on this machine (see tls.py).
 """
 
+import contextlib
 import io
 import json
 import re
@@ -615,18 +616,60 @@ def _hint_recovery(spawn_id: int) -> None:
             f"everything else the Spawn wrote, not just its declared outputs")
 
 
+def _held_bytes(path: str) -> int | None:
+    """How much the Head says it is holding, for a progress bar's denominator — or None if it will not
+    say. A courtesy lookup like `_recovery_status`: never a reason to refuse a download, since the only
+    thing riding on it is whether a percentage can be shown or only a running total."""
+    client = auth._client()
+    client.token = auth._load_token()
+    try:
+        st = client.json("GET", path, missing_ok=True)
+    except api.ApiError:
+        return None
+    return st.get("bytes") if st else None
+
+
+def _fetch(path: str, dest: Path, total: int | None, label: str, member=None) -> None:
+    """Stream a tar off the Head straight into `dest`, drawing how far along it is.
+
+    The bar is not decoration. A 3GB result is minutes of transfer, and the whole reason this command
+    was unusable is that minutes of silence and a wedged connection look identical from the outside.
+
+    Opened lazily, on the first byte rather than here, and that is the whole reason for the stack: a
+    Spawn that wrote nothing is a *normal* answer, and a progress line already on screen when it comes
+    back would have to resolve into a ✗ — which is how this CLI says a command failed. Nothing failed.
+    """
+    client = auth._client()
+    client.token = auth._load_token()
+    with contextlib.ExitStack() as stack:
+        drawn = []
+
+        def update(done: int) -> None:
+            if not drawn:
+                drawn.append(stack.enter_context(ui.progress(label, total=total)))
+            drawn[0](done)
+
+        client.download_extract(path, dest, member=member, on_progress=update)
+
+
 def outputs(spawn_id: int) -> None:
-    """Download a Spawn's declared outputs as a tar into the cwd.
+    """Download and unpack a Spawn's declared outputs into `~/ccc/outputs/spawn-<id>-outputs/`.
+
+    Extracted, not left as a tar: the tar is how results travel, not what anybody wanted. And into the
+    same place the auto-download uses rather than the cwd, so results live in one predictable location
+    however they were fetched — which also means running this twice is idempotent instead of leaving a
+    second copy wherever the second shell happened to be standing.
 
     Two different misses, and the Head is the one that can tell them apart (see main.spawn_outputs), so
     its 404 detail is printed verbatim rather than replaced by a guess here: a Spawn that WROTE nothing,
     versus one whose results were held and are now gone — 7 days elapsed, or evicted for the submitter's
     32GB Allowance. Telling a User their Spawn produced nothing when it produced 3GB they simply came
     back too late for is the one answer worse than saying neither."""
-    client = auth._client()
-    client.token = auth._load_token()
+    dest = config.OUTPUTS_DIR / f"spawn-{spawn_id}-outputs"
+    total = _held_bytes(f"/spawns/{spawn_id}/retention")
     try:
-        data = client.raw(f"/spawns/{spawn_id}/outputs")
+        _fetch(f"/spawns/{spawn_id}/outputs", dest, total, f"downloading spawn {spawn_id}",
+               member=watch._member)
     except api.ApiError as e:
         if e.status != 404:
             if ui.DEBUG:
@@ -635,24 +678,41 @@ def outputs(spawn_id: int) -> None:
         ui.warn(e.user_message())
         _hint_recovery(spawn_id)
         return
-    dest = Path.cwd() / f"spawn-{spawn_id}-outputs.tar.gz"
-    dest.write_bytes(data)
-    ui.ok(f"wrote {dest}")
+    ui.ok(f"results are in {dest}")
+
+
+def _recovery_member(member, path):
+    """The extraction filter for a recovery tar: the stdlib's `data` rules, then drop the archive's own
+    `recovery/` prefix — `watch._member`'s reasoning exactly, one directory name over. Without it the
+    result is `spawn-41-recovery/recovery/…`, which says the same word twice and buries the tree."""
+    member = tarfile.data_filter(member, path)
+    if member is None or member.name == "recovery":
+        return None
+    if member.name.startswith("recovery/"):
+        member = member.replace(name=member.name[len("recovery/"):], deep=False)
+    return member
 
 
 def recover(spawn_id: int) -> None:
-    """Download a Spawn's Recovery Window copy — its whole working dir as it stood when
+    """Download and unpack a Spawn's Recovery Window copy — its whole working dir as it stood when
     the Spawn ended, not just what it wrote to its declared outputs — for as long as the window is open.
 
     A separate artifact from `outputs()` on purpose: the declared outputs tar is permanent and never
     changes shape; this one expires, so the two are never merged into one download whose contents would
-    otherwise silently change once the window closes.
+    otherwise silently change once the window closes. Which is also why it lands in its own directory
+    rather than beside the declared results: what is in here stops existing on a schedule.
     """
-    data = _get_bytes(f"/spawns/{spawn_id}/recovery/download", missing_ok=True)
-    if data is None:
+    total = _held_bytes(f"/spawns/{spawn_id}/recovery")
+    dest = config.OUTPUTS_DIR / f"spawn-{spawn_id}-recovery"
+    try:
+        _fetch(f"/spawns/{spawn_id}/recovery/download", dest, total,
+               f"recovering spawn {spawn_id}", member=_recovery_member)
+    except api.ApiError as e:
+        if e.status != 404:
+            if ui.DEBUG:
+                raise
+            raise ui.abort(e.user_message()) from None
         ui.warn(f"spawn {spawn_id} has no open Recovery Window "
                 f"(already closed, over the 16GB cap, or none was made)")
         return
-    dest = Path.cwd() / f"spawn-{spawn_id}-recovery.tar.gz"
-    dest.write_bytes(data)
-    ui.ok(f"wrote {dest}")
+    ui.ok(f"recovered working directory is in {dest}")

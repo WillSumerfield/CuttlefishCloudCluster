@@ -94,12 +94,9 @@ effect on the **next** visit.
 
 Like a Tide Pool's, and for the same reason. An output here is an ordinary folder in the Workspace
 tree, so anything you write is kept either way and declaring one costs you no extra Storage. What
-declaring an output buys you is that the end of each session ALSO sends it home, to be downloaded like
-any Spawn's results:
-
-```sh
-cuttle outputs <spawn id>
-```
+declaring an output buys you is that the end of each session ALSO sends it home, and it arrives on your
+own machine without being asked for — in `~/ccc/outputs/spawn-<id>-outputs/`, like any Spawn's results.
+`cuttle outputs <spawn id>` fetches them again.
 
 ### There is no Recovery Window
 

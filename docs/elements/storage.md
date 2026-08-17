@@ -51,8 +51,8 @@ cuttle recipe list
 
 | | |
 |---|---|
-| `cuttle outputs <id>` | Download a Spawn's declared results as a tar, into the current directory. |
-| `cuttle recover <id>` | Download what it wrote *outside* those. One-day window. |
+| `cuttle outputs <id>` | Download a Spawn's declared results into `~/ccc/outputs/spawn-<id>-outputs/`. |
+| `cuttle recover <id>` | Download what it wrote *outside* those, into `~/ccc/outputs/spawn-<id>-recovery/`. One-day window. |
 
 ## Behavior
 

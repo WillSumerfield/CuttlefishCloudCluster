@@ -1210,7 +1210,7 @@ def logs(
 
 @app.command()
 def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
-    """Download a Spawn's declared outputs as a tar into the current directory."""
+    """Download a Spawn's declared outputs into ~/ccc/outputs/spawn-<id>-outputs/."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Download which Spawn?"))
     spawns_mod.outputs(spawn_id)
 
@@ -1218,8 +1218,9 @@ def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
 @app.command()
 def recover(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
     """Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared outputs,
-    while the day-long window since it ended is still open. See `--output`'s help on `cuttle run` for
-    what this is a safety net for; `cuttle outputs` is the separate, permanent outputs download."""
+    while the day-long window since it ended is still open. Lands unpacked in
+    ~/ccc/outputs/spawn-<id>-recovery/. See `--output`'s help on `cuttle run` for what this is a
+    safety net for; `cuttle outputs` is the separate, permanent outputs download."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Recover which Spawn?"))
     spawns_mod.recover(spawn_id)
 

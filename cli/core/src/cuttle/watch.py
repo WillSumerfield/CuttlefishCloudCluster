@@ -28,7 +28,6 @@ import sys
 import tarfile
 import time
 from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
 
 from . import api, config
@@ -243,25 +242,24 @@ def _member(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
     return member
 
 
-def _extract(data: bytes, dest: Path, spawn_id: int) -> Path:
-    """Unpack the Head's tar into `dest/spawn-<id>-outputs/`.
+def target(dest: Path, spawn_id: int) -> Path:
+    """Where this Spawn's results land: `dest/spawn-<id>-outputs/`.
 
     `dest` is config.OUTPUTS_DIR unless the Spawn was submitted with `--dest`, and it is created rather
     than required: the default is CCC's own directory and may not exist on a box that has never
     downloaded anything. A `--dest` whose parent is gone (deleted, an unmounted share) falls back to
     the default — results still have to land somewhere rather than be dropped for a reason the User
-    will never see."""
+    will never see.
+
+    Resolved before the download rather than after, because `api.download_extract` needs somewhere to
+    put the `.partial` directory it fills, and the fallback must not be discovered with 3GB in hand."""
     if not dest.is_dir() and dest != config.OUTPUTS_DIR:
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError:
             dest = config.OUTPUTS_DIR
             note(spawn_id, f"--dest is unreachable — extracting to {dest} instead")
-    out = dest / f"spawn-{spawn_id}-outputs"
-    out.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as tar:
-        tar.extractall(out, filter=_member)
-    return out
+    return dest / f"spawn-{spawn_id}-outputs"
 
 
 def drain_one(spawn_id: int, token: str | None = None) -> bool:
@@ -283,7 +281,10 @@ def drain_one(spawn_id: int, token: str | None = None) -> bool:
         state = client.json("GET", f"/spawns/{spawn_id}")
         if not state.get("done"):
             return False
-        data = client.raw(f"/spawns/{spawn_id}/outputs")
+        # Straight from the wire onto disk, never through this process's memory: the sweeper is a
+        # background process on a User's own machine and a 3GB result is a perfectly ordinary one.
+        out = target(Path(entry["dest"]), spawn_id)
+        client.download_extract(f"/spawns/{spawn_id}/outputs", out, member=_member)
     except api.ApiError as e:
         if e.status == 401:
             _finish(spawn_id, PARKED, "session expired — run `cuttle login` and it resumes")
@@ -295,12 +296,10 @@ def drain_one(spawn_id: int, token: str | None = None) -> bool:
             note(spawn_id, e.detail)
             _finish(spawn_id, EMPTY, e.detail)
             return True
-        # Unreachable Head, a 5xx, a transport hiccup: the entry is an obligation, not an attempt, so
-        # it stays exactly as it is and the next pass tries again.
+        # Unreachable Head, a 5xx, a transport hiccup, a transfer cut mid-stream: the entry is an
+        # obligation, not an attempt, so it stays exactly as it is and the next pass tries again.
         note(spawn_id, f"retrying — {e.detail}")
         return False
-    try:
-        out = _extract(data, Path(entry["dest"]), spawn_id)
     except OSError as e:
         _finish(spawn_id, PARKED, f"could not write the results — {e}")
         return True
