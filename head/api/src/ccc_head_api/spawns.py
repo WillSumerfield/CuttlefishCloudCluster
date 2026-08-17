@@ -1054,6 +1054,24 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
         what = f"the '{feat}' Arm Feature's system libraries"
         cmds.append(f"ccc_building={shlex.quote(what)}")
         cmds.append(f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}")
+    if specs:
+        # The whole of this prefix's lib/ goes on LD_LIBRARY_PATH (ccc_head_api.features), so every
+        # library conda happened to drag in SHADOWS the image's copy — for every process in the Pod, not
+        # just the Feature's. ncurses is the one that shouts: nothing in any profile's `libs` asks for it
+        # (it arrives under mesalib, via llvm), and the image's own `tput` is built against Ubuntu's
+        # libtinfo, so an interactive shell opened on
+        #     tput: symbol lookup error: undefined symbol: _nc_safe_fopen
+        # five times over — once per `tput` in oh-my-zsh's you-should-use plugin.
+        #
+        # Safe to delete precisely BECAUSE the image ships a libtinfo.so.6 of its own: whatever in here
+        # linked it resolves to Ubuntu's instead, which is the copy every other binary in the Pod was
+        # already using. Deleting a library the image does NOT supply would not be safe, and this is not
+        # a general prune of duplicates — libstdc++ especially must stay, since conda's is routinely
+        # newer than the image's and the Feature's own objects are built against it.
+        #
+        # Still bound WRITABLE here; it is read-only by the time the payload reads it.
+        cmds.append("rm -f %%FEATLIB_MOUNT%%/*/lib/libtinfo.so* "
+                    "%%FEATLIB_MOUNT%%/*/lib/libncurses*.so*")
     post = []
     if declared is not None:
         post.append('py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"; '
