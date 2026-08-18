@@ -40,6 +40,14 @@ This is the one place `--manifest` is optional. Leave it off and you get a bare 
 Environment at all — which is the right answer when you are poking at the machine rather than at your
 code.
 
+**Open it in VS Code instead of a terminal:**
+
+```sh
+cuttle run --tidepool --time 30 --vram 24 --vscode
+```
+
+See [Editing in VS Code](#editing-in-vs-code) below.
+
 **Come back to one you left:**
 
 ```sh
@@ -91,6 +99,30 @@ made something you want to keep, declare it.
 
 If you are reaching for the Recovery Window more than once, you want a [Workspace](workspaces.md)
 instead: it keeps the whole directory, permanently, with no window to miss.
+
+### Editing in VS Code
+
+Every session gets an ssh alias on this machine — `ccc-tp-<id>` for a Tide Pool, `ccc-ws-<name>` for a
+[Workspace](workspaces.md) visit — and it is printed when you attach. Anything that speaks ssh can use
+it:
+
+```sh
+ssh ccc-tp-58
+code --remote ssh-remote+ccc-tp-58
+```
+
+`--vscode` does the last one for you, opening straight at your project directory instead of giving
+you a terminal here. The session runs exactly as it would otherwise; you are simply not the one
+holding it.
+
+You never handle a key or a port. cuttle writes `~/.ssh/ccc.config` and adds a single `Include` line
+to your own `~/.ssh/config` — it never edits an entry you wrote. That file is regenerated from your
+live sessions every time you open one, so a Tide Pool that has ended leaves no alias and no key
+behind.
+
+The VS Code server (~150 MB) unpacks inside the Pod, on disk rather than in the small in-memory home,
+and it goes with the Pod when the session ends. Extensions install per session — a long-lived
+[Workspace](workspaces.md) is the better home for a setup you want back.
 
 ### If it never gets placed
 

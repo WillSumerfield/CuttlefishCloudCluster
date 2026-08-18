@@ -808,6 +808,11 @@ def workspace_open(
                                   help="Override the system-package file for THIS visit."),
     output: list[str] = typer.Option(None, "--output", "-o", help="Override the outputs for THIS visit."),
     feature: list[str] = typer.Option(None, "--feature", help="Override required Features for THIS visit."),
+    vscode: bool = typer.Option(
+        False, "--vscode", help="Open this visit in VS Code instead of a terminal here. Writes an "
+                                "ssh alias this box can reach the Pod by, then launches VS Code "
+                                "straight into your workspace. Without it the alias is printed and "
+                                "VS Code's own 'Connect to Host' picker finds it."),
 ):
     """Open a workspace and drop into its shell, resuming where the last visit left off.
 
@@ -824,7 +829,7 @@ def workspace_open(
                    lambda: ui.ask_text("Which workspace to open?"))
     workspaces_mod.open_(name, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
                          substrate=substrate, outputs=list(output) if output else None,
-                         features=list(feature) if feature else None)
+                         features=list(feature) if feature else None, vscode=vscode)
 
 
 @workspace_app.command("update")
@@ -1047,6 +1052,12 @@ def run(
                                   "environment is built, so a wheel that has to compile finds its "
                                   "headers. Relative to the project root; `apt.txt` by convention. "
                                   "Package names only: no versions, no URLs, no apt options."),
+    vscode: bool = typer.Option(
+        False, "--vscode", help="With --tidepool only. Open the shell in VS Code instead of this "
+                                "terminal. Writes an ssh alias this box can reach the Pod by, then "
+                                "launches VS Code straight into your project directory. Without it "
+                                "the alias is printed and VS Code's own 'Connect to Host' picker "
+                                "finds it."),
     no_download: bool = typer.Option(
         False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
                                      "they are downloaded into ~/ccc/outputs/spawn-<id>-outputs/ as "
@@ -1108,7 +1119,9 @@ def run(
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
                                 features=feature, follow=follow, download=not no_download,
                                 manifest=manifest, substrate=substrate, no_gitignore=no_gitignore,
-                                root=root, name=name)
+                                vscode=vscode, root=root, name=name)
+    if vscode:
+        ui.warn("--vscode is ignored without --tidepool — a script Spawn has no shell to open")
     wizard = script is None
     # The card count shows only past one: at a single Device it is what every Spawn does, and `24G`
     # already IS the per-card figure, so printing it would add a word and say nothing.

@@ -150,7 +150,8 @@ def update(name: str, storage_gb: int | None = None, vram: int | None = None, mi
 
 def open_(name: str, vram: int | None = None, minutes: int | None = None, gpu: int | None = None,
           manifest: str | None = None, outputs: list[str] | None = None,
-          features: list[str] | None = None, substrate: str | None = None) -> None:
+          features: list[str] | None = None, substrate: str | None = None,
+          vscode: bool = False) -> None:
     """Start a visit (or attach to the live one) and drop into the shell.
 
     Reuses the Tide Pool attach path wholesale — a visit IS a Tide Pool, so placement, the ephemeral
@@ -188,7 +189,7 @@ def open_(name: str, vram: int | None = None, minutes: int | None = None, gpu: i
         # It also owns the ending now. Saying "everything is saved" here as well would have collided
         # with the `--time` ending's "being mirrored home now" and reproduced, in two lines, exactly
         # the contradiction that made a timed-out visit read as a disaster.
-        tidepool_mod._wait_and_attach(spawn_id, workspace=name)
+        tidepool_mod._wait_and_attach(spawn_id, workspace=name, vscode=vscode)
     finally:
         stop.set()
     tidepool_mod.arm(spawn_id)

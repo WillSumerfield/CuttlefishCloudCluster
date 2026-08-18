@@ -32,7 +32,11 @@ That upload is the **only** one it ever takes. From then on it changes from insi
 
 ```sh
 cuttle workspace open scratch
+cuttle workspace open scratch --vscode   # in VS Code instead of this terminal
 ```
+
+The visit gets an ssh alias — `ccc-ws-scratch`, named for the Workspace and not for the Spawn, so it
+is the same one every visit. See [Editing in VS Code](tide-pool.md#editing-in-vs-code).
 
 **See what you have, and how full each one is:**
 
