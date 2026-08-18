@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, guises, karma, ratelimit, retraction, slurm
+from . import db, guises, karma, ratelimit, retraction, slurm, tarstream
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import recipes as recipes_mod
 from . import recovery as recovery_mod
@@ -449,9 +449,13 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
     **Every one of those 404s is decided before the first chunk goes out.** Streaming buys the fix this
     route exists to have (a 3GB result no longer spends four silent minutes compressing while the client
     times out), and costs exactly one thing: once a byte is sent the 200 is committed, and a refusal
-    after that is a truncated tar rather than a message. Hence the shape below — ask, then stream."""
-    stream = spawns_mod.outputs_tar(job_id)
-    if stream is None:
+    after that is a truncated tar rather than a message. Hence the shape below — ask, then stream.
+
+    `X-CCC-Bytes` is what the tree weighs uncompressed, from the same walk that decided the 404. A
+    streamed body carries no `Content-Length`, so without it a client has no denominator and can only
+    count upwards — which on a 3GB result is the silence this route already fixed once."""
+    weighed = spawns_mod.outputs_tar(job_id)
+    if weighed is None:
         with db.connect() as conn:
             known = db.get_spawn(conn, job_id) is not None
         if known and retention_mod.evicted(job_id):
@@ -460,8 +464,10 @@ def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
                                      f"until the submitter's newer results need the room")
         raise HTTPException(404, f"Spawn {job_id} wrote no outputs — the folders it declared with "
                                  f"--output were empty when it ended")
+    stream, total = weighed
     return StreamingResponse(stream, media_type="application/gzip", headers={
-        "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"'})
+        "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"',
+        "X-CCC-Bytes": str(total)})
 
 
 @api.get("/spawns/{job_id}/retention")
@@ -507,13 +513,15 @@ def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> 
     `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
     artifact whose contents would otherwise silently change once the window closes.
 
-    Streamed, and the 404 settled first, for the same reasons as `/outputs` above — more so here, where
-    the per-Spawn cap admits copies up to 16GB."""
-    stream = recovery_mod.tar_stream(job_id)
-    if stream is None:
+    Streamed, the 404 settled first, and `X-CCC-Bytes` declared, for the same reasons as `/outputs`
+    above — more so here, where the per-Spawn cap admits copies up to 16GB."""
+    weighed = recovery_mod.tar_stream(job_id)
+    if weighed is None:
         raise HTTPException(404, f"no recovery copy for Spawn {job_id}")
+    stream, total = weighed
     return StreamingResponse(stream, media_type="application/gzip", headers={
-        "Content-Disposition": f'attachment; filename="spawn-{job_id}-recovery.tar.gz"'})
+        "Content-Disposition": f'attachment; filename="spawn-{job_id}-recovery.tar.gz"',
+        "X-CCC-Bytes": str(total)})
 
 
 @api.delete("/spawns/{job_id}", status_code=204)
@@ -1109,7 +1117,11 @@ def download_workspace(name: str, path: str | None = None,
     visited is still readable, it is just a moment older than what the session sees.
 
     Streamed, never buffered (`workspaces.tar_stream`): a Storage runs to 16GB and up, so the in-memory
-    shape `/spawns/{id}/outputs` uses would put the whole tree in this process."""
+    shape this route once used would have put the whole tree in this process.
+
+    `X-CCC-Bytes` costs a walk of that tree before the first byte, and a Workspace is the one tree in
+    CCC allowed to hold a venv — so this is the most expensive of the three to weigh and the most
+    worth weighing, since it is also the largest thing a User ever waits on."""
     with db.connect() as conn:
         row = db.get_workspace(conn, user["id"], name)
     if row is None:
@@ -1119,9 +1131,13 @@ def download_workspace(name: str, path: str | None = None,
     except ValueError as e:
         raise HTTPException(404, str(e))
     stem = f"workspace-{name}" + (f"-{Path(path).name}" if path else "")
+    # An empty Workspace is not a 404 the way an empty outputs dir is — it is a Workspace that exists
+    # and holds nothing yet, and a tar of nothing is the honest answer to asking for it.
+    total = tarstream.weigh(target) or 0
     return StreamingResponse(
         workspaces_mod.tar_stream(target, stem), media_type="application/gzip",
-        headers={"Content-Disposition": f'attachment; filename="{stem}.tar.gz"'})
+        headers={"Content-Disposition": f'attachment; filename="{stem}.tar.gz"',
+                 "X-CCC-Bytes": str(total)})
 
 
 @api.delete("/workspaces/{name}", status_code=204)

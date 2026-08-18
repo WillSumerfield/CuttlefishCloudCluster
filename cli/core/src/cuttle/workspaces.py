@@ -232,9 +232,12 @@ def download(name: str, subpath: str | None = None, dest: Path | None = None) ->
     back.
 
     Kept as a tar, unlike a Spawn's results — a Workspace is a tree someone works in and keeps working
-    in, so a download of one is a copy to put somewhere, not a set of results to open. The progress
-    line counts bytes with no percentage: what a Workspace holds is only knowable by walking it, and
-    that walk would delay the first byte for the sake of a number.
+    in, so a download of one is a copy to put somewhere, not a set of results to open.
+
+    The progress line gets a bar, from the `X-CCC-Bytes` the Head declares. That walk of the tree was
+    once refused here as a delay before the first byte — it is paid now because the Head was already
+    walking the same tree to answer, and a Storage is the largest thing a User ever waits on, so it is
+    the one that most needs a number rather than a rising count.
     """
     from urllib.parse import quote
 

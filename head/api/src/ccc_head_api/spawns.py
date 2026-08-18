@@ -1917,7 +1917,7 @@ def err_text(job_id: int) -> str | None:
 
 
 def outputs_tar(job_id: int):
-    """gzip-tar of the Spawn's keep directory, for `cuttle outputs <id>` — as a stream of chunks, or
+    """gzip-tar of the Spawn's keep directory, for `cuttle outputs <id>` — as `(chunks, bytes)`, or
     None if it produced none.
 
     The tree inside mirrors the paths that were declared: `-o runs` arrives as `outputs/runs/…`, and an
@@ -1927,9 +1927,14 @@ def outputs_tar(job_id: int):
     Emptiness — not existence — is the test: submit() pre-creates the dir for every Spawn, so its mere
     presence says nothing. An empty dir means "nothing written yet / nothing produced", not "ready".
     Asked here, before the generator is handed back, because the caller's 404 has to be decidable while
-    it is still possible to send one (`tarstream.has_files`).
+    it is still possible to send one (`tarstream.weigh`).
+
+    That same walk returns what the tree weighs, which the route sends as `X-CCC-Bytes` so the client
+    has a denominator. Read off the disk rather than the retention ledger: the ledger row is written by
+    a 30s tick, so a User collecting results the moment their Spawn ended got no bar at all.
     """
     outputs = _spawn_dir(job_id) / "outputs"
-    if not tarstream.has_files(outputs):
+    total = tarstream.weigh(outputs)
+    if total is None:
         return None
-    return tarstream.chunks(outputs, "outputs")
+    return tarstream.chunks(outputs, "outputs"), total

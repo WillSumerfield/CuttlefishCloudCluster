@@ -635,12 +635,24 @@ class TestTarStream:
         d = head_spawns.SPAWNS_DIR / "44" / "recovery"
         d.mkdir(parents=True)
         (d / "result.txt").write_text("hi")
-        stream = recovery.tar_stream(44)
-        assert stream is not None
+        weighed = recovery.tar_stream(44)
+        assert weighed is not None
+        stream, total = weighed
         data = b"".join(stream)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
             names = tf.getnames()
         assert any(n.endswith("result.txt") for n in names)
+
+    def test_the_weight_comes_off_the_disk_not_the_ledger(self):
+        """The ledger's `bytes` is what was copied when the window opened. What the client is about to
+        receive is what is on the disk now, and the bar has to be drawn against that."""
+        d = head_spawns.SPAWNS_DIR / "45" / "recovery"
+        d.mkdir(parents=True)
+        (d / "a.bin").write_bytes(b"x" * 700)
+        (d / "sub").mkdir()
+        (d / "sub" / "b.bin").write_bytes(b"y" * 300)
+        _, total = recovery.tar_stream(45)
+        assert total == 1000
 
 
 # --- the two new API routes ---------------------------------------------------

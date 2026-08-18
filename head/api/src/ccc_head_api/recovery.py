@@ -179,13 +179,18 @@ def status(conn, job_id: int) -> dict | None:
 
 def tar_stream(job_id: int):
     """gzip-tar of a Spawn's recovery copy, for `cuttle recover <id>` / the Dashboard's download button
-    — a stream of chunks (`tarstream`), or None if there is nothing on disk.
+    — `(chunks, bytes)` (`tarstream`), or None if there is nothing on disk.
 
     The caller (main.py) is expected to have already checked `status()` isn't None, but this re-checks
     disk directly rather than trusting the DB row alone: a race between the sweep evicting it and a
     download landing should read as 404, not a half-written tar. Which is also why the check happens
-    here, before a single chunk is yielded — after that the 200 is already sent."""
+    here, before a single chunk is yielded — after that the 200 is already sent.
+
+    The weight comes back off the same walk and travels as `X-CCC-Bytes`. Deliberately NOT the
+    `bytes` on the ledger row `status()` reads: that number is what was copied when the window opened,
+    and this one is what is on the disk now, which is what the client is about to receive."""
     recovery_dir = _spawn_dir(job_id) / "recovery"
-    if not tarstream.has_files(recovery_dir):
+    total = tarstream.weigh(recovery_dir)
+    if total is None:
         return None
-    return tarstream.chunks(recovery_dir, "recovery")
+    return tarstream.chunks(recovery_dir, "recovery"), total

@@ -23,6 +23,7 @@ Level 1 gives that back and costs little — these trees are checkpoints, logs a
 come out around 2:1. The point of the ratio was never the ratio; it was not sending 3GB.
 """
 
+import os
 import queue
 import tarfile
 import threading
@@ -69,12 +70,49 @@ def chunks(target: Path, arcbase: str):
         stop.set()
 
 
-def has_files(target: Path) -> bool:
-    """Whether there is anything in there worth a tar at all.
+def weigh(target: Path) -> int | None:
+    """How many bytes of file this tar will carry, or None if there is nothing in there to tar at all.
 
-    Emptiness, not existence, is the test everywhere this is used: `submit` pre-creates a Spawn's
-    `outputs/` before the job runs, so the directory being there says nothing. And it has to be asked
-    BEFORE the stream opens — once the first chunk is out the 200 is committed, and the careful 404
-    telling "wrote nothing" from "held it, now evicted" can no longer be sent.
+    Two answers off one walk, because both are needed at the same instant and for the same reason.
+
+    **The None is the 404.** Emptiness, not existence, is the test everywhere this is used: `submit`
+    pre-creates a Spawn's `outputs/` before the job runs, so the directory being there says nothing.
+    And it has to be asked BEFORE the stream opens — once the first chunk is out the 200 is committed,
+    and the careful 404 telling "wrote nothing" from "held it, now evicted" can no longer be sent.
+
+    **The int is the progress bar's denominator**, sent as `X-CCC-Bytes` beside the tar. A client
+    cannot derive it: `Content-Length` is absent on a streamed body, and the compressed length is not
+    known to anyone until the last chunk. Declared here, in the same breath as the 200, so it is never
+    the stale reading a separate metadata route would give (the retention ledger this replaced was
+    written by a 30s tick, so a download that beat the tick got no bar at all).
+
+    Counted the way `retention._du` and `workspaces.usage` count — file sizes, symlinks as links and
+    never followed — so the number a User is shown mid-download is the number they were shown before
+    it and after it. Directories and symlinks contribute 0, which is also what they contribute to the
+    tar members a client sums on the other end.
+
+    The walk is the cost, and it is paid before the first byte. That was a deliberate no for a
+    **Workspace**, whose tree is the one in CCC allowed to hold a venv; overturned because the walk
+    was already happening here for the 404, and ~100k stats is not a delay next to 16GB of transfer.
     """
-    return target.is_dir() and any(p.is_file() for p in target.rglob("*"))
+    if not target.is_dir():
+        return None
+    total = 0
+    found = False
+    stack = [str(target)]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue    # raced with an eviction, or was never readable
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                    continue
+                found = True
+                if not entry.is_symlink():
+                    total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+    return total if found else None

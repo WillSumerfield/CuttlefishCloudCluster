@@ -616,20 +616,7 @@ def _hint_recovery(spawn_id: int) -> None:
             f"everything else the Spawn wrote, not just its declared outputs")
 
 
-def _held_bytes(path: str) -> int | None:
-    """How much the Head says it is holding, for a progress bar's denominator — or None if it will not
-    say. A courtesy lookup like `_recovery_status`: never a reason to refuse a download, since the only
-    thing riding on it is whether a percentage can be shown or only a running total."""
-    client = auth._client()
-    client.token = auth._load_token()
-    try:
-        st = client.json("GET", path, missing_ok=True)
-    except api.ApiError:
-        return None
-    return st.get("bytes") if st else None
-
-
-def _fetch(path: str, dest: Path, total: int | None, label: str, member=None) -> None:
+def _fetch(path: str, dest: Path, label: str, member=None) -> None:
     """Stream a tar off the Head straight into `dest`, drawing how far along it is.
 
     The bar is not decoration. A 3GB result is minutes of transfer, and the whole reason this command
@@ -638,16 +625,21 @@ def _fetch(path: str, dest: Path, total: int | None, label: str, member=None) ->
     Opened lazily, on the first byte rather than here, and that is the whole reason for the stack: a
     Spawn that wrote nothing is a *normal* answer, and a progress line already on screen when it comes
     back would have to resolve into a ✗ — which is how this CLI says a command failed. Nothing failed.
+
+    The denominator rides in on the response's own `X-CCC-Bytes` header and reaches `ui.progress`
+    through `update`. There is no pre-flight lookup: this used to GET `/spawns/<id>/retention` first,
+    a ledger row the Head writes on a 30s tick, so collecting results the moment a Spawn ended — the
+    common case — reliably found nothing and drew no bar.
     """
     client = auth._client()
     client.token = auth._load_token()
     with contextlib.ExitStack() as stack:
         drawn = []
 
-        def update(done: int) -> None:
+        def update(done: int, total: int | None = None) -> None:
             if not drawn:
                 drawn.append(stack.enter_context(ui.progress(label, total=total)))
-            drawn[0](done)
+            drawn[0](done, total)
 
         client.download_extract(path, dest, member=member, on_progress=update)
 
@@ -666,9 +658,8 @@ def outputs(spawn_id: int) -> None:
     32GB Allowance. Telling a User their Spawn produced nothing when it produced 3GB they simply came
     back too late for is the one answer worse than saying neither."""
     dest = config.OUTPUTS_DIR / f"spawn-{spawn_id}-outputs"
-    total = _held_bytes(f"/spawns/{spawn_id}/retention")
     try:
-        _fetch(f"/spawns/{spawn_id}/outputs", dest, total, f"downloading spawn {spawn_id}",
+        _fetch(f"/spawns/{spawn_id}/outputs", dest, f"downloading spawn {spawn_id}",
                member=watch._member)
     except api.ApiError as e:
         if e.status != 404:
@@ -702,10 +693,9 @@ def recover(spawn_id: int) -> None:
     otherwise silently change once the window closes. Which is also why it lands in its own directory
     rather than beside the declared results: what is in here stops existing on a schedule.
     """
-    total = _held_bytes(f"/spawns/{spawn_id}/recovery")
     dest = config.OUTPUTS_DIR / f"spawn-{spawn_id}-recovery"
     try:
-        _fetch(f"/spawns/{spawn_id}/recovery/download", dest, total,
+        _fetch(f"/spawns/{spawn_id}/recovery/download", dest,
                f"recovering spawn {spawn_id}", member=_recovery_member)
     except api.ApiError as e:
         if e.status != 404:

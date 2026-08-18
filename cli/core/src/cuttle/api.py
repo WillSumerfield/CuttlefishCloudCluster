@@ -187,17 +187,42 @@ class Api:
         Written to a `.part` beside the target and renamed on success, so an interrupted download never
         leaves a truncated tar sitting under the name of a complete one.
 
-        `on_progress` is called with the bytes written so far. Compressed bytes here, uncompressed in
-        `download_extract` — this one never learns what is inside what it is writing.
+        `on_progress(done, total)` is called with the UNCOMPRESSED bytes so far and the size the Head
+        declared in `X-CCC-Bytes`. The file on disk is the compressed tar, byte for byte as it arrived
+        — the decompression here exists only so the bar's numerator and denominator are the same
+        quantity, since a compressed count against an uncompressed total would show a 16GB Workspace
+        finishing at 45%. A gzip decompress at level 1 runs an order of magnitude faster than the mesh
+        moves, so it costs nothing anybody can see.
+
+        It also, finally, checks the gzip CRC32 — the one integrity check `download_extract` explicitly
+        cannot reach, because tarfile stops at the archive's end-of-file blocks and never feeds the
+        trailer through.
+
+        The count is of tar-stream bytes, so it runs slightly ahead of the file sizes the Head summed:
+        every member carries a 512-byte header and pads to a 512-byte boundary. On a tree of many tiny
+        files that is a real gap, and the bar simply arrives at 100% a little early rather than
+        reporting past it — worth it to keep `X-CCC-Bytes` meaning "what this tree holds", the same
+        number a listing quotes, instead of a wire artifact nothing else could use.
         """
         part = dest.with_suffix(dest.suffix + ".part")
         written = 0
+        plain = 0
         try:
             with self._stream(path) as r, part.open("wb") as f:
+                total = _declared_bytes(r)
+                gz = zlib.decompressobj(zlib.MAX_WBITS | 16)
                 for chunk in r.iter_bytes():
                     written += f.write(chunk)
+                    plain += len(gz.decompress(chunk, 0))
                     if on_progress:
-                        on_progress(written)
+                        on_progress(plain, total)
+                plain += len(gz.flush())
+                if on_progress:
+                    on_progress(plain, total)
+        except zlib.error as e:
+            part.unlink(missing_ok=True)
+            raise ApiError(path, f"the download arrived corrupted and was discarded ({e}) — nothing "
+                                 f"was written; try again") from None
         except httpx.RequestError as e:
             part.unlink(missing_ok=True)
             raise ApiError(path, self._transport_detail(e)) from None
@@ -237,16 +262,19 @@ class Api:
         try:
             with self._stream(path) as r:
                 # Called once with nothing done yet, and only now: the caller's progress line is what
-                # this fires, and a route that answered 404 must not have drawn one first.
+                # this fires, and a route that answered 404 must not have drawn one first. The size
+                # rides along from here on, because the header it comes from is only readable once the
+                # response is open — which is after the caller decided whether to draw a line at all.
+                total = _declared_bytes(r)
                 if on_progress:
-                    on_progress(0)
+                    on_progress(0, total)
                 reader = _ChunkReader(r.iter_bytes())
                 with tarfile.open(fileobj=reader, mode="r|gz") as tf:
                     for m in tf:
                         tf.extract(m, work, filter=member or tarfile.data_filter)
                         seen += m.size
                         if on_progress:
-                            on_progress(seen)
+                            on_progress(seen, total)
         except httpx.RequestError as e:
             shutil.rmtree(work, ignore_errors=True)
             raise ApiError(path, self._transport_detail(e)) from None
@@ -337,6 +365,25 @@ class _ChunkReader:
             return out
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
+
+
+def _declared_bytes(r: httpx.Response) -> int | None:
+    """What the Head says this download weighs, from `X-CCC-Bytes`, or None if it will not say.
+
+    Never a reason to fail a transfer. The only thing riding on it is whether the progress line can
+    draw a bar or must count upwards, so an old Head that does not send the header, or one that sends
+    something unparseable, degrades to the line that was there before the header existed.
+
+    A streamed body has no `Content-Length` to read instead — and would not want one, since the useful
+    number is the uncompressed size and the compressed length is unknown until the last chunk.
+    """
+    raw = r.headers.get("X-CCC-Bytes")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _detail(r: httpx.Response) -> str:

@@ -379,12 +379,18 @@ _REPAINT_S = 0.1        # a repaint per chunk would spend more time drawing than
 
 @contextmanager
 def progress(label: str, total: int | None = None):
-    """`step`, for a phase that knows how far along it is. Yields `update(done)` — bytes SO FAR, not a
-    delta, so a caller that recomputes rather than accumulates cannot drift.
+    """`step`, for a phase that knows how far along it is. Yields `update(done, total=None)` — bytes SO
+    FAR, not a delta, so a caller that recomputes rather than accumulates cannot drift.
 
-    A `total` gets a bar and a percentage; without one the line is bytes and a rate, which is the
-    honest rendering when nobody knows the denominator (a **Workspace** tree's size would cost a `du`
-    walk that delays the first byte — the very thing this exists to stop delaying).
+    A `total` gets a bar and a percentage; without one the line is bytes and a rate, which stays the
+    honest rendering whenever nobody knows the denominator.
+
+    **The total may arrive late, and usually does.** A download learns what it is fetching from the
+    `X-CCC-Bytes` header on the response, which is not read until the stream is already open — by then
+    the caller has drawn its first line. So `update` takes an optional second argument and latches it:
+    the line starts as bytes-and-rate and becomes a bar the moment the size is known. Latched, not
+    tracked, because it is one fact about one transfer; a second value would be a Head changing its
+    mind mid-stream, and the first answer is the one the bar was drawn against.
 
     Why this exists at all: a 3GB result is minutes of silence, and silence is exactly what a User
     reads as a hang. It is also what made the timeout that motivated all this indistinguishable from an
@@ -396,29 +402,37 @@ def progress(label: str, total: int | None = None):
     """
     if VERBOSE:
         err.print(f"[accent]→[/accent] {label}")
-        yield lambda done: None
+        yield lambda done, total=None: None
         ok(label)
         return
     started = time.monotonic()
     last = [0.0]
     seen = [0]
+    cap = [total]
 
     def render(done: int) -> Text:
         elapsed = max(time.monotonic() - started, 1e-6)
         rate = f"{human_bytes(done / elapsed)}/s"
-        if total:
-            frac = min(done / total, 1.0)
+        whole = cap[0]
+        if whole:
+            frac = min(done / whole, 1.0)
             filled = round(frac * _BAR_WIDTH)
             bar = "━" * filled + "─" * (_BAR_WIDTH - filled)
+            # Both numbers, not just the percentage: "82%" of an unnamed quantity says nothing about
+            # whether the wait left is seconds or an hour, and that is the question being asked.
             return Text.from_markup(
-                f"{label}  [accent]{bar}[/accent] {frac * 100:3.0f}%  [muted]{rate}[/muted]")
+                f"{label}  [accent]{bar}[/accent] {frac * 100:3.0f}%  "
+                f"{human_bytes(min(done, whole))}/{human_bytes(whole)}  [muted]{rate}[/muted]")
         return Text.from_markup(f"{label}  {human_bytes(done)}  [muted]{rate}[/muted]")
 
     with _Surface() as surface:
         surface.show(render(0))
 
-        def update(done: int) -> None:
+        def update(done: int, total: int | None = None) -> None:
             seen[0] = done
+            if total and not cap[0]:
+                cap[0] = total
+                last[0] = 0.0   # the bar appearing is worth a repaint the throttle would swallow
             now = time.monotonic()
             if now - last[0] < _REPAINT_S:
                 return
