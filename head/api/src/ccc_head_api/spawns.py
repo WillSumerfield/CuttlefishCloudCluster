@@ -940,6 +940,19 @@ done
 echo "export TMPDIR=/ccc-tmp" >> /etc/profile.d/ccc-tidepool.sh
 echo "export PIP_CACHE_DIR=/ccc-tmp/pip" >> /etc/profile.d/ccc-tidepool.sh
 chmod 600 /etc/profile.d/ccc-tidepool.sh
+# Where the VS Code server unpacks — ~150MB, into the same 64MB tmpfs home, which fails as ENOSPC
+# partway through and is then reported by Remote-SSH as "Cannot resolve authority" with the real cause
+# (StorageFull, unpacking package.json) buried four screens down its own log. Measured on real hardware
+# (2026-08-18), against `cuttle run --tidepool --vscode`.
+#
+# VSCODE_AGENT_FOLDER in sshd's SetEnv below is NOT enough on its own, and this is why the variable did
+# not save us: it names the legacy server-script location, and Remote-SSH 0.124 bootstraps through the
+# Rust CLI instead, which unpacks to ~/.vscode-server/cli/servers/ and reads its own
+# VSCODE_CLI_DATA_DIR. Both are set now, but the SYMLINK is the fix that does not depend on knowing
+# which variable this month's client honours — whatever any of them decides to write under
+# ~/.vscode-server lands on the bound disk scratch.
+mkdir -p "$HOME"
+ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"
 # The shell's own configuration (ccc_head_api.zshrc), which the Head renders rather than the image
 # bakes — that module's docstring says why. Everything ABOVE this point still lands in /etc/profile.d
 # and is reached through the one line BASE_DEF_TMPL appends to /etc/zsh/zprofile: there is exactly one
@@ -1000,14 +1013,18 @@ CCC_TP_USERRC
 #
 # XDG: the Pod's home is a 64MB tmpfs and, for a Feature-requesting Spawn, a **Licence** directory
 # every Guise on the Arm can read — see the XDG_ENV note in JOB_SCRIPT for the leak this closes.
-# VSCODE_AGENT_FOLDER: the VS Code server unpacks to ~150MB, which that same 64MB home cannot hold.
+# VSCODE_AGENT_FOLDER / VSCODE_CLI_DATA_DIR: the VS Code server unpacks to ~150MB, which that same
+# 64MB home cannot hold. Two variables because two bootstraps — the legacy server script reads the
+# first, the Rust CLI the second — and neither is load-bearing on its own: the ~/.vscode-server symlink
+# in the boot script above is what actually moves the bytes.
 # `/ccc-tmp` is `$scratch/tmp` on the Arm's real disk (cuttle.templates: only /tmp is a bind mount off
 # BasePath's disk), so it can.
 exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no \\
   -o AuthorizedKeysFile=/ccc_authorized_keys \\
   -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8 XDG_CONFIG_HOME=/ccc-tmp/xdg/config \\
 XDG_DATA_HOME=/ccc-tmp/xdg/data XDG_STATE_HOME=/ccc-tmp/xdg/state \\
-XDG_CACHE_HOME=/ccc-tmp/xdg/cache VSCODE_AGENT_FOLDER=/ccc-tmp/vscode"
+XDG_CACHE_HOME=/ccc-tmp/xdg/cache VSCODE_AGENT_FOLDER=/ccc-tmp/vscode \\
+VSCODE_CLI_DATA_DIR=/ccc-tmp/vscode"
 CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 # Which variables the boot script above has to re-export past sshd — DERIVED from `$featenv` rather than

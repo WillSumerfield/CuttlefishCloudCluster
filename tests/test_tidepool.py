@@ -314,6 +314,21 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         assert "$scratch/tmp:/ccc-tmp" in body            # the disk-backed bind
         assert 'export TMPDIR=/ccc-tmp' in body           # ...and the login shell told to use it
 
+    def test_the_vscode_server_unpacks_onto_disk_not_into_the_ram_home(self, tmp_path):
+        """~150MB of server into a 64MB tmpfs home: it dies as ENOSPC partway through the unpack, and
+        Remote-SSH reports that as "Cannot resolve authority" with the real cause several screens down
+        its own log. The symlink is the load-bearing half — the two variables name the legacy server
+        script's folder and the Rust CLI's data dir respectively, and which one a given client reads
+        is not ours to know."""
+        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        assert 'ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"' in body
+        assert "VSCODE_AGENT_FOLDER=/ccc-tmp/vscode" in body
+        assert "VSCODE_CLI_DATA_DIR=/ccc-tmp/vscode" in body
+        # ...and the directory it points at is created on the disk scratch, host-side, before any of it.
+        assert '"$scratch/tmp/vscode"' in body
+        assert body.index("ln -sfn /ccc-tmp/vscode") < body.index("exec /usr/sbin/sshd")
+
     def test_missing_outputs_still_required_without_tidepool(self, tmp_path):
         with pytest.raises(ValueError, match="output"):
             head_spawns.submit(

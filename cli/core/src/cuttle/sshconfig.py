@@ -157,8 +157,9 @@ def open_vscode(name: str, proj: str | None) -> bool:
 
     `--remote ssh-remote+<alias> <folder>` is VS Code's own documented spelling, and it is the whole
     integration: Remote-SSH reads `~/.ssh/config`, finds the alias `refresh` just wrote, and installs
-    its server under `VSCODE_AGENT_FOLDER=/ccc-tmp/vscode` (sshd's SetEnv — the 64MB home tmpfs cannot
-    hold the ~150MB server).
+    its server on the Pod's disk scratch — a `~/.vscode-server` symlink the Tide Pool's boot script
+    lays down, because the ~150MB server does not fit the 64MB tmpfs home and the variables that are
+    supposed to redirect it depend on which bootstrap the client uses (ccc_head_api.spawns).
     """
     exe = shutil.which("code")
     if not exe:
