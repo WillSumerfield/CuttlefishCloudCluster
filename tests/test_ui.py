@@ -312,3 +312,124 @@ class TestASecretCanBeTakenOffARemoteHead:
         written = capsys.readouterr().err
         assert written.startswith("\033Ptmux;") and written.endswith("\033\\")
         assert "\033\033]52;c;" in written, "ESC is doubled inside a DCS string"
+
+
+class TestTheCanvasWritesOnlyWhatMoved:
+    """The alternate-screen canvas is repainted ~12x/s (ui._tick_start). Rich has no incremental
+    screen diff, so that used to mean rewriting every cell of the terminal — padding included —
+    twelve times a second, unbuffered, into a terminal that draws bytes as they arrive. gnome
+    terminal answers the DECRQM query for synchronized output (mode 2026) with status 4,
+    "permanently reset", so nothing there can make such a frame atomic. The only fix is to write
+    less.
+    """
+
+    @pytest.fixture
+    def canvas(self, monkeypatch):
+        """A real Rich console on the alternate screen, writing to a buffer we can measure."""
+        import io
+        from rich.console import Console
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, height=50, force_terminal=True, highlight=False)
+        console.set_alt_screen(True)
+        monkeypatch.setattr(ui, "err", console)
+        monkeypatch.setattr(ui, "_SCREEN", object())   # only a flag now; nothing is called on it
+        monkeypatch.setattr(ui, "_PREV", None)
+        monkeypatch.setattr(ui, "_REASSERT_AT", 0.0)
+        monkeypatch.setattr(ui, "_FRAME", None)
+        monkeypatch.setattr(ui, "_LOOSE", [])
+        buf.truncate(0), buf.seek(0)
+
+        def paint(**kw):
+            buf.truncate(0), buf.seek(0)
+            ui._paint(**kw)
+            return buf.getvalue()
+        return paint
+
+    def _row(self, text):
+        from rich.text import Text
+        ui._LOOSE.append(Text(text))
+
+    def test_the_first_paint_writes_the_whole_screen(self, canvas):
+        self._row("hello")
+        assert len(canvas()) > 5000     # 200x50 cells, padding and all
+
+    def test_an_unchanged_canvas_writes_nothing_at_all(self, canvas):
+        self._row("hello")
+        canvas()
+        assert canvas() == ""
+
+    def test_one_changed_row_costs_one_row(self, canvas):
+        """The spinner case, and the whole point: a step turning must not redraw the terminal."""
+        self._row("hello")
+        canvas()
+        from rich.text import Text
+        ui._LOOSE[-1] = Text("hellp")     # one cell, as a spinner turning is
+        out = canvas()
+        assert out != ""
+        assert len(out) < 400           # was ~10,000
+
+    def test_a_changed_row_is_addressed_absolutely(self, canvas):
+        """Cursor-addressed per run, so a partial write can never land on the wrong line."""
+        self._row("hello")
+        canvas()
+        self._row("second")
+        assert "\x1b[" in canvas()
+
+    def test_a_resize_rewrites_everything(self, canvas):
+        """Every row moved, so there is nothing a diff could usefully say."""
+        self._row("hello")
+        canvas()
+        ui.err.size = (120, 40)
+        assert len(canvas()) > 3000
+
+    def test_the_screen_is_re_asserted_even_when_idle(self, canvas, monkeypatch):
+        """Re-assertion is the repair for a canvas something ELSE wiped — exactly the case where
+        nothing changed on our side. Rarer now, never gone."""
+        self._row("hello")
+        canvas()
+        assert canvas() == ""
+        monkeypatch.setattr(ui, "_REASSERT_AT", 0.0)   # as if _REASSERT_S had elapsed
+        assert len(canvas()) > 5000
+
+    def test_a_frame_is_wrapped_in_synchronized_output(self, canvas):
+        """Inert on gnome-terminal, and kept for the terminals it does reach: on WSL the full
+        re-assert still crosses ConPTY."""
+        self._row("hello")
+        out = canvas()
+        assert out.startswith(ui._BSU) and out.endswith(ui._ESU)
+
+    def test_there_is_no_canvas_to_paint_without_one(self, monkeypatch):
+        monkeypatch.setattr(ui, "_SCREEN", None)
+        ui._paint()   # must not raise, and must not touch the terminal
+
+    def test_a_console_that_is_not_a_terminal_still_paints(self, monkeypatch):
+        """Rich refuses cursor-addressed updates unless it believes it is on the alternate screen,
+        and a console writing to a buffer never is. The frame still has to be drawn — there is just
+        nothing there to tear."""
+        import io
+        from rich.console import Console
+        from rich.text import Text
+        buf = io.StringIO()
+        console = Console(file=buf, width=80, height=24, highlight=False)   # NOT a terminal
+        monkeypatch.setattr(ui, "err", console)
+        monkeypatch.setattr(ui, "_SCREEN", console.screen())
+        monkeypatch.setattr(ui, "_FRAME", None)
+        monkeypatch.setattr(ui, "_LOOSE", [Text("hello")])
+        ui._paint()
+        assert "hello" in buf.getvalue()
+
+
+class TestTheRunDiff:
+    """`ui._changed_runs` — contiguous stretches, so a redrawn box is one `move_to` and not forty."""
+
+    def test_nothing_changed_is_no_runs(self):
+        assert ui._changed_runs(["a", "b"], ["a", "b"]) == []
+
+    def test_adjacent_rows_are_one_run(self):
+        assert ui._changed_runs(["x", "y", "c"], ["a", "b", "c"]) == [(0, ["x", "y"])]
+
+    def test_a_gap_splits_them(self):
+        assert ui._changed_runs(["x", "b", "z"], ["a", "b", "c"]) == [(0, ["x"]), (2, ["z"])]
+
+    def test_a_run_reaching_the_last_row_is_closed(self):
+        assert ui._changed_runs(["a", "y"], ["a", "b"]) == [(1, ["y"])]

@@ -38,6 +38,7 @@ import typer
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -905,7 +906,7 @@ def fullscreen():
     otherwise `cuttle setup --head` would restore the terminal and take the one-time admin password
     with it.
     """
-    global _ALT, _SCREEN
+    global _ALT, _SCREEN, _PREV
     if not _tty() or _ALT or STREAMING:
         # Already on it (the outer frame owns the screen), or there is no terminal to take, or this
         # command streams — see STREAMING.
@@ -918,6 +919,7 @@ def fullscreen():
     _SCREEN.__enter__()
     _ALT = True
     _LOOSE.clear()
+    _PREV = None        # a fresh buffer holds nothing to diff against — this paint writes it whole
     _paint()
     _tick_start()                # animates the step spinner, and re-asserts the screen ~12×/s
     capture.__enter__()
@@ -933,6 +935,7 @@ def fullscreen():
         _ALT = False
         _SCREEN.__exit__(None, None, None)
         _SCREEN = None
+        _PREV = None    # the buffer is gone; nothing on it is a baseline for the next flow
         if held.getvalue():
             sys.stdout.write(held.getvalue())
             sys.stdout.flush()
@@ -987,27 +990,96 @@ def _canvas_render():
     return Group(*parts) if parts else Text("")
 
 
-# DEC private mode 2026, "synchronized output". A paint rewrites every cell of the screen (Rich has
-# no incremental screen diff — see `_paint`), and a terminal that renders those bytes as they arrive
-# shows the frame half-drawn. On WSL/Windows Terminal, where the write crosses ConPTY, that is
-# *visible*: the box blinks and rows appear to jump. Between BSU and ESU the terminal buffers the
-# whole frame and presents it atomically. An unknown private mode is ignored, so this is inert on the
-# terminals that were already smooth (gnome-terminal et al).
+# DEC private mode 2026, "synchronized output": between BSU and ESU a terminal buffers what arrives
+# and presents it in one go, so a frame is never shown half-drawn. Kept, because it is what makes the
+# full repaints below atomic on WSL/Windows Terminal, where the write crosses ConPTY and a torn frame
+# is *visible* — the box blinks and rows appear to jump.
+#
+# It is NOT a general answer, and this is why the diff below exists. gnome-terminal answers the
+# DECRQM query for 2026 with status 4, "permanently reset": VTE knows the mode and will never honour
+# it. There, and on anything else that ignores the sequence, the only thing that keeps a frame whole
+# is not writing much.
 _BSU, _ESU = "\x1b[?2026h", "\x1b[?2026l"
 
+# How long a canvas may go untouched before it is rewritten whole regardless of the diff. This is the
+# re-assertion `_tick_start` describes — the repair for a canvas something else wiped — kept as a
+# real mechanism but at 1/24th the rate it used to run at.
+_REASSERT_S = 2.0
+_PREV: list | None = None      # the lines currently ON the screen, to diff the next frame against
+_PREV_SIZE = (0, 0)
+_REASSERT_AT = 0.0
 
-def _paint() -> None:
-    """One absolute, full-screen redraw of the canvas — locked, because the tick thread paints too.
+
+def _frame_lines() -> list:
+    """The canvas as exactly `height` lines of exactly `width` cells — what Rich's own `Screen`
+    renderable produces, built here so the lines can be compared before any of them is written."""
+    width, height = err.width, err.height
+    options = err.options.update(width=width, height=height)
+    lines = err.render_lines(_canvas_render(), options, pad=True)
+    return Segment.set_shape(lines, width, height)
+
+
+def _changed_runs(lines: list, prev: list) -> list:
+    """The contiguous stretches of rows that differ, as `(y, lines)`. Contiguous rather than one
+    entry per row because a run is one `move_to` for the whole stretch instead of one per line, and
+    the common change — a box redrawn — is contiguous by construction."""
+    runs, start = [], None
+    for y, (new, old) in enumerate(zip(lines, prev)):
+        if new != old:
+            if start is None:
+                start = y
+        elif start is not None:
+            runs.append((start, lines[start:y]))
+            start = None
+    if start is not None:
+        runs.append((start, lines[start:]))
+    return runs
+
+
+def _paint(full: bool = False) -> None:
+    """Bring the screen up to date — locked, because the tick thread paints too.
+
+    **Only the rows that changed are written.** Rich has no incremental screen diff: printing a
+    `Screen` rewrites every cell, padding included, so a spinner turning cost a full 10KB frame on a
+    200x50 terminal, twelve times a second — over 100 KiB/s of unbuffered output into a terminal that
+    renders bytes as they arrive. That is what tore. Diffed, the same spinner costs ~200 B/frame and
+    an idle canvas costs nothing at all.
+
+    The periodic full re-assert is not a tearing risk of its own: it rewrites the cells that are
+    already there, so a terminal presenting it half-done shows exactly what it showed before.
+
+    A full rewrite still happens on a resize (every row moved), on the first paint, and every
+    `_REASSERT_S` — see `_tick_start` for why re-assertion cannot simply be dropped.
 
     A no-op when there is no canvas: a streaming command (fullscreen is skipped), or a section opened
     in a test. In those cases a frame draws itself through its own transient `Live` instead."""
+    global _PREV, _PREV_SIZE, _REASSERT_AT
     if _SCREEN is None:
         return
     with _LOCK:
+        if not err.is_alt_screen:
+            # A canvas was claimed but the console underneath is not a real terminal — a test that
+            # forces one onto a buffer, a run whose stderr is a pipe. Rich refuses cursor-addressed
+            # updates there (NoAltScreen), and there is nothing to tear anyway, so this is the whole
+            # frame printed exactly as it was before the diff existed.
+            _PREV = None
+            _SCREEN.update(_canvas_render())
+            return
+        size = (err.width, err.height)
+        lines = _frame_lines()
+        now = time.monotonic()
+        full = full or _PREV is None or size != _PREV_SIZE or now >= _REASSERT_AT
+        runs = [(0, lines)] if full else _changed_runs(lines, _PREV)
+        _PREV, _PREV_SIZE = lines, size
+        if full:
+            _REASSERT_AT = now + _REASSERT_S
+        if not runs:
+            return          # nothing moved: the cheapest frame is the one nobody writes
         sync = err.is_terminal
         if sync:
             err.file.write(_BSU)
-        _SCREEN.update(_canvas_render())   # writes and flushes the frame itself
+        for y, run in runs:
+            err.update_screen_lines(run, 0, y)   # absolute `move_to` per row; writes and flushes
         if sync:
             err.file.write(_ESU)
             err.file.flush()
@@ -1019,12 +1091,12 @@ def _tick_start() -> None:
     """A background repaint ~12×/s. Two jobs: animate the step spinner (the main thread is busy inside
     the step and cannot), and re-assert the absolute screen so a scroll or resize self-corrects.
 
-    **Unconditional, deliberately.** Painting only on a visible change (a spinner turning, a resize)
-    is the obvious optimisation and it breaks the second job: whatever wipes the canvas — ConPTY
-    racing the alt-buffer switch, a stray write, a resize we did not notice — is exactly the case
-    where nothing has changed on OUR side, so the repaint that would repair it never fires and the
-    box sits there empty. Re-assertion IS the mechanism. The cost of the redraws is paid down by
-    synchronized output instead (see `_paint`), which is what made them flicker.
+    **The tick is unconditional; the writing is not.** Whatever wipes the canvas — ConPTY racing the
+    alt-buffer switch, a stray write, a resize we did not notice — is exactly the case where nothing
+    has changed on OUR side, so a repaint that fired only on a visible change would never repair it
+    and the box would sit there empty. Re-assertion IS the mechanism, and it stays. What changed is
+    its cost: `_paint` writes only the rows that differ, and re-asserts the whole screen every
+    `_REASSERT_S` rather than 12 times a second.
     """
     global _TICK, _TICK_STOP
     _TICK_STOP = threading.Event()
