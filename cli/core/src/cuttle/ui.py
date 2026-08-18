@@ -855,6 +855,14 @@ _DEFERRED: list[tuple[str | None, list[tuple[str, str]]]] = []
 _SCREEN = None
 _LOCK = threading.Lock()
 _LOOSE: list = []
+# What was said on the canvas, kept so it can be said again on the real terminal once the buffer is
+# handed back. `_LOOSE` itself cannot be replayed: `step` and the progress bars park LIVE renderables
+# in it and mutate them in place, so by the end it holds spinners rather than the lines that were
+# read. Each entry is the markup as it was said, paired with the offset into captured stdout it was
+# said at — the two streams interleave (`run` prints its preview and the Spawn id to stdout, its
+# confirmation to stderr), and replaying either one whole reorders it against the other.
+_REPLAY: list[tuple[int, str]] = []
+_HELD = None
 _TICK = None
 _TICK_STOP = None
 
@@ -906,7 +914,7 @@ def fullscreen():
     otherwise `cuttle setup --head` would restore the terminal and take the one-time admin password
     with it.
     """
-    global _ALT, _SCREEN, _PREV
+    global _ALT, _SCREEN, _PREV, _HELD
     if not _tty() or _ALT or STREAMING:
         # Already on it (the outer frame owns the screen), or there is no terminal to take, or this
         # command streams — see STREAMING.
@@ -919,6 +927,8 @@ def fullscreen():
     _SCREEN.__enter__()
     _ALT = True
     _LOOSE.clear()
+    _REPLAY.clear()
+    _HELD = held
     _PREV = None        # a fresh buffer holds nothing to diff against — this paint writes it whole
     _paint()
     _tick_start()                # animates the step spinner, and re-asserts the screen ~12×/s
@@ -936,13 +946,36 @@ def fullscreen():
         _SCREEN.__exit__(None, None, None)
         _SCREEN = None
         _PREV = None    # the buffer is gone; nothing on it is a baseline for the next flow
-        if held.getvalue():
-            sys.stdout.write(held.getvalue())
-            sys.stdout.flush()
+        _HELD = None
+        _replay(held.getvalue())
         for title, facts in _DEFERRED:
             _panel(title, facts)
         _DEFERRED.clear()
         _closing(broke)
+
+
+def _replay(held: str) -> None:
+    """Say again, on the real terminal, everything the canvas showed outside a box.
+
+    The alternate screen is discarded on exit, so a command whose whole result is a line of
+    commentary — `cuttle run`'s submitted-spawn echo, `cuttle cancel`'s confirmation — left nothing
+    behind at all. Box rows are deliberately not here: those are progress, and progress is meant to
+    be transient. Loose rows are the outcome.
+
+    Interleaved rather than concatenated: stdout is replayed up to the offset each line was said at,
+    then the line, so the transcript reads in the order it happened.
+    """
+    pos = 0
+    for at, markup in _REPLAY:
+        if at > pos:
+            sys.stdout.write(held[pos:at])
+            pos = at
+        sys.stdout.flush()      # the two streams are one terminal; order only holds if we flush
+        err.print(markup)
+    if pos < len(held):
+        sys.stdout.write(held[pos:])
+    sys.stdout.flush()
+    _REPLAY.clear()
 
 
 def _closing(broke: bool) -> None:
@@ -1358,6 +1391,7 @@ def _emit(markup: str) -> None:
         # On the canvas, but between or outside boxes: a loose row, redrawn with the screen. NOT
         # err.print — that writes under the canvas and is wiped by the next paint.
         _LOOSE.append(Text.from_markup(markup))
+        _REPLAY.append((_HELD.tell() if _HELD is not None else 0, markup))
         _paint()
         return
     err.print(markup)
