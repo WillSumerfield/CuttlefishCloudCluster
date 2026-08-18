@@ -801,6 +801,16 @@ CREDENTIALS_FILE = CCC_HOME / "credentials"
 # owed, plus its `<id>.log`. The FILE is the durable intent and the sweeper process is only the
 # current attempt at it — which is what lets a reboot, a logout or a `pkill` cost nothing but time.
 WATCH_DIR = CCC_HOME / "watch"
+# One `<id>.key` (0600) + `<id>.json` per Tide Pool this box can still reach. The key used to be a
+# tempfile unlinked the moment `ssh` exited, which made it unusable by anything that is not this
+# process — and VS Code is exactly that. A key's lifetime is now its Tide Pool's: the same sweep that
+# rewrites SSH_CCC_CONFIG deletes both files once the Head no longer lists the Spawn as live.
+TIDEPOOL_DIR = CCC_HOME / "tidepool"
+# The User's OWN ssh directory. cuttle writes exactly one file in it (`ccc.config`, wholly generated)
+# and adds exactly one `Include` line to `config` — it never touches an entry anyone else wrote.
+SSH_DIR = Path(os.environ.get("CCC_SSH_DIR") or Path.home() / ".ssh")
+SSH_CONFIG = SSH_DIR / "config"
+SSH_CCC_CONFIG = SSH_DIR / "ccc.config"
 # Where `apptainer build` caches the layers it pulls (APPTAINER_CACHEDIR, set by setup.build_base_sif).
 # Under ~/.ccc rather than apptainer's own ~/.apptainer/cache so that teardown reclaims it: the build
 # runs unprivileged, and a multi-GB cache in the operator's home is outside every tree CCC removes.

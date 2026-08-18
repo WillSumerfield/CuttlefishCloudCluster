@@ -22,13 +22,12 @@ session, a Tide Pool's scratch gets one copy into the day-long Recovery Window.
 
 import os
 import subprocess
-import tempfile
 import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import auth, config, settings, spawns as spawns_mod, ui, watch
+from . import auth, config, settings, spawns as spawns_mod, sshconfig, ui, watch
 
 _POLL_S = 1.0
 _PLACEMENT_TIMEOUT_S = 3600     # an hour queued is already a long wait; fail loud rather than hang forever
@@ -89,7 +88,7 @@ def _noun(spawn_id: int, workspace: str | None) -> str:
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
         node: str | None, outputs: list[str], features: list[str], follow: bool,
         download: bool = True, manifest: str | None = None, substrate: str | None = None,
-        no_gitignore: bool = False,
+        no_gitignore: bool = False, vscode: bool = False,
         root: Path | None = None, name: str = "") -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
     Spawn) unless `script_or_id` resolves to an existing one, then attaches either way.
@@ -111,7 +110,7 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
                             substrate=substrate, no_gitignore=no_gitignore, root=root, name=name)
     if download:
         arm(spawn_id)
-    _wait_and_attach(spawn_id)
+    _wait_and_attach(spawn_id, vscode=vscode)
     # Again on the way out, and this is the arming that matters. A Tide Pool's **Output**s are most
     # often declared by the session itself rather than at submission — a `--output` handed to a
     # reattach, or simply the folder someone decided to write to — and the moment the shell closes is
@@ -190,24 +189,35 @@ def _wait_for_running(spawn_id: int) -> None:
             time.sleep(_POLL_S)
 
 
-def _wait_for_relay(spawn_id: int) -> tuple[int, str, str]:
-    """Poll until the Head hands back the port + private key + login account — see main.spawn_tidepool:
-    this call is what BRINGS the relay up, not just a passive read, so it converges quickly rather than
-    waiting on the karma tick's cadence.
+def _wait_for_relay(spawn_id: int) -> tuple[int, str, str, str | None]:
+    """Poll until the Head hands back the port + private key + login account + Pod working directory —
+    see main.spawn_tidepool: this call is what BRINGS the relay up, not just a passive read, so it
+    converges quickly rather than waiting on the karma tick's cadence.
 
     The account is the owner's **Guise** (`ccc-u<uid>`), and it has to come from the Head because a uid
-    is a Head-side fact — there is nothing here to derive it from. Older Heads send no `user`; falling
-    back to the Mantle keeps this CLI working against one."""
+    is a Head-side fact — there is nothing here to derive it from. `proj` is Head-side for the same
+    kind of reason: it depends on which Arm took the Spawn. Older Heads send neither; falling back to
+    the Mantle, and to no folder at all, keeps this CLI working against one."""
     deadline = time.monotonic() + _RELAY_TIMEOUT_S
     with ui.step("connecting"):
         while True:
             info = auth._api("GET", f"/spawns/{spawn_id}/tidepool")
             if info["ready"]:
-                return info["port"], info["private_key"], info.get("user") or config.HEAD_API_USER
+                return (info["port"], info["private_key"],
+                        info.get("user") or config.HEAD_API_USER, info.get("proj"))
             if time.monotonic() > deadline:
                 raise ui.abort(f"tide pool {spawn_id} is running but never came up for SSH — "
                                f"`cuttle run --tidepool {spawn_id}` to retry")
             time.sleep(_POLL_S)
+
+
+def _live_ids() -> set[int] | None:
+    """Every Spawn id the Head still has in its queue, or None if it could not be asked. `None` is not
+    "none of them" — see sshconfig.refresh, which prunes on this and must not act on a failed GET."""
+    try:
+        return {r["id"] for r in auth._api("GET", "/spawns") if r.get("id") is not None}
+    except Exception:
+        return None
 
 
 def _deadline(spawn_id: int) -> float | None:
@@ -265,8 +275,9 @@ def _warn_thread(spawn_id: int, deadline: float | None, stop: threading.Event,
     return t
 
 
-def _wait_and_attach(spawn_id: int, workspace: str | None = None) -> None:
-    """Attach to a placed Spawn's shell and hold the terminal until it detaches.
+def _wait_and_attach(spawn_id: int, workspace: str | None = None, vscode: bool = False) -> None:
+    """Attach to a placed Spawn and hold the terminal until the shell detaches — or, with `vscode`,
+    hand the session to VS Code and return immediately.
 
     `workspace` is the visited **Workspace**'s name when this is a visit (workspaces.open_) and None for
     a bare Tide Pool. It is not decoration: the two differ in *what happens to the files* at every exit
@@ -275,53 +286,74 @@ def _wait_and_attach(spawn_id: int, workspace: str | None = None) -> None:
     hint, since a visit is rejoined by name (`_reattach_hint`).
     """
     _wait_for_running(spawn_id)
-    port, private_key, login = _wait_for_relay(spawn_id)
+    port, private_key, login, proj = _wait_for_relay(spawn_id)
     deadline = _deadline(spawn_id)
 
-    fd, keypath = tempfile.mkstemp(prefix="ccc-tidepool-")
-    try:
-        os.write(fd, private_key.encode())
-        os.close(fd)
-        os.chmod(keypath, 0o600)
+    # On disk under ~/.ccc, not in a tempfile unlinked when `ssh` exits: an alias in ~/.ssh/ccc.config
+    # is only as good as the IdentityFile it names, and VS Code opens its own connections long after
+    # this process is gone. The key dies with the Tide Pool instead — sshconfig.refresh reaps both.
+    host = _head_host()
+    keypath = sshconfig.record(spawn_id, private_key=private_key, port=port, user=login,
+                               host=host, workspace=workspace, proj=proj)
+    name = sshconfig.alias(spawn_id, workspace)
+    # THIS session is live by construction — we just waited for RUNNING and the Head just handed over
+    # its key. Adding it by hand rather than trusting the queue read costs nothing and takes the one
+    # outcome that would actually hurt (squeue lagging by a poll, and the sweep deleting the key this
+    # very attach is about to use) off the table entirely.
+    live = _live_ids()
+    sshconfig.refresh(None if live is None else live | {spawn_id})
 
+    if vscode:
+        # No terminal, so no `--time` warner (nothing to write to) and no ending to report: this
+        # process exits while the session goes on running, which is exactly what detaching means here.
         ui.warn(f"this GPU is yours until you cancel it — `{_cancel_hint(spawn_id)}` — or --time runs "
-                f"out. Disconnecting (closing this terminal, a dropped connection) does NOT free it.")
-        # Said up front, not only at the limit: where the files go is what a User plans the session
-        # around, and learning it five minutes before the cutoff is learning it too late to act on.
-        if workspace:
-            ui.hint(f"everything under this workspace is mirrored home as you work and again when the "
-                    f"session ends; declared outputs come home as normal (`cuttle outputs {spawn_id}`)")
-        else:
-            ui.hint(f"declared outputs come home as normal (`cuttle outputs {spawn_id}`); everything "
-                    f"else is copied when it ends and recoverable for a day "
-                    f"(`cuttle recover {spawn_id}`)")
-        ui.hint(f"type `exit` to leave the shell — the {'visit' if workspace else 'Tide Pool'} itself "
-                f"keeps running either way")
-        stop = threading.Event()
-        _warn_thread(spawn_id, deadline, stop, workspace)
-        try:
-            # Real ssh, real protocol — the relay is a pure byte pipe underneath (relay.py); nothing
-            # about the session is aware it exists. Host-key checking is off deliberately: the Pod mints
-            # a fresh host key every Tide Pool, so there is nothing to pin, and the actual security
-            # boundary is the ephemeral client keypair handed over the CLI's own authenticated session.
-            #
-            # Login account is the submitter's own **Guise**, never `mantle@` or `ccc@`: apptainer's
-            # --writable-tmpfs patches the invoking uid's /etc/passwd entry to its real host identity,
-            # so the invoking uid is the Guise owning this Spawn. User never types it (nobody knows
-            # their own uid) — see spawns.PAYLOAD_TIDEPOOL.
-            subprocess.run([
-                "ssh", "-i", keypath, "-p", str(port),
-                "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                # LogLevel=ERROR: the discarded (/dev/null) known_hosts still gets an "added" notice
-                # every single connection otherwise — pure noise for a host key nothing ever pins.
-                "-o", "LogLevel=ERROR",
-                "-o", "IdentitiesOnly=yes", "-o", "ServerAliveInterval=30",
-                f"{login}@{_head_host()}",
-            ])
-        finally:
-            stop.set()
+                f"out. Closing VS Code does NOT free it.")
+        if sshconfig.open_vscode(name, proj):
+            ui.ok(f"opening {_noun(spawn_id, workspace)} in VS Code ({name})")
+        ui.hint(f"reconnect any time with `ssh {name}`, or `{_reattach_hint(spawn_id, workspace)}` "
+                f"for a terminal here")
+        return
+
+    ui.warn(f"this GPU is yours until you cancel it — `{_cancel_hint(spawn_id)}` — or --time runs "
+            f"out. Disconnecting (closing this terminal, a dropped connection) does NOT free it.")
+    # Said up front, not only at the limit: where the files go is what a User plans the session
+    # around, and learning it five minutes before the cutoff is learning it too late to act on.
+    if workspace:
+        ui.hint(f"everything under this workspace is mirrored home as you work and again when the "
+                f"session ends; declared outputs come home as normal (`cuttle outputs {spawn_id}`)")
+    else:
+        ui.hint(f"declared outputs come home as normal (`cuttle outputs {spawn_id}`); everything "
+                f"else is copied when it ends and recoverable for a day "
+                f"(`cuttle recover {spawn_id}`)")
+    ui.hint(f"type `exit` to leave the shell — the {'visit' if workspace else 'Tide Pool'} itself "
+            f"keeps running either way")
+    # The alias is live from here on whether or not anyone asked for VS Code — printed rather than
+    # acted on, because an editor is not what most people opened a terminal to get.
+    ui.hint(f"editors and a second terminal reach this session as `{name}` (ssh {name}) — "
+            f"`--vscode` opens it there instead")
+    stop = threading.Event()
+    _warn_thread(spawn_id, deadline, stop, workspace)
+    try:
+        # Real ssh, real protocol — the relay is a pure byte pipe underneath (relay.py); nothing
+        # about the session is aware it exists. Host-key checking is off deliberately: the Pod mints
+        # a fresh host key every Tide Pool, so there is nothing to pin, and the actual security
+        # boundary is the ephemeral client keypair handed over the CLI's own authenticated session.
+        #
+        # Login account is the submitter's own **Guise**, never `mantle@` or `ccc@`: apptainer's
+        # --writable-tmpfs patches the invoking uid's /etc/passwd entry to its real host identity,
+        # so the invoking uid is the Guise owning this Spawn. User never types it (nobody knows
+        # their own uid) — see spawns.PAYLOAD_TIDEPOOL.
+        subprocess.run([
+            "ssh", "-i", keypath, "-p", str(port),
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            # LogLevel=ERROR: the discarded (/dev/null) known_hosts still gets an "added" notice
+            # every single connection otherwise — pure noise for a host key nothing ever pins.
+            "-o", "LogLevel=ERROR",
+            "-o", "IdentitiesOnly=yes", "-o", "ServerAliveInterval=30",
+            f"{login}@{host}",
+        ])
     finally:
-        Path(keypath).unlink(missing_ok=True)
+        stop.set()
 
     _report_ending(spawn_id, workspace)
 

@@ -99,6 +99,14 @@ def ccc_home(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "LOG_DIR", home / "logs")
     monkeypatch.setattr(config, "WATCH_DIR", home / "watch")
     monkeypatch.setattr(config, "OUTPUTS_DIR", home / "outputs")
+    monkeypatch.setattr(config, "TIDEPOOL_DIR", home / "tidepool")
+    # The User's own ~/.ssh, redirected for the same reason as everything above and then some: a test
+    # that regenerated the operator's real ssh config would rewrite the file their whole machine's ssh
+    # reads (sshconfig.refresh writes it in full).
+    ssh = tmp_path / ".ssh"
+    monkeypatch.setattr(config, "SSH_DIR", ssh)
+    monkeypatch.setattr(config, "SSH_CONFIG", ssh / "config")
+    monkeypatch.setattr(config, "SSH_CCC_CONFIG", ssh / "ccc.config")
     # Plain http, so tls pinning is a no-op: certificate handling is its own concern and not one the
     # CLI's behaviour should be coupled to in every test.
     settings.save({"head": "http://head"})

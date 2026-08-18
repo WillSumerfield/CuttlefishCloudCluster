@@ -11,7 +11,7 @@ import glob
 import shutil
 import time
 
-from . import config, menu, settings, system, ui
+from . import config, menu, settings, sshconfig, system, ui
 from .system import run
 
 
@@ -234,6 +234,9 @@ def remove_repos() -> None:
 
 def remove_user_dirs() -> None:
     revoke_session()
+    # Before ~/.ccc goes: the aliases in the User's own ~/.ssh name keys that live under it, so
+    # removing one without the other leaves Host entries pointing at nothing (sshconfig.remove).
+    sshconfig.remove()
     shutil.rmtree(config.CCC_HOME, ignore_errors=True)
 
 
