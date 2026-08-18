@@ -52,7 +52,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
     offered as a guided **wizard**. Parity covers what can be asked of the *cluster*, not what each
     client can do to the machine it runs on: the CLI alone brings a finished **Spawn**'s results down
     onto that machine by itself, unattended, because a browser cannot write to a folder with nobody
-    there.
+    there. On the same terms it is the CLI that arranges the machine it runs on so a program already
+    installed there — an editor, most obviously — can reach a live **Tide Pool**; a browser can
+    describe that session but cannot hand it to anything outside itself.
   - *Host duties* (only on the machine being changed): node bring-up and removal (`setup`/`teardown`).
     These are the one thing the **Dashboard** can never do, because they provision the box you run them
     on.
@@ -96,7 +98,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   it. So a Recipe is *captured*, never recovered — never reconstructed from a Spawn that has already run,
   because the Head holds an ad-hoc **Spawn**'s uploaded project only while that Spawn is starting
   (**Allowance**), and by the time there is a result to admire the code behind it is already gone.
-  A Recipe captures the **Environment**'s *declaration* — which file, and which **Arm Feature**s —
+  A Recipe captures the **Environment**'s *declaration* — which file, which **Substrate**, and which
+  **Arm Feature**s —
   alongside the code, so re-running one is said once rather than at every run. It does not hold a built
   Environment: that is made by whichever **Arm** runs the Spawn (**Environment**), so a Recipe freezes
   what was declared and not a tree resolved from it.
@@ -121,10 +124,16 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   (see **Eligibility**); it is told which Arm it got. On its own it keeps nothing: what it wrote dies
   with it. A Tide Pool opened on a **Workspace** is the one that does not.
   The shell it attaches is the **cluster's own**, and the same one for everybody: CCC ships one
-  configured shell into every Pod and carries no User's dotfiles to it. A Tide Pool is a place to debug
+  configured shell, and the plain editors a person needs to change a file, into every Pod, and carries
+  no User's dotfiles to any of it. A Tide Pool is a place to debug
   against real hardware, not a machine a User moves into — so what greets them is furniture the cluster
   provides, and a User who wants their own arranges it within the session like anything else they write
   there. Nothing about it survives the session, on the same terms as everything else a Tide Pool holds.
+  How a User *meets* that shell is not fixed, though: a Tide Pool is an ordinary remote-shell
+  endpoint, so it can be entered through the **CLI**'s own terminal or by pointing the editor already
+  running on the machine a User is sitting at. Neither is more real than the other — the work happens
+  inside the **Pod** either way, and an editor attached from outside is a visitor to the session and
+  never a way to keep what it held.
 - **Workspace** — a **User**'s durable interactive place on the cluster: a working directory that
   outlives the session that made it, so opening one resumes where the last visit left off instead of
   starting bare. Private to its owner. It is the **Recipe**'s opposite in the one respect that matters —
@@ -171,7 +180,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   real, and they enclose the **whole** Spawn — the payload and the wrapper that stages its files in and
   out, not just the payload: a Spawn cannot see the host's filesystem, the machine's other processes, or
   any concurrent Spawn's working files, including their scratch. A Pod is the *walls*, never the
-  contents: what is installed within one is that Spawn's **Environment**. And a Pod is not only an
+  contents. What is installed within one is that Spawn's **Environment**, its **Substrate**, and
+  whatever else the Spawn goes on to install for itself — every Pod's own system is writable, and no
+  Pod keeps what it holds. That system is the Spawn's alone, unreachable by every other Spawn on the
+  machine, and discarded with the Pod. And a Pod is not only an
   **Arm**'s: work the **Head** does on a User's behalf is walled the same way, as the same **Guise**.
 - **Environment** — the Python a **Spawn**'s code actually runs against inside its **Pod**. It is
   **self-contained**: it carries its own interpreter and inherits nothing from the machine or from the
@@ -196,6 +208,24 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   declaration, a named file that is not there, one nothing can classify, a node without the build tools.
   A **build** that fails is a failed Spawn — it holds a **Device** while it builds, so its **Karma** is
   spent rather than returned.
+- **Substrate** — the system packages a **Spawn** declares, installed into its **Pod** beneath its
+  **Environment**. What the Environment is to Python, the Substrate is to everything under it: the
+  libraries and tools a build compiles against and a script shells out to, which no dependency file can
+  name because they are not Python at all. Declared in a file in the Spawn's **own project**, named at
+  submit exactly as an Environment's is — the cluster supplies no default and infers nothing here
+  either — and *optional*, unlike an Environment, because most work needs none.
+  It is **not** an **Arm Feature**, and the two are never confused: a Feature is heavy or licence-gated
+  software that lives on particular **Arm**s and therefore decides which of them are **eligible**; a
+  Substrate constrains placement not at all, because it is fetched wherever the Spawn lands.
+  Laid down BEFORE the Environment is built, so a package that must compile against a system library
+  finds it — which is the whole reason it is declared rather than merely installed once the Spawn is
+  already running. A Spawn may still install more for itself afterwards; only what it *declared* is
+  reproduced, and a **Recipe** freezes the declaration with the code like every other. Nothing about
+  either survives the **Pod**.
+  A name nothing can install is a failed Spawn on the same terms a failed **build** is, since no
+  archive can be consulted at submit — but a file that is not there, or one holding something that is
+  not a package name, is refused at submit like every other declaration that can be judged without
+  building.
 - **Output** — a folder a **Spawn** declares as holding its results, and the only thing it produces that
   is deliberately *kept*. Named as a path in the Spawn's **own project**, because the folder a script
   writes to is one its author already chose: a cluster that named a second place of its own would be

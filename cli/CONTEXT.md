@@ -36,6 +36,9 @@ two kinds of **duty**.
 - **Parity** — the CLI can perform every operation the **Dashboard** offers. Admin operations appear
   **read-only** over the API: every admin *write* is a Head-local command, so a stolen **Session** can
   never mutate admin state. Parity is also what makes the CLI the project's end-to-end **test**
-  surface, driven in place of browser testing.
+  surface, driven in place of browser testing. What parity never covered is *host* work on the box the
+  tool runs on: collecting a **Spawn**'s results, and pointing a locally-installed editor at a live
+  **Tide Pool**, are both the CLI acting on that machine rather than asking the cluster for anything,
+  so neither is a gap in what the **Dashboard** offers.
 
 Layout: `core/` — the Python tool. `cuttle` is Python-only; there is no separate host-native launcher.
