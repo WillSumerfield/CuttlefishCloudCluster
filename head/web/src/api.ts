@@ -7,7 +7,7 @@
 // Every route but /healthz is behind that session, so ANY call can come back 401, not just at login.
 // `Unauthorized` is how the app notices and drops back to the login screen.
 
-import { gzip, makeTar } from './tar'
+import type { TarRequest } from './tar.worker'
 import { relPath, type Picked } from './project'
 
 // `owner` is the User who donated the machine — named by the Admin when they authorized it, never
@@ -181,14 +181,37 @@ const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
  * The gzip-tar body every upload sends: a Spawn's project, a Recipe's snapshot, a Workspace's seed, a
  * Tide Pool's (often empty) folder. One shape, because the Head has one upload path.
  *
- * **No file is read on the main thread.** The tar is described from `File.size` alone and the Files go
- * in by reference; the bytes are pulled off disk later, by gzip, in chunks. Before this, each call
- * site did `await f.arrayBuffer()` per file and then memcpy'd the lot into one array — which held the
- * whole project in memory twice over and, being synchronous, froze the tab for the duration. Picking a
- * folder is the most ordinary thing a user does here, and it was the one action that stopped the page.
+ * **Built on a worker thread, and that is the whole point.** Two separate costs were freezing the tab,
+ * and only one of them was obvious. The first was `makeTar` copying the project into one array after
+ * every call site had already read each file with `await f.arrayBuffer()`; that is gone — the tar is
+ * described from `File.size` and the Files go in by reference. The second is `gzip`, and it survived
+ * that fix untouched: `CompressionStream` deflates on the thread that created it, so the whole project
+ * was still pulled through the main thread before `fetch` saw a byte. A few hundred MB of
+ * incompressible data is tens of seconds of it, during which every animated surface in the app — all
+ * `requestAnimationFrame` on that same thread — stops dead.
+ *
+ * Paths are resolved here because `relPath` reads `webkitRelativePath`, which is string work and
+ * belongs with the picker; everything that touches bytes happens over there.
  */
-async function projectBody(files: File[]): Promise<Blob> {
-  return gzip(makeTar(files.map((f) => ({ path: relPath(f), data: f }))))
+function projectBody(files: File[]): Promise<Blob> {
+  const paths = files.map(relPath)
+  // Built per upload and terminated after, rather than kept alive: an upload is a rare, discrete act,
+  // and a resident worker holding the last project's Blob alive is worse than the cost of starting one.
+  const worker = new Worker(new URL('./tar.worker.ts', import.meta.url), { type: 'module' })
+  return new Promise<Blob>((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent<{ body?: Blob; error?: string }>) => {
+      worker.terminate()
+      if (e.data.error) reject(new Error(e.data.error))
+      else resolve(e.data.body as Blob)
+    }
+    // A worker that fails to LOAD (a stale cached bundle, a blocked module) never runs our onmessage,
+    // and without this the submit would hang forever with the composer's spinner up.
+    worker.onerror = (e) => {
+      worker.terminate()
+      reject(new Error(e.message || 'the upload could not be prepared'))
+    }
+    worker.postMessage({ paths, files } satisfies TarRequest)
+  })
 }
 
 
