@@ -8,7 +8,8 @@
 // `Unauthorized` is how the app notices and drops back to the login screen.
 
 import type { TarRequest } from './tar.worker'
-import { relPath, type Picked } from './project'
+import { once } from './worker'
+import { type Picked } from './project'
 
 // `owner` is the User who donated the machine — named by the Admin when they authorized it, never
 // declared by the donor. Karma will pay its passive income here.
@@ -190,29 +191,20 @@ const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
  * incompressible data is tens of seconds of it, during which every animated surface in the app — all
  * `requestAnimationFrame` on that same thread — stops dead.
  *
- * Paths are resolved here because `relPath` reads `webkitRelativePath`, which is string work and
- * belongs with the picker; everything that touches bytes happens over there.
+ * Paths come off the `Picked` rather than being re-derived: `webkitRelativePath` is not part of a
+ * File's structured clone, so by the time these Files reach a worker they no longer know where in the
+ * tree they came from. The picker read them once, on its own thread.
  */
-function projectBody(files: File[]): Promise<Blob> {
-  const paths = files.map(relPath)
-  // Built per upload and terminated after, rather than kept alive: an upload is a rare, discrete act,
-  // and a resident worker holding the last project's Blob alive is worse than the cost of starting one.
-  const worker = new Worker(new URL('./tar.worker.ts', import.meta.url), { type: 'module' })
-  return new Promise<Blob>((resolve, reject) => {
-    worker.onmessage = (e: MessageEvent<{ body?: Blob; error?: string }>) => {
-      worker.terminate()
-      if (e.data.error) reject(new Error(e.data.error))
-      else resolve(e.data.body as Blob)
-    }
-    // A worker that fails to LOAD (a stale cached bundle, a blocked module) never runs our onmessage,
-    // and without this the submit would hang forever with the composer's spinner up.
-    worker.onerror = (e) => {
-      worker.terminate()
-      reject(new Error(e.message || 'the upload could not be prepared'))
-    }
-    worker.postMessage({ paths, files } satisfies TarRequest)
-  })
+function projectBody(picked: Pick<Picked, 'files' | 'paths'>): Promise<Blob> {
+  return once<Blob>(
+    new Worker(new URL('./tar.worker.ts', import.meta.url), { type: 'module' }),
+    { paths: picked.paths, files: picked.files } satisfies TarRequest,
+  )
 }
+
+/** The body for an upload that may have no folder behind it — a Tide Pool opened over nothing. An
+ *  empty tar, not an empty body: the Head opens every upload as an archive. */
+const EMPTY_PICK = { files: [], paths: [] }
 
 
 export const getArms = () => json<Arm[]>('/arms')
@@ -406,7 +398,7 @@ export type NewRecipe = {
 // Shared because an update IS a save — the Head releases the old snapshot's bytes and charges the new
 // ones (delete-then-save), so the two differ only in which path they POST to.
 async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
-  const body = await projectBody(r.picked.files)
+  const body = await projectBody(r.picked)
   const meta = {
     name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
     vram_mb: r.vram_mb, minutes: r.minutes,
@@ -530,7 +522,7 @@ export type NewWorkspace = {
 }
 
 export async function createWorkspace(w: NewWorkspace): Promise<Workspace> {
-  const body = await projectBody(w.picked.files)
+  const body = await projectBody(w.picked)
   const meta = {
     name: w.name, storage_bytes: w.storage_bytes, gpus: w.gpus, vram_mb: w.vram_mb,
     minutes: w.minutes, manifest: w.manifest.trim(), substrate: w.substrate.trim(),
@@ -781,7 +773,7 @@ export async function submit({
   picked, name, script, gpu, minutes, vram, node, args, wandb, wandbProject, wandbEntity, outputs,
   features, manifest, substrate,
 }: SubmitOpts): Promise<SubmitResult> {
-  const body = await projectBody(picked.files)
+  const body = await projectBody(picked)
   // Head owns the key, client owns the run: send WANDB_PROJECT/WANDB_ENTITY only — never a key (browser
   // has none), never WANDB_MODE. Head fills in the key it holds for you.
   //
@@ -842,7 +834,7 @@ export async function submitTidepool({
   // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens the
   // upload as a tar archive (ccc_head_api.spawns.submit). `makeTar([])` writes the two all-zero
   // end-of-archive blocks tar readers expect, same as Python's tarfile for no members.
-  const body = await projectBody(picked?.files ?? [])
+  const body = await projectBody(picked ?? EMPTY_PICK)
   const meta = {
     minutes, vram, gpu, node, tidepool: true, outputs: [], name,
     ...(features.length ? { features } : {}),

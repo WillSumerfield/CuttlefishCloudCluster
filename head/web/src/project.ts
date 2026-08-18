@@ -12,6 +12,11 @@ import ignore from 'ignore'
 export type Picked = {
   root: string
   files: File[]   // what we'd upload
+  // Each file's path relative to the picked root, in step with `files`. Carried rather than re-derived
+  // because `webkitRelativePath` DOES NOT SURVIVE structured clone: a File that has crossed to a worker
+  // still knows its name and its bytes, and no longer knows where in the tree it came from. Every path
+  // is therefore read once, on the thread that owns the picker, and travels alongside.
+  paths: string[]
   bytes: number   // total size of `files`
   scanned: number // how many were in the folder before filtering
 }
@@ -23,7 +28,9 @@ export function relPath(f: File): string {
   return i < 0 ? p : p.slice(i + 1)
 }
 
-function rootName(files: File[]): string {
+/** The folder's own name, off the first file's full path. Read on the picker's thread, like `relPath`
+ *  and for the same reason — `webkitRelativePath` does not cross to a worker. */
+export function rootName(files: ArrayLike<File>): string {
   const p = files[0]?.webkitRelativePath ?? ''
   return p.split('/')[0] || 'project'
 }
@@ -33,20 +40,28 @@ function rootName(files: File[]): string {
  * uploaded under any setting: it is the repo's entire object store, it can dwarf the working tree, and
  * a Spawn has no use for it.
  */
-export async function pick(fileList: FileList, honorGitignore: boolean): Promise<Picked> {
-  const all = Array.from(fileList)
-  const notGit = all.filter((f) => !relPath(f).startsWith('.git/'))
+export async function pick(
+  root: string,
+  paths: string[],
+  all: File[],
+  honorGitignore: boolean,
+): Promise<Picked> {
+  const scanned = all.length
+  const keep: number[] = []
+  for (let i = 0; i < scanned; i++) if (!paths[i].startsWith('.git/')) keep.push(i)
 
   if (!honorGitignore) {
-    return { root: rootName(all), files: notGit, bytes: total(notGit), scanned: all.length }
+    const files = keep.map((i) => all[i])
+    return { root, files, paths: keep.map((i) => paths[i]), bytes: total(files), scanned }
   }
 
   // Collect every .gitignore in the tree. Patterns from a nested .gitignore are scoped to its own
   // directory, so prefix them with that directory to keep them from matching the whole project.
   const ig = ignore()
-  for (const f of notGit.filter((f) => f.name === '.gitignore')) {
-    const dir = relPath(f).slice(0, -'.gitignore'.length) // "" at the root, "sub/" when nested
-    const patterns = (await f.text())
+  for (const i of keep) {
+    if (all[i].name !== '.gitignore') continue
+    const dir = paths[i].slice(0, -'.gitignore'.length) // "" at the root, "sub/" when nested
+    const patterns = (await all[i].text())
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith('#'))
@@ -54,8 +69,9 @@ export async function pick(fileList: FileList, honorGitignore: boolean): Promise
     ig.add(patterns)
   }
 
-  const files = notGit.filter((f) => !ig.ignores(relPath(f)))
-  return { root: rootName(all), files, bytes: total(files), scanned: all.length }
+  const kept = keep.filter((i) => !ig.ignores(paths[i]))
+  const files = kept.map((i) => all[i])
+  return { root, files, paths: kept.map((i) => paths[i]), bytes: total(files), scanned }
 }
 
 /** Re-anchor a nested .gitignore's pattern to its directory, preserving negation ('!'). */

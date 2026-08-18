@@ -4,7 +4,8 @@ import { Chip } from "../app/Chip";
 import { Labeled } from "../app/Composer";
 import { NumberField } from "../app/NumberField";
 import { Select } from "../app/Select";
-import { human, pick, type Picked } from "../project";
+import { human, type Picked } from "../project";
+import { pickOffThread } from "../pick";
 import { ALLOWANCE, GB, size } from "./format";
 
 /**
@@ -94,7 +95,7 @@ export function WorkspaceComposer({
   async function take(list: FileList | null, honorGitignore: boolean) {
     if (!list || !list.length) return;
     lastList.current = list;
-    setPicked(await pick(list, honorGitignore));
+    setPicked(await pickOffThread(list, honorGitignore));
   }
 
   const trimmed = name.trim();

@@ -22,8 +22,9 @@ self.onmessage = async (e: MessageEvent<TarRequest>) => {
   try {
     const body = await gzip(makeTar(files.map((f, i) => ({ path: paths[i], data: f }))))
     // The Blob goes back by reference too — the browser keeps it in blob storage, and a large one is
-    // backed by disk rather than by either thread's heap.
-    self.postMessage({ body })
+    // backed by disk rather than by either thread's heap. `{ value }` / `{ error }` is the shape
+    // `worker.once` reads (both workers answer it).
+    self.postMessage({ value: body })
   } catch (err) {
     // A path too long for ustar is the one error `makeTar` raises, and it names the file. It has to
     // cross the thread boundary as a message: an exception in here would otherwise surface on the main

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Arm, Recipe } from "../api";
 import { getFeatureCatalog, getWandbKey, submit, submitTidepool } from "../api";
-import { human, pick, relPath, type Picked } from "../project";
+import { human, type Picked } from "../project";
+import { pickOffThread } from "../pick";
 import { NumberField } from "./NumberField";
 import { Chip } from "./Chip";
 import { Select } from "./Select";
@@ -250,7 +251,7 @@ export function Composer(props: ComposerProps) {
   // The script picker's choices: every .py in the picked tree, so "script must exist" is true by
   // construction. Sorted so a re-pick doesn't reshuffle the list.
   const scriptOptions = useMemo(
-    () => (picked ? picked.files.filter((f) => f.name.endsWith(".py")).map(relPath).sort() : []),
+    () => (picked ? picked.paths.filter((p) => p.endsWith(".py")).sort() : []),
     [picked],
   );
 
@@ -265,7 +266,7 @@ export function Composer(props: ComposerProps) {
   const rescan = useCallback(
     async (list: FileList | null, honorGitignore: boolean) => {
       if (!list || list.length === 0) return;
-      setPick(await pick(list, honorGitignore));
+      setPick(await pickOffThread(list, honorGitignore));
     },
     [setPick],
   );
