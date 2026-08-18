@@ -12,7 +12,12 @@
 
 const BLOCK = 512
 
-export type TarEntry = { path: string; data: Uint8Array }
+/** One file in the archive. `data` is a Blob — normally the picked `File` itself, unread. */
+export type TarEntry = { path: string; data: Blob }
+
+// One shared block of zeros to pad and terminate with. Blob copies what it is given at construction,
+// so handing the same buffer out repeatedly is safe and costs one 512-byte allocation for a whole tar.
+const ZEROS = new Uint8Array(BLOCK)
 
 function octal(n: number, len: number): string {
   // tar stores numbers as zero-padded octal, NUL-terminated: len-1 digits + '\0'.
@@ -57,23 +62,42 @@ function header(path: string, size: number): Uint8Array {
   return h
 }
 
-/** Build an uncompressed tar of `entries`. Paths must be relative (no leading '/'). */
-export function makeTar(entries: TarEntry[]): Uint8Array {
+/**
+ * Build an uncompressed tar of `entries` as a Blob. Paths must be relative (no leading '/').
+ *
+ * **Nothing is read and nothing is copied**, and that is the whole point. This used to allocate one
+ * `Uint8Array` the size of the entire project and memcpy every file into it, after the caller had
+ * already pulled each file into memory with `await file.arrayBuffer()`. Peak was ~2x the project, and
+ * because both loops are synchronous the tab painted nothing and answered no clicks for the duration —
+ * picking a folder of any size froze the page.
+ *
+ * A Blob is a *reference* to bytes, not the bytes: the browser keeps a File's contents on disk and
+ * reads them only when something drains the Blob's stream. A tar header needs just the size, and
+ * `File.size` is already known, so the whole archive can be described without touching a byte of it.
+ * The read then happens lazily, off the main thread, as gzip pulls.
+ */
+export function makeTar(entries: TarEntry[]): Blob {
   const pad = (n: number) => (BLOCK - (n % BLOCK)) % BLOCK
-  const total = entries.reduce((n, e) => n + BLOCK + e.data.length + pad(e.data.length), 0) + BLOCK * 2
-  const out = new Uint8Array(total)
-  let o = 0
+  const parts: BlobPart[] = []
   for (const e of entries) {
-    out.set(header(e.path, e.data.length), o)
-    o += BLOCK
-    out.set(e.data, o)
-    o += e.data.length + pad(e.data.length)
+    parts.push(header(e.path, e.data.size) as BlobPart)
+    parts.push(e.data)
+    const p = pad(e.data.size)
+    if (p) parts.push(ZEROS.subarray(0, p) as BlobPart)
   }
-  return out // trailing two zero blocks are already zero
+  parts.push(ZEROS as BlobPart, ZEROS as BlobPart)   // the two all-zero blocks that end an archive
+  return new Blob(parts, { type: 'application/x-tar' })
 }
 
-/** gzip a byte array using the platform's CompressionStream — no dependency, no polyfill. */
-export async function gzip(data: Uint8Array): Promise<Blob> {
-  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
+/**
+ * gzip a Blob using the platform's CompressionStream — no dependency, no polyfill.
+ *
+ * The result is buffered back into a Blob rather than handed to `fetch` as a stream: a streaming
+ * request body needs `duplex: 'half'`, which is Chromium-only. Buffering is fine here where the
+ * synchronous build was not — `CompressionStream` pulls in chunks and yields between them, so the tab
+ * stays responsive, and a Blob the browser decides is large is backed by disk rather than the heap.
+ */
+export async function gzip(data: Blob): Promise<Blob> {
+  const stream = data.stream().pipeThrough(new CompressionStream('gzip'))
   return new Response(stream).blob()
 }

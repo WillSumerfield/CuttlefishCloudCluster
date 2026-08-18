@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
 import {
-  downloadOutputs,
-  downloadRecovery,
+  outputsDownloadUrl,
+  recoveryDownloadUrl,
   getLogs,
   getRecovery,
   getRetention,
@@ -72,9 +72,12 @@ function RecoveryPanel({ id }: { id: string }) {
           outputs, held on the Head as a safety net.
         </p>
       </div>
-      <button className="btn-primary" onClick={() => downloadRecovery(jobId)}>
+      {/* A link, not a fetch — the browser's download manager owns the transfer, so a 16 GB copy
+          never sits in this tab. Only rendered when the Head said there is one, so the link cannot
+          land on the route's 404. */}
+      <a className="btn-primary" href={recoveryDownloadUrl(jobId)} download>
         Download recovery copy
-      </button>
+      </a>
     </div>
   );
 }
@@ -122,9 +125,11 @@ function OutputsPanel({ id }: { id: string }) {
           Fetch them before then — results are not kept forever.
         </p>
       </div>
-      <button className="btn-primary" onClick={() => downloadOutputs(jobId)}>
+      {/* See RecoveryPanel: a link, so a 3 GB result is the download manager's problem and not this
+          tab's memory. This panel only renders when the retention route reported bytes held. */}
+      <a className="btn-primary" href={outputsDownloadUrl(jobId)} download>
         Download outputs
-      </button>
+      </a>
     </div>
   );
 }

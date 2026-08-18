@@ -7,7 +7,7 @@
 // Every route but /healthz is behind that session, so ANY call can come back 401, not just at login.
 // `Unauthorized` is how the app notices and drops back to the login screen.
 
-import { gzip, makeTar, type TarEntry } from './tar'
+import { gzip, makeTar } from './tar'
 import { relPath, type Picked } from './project'
 
 // `owner` is the User who donated the machine — named by the Admin when they authorized it, never
@@ -176,6 +176,21 @@ async function req(path: string, init?: RequestInit): Promise<Response> {
 export const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 const json = <T,>(path: string) => req(path).then((r) => r.json() as Promise<T>)
+
+/**
+ * The gzip-tar body every upload sends: a Spawn's project, a Recipe's snapshot, a Workspace's seed, a
+ * Tide Pool's (often empty) folder. One shape, because the Head has one upload path.
+ *
+ * **No file is read on the main thread.** The tar is described from `File.size` alone and the Files go
+ * in by reference; the bytes are pulled off disk later, by gzip, in chunks. Before this, each call
+ * site did `await f.arrayBuffer()` per file and then memcpy'd the lot into one array — which held the
+ * whole project in memory twice over and, being synchronous, froze the tab for the duration. Picking a
+ * folder is the most ordinary thing a user does here, and it was the one action that stopped the page.
+ */
+async function projectBody(files: File[]): Promise<Blob> {
+  return gzip(makeTar(files.map((f) => ({ path: relPath(f), data: f }))))
+}
+
 
 export const getArms = () => json<Arm[]>('/arms')
 // The Arm Features CCC supports — what the submit composer offers to require. Built into CCC, not
@@ -364,11 +379,7 @@ export type NewRecipe = {
 // Shared because an update IS a save — the Head releases the old snapshot's bytes and charges the new
 // ones (delete-then-save), so the two differ only in which path they POST to.
 async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
-  const entries: TarEntry[] = []
-  for (const f of r.picked.files) {
-    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
-  }
-  const body = await gzip(makeTar(entries))
+  const body = await projectBody(r.picked.files)
   const meta = {
     name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
     vram_mb: r.vram_mb, minutes: r.minutes,
@@ -488,11 +499,7 @@ export type NewWorkspace = {
 }
 
 export async function createWorkspace(w: NewWorkspace): Promise<Workspace> {
-  const entries: TarEntry[] = []
-  for (const f of w.picked.files) {
-    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
-  }
-  const body = await gzip(makeTar(entries))
+  const body = await projectBody(w.picked.files)
   const meta = {
     name: w.name, storage_bytes: w.storage_bytes, gpus: w.gpus, vram_mb: w.vram_mb,
     minutes: w.minutes, manifest: w.manifest.trim(), outputs: w.outputs, features: w.features,
@@ -668,29 +675,27 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   })
 }
 
-/** Download a Spawn's outputs tar, straight to the user's disk. */
-export async function downloadOutputs(id: number): Promise<void> {
-  const blob = await req(`/spawns/${id}/outputs`).then((r) => r.blob())
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `spawn-${id}-outputs.tar.gz`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+/**
+ * Where the browser fetches a Spawn's declared outputs as a tar. A plain link, like a Workspace's — not
+ * a fetch.
+ *
+ * This used to `await r.blob()` and hand the result to `URL.createObjectURL`, which put the entire
+ * download in the tab before a single byte reached the disk. On a 3GB result that is minutes during
+ * which the page shows nothing, offers no cancel, reports no progress and can run the tab out of
+ * memory — while the Head, which streams precisely so none of that is necessary, has already sent it.
+ *
+ * As a link it belongs to the browser's own download manager: progress, a destination, a pause, a
+ * retry, all of it free and none of it in this tab. The session cookie is `SameSite=Lax` and the API
+ * is same-origin, so it goes out with the request; the filename comes from the route's own
+ * `Content-Disposition` and is repeated in the `download` attribute for the same-origin case.
+ */
+export const outputsDownloadUrl = (id: number) => `${API}/spawns/${id}/outputs`
 
-/** Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared outputs, while the window is
- *  still open. Same shape as downloadOutputs, distinct route and filename (docs/TODO.md: never merge
- *  the two into one artifact whose contents would silently change once the window closes). */
-export async function downloadRecovery(id: number): Promise<void> {
-  const blob = await req(`/spawns/${id}/recovery/download`).then((r) => r.blob())
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `spawn-${id}-recovery.tar.gz`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+/** Where the browser fetches a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared
+ *  outputs, while the window is still open. A plain link for the same reasons as the outputs one above,
+ *  and more so: the per-Spawn cap admits copies up to 16GB. A distinct route and filename, never merged
+ *  into one artifact whose contents would silently change once the window closes. */
+export const recoveryDownloadUrl = (id: number) => `${API}/spawns/${id}/recovery/download`
 
 export type SubmitOpts = {
   picked: Picked
@@ -740,11 +745,7 @@ export async function submit({
   picked, name, script, gpu, minutes, vram, node, args, wandb, wandbProject, wandbEntity, outputs,
   features, manifest,
 }: SubmitOpts): Promise<SubmitResult> {
-  const entries: TarEntry[] = []
-  for (const f of picked.files) {
-    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
-  }
-  const body = await gzip(makeTar(entries))
+  const body = await projectBody(picked.files)
   // Head owns the key, client owns the run: send WANDB_PROJECT/WANDB_ENTITY only — never a key (browser
   // has none), never WANDB_MODE. Head fills in the key it holds for you.
   //
@@ -799,11 +800,7 @@ export async function submitTidepool({
   // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens the
   // upload as a tar archive (ccc_head_api.spawns.submit). `makeTar([])` writes the two all-zero
   // end-of-archive blocks tar readers expect, same as Python's tarfile for no members.
-  const entries: TarEntry[] = []
-  for (const f of picked?.files ?? []) {
-    entries.push({ path: relPath(f), data: new Uint8Array(await f.arrayBuffer()) })
-  }
-  const body = await gzip(makeTar(entries))
+  const body = await projectBody(picked?.files ?? [])
   const meta = {
     minutes, vram, gpu, node, tidepool: true, outputs: [], name,
     ...(features.length ? { features } : {}),
