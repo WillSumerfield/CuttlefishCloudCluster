@@ -205,7 +205,9 @@ def fake_slurm(monkeypatch, tmp_path):
     these tests exist to check is *not* reachable.
     """
     state = tmp_path / "head-state"
-    for name in ("projects", "spawns", "scratch"):
+    # `scripts` is not a real Head directory: it is where the sbatch stub below keeps the job script
+    # it was fed on stdin, so a test can read back what the Arm would actually have run.
+    for name in ("projects", "spawns", "scratch", "scripts"):
         (state / name).mkdir(parents=True)
     monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
     monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
@@ -221,8 +223,12 @@ def fake_slurm(monkeypatch, tmp_path):
     # sbatch --parsable prints just the job id. A counter file gives each Spawn a distinct, stable id.
     counter = tmp_path / "job-counter"
     counter.write_text("4200")
+    # The job script arrives on stdin (spawns.submit feeds it there rather than writing a temp file),
+    # so it is kept before the id is printed — otherwise the one artefact the Head actually produces
+    # for an Arm would be unreadable to the tests.
     (bin_dir / "sbatch").write_text(
-        f'#!/bin/sh\nn=$(cat {counter}); n=$((n+1)); echo $n > {counter}; echo $n\n')
+        f'#!/bin/sh\nn=$(cat {counter}); n=$((n+1)); echo $n > {counter}\n'
+        f'cat > {state / "scripts"}/$n.sh\necho $n\n')
     # Two call shapes share this one stub: `squeue -h -j <id> -o %T` (spawns.active_state — no
     # matching job prints NOTHING, which is how the Head decides a Spawn is finished) and
     # `squeue --json` (slurm.queue/spawns — submit_checked's concurrent-Spawn cap + the Karma tick,

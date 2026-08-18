@@ -1026,6 +1026,12 @@ def run(
                                  "and nothing is detected: the environment carries its own Python and "
                                  "inherits nothing, so it is yours to name. With --tidepool it is "
                                  "optional, and passing one uploads this directory too."),
+    substrate: str = typer.Option(
+        None, "--substrate", help="Optional. File naming the system packages this Spawn needs — one "
+                                  "per line, `#` comments — installed into its Pod before the "
+                                  "environment is built, so a wheel that has to compile finds its "
+                                  "headers. Relative to the project root; `apt.txt` by convention. "
+                                  "Package names only: no versions, no URLs, no apt options."),
     no_download: bool = typer.Option(
         False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
                                      "they are downloaded into ~/ccc/outputs/spawn-<id>-outputs/ as "
@@ -1081,9 +1087,13 @@ def run(
         if manifest and not (root / manifest).is_file():
             raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the "
                            f"project directory, {root})")
+        if substrate and not (root / substrate).is_file():
+            raise ui.abort(f"substrate {substrate!r} was not found (looked for it relative to the "
+                           f"project directory, {root})")
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
                                 features=feature, follow=follow, download=not no_download,
-                                manifest=manifest, no_gitignore=no_gitignore, root=root, name=name)
+                                manifest=manifest, substrate=substrate, no_gitignore=no_gitignore,
+                                root=root, name=name)
     wizard = script is None
     # The card count shows only past one: at a single Device it is what every Spawn does, and `24G`
     # already IS the per-card figure, so printing it would add a word and say nothing.
@@ -1151,15 +1161,21 @@ def run(
     if not (root / manifest).is_file():
         raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the project "
                        f"directory, {root})")
+    # Never prompted for, unlike --manifest: a Spawn needing no system package is the ordinary one, so
+    # asking everybody would be a question most people answer with an empty line.
+    if substrate and not (root / substrate).is_file():
+        raise ui.abort(f"substrate {substrate!r} was not found (looked for it relative to the project "
+                       f"directory, {root})")
     if wizard:
         spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore,
-                          outputs=output, features=feature, manifest=manifest, root=root)
+                          outputs=output, features=feature, manifest=manifest, substrate=substrate,
+                          root=root)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
-                      features=feature, manifest=manifest, download=not no_download, dest=dest,
-                      root=root, name=name)
+                      features=feature, manifest=manifest, substrate=substrate,
+                      download=not no_download, dest=dest, root=root, name=name)
 
 
 @app.command()

@@ -12,6 +12,8 @@ import pytest
 
 from ccc_head_api import environments, spawns, substrate
 
+from test_cli_e2e import _spawn_id
+
 
 def _project(tmp_path, **files):
     for name, body in files.items():
@@ -199,3 +201,51 @@ class TestTheInstallIsRendered:
         **Guise** on the donor's own box, against the donor's own /usr."""
         block = _block(["ffmpeg"])
         assert "\napt-get" not in block
+
+
+# --- the CLI, end to end ---------------------------------------------------
+# Rides the same `/submit` the Dashboard does, so what these pin holds for both clients.
+
+class TestTheDeclarationTravels:
+    def test_a_spawn_declaring_none_is_unaffected(self, signed_in, fake_slurm, project):
+        result = signed_in("run", "train.py", "--name", "n", "--time", "60", "--vram", "24",
+                           "--output", "out", "--manifest", "requirements.txt")
+        assert result.exit_code == 0, result.output
+        assert "substrate" not in result.output
+
+    def test_the_echo_names_what_was_declared(self, signed_in, fake_slurm, project):
+        """Said while the User is still watching. A Substrate is what a build compiles against, and
+        discovering it went nowhere costs a queue place, a card and a wall clock."""
+        (project / "apt.txt").write_text("# system deps\nlibjpeg-dev\nffmpeg\n")
+        result = signed_in("run", "train.py", "--name", "n", "--time", "60", "--vram", "24",
+                           "--output", "out", "--manifest", "requirements.txt",
+                           "--substrate", "apt.txt")
+        assert result.exit_code == 0, result.output
+        assert "substrate: libjpeg-dev, ffmpeg" in result.output
+
+    def test_the_arm_is_told_to_install_it(self, signed_in, fake_slurm, project):
+        (project / "apt.txt").write_text("ffmpeg\n")
+        result = signed_in("run", "train.py", "--name", "n", "--time", "60", "--vram", "24",
+                           "--output", "out", "--manifest", "requirements.txt",
+                           "--substrate", "apt.txt")
+        assert result.exit_code == 0, result.output
+        script = (fake_slurm / "scripts" / f"{_spawn_id(result.output)}.sh").read_text()
+        assert "apt-get install -y --no-install-recommends ffmpeg" in script
+
+    def test_a_file_that_is_not_there_never_leaves_the_client(self, signed_in, fake_slurm, project):
+        """Caught before the whole project is uploaded, exactly as a missing manifest is."""
+        result = signed_in("run", "train.py", "--name", "n", "--time", "60", "--vram", "24",
+                           "--output", "out", "--manifest", "requirements.txt",
+                           "--substrate", "nope.txt")
+        assert result.exit_code != 0
+        assert "substrate 'nope.txt' was not found" in result.output
+
+    def test_a_bad_line_is_refused_before_the_spawn_exists(self, signed_in, fake_slurm, project):
+        """The Head's own check, against what actually arrived — .gitignore can drop a file that is
+        right here, so the client's stat is a courtesy and this is the one that counts."""
+        (project / "apt.txt").write_text("ffmpeg\nhttps://example.com/thing.deb\n")
+        result = signed_in("run", "train.py", "--name", "n", "--time", "60", "--vram", "24",
+                           "--output", "out", "--manifest", "requirements.txt",
+                           "--substrate", "apt.txt")
+        assert result.exit_code != 0
+        assert "not a package name" in result.output

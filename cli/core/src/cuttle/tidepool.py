@@ -88,7 +88,8 @@ def _noun(spawn_id: int, workspace: str | None) -> str:
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
         node: str | None, outputs: list[str], features: list[str], follow: bool,
-        download: bool = True, manifest: str | None = None, no_gitignore: bool = False,
+        download: bool = True, manifest: str | None = None, substrate: str | None = None,
+        no_gitignore: bool = False,
         root: Path | None = None, name: str = "") -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
     Spawn) unless `script_or_id` resolves to an existing one, then attaches either way.
@@ -107,7 +108,7 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
         spawn_id = _request(minutes, vram, gpu, node, outputs, features, manifest=manifest,
-                            no_gitignore=no_gitignore, root=root, name=name)
+                            substrate=substrate, no_gitignore=no_gitignore, root=root, name=name)
     if download:
         arm(spawn_id)
     _wait_and_attach(spawn_id)
@@ -138,6 +139,7 @@ def arm(spawn_id: int) -> None:
 
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
             outputs: list[str], features: list[str], manifest: str | None = None,
+            substrate: str | None = None,
             no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
     nothing here weakens that gate; `--output` and `--manifest` alone are optional, the first gated
@@ -166,8 +168,8 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
             # scripted request proceeds; it just cannot be asked first.
             ui.warn(warning)
     spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, outputs, node=node, features=features,
-                                          manifest=manifest, no_gitignore=no_gitignore, root=root,
-                                          name=name)
+                                          manifest=manifest, substrate=substrate,
+                                          no_gitignore=no_gitignore, root=root, name=name)
     ui.ok(f"requested tide pool {spawn_id}")
     return spawn_id
 

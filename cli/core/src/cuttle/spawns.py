@@ -144,7 +144,8 @@ def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
                    features: list[str] | None = None, tidepool: bool = False,
-                   manifest: str | None = None, activation: bool = False,
+                   manifest: str | None = None, substrate: str | None = None,
+                   activation: bool = False,
                    user: str | None = None, name: str = "") -> tuple[int, str | None]:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
@@ -182,6 +183,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
             *(["--activation"] if activation else []),
             *(["--tidepool"] if tidepool else []),
             *(["--manifest", manifest] if manifest else []),
+            *(["--substrate", substrate] if substrate else []),
             *args],
             # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a
             # fresh subprocess and inherits nothing from it. Without it every pinned Spawn renders
@@ -214,6 +216,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
 
 def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
            outputs: list[str], features: list[str] | None = None, manifest: str | None = None,
+           substrate: str | None = None,
            root: Path | None = None) -> None:
     """Show what is about to be uploaded, before it is.
 
@@ -236,6 +239,9 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
         # Named here because the preview's whole job is "is this the directory you meant" — and the
         # manifest is the one line that says what the work will run against, not merely what ships.
         ("environment", manifest or "—"),
+        # Only when one was declared. Most Spawns have none, and a permanent "substrate: —" would add
+        # a line to every preview to say nothing.
+        *([("substrate", substrate)] if substrate else []),
         ("upload", f"{len(paths)} files, {total / 1_048_576:.1f} MB"
                    f"{'' if no_gitignore else '  (.gitignore honored)'}"),
         ("limit", f"{minutes} min"),
@@ -249,6 +255,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
            outputs: list[str], project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, node: str | None = None,
            features: list[str] | None = None, manifest: str | None = None,
+           substrate: str | None = None,
            download: bool = True, dest: Path | None = None, root: Path | None = None,
            name: str = "") -> None:
     root = root or Path.cwd()
@@ -268,7 +275,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     if node:
         spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
                                             wandb_env, outputs, features=features, manifest=manifest,
-                                            name=name)
+                                            substrate=substrate, name=name)
     else:
         meta = {"script": script, "gpu": gpu, "args": args, "name": name,
                 "minutes": minutes, "vram": vram, "wandb_env": wandb_env, "outputs": outputs,
@@ -278,7 +285,10 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
                 # Required, unlike everything above it — the Head refuses a Spawn that names no
                 # dependency file (ccc_head_api.environments). Sent unconditionally so a caller that
                 # somehow got here without one meets the Head's message rather than a missing key.
-                "manifest": manifest or ""}
+                "manifest": manifest or "",
+                # Optional for every Spawn, so omitted rather than sent empty — the Head reads an
+                # absent key as "no system package needed", which is the ordinary case.
+                **({"substrate": substrate} if substrate else {})}
         client = auth._client()
         client.token = auth._load_token()
         try:
@@ -340,6 +350,7 @@ def _download_now(spawn_id: int) -> None:
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
                     features: list[str] | None = None, manifest: str | None = None,
+                    substrate: str | None = None,
                     no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
     """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
     tidepool.py, owns the UI from here, since it still has to poll for placement and attach).
@@ -357,19 +368,24 @@ def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node:
     """
     features = features or []
     root = root or Path.cwd()
-    if manifest:
+    # A declared **Substrate** uploads the directory for the same reason a manifest does: the file
+    # naming the packages has to be in the project the Head reads it out of, and a bare Tide Pool sends
+    # an empty tar with nothing in it to name.
+    if manifest or substrate:
         tar = _make_tar(root, None if no_gitignore else _project_files(root))
     else:
         tar = _make_tar(root, [])
     if node:
         return _submit_pinned(tar, "", [], minutes, vram, gpu, node, {}, outputs,
-                              features=features, tidepool=True, manifest=manifest, name=name)[0]
+                              features=features, tidepool=True, manifest=manifest,
+                              substrate=substrate, name=name)[0]
     meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,
            "name": name,
            **({"features": features} if features else {}),
            # Absent means "no Environment", which for a Tide Pool alone is legal — so unlike an
            # ordinary Spawn this is omitted rather than sent empty.
-           **({"manifest": manifest} if manifest else {})}
+           **({"manifest": manifest} if manifest else {}),
+           **({"substrate": substrate} if substrate else {})}
     client = auth._client()
     client.token = auth._load_token()
     try:

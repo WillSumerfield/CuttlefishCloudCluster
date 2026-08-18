@@ -145,7 +145,8 @@ def _return(node: str) -> int:
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
             node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
             features: list[str] | None = None, tidepool: bool = False,
-            manifest: str | None = None, activation: bool = False, name: str = "") -> int:
+            manifest: str | None = None, substrate: str | None = None,
+            activation: bool = False, name: str = "") -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
     Authorization is being the operator on the Head; attribution is the account named here. Goes through
@@ -173,7 +174,7 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
-                                       activation=activation, name=name)
+                                       substrate=substrate, activation=activation, name=name)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -252,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--manifest", help="REQUIRED (except --tidepool): dependency file to build this "
                                       "Spawn's environment from, relative to the project root. "
                                       "Nothing is detected and there is no default.")
+    s.add_argument("--substrate", help="optional: file naming the system packages to install into "
+                                       "this Spawn's Pod, one per line, relative to the project "
+                                       "root.")
     # The client's project/entity hint, as the JSON dict submit_checked takes — not two --project/
     # --entity flags, so the CLI and the HTTP route hand over the *same* value and there is one place
     # that decides what a W&B run is called (cuttle.settings.wandb_env).
@@ -280,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
                        args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features,
-                       tidepool=args.tidepool, manifest=args.manifest,
+                       tidepool=args.tidepool, manifest=args.manifest, substrate=args.substrate,
                        activation=args.activation, name=args.name)
     if args.cmd == "feature-activation":
         return _feature_activation(args.name)
