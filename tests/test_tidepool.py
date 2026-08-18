@@ -410,7 +410,7 @@ class TestTidepoolRoute:
         assert r.status_code == 200
         # `user` is the owner's Guise — what the CLI ssh's in as. Present even when not ready: the CLI
         # polls this same route, and the account does not depend on the relay being up.
-        assert r.json() == {"ready": False, "port": None, "private_key": None, "user": _GUISE}
+        assert r.json() == {"ready": False, "port": None, "private_key": None, "user": _GUISE, "proj": None}
 
     def test_ready_once_running_and_relayed(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)
@@ -429,7 +429,8 @@ class TestTidepoolRoute:
         r = c.get("/api/spawns/77/tidepool")
         assert r.status_code == 200
         body = r.json()
-        assert body == {"ready": True, "port": 41007, "private_key": "PRIVATEKEY", "user": _GUISE}
+        assert body == {"ready": True, "port": 41007, "private_key": "PRIVATEKEY", "user": _GUISE,
+                        "proj": "/tmp/ccc-77/proj"}
         assert calls == [(77, "100.99.0.5", "gpu-box", False)]
 
     def test_not_ready_while_nothing_accepts_on_the_port(self, monkeypatch, tmp_path):
@@ -466,7 +467,7 @@ class TestTidepoolRoute:
         monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "gpu-box"}])
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "mesh_ip": None}])
         r = c.get("/api/spawns/77/tidepool")
-        assert r.json() == {"ready": False, "port": None, "private_key": None, "user": _GUISE}
+        assert r.json() == {"ready": False, "port": None, "private_key": None, "user": _GUISE, "proj": None}
 
 
 class TestReadyMeansConnectable:

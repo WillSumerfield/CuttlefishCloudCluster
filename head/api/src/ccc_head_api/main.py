@@ -1193,6 +1193,11 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md). It
     is on the wire because the CLI cannot derive it: it is `ccc-u<uid>`, and a uid is a Head-side fact.
     The User never types it and never sees it; nobody is expected to know their own uid.
+
+    `proj` is the working directory inside the Pod — what a VS Code remote window should open. Also
+    not derivable client-side: a Spawn's scratch is `/tmp/ccc-<id>` on a donor's Arm and lives under
+    the Head's state dir on its co-located one, and only this side knows which Arm took it. It is
+    `None` until `ready`, for the same reason.
     """
     with db.connect() as conn:
         row = db.get_spawn(conn, job_id)
@@ -1208,16 +1213,17 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     with db.connect() as conn:
         guise = guises.name(db.allocate_guise(conn, user["id"]))
     if spawns_mod.active_state(job_id) != "RUNNING":
-        return {"ready": False, "port": None, "private_key": None, "user": guise}
+        return {"ready": False, "port": None, "private_key": None, "user": guise, "proj": None}
     node_name = next((s["node"] for s in slurm.spawns() if s["id"] == job_id), None)
     arm = next((a for a in slurm.arms() if a["name"] == node_name), None) if node_name else None
     if arm is None or not arm.get("mesh_ip"):
-        return {"ready": False, "port": None, "private_key": None, "user": guise}
+        return {"ready": False, "port": None, "private_key": None, "user": guise, "proj": None}
+    head_arm = bool(arm.get("head"))
     with db.connect() as conn:
-        up = tidepool_mod.ensure_relay(conn, job_id, arm["mesh_ip"], node_name,
-                                       head_arm=bool(arm.get("head")))
+        up = tidepool_mod.ensure_relay(conn, job_id, arm["mesh_ip"], node_name, head_arm=head_arm)
         key = db.tidepool_private_key(conn, job_id)
-    return {"ready": up and key is not None, "port": tp["port"], "private_key": key, "user": guise}
+    return {"ready": up and key is not None, "port": tp["port"], "private_key": key, "user": guise,
+            "proj": spawns_mod.pod_project_dir(job_id, head_arm)}
 
 
 def _human(n: int) -> str:
