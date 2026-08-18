@@ -463,13 +463,35 @@ def render_ubuntu_snapshot_list() -> str:
 # `rm -rf /var/lib/apt/lists/*` (an image ships no stale index), so a fresh Pod knows of no packages
 # at all and the first install would otherwise fail with "unable to locate package" — which reads as
 # a broken name rather than a missing index.
+#
+# `DEBIAN_FRONTEND=noninteractive` because there is no one to answer. A package that stops to ask
+# (tzdata is the usual one) would hang the Spawn holding it until its wall clock ran out, and a
+# **Substrate** installed from the job script has no terminal attached at all.
+#
+# Three lines are dropped from stderr, and only three — each measured on hardware, each printed on
+# every single invocation, none of them meaning anything failed. `setpriv: setresuid failed` is
+# man-db's trigger trying to drop to its own service account, and `chown to root:adm` is apt failing
+# to give its own log away, both direct consequences of a namespace that maps ONE uid. `debconf:
+# delaying package configuration` is the slim image not shipping apt-utils, which is deliberate.
+# Leaving them in would teach Users to read past apt's stderr, and that is where the real failures
+# appear too. Anything else apt says comes through untouched.
 APT_SHIM = """\
 #!/bin/sh
 # Rendered into every Pod image by `cuttle setup`. Do not hand-edit.
-[ -f /ccc-tmp/.apt-updated ] || {
-    unshare -r /usr/bin/apt-get -o APT::Sandbox::User=root update && : > /ccc-tmp/.apt-updated
+export DEBIAN_FRONTEND=noninteractive
+ccc_noise='setpriv: setresuid failed|chown to root:adm of file|^debconf: delaying package'
+# stderr is filtered via a file rather than inline, so the exit status stays apt's own rather than
+# grep's; stdout, where apt's progress and package list go, is never touched and stays live.
+ccc_apt() {
+    ccc_err=/ccc-tmp/.apt-stderr.$$
+    unshare -r /usr/bin/apt-get -o APT::Sandbox::User=root "$@" 2>"$ccc_err"
+    ccc_rc=$?
+    grep -Ev "$ccc_noise" "$ccc_err" >&2
+    rm -f "$ccc_err"
+    return $ccc_rc
 }
-exec unshare -r /usr/bin/apt-get -o APT::Sandbox::User=root "$@"
+[ -f /ccc-tmp/.apt-updated ] || { ccc_apt update && : > /ccc-tmp/.apt-updated; }
+ccc_apt "$@"
 """
 
 

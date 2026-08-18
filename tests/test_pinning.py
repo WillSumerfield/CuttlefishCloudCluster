@@ -170,6 +170,67 @@ class TestTheImageCarriesNoRuntime:
         assert f"mantle:x:{config.CCC_UID}:{config.CCC_GID}" in d
 
 
+class TestAptWorksInsideAPod:
+    """`apt install` inside a Pod, which a **Substrate** needs and a **Tide Pool**'s User expects.
+
+    The image ships shims in /usr/local/bin (ahead of /usr/bin on PATH) rather than teaching every
+    caller an incantation. What they must do was settled on hardware (2026-08-18) and each of these
+    guards one finding, because every one of them looks removable and none is."""
+
+    def test_it_is_a_nested_namespace_and_not_fakeroot(self):
+        """fakeroot issues the real chown and swallows only EPERM; apptainer's userns leaves uid 0
+        unmapped, so the kernel answers EINVAL and dpkg-deb dies in its tar subprocess. `unshare -r`
+        maps a real uid 0 one level down, so the chown is permitted rather than faked."""
+        d = templates.render_base_def()
+        assert "unshare -r" in d
+        assert "fakeroot" not in d
+
+    def test_apt_does_not_drop_to_a_uid_that_does_not_exist(self):
+        """apt fetches as `_apt`, and a namespace holding one mapped uid has no such account — every
+        download dies on "setgroups: Operation not permitted" long before dpkg is reached."""
+        assert "APT::Sandbox::User=root" in templates.render_base_def()
+
+    def test_nothing_stops_to_ask_a_question(self):
+        """A Substrate is installed from the job script with no terminal attached; a package that
+        prompts would hang the Spawn holding a Device until its wall clock ran out."""
+        assert "DEBIAN_FRONTEND=noninteractive" in templates.render_base_def()
+
+    def test_the_index_is_fetched_once_per_pod(self):
+        """The image ships no package list (`rm -rf /var/lib/apt/lists/*`), so a first install would
+        otherwise fail with "unable to locate package" — which reads as a broken name, not a missing
+        index. The marker sits on the bound disk scratch, so it dies with the Pod."""
+        d = templates.render_base_def()
+        assert "/ccc-tmp/.apt-updated" in d
+
+    def test_only_the_known_noise_is_filtered(self):
+        """Three lines print on every invocation in a one-uid namespace and none means anything
+        failed. Filtering more would hide real failures, which arrive on the same stream."""
+        d = templates.render_base_def()
+        noise = [line for line in d.splitlines() if line.startswith("ccc_noise=")]
+        assert len(noise) == 1
+        assert noise[0].count("|") == 2
+
+    def test_apts_own_exit_status_survives_the_filter(self):
+        """A pipe would report grep's status instead, so `apt-get install nonesuch` would look like a
+        success and a **Substrate** naming a bad package would install nothing and pass."""
+        d = templates.render_base_def()
+        assert "return $ccc_rc" in d
+        assert "| grep" not in d
+
+    def test_sudo_grants_nothing_and_still_works(self):
+        """People type it reflexively. Inside a Pod there is nothing left to grant, so it execs its
+        arguments — refusing would only send them looking for a privilege that does not exist here."""
+        d = templates.render_base_def()
+        assert "/usr/local/bin/sudo" in d
+        assert 'exec "$@"' in d
+
+    def test_editors_ship_with_the_image(self):
+        """A Tide Pool is a shell on a donated box: nothing can be edited without one, and no
+        **Environment** can supply a system editor."""
+        d = templates.render_base_def()
+        assert "nano" in d and "neovim" in d
+
+
 DEB_BYTES = b"!<arch>\ndebian-binary   pretend apptainer .deb\n"
 DONOR_IP = "100.99.0.2"  # where the fake "donor-box" node in `head_pin` is registered
 
