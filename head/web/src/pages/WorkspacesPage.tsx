@@ -113,6 +113,7 @@ export function WorkspacesPage() {
         vram_mb: w.vram_mb,
         minutes: w.minutes,
         manifest: w.manifest,
+        substrate: w.substrate,
         outputs: w.outputs,
         features: w.features,
         created_at: Date.now(),

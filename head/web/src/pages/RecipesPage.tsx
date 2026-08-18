@@ -114,6 +114,7 @@ export function RecipesPage() {
         wandb_project: r.wandb_project,
         wandb_entity: r.wandb_entity,
         manifest: r.manifest,
+        substrate: r.substrate,
         features: r.features,
       };
       setRecipes((prev) =>
@@ -145,7 +146,7 @@ export function RecipesPage() {
       const target = recipes.find((x) => x.name === name);
       if (!target) return;
       setRecipes((prev) =>
-        prev.map((x) => (x.name === name ? { ...x, ...r, manifest: r.manifest } : x)),
+        prev.map((x) => (x.name === name ? { ...x, ...r, manifest: r.manifest, substrate: r.substrate } : x)),
       );
       setActive(null);
       setActionError(null);

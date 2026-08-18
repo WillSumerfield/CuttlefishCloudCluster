@@ -440,10 +440,22 @@ _SCHEMA_V18 = """
 ALTER TABLE spawns ADD COLUMN name TEXT NOT NULL DEFAULT '';
 """
 
+# The **Substrate** declaration, frozen wherever the other declarations are (`manifest`, `features`).
+# The path a Spawn named, not the packages it resolved to: what a Recipe freezes is the declaration,
+# and the file itself is in the tree the Recipe already holds — storing the resolved list instead would
+# be a second copy that goes stale the moment its owner edits the file they can still see.
+#
+# `DEFAULT ''` on both, meaning "declared none", which is the ordinary case and the only thing a row
+# predating this column could have meant.
+_SCHEMA_V19 = """
+ALTER TABLE recipes ADD COLUMN substrate TEXT NOT NULL DEFAULT '';
+ALTER TABLE workspaces ADD COLUMN substrate TEXT NOT NULL DEFAULT '';
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
               _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
-              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18]
+              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18, _SCHEMA_V19]
 
 # DERIVED from the ladder, never written by hand. It was a standalone constant until it fell one behind
 # the list it describes: `init_schema` stamps this AFTER running `_MIGRATIONS[ver:]`, so a version that
@@ -1363,13 +1375,15 @@ def get_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row
 def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
                outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
                wandb_project: str, wandb_entity: str, size_bytes: int,
-               manifest: str | None, features: list[str]) -> sqlite3.Row:
+               manifest: str | None, features: list[str], substrate: str = "") -> sqlite3.Row:
     conn.execute(
         """INSERT INTO recipes (user_id, name, script, args, outputs, gpus, vram_mb, minutes,
-                                wandb, wandb_project, wandb_entity, bytes, manifest, features)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                wandb, wandb_project, wandb_entity, bytes, manifest, features,
+                                substrate)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (user_id, name, script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         int(wandb), wandb_project, wandb_entity, size_bytes, manifest, json.dumps(features)))
+         int(wandb), wandb_project, wandb_entity, size_bytes, manifest, json.dumps(features),
+         substrate))
     conn.commit()
     return get_recipe(conn, user_id, name)
 
@@ -1377,16 +1391,18 @@ def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, a
 def update_recipe_meta(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
                         outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
                         wandb_project: str, wandb_entity: str, manifest: str | None,
-                        features: list[str]) -> sqlite3.Row:
+                        features: list[str], substrate: str = "") -> sqlite3.Row:
     """Change what a Recipe runs and how, without touching its code or `bytes`/`frozen_at` — the settings-
     only sibling of `add_recipe`'s insert. `recipes.update_meta` has already checked `script` against the
     code already on disk, so this is a plain column write."""
     conn.execute(
         """UPDATE recipes SET script=?, args=?, outputs=?, gpus=?, vram_mb=?, minutes=?,
-                              wandb=?, wandb_project=?, wandb_entity=?, manifest=?, features=?
+                              wandb=?, wandb_project=?, wandb_entity=?, manifest=?, features=?,
+                              substrate=?
            WHERE user_id=? AND name=?""",
         (script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         int(wandb), wandb_project, wandb_entity, manifest, json.dumps(features), user_id, name))
+         int(wandb), wandb_project, wandb_entity, manifest, json.dumps(features), substrate,
+         user_id, name))
     conn.commit()
     return get_recipe(conn, user_id, name)
 
@@ -1457,29 +1473,29 @@ def get_workspace_by_id(conn: sqlite3.Connection, ws_id: int) -> sqlite3.Row | N
 
 def add_workspace(conn: sqlite3.Connection, user_id: int, name: str, storage_bytes: int, gpus: int,
                   vram_mb: int, minutes: int, manifest: str, outputs: list[str],
-                  features: list[str]) -> sqlite3.Row:
+                  features: list[str], substrate: str = "") -> sqlite3.Row:
     conn.execute(
         """INSERT INTO workspaces (user_id, name, storage_bytes, gpus, vram_mb, minutes, manifest,
-                                   outputs, features)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+                                   outputs, features, substrate)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (user_id, name, storage_bytes, gpus, vram_mb, minutes, manifest,
-         json.dumps(outputs), json.dumps(features)))
+         json.dumps(outputs), json.dumps(features), substrate))
     conn.commit()
     return get_workspace(conn, user_id, name)
 
 
 def update_workspace_meta(conn: sqlite3.Connection, user_id: int, name: str, storage_bytes: int,
                           gpus: int, vram_mb: int, minutes: int, manifest: str, outputs: list[str],
-                          features: list[str]) -> sqlite3.Row:
+                          features: list[str], substrate: str = "") -> sqlite3.Row:
     """Change what a visit asks for, and the **Storage** reserved for the tree — never the tree itself.
     There is no upload sibling of this: a Workspace is seeded once and written to from inside its own
     sessions thereafter."""
     conn.execute(
         """UPDATE workspaces SET storage_bytes=?, gpus=?, vram_mb=?, minutes=?, manifest=?,
-                                 outputs=?, features=?
+                                 outputs=?, features=?, substrate=?
            WHERE user_id=? AND name=?""",
         (storage_bytes, gpus, vram_mb, minutes, manifest, json.dumps(outputs), json.dumps(features),
-         user_id, name))
+         substrate, user_id, name))
     conn.commit()
     return get_workspace(conn, user_id, name)
 

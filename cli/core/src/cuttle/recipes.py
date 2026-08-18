@@ -46,17 +46,20 @@ def _pack(root: Path, no_gitignore: bool) -> tuple[bytes, int, int]:
 
 
 def _meta(name: str, script: str, args: list[str], minutes: int, vram: int, gpu: int,
-          outputs: list[str], project: str | None, entity: str | None, manifest: str) -> dict:
+          outputs: list[str], project: str | None, entity: str | None, manifest: str,
+          substrate: str = "") -> dict:
     # vram_mb, not the `vram` (GB) a Spawn sends: a Recipe stores the declared need rather than handing
     # it straight to Slurm, and the Head's Recipe schema keeps it in MB.
     wandb_env = settings.wandb_env(project, entity)
     return {"name": name, "script": script, "args": args, "outputs": outputs, "gpus": gpu,
             "vram_mb": vram * 1024, "minutes": minutes, "manifest": manifest,
+            "substrate": substrate,
             "wandb": True, "wandb_project": wandb_env.get("WANDB_PROJECT", ""),
             "wandb_entity": wandb_env.get("WANDB_ENTITY", "")}
 
 
-def _validate(root: Path, script: str, outputs: list[str], manifest: str) -> None:
+def _validate(root: Path, script: str, outputs: list[str], manifest: str,
+              substrate: str = "") -> None:
     """The gates `cuttle run` applies before uploading, applied here for the same reasons — and they
     matter MORE here. A Spawn with a missing script or manifest fails now; a Recipe with one fails
     every time it is ever run, discovered long after the folder that would have fixed it is gone."""
@@ -66,18 +69,24 @@ def _validate(root: Path, script: str, outputs: list[str], manifest: str) -> Non
     if not manifest:
         raise ui.abort("--manifest is required — a Recipe freezes the environment its work runs in, "
                        "not just the code (e.g. `--manifest pyproject.toml`)")
-    for label, rel in (("script", script), ("manifest", manifest)):
+    # The **Substrate** is optional here as everywhere, so it is checked only when named — but when it
+    # IS named it gets the same treatment, for the reason above: a Recipe frozen around a file that is
+    # not there fails every run, months from now.
+    for label, rel in (("script", script), ("manifest", manifest), ("substrate", substrate)):
+        if not rel:
+            continue
         if not (root / rel).is_file():
             raise ui.abort(f"{label} {rel!r} was not found (looked for it relative to the project "
                            f"directory, {root})")
 
 
 def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[str],
-         outputs: list[str], manifest: str, project: str | None = None, entity: str | None = None,
+         outputs: list[str], manifest: str, substrate: str = "",
+         project: str | None = None, entity: str | None = None,
          no_gitignore: bool = False, yes: bool = False, root: Path | None = None) -> None:
     """Freeze a project dir into a new Recipe."""
     root = root or Path.cwd()
-    _validate(root, script, outputs, manifest)
+    _validate(root, script, outputs, manifest, substrate)
     tar_bytes, count, total = _pack(root, no_gitignore)
     if not yes:
         ui.kv([
@@ -87,6 +96,7 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
             # A Recipe freezes the **Environment** as well as the code, so this line is as much part of
             # "what am I about to freeze" as the script is.
             ("environment", manifest),
+            *([("substrate", substrate)] if substrate else []),
             ("upload", f"{count} files, {total / 1_048_576:.1f} MB"
                        f"{'' if no_gitignore else '  (.gitignore honored)'}"),
             ("limit", f"{minutes} min"),
@@ -100,7 +110,8 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
         if not ui.ask_confirm("Save?", True):
             raise ui.abort("not saved")
     saved = _upload("/recipes", tar_bytes,
-                    _meta(name, script, args, minutes, vram, gpu, outputs, project, entity, manifest),
+                    _meta(name, script, args, minutes, vram, gpu, outputs, project, entity, manifest,
+                          substrate),
                     f"save recipe {name!r}")
     ui.ok(f"saved recipe {saved['name']} ({_human(saved['size_bytes'])})")
     ui.data(saved["name"])
@@ -108,7 +119,8 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
 
 def update(name: str, script: str | None = None, minutes: int | None = None, vram: int | None = None,
            gpu: int | None = None, args: list[str] | None = None, outputs: list[str] | None = None,
-           manifest: str | None = None, project: str | None = None, entity: str | None = None,
+           manifest: str | None = None, substrate: str | None = None,
+           project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, yes: bool = False, root: Path | None = None) -> None:
     """Re-capture a project dir into an existing Recipe.
 
@@ -120,7 +132,10 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
     current = _find(name)
     script = script or current["script"]
     manifest = manifest or current["manifest"]
-    _validate(root, script, list(outputs) if outputs else current["outputs"], manifest)
+    # `is not None` rather than `or`, unlike the manifest: an empty --substrate is how a Recipe drops
+    # one it no longer needs, and there is no equivalent for a manifest, which is mandatory.
+    substrate = substrate if substrate is not None else (current.get("substrate") or "")
+    _validate(root, script, list(outputs) if outputs else current["outputs"], manifest, substrate)
     tar_bytes, count, total = _pack(root, no_gitignore)
     meta = _meta(name, script,
                  list(args) if args else current["args"],
@@ -128,7 +143,7 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
                  vram if vram is not None else current["vram_mb"] // 1024,
                  gpu if gpu is not None else current["gpus"],
                  list(outputs) if outputs else current["outputs"],
-                 project, entity, manifest)
+                 project, entity, manifest, substrate)
     if not project and not entity:
         # Keep what the Recipe already froze rather than the local config's answer: an update is about
         # the code, and silently re-pointing someone's runs at a different W&B project is not.
@@ -140,6 +155,7 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
             ("script", script),
             ("directory", str(root)),
             ("environment", manifest),
+            *([("substrate", substrate)] if substrate else []),
             ("upload", f"{count} files, {total / 1_048_576:.1f} MB"),
             ("replaces", _human(current["size_bytes"])),
         ], title="About to update")

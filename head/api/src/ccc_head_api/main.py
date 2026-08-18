@@ -1076,7 +1076,8 @@ async def open_workspace(name: str, request: Request, user: dict = Depends(curre
 
     A Workspace holds ONE visit at a time, so this never queues a second Spawn behind a live one: it
     returns that one's id with `attached: true`. The body is optional per-visit overrides (vram, time,
-    gpus, features, outputs, manifest) — they change this session only and are never written back."""
+    gpus, features, outputs, manifest, substrate) — they change this session only and are never written
+    back."""
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before opening a workspace (run `cuttle passwd`)")
     try:

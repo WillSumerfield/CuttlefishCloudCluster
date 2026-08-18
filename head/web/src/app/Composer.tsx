@@ -83,6 +83,7 @@ export type RecipePayload = {
   wandb_project: string;
   wandb_entity: string;
   manifest: string;
+  substrate: string;
   features: string[];
 };
 
@@ -166,6 +167,9 @@ export function Composer(props: ComposerProps) {
   const [featureCatalog, setFeatureCatalog] = useState<string[]>([]);
   const [features, setFeatures] = useState<string[]>(editing?.features ?? []);
   const [manifest, setManifest] = useState(editing?.manifest ?? "");
+  // Optional in every mode, so nothing gates on it — unlike `named` below. A **Substrate** names system
+  // packages, and most work needs none.
+  const [substrate, setSubstrate] = useState(editing?.substrate ?? "");
   // What the Head says it will build, echoed after a successful Spawn submit — meaningless for a
   // Recipe, which never runs at save time.
   const [envNote, setEnvNote] = useState<string | null>(null);
@@ -342,6 +346,9 @@ export function Composer(props: ComposerProps) {
   // an Environment carries its own Python and inherits nothing, so the Head refuses a Spawn or a Recipe
   // that named none. A Tide Pool is the one Spawn that may decline — it is a shell, not a run.
   const named = !!manifest.trim();
+  // A **Substrate** is optional everywhere, so it gates nothing on its own — but it is read out of the
+  // upload exactly as a manifest is, so naming one still needs the folder that holds it.
+  const substrated = !!substrate.trim();
   // The selected count can go stale without being re-picked: choose 2 cards at 40GB, then raise Memory
   // to 400, and the option that was fine is now one no Arm can host. Greying the row out doesn't undo
   // a choice already made, so readiness re-asks the same question of what is currently selected.
@@ -357,7 +364,8 @@ export function Composer(props: ComposerProps) {
     variant === "spawn" && mode === "tidepool"
       // A named manifest needs the folder that holds it — the Head builds from the upload, and there
       // is nothing to resolve the name against otherwise.
-      ? !!trimmed && Number(minutes) > 0 && Number(vram) > 0 && (!named || !!picked)
+      ? !!trimmed && Number(minutes) > 0 && Number(vram) > 0 &&
+        (!named || !!picked) && (!substrated || !!picked)
       : variant === "recipe"
         ? metaOnly && !picked
           ? !!script.trim() && named && Number(minutes) > 0 && Number(vram) > 0 && outputs.length > 0
@@ -378,7 +386,7 @@ export function Composer(props: ComposerProps) {
           // `trimmed`, never `|| null`: a Name is required now, and `ready` above has already refused
           // to enable the button without one. Sending null could only ever produce a 422 for a field
           // the form itself just guaranteed.
-          name: trimmed, manifest: manifest.trim(),
+          name: trimmed, manifest: manifest.trim(), substrate: substrate.trim(),
         });
         setTidepoolId(id);
       } else {
@@ -386,6 +394,7 @@ export function Composer(props: ComposerProps) {
           picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
           wandb: wandbLog, wandbProject, wandbEntity, outputs, features, manifest,
+          substrate,
         });
         setEnvNote(res.environment);
       }
@@ -404,6 +413,7 @@ export function Composer(props: ComposerProps) {
       script, args: args.split(/\s+/).filter(Boolean), outputs, gpus: gpu,
       vram_mb: Number(vram) * 1024, minutes: Number(minutes), wandb: wandbLog,
       wandb_project: wandbProject.trim(), wandb_entity: wandbEntity.trim(), manifest: manifest.trim(),
+      substrate: substrate.trim(),
       features,
     };
     if (metaOnly && !picked) {
@@ -604,6 +614,24 @@ export function Composer(props: ComposerProps) {
           {mode === "tidepool" && named && !picked && (
             <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>
               Pick a folder above — the environment is built from what you upload.
+            </span>
+          )}
+        </Labeled>
+
+        {/* Free text for the same reason the field above is: naming the file is the declaration, and
+            offering a list of the .txt files we can see would make CCC decide which one meant this.
+            Optional in every mode, which is why nothing gates on it — but it still needs the folder,
+            because the Head reads the file out of the upload. */}
+        <Labeled label="System packages" className="sm:col-span-2" help="Optional. Name a file listing the apt packages this work needs — one per line — and they are installed into the Pod before your environment is built, so anything that has to compile finds its headers. Nothing survives the Spawn; declaring them is what makes them come back next time.">
+          <input
+            className="field"
+            placeholder="optional — apt.txt"
+            value={substrate}
+            onChange={(e) => setSubstrate(e.target.value)}
+          />
+          {substrated && !picked && (
+            <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>
+              Pick a folder above — the package list is read from what you upload.
             </span>
           )}
         </Labeled>

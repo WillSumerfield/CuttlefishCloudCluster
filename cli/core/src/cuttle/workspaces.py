@@ -53,20 +53,24 @@ def _find(name: str) -> dict:
 
 
 def _meta(name: str, storage_gb: int, vram: int, minutes: int, gpu: int, manifest: str | None,
-          outputs: list[str], features: list[str]) -> dict:
+          outputs: list[str], features: list[str], substrate: str | None = None) -> dict:
     # vram_mb / storage_bytes, not the GB the flags take: the Head stores the declared need the way a
     # Recipe's schema does, and the client converts once, here.
     return {"name": name, "storage_bytes": storage_gb * GIB, "vram_mb": vram * 1024,
             "minutes": minutes, "gpus": gpu, "manifest": manifest or "",
+            "substrate": substrate or "",
             "outputs": outputs, "features": features}
 
 
 def new(name: str, storage_gb: int, vram: int, minutes: int, gpu: int, manifest: str | None,
         outputs: list[str], features: list[str], root: Path, no_gitignore: bool = False,
-        yes: bool = False) -> None:
+        yes: bool = False, substrate: str | None = None) -> None:
     """Seed a directory into a new Workspace."""
     if manifest and not (root / manifest).is_file():
         raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the project "
+                       f"directory, {root})")
+    if substrate and not (root / substrate).is_file():
+        raise ui.abort(f"substrate {substrate!r} was not found (looked for it relative to the project "
                        f"directory, {root})")
     files = None if no_gitignore else spawns._project_files(root)
     paths = [root / f for f in files] if files is not None else [p for p in root.rglob("*") if p.is_file()]
@@ -78,6 +82,7 @@ def new(name: str, storage_gb: int, vram: int, minutes: int, gpu: int, manifest:
             ("directory", str(root)),
             ("storage", f"{storage_gb} GB"),
             ("environment", manifest or "—"),
+            *([("substrate", substrate)] if substrate else []),
             ("seed", f"{len(paths)} files, {total / 1_048_576:.1f} MB"
                      f"{'' if no_gitignore else '  (.gitignore honored)'}"),
             ("visits", f"{minutes} min, {vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"),
@@ -91,7 +96,8 @@ def new(name: str, storage_gb: int, vram: int, minutes: int, gpu: int, manifest:
             raise ui.abort("not created")
     try:
         made = _client().upload("/workspaces", tar_bytes,
-                                _meta(name, storage_gb, vram, minutes, gpu, manifest, outputs, features))
+                                _meta(name, storage_gb, vram, minutes, gpu, manifest, outputs,
+                                      features, substrate))
     except api.ApiError as e:
         if ui.DEBUG:
             raise
@@ -103,7 +109,8 @@ def new(name: str, storage_gb: int, vram: int, minutes: int, gpu: int, manifest:
 
 def update(name: str, storage_gb: int | None = None, vram: int | None = None, minutes: int | None = None,
            gpu: int | None = None, manifest: str | None = None, outputs: list[str] | None = None,
-           features: list[str] | None = None, yes: bool = False) -> None:
+           features: list[str] | None = None, yes: bool = False,
+           substrate: str | None = None) -> None:
     """Change what a visit asks for, and the **Storage** the tree may fill. Never the files.
 
     Every setting defaults to what the Workspace already holds, so `cuttle workspace update foo --time
@@ -120,6 +127,7 @@ def update(name: str, storage_gb: int | None = None, vram: int | None = None, mi
         manifest if manifest is not None else current["manifest"],
         list(outputs) if outputs else current["outputs"],
         list(features) if features else current["features"],
+        substrate if substrate is not None else current.get("substrate"),
     )
     if storage_gb is not None and not yes:
         # Only for a resize: every other field here takes effect on the next visit and is trivially
@@ -142,14 +150,14 @@ def update(name: str, storage_gb: int | None = None, vram: int | None = None, mi
 
 def open_(name: str, vram: int | None = None, minutes: int | None = None, gpu: int | None = None,
           manifest: str | None = None, outputs: list[str] | None = None,
-          features: list[str] | None = None) -> None:
+          features: list[str] | None = None, substrate: str | None = None) -> None:
     """Start a visit (or attach to the live one) and drop into the shell.
 
     Reuses the Tide Pool attach path wholesale — a visit IS a Tide Pool, so placement, the ephemeral
     keypair and the relay all work exactly as they do for `cuttle run --tidepool`.
     """
     over = {k: v for k, v in (("vram_mb", vram * 1024 if vram else None), ("minutes", minutes),
-                              ("gpus", gpu), ("manifest", manifest),
+                              ("gpus", gpu), ("manifest", manifest), ("substrate", substrate),
                               ("outputs", list(outputs) if outputs else None),
                               ("features", list(features) if features else None))
             if v is not None}

@@ -122,7 +122,7 @@ def usage(user_id: int, name: str) -> int:
     return total
 
 
-def _needs(meta: dict) -> tuple[int, int, int, str, list[str], list[str]]:
+def _needs(meta: dict) -> tuple[int, int, int, str, list[str], list[str], str]:
     """The declaration a visit is submitted from — validated the way `recipes.save` validates a
     Recipe's, minus the two a Workspace does not have.
 
@@ -144,7 +144,7 @@ def _needs(meta: dict) -> tuple[int, int, int, str, list[str], list[str]]:
     if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
         raise ValueError("'features' must be a list of strings")
     return (max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]), int(meta["minutes"]),
-            meta.get("manifest") or "", outputs, features)
+            meta.get("manifest") or "", outputs, features, meta.get("substrate") or "")
 
 
 def _storage(meta: dict) -> int:
@@ -155,17 +155,20 @@ def _storage(meta: dict) -> int:
     return int(storage)
 
 
-def weigh(tar_path: Path, manifest: str) -> int:
-    """Uncompressed bytes in the seed upload, and the is-it-really-in-there check for the manifest.
+def weigh(tar_path: Path, manifest: str, substrate: str = "") -> int:
+    """Uncompressed bytes in the seed upload, and the is-it-really-in-there checks for the two files a
+    visit is declared from.
 
-    Both before anything is written, like `recipes.weigh`. Only the manifest is checked, and only when
-    one was named: there is no entrypoint to look for, because nothing about a Workspace ever runs a
-    script."""
+    All before anything is written, like `recipes.weigh`. There is no entrypoint to look for, because
+    nothing about a Workspace ever runs a script — and each of these is checked only when it was
+    named, since both are optional for a shell."""
     with tarfile.open(tar_path, mode="r:gz") as tf:
         members = tf.getmembers()
-        if manifest and manifest not in [m.name for m in members]:
-            raise ValueError(f"manifest {manifest!r} was not found in the uploaded directory — check "
-                             f"the path matches exactly (and isn't excluded by .gitignore)")
+        names = [m.name for m in members]
+        for label, rel in (("manifest", manifest), ("substrate", substrate)):
+            if rel and rel not in names:
+                raise ValueError(f"{label} {rel!r} was not found in the uploaded directory — check "
+                                 f"the path matches exactly (and isn't excluded by .gitignore)")
         return sum(m.size for m in members if m.isfile())
 
 
@@ -184,13 +187,13 @@ def create(conn, user_id: int, meta: dict, tar_path: Path) -> dict:
                          f"start with a letter or digit, 64 characters or fewer")
     if db.get_workspace(conn, user_id, name) is not None:
         raise ValueError(f"you already have a workspace named {name!r} — open it, or delete it first")
-    gpus, vram_mb, minutes, manifest, outputs, features = _needs(meta)
+    gpus, vram_mb, minutes, manifest, outputs, features, substrate = _needs(meta)
     storage = _storage(meta)
 
     used = db.user_workspace_storage(conn, user_id)
     if used + storage > MAX_USER_BYTES:
         raise PoolExceeded(used, storage)
-    size = weigh(tar_path, manifest)
+    size = weigh(tar_path, manifest, substrate)
     if size > storage:
         raise SeedTooBig(size, storage)
 
@@ -200,7 +203,7 @@ def create(conn, user_id: int, meta: dict, tar_path: Path) -> dict:
         dest.mkdir()
         tf.extractall(dest, filter="data")  # 'data' filter blocks path-traversal entries
     row = db.add_workspace(conn, user_id, name, storage, gpus, vram_mb, minutes, manifest,
-                           outputs, features)
+                           outputs, features, substrate)
     return to_json(row, size)
 
 
@@ -214,7 +217,7 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
     row = db.get_workspace(conn, user_id, name)
     if row is None:
         raise ValueError(f"no workspace named {name!r}")
-    gpus, vram_mb, minutes, manifest, outputs, features = _needs(meta)
+    gpus, vram_mb, minutes, manifest, outputs, features, substrate = _needs(meta)
     storage = _storage(meta)
 
     # Weighed on what it GROWS BY: this Workspace's own reservation comes out of the pool first, the
@@ -231,9 +234,12 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
     if manifest and not (dir_of(user_id, name) / manifest).is_file():
         raise ValueError(f"manifest {manifest!r} is not in this workspace — open it and add the file, "
                          f"or name one that is there")
+    if substrate and not (dir_of(user_id, name) / substrate).is_file():
+        raise ValueError(f"substrate {substrate!r} is not in this workspace — open it and add the "
+                         f"file, or name one that is there")
 
     updated = db.update_workspace_meta(conn, user_id, name, storage, gpus, vram_mb, minutes, manifest,
-                                       outputs, features)
+                                       outputs, features, substrate)
     return to_json(updated, held)
 
 
@@ -282,6 +288,8 @@ def visit(conn, user_id: int, name: str, is_admin: bool, overrides: dict | None 
             tidepool=True,
             manifest=(over.get("manifest") if over.get("manifest") is not None else row["manifest"])
             or None,
+            substrate=(over.get("substrate") if over.get("substrate") is not None
+                       else row["substrate"]) or None,
             features=list(over.get("features") or json.loads(row["features"])),
             workspace=dir_of(user_id, name), workspace_storage=row["storage_bytes"],
             # Inherited, exactly as a Recipe's is: the Workspace was named by its owner when they
@@ -417,6 +425,7 @@ def to_json(row, used_bytes: int) -> dict:
         "vram_mb": row["vram_mb"],
         "minutes": row["minutes"],
         "manifest": row["manifest"],
+        "substrate": row["substrate"],
         "outputs": json.loads(row["outputs"]),
         "features": json.loads(row["features"]),
         "created_at": _ms(row["created_at"]),

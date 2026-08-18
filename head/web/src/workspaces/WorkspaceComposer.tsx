@@ -33,6 +33,7 @@ export type WorkspacePayload = {
   vram_mb: number;
   minutes: number;
   manifest: string;
+  substrate: string;
   outputs: string[];
   features: string[];
 };
@@ -75,6 +76,7 @@ export function WorkspaceComposer({
   const [minutes, setMinutes] = useState(editing ? String(editing.minutes) : "");
   const [vram, setVram] = useState(editing ? String(editing.vram_mb / 1024) : "");
   const [manifest, setManifest] = useState(editing?.manifest ?? "");
+  const [substrate, setSubstrate] = useState(editing?.substrate ?? "");
   const [outputs, setOutputs] = useState<string[]>(editing?.outputs ?? []);
   const [outputDraft, setOutputDraft] = useState("");
   const [featureCatalog, setFeatureCatalog] = useState<string[]>([]);
@@ -134,6 +136,7 @@ export function WorkspaceComposer({
       vram_mb: Number(vram) * 1024,
       minutes: Number(minutes),
       manifest: manifest.trim(),
+      substrate: substrate.trim(),
       outputs,
       features,
     };
@@ -300,6 +303,18 @@ export function WorkspaceComposer({
               placeholder="optional — pyproject.toml, requirements.txt…"
               value={manifest}
               onChange={(e) => setManifest(e.target.value)}
+            />
+          </Labeled>
+
+          {/* Reinstalled on EVERY visit, which is the point rather than a cost: a Pod keeps nothing, so
+              a package apt-installed by hand inside a session is gone the next time the workspace is
+              opened. Declaring it here is what makes it come back. */}
+          <Labeled label="System packages" help="Optional. Name a file listing the apt packages a visit needs — one per line — and they are installed into the Pod before the environment is built. Reinstalled on every visit: a Pod keeps nothing, so anything you apt-install by hand inside a session is gone the next time you open it.">
+            <input
+              className="field"
+              placeholder="optional — apt.txt"
+              value={substrate}
+              onChange={(e) => setSubstrate(e.target.value)}
             />
           </Labeled>
 

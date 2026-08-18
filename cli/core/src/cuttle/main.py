@@ -613,6 +613,10 @@ def recipe_save(
         None, "--manifest", help="REQUIRED. Dependency file the Recipe's Python environment is built "
                                  "from, frozen with the code — a Recipe freezes what its work runs "
                                  "IN, not just the code."),
+    substrate: str = typer.Option(
+        None, "--substrate", help="Optional. File naming the system packages this Recipe's work "
+                                  "needs, frozen with the code — one per line, `#` comments, "
+                                  "`apt.txt` by convention."),
     project: str = typer.Option(None, "--project", help="W&B project, frozen with the code."),
     entity: str = typer.Option(None, "--entity", help="W&B entity/slug, frozen with the code."),
     no_gitignore: bool = typer.Option(
@@ -656,8 +660,8 @@ def recipe_save(
                 else:
                     ui.warn("at least one output folder is required")
     recipes_mod.save(name, script, minutes=time, vram=vram, gpu=gpu, args=ctx.args, outputs=output,
-                     manifest=manifest, project=project, entity=entity, no_gitignore=no_gitignore,
-                     yes=yes, root=spawns_mod.project_root(directory))
+                     manifest=manifest, substrate=substrate or "", project=project, entity=entity,
+                     no_gitignore=no_gitignore, yes=yes, root=spawns_mod.project_root(directory))
 
 
 @recipe_app.command("update", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -674,6 +678,9 @@ def recipe_update(
     manifest: str = typer.Option(
         None, "--manifest", help="Change the dependency file the environment is built from "
                                  "(default: keep)."),
+    substrate: str = typer.Option(
+        None, "--substrate", help="Change the system-package file (default: keep). Pass an empty "
+                                  "string to drop it."),
     project: str = typer.Option(None, "--project", help="Change the W&B project (default: keep)."),
     entity: str = typer.Option(None, "--entity", help="Change the W&B entity (default: keep)."),
     no_gitignore: bool = typer.Option(
@@ -694,7 +701,7 @@ def recipe_update(
     name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to update?"))
     recipes_mod.update(name, script=script, minutes=time, vram=vram, gpu=gpu,
                        args=ctx.args or None, outputs=list(output) if output else None,
-                       manifest=manifest, project=project, entity=entity,
+                       manifest=manifest, substrate=substrate, project=project, entity=entity,
                        no_gitignore=no_gitignore, yes=yes,
                        root=spawns_mod.project_root(directory))
 
@@ -749,6 +756,10 @@ def workspace_new(
     manifest: str = typer.Option(
         None, "--manifest", help="Dependency file a visit builds its environment from. Optional, like "
                                  "a tide pool's — a workspace opened to poke at a box declares none."),
+    substrate: str = typer.Option(
+        None, "--substrate", help="Optional. File naming the system packages a visit needs — one per "
+                                  "line, `#` comments, `apt.txt` by convention. Installed fresh into "
+                                  "every visit's Pod; nothing you apt-install by hand survives one."),
     output: list[str] = typer.Option(
         None, "--output", "-o", help="Folder in the workspace tree a visit writes results to "
                                      "(repeatable). Optional — everything in the tree is kept either "
@@ -782,7 +793,7 @@ def workspace_new(
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit per visit? (minutes)"))
         vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
     workspaces_mod.new(name, storage_gb=storage, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
-                       outputs=output, features=feature,
+                       substrate=substrate, outputs=output, features=feature,
                        root=spawns_mod.project_root(directory), no_gitignore=no_gitignore, yes=yes)
 
 
@@ -793,6 +804,8 @@ def workspace_open(
     vram: int = typer.Option(None, "--vram", help="Override the VRAM need for THIS visit."),
     gpu: int = typer.Option(None, "--gpus", "--gpu", help="Override the GPU count for THIS visit."),
     manifest: str = typer.Option(None, "--manifest", help="Override the dependency file for THIS visit."),
+    substrate: str = typer.Option(None, "--substrate",
+                                  help="Override the system-package file for THIS visit."),
     output: list[str] = typer.Option(None, "--output", "-o", help="Override the outputs for THIS visit."),
     feature: list[str] = typer.Option(None, "--feature", help="Override required Features for THIS visit."),
 ):
@@ -810,7 +823,7 @@ def workspace_open(
     name = ui.need(name, "the workspace's name",
                    lambda: ui.ask_text("Which workspace to open?"))
     workspaces_mod.open_(name, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
-                         outputs=list(output) if output else None,
+                         substrate=substrate, outputs=list(output) if output else None,
                          features=list(feature) if feature else None)
 
 
@@ -824,6 +837,8 @@ def workspace_update(
     gpu: int = typer.Option(None, "--gpus", "--gpu", help="Change how many GPUs a visit holds."),
     manifest: str = typer.Option(None, "--manifest", help="Change the dependency file visits build "
                                                           "from (pass '' to declare none)."),
+    substrate: str = typer.Option(None, "--substrate", help="Change the system-package file visits "
+                                                            "install (pass '' to declare none)."),
     output: list[str] = typer.Option(None, "--output", "-o", help="REPLACE the declared outputs."),
     feature: list[str] = typer.Option(None, "--feature", help="REPLACE the required Features."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
@@ -835,7 +850,7 @@ def workspace_update(
     """
     name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to update?"))
     workspaces_mod.update(name, storage_gb=storage, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
-                          outputs=list(output) if output else None,
+                          substrate=substrate, outputs=list(output) if output else None,
                           features=list(feature) if feature else None, yes=yes)
 
 

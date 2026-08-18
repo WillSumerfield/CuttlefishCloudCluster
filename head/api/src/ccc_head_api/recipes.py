@@ -69,18 +69,21 @@ def _dir(user_id: int, name: str) -> Path:
     return _root() / str(user_id) / name
 
 
-def weigh(tar_path: Path, script: str | None, manifest: str | None = None) -> int:
+def weigh(tar_path: Path, script: str | None, manifest: str | None = None,
+          substrate: str | None = None) -> int:
     """Uncompressed bytes in the upload, plus the two is-it-really-in-there checks, in one pass.
 
     All three happen before anything is written, so a save the wall refuses — or one naming an entrypoint
     or a manifest the tar does not contain — leaves nothing behind at all. Both checks mirror
     `spawns.submit_checked`: a Recipe frozen around a missing file is one that fails every time it is ever
     run, discovered long after the folder that would have fixed it is gone. The manifest matters as much
-    as the script here, because a Recipe freezes its **Environment** and not merely its code."""
+    as the script here, because a Recipe freezes its **Environment** and not merely its code — and the
+    **Substrate**, when one is declared, for the same reason and on the same terms. `None` is how a
+    caller says "none declared", which for a Substrate is the ordinary case."""
     with tarfile.open(tar_path, mode="r:gz") as tf:
         members = tf.getmembers()
         names = [m.name for m in members]
-        for label, rel in (("script", script), ("manifest", manifest)):
+        for label, rel in (("script", script), ("manifest", manifest), ("substrate", substrate)):
             if rel is not None and rel not in names:
                 raise ValueError(f"{label} {rel!r} was not found in the uploaded project — check the "
                                  f"path matches exactly (and isn't excluded by .gitignore)")
@@ -130,6 +133,9 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
         raise ValueError("missing 'manifest' in X-CCC-Meta — a Recipe freezes the environment its work "
                          "runs in, not just the code, so it must name the dependency file to build "
                          "(e.g. pyproject.toml, uv.lock, requirements.txt, environment.yml)")
+    # Optional, unlike the manifest — most work needs no system package. Frozen the same way when there
+    # IS one: a Recipe that rebuilt against a different Substrate would not be the same Recipe.
+    substrate = meta.get("substrate") or ""
 
     old = db.get_recipe(conn, user_id, replacing) if replacing else None
     if replacing and old is None:
@@ -137,7 +143,7 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
     if not replacing and db.get_recipe(conn, user_id, name) is not None:
         raise ValueError(f"you already have a recipe named {name!r} — delete it or update it instead")
 
-    size = weigh(tar_path, script, manifest)
+    size = weigh(tar_path, script, manifest, substrate or None)
     # Delete-then-save arithmetic: the old snapshot is already released here, so an update is weighed on
     # what it GROWS BY. Nothing on disk has moved yet.
     used = db.user_recipe_bytes(conn, user_id) - (old["bytes"] if old else 0)
@@ -156,7 +162,7 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
     row = db.add_recipe(conn, user_id, name, script, meta.get("args") or [], outputs,
                         max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]), int(meta["minutes"]),
                         bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                        meta.get("wandb_entity") or "", size, manifest, features)
+                        meta.get("wandb_entity") or "", size, manifest, features, substrate)
     return to_json(row)
 
 
@@ -201,12 +207,16 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
     if not (_dir(user_id, name) / manifest).is_file():
         raise ValueError(f"manifest {manifest!r} was not found in this recipe's saved code — drop a "
                          f"folder instead if you meant to point it at a different one")
+    substrate = meta.get("substrate") or ""
+    if substrate and not (_dir(user_id, name) / substrate).is_file():
+        raise ValueError(f"substrate {substrate!r} was not found in this recipe's saved code — drop a "
+                         f"folder instead if you meant to point it at a different one")
 
     row = db.update_recipe_meta(conn, user_id, name, script, meta.get("args") or [], outputs,
                                 max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]),
                                 int(meta["minutes"]),
                                 bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                                meta.get("wandb_entity") or "", manifest, features)
+                                meta.get("wandb_entity") or "", manifest, features, substrate)
     return to_json(row)
 
 
@@ -259,6 +269,7 @@ def run(conn, user_id: int, name: str, is_admin: bool) -> int:
         user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]), wandb_env,
         None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
         wandb=bool(row["wandb"]), features=json.loads(row["features"]), manifest=row["manifest"],
+        substrate=row["substrate"] or None,
         # The Recipe's own name is the Spawn's **Name**, INHERITED rather than asked for again: it was
         # chosen by a person when the Recipe was saved, so the rule that a human names every Spawn is
         # already satisfied and there is nothing left to prompt for. Running one Recipe ten times gives
@@ -319,5 +330,6 @@ def to_json(row, running: bool = False) -> dict:
         "wandb_entity": row["wandb_entity"],
         # Frozen structurally only — see `save`'s note on why neither is checked against the fleet here.
         "manifest": row["manifest"],
+        "substrate": row["substrate"],
         "features": json.loads(row["features"]),
     }

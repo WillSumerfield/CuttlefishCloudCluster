@@ -341,6 +341,7 @@ export type Recipe = {
   // than asked again on every run. `features` is usually empty; `manifest` never is — a Recipe freezes
   // the environment its work runs in, not just the code, so naming one is required to save at all.
   manifest: string
+  substrate: string
   features: string[]
 }
 
@@ -372,6 +373,9 @@ export type NewRecipe = {
   // Same as above — asked once, frozen with the code. `manifest` is REQUIRED: a Recipe that named no
   // dependency file could never be run, so the Head refuses the save rather than freezing a dead one.
   manifest: string
+  // Which file names this Spawn's **Substrate** — the system packages installed into its Pod before
+  // the environment is built (CONTEXT.md). OPTIONAL, unlike the manifest: most work needs none.
+  substrate: string
   features: string[]
 }
 
@@ -388,6 +392,7 @@ async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
     // not the same instruction as any other value. `manifest` is required, so it always travels.
     ...(r.features.length ? { features: r.features } : {}),
     manifest: r.manifest.trim(),
+    substrate: r.substrate.trim(),
   }
   const res = await req(path, {
     method: 'POST',
@@ -423,6 +428,7 @@ export type RecipeSettings = {
   wandb_project: string
   wandb_entity: string
   manifest: string
+  substrate: string
   features: string[]
 }
 
@@ -469,6 +475,7 @@ export type Workspace = {
   vram_mb: number
   minutes: number         // per-VISIT wall clock; the workspace itself never expires
   manifest: string        // optional here, unlike a Recipe's — a visit is a shell, not a run
+  substrate: string       // optional everywhere — the system packages every visit installs
   outputs: string[]       // optional too — everything in the tree is kept either way
   features: string[]
   created_at: number | null
@@ -494,6 +501,7 @@ export type NewWorkspace = {
   vram_mb: number
   minutes: number
   manifest: string
+  substrate: string
   outputs: string[]
   features: string[]
 }
@@ -502,7 +510,8 @@ export async function createWorkspace(w: NewWorkspace): Promise<Workspace> {
   const body = await projectBody(w.picked.files)
   const meta = {
     name: w.name, storage_bytes: w.storage_bytes, gpus: w.gpus, vram_mb: w.vram_mb,
-    minutes: w.minutes, manifest: w.manifest.trim(), outputs: w.outputs, features: w.features,
+    minutes: w.minutes, manifest: w.manifest.trim(), substrate: w.substrate.trim(),
+    outputs: w.outputs, features: w.features,
   }
   const res = await req('/workspaces', {
     method: 'POST',
@@ -521,6 +530,7 @@ export type WorkspaceSettings = {
   vram_mb: number
   minutes: number
   manifest: string
+  substrate: string
   outputs: string[]
   features: string[]
 }
@@ -731,6 +741,9 @@ export type SubmitOpts = {
   // Environment carries its own Python and inherits nothing, so which file it comes from decides
   // everything the work runs against.
   manifest: string
+  // Which file names this Spawn's **Substrate** — the system packages installed into its Pod before
+  // the environment is built (CONTEXT.md). OPTIONAL, unlike the manifest: most work needs none.
+  substrate: string
 }
 
 /** What the Head decided this Spawn's environment is, echoed back at submit. */
@@ -743,7 +756,7 @@ export type SubmitResult = { id: number; environment: string | null }
  */
 export async function submit({
   picked, name, script, gpu, minutes, vram, node, args, wandb, wandbProject, wandbEntity, outputs,
-  features, manifest,
+  features, manifest, substrate,
 }: SubmitOpts): Promise<SubmitResult> {
   const body = await projectBody(picked.files)
   // Head owns the key, client owns the run: send WANDB_PROJECT/WANDB_ENTITY only — never a key (browser
@@ -765,6 +778,9 @@ export async function submit({
     // Always sent, unlike the fields above: the Head refuses a Spawn that names no dependency file, and
     // an omitted key would meet that refusal as a confusing "missing" rather than the empty box it is.
     manifest: manifest.trim(),
+    // Omitted rather than sent empty, like `features` above — absent means "no system package needed",
+    // which is the ordinary case and not the same instruction as a blank file name.
+    ...(substrate.trim() ? { substrate: substrate.trim() } : {}),
   }
   const r = await req('/submit', {
     method: 'POST',
@@ -792,10 +808,13 @@ export type SubmitTidepoolOpts = {
   /** OPTIONAL here and only here — a Tide Pool may decline to declare an Environment. Blank gives a
    *  bare shell; a name builds that env into it, and needs `picked` to resolve against. */
   manifest?: string
+  /** Optional everywhere. Like `manifest`, naming one requires the picked folder — the file it names
+   *  has to be in the project the Head reads it out of. */
+  substrate?: string
 }
 
 export async function submitTidepool({
-  minutes, vram, gpu, node, features, picked, name, manifest,
+  minutes, vram, gpu, node, features, picked, name, manifest, substrate,
 }: SubmitTidepoolOpts): Promise<number> {
   // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens the
   // upload as a tar archive (ccc_head_api.spawns.submit). `makeTar([])` writes the two all-zero
@@ -808,6 +827,7 @@ export async function submitTidepool({
     // lets decline to declare an Environment, so absent here means "a bare shell" rather than an
     // error. Naming one requires the picked folder — it is built from the upload.
     ...(manifest?.trim() ? { manifest: manifest.trim() } : {}),
+    ...(substrate?.trim() ? { substrate: substrate.trim() } : {}),
   }
   const r = await req('/submit', {
     method: 'POST',
