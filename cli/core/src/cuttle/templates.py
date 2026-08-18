@@ -417,11 +417,62 @@ def render_ubuntu_snapshot_list() -> str:
 #   unpack. Removing the excludes only helps packages installed *after* it, so the already-unpacked core
 #   is reinstalled to get its pages back; otherwise `man zsh` works and `man ls` does not, which is a
 #   worse state than having no man at all.
+# * `nano` and `neovim` — the editors. A **Tide Pool** is a shell a person sits in, and until now the
+#   only way to change a line of code in one was to edit it somewhere else and re-upload. Two, not one,
+#   and not a choice offered at submit: which editor a person reaches for is a fifty-year-old argument
+#   and neither costs enough to be worth having it. Between them they are ~20 MB against build-essential's
+#   250, so the trade is not close.
+# * `curl` — the image has neither curl nor wget, and VS Code's Remote-SSH downloads its server into the
+#   Pod over one of them. Nothing else in CCC needs it: every transfer CCC itself makes is rsync over the
+#   Mesh.
+# * `/usr/local/bin/{apt,apt-get,sudo}` — the shims that make `apt install` work for a Guise. See
+#   APT_SHIM below, which is where the reasoning lives.
 # * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
 #   sshd still needs that a stock image does not have: the connecting uid has to resolve via
 #   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
 #   directly rather than via useradd/groupadd (not guaranteed present in every base image) — three text
 #   appends and a directory, nothing that can fail for a missing tool.
+# What `apt` means inside a Pod. Baked into /usr/local/bin by the %post block below, ahead of
+# /usr/bin on PATH, so a User types the command they already know and it works.
+#
+# **Why it cannot just be `apt`.** A Pod runs as an unprivileged **Guise** and `dpkg` refuses outright:
+# "requested operation requires superuser privilege". Two separate things are missing, and only one of
+# them is solved by the writable overlay the payload now carries (ccc_head_api.spawns): the overlay
+# gives `/usr` and `/var/lib/dpkg` somewhere to write, but dpkg also `chown`s every unpacked file to
+# root:root, and that is a question about identity rather than about permissions.
+#
+# **`fakeroot` was the obvious answer and it does not work here.** Measured on hardware (2026-08-18,
+# apptainer 1.5.3): libfakeroot intercepts `chown` but still issues the real syscall underneath,
+# swallowing the failure only when it is EPERM. Apptainer's unprivileged user namespace maps the
+# Guise's uid to ITSELF, so uid 0 does not exist in that namespace at all and the kernel answers
+# EINVAL — which fakeroot 1.33 (Noble's) passes straight through. `dpkg-deb` then dies inside its own
+# `tar` subprocess ("Cannot change ownership to uid 0, gid 0"). The identical command works on the
+# host, so this is the namespace and not the invocation; no spelling of a fakeroot shim survives it.
+#
+# **A nested user namespace does work.** `unshare -r` maps the Guise to a real uid 0 one level down,
+# so `chown(0,0)` is not faked but genuinely permitted — and it wraps only this command, so nothing
+# touches the Pod's own process tree. That is what makes apptainer's `--fakeroot` unnecessary as well:
+# a Tide Pool's sshd is PID 1 in its Pod, and wrapping THAT would fake the privilege separation and
+# per-session setuid() it actually performs.
+#
+# `APT::Sandbox::User=root` is not optional. apt drops to `_apt` to fetch, and a namespace holding one
+# mapped uid has no such account — without it every download dies on "setgroups: Operation not
+# permitted" long before dpkg is reached.
+#
+# The `update` is once per Pod, behind a marker on the bound disk scratch. BASE_DEF_TMPL ends with
+# `rm -rf /var/lib/apt/lists/*` (an image ships no stale index), so a fresh Pod knows of no packages
+# at all and the first install would otherwise fail with "unable to locate package" — which reads as
+# a broken name rather than a missing index.
+APT_SHIM = """\
+#!/bin/sh
+# Rendered into every Pod image by `cuttle setup`. Do not hand-edit.
+[ -f /ccc-tmp/.apt-updated ] || {
+    unshare -r /usr/bin/apt-get -o APT::Sandbox::User=root update && : > /ccc-tmp/.apt-updated
+}
+exec unshare -r /usr/bin/apt-get -o APT::Sandbox::User=root "$@"
+"""
+
+
 BASE_DEF_TMPL = """\
 Bootstrap: docker
 From: {image}
@@ -436,7 +487,7 @@ From: {image}
     # unpacks, so it has to be gone before anything below is installed or their pages go with it.
     rm -f /etc/dpkg/dpkg.cfg.d/excludes
     apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
-      build-essential zsh zoxide ncurses-term man-db \
+      build-essential zsh zoxide ncurses-term man-db nano neovim curl \
       && apt-get install -y --reinstall --no-install-recommends \
       coreutils bash grep sed findutils procps tar \
       && rm -rf /var/lib/apt/lists/*
@@ -453,6 +504,20 @@ From: {image}
     chown -R root:root {omz}
     chmod -R go-w {omz}
     chmod 0755 {omz}/custom/themes/powerlevel10k/gitstatus/usrbin/gitstatusd-linux-x86_64
+    # The package-manager shims. /usr/local/bin precedes /usr/bin on every PATH a Pod ever has, so
+    # these are what `apt` means in here without anybody being told.
+    cat > /usr/local/bin/apt-get <<'CCC_APT'
+{apt_shim}
+CCC_APT
+    cp /usr/local/bin/apt-get /usr/local/bin/apt
+    # `sudo` grants nothing and pretends to grant nothing — a Pod has no privilege left to escalate
+    # to. It exists because `sudo apt install x` is muscle memory, and without it that types out as
+    # "sudo: command not found", which reads as a broken image rather than as an unnecessary word.
+    cat > /usr/local/bin/sudo <<'CCC_SUDO'
+#!/bin/sh
+exec "$@"
+CCC_SUDO
+    chmod 0755 /usr/local/bin/apt-get /usr/local/bin/apt /usr/local/bin/sudo
 """
 
 
@@ -535,7 +600,8 @@ def render_rsyncd_unit() -> str:
 def render_base_def() -> str:
     return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER,
                                 uid=config.CCC_UID, gid=config.CCC_GID,
-                                zsh_src=config.ZSH_DATA_DIR, omz=config.POD_OMZ_DIR)
+                                zsh_src=config.ZSH_DATA_DIR, omz=config.POD_OMZ_DIR,
+                                apt_shim=APT_SHIM.rstrip("\n"))
 
 
 # The `Prolog=` line, or the reason there isn't one. Rendering the line is the moment Guises become

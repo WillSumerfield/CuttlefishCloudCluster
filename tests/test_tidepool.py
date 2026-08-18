@@ -265,11 +265,17 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
             assert f"> {f}\n" in code          # truncated in place, never renamed over
 
     def test_an_ordinary_spawn_is_unaffected(self, tmp_path):
-        """No token leakage the other direction: a normal render never mentions Tide Pool at all."""
+        """No token leakage the other direction: a normal render runs no Tide Pool machinery.
+
+        Comments are stripped first, the same way `test_neither_repair_uses_sed_i` above strips them:
+        JOB_SCRIPT is shared by both payloads, so a note in it explaining what the OTHER one does with
+        a variable is exactly the kind of comment that should be there. What must not appear is a line
+        that runs."""
         body = head_spawns._render("/tmp/u", 1, "train.py", [], [], ["out"], None, 30, "vram24",
                                    "a3f9", "s3cr3t")
-        assert "sshd" not in body
-        assert "PAYLOAD_TIDEPOOL" not in body
+        code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+        assert "sshd" not in code
+        assert "PAYLOAD_TIDEPOOL" not in code
         # `$py`, not a literal `python`: the interpreter is chosen by the script at run time from the
         # env dir's presence, not baked in here (ccc_head_api.environments). This render was given no
         # manifest, so the token starts EMPTY — the image supplies no interpreter to fall back to, and

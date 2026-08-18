@@ -183,6 +183,22 @@ SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 CCC_SIF = Path(os.environ.get("CCC_SIF", "/opt/ccc/images/base.sif"))
 MESH_IP = os.environ.get("CCC_MESH_IP", "")
 
+# How much a Spawn may write to its own Pod's SYSTEM — /usr, /etc, /var/lib/dpkg, everything outside a
+# bind. Backs the sparse ext3 overlay every payload carries (see POD_OVERLAY in JOB_SCRIPT).
+#
+# A number at all, rather than "whatever the disk has", because this is the one writable surface a Pod
+# gained that nothing else meters. A Spawn's declared **Output**s are charged to its submitter's
+# Allowance and its scratch dies with the job, but `apt install` writes to a place no accounting
+# reaches — so the cap is the accounting. Filesystem-enforced, which is what makes it honest: a runaway
+# install hits ENOSPC inside its own Pod instead of filling the Arm's disk under every other Spawn
+# running on it.
+#
+# 4GB because it is generous for what this is FOR — editors, a dev header, a CLI tool the Environment
+# could not carry — and far short of a second Environment. A Spawn that needs more than 4GB of system
+# packages is declaring an **Environment** badly, not using this feature. Sparse, so an overlay nobody
+# writes to costs a few hundred KB of the Arm's disk and not 4GB.
+POD_OVERLAY_MB = 4096
+
 # Per-User concurrent-Spawn cap. Escrow already prices queue-flooding but never hard-stops it; this
 # does. Admins are exempt — they are already outside the Karma economy (see submit_checked,
 # db.spawn_owners).
@@ -543,7 +559,45 @@ cd "$proj"
 # Deliberately OUTSIDE $proj: recover_scratch() copies $proj for the Recovery Window and measures it
 # against RECOVERY_MAX_BYTES, so a cache in there would eat a User's recovery for temp files nobody
 # wants back. The EXIT trap's `rm -rf "$scratch"` takes it either way.
-mkdir -p "$scratch/tmp/pip"
+mkdir -p "$scratch/tmp/pip" "$scratch/tmp/xdg" "$scratch/tmp/vscode"
+# Where every tool that follows the XDG spec keeps its config, data, state and cache — pointed at the
+# bound disk scratch, and NOT left to default to `$HOME/.config` and friends.
+#
+# Two separate problems, one answer. The Pod's home is a 64MB RAM tmpfs, so anything with a real cache
+# (HuggingFace, matplotlib, a language server) fills it and dies as ENOSPC. And worse: a Spawn that
+# requests an Arm **Feature** has the Arm's **Licence** directory bound OVER that home (see `licbind`),
+# a `2770 ccc-licence:ccc-guises` tree that EVERY Guise on the box can read. So the moment a Pod ships
+# editors, nvim's `shada` — search history, registers, the path of every file opened — and its undo
+# files, which hold file CONTENTS, would land in a directory another User can read. That is a leak
+# between Users, not untidiness, and redirecting the four variables closes it for every XDG-respecting
+# tool at once rather than one tool at a time.
+#
+# The Tide Pool sets the same four again, in sshd's SetEnv (see PAYLOAD_TIDEPOOL): sshd builds a fresh
+# environment per session and drops apptainer's `--env` entirely, so this line does not reach a shell.
+XDG_ENV="XDG_CONFIG_HOME=/ccc-tmp/xdg/config,XDG_DATA_HOME=/ccc-tmp/xdg/data"
+XDG_ENV="$XDG_ENV,XDG_STATE_HOME=/ccc-tmp/xdg/state,XDG_CACHE_HOME=/ccc-tmp/xdg/cache"
+# The Pod's own writable system, and the reason `apt install` works inside a Spawn at all.
+#
+# A Pod's root is a read-only squashfs. `--writable-tmpfs` used to make it writable for a **Tide Pool**
+# only, out of apptainer's session directory — a RAM tmpfs capped at 64MB, which is enough for the boot
+# script's edits to /etc and nothing else. A sparse ext3 image instead: %%POD_OVERLAY_MB%%MB, on the
+# same node-local disk as the scratch, and carried by EVERY payload rather than just the interactive
+# one. The upper layer is owned by the Guise that created it, so a write to /usr or /var/lib/dpkg
+# simply succeeds.
+#
+# It is created before the **Environment** build and handed to that Pod as well, so a declared
+# **Substrate**'s packages are present while the manifest builds — a wheel that has to compile against
+# a system library finds it, which is most of why declaring one is worth doing.
+#
+# Inside `$scratch`, so cleanup()'s `rm -rf` takes it with everything else and no Pod keeps what it
+# held. Deliberately not inside `$proj`: recover_scratch() copies that for the **Recovery Window**, and
+# a 4GB overlay in there would silently disable recovery for every Spawn that installed anything.
+if ! apptainer overlay create --size %%POD_OVERLAY_MB%% "$scratch/overlay.img" >> "$err" 2>&1; then
+    echo "ccc: could not create this Spawn's writable Pod layer at $scratch/overlay.img." >> "$err"
+    echo "ccc: this Spawn never ran. Is this Arm's disk full?" >> "$err"
+    echo 1 > "$exitf"; stage_out; exit 1
+fi
+overlay="--overlay $scratch/overlay.img"
 # The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one — built HERE,
 # now, out of this box's own bandwidth. The Head decided what to build and rendered the commands into
 # the build block below; running them is all that happens on this side.
@@ -649,7 +703,7 @@ if [ -n "$csz" ] && [ "$csz" -gt %%ENV_CACHE_MAX%% ]; then
     rm -rf "$ccc_cache"/* 2>/dev/null
 fi
 %%STUB_FILES%%ccc_build() {
-    apptainer exec --contain --pid --pwd "$proj" \\
+    apptainer exec --contain --pid --pwd "$proj" $overlay \\
       --bind "$proj,$scratch/env:%%ENV_MOUNT%%,$ccc_cache:%%POD_CACHE%%,\
 $scratch/tmp:%%POD_TMP%%,%%TOOLS_DIR%%:%%TOOLS_DIR%%:ro%%FEATLIB_BUILD_BIND%%%%STUB_BINDS%%" \\
       --env "%%BUILD_POD_ENV%%" \\
@@ -711,9 +765,9 @@ ccc_build_or_die() {
 # out after the GPU time is spent. What replaced it is that `-o runs` simply means the `runs/` the code
 # was already writing.
 PAYLOAD_SCRIPT = """\
-apptainer exec --nv --contain --pid --pwd "$proj" --no-mount /etc/passwd,/etc/group $dxg \\
+apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group $dxg \\
   --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv$featenv" \\
+  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
@@ -926,8 +980,23 @@ CCC_TP_USERRC
 # AuthorizedKeysFile: the ephemeral key lives outside the Guise's home — see the note at the top of this
 # script for why it has to. An absolute path with no %u/%h token, because there is exactly one account
 # that ever logs into a Pod.
+#
+# The XDG four and VSCODE_AGENT_FOLDER ride here rather than in /etc/profile.d beside the W&B keys,
+# and the difference matters: profile.d is read by LOGIN shells only. An editor attached over
+# Remote-SSH runs a non-login, non-interactive command and would see none of it — which is exactly the
+# session that most needs somewhere to write. SetEnv is sshd's own, applied to every session of every
+# shape, which is why LC_ALL was already here.
+#
+# XDG: the Pod's home is a 64MB tmpfs and, for a Feature-requesting Spawn, a **Licence** directory
+# every Guise on the Arm can read — see the XDG_ENV note in JOB_SCRIPT for the leak this closes.
+# VSCODE_AGENT_FOLDER: the VS Code server unpacks to ~150MB, which that same 64MB home cannot hold.
+# `/ccc-tmp` is `$scratch/tmp` on the Arm's real disk (cuttle.templates: only /tmp is a bind mount off
+# BasePath's disk), so it can.
 exec /usr/sbin/sshd -D -e -p %%TIDEPOOL_PORT%% -o UsePAM=no \\
-  -o AuthorizedKeysFile=/ccc_authorized_keys -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8"
+  -o AuthorizedKeysFile=/ccc_authorized_keys \\
+  -o "SetEnv=LC_ALL=C.UTF-8 LANG=C.UTF-8 XDG_CONFIG_HOME=/ccc-tmp/xdg/config \\
+XDG_DATA_HOME=/ccc-tmp/xdg/data XDG_STATE_HOME=/ccc-tmp/xdg/state \\
+XDG_CACHE_HOME=/ccc-tmp/xdg/cache VSCODE_AGENT_FOLDER=/ccc-tmp/vscode"
 CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
 # Which variables the boot script above has to re-export past sshd — DERIVED from `$featenv` rather than
@@ -937,7 +1006,7 @@ chmod +x "$scratch/tp_boot.sh"
 featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' ' ')
 featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
-  --writable-tmpfs --no-mount /etc/passwd,/etc/group \\
+  $overlay --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind$migbind" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
@@ -1213,6 +1282,8 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         "%%SINK_TAG%%": Path(staging).name[:8],
         # Recovery Window: the per-Spawn cap `recover_scratch` gates on, both branches.
         "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
+        # The Pod's writable system layer — see POD_OVERLAY_MB.
+        "%%POD_OVERLAY_MB%%": str(POD_OVERLAY_MB),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
         # The Spawn's **Environment** (environments.py). The mount point is a constant — one path, on
         # every machine — but the interpreter is NOT: a conda prefix keeps its python at `ENV_MOUNT/bin`,
