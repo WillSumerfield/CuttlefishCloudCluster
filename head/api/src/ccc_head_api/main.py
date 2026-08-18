@@ -855,7 +855,8 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
             wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [],
-            tidepool=tidepool, manifest=meta.get("manifest"), name=meta.get("name") or "")
+            tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
+            name=meta.get("name") or "")
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:

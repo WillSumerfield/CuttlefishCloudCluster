@@ -6,9 +6,11 @@ pinning: only bare package names survive, the file stays inside the project, and
 is ordinary rather than an error (the one place a Substrate differs from a manifest).
 """
 
+from pathlib import Path
+
 import pytest
 
-from ccc_head_api import substrate
+from ccc_head_api import environments, spawns, substrate
 
 
 def _project(tmp_path, **files):
@@ -133,3 +135,67 @@ class TestTheEcho:
 
     def test_declaring_none_says_so(self, tmp_path):
         assert substrate.describe([]) == "substrate: none declared"
+
+
+# --- what the Arm is told to run -------------------------------------------
+# The Head decides, the Arm installs — the same split `environments` makes. Nothing here runs apt;
+# what there is to check is the shell rendered into the job script.
+
+def _block(packages, declared=None, features=()):
+    """The %%ENV_BUILD%% text for a Spawn declaring `packages`."""
+    return spawns._render_env_build(declared, Path("/tmp/u"), list(features), [], [], [],
+                                    "", list(packages))
+
+
+class TestTheInstallIsRendered:
+    def test_declaring_nothing_renders_no_block_at_all(self):
+        assert _block([]) == ""
+
+    def test_a_substrate_alone_is_enough_to_need_one(self):
+        """A **Tide Pool** may decline a manifest and still want ffmpeg. Before this, a Spawn with no
+        Environment and no Feature rendered an empty build block and the declaration went nowhere."""
+        assert "apt-get install" in _block(["ffmpeg"])
+
+    def test_every_name_goes_in_one_command(self):
+        """apt resolves the set together; one call per name would re-run the solver each time and
+        fetch a shared dependency more than once."""
+        block = _block(["ffmpeg", "libjpeg-dev", "git"])
+        installs = [ln for ln in block.splitlines() if "apt-get install" in ln]
+        assert len(installs) == 1
+        for name in ("ffmpeg", "libjpeg-dev", "git"):
+            assert name in installs[0]
+
+    def test_nothing_is_recommended_into_the_pod(self):
+        """The image itself is built --no-install-recommends, and a Substrate that quietly dragged in
+        a documentation set would be the one place that stopped being true."""
+        assert "--no-install-recommends" in _block(["ffmpeg"])
+
+    def test_it_answers_no_questions(self):
+        assert " -y " in _block(["ffmpeg"])
+
+    def test_a_name_the_archive_has_not_got_fails_the_spawn(self):
+        """No archive can be consulted at submit — the answer differs per Arm and per day — so this
+        ends the Spawn the way a failed build does, with apt's own output in `err`."""
+        block = _block(["ffmpeg"])
+        assert "ccc_build_or_die apt-get install" in block
+
+    def test_the_failure_says_it_was_the_substrate(self):
+        """`ccc_building` is what the failure message names. Blaming 'the environment' for an apt
+        failure would send a User to edit the wrong file."""
+        assert "ccc_building='the substrate: ffmpeg'" in _block(["ffmpeg"])
+
+    def test_it_is_laid_down_before_the_environment_is_built(self):
+        """The whole reason it is declared rather than installed once the Spawn is running: a wheel
+        that has to compile needs its headers present WHILE uv syncs, not afterwards."""
+        block = _block(["libjpeg-dev"], declared=environments.Manifest("uv-requirements",
+                                                                      "requirements.txt"))
+        lines = block.splitlines()
+        apt = next(i for i, ln in enumerate(lines) if "apt-get install" in ln)
+        uv = next(i for i, ln in enumerate(lines) if "requirements.txt" in ln)
+        assert apt < uv
+
+    def test_it_runs_in_the_pod_and_not_on_the_arm(self):
+        """`ccc_build` is the wrapper that enters the Pod. A bare `apt-get` here would run as the
+        **Guise** on the donor's own box, against the donor's own /usr."""
+        block = _block(["ffmpeg"])
+        assert "\napt-get" not in block

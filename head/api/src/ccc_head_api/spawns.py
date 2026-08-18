@@ -54,6 +54,7 @@ from . import guises
 from . import recovery
 from . import siphons
 from . import slurm
+from . import substrate as substrate_mod
 from . import tarstream
 from . import zshrc
 
@@ -1093,7 +1094,8 @@ def _stub_files_sh(files: list[environments.StubFile]) -> str:
 def _render_env_build(declared: environments.Manifest | None, staging: Path,
                       feature_names: list[str], stub_files: list[environments.StubFile],
                       stub_binds: list[environments.StubBind],
-                      stub_log: list[str], drop_lock: str = "") -> str:
+                      stub_log: list[str], drop_lock: str = "",
+                      packages: list[str] | None = None) -> str:
     """Fill ENV_BUILD for this Spawn, or return "" when it has nothing to build at all.
 
     Everything decided here is decided ONCE, on the Head, at submit: which commands build this manifest
@@ -1110,9 +1112,26 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
     for `_render`'s own pass, which runs after this text is spliced in.
     """
     specs = features_mod.lib_specs(feature_names)
-    if declared is None and not specs:
+    packages = packages or []
+    if declared is None and not specs and not packages:
         return ""
     cmds: list[str] = []
+    # The **Substrate** goes FIRST, before anything else this block builds, and that ordering is the
+    # whole reason it is declared rather than installed by the User once their Spawn is already
+    # running: a wheel that has to compile needs its headers present while `uv sync` runs, not after.
+    #
+    # One `apt-get install` for the lot, not one per name — apt resolves the set together, and a
+    # package that pulls another in is then fetched once instead of racing its own dependency. The
+    # shim in /usr/local/bin (cuttle.templates.APT_SHIM) is what makes this an ordinary command
+    # inside a Pod; nothing here knows about namespaces, and it fetches the index on first use.
+    #
+    # `ccc_build_or_die` on the same terms as the Environment: a name the archive does not carry is
+    # a failed Spawn with apt's own "E: Unable to locate package" in `err`, not a refusal. No archive
+    # can be consulted at submit — the answer differs per Arm and per day (ccc_head_api.substrate).
+    if packages:
+        cmds.append(f"ccc_building={shlex.quote('the substrate: ' + ', '.join(packages))}")
+        argv = ["apt-get", "install", "-y", "--no-install-recommends", *packages]
+        cmds.append(f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}")
     if declared is not None:
         cmds.append(f"ccc_building={shlex.quote(f'the environment declared in {declared.path}')}")
         cmds += [f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}"
@@ -1202,7 +1221,8 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
             stub_files: list[environments.StubFile] | None = None,
             stub_binds: list[environments.StubBind] | None = None,
             stub_log: list[str] | None = None, drop_lock: str = "",
-            workspace: Path | None = None, workspace_storage: int = 0) -> str:
+            workspace: Path | None = None, workspace_storage: int = 0,
+            packages: list[str] | None = None) -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
@@ -1224,7 +1244,7 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     body = body.replace("%%ENV_BUILD%%",
                         _render_env_build(declared, workspace or staging, features or [],
                                           stub_files or [], stub_binds or [], stub_log or [],
-                                          drop_lock))
+                                          drop_lock, packages or []))
     # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
     # tokens, deliberately. A Feature profile (ccc_head_api.features) is bash the Head splices in
     # verbatim, so it reads as bash rather than as a second template — everything it needs from this
@@ -1444,7 +1464,7 @@ def _said(e: subprocess.CalledProcessError) -> str:
 def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
            tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
-           tidepool: bool = False, manifest: str | None = None,
+           tidepool: bool = False, manifest: str | None = None, substrate: str | None = None,
            features: list[str] | None = None, source_dir: Path | None = None,
            activation: bool = False, recipe_name: str | None = None,
            workspace: Path | None = None, workspace_storage: int = 0,
@@ -1581,6 +1601,10 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     # The tree the declaration is read out of. For a visit that is the Workspace itself — direct-serve
     # means the durable tree IS the directory `detect` would have inspected, so it works unchanged.
     project = workspace if workspace is not None else staging
+    # The **Substrate**, read on the same terms and in the same breath. Optional for EVERY Spawn, not
+    # just a Tide Pool, so there is no `or not tidepool` here: most work needs no system package, and
+    # unlike an Environment there is nothing load-bearing to refuse the absence of.
+    packages = substrate_mod.read(project, substrate)
     if manifest or not tidepool:
         declared = environments.detect(project, manifest)
         environments.require_tool(declared, features or [])
@@ -1645,7 +1669,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
                    wants_licence=bool(features), features=features, activation=activation,
                    declared=declared, stub_files=stub_files, stub_binds=stub_binds,
                    stub_log=stub_log, drop_lock=drop_lock,
-                   workspace=workspace, workspace_storage=workspace_storage)
+                   workspace=workspace, workspace_storage=workspace_storage, packages=packages)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -1699,8 +1723,15 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # against. Said at submit because the worst case — a manifest one directory too deep — is not a
         # build failure at all: nothing else would ever mention it, and the User would meet it as an
         # ImportError after paying for a GPU.
-        (SPAWNS_DIR / str(job_id) / "environment").write_text(
-            environments.describe(declared) + "\n")
+        #
+        # The **Substrate** rides on the same line rather than a second one, so every reader of this
+        # file — the CLI's echo, the Dashboard's composer, `cuttle admin` — shows it without knowing
+        # it exists. Only when one was declared: most Spawns have none, and saying so on every submit
+        # would be noise around the fact that actually matters.
+        note = environments.describe(declared)
+        if packages:
+            note += " · " + substrate_mod.describe(packages)
+        (SPAWNS_DIR / str(job_id) / "environment").write_text(note + "\n")
         # Only now can the out module name a path. The proj half has been live since before sbatch; this
         # adds the other and renames the pair to the job id, which is how the tick finds it to close.
         siphons.bind(token, job_id)
@@ -1762,7 +1793,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    wandb_env: dict[str, str], tar_path: Path | None, minutes: int, vram_gb: int,
                    outputs: list[str], node: str | None = None, wandb: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
-                   manifest: str | None = None, activation: bool = False,
+                   manifest: str | None = None, substrate: str | None = None,
+                   activation: bool = False,
                    source_dir: Path | None = None, recipe_name: str | None = None,
                    workspace: Path | None = None, workspace_storage: int = 0,
                    name: str = "") -> int:
@@ -1884,7 +1916,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool, manifest=manifest, features=features, activation=activation,
+                  tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
+                  activation=activation,
                   source_dir=source_dir, recipe_name=recipe_name,
                   workspace=workspace, workspace_storage=workspace_storage, name=name)
 
