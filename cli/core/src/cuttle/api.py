@@ -20,6 +20,7 @@ to guess and the command layer translates.
 """
 
 import json
+import os
 import shutil
 import ssl
 import tarfile
@@ -269,12 +270,37 @@ class Api:
                 if on_progress:
                     on_progress(0, total)
                 reader = _ChunkReader(r.iter_bytes())
+                keep = member or tarfile.data_filter
                 with tarfile.open(fileobj=reader, mode="r|gz") as tf:
                     for m in tf:
-                        tf.extract(m, work, filter=member or tarfile.data_filter)
-                        seen += m.size
-                        if on_progress:
-                            on_progress(seen, total)
+                        # The filter is applied here rather than handed to `extract`, because the
+                        # progress below needs the member open. It is the same gate either way: a
+                        # filter runs on the TarInfo, before a byte is written, and may rewrite the
+                        # member (`data_filter` clamps the mode) or refuse it outright.
+                        info = keep(m, str(work))
+                        if info is None:
+                            continue
+                        if not info.isreg():
+                            # Directories, symlinks, the rest: no contents to count, and nothing to
+                            # gain from reimplementing what tarfile already does. Filtered already,
+                            # so the identity filter here is not a hole.
+                            tf.extract(info, work, filter=lambda i, _p: i)
+                            continue
+                        # Copied a megabyte at a time rather than through `extract`, which returns
+                        # only once the whole member has landed. That was the bar's bug: progress
+                        # advanced per FILE, so a Spawn whose output is one 300MB blob sat at 0%
+                        # for the entire transfer and then jumped to done.
+                        target = work / info.name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        src = tf.extractfile(info)
+                        with target.open("wb") as out:
+                            while chunk := src.read(1 << 20):
+                                out.write(chunk)
+                                seen += len(chunk)
+                                if on_progress:
+                                    on_progress(seen, total)
+                        if info.mode is not None:
+                            os.chmod(target, info.mode)
         except httpx.RequestError as e:
             shutil.rmtree(work, ignore_errors=True)
             raise ApiError(path, self._transport_detail(e)) from None
