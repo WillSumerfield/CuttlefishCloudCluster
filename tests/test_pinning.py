@@ -177,13 +177,27 @@ class TestAptWorksInsideAPod:
     caller an incantation. What they must do was settled on hardware (2026-08-18) and each of these
     guards one finding, because every one of them looks removable and none is."""
 
-    def test_it_is_a_nested_namespace_and_not_fakeroot(self):
-        """fakeroot issues the real chown and swallows only EPERM; apptainer's userns leaves uid 0
-        unmapped, so the kernel answers EINVAL and dpkg-deb dies in its tar subprocess. `unshare -r`
-        maps a real uid 0 one level down, so the chown is permitted rather than faked."""
+    def test_it_is_a_nested_namespace(self):
+        """apptainer's userns leaves uid 0 unmapped, so a chown answers EINVAL and dpkg-deb dies in
+        its tar subprocess. `unshare -r` maps a real uid 0 one level down, so the chown is permitted
+        rather than faked."""
         d = templates.render_base_def()
         assert "unshare -r" in d
-        assert "fakeroot" not in d
+
+    def test_a_chown_to_an_unmapped_group_does_not_kill_the_install(self):
+        """`unshare -r` maps ONE id pair, so a package shipping a file owned by any group but root —
+        utmp (tmux), crontab, ssl-cert — makes dpkg chown to a gid that is not in the namespace. The
+        kernel answers EINVAL, not EPERM, and dpkg treats it as fatal.
+
+        fakeroot alone does NOT fix it: libfakeroot issues the real chown underneath and swallows only
+        EPERM. FAKEROOTDONTTRYCHOWN stops it attempting the real call, and is the entire fix —
+        measured 2026-08-18, `unshare -r fakeroot chown 0:43` fails and the same with the variable
+        set succeeds. Both halves are asserted because either alone is inert."""
+        d = templates.render_base_def()
+        assert "fakeroot" in d
+        assert "FAKEROOTDONTTRYCHOWN=1" in d
+        # ...and it has to BE in the image, or the shim is a "command not found" on every install.
+        assert "neovim curl fakeroot" in d
 
     def test_apt_does_not_drop_to_a_uid_that_does_not_exist(self):
         """apt fetches as `_apt`, and a namespace holding one mapped uid has no such account — every

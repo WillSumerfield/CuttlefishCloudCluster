@@ -441,19 +441,25 @@ def render_ubuntu_snapshot_list() -> str:
 # gives `/usr` and `/var/lib/dpkg` somewhere to write, but dpkg also `chown`s every unpacked file to
 # root:root, and that is a question about identity rather than about permissions.
 #
-# **`fakeroot` was the obvious answer and it does not work here.** Measured on hardware (2026-08-18,
-# apptainer 1.5.3): libfakeroot intercepts `chown` but still issues the real syscall underneath,
-# swallowing the failure only when it is EPERM. Apptainer's unprivileged user namespace maps the
-# Guise's uid to ITSELF, so uid 0 does not exist in that namespace at all and the kernel answers
-# EINVAL — which fakeroot 1.33 (Noble's) passes straight through. `dpkg-deb` then dies inside its own
-# `tar` subprocess ("Cannot change ownership to uid 0, gid 0"). The identical command works on the
-# host, so this is the namespace and not the invocation; no spelling of a fakeroot shim survives it.
+# **A nested user namespace is most of the answer.** `unshare -r` maps the Guise to a real uid 0 one
+# level down, so `chown(0,0)` is not faked but genuinely permitted — and it wraps only this command, so
+# nothing touches the Pod's own process tree. That is what makes apptainer's `--fakeroot` unnecessary
+# as well: a Tide Pool's sshd is PID 1 in its Pod, and wrapping THAT would fake the privilege
+# separation and per-session setuid() it actually performs.
 #
-# **A nested user namespace does work.** `unshare -r` maps the Guise to a real uid 0 one level down,
-# so `chown(0,0)` is not faked but genuinely permitted — and it wraps only this command, so nothing
-# touches the Pod's own process tree. That is what makes apptainer's `--fakeroot` unnecessary as well:
-# a Tide Pool's sshd is PID 1 in its Pod, and wrapping THAT would fake the privilege separation and
-# per-session setuid() it actually performs.
+# **`unshare -r` maps ONE id pair, and that is the rest of the story.** A package shipping a file owned
+# by any group other than root — `utmp` (tmux, screen), `crontab`, `ssl-cert`, `messagebus` — makes dpkg
+# call `chown(0, 43)` for a gid that does not exist in that namespace, and the kernel answers EINVAL
+# rather than EPERM. dpkg treats it as fatal: `tmux` unpacked, `libutempter0` did not, and the install
+# died half-done ("error setting ownership of './usr/lib/.../utempter': Invalid argument").
+#
+# `fakeroot` closes it, but ONLY with `FAKEROOTDONTTRYCHOWN=1`, and the distinction is the whole reason
+# this line reads the way it does. libfakeroot intercepts `chown` and then still issues the real syscall
+# underneath, swallowing the failure only when it is EPERM — so plain `fakeroot` passes EINVAL straight
+# through and changes nothing. That variable stops it attempting the real call at all. Measured here
+# (2026-08-18): `unshare -r fakeroot chown 0:43` fails EINVAL, the same command with the variable set
+# succeeds. Ownership is then faked rather than applied, which costs nothing real: ns-uid 0 IS the
+# Guise, so every file dpkg unpacks was already landing Guise-owned on the disk underneath.
 #
 # `APT::Sandbox::User=root` is not optional. apt drops to `_apt` to fetch, and a namespace holding one
 # mapped uid has no such account — without it every download dies on "setgroups: Operation not
@@ -484,7 +490,8 @@ ccc_noise='setpriv: setresuid failed|chown to root:adm of file|^debconf: delayin
 # grep's; stdout, where apt's progress and package list go, is never touched and stays live.
 ccc_apt() {
     ccc_err=/ccc-tmp/.apt-stderr.$$
-    unshare -r /usr/bin/apt-get -o APT::Sandbox::User=root "$@" 2>"$ccc_err"
+    ccc_ns="unshare -r env FAKEROOTDONTTRYCHOWN=1 fakeroot"
+    $ccc_ns /usr/bin/apt-get -o APT::Sandbox::User=root "$@" 2>"$ccc_err"
     ccc_rc=$?
     grep -Ev "$ccc_noise" "$ccc_err" >&2
     rm -f "$ccc_err"
@@ -509,7 +516,7 @@ From: {image}
     # unpacks, so it has to be gone before anything below is installed or their pages go with it.
     rm -f /etc/dpkg/dpkg.cfg.d/excludes
     apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
-      build-essential zsh zoxide ncurses-term man-db nano neovim curl \
+      build-essential zsh zoxide ncurses-term man-db nano neovim curl fakeroot \
       && apt-get install -y --reinstall --no-install-recommends \
       coreutils bash grep sed findutils procps tar \
       && rm -rf /var/lib/apt/lists/*
