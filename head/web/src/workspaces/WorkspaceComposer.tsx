@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { getFeatureCatalog, type Arm, type Workspace } from "../api";
 import { Chip } from "../app/Chip";
 import { Labeled } from "../app/Composer";
+import { Tip } from "../app/Tip";
 import { NumberField } from "../app/NumberField";
 import { Select } from "../app/Select";
 import { human, type Picked } from "../project";
@@ -110,10 +112,28 @@ export function WorkspaceComposer({
   // round trip on the one edit most likely to be wrong.
   const belowHeld = metaOnly && storage > 0 && storage < editing!.used_bytes;
 
-  const ready =
-    !!trimmed && !dup && !overPool && !seedTooBig && !belowHeld &&
-    Number(storageGb) >= 1 && Number(vram) >= 1 && Number(minutes) >= 1 &&
-    (metaOnly || !!picked);
+  // EVERY reason Create/Save is dead, in the order the form asks for them, said out loud by the Tip on
+  // the button itself — three of these (overPool, seedTooBig, belowHeld) are arithmetic nobody can see
+  // by looking at the fields, and an inert button is where they used to be discovered. `ready` derives
+  // FROM the list so the button and its explanation cannot disagree.
+  const blockers: string[] = [];
+  if (!metaOnly && !picked) blockers.push("pick the folder to seed it with");
+  if (!trimmed) blockers.push("name this workspace");
+  if (dup) blockers.push("choose a name you have not used");
+  if (!(Number(storageGb) >= 1)) blockers.push("set how much storage it may hold");
+  if (!(Number(minutes) >= 1)) blockers.push("set a time limit per visit");
+  if (!(Number(vram) >= 1)) blockers.push("set the GPU memory a visit needs");
+  if (overPool) blockers.push("lower the storage — it is past your 32GB workspace allowance");
+  if (seedTooBig) blockers.push("raise the storage or trim the folder — the seed does not fit in it");
+  if (belowHeld) blockers.push("raise the storage — it is below what this workspace already holds");
+
+  const ready = blockers.length === 0;
+  // Prose, one sentence: `Tip` takes no markup, deliberately (app/Tip).
+  const why = `Not ready yet: ${blockers.join("; ")}.`;
+  // Only while blocked — a live button explains itself. `pointerEvents: none` is what lets the wrapper
+  // see the pointer at all: a disabled <button> dispatches none, and they never reach an ancestor.
+  const blocked = (btn: ReactNode) =>
+    ready ? btn : <Tip text={why} className="justify-self-center" focusable={false}>{btn}</Tip>;
 
   const gpuOptions = (() => {
     const most = arms.reduce((n, a) => Math.max(n, a.gpus ?? 0), 0);
@@ -345,9 +365,12 @@ export function WorkspaceComposer({
 
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
           <span aria-hidden />
-          <button className="btn-primary justify-self-center" onClick={save} disabled={!ready}>
-            {metaOnly ? "Save changes" : "Create workspace"}
-          </button>
+          {blocked(
+            <button className="btn-primary justify-self-center" onClick={save} disabled={!ready}
+                    style={{ pointerEvents: ready ? undefined : "none" }}>
+              {metaOnly ? "Save changes" : "Create workspace"}
+            </button>
+          )}
           <button className="btn-ghost justify-self-start" onClick={onCancel}>
             Cancel
           </button>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { Arm, Recipe } from "../api";
 import { getFeatureCatalog, getWandbKey, submit, submitTidepool } from "../api";
 import { human, type Picked } from "../project";
@@ -339,10 +340,6 @@ export function Composer(props: ComposerProps) {
   const over = variant === "recipe" && !!picked && projected > ALLOWANCE;
   const overBy = projected - ALLOWANCE;
 
-  // A dropped folder always means "also refresh the code" — same requirements either way, metaOnly or
-  // not (a brand-new Recipe always has one; editing's is just optional). Only when editing WITHOUT one
-  // does readiness relax to the settings-only shape, `script` free-typed rather than picked from a tree.
-  //
   // `manifest` gates every branch but the Tide Pool's: naming the dependency file is required, because
   // an Environment carries its own Python and inherits nothing, so the Head refuses a Spawn or a Recipe
   // that named none. A Tide Pool is the one Spawn that may decline — it is a shell, not a run.
@@ -356,24 +353,56 @@ export function Composer(props: ComposerProps) {
   // A count past the end of the list is unplaceable too, not merely unlisted — an old Recipe frozen at
   // 4 cards, opened after the 4-card Arm left, has no row here at all.
   const placeable = !known || !!gpuOptions[gpu - 1] && !gpuOptions[gpu - 1].disabled;
+  // A Tide Pool asks for a shell, not a run: no script, no outputs, and an upload only if it declared
+  // something to build out of one.
+  //
+  // A dropped folder always means "also refresh the code" — same requirements either way, metaOnly or
+  // not (a brand-new Recipe always has one; editing's is just optional). Only when editing WITHOUT one
+  // do the requirements relax to the settings-only shape: no folder to ask for, `script` free-typed
+  // against the code already saved, and no collision possible with the name it already holds.
+  const tide = variant === "spawn" && mode === "tidepool";
+  const settingsOnly = variant === "recipe" && metaOnly && !picked;
+
+  // EVERY reason the primary button is dead, in the order the form asks for them — the Tip on that
+  // button says them out loud, because a control that is simply inert teaches nobody what it wants.
+  // `ready` is derived FROM this list rather than computed beside it: two expressions of one rule
+  // drift, and the half that drifts silently is the explanation, which nothing type-checks.
+  const blockers: string[] = [];
+  // A named manifest or substrate needs the folder that holds it — the Head builds from the upload,
+  // and there is nothing to resolve the name against otherwise. That is the ONLY thing that makes a
+  // Tide Pool need one.
+  if (!settingsOnly && !picked && (!tide || named || substrated))
+    blockers.push(tide ? "pick the folder holding the file you named" : "pick a project folder");
   // Every Spawn carries a **Name** a person chose (CONTEXT.md) — the Head refuses a nameless one, so
-  // both Spawn branches gate on it exactly as they gate on --time and --vram. A Tide Pool is no
-  // exception: it may decline to declare an Environment, and it may not decline to be named.
-  // A Recipe already required its own (it is the key you run it by), which is why this is not a third
-  // condition there.
-  const ready = placeable && (
-    variant === "spawn" && mode === "tidepool"
-      // A named manifest needs the folder that holds it — the Head builds from the upload, and there
-      // is nothing to resolve the name against otherwise.
-      ? !!trimmed && Number(minutes) > 0 && Number(vram) > 0 &&
-        (!named || !!picked) && (!substrated || !!picked)
-      : variant === "recipe"
-        ? metaOnly && !picked
-          ? !!script.trim() && named && Number(minutes) > 0 && Number(vram) > 0 && outputs.length > 0
-          : !!picked && !!trimmed && !dup && !!script && named && Number(minutes) > 0 &&
-            Number(vram) > 0 && outputs.length > 0 && !over
-        : !!picked && !!trimmed && !!script && named && Number(minutes) > 0 && Number(vram) > 0 &&
-          outputs.length > 0);
+  // this gates exactly as the time and memory fields do. A Tide Pool is no exception: it may decline to
+  // declare an Environment, and it may not decline to be named. A Recipe being EDITED already holds one
+  // (it is the key you run it by, and the field is read-only), the one shape this cannot block.
+  if (!settingsOnly && !trimmed)
+    blockers.push(variant === "recipe" ? "name this recipe" : tide ? "name this tide pool" : "name this spawn");
+  if (dup) blockers.push("choose a recipe name you have not used");
+  if (!tide && !script.trim()) blockers.push("name the script to run");
+  if (!tide && !named) blockers.push("name the dependency file its environment is built from");
+  if (!(Number(minutes) > 0)) blockers.push("set a time limit");
+  if (!(Number(vram) > 0)) blockers.push("set the GPU memory it needs");
+  if (!tide && outputs.length === 0) blockers.push("name at least one output folder");
+  // Both already draw their own line elsewhere on the form (the allowance block, the greyed card
+  // rows). Said again here anyway: this list answers "why is this dead", and an answer with a hole in
+  // it sends someone hunting the form for a message they have already scrolled past.
+  if (over) blockers.push("trim the folder or free recipe space — this save is over your allowance");
+  if (!placeable) blockers.push("lower the GPU count — no arm can host that many at this memory");
+
+  const ready = blockers.length === 0;
+  // One sentence, because `Tip` takes prose and not markup — a bulleted list of fields is documentation
+  // growing inside a tooltip, which is the thing Tip's own contract refuses.
+  const why = `Not ready yet: ${blockers.join("; ")}.`;
+
+  // Wrapped ONLY while blocked: a live button explains itself, so a tip existing at all is itself the
+  // signal that something is missing. `pointerEvents: none` is what lets the wrapper see the pointer —
+  // a disabled <button> dispatches no pointer events and they do not reach an ancestor either, so a Tip
+  // around one would be a hover explanation that never explains. The `not-allowed` cursor goes with it;
+  // an explanation you can actually read is the better trade.
+  const blocked = (btn: ReactNode) =>
+    ready ? btn : <Tip text={why} className="justify-self-center" focusable={false}>{btn}</Tip>;
 
   const go = async () => {
     if (!ready || variant !== "spawn") return;
@@ -689,14 +718,16 @@ export function Composer(props: ComposerProps) {
       {/* Primary sits dead-centre; the secondary hangs off its right without shifting it. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <span aria-hidden />
-        {variant === "spawn" ? (
-          <button className="btn-primary justify-self-center" onClick={go} disabled={!ready || busy}>
+        {variant === "spawn" ? blocked(
+          <button className="btn-primary justify-self-center" onClick={go} disabled={!ready || busy}
+                  style={{ pointerEvents: ready ? undefined : "none" }}>
             {busy
               ? mode === "tidepool" ? "Requesting…" : "Submitting…"
               : mode === "tidepool" ? "Request tide pool" : "Submit spawn"}
           </button>
-        ) : (
-          <button className="btn-primary justify-self-center" onClick={save} disabled={!ready}>
+        ) : blocked(
+          <button className="btn-primary justify-self-center" onClick={save} disabled={!ready}
+                  style={{ pointerEvents: ready ? undefined : "none" }}>
             {metaOnly ? "Save changes" : "Save recipe"}
           </button>
         )}
