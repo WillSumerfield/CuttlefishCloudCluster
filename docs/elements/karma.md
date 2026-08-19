@@ -145,7 +145,13 @@ Escrow is quoted from. `cuttle tide` draws it as a sparkline per Arm.
 | Finished normally | For the seconds it held. |
 | Your script failed | For the seconds it held. Settled, **not requeued**. |
 | You cancelled it | For the seconds it held. You chose to stop; you pay. |
+| An operator cancelled it | For the seconds it held. Same as your own cancel. |
 | The Arm was **retracted** under it | **Zero.** |
+
+An operator's cancel bills its submitter even though the submitter did not choose it, because those
+seconds were really held on somebody else's card and that Arm's owner is owed them. Zeroing it would
+either pay the owner nothing for a card they really lent, or mint the difference — and **Override** is
+the only thing in CCC allowed to mint.
 
 The retract row is the only ending that costs nothing, and the reason is that reclaiming is paid for
 by whoever chose to reclaim. Its submitter pays nothing for work someone else killed, and the owner

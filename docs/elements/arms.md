@@ -72,8 +72,11 @@ cancel`, so they run from your laptop, a Client box, the Head, or the Arm itself
 whether or not the Arm is up, because the state that stops placement lives on the Head.
 
 Two conditions: you need a session (`cuttle login` — enrolling an Arm does not create one), and the
-Arm has to be **yours**. The Head checks ownership on every call and there is no admin exception to
-it; an operator acting for a donor uses `--any`, which is refused off the Head.
+Arm has to be **yours**. The Head checks ownership on every call and there is no admin exception to it.
+
+An operator acting for a donor runs the same command **on the Head**, with no flag: the Head's "not
+yours" selects the Head-local road rather than ending the command. `--any` skips asking altogether and
+is refused off the Head.
 
 A retracted Arm **never leaves**. It stays enrolled and stays on the mesh; it simply stops accepting
 work. So returning it is entirely yours to do: no admin, no new enrollment token, no re-setup.

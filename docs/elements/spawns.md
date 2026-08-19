@@ -167,5 +167,11 @@ An Arm's owner has no way to kill one particular Spawn running on their machine.
 `cuttle run --node <name>` pins a Spawn to one named Arm. It is the single exception to "declare
 needs, never machines", and it is admin-only for exactly that reason.
 
-`cuttle cancel <id> --any` cancels a Spawn belonging to someone else. It runs `sudo scancel`, so it
-works only while sitting on the Head.
+`cuttle cancel <id>` ends a Spawn belonging to someone else, when you run it **on the Head**. No flag:
+the Head API is asked first, and its "not yours" is the ownership test rather than the end of the
+command — on the Head that answer selects the operator's road (`sudo scancel`) instead. Pick from the
+menu and the whole queue is offered, not just your own Spawns.
+
+`--any` remains for the one case that road cannot be reached by asking: an id the ledger never
+recorded. `DELETE /spawns/{id}` answers 404 for those and is never escalated past it, so reaping a
+runaway the Head has no row for is what the flag is for. It is refused off the Head.

@@ -100,4 +100,10 @@ See [Security](Security.md#the-head-api-has-no-admin-writes) for the reasoning, 
 [Set up the Head](setup/head.md#running-the-cluster) for where each of those commands lives.
 
 Retract and Return are the exception, and are on the Arms page: they are **owner-scoped**, not
-admin-scoped, so they are yours to do over the API from anywhere.
+admin-scoped, so they are yours to do over the API from anywhere. The Arms page offers them on your own
+Arms only, for the same reason the queue offers Cancel on your own Spawns only.
+
+Cancel is the one worth spelling out, because an Admin genuinely *can* cancel anyone's Spawn — just not
+from here. `DELETE /spawns/{id}` applies its ownership test unconditionally and gets no admin branch,
+so the button appears on your own Spawns and nobody else's, whoever you are. Anyone else's is
+`cuttle cancel <id>`, run on the Head.

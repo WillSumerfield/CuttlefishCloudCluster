@@ -69,6 +69,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   has set no credential is told their Spawns will log nothing rather than discovering it afterwards.
 - **Admin / Maintainer** — the privileged User (the operator) who provisions accounts, mints
   **enrollment tokens** (naming each Arm's owner), and can **override** Karma. One person today.
+  The role's authority has two sources and they are not interchangeable: the **account**, which is what
+  a **Session** carries and which grants no power over anyone else's work; and the **Head** itself, where
+  being present at the machine is the authorization for every privileged act. An Admin away from the Head
+  is an ordinary **User** with a title.
   The Admin is **outside the economy** — a role for *running* the cluster, not for *using* it. They
   earn no **Karma** (an Arm they own is a **Commons Arm**, and its Karma is destroyed), pay none, and
   hold no **Balance**: their **Spawns** are never **Escrow**ed, never **Settled**, and never lose
@@ -489,8 +493,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Early-failure rule** — a Spawn that fails is **settled, not requeued**: it pays for what it
   actually consumed and does not silently run again.
 - **Cancel** — a **User** ending their own outstanding **Spawn** early (an **Admin** may cancel anyone's).
-  Like any other ending it **settles** for the seconds it actually held — the submitter chose to stop, so
-  the submitter pays. Distinct from **Retract**, which is the *Arm owner* reclaiming a machine out from
+  Like any other ending it **settles** for the seconds it actually held, and its submitter pays them
+  whoever ended it: those seconds were really held on someone else's machine, and that **Arm**'s owner is
+  owed them. Distinct from **Retract**, which is the *Arm owner* reclaiming a machine out from
   under work that did not choose to die, and is therefore the only ending that settles at **zero**. An
   Arm's owner has no power to kill a single Spawn on their Arm; they have **Retract**.
 - **Override** — an admin-only operation that adds/removes/sets a User's **Balance** directly. The only

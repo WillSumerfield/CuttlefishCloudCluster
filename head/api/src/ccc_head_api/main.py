@@ -281,8 +281,9 @@ def retract_arm(name: str, user: dict = Depends(current_user)) -> Response:
     force-kills it; either way it settles at ZERO.
 
     **Retracting someone else's Arm is an admin action and is not reachable from here** (mirrors
-    cancel_spawn): it is `cuttle arm retract <name> --any`, run on the Head. The ownership test below
-    is unconditional — an Admin gets no branch.
+    cancel_spawn): it is `cuttle arm retract <name>`, run *on the Head*, where the client reads this
+    route's 403 as the ownership test and writes head.db directly instead. The test below is
+    unconditional — an Admin gets no branch.
     """
     owner = _arm_owner(name)
     if owner is None:
@@ -534,8 +535,13 @@ def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
     actually held, by the Karma tick, when the cancelled Spawn drops out of squeue — see slurm.cancel.
 
     **Cancelling someone else's Spawn is an admin WRITE and is not reachable from here**: it is
-    `cuttle cancel <id> --any`, run on the Head. The ownership test below is unconditional — an Admin
-    gets no branch — so a stolen admin Session is worth exactly one User's Session.
+    `cuttle cancel <id>`, run *on the Head*, where the client reads this route's 403 as the ownership
+    test and takes the operator's `sudo scancel` road instead. The test below is unconditional — an
+    Admin gets no branch — so a stolen admin Session is worth exactly one User's Session, and the
+    Dashboard (which has only this route) offers Cancel on your own Spawns and nobody else's.
+
+    The 404 above matters to that client: an id this ledger never recorded is never escalated to a
+    blind scancel. Reaping one of those is `--any`, deliberately typed.
     """
     with db.connect() as conn:
         row = db.get_spawn(conn, job_id)

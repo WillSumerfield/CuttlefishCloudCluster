@@ -45,7 +45,14 @@ all. The API surface that faces the LAN can create no accounts, move no Karma, a
 
 The same logic pins two specific commands to the Head for a second reason: `cuttle karma bump` needs
 a *negative* nice, which Slurm grants only to an operator — an authority the LAN-facing API
-deliberately does not have. And `cuttle cancel --any` uses `sudo scancel`.
+deliberately does not have. And cancelling someone else's Spawn uses `sudo scancel`.
+
+That last pair — `cuttle cancel` and `cuttle arm retract`/`return` — are the only commands with a road
+on *both* sides of this line, because their ordinary form is an owner action that has to work from a
+laptop. They ask the Head first and read its 403 as the ownership test: off the Head that refusal is
+the answer, and on the Head it selects the operator's road. What decides is **being on the Head**, never
+a session's `is_admin` — the API governs what a session may do, `sudo` governs what the shell may do,
+and it is the shell that acts here.
 
 ## Isolation
 
