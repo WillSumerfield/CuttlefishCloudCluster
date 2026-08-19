@@ -14,7 +14,8 @@ import pytest
 from ccc_head_api import db, karma, slurm
 from ccc_head_api import spawns as head_spawns
 from ccc_head_api import workspaces as head_workspaces
-from cuttle import config
+from cuttle import auth, config, menu, pickers, ui
+from cuttle import spawns as spawns_mod
 from cuttle import tidepool as tidepool_mod
 
 from conftest import USERS
@@ -395,7 +396,8 @@ class TestCancel:
 
     def test_you_may_not_cancel_someone_elses(self, cli, fake_slurm, project, monkeypatch):
         """alice submits; root tries to stop it over the API and is refused — an Admin has no
-        branch on that route."""
+        branch on that route. Off the Head there is no second road either, so this is the end of it."""
+        monkeypatch.setattr(menu, "is_head", lambda: False)
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
         spawn = self._spawn(cli)
@@ -404,6 +406,65 @@ class TestCancel:
         result = cli("cancel", spawn, "--yes")
         assert result.exit_code != 0
         assert "your own Spawns" in result.output
+
+    def _as_root_on_the_head(self, cli, monkeypatch):
+        """Someone else's live Spawn, and an operator standing on the Head looking at it."""
+        cli("login", input=f"alice\n{USERS['alice']}\n")
+        spawn = self._spawn(cli)
+        config.CREDENTIALS_FILE.unlink()
+        cli("login", input=f"root\n{USERS['root']}\n")
+        monkeypatch.setattr(menu, "is_head", lambda: True)
+        ran = []
+        monkeypatch.setattr(spawns_mod, "run", lambda cmd, **kw: ran.append(cmd))
+        return spawn, ran
+
+    def test_on_the_head_someone_elses_takes_the_operator_road(self, cli, fake_slurm, project,
+                                                               monkeypatch):
+        """The refusal is the ownership test, not the end. On the Head it selects `sudo scancel` —
+        with no flag, because the menu can only ever run this command bare."""
+        monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("the API route must not run"))
+        spawn, ran = self._as_root_on_the_head(cli, monkeypatch)
+        result = cli("cancel", spawn, "--yes")
+        assert result.exit_code == 0, result.output
+        assert ran[0] == ["scancel", str(spawn)]
+        # The marker DELETE writes has to be written here too, or the Spawn reports itself as having
+        # died on its own.
+        assert ran[1][:2] == ["-u", config.HEAD_API_USER] and ran[1][2] == "touch"
+        assert "Head operator" in result.output
+
+    def test_on_the_head_the_picker_offers_the_whole_queue(self, signed_in, monkeypatch):
+        """The bug's real shape: the menu runs `cancel` with no options, so a picker filtered to your
+        own Spawns never showed the operator the one they meant to stop."""
+        monkeypatch.setattr(menu, "is_head", lambda: True)
+        # `ui.need` only reaches a picker when somebody can be asked — the menu's whole situation, and
+        # the one CliRunner does not reproduce on its own.
+        monkeypatch.setattr(ui, "interactive", lambda: True)
+        seen = {}
+
+        def fake_pick(message, mine_only=True):
+            seen["mine_only"] = mine_only
+            return 424242
+
+        monkeypatch.setattr(pickers, "pick_spawn", fake_pick)
+        signed_in("cancel", "--yes")           # the cancel itself 404s; the picker call is the subject
+        assert seen["mine_only"] is False
+
+    def test_an_id_the_ledger_never_recorded_is_not_escalated(self, signed_in, monkeypatch):
+        """A 404 is not a 403. Escalating one would blind-scancel an arbitrary id — that is what
+        `--any` is for, deliberately typed."""
+        monkeypatch.setattr(menu, "is_head", lambda: True)
+        monkeypatch.setattr(spawns_mod, "run", lambda *a, **kw: pytest.fail("must not scancel"))
+        result = signed_in("cancel", "424242", "--yes")
+        assert result.exit_code != 0
+
+    def test_any_is_refused_off_the_head(self, signed_in, monkeypatch):
+        """The only Head-local admin road that does not go through `auth._admin`, so it needs the
+        guard the others get for free."""
+        monkeypatch.setattr(menu, "is_head", lambda: False)
+        monkeypatch.setattr(spawns_mod, "run", lambda *a, **kw: pytest.fail("must not sudo here"))
+        result = signed_in("cancel", "424242", "--any", "--yes")
+        assert result.exit_code != 0
+        assert "on the Head" in result.output
 
 
 class TestArmRetraction:
@@ -430,12 +491,39 @@ class TestArmRetraction:
 
     def test_you_may_not_retract_someone_elses(self, cli, fake_slurm, monkeypatch):
         """gpu-box is alice's; root tries to retract it over the API and is refused — mirrors
-        cancel's unconditional ownership test."""
+        cancel's unconditional ownership test. Off the Head there is no second road."""
+        monkeypatch.setattr(menu, "is_head", lambda: False)
         self._own_gpu_box(monkeypatch, owner="alice")
         cli("login", input=f"root\n{USERS['root']}\n")
         result = cli("arm", "retract", "gpu-box")
         assert result.exit_code != 0
         assert "your own Arm" in result.output
+
+    def test_on_the_head_someone_elses_takes_the_operator_road(self, cli, fake_slurm, monkeypatch):
+        """Same shape as cancel's: `pick_arm` has always listed every Arm, so the menu offered the
+        operator an Arm and then refused it. On the Head the 403 selects the road instead."""
+        self._own_gpu_box(monkeypatch, owner="alice")
+        cli("login", input=f"root\n{USERS['root']}\n")
+        monkeypatch.setattr(menu, "is_head", lambda: True)
+        called = []
+        monkeypatch.setattr(auth, "_admin", lambda args, **kw: called.append(list(args)))
+        result = cli("arm", "retract", "gpu-box")
+        assert result.exit_code == 0, result.output
+        assert called == [["retract", "gpu-box"]]
+        assert "Head operator" in result.output
+
+        called.clear()
+        assert cli("arm", "return", "gpu-box").exit_code == 0
+        assert called == [["return", "gpu-box"]]
+
+    def test_any_is_refused_off_the_head(self, cli, fake_slurm, monkeypatch):
+        self._own_gpu_box(monkeypatch, owner="alice")
+        cli("login", input=f"root\n{USERS['root']}\n")
+        monkeypatch.setattr(menu, "is_head", lambda: False)
+        monkeypatch.setattr(auth, "_admin", lambda *a, **kw: pytest.fail("must not sudo here"))
+        result = cli("arm", "retract", "gpu-box", "--any")
+        assert result.exit_code != 0
+        assert "on the Head" in result.output
         with db.connect() as conn:
             assert db.retracted_nodes(conn) == set()
 
