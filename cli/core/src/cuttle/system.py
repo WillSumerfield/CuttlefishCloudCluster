@@ -368,6 +368,48 @@ def _nssdb() -> Path:
     return Path.home() / config.NSSDB_DIR
 
 
+def _no_certutil(why: str) -> Exception:
+    """The one message both failures below share — a box that cannot write the Chromium store."""
+    return ui.abort(
+        f"this box cannot trust the cluster's CA in Chromium-family browsers: {why}. They read a "
+        f"store of their own rather than the OS one, and `certutil` is what writes it.",
+        next_step=f"install it by hand — `sudo apt install {config.NSS_TOOLS_PKG}` — and run this again")
+
+
+def ensure_certutil() -> None:
+    """Install `certutil` if this box has not got it, on demand, for whoever got here without it.
+
+    `libnss3-tools` is in the pinned stack every Head and Arm installs (setup.install_packages) — but
+    two callers reach the trust below BEFORE that apt has run, or without it ever running: an Arm
+    trusts the CA at /enroll, a dozen steps ahead of its apt block, and `tls.ensure_ca` fires on any
+    client that talks to an https Head having never run `setup --client`. Both used to die on a bare
+    FileNotFoundError, which `run` does not even print (it dumps CalledProcessError alone).
+
+    No new privilege on any path: `trust_ccc_ca` has already written the OS trust store with sudo by
+    the time anything calls this, so a box that can get here can already apt.
+
+    Deliberately UNRECORDED. On an Arm this lands ahead of `record_installed`'s window, and a client
+    has no manifest at all — so a teardown leaves it, on the same reasoning `teardown_client` already
+    states: a general-purpose package something else may since depend on is the wrong thing to purge
+    on a guess.
+
+    Fatal rather than a warning, because the half-trusted box is the worse outcome: OS store yes,
+    browsers no, is exactly the state that produces "cuttle said it worked and Chrome still warns".
+    """
+    if shutil.which("certutil"):
+        return
+    ui.say(f"  [muted]installing {config.NSS_TOOLS_PKG} — it carries the `certutil` that trusts this "
+           f"cluster's CA in Chromium-family browsers[/muted]")
+    try:
+        run(["apt-get", *APT_LOCK_WAIT, "update"], sudo=True)
+        run(["apt-get", *APT_LOCK_WAIT, "install", "-y", config.NSS_TOOLS_PKG], sudo=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # `run` has already dumped apt's own output; this says what it was FOR.
+        raise _no_certutil(f"installing {config.NSS_TOOLS_PKG} failed") from None
+    if not shutil.which("certutil"):
+        raise _no_certutil(f"{config.NSS_TOOLS_PKG} installed without leaving `certutil` on PATH")
+
+
 def trust_ccc_ca_browsers(pem: str) -> None:
     """Trust the CA in this user's Chromium-family NSS db and, box-wide, in Firefox.
 
@@ -379,6 +421,7 @@ def trust_ccc_ca_browsers(pem: str) -> None:
     organisation's own settings, and clobbering those to add one key would be a poor trade. We record
     whether it was ours to begin with so teardown knows whether to delete the file or just our key.
     """
+    ensure_certutil()
     db = _nssdb()
     db.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", suffix=".crt", delete=False) as f:

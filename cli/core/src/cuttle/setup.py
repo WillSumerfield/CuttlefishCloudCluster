@@ -192,18 +192,6 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     return before
 
 
-def install_client_packages() -> None:
-    """The client role's whole apt footprint: `certutil`, so this box's browsers can be told to trust
-    the cluster. Deliberately not `install_packages` — a submitter's box has no business gaining Slurm.
-
-    Unrecorded, so teardown leaves it: there is no manifest on a client (record_installed is a Head/Arm
-    step), and libnss3-tools is a general-purpose tool that another application may since have come to
-    rely on. Removing a shared package we cannot prove we alone added is the worse mistake.
-    """
-    run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
-    _apt_install([config.NSS_TOOLS_PKG])
-
-
 def install_apptainer(deb: Path) -> None:
     """Install the Head's pinned apptainer from the .deb itself — the same bytes on the Head and on
     every Arm, whatever the PPA holds by then.
@@ -1176,9 +1164,11 @@ def setup_client() -> None:
     No mesh and no Slurm — a client only ever talks to the Head API over HTTPS. It does now need sudo
     and one package, which it did not before: the **Cluster name** goes in /etc/hosts, and trusting the
     cluster's CA (so the Dashboard loads without a warning) means writing the OS trust store and, for
-    Chromium-family browsers, importing with `certutil`. Still kept separate from `setup --head/--arm`,
-    because the gap between "one hosts line and a trusted CA" and "provision this machine" is the
-    whole point of the role.
+    Chromium-family browsers, importing with `certutil`. That package is not installed here: the trust
+    itself installs it (system.ensure_certutil), which is the only way the client that never ran this
+    command at all — `cuttle login` against an https Head trusts the CA too — gets it. Still kept
+    separate from `setup --head/--arm`, because the gap between "one hosts line and a trusted CA" and
+    "provision this machine" is the whole point of the role.
 
     No sudo on the box means this fails, and is meant to: a client that could not be given the name is
     a client on a different configuration from every other, and finding that out here beats finding it
@@ -1187,7 +1177,6 @@ def setup_client() -> None:
     pointed: dict[str, str] = {}
     with ui.section("Set up this client", lambda: pointed.get("head", "")):
         make_user_dirs()
-        install_client_packages()  # certutil, for the browser trust below
         pointed["head"] = point_at_head()
         # Before login, which is what would otherwise ask: `auth.login` calls tls.ensure_ca itself, so
         # this is only the difference between confirming a fingerprint inside the wizard and outside it.

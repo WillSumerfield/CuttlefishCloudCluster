@@ -111,7 +111,6 @@ class TestTheClientWizardPointsTheBoxItself:
 
     def test_an_unpointed_box_is_asked_which_head(self, answers, ccc_home, monkeypatch):
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
-        monkeypatch.setattr(setup_mod, "install_client_packages", lambda: None)
         monkeypatch.setattr(setup_mod.tls, "ensure_ca", lambda url: None)
         answers("172.30.26.166")
         setup_mod.setup_client()
@@ -145,7 +144,6 @@ class TestTheClientWizardPointsTheBoxItself:
         baked = headapi.head_url(config.DOMAIN)
         settings.save({"head": baked})
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
-        monkeypatch.setattr(setup_mod, "install_client_packages", lambda: None)
         monkeypatch.setattr(setup_mod.tls, "ensure_ca", lambda url: None)
         a = answers(baked)
         setup_mod.setup_client()

@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import typer
 from fastapi.testclient import TestClient
 
 from ccc_head_api import main as head_main
@@ -211,6 +212,68 @@ class TestTrustOnFirstUse:
         """Every box in the cluster dials the same name now, so every box's pin has one name. It is
         also what build-installer bakes into a bundle, so the two must agree by construction."""
         assert tls._pin_path(headapi.head_url(config.DOMAIN)).name == f"{config.DOMAIN}_443.pem"
+
+
+class TestCertutilArrivesOnDemand:
+    """`certutil` (libnss3-tools) is what writes the Chromium-family store, and two callers reach the
+    browser trust without it: an Arm trusts the CA at /enroll, a dozen steps ahead of its apt block,
+    and a client that never ran `setup --client` trusts it on first contact with an https Head. Both
+    used to die on a bare FileNotFoundError — `run` catches CalledProcessError alone, so nothing was
+    even printed. It is installed here instead, and refused loudly when it cannot be."""
+
+    @pytest.fixture
+    def apt(self, monkeypatch):
+        """Every `run` this path makes, with certutil absent until an install goes through."""
+        calls: list[list[str]] = []
+        present = []
+
+        def fake_run(cmd, sudo=False, check=True, **kw):
+            calls.append(cmd)
+            if "install" in cmd:
+                present.append(True)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(system, "run", fake_run)
+        monkeypatch.setattr(system.shutil, "which", lambda _: "/usr/bin/certutil" if present else None)
+        return calls
+
+    def test_a_box_without_it_installs_it(self, apt):
+        system.ensure_certutil()
+        assert any("install" in c and config.NSS_TOOLS_PKG in c for c in apt)
+
+    def test_the_index_is_refreshed_first(self, apt):
+        """A client box may never have run `apt-get update`, and an install against no index fails
+        with `unable to locate package` — which reads as a wrong package name."""
+        system.ensure_certutil()
+        assert "update" in apt[0]
+
+    def test_a_box_that_already_has_it_never_touches_apt(self, apt, monkeypatch):
+        monkeypatch.setattr(system.shutil, "which", lambda _: "/usr/bin/certutil")
+        system.ensure_certutil()
+        assert apt == []
+
+    def test_a_failed_install_is_refused_not_warned(self, apt, monkeypatch):
+        """The half-trusted box — OS store yes, browsers no — is the outcome worth refusing: it is
+        exactly the state where cuttle says it worked and Chrome goes on warning."""
+        import subprocess
+        def boom(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd)
+        monkeypatch.setattr(system, "run", boom)
+        with pytest.raises(typer.Exit):
+            system.ensure_certutil()
+
+    def test_an_install_that_leaves_no_binary_is_refused_too(self, monkeypatch):
+        monkeypatch.setattr(system, "run", lambda cmd, **kw: SimpleNamespace(returncode=0))
+        monkeypatch.setattr(system.shutil, "which", lambda _: None)
+        with pytest.raises(typer.Exit):
+            system.ensure_certutil()
+
+    def test_the_message_names_the_package_to_install_by_hand(self, capsys, monkeypatch):
+        monkeypatch.setattr(system, "run", lambda cmd, **kw: SimpleNamespace(returncode=0))
+        monkeypatch.setattr(system.shutil, "which", lambda _: None)
+        with pytest.raises(typer.Exit):
+            system.ensure_certutil()
+        assert config.NSS_TOOLS_PKG in capsys.readouterr().err
 
 
 class TestTeardownUndoesTheHostMutations:
