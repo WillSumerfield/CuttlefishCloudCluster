@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import auth, config, headapi, mesh, settings, system, templates, ui
+from . import auth, config, headapi, menu, mesh, settings, system, templates, ui
 from . import features as features_mod   # `features` is a parameter name throughout this module
 from .system import run
 
@@ -965,21 +965,43 @@ def rotate_munge_key() -> None:
 # an owner action reachable over the network (any box, session-authed), exactly like `cuttle cancel`.
 # `--any` is the operator's escape hatch — Head-only, and writes head.db directly through the API venv
 # rather than the network route, mirroring `cuttle user reset` (see auth._admin).
+#
+# On the Head the flag is optional, for the same reason it is on `cuttle cancel`: `pick_arm` has always
+# listed EVERY Arm (there is no owner filter in it at all), so the menu showed the operator an Arm and
+# then refused it — the flag that would have worked being unreachable from a menu that dispatches bare
+# argv. The API's 403 is the ownership test; on the Head it selects the road instead of ending the
+# command.
 
 def retract_arm(name: str, any_owner: bool = False) -> None:
     """Pause an Arm: it stops taking new Spawns and whatever is running on it now is ended (TERM now, a
     3-minute grace, then force-killed by the Karma tick). Settles at zero either way."""
-    if any_owner:
-        auth._admin(["retract", name])
-    else:
-        auth._api("POST", f"/arms/{name}/retract")
+    _owner_road("retract", name, any_owner)
     print(f"cuttle: {name} retracted — running work has 3 minutes to end gracefully")
 
 
 def return_arm(name: str, any_owner: bool = False) -> None:
     """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught."""
-    if any_owner:
-        auth._admin(["return", name])
-    else:
-        auth._api("POST", f"/arms/{name}/return")
+    _owner_road("return", name, any_owner)
     print(f"cuttle: {name} returned — accepting new Spawns again")
+
+
+def _owner_road(verb: str, name: str, any_owner: bool) -> None:
+    """Whichever of the two roads this box and this Arm actually call for.
+
+    Gated on being on the Head and nothing else — `is_admin` governs what a **Session** may do, and
+    this road uses no session at all (auth._admin execs the API venv as `ccc`, which exists only on the
+    Head). See menu.py's module docstring: "Admin" is not an axis.
+    """
+    if any_owner:
+        if not menu.is_head():
+            raise ui.abort(f"only the operator on the Head can {verb} someone else's Arm",
+                           next_step=f"run this on the Head, or ask {name}'s owner to {verb} it")
+    else:
+        if auth._api("POST", f"/arms/{name}/{verb}", refused_ok=True) is not None:
+            return                                      # ours, and the API has already done it
+        if not menu.is_head():
+            raise ui.abort(f"you can only {verb} your own Arm",
+                           next_step=f"an Arm that isn't yours can only be {verb}ed by the operator "
+                                     f"on the Head")
+        ui.say(f"  [muted]{name} isn't yours — {verb}ing it as the Head operator[/muted]")
+    auth._admin([verb, name])

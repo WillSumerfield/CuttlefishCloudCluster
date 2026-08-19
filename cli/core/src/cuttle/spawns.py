@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, auth, config, mesh, settings, ui, watch
+from . import api, auth, config, menu, mesh, settings, ui, watch
 from .system import run
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
@@ -443,26 +443,61 @@ def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:
     from. Cancelling *someone else's* is an admin write, and the Head API has none: an operator
     standing at the Head can stop a runaway, a stolen Session cannot.
 
+    **On the Head the two roads are one command.** The API is asked first and its refusal is the
+    ownership test: a 403 means "not yours", which on the Head is not a dead end but the other road,
+    taken automatically. So an operator who picked someone else's Spawn out of the queue is not sent
+    away to retype the same thing with a flag — `--any` remains for the case the API cannot serve at
+    all (see `_cancel_on_head`).
+
+    The escalation is gated on **being on the Head and nothing else**. `is_admin` governs what a
+    **Session** may do; `sudo` governs what this shell may do; and it is the shell that scancels. See
+    menu.py's module docstring — "Admin" is not an axis.
+
+    A **404 is never escalated**: an id the ledger does not know is not a Spawn this command may guess
+    at, and reaping one is exactly what `--any` is for.
+
     Either way the Karma tick settles the Spawn for the seconds it actually held when it drops out of
-    squeue, so a cancel costs its submitter what it used and no more.
+    squeue, so a cancel costs its submitter what it used and no more — whoever ended it.
     """
     if not yes and not ui.ask_confirm(f"Cancel spawn {spawn_id}?"):
         raise ui.abort("not cancelled")
     if any_owner:
-        # scancel, not the API: every Spawn runs as the Mantle, so the operator's sudo is what makes
-        # this possible at all. No ledger lookup — an operator reaping a runaway may well be doing it
-        # for a Spawn the Head never recorded.
-        #
-        # The marker `DELETE /spawns/{id}` writes has to be written here too, as the Head API user
-        # that owns the Spawn dir, or the Spawn this operator deliberately ended would still report
-        # itself as having died on its own. check=False: an id the Head never recorded has no dir,
-        # and reaping a runaway is exactly when that is true.
-        run(["scancel", str(spawn_id)], sudo=True)
-        run(["-u", config.HEAD_API_USER, "touch",
-             str(config.HEAD_SPAWNS_DIR / str(spawn_id) / "cancelled")], sudo=True, check=False)
-    else:
-        auth._api("DELETE", f"/spawns/{spawn_id}")
+        _cancel_on_head(spawn_id)
+    elif auth._api("DELETE", f"/spawns/{spawn_id}", refused_ok=True) is None:
+        # Refused as not ours. Off the Head that is the end of it, and the Head's own words are the
+        # right ones — say only where the other road is.
+        if not menu.is_head():
+            raise ui.abort("you can only cancel your own Spawns",
+                           next_step="someone else's can only be ended by the operator on the Head")
+        ui.say(f"  [muted]spawn {spawn_id} isn't yours — ending it as the Head operator[/muted]")
+        _cancel_on_head(spawn_id)
     ui.ok(f"spawn {spawn_id} cancelled")
+
+
+def _cancel_on_head(spawn_id: int) -> None:
+    """The operator's road: scancel, not the API.
+
+    Every Spawn runs as the Mantle, so the operator's sudo is what makes this possible at all. No
+    ledger lookup — an operator reaping a runaway may well be doing it for a Spawn the Head never
+    recorded, which is the one thing `DELETE /spawns/{id}` can never do (it 404s on an id it has no
+    row for, deliberately).
+
+    The marker that route writes has to be written here too, as the Head API user that owns the Spawn
+    dir, or the Spawn this operator deliberately ended would still report itself as having died on its
+    own. check=False: an id the Head never recorded has no dir, and reaping a runaway is exactly when
+    that is true.
+
+    The guard is not decoration. This is the only Head-local admin road that does not go through
+    `auth._admin` (which execs the API venv and so cannot exist off the Head); without it, `--any` on a
+    client failed in whatever way `sudo scancel` fails there, which is a message about a missing binary
+    rather than about authority.
+    """
+    if not menu.is_head():
+        raise ui.abort("only the operator on the Head can cancel someone else's Spawn",
+                       next_step="run this on the Head, or ask the Spawn's submitter to cancel it")
+    run(["scancel", str(spawn_id)], sudo=True)
+    run(["-u", config.HEAD_API_USER, "touch",
+         str(config.HEAD_SPAWNS_DIR / str(spawn_id) / "cancelled")], sudo=True, check=False)
 
 
 def _outcome(st: dict) -> str:

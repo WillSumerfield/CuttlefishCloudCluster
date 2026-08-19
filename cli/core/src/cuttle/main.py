@@ -277,11 +277,14 @@ def arm_chown(
 def arm_retract(
     name: str = typer.Argument(None, help="The Arm's node name."),
     any_owner: bool = typer.Option(
-        False, "--any", help="Retract on someone else's behalf (Head-only, admin)."),
+        False, "--any",
+        help="Write head.db directly instead of asking the Head who owns it — for an Arm the "
+             "API has no owner row for. Head-only. On the Head, retracting someone else's "
+             "Arm needs no flag."),
 ):
-    """Pause your own Arm: stop it taking new Spawns and end whatever is running on it now (TERM right
+    """Pause an Arm: stop it taking new Spawns and end whatever is running on it now (TERM right
     away, a 3-minute grace, then force-killed). Settles at zero either way — Retract must never be a
-    way to farm Karma by yanking a card back mid-run."""
+    way to farm Karma by yanking a card back mid-run. Your own from anywhere; anyone's on the Head."""
     name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to retract?"))
     enroll_mod.retract_arm(name, any_owner)
 
@@ -290,9 +293,13 @@ def arm_retract(
 def arm_return(
     name: str = typer.Argument(None, help="The Arm's node name."),
     any_owner: bool = typer.Option(
-        False, "--any", help="Return on someone else's behalf (Head-only, admin)."),
+        False, "--any",
+        help="Write head.db directly instead of asking the Head who owns it — for an Arm the "
+             "API has no owner row for. Head-only. On the Head, returning someone else's "
+             "Arm needs no flag."),
 ):
-    """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught."""
+    """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught.
+    Your own from anywhere; anyone's on the Head."""
     name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to return?"))
     enroll_mod.return_arm(name, any_owner)
 
@@ -1211,12 +1218,21 @@ def cancel(
     spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id."),
     any_owner: bool = typer.Option(
         False, "--any",
-        help="Cancel a Spawn you don't own. Admin, and ONLY on the Head (uses sudo scancel)."),
+        help="Cancel without asking the Head who owns it — reaps a job the ledger never recorded. "
+             "ONLY on the Head (uses sudo scancel). On the Head, cancelling someone else's Spawn "
+             "needs no flag."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
 ):
-    """End a Spawn early. Your own from anywhere; anyone's only on the Head, with --any."""
+    """End a Spawn early. Your own from anywhere; anyone's only on the Head."""
+    # On the Head the picker offers the WHOLE queue, flag or no flag. The menu can only ever run this
+    # command bare (menu.choose returns argv with no options), so a picker filtered to your own Spawns
+    # made the operator's road unreachable from the menu entirely — the Spawn you meant to stop was
+    # simply not on the list. `karma bump`, the other Head-local command that points at someone else's
+    # Spawn, has always listed everything for the same reason.
     spawn_id = ui.need(spawn_id, "the Spawn id",
-                       lambda: pickers.pick_spawn("Which Spawn to cancel?", mine_only=not any_owner))
+                       lambda: pickers.pick_spawn(
+                           "Which Spawn to cancel?",
+                           mine_only=not (any_owner or menu_mod.is_head())))
     spawns_mod.cancel(spawn_id, any_owner=any_owner, yes=yes)
 
 

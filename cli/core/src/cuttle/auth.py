@@ -35,10 +35,16 @@ def _client() -> api.Api:
 
 
 def _api(method: str, path: str, token: str | None = None, body: dict | None = None,
-         auth: bool = True) -> dict:
+         auth: bool = True, refused_ok: bool = False) -> dict | None:
     """A JSON call to the Head API, verified against the Head's pinned certificate (see tls.py).
 
     `auth=True` (the default) attaches the stored session bearer. Every route but /healthz needs one.
+
+    `refused_ok` returns None on a **403** instead of aborting — mirroring `api.Client.json`'s
+    `missing_ok` for a 404. It is for the two commands that have a second road on the Head (`cuttle
+    cancel`, `cuttle arm retract`/`return`): there, "not yours" is the Head performing the ownership
+    test for us, and the answer is which road to take rather than what to print. Nothing else should
+    use it — for every other command a 403 IS the outcome.
     """
     # Loaded here, not in api.py: reading the credentials file is what makes "not logged in" a
     # *command* error, and `auth=False` callers (login) must never trigger it.
@@ -47,6 +53,8 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
     try:
         return _client().json(method, path, body=body, token=token, auth=auth)
     except api.ApiError as e:
+        if refused_ok and e.status == 403:
+            return None                # a branch, not a failure — checked before --debug for that reason
         if ui.DEBUG:
             raise                      # --debug wants the stack, not a tidy summary of it
         if e.status == 401 and auth and token:
