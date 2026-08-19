@@ -45,7 +45,7 @@ def test_declaring_nothing_is_refused(tmp_path):
     not, if the User is vendoring something."""
     p = _project(tmp_path, **{"pyproject.toml": "", "requirements.txt": ""})
     for nothing in (None, "", "   "):
-        with pytest.raises(env.BuildError, match="declares no environment"):
+        with pytest.raises(env.BuildError, match="declares no Environment"):
             env.detect(p, nothing)
 
 
@@ -675,7 +675,7 @@ def test_a_spawn_that_declares_nothing_never_reaches_sbatch(head, tmp_path):
     """Refused, not degraded — and refused before sbatch, so there is no Spawn to Escrow, nothing in
     the queue, and nothing for a reaper to come back for. This is the one class of build problem that
     is still caught for free, and it is why detection stayed on the Head."""
-    with pytest.raises(env.BuildError, match="declares no environment"):
+    with pytest.raises(env.BuildError, match="declares no Environment"):
         _submit(tmp_path)
     assert not [c for c in head if "sbatch" in c]
 

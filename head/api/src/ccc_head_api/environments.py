@@ -207,13 +207,18 @@ _SUFFIX_KINDS = (
     ((".txt",), "uv-requirements"),
 )
 
-# What a User is told when they named nothing. Long, because it is the message that meets everyone who
-# submitted the way they used to, and "required" alone would not tell them what to type.
-_NOTHING_DECLARED = (
-    "this Spawn declares no environment — name the dependency file to build it from, e.g. "
-    "--manifest pyproject.toml (also uv.lock, requirements.txt, environment.yml). CCC does not "
-    "guess: a dependency file in a repo is not by itself an instruction to the cluster, and the "
-    "Environment your work runs in is too load-bearing to be inferred from one"
+# What a User is told when they named nothing. Long, because "required" is the one thing they already
+# know by the time they are reading it. The same explanation the CLI refuses with (cuttle.spawns
+# NO_MANIFEST/NO_MANIFEST_WHY) and the Dashboard's field help carries — three surfaces, one account of
+# why, because whichever one a person meets is the only one they will read. Kept in step by hand:
+# nothing is shared between a Head, a client and a browser bundle.
+NOTHING_DECLARED = (
+    "this Spawn declares no Environment — name the dependency file to build it from, e.g. "
+    "--manifest pyproject.toml (also uv.lock, requirements.txt, environment.yml). The Pod carries no "
+    "Python of its own, so a Spawn that declares nothing has no interpreter to run your script with "
+    "at all. CCC does not guess which file is the instruction: a dependency file in a repo is not "
+    "always the one describing this work. If yours needs no packages, an empty requirements.txt is a "
+    "complete declaration — it builds Python 3.12, or whatever a .python-version beside it names"
 )
 
 
@@ -227,7 +232,7 @@ def detect(project: Path, manifest: str | None) -> Manifest:
     """
     rel = (manifest or "").strip()
     if not rel:
-        raise BuildError(_NOTHING_DECLARED)
+        raise BuildError(NOTHING_DECLARED)
     # The same containment rule declared output paths get (spawns.OUTPUT_SEG_RE): a manifest
     # path is joined onto a directory the Head owns, so `../../etc` must not be a way out of it.
     # Resolved against the project and required to stay inside it.

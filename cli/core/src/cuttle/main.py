@@ -649,8 +649,7 @@ def recipe_save(
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
         vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
         # Asked outright, never suggested — see `cuttle run`'s own prompt for why.
-        manifest = ui.need(manifest, "--manifest", lambda: ui.ask_text(
-            "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)"))
+        manifest = spawns_mod.need_manifest(manifest)
         output = list(output) if output else []
         if wizard:
             while not output:
@@ -1143,8 +1142,9 @@ def run(
         # CCC inferring which file is the instruction — and a suggestion is an inference, accepted by
         # whoever presses Enter. The Environment carries its own Python and inherits nothing, so which
         # file it is built from decides everything the work runs against; that is the User's to say.
-        manifest = ui.need(manifest, "--manifest", lambda: ui.ask_text(
-            "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)"))
+        # Not `ui.need`: naming nothing has its own explanation, and reaches it from both the prompt
+        # and a flagless scripted run (spawns.need_manifest).
+        manifest = spawns_mod.need_manifest(manifest)
         if wizard:
             gpu = ui.ask_int("How many GPUs? (all on one machine)", default=str(gpu))
             project = project or (ui.ask_text("W&B project? (blank = config default)") or None)

@@ -191,9 +191,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   underneath can alter what a Spawn already runs. A **User** declares one in their project, in the
   dependency file their own tooling already writes, and **every Spawn names the file it declares** —
   the cluster supplies no default and infers nothing, so a Spawn that names no declaration is refused
-  before it exists. CCC never guesses which file describes the work, because a dependency file in a
-  repo is not always the one that does; a **Recipe** captures the name along with the code, so it is
-  said once rather than at every run. A **Tide Pool** is the one exception, and may decline: it is a
+  before it exists. The requirement is on the *naming*, not on the contents: a file that declares
+  nothing is still a complete declaration, and a User whose work needs no package answers by naming
+  an empty one rather than by declining. CCC never guesses which file describes the work, because a
+  dependency file in a repo is not always the one that does; a **Recipe** captures the name along with
+  the code, so it is said once rather than at every run. A **Tide Pool** is the one exception, and may decline: it is a
   shell rather than a run, and one opened with no project has no file in it to name.
   The **Head** decides what a declaration *means* — which file, which shape, which commands — and the
   **Arm** the Spawn is placed on builds it, at job start, out of its own bandwidth. A built Environment

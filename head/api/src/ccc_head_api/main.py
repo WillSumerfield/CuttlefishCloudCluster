@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, guises, karma, ratelimit, retraction, slurm, tarstream
+from . import db, environments, guises, karma, ratelimit, retraction, slurm, tarstream
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import recipes as recipes_mod
 from . import recovery as recovery_mod
@@ -837,9 +837,9 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     # after. `spawns.submit` re-checks it against the extracted project — this is only the "did the
     # client send one" half. Skipped for a Tide Pool alone, the one Spawn that may decline to declare.
     if not (meta.get("manifest") or "").strip() and not tidepool:
-        raise HTTPException(422, "missing 'manifest' in X-CCC-Meta — name the dependency file to build "
-                                 "this Spawn's environment from (--manifest), e.g. pyproject.toml, "
-                                 "uv.lock, requirements.txt or environment.yml")
+        # environments' own words, not a second set: this gate and the one inside submit refuse the
+        # same thing, and a client that met the terser of the two would be the one told least.
+        raise HTTPException(422, environments.NOTHING_DECLARED)
     # `gpus` is the current name; `gpu` is what older clients send. Either is accepted — see
     # spawns.submit_checked, which is where a count no Arm can host is refused.
     minutes, vram_gb = int(meta["minutes"]), int(meta["vram"])

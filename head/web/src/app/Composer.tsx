@@ -603,7 +603,7 @@ export function Composer(props: ComposerProps) {
             Spawn would have run in. Required everywhere else — see `named`. */}
         <Labeled label="Dependencies" className="sm:col-span-2" help={mode === "tidepool"
           ? "Optional here, and only here. Name a dependency file and this shell gets the environment your Spawn would have run in — pick a folder above too, since it cannot be built from a file that was not sent. Leave it blank for a bare shell."
-          : "Which file builds your Python environment, relative to your project root. Required: the environment carries its own Python and inherits nothing from the cluster, so what it is built from is yours to name."}>
+          : "Which file builds your Python environment, relative to your project root. Required: the Pod carries no Python of its own, so a Spawn that declares nothing has no interpreter to run your script with at all. CCC does not guess which file is the instruction — a dependency file in a repo is not always the one describing this work, and the environment carries its own Python and inherits nothing from the cluster. If yours needs no packages, an empty requirements.txt is a complete declaration: it builds Python 3.12, or whatever a .python-version beside it names."}>
           <input
             className="field"
             placeholder={mode === "tidepool"

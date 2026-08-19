@@ -34,6 +34,45 @@ from .system import run
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
 
+# What meets everybody who named no dependency file — the wizard's blank Enter and the scripted run
+# that passed no flag alike, since neither has said anything and both used to get a message about
+# something else (`ui.need`'s "no terminal to prompt on", or a path error about a manifest named `''`).
+#
+# Long, and deliberately so: "required" is the one thing the person already knows by the time they are
+# reading this. It says WHY nothing can be inferred, what the consequence of no declaration would be,
+# and — the part that unblocks someone whose work genuinely needs nothing — that a file declaring
+# nothing is still a complete declaration. Kept in step with the Head's own refusal
+# (ccc_head_api.environments.NOTHING_DECLARED) and the Dashboard's field help; three surfaces, one
+# explanation, because whichever one a person meets is the only one they will read.
+NO_MANIFEST = ("this Spawn declares no Environment — name the dependency file it is built from: "
+               "--manifest pyproject.toml (also uv.lock, requirements.txt, environment.yml)")
+NO_MANIFEST_WHY = (
+    "The Pod carries no Python of its own, so a Spawn that declares nothing has no interpreter to run "
+    "your script with at all. CCC does not guess which file is the instruction — a dependency file in "
+    "a repo is not always the one describing this work. If yours needs no packages, an empty "
+    "requirements.txt is a complete declaration: it builds Python 3.12, or whatever a .python-version "
+    "beside it names.")
+
+
+def need_manifest(manifest: str | None) -> str:
+    """The declared **Environment**, or the one refusal that explains itself.
+
+    Replaces `ui.need` for this field alone, because the blank answer arrives by two routes and only
+    one of them was ever handled: a scripted run passes no flag (ui.need's generic message), and the
+    wizard's `ask_text` returns "" on a bare Enter (no re-ask loop, unlike ask_int) — which used to
+    reach the caller's path check and come back as `manifest '' was not found`, a typo's error for
+    someone who typed nothing.
+
+    A file that IS named and missing keeps that path error: it is the right message for a typo, and
+    this one would bury it.
+    """
+    if manifest is None and ui.interactive():
+        manifest = ui.ask_text(
+            "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)")
+    if not (manifest or "").strip():
+        raise ui.abort(NO_MANIFEST, next_step=NO_MANIFEST_WHY)
+    return manifest.strip()
+
 
 def project_root(path: str | Path | None) -> Path:
     """Which directory gets uploaded: `--dir`, or the cwd when nobody said.
