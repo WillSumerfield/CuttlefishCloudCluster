@@ -45,8 +45,11 @@ function Group({
               spawn={s}
               variant={variant}
               position={variant === "waiting" ? i + 1 : undefined}
-              // You may cancel your own; an Admin may cancel anyone's.
-              canCancel={session.isAdmin || s.submitted_by === session.username}
+              // Your own, and only your own. An Admin may cancel anyone's — but not from here:
+              // DELETE /spawns/{id} has no admin branch (the Head API has no admin writes at all), so
+              // offering the button to an admin only ever produced a red refusal. Anyone else's is
+              // `cuttle cancel <id>` on the Head. See docs/Security.md.
+              canCancel={s.submitted_by === session.username}
               onCancelled={onCancelled}
             />
           ))}

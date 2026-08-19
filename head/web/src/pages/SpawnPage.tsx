@@ -341,10 +341,12 @@ export function SpawnPage({ id }: { id: string }) {
   }, [jobId, refresh]);
 
   const v = detail ? verdict(detail) : null;
-  // Cancel is for an OUTSTANDING Spawn — queued or running, `done` says which. You may end your own; an
-  // Admin may end anyone's. The row you clicked in from can still be stopped from here.
+  // Cancel is for an OUTSTANDING Spawn — queued or running, `done` says which. Your own only: an Admin
+  // may end anyone's, but that road is `cuttle cancel <id>` on the Head, not this button — the API's
+  // ownership test is unconditional and gets no admin branch (docs/Security.md). The row you clicked in
+  // from can still be stopped from here.
   const canCancel =
-    !!detail && !detail.done && (session.isAdmin || detail.submitted_by === session.username);
+    !!detail && !detail.done && detail.submitted_by === session.username;
 
   return (
     <Page
