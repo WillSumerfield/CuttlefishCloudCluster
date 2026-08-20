@@ -789,7 +789,9 @@ class TestRecipes:
         r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
                       "-o", "checkpoints", "--yes")
         assert r.exit_code != 0
-        assert "missing --manifest" in r.output
+        # The opening clause of `spawns.NO_MANIFEST`, not the whole string: the message is wrapped to
+        # the terminal, so anything long enough to be worth asserting is long enough to be split.
+        assert "declares no Environment" in r.output
 
     def test_a_missing_script_is_refused_before_uploading(self, signed_in, project):
         r = signed_in("recipe", "save", "nightly", "nope.py", "--time", "60", "--vram", "24",
