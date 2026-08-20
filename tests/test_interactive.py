@@ -211,14 +211,47 @@ class TestTheMenuIsDerived:
         assert ordered and ordered[0] != "teardown"
 
 
+def _reachable(st, node=None, prefix="", root=None) -> set[str]:
+    """Walk every menu level and collect the command paths on offer."""
+    root = root or typer.main.get_command(main.app)
+    node = node if node is not None else root
+    found = set()
+    for path, _, cmd in menu._entries(node, st, prefix, root):
+        found.add(path)
+        if menu._is_group(cmd) and path != prefix.strip():
+            found |= _reachable(st, cmd, "" if isinstance(cmd, menu._Folder) else f"{path} ", root)
+    return found
+
+
+def _labels(st, node=None, prefix="", root=None) -> list[tuple[str, str]]:
+    """(path, label) for every row at every menu level, in the order they are drawn."""
+    root = root or typer.main.get_command(main.app)
+    node = node if node is not None else root
+    out = []
+    for path, label, cmd in menu._entries(node, st, prefix, root):
+        out.append((path, label))
+        if menu._is_group(cmd) and path != prefix.strip():
+            out += _labels(st, cmd, "" if isinstance(cmd, menu._Folder) else f"{path} ", root)
+    return out
+
+
 class TestTheMenuGatesByState:
     """Bare `cuttle` offers only what the box can do *now*: no `run` before you can log in, no
     `setup` on a box that already carries a role, no admin off the Head. Menu-only — typed commands
     still run and fail with their own message (that invariant is tested above)."""
 
     def _paths(self, **state) -> set[str]:
+        """Every command path reachable from *any* level of the menu in this state.
+
+        Not just the top level any more: `GROUPS` files most commands into folders, so "offered" and
+        "on the first screen" stopped being the same question. What the gating tests care about is
+        whether a box can get to a command at all."""
+        return _reachable(menu.MenuState(**state))
+
+    def _top(self, **state) -> list[str]:
+        """Just the first screen, in order — for the tests that are about what your hand lands on."""
         root = typer.main.get_command(main.app)
-        return {p for p, _, _ in menu._entries(root, menu.MenuState(**state))}
+        return [p for p, _, _ in menu._entries(root, menu.MenuState(**state), "", root)]
 
     def test_logged_out_hides_the_submit_suite_and_offers_login(self):
         paths = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
@@ -236,21 +269,20 @@ class TestTheMenuGatesByState:
         """`_visible` DEFAULTS to True, so a new submitter command that nobody adds to LOGIN_REQUIRED
         is not merely unsorted — it is offered to a logged-OUT user, whose first act is a 401. That is
         how `recover` shipped. This is the invariant, rather than a test naming one command: anything
-        reaching the Head with a session bearer belongs in that set."""
-        root = typer.main.get_command(main.app)
-        logged_out = {p for p, _, _ in menu._entries(
-            root, menu.MenuState(logged_in=False, provisioned=True, pointed=True, on_head=False))}
+        reaching the Head with a session bearer belongs in that set.
+
+        Checked at every level, not just the first: filing a command into a folder must not be a way
+        to smuggle it past its own gate."""
+        logged_out = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
         assert logged_out.isdisjoint({"run", "queue", "history", "status", "logs", "outputs",
                                       "recover", "cancel", "karma", "tide", "account"})
 
     def test_the_menu_never_falls_back_to_a_truncated_help_string(self):
         """`_label` falls back to `get_short_help_str(limit=40)` — a command missing from LABELS gets
         its docstring's first paragraph chopped mid-word as its menu row. Every row a User can actually
-        reach should be deliberately named."""
-        root = typer.main.get_command(main.app)
-        st = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
-        unlabelled = [p for p, _, _ in menu._entries(root, st) if p not in menu.LABELS]
-        assert unlabelled == []
+        reach should be deliberately named, at every level."""
+        reachable = self._paths(logged_in=True, provisioned=True, pointed=True, on_head=True)
+        assert [p for p in reachable if p not in menu.LABELS] == []
 
     def test_setup_never_goes_away(self):
         """`setup` is where every answer is made or CHANGED, so a provisioned box still needs it —
@@ -264,13 +296,13 @@ class TestTheMenuGatesByState:
     def test_setup_is_renamed_once_there_are_settings_to_change(self):
         """Next to `update`, a row reading "Set up this box" on a live Head is the one a hand reaches
         for by reflex — and it is the one that re-asks every question."""
-        root = typer.main.get_command(main.app)
-        fresh = menu.MenuState(logged_in=False, provisioned=False, pointed=False, on_head=False)
-        live = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
-        def label(st):
-            return dict((p, lbl) for p, lbl, _ in menu._entries(root, st))["setup"]
-        assert label(fresh) == "Set up this box"
-        assert label(live) == "Change this box's settings"
+        def label(**state):
+            st = menu.MenuState(**state)
+            return dict((p, lbl) for p, lbl in _labels(st))["setup"]
+        assert label(logged_in=False, provisioned=False, pointed=False,
+                     on_head=False) == "Set up this box"
+        assert label(logged_in=True, provisioned=True, pointed=True,
+                     on_head=True) == "Change this box's settings"
 
     def test_update_needs_a_box_that_was_already_set_up(self):
         """An **Update** lays recorded answers down again, so there must BE recorded answers. A bare
@@ -293,12 +325,14 @@ class TestTheMenuGatesByState:
 
     def test_a_freshly_installed_box_leads_with_login_then_setup(self):
         """What a baked bundle leaves behind: pointed, roleless, logged out. `install.sh` says to run
-        `cuttle login`, so that must be the pre-selected row — with `setup` still there beneath it."""
-        root = typer.main.get_command(main.app)
-        st = menu.MenuState(logged_in=False, provisioned=False, pointed=True, on_head=False)
-        rows = [p for p, _, _ in menu._entries(root, st)]
-        assert rows[0] == "login"
-        assert rows.index("setup") > rows.index("login")
+        `cuttle login`, so that must be the pre-selected row — with `setup` still reachable."""
+        st = dict(logged_in=False, provisioned=False, pointed=True, on_head=False)
+        assert self._top(**st)[0] == "login"
+        assert "setup" in self._paths(**st)
+        # And the folder it now lives in still sorts below `login`, so nothing about grouping
+        # promoted "this box" work above the one thing install.sh told you to do.
+        top = self._top(**st)
+        assert top.index(f"{menu.FOLDER}box") > top.index("login")
 
     def test_the_dashboard_is_offered_wherever_a_head_is_known_but_never_leads(self):
         """It needs no session — the browser does its own login — so it shows on a pointed box that
@@ -324,13 +358,157 @@ class TestTheMenuGatesByState:
         karma = typer.main.get_command(main.app).commands["karma"]
         client = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=False)
         head = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
-        assert menu._visible_children("karma", karma, client) is True
-        client_rows = [p for p, _, _ in menu._entries(karma, client, "karma ")]
-        head_rows = [p for p, _, _ in menu._entries(karma, head, "karma ")]
+        root = typer.main.get_command(main.app)
+        assert menu._visible_children("karma", karma, client, root) is True
+        client_rows = [p for p, _, _ in menu._entries(karma, client, "karma ", root)]
+        head_rows = [p for p, _, _ in menu._entries(karma, head, "karma ", root)]
         # "karma" (its own row) is standings; the whole point is that it survives the descent.
         assert client_rows == ["karma", "karma ledger"]
         assert "karma" in head_rows
         assert "karma override" in head_rows and "karma bump" in head_rows
+
+
+class TestTheMenuIsGroupedNotFlat:
+    """Twenty-five rows on a Head is a list nobody reads — you scan it once, fail to find the thing,
+    and type the command instead. Folders are presentation only: `cuttle queue` is still
+    `cuttle queue`, and the argv a folder hands back must never contain the folder."""
+
+    HEAD = dict(logged_in=True, provisioned=True, pointed=True, on_head=True)
+
+    def _top(self, **state):
+        root = typer.main.get_command(main.app)
+        return menu._entries(root, menu.MenuState(**state), "", root)
+
+    def test_the_head_sees_nine_rows_not_twenty_five(self):
+        assert len(self._top(**self.HEAD)) == 9
+
+    def test_a_folder_is_never_part_of_a_command_line(self):
+        """The whole risk of a synthetic level: a path that reads fine in the menu and is not a
+        command. `choose` returns `picked.split()` straight to click, so a folder key leaking into a
+        member's path is an unparseable argv, not a wrong screen."""
+        st = menu.MenuState(**self.HEAD)
+        for path in _reachable(st):
+            if path in menu.GROUPS:
+                continue
+            assert menu.FOLDER not in path, f"{path!r} carries a folder key into its argv"
+
+    def test_every_command_still_reaches_the_menu_in_some_state(self):
+        """A folder can misfile a command; it must not be able to lose one. `GROUPS` is hand-written,
+        so the failure it invites is a new command nobody adds to it — which has to fall through to
+        the top level rather than vanish.
+
+        Across states, not one: `login` is *supposed* to be gone once you hold a session. What must
+        not exist is a command no box in any state is ever offered."""
+        root = typer.main.get_command(main.app)
+        reachable = set()
+        for state in (self.HEAD,
+                      dict(logged_in=False, provisioned=False, pointed=False, on_head=False),
+                      dict(logged_in=False, provisioned=False, pointed=True, on_head=False),
+                      dict(logged_in=True, provisioned=True, pointed=True, on_head=False)):
+            reachable |= _reachable(menu.MenuState(**state))
+        for name in root.commands:
+            assert name in reachable, f"`cuttle {name}` is in the tree but not in the menu"
+
+    def test_a_filed_command_leaves_the_top_level(self):
+        """Otherwise grouping adds rows instead of removing them."""
+        top = {p for p, _, _ in self._top(**self.HEAD)}
+        assert top.isdisjoint({"queue", "history", "user", "arm", "teardown", "whoami"})
+
+    def test_a_folder_holding_one_row_collapses_into_it(self, monkeypatch):
+        """A folder earns its row by holding a choice. On a bare box almost everything is gated off,
+        and making someone open "This box" to find the single thing it can do is a keystroke charging
+        rent."""
+        bare = dict(logged_in=False, provisioned=False, pointed=False, on_head=False)
+        # `feature` is the other thing a bare box can do, so the folder holds two and stays a folder.
+        assert f"{menu.FOLDER}box" in {p for p, _, _ in self._top(**bare)}
+        # Take it away and the folder must disappear in favour of `setup` itself.
+        monkeypatch.setitem(menu.GROUPS, f"{menu.FOLDER}box", ["update", "setup", "teardown"])
+        rows = {p for p, _, _ in self._top(**bare)}
+        assert "setup" in rows and f"{menu.FOLDER}box" not in rows
+        # And `feature`, filed nowhere now, falls through to the top level rather than vanishing.
+        assert "feature" in rows
+
+    def test_a_collapsed_folder_keeps_the_folders_slot(self):
+        """Ranked before collapsing. Otherwise the lone row jumps to wherever that command would have
+        sorted on its own, and a menu that reorders itself by state is one you cannot learn."""
+        bare = dict(logged_in=False, provisioned=False, pointed=False, on_head=False)
+        rows = [p for p, _, _ in self._top(**bare)]
+        assert rows[-1] == f"{menu.FOLDER}box"
+
+
+class TestNavigatingAFolderStillProducesACommandLine:
+    """`choose` hands `picked.split()` straight to click. A folder is the one menu path that is not a
+    command, so the thing to prove is that walking through one still comes back as argv click can
+    parse — and that backing out of a real group reached through a folder lands in the folder rather
+    than teleporting to the top."""
+
+    @pytest.fixture(autouse=True)
+    def head_box(self, monkeypatch):
+        monkeypatch.setattr(menu, "_detect_state", lambda: (
+            menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True), None))
+
+    def test_a_command_inside_a_folder_comes_back_as_its_own_argv(self, answers):
+        answers(f"{menu.FOLDER}spawns", "queue")
+        assert menu.choose(main.app) == ["queue"]
+
+    def test_a_subcommand_two_levels_down_keeps_its_real_path(self, answers):
+        """`arm` sits inside "Run the cluster", so this walks folder → real group → leaf."""
+        answers(f"{menu.FOLDER}admin", "arm", "arm list")
+        assert menu.choose(main.app) == ["arm", "list"]
+
+    def test_backing_out_of_a_group_returns_to_the_folder_it_was_opened_from(self, answers):
+        """Lopping a name off the prefix would land at the top level instead: there is nothing in the
+        string "arm " that remembers you came in through a folder."""
+        answers(f"{menu.FOLDER}admin", "arm", menu.BACK, "munge", "munge rotate")
+        assert menu.choose(main.app) == ["munge", "rotate"]
+
+    def test_backing_out_of_a_folder_returns_to_the_top(self, answers):
+        answers(f"{menu.FOLDER}spawns", menu.BACK, "run")
+        assert menu.choose(main.app) == ["run"]
+
+
+class TestTheMenuReadsAsOneList:
+    """Two rules, so twenty-five rows are one list rather than twenty-five decisions: a folder or a
+    group is a noun phrase, a leaf is an imperative, and inside a real group the child drops the
+    group's noun (the box is already titled `cuttle recipe`)."""
+
+    HEAD = dict(logged_in=True, provisioned=True, pointed=True, on_head=True)
+
+    def test_no_row_asks_you_a_question(self):
+        """"Who am I?" was a menu entry. A row says what picking it does; it does not interview you."""
+        labels = [lbl for _, lbl in _labels(menu.MenuState(**self.HEAD))]
+        assert [l for l in labels if l.endswith("?")] == []
+
+    def test_no_child_repeats_its_own_groups_noun(self):
+        """"Delete a recipe" inside a box titled `cuttle recipe` says it twice."""
+        st = menu.MenuState(**self.HEAD)
+        root = typer.main.get_command(main.app)
+        for name, cmd in root.commands.items():
+            if not menu._is_group(cmd) or name in menu.GROUPS:
+                continue
+            for path, label, _ in menu._entries(cmd, st, f"{name} ", root):
+                if path == name:
+                    continue      # the group's own-action row (karma → Standings)
+                assert name.rstrip("s") not in label.lower().split(), \
+                    f"{path!r} labelled {label!r} repeats its group's noun"
+
+    def test_the_possessive_is_kept_only_where_ownership_is_the_filter(self):
+        """`queue` and `history` are everyone's, like the Dashboard's landing table; recipes and
+        workspaces are private to their owner. "My Spawns" would have promised a filter there is no
+        code for."""
+        labels = dict(_labels(menu.MenuState(**self.HEAD)))
+        assert labels[f"{menu.FOLDER}spawns"] == "Spawns"
+        assert labels["recipe"].startswith("My") and labels["workspace"].startswith("My")
+
+    def test_a_group_that_also_runs_is_named_twice(self):
+        """`cuttle karma` is both a subject you open and an action. One label for both put "Karma"
+        inside "Karma", which reads as a loop."""
+        st = menu.MenuState(**self.HEAD)
+        root = typer.main.get_command(main.app)
+        karma = root.commands["karma"]
+        inside = dict((p, lbl) for p, lbl, _ in menu._entries(karma, st, "karma ", root))
+        assert menu.LABELS["karma"] == "Karma"
+        assert inside["karma"] == "Standings"
 
 
 class TestTheSessionProbe:

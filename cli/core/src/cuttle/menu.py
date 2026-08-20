@@ -24,6 +24,13 @@ admin commands are Head-local operator commands, gated by being on the Head, nev
 Provisioned and pointed are deliberately separate (glossary: `cli/CONTEXT.md`): a **baked** bundle's
 `install.sh` points a box (config + cert pin) without provisioning it, so conflating the two would
 hide `setup` on a freshly-installed box and block turning it into an Arm from the menu.
+
+**Grouping is presentation, and is the one hand-written thing here.** `GROUPS` sorts existing commands
+into folders — twenty-five flat rows on a Head is a list nobody reads. It does not contradict
+"derived, never hand-written": that rule is about which commands EXIST, and it still holds, because a
+command missing from every folder falls through to the top level. The failure mode of this table is a
+command in the wrong place, never a command that vanished. The command tree itself is untouched —
+`cuttle queue` is still `cuttle queue`; a folder is a place to look, never a prefix to type.
 """
 
 from dataclasses import dataclass
@@ -59,74 +66,140 @@ class MenuState:
     pointed: bool
     on_head: bool
 
+# Menu-only grouping: which folder each top-level command is filed under. A folder is a row that
+# opens onto commands that are NOT its subcommands — see the header. Keyed by a path no argv can
+# collide with, because these are the only menu paths that never become a command line.
+FOLDER = "\0"
+GROUPS: dict[str, list[str]] = {
+    f"{FOLDER}spawns": ["queue", "history", "status", "logs", "outputs", "recover", "cancel"],
+    # `karma` whole, rather than its standings here and `bump`/`override` under the admin folder: one
+    # command's subtree splits across two places exactly once and then nobody can find either half.
+    # Both are Head-gated inside it anyway, so a donor's box still never sees them.
+    f"{FOLDER}cluster": ["karma", "tide"],
+    f"{FOLDER}account": ["account", "wandb", "passwd", "whoami", "logout"],
+    f"{FOLDER}admin": ["user", "arm", "munge", "backup", "build-installer"],
+    f"{FOLDER}box": ["update", "setup", "feature", "teardown"],
+}
+
 # Short labels for the menu. The command's own help is written for `--help` and is a paragraph; a
 # menu needs four words. Keyed by the path so subcommands can be labelled too.
+#
+# Two rules, so twenty-five rows read as one list rather than twenty-five decisions:
+#
+# * **A folder or a group is a noun phrase; a leaf is an imperative.** The row either names a subject
+#   you are going to look inside, or tells you what picking it does.
+# * **Inside a real group, the child drops the group's noun** — the box is already titled
+#   `cuttle recipe`, so "Delete a recipe" says it twice. Folder children keep theirs, because a folder
+#   holding one visible row collapses INTO the top level (see `_collapse`), and a collapsed
+#   "Change the settings" out there names nothing.
 LABELS = {
+    f"{FOLDER}spawns": "Spawns",
+    f"{FOLDER}cluster": "The cluster",
+    f"{FOLDER}account": "My account",
+    f"{FOLDER}admin": "Run the cluster",
+    f"{FOLDER}box": "This box",
+
     "run": "Submit a Spawn",
-    "recipe": "My recipes",
-    "recipe list": "List my recipes",
-    "recipe save": "Freeze this folder into a recipe",
-    "recipe run": "Run a recipe",
-    "recipe update": "Re-capture a recipe's code",
-    "recipe delete": "Delete a recipe",
-    "workspace": "My workspaces",
-    "workspace list": "List my workspaces",
-    "workspace new": "Make this folder into a workspace",
-    "workspace open": "Open a workspace",
-    "workspace update": "Change a workspace's settings",
-    "workspace download": "Download a workspace",
-    "workspace delete": "Delete a workspace",
+    "dashboard": "Open the dashboard",
+    "login": "Log in",
+
+    # Spawns. Cluster-wide, so no possessive: `queue` and `history` are everyone's, like the
+    # Dashboard's landing table. "My" is kept only where ownership really is the filter.
     "queue": "See the queue",
-    "history": "Spawn history",
+    "history": "See past Spawns",
     "status": "Check a Spawn",
     "logs": "Read a Spawn's output",
     "outputs": "Download a Spawn's outputs",
     "recover": "Recover a Spawn's undeclared files",
     "cancel": "Cancel a Spawn",
-    "karma": "Karma standings",
-    "karma ledger": "My Karma ledger",
+
+    # The cluster.
+    "karma": "Karma",
+    "karma ledger": "My ledger",
     "karma bump": "Bump a Spawn up the queue",
     "karma override": "Adjust someone's Balance",
-    "tide": "The Tide (demand)",
-    "account": "My account",
-    "dashboard": "Open the dashboard",
-    "login": "Log in",
-    "logout": "Log out",
-    "whoami": "Who am I?",
-    "passwd": "Change my password",
-    "setup": "Set up this box",
-    "update": "Update this box (keep all settings)",
-    "teardown": "Tear down this box",
-    "build-installer": "Build a client installer",
-    "user": "Manage users",
-    "user add": "Create a user",
-    "user list": "List users",
-    "user remove": "Delete a user",
-    "user reset": "Reset a user's password",
-    "arm": "Manage Arms",
-    "arm list": "List Arms",
-    "arm authorize": "Authorize a new Arm",
-    "arm admit": "Admit an enrolled Arm",
-    "arm benchmark": "Re-benchmark an Arm",
-    "arm activate": "Re-activate an Arm's Features",
-    "arm chown": "Change an Arm's owner",
-    "arm retract": "Pause your Arm (stop new work, end what's running)",
-    "arm return": "Reopen a retracted Arm",
-    "arm sync-key": "Re-fetch the munge key from the Head",
-    "arm remove": "Remove an Arm",
+    "tide": "See the Tide (demand)",
+
+    # My account.
+    "account": "Show my standing",
     "wandb": "My W&B key",
-    "wandb set": "Store my W&B key",
-    "wandb show": "Show my W&B key",
-    "wandb clear": "Forget my W&B key",
+    "wandb set": "Store it",
+    "wandb show": "Show it",
+    "wandb clear": "Forget it",
+    "passwd": "Change my password",
+    "whoami": "Show who I am logged in as",
+    "logout": "Log out",
+
+    # Run the cluster — Head-local operator work.
+    "user": "Users",
+    "user list": "List",
+    "user add": "Create one",
+    "user reset": "Reset a password",
+    "user remove": "Delete one",
+    "arm": "Arms",
+    "arm list": "List",
+    "arm authorize": "Authorize a new one",
+    "arm admit": "Admit an enrolled one",
+    "arm benchmark": "Re-benchmark",
+    "arm activate": "Re-activate its Features",
+    "arm chown": "Change the owner",
+    "arm retract": "Pause (stop new work, end what's running)",
+    "arm return": "Reopen after a pause",
+    "arm sync-key": "Re-fetch the munge key from the Head",
+    "arm remove": "Remove",
     "munge": "The cluster's munge key",
-    "munge rotate": "Rotate the cluster's munge key",
-    "backup": "Back up the Head",
+    "munge rotate": "Rotate it",
+    "backup": "Backups",
     "backup create": "Snapshot the Head's state",
     "backup restore": "Restore the Head from a snapshot",
+    "build-installer": "Build a client installer",
+
+    # This box. Self-contained, because this folder is the one that collapses.
+    "update": "Update this box (keep all settings)",
+    "setup": "Set up this box",
+    "teardown": "Tear down this box",
     "feature": "Arm Features",
     "feature list": "List the Features CCC supports",
-    "feature show": "Print a starter environment.yml for a Feature",
+    "feature show": "Print a starter environment.yml",
+
+    # My recipes / My workspaces — top-level, and the possessive is right: they are private to you.
+    "recipe": "My recipes",
+    "recipe list": "List",
+    "recipe save": "Freeze this folder into one",
+    "recipe run": "Run",
+    "recipe update": "Re-capture the code",
+    "recipe delete": "Delete",
+    "workspace": "My workspaces",
+    "workspace list": "List",
+    "workspace new": "Make this folder into one",
+    "workspace open": "Open",
+    "workspace update": "Change its settings",
+    "workspace download": "Download",
+    "workspace delete": "Delete",
 }
+
+
+class _Folder:
+    """A synthetic menu folder — a row you open, holding commands that are not its subcommands.
+
+    It has no callback and never becomes argv: there is no `cuttle spawns`. `_menu_children` answers
+    for it instead of a `.commands` dict, so nothing can mistake it for a real group and try to
+    prefix its members' paths with it.
+    """
+
+    hidden = False
+    invoke_without_command = False
+
+    def __init__(self, key: str):
+        self.key = key
+        self.label = LABELS[key]
+        self.members = GROUPS[key]
+
+
+# A group that also RUNS on its own needs two labels, not one: the row you open is the subject
+# ("Karma"), and the row inside it that fires the default action is a verb phrase like any other leaf
+# ("Standings"). Labelling both from LABELS put "Karma" inside "Karma", which reads as a loop.
+OWN_ACTION = {"karma": "Standings"}
 
 # Sentinels for the navigation entries. Deliberately NOT None: `ui._ask` reads a None answer as
 # "^C/^D inside the prompt" and raises KeyboardInterrupt, so a Choice whose value is None makes
@@ -145,11 +218,11 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # only ever shows when logged out, so this costs the everyday menu nothing.
 # `dashboard` sits *after* login for the same reason: it shows on any pointed box, including the
 # logged-out one, and must not displace "Log in" as the pre-selected row there.
-# `update` trails everything a submitter reaches for but leads `setup` and `teardown`: on a set-up box
-# it is the common one of the three by a wide margin, and the two that change or undo what this box is
-# should never be the row your hand lands on first.
-ORDER = ["run", "workspace", "recipe", "queue", "history", "status", "logs", "outputs", "recover",
-         "cancel", "karma", "tide", "account", "login", "dashboard", "update"]
+# Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
+# inside a real group the declaration order does — both because the sort is stable and everything
+# unlisted ties.
+ORDER = ["run", f"{FOLDER}spawns", "recipe", "workspace", f"{FOLDER}cluster", f"{FOLDER}account",
+         "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 
 def is_head() -> bool:
@@ -219,11 +292,33 @@ def _detect_state() -> tuple[MenuState, str | None]:
 
 
 def _is_group(cmd) -> bool:
-    """Duck-typed on purpose. `TyperGroup` does NOT subclass `click.Group` — Typer vendors its own
-    click, so its MRO is `typer._click.core.Command` and `isinstance(cmd, click.Group)` is **False**
-    for `arm`, `user` and `karma`. A walker using isinstance renders those three as leaves and
-    silently loses all eleven subcommands under them."""
-    return hasattr(cmd, "commands") and bool(cmd.commands)
+    """Something the menu descends INTO — a real command group, or one of our folders.
+
+    Duck-typed on purpose for the real ones. `TyperGroup` does NOT subclass `click.Group` — Typer
+    vendors its own click, so its MRO is `typer._click.core.Command` and `isinstance(cmd,
+    click.Group)` is **False** for `arm`, `user` and `karma`. A walker using isinstance renders those
+    three as leaves and silently loses all eleven subcommands under them."""
+    return isinstance(cmd, _Folder) or (hasattr(cmd, "commands") and bool(cmd.commands))
+
+
+def _menu_children(node, root, prefix: str) -> list[tuple[str, object]]:
+    """(path, command) for everything one level under `node`, before any filtering.
+
+    Three shapes, because the menu tree is not the command tree. At the **root** the folders stand in
+    for every command they claim, so the top level is nine rows instead of twenty-five. Inside a
+    **folder** the children are those commands at their REAL paths — a folder is a place to look, not
+    a prefix to type, and `cuttle queue` must still come back as `["queue"]`. Inside a **real group**
+    it is the ordinary prefixed walk.
+    """
+    if isinstance(node, _Folder):
+        return [(path, _descend(root, path)) for path in node.members]
+    if not prefix:
+        # Derived here rather than cached beside GROUPS, so the table stays the single place this is
+        # said — and a command filed nowhere still surfaces at the top level rather than vanishing.
+        filed = {path for members in GROUPS.values() for path in members}
+        return ([(name, cmd) for name, cmd in node.commands.items() if name not in filed]
+                + [(key, _Folder(key)) for key in GROUPS])
+    return [(f"{prefix}{name}", cmd) for name, cmd in node.commands.items()]
 
 
 def _visible(path: str, st: MenuState) -> bool:
@@ -259,14 +354,30 @@ def _visible(path: str, st: MenuState) -> bool:
     return True
 
 
-def _visible_children(path: str, group, st: MenuState) -> bool:
+def _shown_children(path: str, group, st: MenuState, root) -> list[tuple[str, object]]:
+    """The children of `group` that state `st` actually offers."""
+    return [(p, c) for p, c in _menu_children(group, root, f"{path} ")
+            if not getattr(c, "hidden", False) and _node_visible(p, c, st, root)]
+
+
+def _visible_children(path: str, group, st: MenuState, root) -> bool:
     """Does `group` have at least one child worth descending into, in state `st`?"""
-    return any(_node_visible(f"{path} {name}", child, st)
-               for name, child in group.commands.items()
-               if not getattr(child, "hidden", False))
+    return bool(_shown_children(path, group, st, root))
 
 
-def _node_visible(path: str, cmd, st: MenuState) -> bool:
+def _collapse(path: str, cmd, st: MenuState, root):
+    """A folder holding exactly one visible row IS that row.
+
+    Otherwise a fresh box — where almost everything is gated off — would make you open "This box" to
+    find the single thing it can do. A folder earns its row by holding a choice; with nothing to
+    choose it is a keystroke charging rent."""
+    if not isinstance(cmd, _Folder):
+        return path, cmd
+    shown = _shown_children(path, cmd, st, root)
+    return shown[0] if len(shown) == 1 else (path, cmd)
+
+
+def _node_visible(path: str, cmd, st: MenuState, root=None) -> bool:
     """Whether to show a menu row for `cmd` — a leaf, or a group with something inside it.
 
     A group with no visible children normally vanishes. The exception is a group that *also runs on
@@ -274,7 +385,7 @@ def _node_visible(path: str, cmd, st: MenuState) -> bool:
     is offered as a leaf, if its own action is permitted. That is what lets a client see one `karma`
     entry (standings) while the Head sees a group it descends into (override/bump)."""
     if _is_group(cmd):
-        return _visible_children(path, cmd, st) or (
+        return _visible_children(path, cmd, st, root) or (
             getattr(cmd, "invoke_without_command", False) and _visible(path, st))
     return _visible(path, st)
 
@@ -289,27 +400,27 @@ def _label(path: str, cmd, st: MenuState | None = None) -> str:
     return LABELS.get(path) or (cmd.get_short_help_str(limit=40) if cmd else path)
 
 
-def _entries(group, st: MenuState, prefix: str = "") -> list[tuple[str, str, object]]:
+def _entries(group, st: MenuState, prefix: str = "", root=None) -> list[tuple[str, str, object]]:
     """(path, label, command) for each child of `group` visible in state `st`.
 
     When `group` is one we have descended INTO and it *also runs on its own* (karma → standings, via
     invoke_without_command), its own action leads the list as an explicit row. Otherwise descending
     into karma would hide the standings behind its subcommands — the default action, reachable only by
     backing out and… not descending. `choose` runs this row as a leaf rather than re-descending."""
+    root = root if root is not None else group
     rows = []
     own = prefix.strip()
     if own and getattr(group, "invoke_without_command", False) and _visible(own, st):
-        rows.append((own, _label(own, group, st), group))
-    for name, cmd in group.commands.items():
-        if getattr(cmd, "hidden", False):
-            continue
-        path = f"{prefix}{name}"
-        if not _node_visible(path, cmd, st):
-            continue
-        rows.append((path, _label(path, cmd, st), cmd))
+        rows.append((own, group))
+    rows += [(path, cmd) for path, cmd in _menu_children(group, root, prefix)
+             if not getattr(cmd, "hidden", False) and _node_visible(path, cmd, st, root)]
     rank = {name: i for i, name in enumerate(ORDER)}
+    # Ranked BEFORE collapsing, so a folder that turns out to hold one row keeps the folder's slot
+    # rather than jumping to wherever that lone command would have sorted on its own.
     rows.sort(key=lambda r: (r[0] in NEVER_DEFAULT, rank.get(r[0], len(ORDER))))
-    return rows
+    return [(path, OWN_ACTION[path] if path == own and path in OWN_ACTION
+             else _label(path, cmd, st), cmd)
+            for path, cmd in (_collapse(p, c, st, root) for p, c in rows)]
 
 
 def _descend(root, path: str):
@@ -328,31 +439,31 @@ def choose(app: typer.Typer) -> list[str] | None:
     # offline-valid commands are shown. The menu still works — you just cannot see what needs the Head.
     if warning:
         ui.warn(warning)
-    node, prefix = root, ""
+    # Where we came from, innermost last. An explicit stack rather than lopping a name off `prefix`,
+    # because a folder is not a prefix: backing out of `cuttle arm` reached through "Run the cluster"
+    # has to land in that folder, and there is nothing in the string "arm " that says so.
+    stack: list[tuple[object, str, str]] = []
+    node, prefix, title = root, "", "cuttle"
     while True:
-        rows = _entries(node, st, prefix)
+        rows = _entries(node, st, prefix, root)
         if not rows:
             return None
         # `_entries` already ordered these: common verbs first, destructive ones last so that the
         # pre-selected entry is never one that destroys something.
         choices = [ui.choice(label, path) for path, label, _ in rows]
-        choices.append(ui.choice("← back", BACK) if prefix else ui.choice("Quit", QUIT))
+        choices.append(ui.choice("← back", BACK) if stack else ui.choice("Quit", QUIT))
         # One box per level, titled with where you are — so descending into `arm` erases the
         # top-level box and draws `cuttle arm` in its place, rather than stacking menus down the
         # screen. Each closes to a one-line breadcrumb of what was picked.
         chosen = {}
-        with ui.section(f"cuttle {prefix}".strip(), lambda: chosen.get("label", "")):
+        with ui.section(title, lambda: chosen.get("label", "")):
             picked = ui.ask_select("What do you want to do?", choices)
             chosen["label"] = dict(((p, lbl) for p, lbl, _ in rows)).get(
                 picked, "back" if picked == BACK else "cancelled")
         if picked == QUIT:
             return None
         if picked == BACK:
-            # One level up. The tree is two deep today, so that is the root; written as a pop so a
-            # third level does not silently teleport the user to the top.
-            parent = " ".join(prefix.split()[:-1])
-            node = root if not parent else _descend(root, parent)
-            prefix = f"{parent} " if parent else ""
+            node, prefix, title = stack.pop()
             continue
         cmd = dict((p, c) for p, _, c in rows)[picked]
         # A group with children to show is navigated into; `cuttle karma` printing standings and the
@@ -361,7 +472,12 @@ def choose(app: typer.Typer) -> list[str] | None:
         # Head-only) is run as a leaf instead, firing its own default action (standings).
         # `picked == prefix.strip()` is the group's own-action row (added by `_entries` when we are
         # already inside it) — run it as a leaf rather than descending into the group we are in.
-        if _is_group(cmd) and _visible_children(picked, cmd, st) and picked != prefix.strip():
-            node, prefix = cmd, f"{picked} "
+        if _is_group(cmd) and _visible_children(picked, cmd, st, root) and picked != prefix.strip():
+            stack.append((node, prefix, title))
+            node = cmd
+            # A folder contributes no prefix: its members keep their real paths, so `cuttle queue`
+            # comes back as ["queue"] and not as a command line nothing could parse.
+            prefix = "" if isinstance(cmd, _Folder) else f"{picked} "
+            title = cmd.label if isinstance(cmd, _Folder) else f"cuttle {picked}"
             continue
         return picked.split()
