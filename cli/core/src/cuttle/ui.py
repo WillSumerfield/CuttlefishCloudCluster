@@ -716,10 +716,40 @@ def _prompt_confirm(surface, message: str, default: bool = True) -> bool:
                 return False
 
 
+# Set while a caller has promised its whole flow asks nothing (`no_prompting`). Checked ahead of the
+# scripted human as well as the real one: a test that answers the question would hide exactly the
+# regression this exists to catch.
+_REFUSE = None
+
+
+@contextlib.contextmanager
+def no_prompting(what: str):
+    """Refuse every prompt raised inside this block, loudly, naming `what` promised not to ask.
+
+    For a flow whose *contract* is that it asks nothing — `cuttle update`, which exists precisely
+    because `setup` asks ten questions this box has already answered. Guarding each call site is what
+    makes that true today; this is what keeps it true, because the way it breaks is somebody adding a
+    prompt to a shared step months from now and no one noticing that a silent duty started talking.
+
+    Deliberately an abort and not a skipped question: a prompt reached here means the flow needs an
+    answer it was supposed to already have, and guessing one is how a re-provision quietly changes
+    what a box is.
+    """
+    global _REFUSE
+    before, _REFUSE = _REFUSE, what
+    try:
+        yield
+    finally:
+        _REFUSE = before
+
+
 def _ask(kind: str, message: str, **kw):
     """One prompt, through the seam. The scripted human and the real one must agree on *every*
     rule, including that a None answer means ^C — a fake that is merely permissive lets a caller
     ship a None-valued menu entry that dies the moment a human touches it."""
+    if _REFUSE is not None:
+        raise abort(f"{_REFUSE} asks nothing, but something tried to ask {message!r}",
+                    next_step=f"this is a bug in CCC — run `cuttle setup` to answer it for now")
     if _ANSWERS is not None:
         answer = _ANSWERS.take(message)
         if answer is None:        # ^C / ^D inside a prompt

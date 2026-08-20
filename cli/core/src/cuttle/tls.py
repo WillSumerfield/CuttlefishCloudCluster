@@ -109,6 +109,48 @@ def ensure_ca(url: str) -> None:
     print(f"cuttle: trusted → {_pin_path(url)} (a Head that cannot prove it holds this CA is refused)")
 
 
+def refresh_pin(url: str) -> None:
+    """Re-check that the CA pinned for `url` still signs what that Head is presenting, and offer to
+    re-pin when it does not. What `cuttle update` runs on a client.
+
+    The case this exists for: the Head was torn down and set up again, minting a fresh CA. Nothing on
+    the client changed, but every request to it now fails verification, and the error arrives at the
+    next `cuttle run` looking like a network fault. A box that is merely out of date should be able to
+    say so and fix itself.
+
+    **Still a confirmation, not a repair.** Re-pinning silently would turn trust-on-first-use into
+    trust-on-every-use: whatever answers at that address gets pinned, which is precisely the check the
+    first ceremony exists to make. So this is the one question `update` is allowed to ask — and with no
+    human to ask, it refuses rather than guessing.
+    """
+    if not url.startswith("https://"):
+        return
+    pin = _pin_path(url)
+    if not pin.exists():
+        return ensure_ca(url)     # never trusted at all: the ordinary first-trust ceremony
+    if signs_leaf(url, pin.read_text()):
+        return
+    host, _ = _host_port(url)
+    pem = fetch_ca(url)
+    if not signs_leaf(url, pem):
+        raise ui.abort(f"{host} served a CA certificate that did not sign the certificate it is "
+                       f"actually presenting — the pin was left alone",
+                       next_step="check you are talking to the Head you think you are")
+    ui.warn(f"{host} is presenting a certificate signed by an authority this box has not pinned.")
+    ui.hint("Usually this means the Head was rebuilt and minted a new authority. It can also mean you "
+            "are not talking to the Head you think you are — only the fingerprint tells them apart, "
+            "so check it against the Head before accepting.")
+    ui.say(f"  SHA-256  {fingerprint(pem)}")
+    if not ui.interactive():
+        raise ui.abort(f"{host}'s certificate authority changed and there is nobody here to confirm it",
+                       next_step="re-run `cuttle setup --client` where you can check the fingerprint")
+    if not ui.ask_confirm("Trust this new certificate authority?", False):
+        raise ui.abort("left pinned to the old authority — this box cannot reach that Head until "
+                       "one of them changes")
+    install_ca(url, pem)
+    print(f"cuttle: re-pinned → {_pin_path(url)}")
+
+
 def context(url: str) -> ssl.SSLContext | None:
     """The SSL context for talking to this Head: verify against the pinned CA and nothing else.
 

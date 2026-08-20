@@ -252,15 +252,35 @@ class TestTheMenuGatesByState:
         unlabelled = [p for p, _, _ in menu._entries(root, st) if p not in menu.LABELS]
         assert unlabelled == []
 
-    def test_setup_shows_until_the_box_carries_a_role(self):
-        """Pointed is NOT provisioned. A box the installer pointed at a Head still has to be able to
-        become an Arm — hiding `setup` there was the installer bug."""
-        assert "setup" in self._paths(logged_in=False, provisioned=False, pointed=False,
-                                      on_head=False)
-        assert "setup" in self._paths(logged_in=False, provisioned=False, pointed=True,
-                                      on_head=False)
-        assert "setup" not in self._paths(logged_in=False, provisioned=True, pointed=True,
+    def test_setup_never_goes_away(self):
+        """`setup` is where every answer is made or CHANGED, so a provisioned box still needs it —
+        that is the only route to a new Feature or a different coordinator address. It also has to
+        survive on a merely *pointed* box, which is the promote-a-client-to-an-Arm path (hiding it
+        there was the installer bug)."""
+        for provisioned, pointed in ((False, False), (False, True), (True, True)):
+            assert "setup" in self._paths(logged_in=False, provisioned=provisioned, pointed=pointed,
                                           on_head=False)
+
+    def test_setup_is_renamed_once_there_are_settings_to_change(self):
+        """Next to `update`, a row reading "Set up this box" on a live Head is the one a hand reaches
+        for by reflex — and it is the one that re-asks every question."""
+        root = typer.main.get_command(main.app)
+        fresh = menu.MenuState(logged_in=False, provisioned=False, pointed=False, on_head=False)
+        live = menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True)
+        def label(st):
+            return dict((p, lbl) for p, lbl, _ in menu._entries(root, st))["setup"]
+        assert label(fresh) == "Set up this box"
+        assert label(live) == "Change this box's settings"
+
+    def test_update_needs_a_box_that_was_already_set_up(self):
+        """An **Update** lays recorded answers down again, so there must BE recorded answers. A bare
+        box has none — and offering it there would promise a re-run of something that never ran."""
+        assert "update" not in self._paths(logged_in=False, provisioned=False, pointed=False,
+                                           on_head=False)
+        assert "update" in self._paths(logged_in=False, provisioned=False, pointed=True,
+                                       on_head=False)
+        assert "update" in self._paths(logged_in=True, provisioned=True, pointed=True,
+                                       on_head=True)
 
     def test_teardown_shows_once_there_is_anything_to_remove(self):
         """A role, or a client's own `~/.ccc` — but not a bare box that has merely been run once."""

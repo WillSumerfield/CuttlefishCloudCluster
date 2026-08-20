@@ -19,7 +19,15 @@ two kinds of **duty**.
   certificate. Independent of **Provisioned**: a box can be pointed and roleless (the ordinary
   submitter's laptop), and a **Bundle** can arrive pre-pointed. Being pointed says nothing about
   holding a **Session** — that is **login**, a separate step.
-- **Duties** — *host duties* (`setup` / `teardown`) provision the box they run on and are the one thing
+- **Update** — laying this box's role down again from what it already recorded. It decides nothing:
+  every answer is the one this box is already living by, so an Update can change what CCC has
+  *installed* here but never what this box *is*. That is the whole line between it and **setup**,
+  which is where an answer is made or changed — an Update never enrolls, never re-points, and never
+  re-prices an **Arm**. On a **Provisioned** box it therefore asks nothing at all; the single question
+  it may raise is a **Pointed** one being shown a **Head**'s new certificate authority, which is not
+  an answer about this box but a fact about the other one. Available to every role, and to no box that
+  has never been set up: there is nothing to lay down again.
+- **Duties** — *host duties* (`setup` / `update` / `teardown`) provision the box they run on and are the one thing
   only the CLI can do; *client duties* (login, **Spawn** submission, following work) need only a Head
   address and a **Session**, and run from any machine. (See root glossary: **Clients**.)
 - **Wizard** — the guided, interactive form of `cuttle setup`: it asks which **setup mode** to

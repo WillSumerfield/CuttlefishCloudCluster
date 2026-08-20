@@ -157,11 +157,18 @@ def setup(
         if not ui.interactive():
             raise typer.BadParameter("specify a role: cuttle setup --head | --arm")
         with ui.section("Set up this box", lambda: role):
-            role = ui.ask_select("What is this box?", [
+            choices = [
                 ui.choice("The Head — control plane, and donates its own GPU", "head"),
                 ui.choice("An Arm — donates a GPU to someone else's Head", "arm"),
                 ui.choice("A client — just submit Spawns from here", "client"),
-            ])
+            ]
+            # Pre-selected with what this box ALREADY is, when it is anything. On a re-run the answer
+            # is almost never "make it something else", and the alternative — always landing on "the
+            # Head" — invites an Enter that tries to provision a control plane onto a donor's box.
+            current = ("head" if menu_mod.is_head() else
+                       "arm" if menu_mod.is_arm() else
+                       "client" if menu_mod.is_pointed() else None)
+            role = ui.ask_select("What is this box?", choices, default=current)
             if role == "head":
                 ui.say("  [muted]Arms reach the coordinator at this address before they are on the "
                        "mesh, so it must be reachable from their network.[/muted]")
@@ -216,6 +223,21 @@ def setup(
                 "cuttle arm authorize <name> --user <you>\n"
                 "If this box is already enrolled and you are just setting it up again: --enrolled")
         setup_mod.setup_arm(token, re_enroll=re_enroll)
+
+
+@app.command()
+def update():
+    """Set this box up again with the settings it already has. Asks nothing.
+
+    The re-run after a CCC upgrade or a code change: the API venv is rebuilt, the Dashboard
+    re-bundled, every unit file and slurm.conf re-rendered, the certificate re-issued. What it never
+    does is change what this box *is* — it does not enroll, re-point, or re-price an Arm, and it does
+    not re-measure or re-license hardware it has already measured and licensed.
+
+    The role comes from the box, not a flag. `cuttle setup` remains where every answer is made or
+    changed, and a box that was never set up has nothing to update.
+    """
+    setup_mod.update_this_box()
 
 
 @arm_app.command("list")

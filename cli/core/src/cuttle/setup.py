@@ -24,8 +24,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import (auth, backup, config, enroll, headapi, mesh, monitor, settings, system, templates,
-               tls, ui)
+from . import (api, auth, backup, config, enroll, headapi, menu, mesh, monitor, settings, system,
+               templates, tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -996,21 +996,28 @@ def mesh_up_head(addr: str) -> str:
     return mesh_ip
 
 
-def setup_head(address: str | None = None) -> None:
-    with ui.section("Setting up the Head", lambda: "control plane + co-located Arm"):
+def setup_head(address: str | None = None, update: bool = False) -> None:
+    with ui.section("Updating the Head" if update else "Setting up the Head",
+                    lambda: "control plane + co-located Arm"):
         system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
-        _setup_head(address)
+        _setup_head(address, update=update)
 
 
-def _setup_head(address: str | None = None) -> None:
+def _setup_head(address: str | None = None, update: bool = False) -> None:
+    """`update` is the **Update** duty: lay this Head down again from what it already recorded. Every
+    question below is skipped in favour of the stored answer — see `update_this_box`."""
     make_user_dirs()
-    settings.prompt_wandb()  # up front, so the rest runs unattended
+    if not update:
+        settings.prompt_wandb()  # up front, so the rest runs unattended
     # Arm Features, also up front and for the same reason. Nothing is defined here — the catalog is
     # config.FEATURE_NAMES, built in — so the Head answers exactly the question a donor's box answers:
     # which of them does THIS box have. Its co-located Arm is an Arm like any other. Asked before
     # write_slurm_config below, which bakes this box's own Features into its NodeName line.
-    head_features = _prompt_arm_features(_head_arm_features())
-    head_licence = _prompt_licence_home(_head_licence_home()) if head_features else ""
+    head_features = _head_arm_features()
+    head_licence = _head_licence_home()
+    if not update:
+        head_features = _prompt_arm_features(head_features)
+        head_licence = _prompt_licence_home(head_licence) if head_features else ""
     preflight("head")
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
@@ -1080,7 +1087,8 @@ def _setup_head(address: str | None = None) -> None:
         backup.install_timer(_write_root_file)   # head.db + arms.json + headscale db, see backup.py
     with ui.step("Installing the Head-box monitor"):
         monitor.install(_write_root_file)        # disk/services/rogue-usage, see monitor.py
-        monitor.prompt_smtp(_write_root_file)     # SMTP creds for alerting; skippable
+        if not update:
+            monitor.prompt_smtp(_write_root_file)  # SMTP creds for alerting; skippable
     with ui.step("Building the Pod image"):
         build_base_sif()                         # Mantle-readable, at the cluster-wide path
     with ui.step("Installing the Environment build tools"):
@@ -1091,8 +1099,12 @@ def _setup_head(address: str | None = None) -> None:
     # The Head's own Arm is an Arm like any other, so it is priced like one — and its declared Arm
     # Features are proved like any other's. Last, because both are real Spawns: they need slurmd up,
     # the Pod image built, and rsyncd listening.
-    enroll.benchmark_arm(system.hostname())
-    enroll.activate_arm(system.hostname(), [f["name"] for f in head_features])
+    #
+    # Both are skipped outright by an Update, and skipped by `setup` too when the registry row already
+    # carries the answer: an activation burns one of a finite number of vendor activations, and a
+    # benchmark costs ten minutes and a card. Neither is something a re-run should silently spend.
+    enroll.ensure_priced(system.hostname())
+    enroll.activate_arm(system.hostname(), head_features)
     verify()
     lan = system.primary_ip()
     # Results, not `ui.kv` — kv writes straight to stdout, which inside a box is both uncounted (so
@@ -1158,7 +1170,7 @@ def point_at_head() -> str:
     return url
 
 
-def setup_client() -> None:
+def setup_client(update: bool = False) -> None:
     """A submitter's box: point it at a Head, trust the cluster, then log in. Nothing else.
 
     No mesh and no Slurm — a client only ever talks to the Head API over HTTPS. It does now need sudo
@@ -1174,6 +1186,8 @@ def setup_client() -> None:
     a client on a different configuration from every other, and finding that out here beats finding it
     out at the first `cuttle run`.
     """
+    if update:
+        return _update_client()
     pointed: dict[str, str] = {}
     with ui.section("Set up this client", lambda: pointed.get("head", "")):
         make_user_dirs()
@@ -1185,6 +1199,86 @@ def setup_client() -> None:
     with ui.section("Log in", lambda: who.get("as", "")):
         who["as"] = auth.login(None)
     ui.ok("Client ready. `cuttle run <script> --time <min> --vram <GB>` to submit.")
+
+
+def _update_client() -> None:
+    """The **Update** duty on a client. Almost nothing is installed on one, so almost nothing can go
+    out of date — what CAN is the trust, and that is the whole of this.
+
+    Two things are checked. The **Cluster name** must still resolve: a client's Head address lives
+    only in that /etc/hosts line (`point_at_head` stores the URL under the name, never the address),
+    so if the line is gone there is nothing here to restore it from and re-pointing is a `setup`. Then
+    the pinned CA must still sign what the Head presents — the case a client actually hits, when the
+    Head was rebuilt behind the same name and every request started failing verification.
+
+    No login: whether you hold a **Session** is not a property of the box, and re-asking for a password
+    is exactly the kind of question an Update does not get to ask. It reports, and leaves it to you.
+    """
+    url = settings.load()["head"]
+    with ui.section("Updating this client", lambda: url):
+        make_user_dirs()
+        try:
+            socket.gethostbyname(config.DOMAIN)
+        except OSError:
+            raise ui.abort(f"{config.DOMAIN} does not resolve on this box — its /etc/hosts line is "
+                           f"gone, and a client keeps its Head's address nowhere else",
+                           next_step="re-point it with `cuttle setup --client`")
+        tls.refresh_pin(url)
+    ui.result("head", url)
+    ui.result("session", _session_line(url))
+
+
+def _session_line(url: str) -> str:
+    """Whether this box currently holds a **Session**, said in one line. Validated against the Head
+    rather than read off disk: a token file proves only that you logged in once."""
+    if not config.CREDENTIALS_FILE.exists():
+        return "not logged in (`cuttle login`)"
+    try:
+        me = api.for_head().json("GET", "/me", token=config.CREDENTIALS_FILE.read_text().strip(),
+                                 timeout=5)
+    except Exception:
+        return f"could not reach {url} to check (`cuttle whoami`)"
+    return f"logged in as {me.get('username', '?')}"
+
+
+def update_this_box() -> None:
+    """The **Update** duty: lay this box's role down again from what it already recorded.
+
+    Re-running `setup` after a code change works, but it re-asks every question setup ever asked — ten
+    of them on a Head — and every answer is already on this box. This asks none of them. What it is
+    for is the *installed* half: the API venv is rebuilt, the Dashboard re-bundled, every unit file and
+    slurm.conf re-rendered, the certificate re-issued. What it is not for is the *decided* half: it
+    never enrolls, never re-points, and never changes what this box is.
+
+    The role is detected, never given — a flag choosing it would be a way to tell an Update to make
+    this box something else, which is the one thing it does not do. A box that has never been set up
+    has nothing to lay down again, and says so.
+
+    Benchmarking and activation are not special-cased here: both already skip when the registry says
+    they are done (`enroll.ensure_priced`, `enroll.activate_arm`), so an Update spends neither — and
+    an Update of a box whose Feature was never proved still proves it, which is the state you would
+    want fixed rather than carried forward.
+    """
+    # Wrapped, not merely trusted: every prompt in the two flows below is guarded by `update`, and
+    # `ui.no_prompting` is what turns "we guarded them all" from a claim into a fact — including for
+    # the prompt somebody adds to a shared step next year. sudo still asks; it is not a `ui` prompt,
+    # and it is asking for permission rather than for an answer.
+    if menu.is_head():
+        with ui.no_prompting("`cuttle update`"):
+            return setup_head(update=True)
+    if menu.is_arm():
+        # An Update is never an enrollment, so there is no token and no --re-enroll: the identity is
+        # read back off this box (enroll.enrollment_from_state, called inside). When that read fails it
+        # aborts there naming a fresh token, which is the right message and the only fix — so it is
+        # deliberately NOT pre-checked and re-worded here.
+        with ui.no_prompting("`cuttle update`"):
+            return setup_arm(None, update=True)
+    # NOT wrapped. A client's update has exactly one question in it — re-trusting a Head that was
+    # rebuilt behind the same name — and that one is a trust decision no default can stand in for.
+    if menu.is_pointed():
+        return setup_client(update=True)
+    raise ui.abort("nothing is set up on this box, so there is nothing to update",
+                   next_step="run `cuttle setup` to decide what this box is")
 
 
 def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
@@ -1352,7 +1446,7 @@ def _prompt_licence_home(existing: str = "") -> str:
                        existing).strip()
 
 
-def setup_arm(token: str | None, re_enroll: bool = False) -> None:
+def setup_arm(token: str | None, re_enroll: bool = False, update: bool = False) -> None:
     """Enroll this box as an Arm, redeeming the **enrollment token** an Admin minted for it.
 
     The donor declares nothing. The token names the Arm and carries the one-time preauth key that
@@ -1365,18 +1459,22 @@ def setup_arm(token: str | None, re_enroll: bool = False) -> None:
 
     `re_enroll` forces a fresh mesh identity even if this box looks already-joined.
     """
-    with ui.section("Setting up this Arm", lambda: "enrolled"):
+    with ui.section("Updating this Arm" if update else "Setting up this Arm", lambda: "enrolled"):
         system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
-        _setup_arm(token, re_enroll=re_enroll)
+        _setup_arm(token, re_enroll=re_enroll, update=update)
 
 
-def _setup_arm(token: str | None, re_enroll: bool = False) -> None:
+def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False) -> None:
+    """`update` is the **Update** duty (see `update_this_box`): every question below is answered from
+    what this box already recorded. It always arrives with a None `token` — an Update is never an
+    enrollment — so the identity comes back out of tailscaled's state like any re-setup's does."""
     make_user_dirs()
     # prime_sudo above is what makes the state read inside enrollment_from_state possible — the
     # coordinator lives in tailscaled's root-owned state file.
     t = enroll.decode_token(token) if token else enroll.enrollment_from_state()
     node_name = t["node_name"]
-    settings.prompt_wandb()
+    if not update:
+        settings.prompt_wandb()
     preflight("arm")
 
     with ui.step("Joining the mesh"):
@@ -1395,10 +1493,13 @@ def _setup_arm(token: str | None, re_enroll: bool = False) -> None:
     # from the Head. A re-setup offers what this box declared last time (settings) rather than
     # re-walking the list.
     prior = (settings.load().get("arm") or {})
-    features = _prompt_arm_features(prior.get("features"))
-    # Only asked when this box actually declared something to licence — a Licence with no Feature to
-    # unlock is a directory nothing would ever bind.
-    licence_home = _prompt_licence_home(prior.get("licence_home", "")) if features else ""
+    features = prior.get("features") or []
+    licence_home = prior.get("licence_home", "")
+    if not update:
+        features = _prompt_arm_features(features)
+        # Only asked when this box actually declared something to licence — a Licence with no Feature
+        # to unlock is a directory nothing would ever bind.
+        licence_home = _prompt_licence_home(licence_home) if features else ""
 
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)

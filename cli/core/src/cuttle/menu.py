@@ -95,6 +95,7 @@ LABELS = {
     "whoami": "Who am I?",
     "passwd": "Change my password",
     "setup": "Set up this box",
+    "update": "Update this box (keep all settings)",
     "teardown": "Tear down this box",
     "build-installer": "Build a client installer",
     "user": "Manage users",
@@ -144,8 +145,11 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # only ever shows when logged out, so this costs the everyday menu nothing.
 # `dashboard` sits *after* login for the same reason: it shows on any pointed box, including the
 # logged-out one, and must not displace "Log in" as the pre-selected row there.
+# `update` trails everything a submitter reaches for but leads `setup` and `teardown`: on a set-up box
+# it is the common one of the three by a wide margin, and the two that change or undo what this box is
+# should never be the row your hand lands on first.
 ORDER = ["run", "workspace", "recipe", "queue", "history", "status", "logs", "outputs", "recover",
-         "cancel", "karma", "tide", "account", "login", "dashboard"]
+         "cancel", "karma", "tide", "account", "login", "dashboard", "update"]
 
 
 def is_head() -> bool:
@@ -229,11 +233,16 @@ def _visible(path: str, st: MenuState) -> bool:
     top = path.split()[0]
     if path in HEAD_ONLY or top in HEAD_ONLY:
         return st.on_head
-    # `setup` goes when there is nothing left to provision. A merely *pointed* box still shows it —
-    # that is the whole promote-a-client-to-an-Arm path, and hiding it is what the installer broke.
+    # `setup` is where an answer is MADE or CHANGED, so it never goes away: a provisioned box still
+    # has settings to change, and a merely *pointed* one is the promote-a-client-to-an-Arm path.
     # (`setup --arm --re-enroll` on a live Arm is a typed recovery command; mesh.py prints it.)
     if top == "setup":
-        return not st.provisioned
+        return True
+    # `update` lays the recorded answers down again, so it needs there to BE recorded answers — a role,
+    # or a client's own pointing. Same gate as `teardown`, and for the same reason: both act on what
+    # setup left behind, and neither has anything to act on before it has run.
+    if top == "update":
+        return st.provisioned or st.pointed
     # `teardown` goes when there is anything to remove — a role, or a client's own `~/.ccc`. A stray
     # logs dir alone is not worth a menu entry.
     if top == "teardown":
@@ -270,7 +279,13 @@ def _node_visible(path: str, cmd, st: MenuState) -> bool:
     return _visible(path, st)
 
 
-def _label(path: str, cmd) -> str:
+# One path whose menu label depends on the box, because the command's job genuinely differs there.
+# On a box with no role and no Head, `setup` is how you get one; on a box that has both, it is the
+# only way to change an answer — and next to `update`, which is the one you almost always want,
+# "Set up this box" would read like the ordinary re-run and get picked by mistake.
+def _label(path: str, cmd, st: MenuState | None = None) -> str:
+    if path == "setup" and st and (st.provisioned or st.pointed):
+        return "Change this box's settings"
     return LABELS.get(path) or (cmd.get_short_help_str(limit=40) if cmd else path)
 
 
@@ -284,14 +299,14 @@ def _entries(group, st: MenuState, prefix: str = "") -> list[tuple[str, str, obj
     rows = []
     own = prefix.strip()
     if own and getattr(group, "invoke_without_command", False) and _visible(own, st):
-        rows.append((own, _label(own, group), group))
+        rows.append((own, _label(own, group, st), group))
     for name, cmd in group.commands.items():
         if getattr(cmd, "hidden", False):
             continue
         path = f"{prefix}{name}"
         if not _node_visible(path, cmd, st):
             continue
-        rows.append((path, _label(path, cmd), cmd))
+        rows.append((path, _label(path, cmd, st), cmd))
     rank = {name: i for i, name in enumerate(ORDER)}
     rows.sort(key=lambda r: (r[0] in NEVER_DEFAULT, rank.get(r[0], len(ORDER))))
     return rows
