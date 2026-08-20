@@ -602,24 +602,36 @@ export const workspaceDownloadUrl = (name: string, path?: string) =>
 export const deleteWorkspace = (name: string) =>
   req(`/workspaces/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
-// The W&B key the Head injects into every Spawn you submit (from either client). Held ENCRYPTED at rest —
-// a third-party secret the Head keeps on your behalf, and unlike a password it must be recoverable in
-// plaintext to be used, so it can't be hashed.
-export type WandbKeyStatus = { set: boolean; last4: string | null }
+// A **Credential**: a third-party secret the Head holds on your behalf and injects into every Spawn you
+// submit, from either client. Kept under your own password, so the Head cannot read one without a live
+// session of yours — see head/api/.../credentials.py.
+//
+// **Write-only.** There is no route that returns the plaintext and there will not be one; `hint` (for a
+// W&B key, its last 4 characters) is the whole of what comes back. Keyed by `kind` so a second secret
+// is a new value here rather than a second set of endpoints.
+export type CredentialKind = 'wandb'
+export type CredentialStatus = {
+  kind: CredentialKind
+  set: boolean
+  hint: string | null
+  set_at: string | null
+}
 
-/** Masked status only — whether a key is stored, and its last 4 chars. Never the plaintext. */
-export const getWandbKey = () => json<WandbKeyStatus>('/account/wandb')
-/** The plaintext, for the deliberate Reveal. A separate route so the masked read never carries the secret. */
-export const revealWandbKey = () => json<{ key: string }>('/account/wandb/reveal').then((r) => r.key)
-/** Store (or replace) the key. */
-export const setWandbKey = (key: string) =>
-  req('/account/wandb', {
+/** Masked status — whether one is stored, and its hint. There is no unmasked counterpart. */
+export const getCredential = (kind: CredentialKind) =>
+  json<CredentialStatus>(`/account/credentials/${kind}`)
+/** Every kind the Head knows about, set or not. */
+export const getCredentials = () => json<CredentialStatus[]>('/account/credentials')
+/** Store (or replace) one. */
+export const setCredential = (kind: CredentialKind, value: string) =>
+  req(`/account/credentials/${kind}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key }),
+    body: JSON.stringify({ value }),
   }).then(() => {})
-/** Clear the key — the Head stops injecting it. */
-export const deleteWandbKey = () => req('/account/wandb', { method: 'DELETE' }).then(() => {})
+/** Forget one — the Head stops injecting it. */
+export const deleteCredential = (kind: CredentialKind) =>
+  req(`/account/credentials/${kind}`, { method: 'DELETE' }).then(() => {})
 
 // The Tide, as the Head serves it: Demand per Arm over CLOCK time — how badly each card has been wanted,
 // hour by hour, over the last `days`. This is the ONLY surface the Tide is seen through: not a forecast,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Arm, Recipe } from "../api";
-import { getFeatureCatalog, getWandbKey, submit, submitTidepool } from "../api";
+import { getCredential, getFeatureCatalog, submit, submitTidepool } from "../api";
 import { human, type Picked } from "../project";
 import { pickOffThread } from "../pick";
 import { NumberField } from "./NumberField";
@@ -190,7 +190,7 @@ export function Composer(props: ComposerProps) {
 
   useEffect(() => {
     if (variant !== "spawn") return;
-    getWandbKey()
+    getCredential("wandb")
       .then((s) => setWandbOn(s.set))
       .catch(() => setWandbOn(true)); // unreadable → assume on; the Head decides for real at submit
   }, [variant]);

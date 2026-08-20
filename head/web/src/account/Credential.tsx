@@ -1,85 +1,105 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  getWandbKey,
-  revealWandbKey,
-  setWandbKey,
-  deleteWandbKey,
+  getCredential,
+  setCredential,
+  deleteCredential,
   Unauthorized,
   errMessage,
-  type WandbKeyStatus,
+  type CredentialKind,
+  type CredentialStatus,
 } from "../api";
 import { Tip } from "../app/Tip";
 
 /**
- * The W&B key module — a stored secret, masked by default. Reveal fetches the plaintext (so you can check
- * you pasted the right one); Replace overwrites it; Remove clears it. Unset, it's an invitation to paste
- * one, with a line on what it does.
+ * One **Credential** module — a stored third-party secret, kept under the User's own password on the
+ * Head and injected into every Spawn they submit from either client.
  *
- * The key is stored on the Head, per User, and injected into every spawn you submit from either client.
- * The plaintext never enters the SPA except for the one deliberate Reveal.
+ * **Write-only, and this component is the shape of that.** There is no Reveal: the plaintext leaves
+ * this page once, when it is pasted, and never comes back. What is shown afterwards is the `hint` the
+ * Head keeps in the clear beside it — for a W&B key, its last 4 characters — which answers the only
+ * question Reveal was really answering ("is this the key I meant?") without putting the secret on the
+ * wire, in scrollback, or on the screen of whoever is standing behind you.
+ *
+ * Parameterised by `kind` rather than written per secret, mirroring `credentials.KINDS` on the Head:
+ * adding the GitHub SSH key should be an entry in SPECS below, not a second copy of this file.
  */
 
-type State = { kind: "loading" } | { kind: "status"; status: WandbKeyStatus };
+type Spec = {
+  label: string;
+  /** What the Tip beside the label explains — why the Head is holding this at all. */
+  tip: string;
+  placeholder: string;
+  /** The line shown when nothing is stored yet. */
+  invitation: string;
+  /** How the hint reads back. A W&B key is one opaque string, so a masked run + its tail. */
+  masked: (hint: string | null) => string;
+};
 
-export function WandbKey({ onUnauthorized }: { onUnauthorized: () => void }) {
+const SPECS: Record<CredentialKind, Spec> = {
+  wandb: {
+    label: "W&B key",
+    tip: "Held on the Head under your password and injected into every Spawn you submit, from either client — so your runs log to your own account whichever machine you launched them from. Nobody can read it back, including you.",
+    placeholder: "paste your W&B API key",
+    invitation: "Injected into every spawn you submit, from either client. Held under your password — nobody can read it back.",
+    masked: (hint) => `•••••••••• ${hint ?? ""}`,
+  },
+};
+
+type State = { kind: "loading" } | { kind: "status"; status: CredentialStatus };
+
+export function Credential({
+  kind,
+  onUnauthorized,
+}: {
+  kind: CredentialKind;
+  onUnauthorized: () => void;
+}) {
+  const spec = SPECS[kind];
   const [state, setState] = useState<State>({ kind: "loading" });
-  const [revealed, setRevealed] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  // Reveal/Save/Remove name what failed rather than swallow it — otherwise you can't tell whether your
+  // Save/Remove name what failed rather than swallow it — otherwise you can't tell whether your
   // key is actually stored.
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    getWandbKey()
+    getCredential(kind)
       .then((status) => setState({ kind: "status", status }))
       .catch((e) => {
         if (e instanceof Unauthorized) return onUnauthorized();
-        setError(`Couldn't read your W&B key — ${errMessage(e)}`);
+        setError(`Couldn't read your ${spec.label} — ${errMessage(e)}`);
       });
-  }, [onUnauthorized]);
+  }, [kind, spec.label, onUnauthorized]);
 
   useEffect(() => { load(); }, [load]);
 
-  const reveal = async () => {
-    setError(null);
-    try {
-      setRevealed(await revealWandbKey());
-    } catch (e) {
-      if (e instanceof Unauthorized) return onUnauthorized();
-      setError(`Couldn't reveal the stored key — ${errMessage(e)}`);
-    }
-  };
-
   const save = async () => {
-    const key = draft.trim();
-    if (!key) return;
+    const value = draft.trim();
+    if (!value) return;
     setBusy(true);
     setError(null);
     try {
-      await setWandbKey(key);
+      await setCredential(kind, value);
       setEditing(false);
       setDraft("");
-      setRevealed(null);
       load();
     } catch (e) {
       if (e instanceof Unauthorized) return onUnauthorized();
-      setError(`Couldn't save your W&B key — ${errMessage(e)} It wasn't stored.`);
+      setError(`Couldn't save your ${spec.label} — ${errMessage(e)} It wasn't stored.`);
     } finally {
       setBusy(false);
     }
   };
 
   const remove = async () => {
-    setRevealed(null);
     setError(null);
     try {
-      await deleteWandbKey();
+      await deleteCredential(kind);
       load();
     } catch (e) {
       if (e instanceof Unauthorized) return onUnauthorized();
-      setError(`Couldn't remove the key — ${errMessage(e)}`);
+      setError(`Couldn't remove the ${spec.label} — ${errMessage(e)}`);
     }
   };
 
@@ -89,19 +109,10 @@ export function WandbKey({ onUnauthorized }: { onUnauthorized: () => void }) {
           to the thing named beside them, not to the value below. They light gold on hover like FactRow,
           so this module stops being the one place on the page where a control reads as bare text. */}
       <div className="mb-2 flex items-center justify-between gap-3">
-        <Tip className="label" text="Held encrypted on the Head and injected into every Spawn you submit, from either client — so your runs log to your own account whichever machine you launched them from.">W&amp;B key</Tip>
+        <Tip className="label" text={spec.tip}>{spec.label}</Tip>
         {state.kind === "status" && state.status.set && !editing && (
           <div className="flex items-center gap-2">
-            <button
-              className="btn-ghost btn-ghost-gold"
-              onClick={revealed !== null ? () => setRevealed(null) : reveal}
-            >
-              {revealed !== null ? "Hide" : "Reveal"}
-            </button>
-            <button
-              className="btn-ghost btn-ghost-gold"
-              onClick={() => { setEditing(true); setRevealed(null); }}
-            >
+            <button className="btn-ghost btn-ghost-gold" onClick={() => setEditing(true)}>
               Replace
             </button>
             <button className="btn-ghost btn-ghost-alarm" onClick={remove}>
@@ -125,7 +136,7 @@ export function WandbKey({ onUnauthorized }: { onUnauthorized: () => void }) {
                 <input
                   className="field min-w-0 flex-1"
                   autoFocus={editing}
-                  placeholder="paste your W&B API key"
+                  placeholder={spec.placeholder}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && save()}
@@ -140,16 +151,13 @@ export function WandbKey({ onUnauthorized }: { onUnauthorized: () => void }) {
                 )}
               </div>
               {!state.status.set && (
-                <p className="text-[12px] text-ink-mute">
-                  Injected into every spawn you submit, from either client. Held encrypted.
-                </p>
+                <p className="text-[12px] text-ink-mute">{spec.invitation}</p>
               )}
             </div>
           ) : (
-            /* Just the value now — its actions moved up into the header row above. */
-            <span className="num text-[13px] text-ink-soft">
-              {revealed !== null ? revealed : `•••••••••• ${state.status.last4 ?? ""}`}
-            </span>
+            /* Just the hint now — its actions moved up into the header row above, and there is no
+               third one: Reveal is gone because the Head has nothing to reveal. */
+            <span className="num text-[13px] text-ink-soft">{spec.masked(state.status.hint)}</span>
           )}
         </>
       )}

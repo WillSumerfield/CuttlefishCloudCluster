@@ -5,7 +5,7 @@ import { getArms, getRecipes, getStandings, RECIPE_ALLOWANCE_BYTES, Unauthorized
 import { Link } from "../app/router";
 import { Tip } from "../app/Tip";
 import { FleshCell } from "../account/FleshCell";
-import { WandbKey } from "../account/WandbKey";
+import { Credential } from "../account/Credential";
 import { PasswordForm } from "../account/PasswordForm";
 import { size } from "../recipes/format";
 
@@ -107,7 +107,7 @@ export function AccountPage() {
               />
             </div>
 
-            <WandbKey onUnauthorized={logout} />
+            <Credential kind="wandb" onUnauthorized={logout} />
 
             <PasswordForm onUnauthorized={logout} />
 
