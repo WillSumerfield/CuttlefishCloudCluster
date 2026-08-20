@@ -153,8 +153,15 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     `spawns.submit_checked`, so the Escrow, the Attribution row and the W&B environment are all produced
     exactly as they are for a Spawn that arrived over HTTP.
 
-    `wandb_env` is the caller's project/entity hint and only that — never a key, which comes from
-    whichever User this is attributed to (spawns.compose_wandb_env).
+    `wandb_env` is the caller's project/entity hint and only that — never a key.
+
+    **No key is injected on this path at all**, and it is worth being plain about why. A Credential is
+    sealed under its owner's password (credentials.py) and only a live Session carries the DEK that
+    opens it. This command has a User to attribute to but no Session — it is an operator standing on
+    the Head, not that User logging in — so there is nothing to decrypt with, and the Spawn runs
+    WANDB_MODE=disabled. Escrowing a copy of the key somewhere the Head could reach unattended would
+    restore it and defeat the entire scheme. Said on stderr below rather than discovered afterwards in
+    a run that logged nothing.
 
     `tidepool` lets an Admin pin a Tide Pool the same way they pin any other Spawn — orthogonal to
     node-pinning (the common path is unpinned, over `/submit`).
@@ -174,7 +181,8 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        wandb_env, Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
-                                       substrate=substrate, activation=activation, name=name)
+                                       substrate=substrate, activation=activation, name=name,
+                                       dek=None)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -182,6 +190,14 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     note = spawns.environment_note(job_id)
     if note:
         print(note, file=sys.stderr)
+    # Only when there is actually something to lose. The masked status needs no DEK — that is exactly
+    # what `hint` being plaintext is for — so this can tell "you had a key and it wasn't used" apart
+    # from "you never had one", and stay quiet in the second case.
+    with db.connect() as conn:
+        if db.credential_status(conn, user["id"], "wandb")["set"]:
+            print(f"note: {username} has a W&B key stored, but a Spawn pinned from the Head has no "
+                  f"session to unlock it — this one runs with W&B disabled. Submit through "
+                  f"`cuttle run` or the Dashboard to log metrics.", file=sys.stderr)
     print(job_id)
     return 0
 

@@ -1782,12 +1782,21 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     return job_id
 
 
-def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True) -> dict[str, str]:
+def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True,
+                      dek: bytes | None = None) -> dict[str, str]:
     """The Spawn's W&B environment: **the Head owns the key, the client owns the run.**
 
-    The key belongs to the Head, tied to the submitting User (db.get_wandb_key) — a browser has no
+    The key belongs to the Head, tied to the submitting User (db.get_credential) — a browser has no
     config file to hold one. Only the run's *identity* still comes from the client: WANDB_PROJECT and
     WANDB_ENTITY, which are `cuttle run --project/--entity`.
+
+    `dek` is the submitting Session's key to that User's Credentials, threaded down from
+    `current_user`. **None means no key**, and that is the ordinary answer for a session-less
+    submission (`cuttle run --node`), not an error. Note what is passed and what is not: the DEK, not
+    the plaintext and not the session token. Because this function still does its own read and its own
+    decrypt, a DEK belonging to the wrong User simply fails to open the row and degrades to disabled —
+    the "you cannot log another User's Spawn into your account" rule below stays true by construction
+    rather than by every caller remembering it.
 
     Anything else the client sent is dropped, `WANDB_API_KEY` and `WANDB_MODE` above all. Honouring a
     client-sent key would let a submitter log another User's Spawns into an account of their choosing,
@@ -1809,7 +1818,7 @@ def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = Tr
         return {"WANDB_MODE": "disabled"}
     env = {k: v for k, v in client_env.items() if k in ("WANDB_PROJECT", "WANDB_ENTITY") and v}
     with db.connect() as conn:
-        key = db.get_wandb_key(conn, user_id)
+        key = db.get_credential(conn, user_id, "wandb", dek)
     if key is None:
         return {"WANDB_MODE": "disabled"}
     env.setdefault("WANDB_PROJECT", "ccc")
@@ -1824,7 +1833,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    activation: bool = False,
                    source_dir: Path | None = None, recipe_name: str | None = None,
                    workspace: Path | None = None, workspace_storage: int = 0,
-                   name: str = "") -> int:
+                   name: str = "", dek: bytes | None = None) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
@@ -1837,6 +1846,12 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     (`cuttle run --node`) gets the identical treatment, for the same reason the Escrow does. `wandb`
     is the per-Spawn off-switch that rides alongside it, and defaults on: a caller that never sets it
     submits exactly the Spawn it always did.
+
+    `dek` is the submitting Session's key to the User's Credentials, and carrying it this far is the
+    price of the Head no longer being able to decrypt one by itself. `cuttle run --node` has a User to
+    attribute to but no Session, so it passes None and its Spawns get WANDB_MODE=disabled — see
+    admin._submit, which says so on stderr rather than letting it be discovered in a run that logged
+    nothing.
 
     `features` is optional and empty by default — most Spawns need none.
     When given, every name must be carried by at least one currently-admitted Arm or the Spawn is
@@ -1941,7 +1956,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
-    return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb), tar_path,
+    return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb, dek),
+                  tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
                   activation=activation,

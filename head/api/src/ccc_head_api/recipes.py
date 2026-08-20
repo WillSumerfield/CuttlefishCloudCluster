@@ -237,7 +237,7 @@ def delete(conn, user_id: int, name: str) -> bool:
     return True
 
 
-def run(conn, user_id: int, name: str, is_admin: bool) -> int:
+def run(conn, user_id: int, name: str, is_admin: bool, dek: bytes | None = None) -> int:
     """Run the frozen snapshot as a new Spawn. Returns the Spawn id.
 
     Every setting the Spawn needs was already answered when the Recipe was saved (CONTEXT.md — a re-run
@@ -274,7 +274,7 @@ def run(conn, user_id: int, name: str, is_admin: bool) -> int:
         # chosen by a person when the Recipe was saved, so the rule that a human names every Spawn is
         # already satisfied and there is nothing left to prompt for. Running one Recipe ten times gives
         # ten rows reading the same thing, which is exactly what re-running one piece of work looks like.
-        source_dir=_dir(user_id, name), recipe_name=name, name=name,
+        source_dir=_dir(user_id, name), recipe_name=name, name=name, dek=dek,
     )
 
 

@@ -243,7 +243,8 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
     return to_json(updated, held)
 
 
-def visit(conn, user_id: int, name: str, is_admin: bool, overrides: dict | None = None) -> tuple[int, bool]:
+def visit(conn, user_id: int, name: str, is_admin: bool, overrides: dict | None = None,
+          dek: bytes | None = None) -> tuple[int, bool]:
     """Open a Workspace: return `(spawn id, attached)`.
 
     **Submit-or-attach, decided by the claim.** A Workspace holds one visit at a time — two sessions
@@ -296,7 +297,7 @@ def visit(conn, user_id: int, name: str, is_admin: bool, overrides: dict | None 
             # created it, so a visit needs no name of its own. Without this a visit was the one Spawn
             # with nothing in its Name at all — it carries no script either, so the archive had nothing
             # whatsoever to title the row with.
-            name=name,
+            name=name, dek=dek,
         )
     except BaseException:
         db.release_workspace(conn, row["id"], db.SUBMITTING)

@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, environments, guises, karma, ratelimit, retraction, slurm, tarstream
+from . import credentials, db, environments, guises, karma, ratelimit, retraction, slurm, tarstream
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import recipes as recipes_mod
 from . import recovery as recovery_mod
@@ -85,8 +85,8 @@ async def access_log(request: Request, call_next):
     """One line per request: who, what, the outcome, and how long. The authenticated username is read
     from `request.state` (stashed by `current_user` during routing) — no extra DB lookup, and `-` for
     the routes that never resolve a user (healthz/readyz, a failed login). Path only, never the query
-    string, headers, or body: `/passwd` and `/login` carry passwords and `/account/wandb` carries a W&B
-    key, none of which may reach a log. This supersedes uvicorn's own access log (the Head API unit
+    string, headers, or body: `/passwd` and `/login` carry passwords and `/account/credentials/{kind}`
+    carries a Credential, none of which may reach a log. This supersedes uvicorn's own access log (the Head API unit
     runs it with `--no-access-log`)."""
     start = time.perf_counter()
     try:
@@ -126,8 +126,8 @@ class PasswdRequest(BaseModel):
     new_password: str
 
 
-class WandbKeyRequest(BaseModel):
-    key: str
+class CredentialRequest(BaseModel):
+    value: str
 
 
 def password_policy_error(new: str, current: str) -> str | None:
@@ -160,7 +160,17 @@ def _token_from(request: Request) -> str | None:
 
 def current_user(request: Request) -> dict:
     """Dependency: resolve the session to a user, or 401. Returns a plain dict (row detached from the
-    per-request connection)."""
+    per-request connection).
+
+    Also unwraps this session's copy of the User's **DEK** and hands it out in that dict, which is
+    what makes a Credential reachable at all (see credentials.py). Done here, eagerly, for two
+    reasons: `lookup_session` already selects the wrapped blob so it costs no extra query, and the
+    unwrap is HKDF + one AES block — microseconds, not a KDF. The alternative, deferring it behind a
+    closure, would mean carrying the **raw token** past authentication, which is strictly more
+    authority than the DEK it would replace.
+
+    The DEK is the ONE thing here that must never be logged, echoed, or returned to a client.
+    """
     token = _token_from(request)
     if not token:
         raise HTTPException(401, "not authenticated")
@@ -173,7 +183,8 @@ def current_user(request: Request) -> dict:
     # write is visible to the middleware once the route returns.
     request.state.username = user["username"]
     return {"username": user["username"], "is_admin": bool(user["is_admin"]),
-            "must_change_password": bool(user["must_change_password"]), "id": user["id"]}
+            "must_change_password": bool(user["must_change_password"]), "id": user["id"],
+            "dek": credentials.unwrap(credentials.token_kek(token), user["dek_wrapped_tok"])}
 
 
 # --- health (open) + reads (authed) -----------------------------------------
@@ -590,7 +601,10 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
             # password. WARNING, not ERROR — a fat-fingered password is not an incident.
             log.warning("login FAILED user=%s from %s", req.username, ip)
             raise HTTPException(401, "bad username or password")
-        token = db.create_session(conn, user["id"])
+        # The only moment a password and a fresh token coexist, so the only moment the master wrap
+        # can be opened and a working wrap made from it. Mints on first sight — a new User, one
+        # carried across the migration, one whose Admin reset destroyed the old DEK.
+        token = db.create_session(conn, user["id"], db.unlock_dek(conn, user, req.password))
     ratelimit.clear(f"ip:{ip}", f"user:{req.username}")
     log.info("login OK user=%s", user["username"])
     response.set_cookie(_COOKIE_NAME, token, max_age=_COOKIE_MAX_AGE, httponly=True,
@@ -622,6 +636,13 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
     """Rotate own password (also the forced-first-login path). Verifies the old password, clears the
     must-change flag. Existing sessions stay valid — the client keeps using its token.
 
+    **Credentials survive.** The DEK this session already holds is re-wrapped under the new password
+    rather than replaced, so every stored ciphertext and every other live session keeps working — a
+    password change is not a security event the way an Admin reset is, and should not silently cost
+    someone their keys. What it does not undo: an old copy of head.db plus the old password still
+    yields this same DEK, and so still opens Credentials stored after this call. Rotating the DEK here
+    would fix that at the price of destroying everything already stored, which is the worse trade.
+
     A wrong old password is **403, not 401**: the caller's session is fine, this one act is refused.
     401 is the clients' "your session is dead, log in again" signal (the SPA drops to its login form
     on any 401), so answering it here made a typo'd password report itself as `not logged in`.
@@ -635,60 +656,75 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
         reason = password_policy_error(req.new_password, req.old_password)
         if reason is not None:
             raise HTTPException(422, reason)
-        db.set_password(conn, user["username"], req.new_password)
+        db.set_password(conn, user["username"], req.new_password, dek=user["dek"])
     return {"ok": True}
 
 
-# --- your account: the stored W&B key (authed) ------------------------------
-# The Head holds one W&B key per User and injects it into every Spawn they submit, from either client
-# (see spawns.compose_wandb_env). It lives here rather than in the CLI's config file because the
-# **Dashboard** is the primary submission surface and a browser has no config file to read — every
-# Spawn from it ran with W&B disabled until these routes existed.
+# --- your account: Credentials (authed) -------------------------------------
+# The Head holds each User's third-party secrets — today a W&B key, tomorrow a GitHub SSH key — and
+# injects them into every Spawn they submit, from either client (see spawns.compose_wandb_env). They
+# live here rather than in the CLI's config file because the **Dashboard** is the primary submission
+# surface and a browser has no config file to read: every Spawn from it ran with W&B disabled until
+# these routes existed.
 #
-# Reveal takes no password re-prompt, deliberately. A stolen session can already exfiltrate the key by
-# submitting a Spawn that echoes $WANDB_API_KEY, so a prompt here would guard a door with no wall
-# beside it — it would cost every honest User a password every time they wanted to check what they had
-# pasted, and cost an attacker nothing.
+# Routes are keyed by `kind` rather than named per secret, so adding one is a `credentials.KINDS` entry
+# and an input widget. POST, not PUT: the API has no PUT routes at all, and POST is already its
+# store-or-replace verb everywhere else.
+#
+# **There is no reveal.** A Credential is write-only by design and the plaintext never comes back out
+# over HTTP — see credentials.py. The old `/account/wandb/reveal` argued a stolen session could echo
+# the key out of a Spawn anyway, so a re-prompt would guard a door with no wall. That is still true,
+# and it cuts the other way now: reveal bought a User one convenience (checking what they pasted) at
+# the cost of the secret crossing the wire, sitting in scrollback, and being shoulder-surfable. The
+# `hint` buys the same convenience for none of that.
 
-@api.get("/account/wandb")
-def wandb_key(user: dict = Depends(current_user)) -> dict:
-    """Masked status: whether a key is stored, and its last 4 characters. Never the plaintext."""
+@api.get("/account/credentials")
+def credential_list(user: dict = Depends(current_user)) -> list[dict]:
+    """Every kind the Head knows about, set or not — so both clients render a stable list of rows
+    rather than discovering which secrets exist from whichever ones happen to be stored."""
     with db.connect() as conn:
-        return db.wandb_key_status(conn, user["id"])
+        return db.credential_statuses(conn, user["id"])
 
 
-@api.get("/account/wandb/reveal")
-def wandb_key_reveal(user: dict = Depends(current_user)) -> dict:
-    """The plaintext, for the deliberate Reveal. Its own route so the masked read — which both clients
-    poll — never carries the secret at all."""
+@api.get("/account/credentials/{kind}")
+def credential_get(kind: str, user: dict = Depends(current_user)) -> dict:
+    """Masked status: whether one is stored and its hint. There is no unmasked counterpart."""
+    if kind not in credentials.KINDS:
+        raise HTTPException(404, f"no such credential kind {kind!r}")
     with db.connect() as conn:
-        key = db.get_wandb_key(conn, user["id"])
-    if key is None:
-        raise HTTPException(404, "you have no W&B key stored")
-    return {"key": key}
+        return db.credential_status(conn, user["id"], kind)
 
 
-@api.post("/account/wandb")
-def set_wandb_key(req: WandbKeyRequest, user: dict = Depends(current_user)) -> dict:
-    """Store (or replace) your key. Encrypted at rest — see atrest.py, which is honest about what that
-    does and does not buy."""
-    key = req.key.strip()
-    if not key:
-        raise HTTPException(422, "the key is empty")
+@api.post("/account/credentials/{kind}")
+def credential_set(kind: str, req: CredentialRequest, user: dict = Depends(current_user)) -> dict:
+    """Store (or replace) one. Sealed under this session's DEK, so it is readable only by a request
+    carrying a live Session of this User's — not by the Head on its own, and not by an Admin."""
+    if kind not in credentials.KINDS:
+        raise HTTPException(404, f"no such credential kind {kind!r}")
+    value = req.value.strip()
+    if not value:
+        raise HTTPException(422, "the value is empty")
+    if user["dek"] is None:
+        # Belt and braces: the invariant is that a live Session always has a DEK. Refusing beats
+        # storing something under a key nobody can reproduce, which would look stored and never work.
+        raise HTTPException(409, "your session cannot store credentials — log in again")
     with db.connect() as conn:
-        db.set_wandb_key(conn, user["id"], key)
-    # Never the key, and never its length: this line goes to journald, which is not where a secret's
+        db.set_credential(conn, user["id"], kind, user["dek"], value)
+    # Never the value, and never its length: this line goes to journald, which is not where a secret's
     # shape belongs. That a User set one is worth knowing; what they set is not.
-    log.info("wandb key set by %s", user["username"])
+    log.info("credential %s set by %s", kind, user["username"])
     return {"ok": True}
 
 
-@api.delete("/account/wandb", status_code=204)
-def clear_wandb_key(user: dict = Depends(current_user)) -> Response:
-    """Forget the key — the Head stops injecting it, and your Spawns go back to WANDB_MODE=disabled."""
+@api.delete("/account/credentials/{kind}", status_code=204)
+def credential_clear(kind: str, user: dict = Depends(current_user)) -> Response:
+    """Forget it — the Head stops injecting it, and (for W&B) your Spawns go back to
+    WANDB_MODE=disabled."""
+    if kind not in credentials.KINDS:
+        raise HTTPException(404, f"no such credential kind {kind!r}")
     with db.connect() as conn:
-        db.clear_wandb_key(conn, user["id"])
-    log.info("wandb key cleared by %s", user["username"])
+        db.clear_credential(conn, user["id"], kind)
+    log.info("credential %s cleared by %s", kind, user["username"])
     return Response(status_code=204)
 
 
@@ -785,7 +821,8 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
 
     `wandb_env` no longer carries a key — it never could from the browser, which is why the Dashboard
     logged no metrics at all. The caller's W&B *project/entity* are honoured and everything else in it
-    is discarded; the key is the Head's, per User (see spawns.compose_wandb_env, /account/wandb).
+    is discarded; the key is the Head's, per User (see spawns.compose_wandb_env,
+    /account/credentials).
     Whether to log at all is the separate `wandb` flag, defaulting to true when absent — it rides
     beside `wandb_env` rather than inside it so a client can still say "not this one" without being
     handed back the WANDB_MODE the Head just took off it.
@@ -862,7 +899,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
             wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [],
             tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
-            name=meta.get("name") or "")
+            name=meta.get("name") or "", dek=user["dek"])
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:
@@ -981,7 +1018,7 @@ def run_recipe(name: str, user: dict = Depends(current_user)) -> dict:
         raise HTTPException(403, "change your password before running a recipe (run `cuttle passwd`)")
     try:
         with db.connect() as conn:
-            job_id = recipes_mod.run(conn, user["id"], name, user["is_admin"])
+            job_id = recipes_mod.run(conn, user["id"], name, user["is_admin"], dek=user["dek"])
     except ValueError as e:
         raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
     log.info("recipe run %r by %s -> spawn %s", name, user["username"], job_id)
@@ -1093,7 +1130,8 @@ async def open_workspace(name: str, request: Request, user: dict = Depends(curre
     try:
         with db.connect() as conn:
             job_id, attached = workspaces_mod.visit(conn, user["id"], name, user["is_admin"],
-                                                    overrides if isinstance(overrides, dict) else {})
+                                                    overrides if isinstance(overrides, dict) else {},
+                                                    dek=user["dek"])
     except ValueError as e:
         raise HTTPException(404 if str(e).startswith("no workspace named") else 422, str(e))
     log.info("workspace open %r by %s -> spawn %s%s", name, user["username"], job_id,
