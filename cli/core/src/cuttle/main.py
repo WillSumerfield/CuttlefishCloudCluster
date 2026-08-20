@@ -260,6 +260,26 @@ def arm_benchmark(name: str = typer.Argument(None, help="The Arm's node name."))
     enroll_mod.benchmark_arm(name)
 
 
+@arm_app.command("activate")
+def arm_activate(name: str = typer.Argument(None, help="The Arm's node name.")):
+    """Re-activate an Arm's licensed **Features**. Runs the vendor's activation as a real Spawn pinned
+    to that node — the same handshake `arm admit` does when the Arm joins.
+
+    Normally part of `arm authorize`, and skipped ever after: the Head records what it proved and does
+    not spend a second activation on it. Run this when that record stopped being true — a licence that
+    expired, a key that was replaced, or an activation that failed and was fixed on the Arm since.
+
+    Each run costs one of a finite number of activations on the key, which is why nothing calls it
+    automatically.
+    """
+    name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to re-activate?"))
+    reg = enroll_mod.load_registry()
+    if name not in reg:
+        raise ui.abort(f"no Arm named {name!r}",
+                       next_step="run `cuttle arm list` to see the Arms this Head knows")
+    enroll_mod.activate_arm(name, reg[name].get("features") or [], force=True)
+
+
 @arm_app.command("chown")
 def arm_chown(
     name: str = typer.Argument(None, help="The Arm's node name."),

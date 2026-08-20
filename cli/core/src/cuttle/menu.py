@@ -107,6 +107,7 @@ LABELS = {
     "arm authorize": "Authorize a new Arm",
     "arm admit": "Admit an enrolled Arm",
     "arm benchmark": "Re-benchmark an Arm",
+    "arm activate": "Re-activate an Arm's Features",
     "arm chown": "Change an Arm's owner",
     "arm retract": "Pause your Arm (stop new work, end what's running)",
     "arm return": "Reopen a retracted Arm",
