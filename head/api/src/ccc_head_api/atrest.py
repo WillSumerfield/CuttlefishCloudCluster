@@ -1,16 +1,23 @@
-"""Encryption at rest for the one secret head.db holds in recoverable form: a User's W&B key.
+"""Encryption at rest for the one secret head.db still holds in unattended-recoverable form: a Tide
+Pool's private key.
 
-Everything else in head.db is one-way (argon2id passwords, sha256 session tokens) — nothing else ever
-needs to come back. A W&B key is a third-party credential the Head must hand to `wandb` verbatim inside
-every Spawn, so it can't be hashed. AES-256-GCM, with a 32-byte keyfile beside the database.
+Everything else in head.db is either one-way (argon2id passwords, sha256 session tokens) or sealed
+under its owner's password (Credentials — see credentials.py, which the User's W&B key moved to). A
+Tide Pool key is neither. The Head mints it at submit and must hand it back to whoever attaches, and
+it cannot ride a User's DEK because an Admin-pinned Tide Pool (`cuttle run --node --tidepool`) is
+submitted with no Session behind it — there would be nothing to seal it under. So it keeps the older
+scheme: AES-256-GCM under a 32-byte keyfile beside the database.
 
-**Be clear about what this buys.** The Head decrypts unattended, so the keyfile sits next to head.db and
-anything that can read one can read the other. This protects a head.db that leaks *on its own* — a
+**Be clear about what this buys.** The Head decrypts unattended, so the keyfile sits next to head.db
+and anything that can read one can read the other. This protects a head.db that leaks *on its own* — a
 copied database, a backup (`cuttle backup` deliberately excludes the keyfile), a pulled disk — not a
-compromised Head.
+compromised Head. The exposure is also bounded in time in a way a stored Credential never was: both
+Tide Pool rows are deleted the moment the Spawn leaves the queue, so a leaked database yields keys to
+Pods that no longer exist.
 
-Failure degrades to "no key", never to an error: a restored backup (keyfile gone by design) must not 500
-the Account page or block submission over it. An unreadable key reads as unset — the User re-pastes it.
+Failure degrades to "no key", never to an error: a restored backup (keyfile gone by design) must not
+500 an attach. An unreadable key reads as a Tide Pool with no connection state — which, for a restored
+backup, is simply true.
 """
 
 import logging
@@ -33,16 +40,16 @@ _warned = False
 def _warn_once(msg: str) -> None:
     global _warned
     if not _warned:
-        log.warning("%s — stored W&B keys read as unset until their owners re-paste them", msg)
+        log.warning("%s — Tide Pool keys read as unset; those Spawns cannot be attached to", msg)
         _warned = True
 
 
 def key_path() -> Path:
     """Where the at-rest key lives: beside head.db, or wherever CCC_HEAD_SECRET_KEY points.
 
-    `db` is imported here rather than at module scope because db imports *this* module for its
-    wandb_key helpers. Reading db.DB_PATH each call (not at import) also means a test that redirects
-    the database redirects the keyfile with it.
+    `db` is imported inside the function rather than at module scope because db imports *this* module
+    for its Tide Pool helpers. Reading db.DB_PATH each call (not at import) also means a test that
+    redirects the database redirects the keyfile with it.
     """
     from . import db
     override = os.environ.get("CCC_HEAD_SECRET_KEY")
@@ -96,5 +103,5 @@ def decrypt(blob: bytes) -> str | None:
     try:
         return AESGCM(key).decrypt(blob[:_NONCE_BYTES], blob[_NONCE_BYTES:], None).decode()
     except (InvalidTag, ValueError):
-        _warn_once("a stored W&B key did not decrypt under this Head's key")
+        _warn_once("a stored Tide Pool key did not decrypt under this Head's key")
         return None

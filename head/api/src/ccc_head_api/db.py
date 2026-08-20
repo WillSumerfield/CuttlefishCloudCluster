@@ -24,7 +24,7 @@ from pathlib import Path
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-from . import atrest
+from . import credentials
 from . import guises
 
 # Path comes from the environment (the systemd unit sets CCC_HEAD_DB) so the API package never
@@ -195,10 +195,12 @@ CREATE TABLE retracted_jobs (
 # User, not the box, so it is a column on `users` — NULL is unset, and deleting a User takes their key
 # with them.
 #
-# BLOB, not TEXT: it is stored ENCRYPTED (AES-256-GCM, see atrest.py). Unlike a password, a W&B key must
-# come back out in plaintext to be usable, so it cannot be hashed. The keyfile lives beside this
-# database — which protects a head.db that leaks on its own (a copy, a backup archive, a pulled disk)
-# and nothing more. atrest.py's docstring is honest about the limit.
+# BLOB, not TEXT: it was stored encrypted under a keyfile beside this database, which protected a
+# head.db that leaked on its own and nothing more — the Head could decrypt unattended.
+#
+# **Superseded by _SCHEMA_V20**, which drops this column for the `user_secrets` envelope. Kept here
+# because the ladder is history: a database at version 6 still has to grow this column before V20 can
+# drop it.
 _SCHEMA_V7 = """
 ALTER TABLE users ADD COLUMN wandb_key BLOB;
 """
@@ -217,8 +219,10 @@ ALTER TABLE users ADD COLUMN wandb_key BLOB;
 #     - `pubkey`/`privkey` — a keypair minted once at submit, baked into the job script's
 #                  authorized_keys (pubkey), never regenerated, so a reattach after a dropped connection
 #                  or a Dashboard-requested Tide Pool gets the SAME key back. `privkey` is encrypted at
-#                  rest (atrest.py), like a W&B key: must come back out in plaintext for the CLI, so it
-#                  cannot be hashed.
+#                  rest (atrest.py): must come back out in plaintext for the CLI, so it cannot be
+#                  hashed, and it is the ONLY thing left the Head decrypts unattended — a Credential
+#                  no longer is. It can't join them: an Admin-pinned Tide Pool (`cuttle run --node
+#                  --tidepool`) has no Session, so there would be no DEK to seal it under.
 #     - `relay_pid` — the Head-side TCP relay subprocess forwarding this port to the Arm, once started
 #                  (tidepool.ensure_relay). NULL until the Spawn is actually RUNNING somewhere.
 #     - `node`     — the Arm the relay is forwarding to, cached so a restarted relay's liveness check
@@ -452,10 +456,43 @@ ALTER TABLE recipes ADD COLUMN substrate TEXT NOT NULL DEFAULT '';
 ALTER TABLE workspaces ADD COLUMN substrate TEXT NOT NULL DEFAULT '';
 """
 
+# **Credentials** — the envelope that replaces the keyfile. See credentials.py for the scheme; this is
+# only the shape it needs.
+#   * `users.dek_salt` / `dek_wrapped_pw` — the master wrap. NULL for a User who has not logged in
+#     since this migration; `/login` mints the pair lazily, which is the one place a password and a
+#     fresh token coexist.
+#   * `sessions.dek_wrapped_tok` — the working wrap, one per live login, openable only with the raw
+#     token the client holds. This is what lets a request reach a Credential without a password.
+#   * `user_secrets` — the secrets themselves, keyed by (user, kind) so a second kind is a row and not
+#     a column. `ct` is AESGCM(DEK); `hint` is deliberately PLAINTEXT, the only part anyone ever sees
+#     again. ON DELETE CASCADE so removing a User takes their Credentials with them, as `users.wandb_key`
+#     did by being a column on the row.
+#
+# **Every existing session is deleted** and **`users.wandb_key` is dropped, unrecovered.** Neither is
+# salvageable and that is by design, not an oversight: a stored key could only be re-encrypted by first
+# decrypting it with the keyfile, and a migration that did that would be doing the exact unattended
+# decrypt this change exists to make impossible. Users re-paste; everyone logs in again.
+_SCHEMA_V20 = """
+ALTER TABLE users ADD COLUMN dek_salt BLOB;
+ALTER TABLE users ADD COLUMN dek_wrapped_pw BLOB;
+ALTER TABLE users DROP COLUMN wandb_key;
+ALTER TABLE sessions ADD COLUMN dek_wrapped_tok BLOB;
+DELETE FROM sessions;
+CREATE TABLE user_secrets (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind    TEXT    NOT NULL,
+  ct      BLOB    NOT NULL,
+  hint    TEXT    NOT NULL,
+  set_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (user_id, kind)
+);
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
               _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
-              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18, _SCHEMA_V19]
+              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18, _SCHEMA_V19,
+              _SCHEMA_V20]
 
 # DERIVED from the ladder, never written by hand. It was a standalone constant until it fell one behind
 # the list it describes: `init_schema` stamps this AFTER running `_MIGRATIONS[ver:]`, so a version that
@@ -564,14 +601,22 @@ def reset_password(conn: sqlite3.Connection, username: str) -> str | None:
     and orphan their Arms).
 
     Every existing session for this User is killed — a reset is a security action, not just a password
-    change. Returns the plaintext temp password, or None if there is no such user."""
+    change. Returns the plaintext temp password, or None if there is no such user.
+
+    **This destroys the User's Credentials**, and there is no way for it not to. Both wraps around
+    their DEK die here: the password one because the password it was derived from is gone, the session
+    ones because the sessions are. An Admin who can reset a password deliberately cannot read what that
+    password was keeping — that is the property, not a gap in it. The rows are deleted rather than left
+    as unopenable ciphertext, so `set` reads false and the User is simply invited to paste again.
+    """
     user = get_user(conn, username)
     if user is None:
         return None
     temp_pw = secrets.token_urlsafe(12)
-    conn.execute("UPDATE users SET pw_hash=?, must_change_password=1 WHERE username=?",
-                 (_ph.hash(temp_pw), username))
+    conn.execute("UPDATE users SET pw_hash=?, must_change_password=1, dek_salt=NULL, "
+                 "dek_wrapped_pw=NULL WHERE username=?", (_ph.hash(temp_pw), username))
     conn.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+    conn.execute("DELETE FROM user_secrets WHERE user_id=?", (user["id"],))
     conn.commit()
     return temp_pw
 
@@ -587,12 +632,52 @@ def verify_password(conn: sqlite3.Connection, username: str, password: str) -> s
     return user
 
 
-def set_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
+def set_password(conn: sqlite3.Connection, username: str, new_password: str,
+                 dek: bytes | None = None) -> None:
+    """Rotate the password and, with it, the master wrap around `dek`.
+
+    Passing the DEK re-wraps the SAME key under a salt derived fresh from the new password, so nothing
+    stored under it has to be touched: every Credential ciphertext and every other live session's wrap
+    stays valid, and nobody is logged out by changing their password.
+
+    `dek=None` means the caller has no DEK to carry across — a test seeding a password, or a User who
+    never had one. The wrap is then cleared rather than left stale, so the next `/login` mints a fresh
+    DEK instead of failing to open a wrap the new password cannot possibly fit.
+    """
+    salt = credentials.new_salt() if dek is not None else None
+    wrapped = credentials.wrap(credentials.password_kek(new_password, salt), dek) if dek else None
     conn.execute(
-        "UPDATE users SET pw_hash=?, must_change_password=0 WHERE username=?",
-        (_ph.hash(new_password), username),
+        "UPDATE users SET pw_hash=?, must_change_password=0, dek_salt=?, dek_wrapped_pw=? "
+        "WHERE username=?",
+        (_ph.hash(new_password), salt, wrapped, username),
     )
     conn.commit()
+
+
+def unlock_dek(conn: sqlite3.Connection, user: sqlite3.Row, password: str) -> bytes:
+    """This User's DEK, opened with their password — minting one if they have none yet.
+
+    Called from exactly one place (`/login`), and that is forced rather than chosen: login is the only
+    moment a password and a fresh session token exist together, which is the pair the whole envelope
+    hangs off. The mint branch covers three cases with one line of code — a brand-new User, a User
+    carried across the migration, and a User whose Admin reset destroyed the old DEK.
+
+    A wrap that will not open (an old database restored over a newer password) is treated as no wrap:
+    mint a new DEK. Anything sealed under the previous one becomes unreadable, which is the same
+    outcome as an Admin reset and the only honest answer — the key that opened it is gone.
+    """
+    if user["dek_wrapped_pw"] is not None and user["dek_salt"] is not None:
+        dek = credentials.unwrap(credentials.password_kek(password, user["dek_salt"]),
+                                 user["dek_wrapped_pw"])
+        if dek is not None:
+            return dek
+    dek = credentials.new_dek()
+    salt = credentials.new_salt()
+    conn.execute("UPDATE users SET dek_salt=?, dek_wrapped_pw=? WHERE id=?",
+                 (salt, credentials.wrap(credentials.password_kek(password, salt), dek), user["id"]))
+    clear_credentials(conn, user["id"])  # nothing left could be opened by this new DEK anyway
+    conn.commit()
+    return dek
 
 
 # A precomputed hash so verify_password does equal work whether or not the user exists.
@@ -638,55 +723,95 @@ def live_guises(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-# --- the stored W&B key -----------------------------------------------------
-# One key per User, encrypted at rest (see atrest.py and _SCHEMA_V7). The Head holds it so BOTH clients
-# get metrics: the Dashboard has no config file to read a key out of, and even the CLI no longer keeps
-# one on disk. Every read goes through atrest.decrypt, which answers None rather than raising when the
-# blob cannot be recovered — so an unreadable key is simply an unset one, everywhere below.
+# --- Credentials ------------------------------------------------------------
+# One row per (User, kind) in `user_secrets`, each value sealed under that User's DEK — see
+# credentials.py for the envelope and _SCHEMA_V20 for the shape. The Head holds these so BOTH clients
+# get them: the Dashboard has no config file to read a key out of, and the CLI no longer keeps one on
+# disk either.
+#
+# Every read here needs a `dek`, which only a live Session produces. `dek=None` is the ordinary
+# session-less case and answers None, exactly as an unset Credential does — so no caller below has to
+# distinguish "no Session" from "nothing stored", and none of them can fail.
 
-def set_wandb_key(conn: sqlite3.Connection, user_id: int, key: str) -> None:
-    conn.execute("UPDATE users SET wandb_key=? WHERE id=?", (atrest.encrypt(key), user_id))
+def set_credential(conn: sqlite3.Connection, user_id: int, kind: str, dek: bytes,
+                   value: str) -> None:
+    """Store or replace one Credential. The `hint` goes in beside it in plaintext, computed per kind
+    (credentials.KINDS) — it is the only part its owner will ever see again."""
+    conn.execute(
+        """INSERT INTO user_secrets (user_id, kind, ct, hint) VALUES (?,?,?,?)
+           ON CONFLICT(user_id, kind) DO UPDATE SET ct=excluded.ct, hint=excluded.hint,
+                                                    set_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')""",
+        (user_id, kind, credentials.seal(dek, value), credentials.hint_for(kind, value)),
+    )
     conn.commit()
 
 
-def get_wandb_key(conn: sqlite3.Connection, user_id: int) -> str | None:
-    """This User's W&B key in plaintext, or None if they have none stored (or it cannot be read)."""
-    row = conn.execute("SELECT wandb_key FROM users WHERE id=?", (user_id,)).fetchone()
-    if row is None or row["wandb_key"] is None:
-        return None
-    return atrest.decrypt(row["wandb_key"])
+def get_credential(conn: sqlite3.Connection, user_id: int, kind: str,
+                   dek: bytes | None) -> str | None:
+    """This User's Credential of `kind` in plaintext, or None — none stored, no Session behind the
+    request, or a DEK that does not open it. The last case is what keeps this un-forgeable: a caller
+    holding the wrong DEK gets None, never someone else's secret."""
+    row = conn.execute("SELECT ct FROM user_secrets WHERE user_id=? AND kind=?",
+                       (user_id, kind)).fetchone()
+    return credentials.open_(dek, row["ct"]) if row else None
 
 
-def wandb_key_status(conn: sqlite3.Connection, user_id: int) -> dict:
-    """The masked view: is one stored, and its last 4 characters — enough to tell "the key I pasted"
-    from "some other key" without ever putting the secret on the wire."""
-    key = get_wandb_key(conn, user_id)
-    return {"set": key is not None, "last4": key[-4:] if key else None}
+def credential_status(conn: sqlite3.Connection, user_id: int, kind: str) -> dict:
+    """The masked view, and the ONLY view: is one stored, and its hint. Needs no DEK — nothing here
+    is encrypted, which is the point. Enough to tell "the key I pasted" from "some other key"
+    without the secret ever going back on the wire."""
+    row = conn.execute("SELECT hint, set_at FROM user_secrets WHERE user_id=? AND kind=?",
+                       (user_id, kind)).fetchone()
+    return {"kind": kind, "set": row is not None,
+            "hint": row["hint"] if row else None,
+            "set_at": row["set_at"] if row else None}
 
 
-def clear_wandb_key(conn: sqlite3.Connection, user_id: int) -> None:
-    conn.execute("UPDATE users SET wandb_key=NULL WHERE id=?", (user_id,))
+def credential_statuses(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    """Every kind the Head knows about, set or not — so the Account page renders the same rows for a
+    User with nothing stored as for one with everything."""
+    return [credential_status(conn, user_id, kind) for kind in credentials.KINDS]
+
+
+def clear_credential(conn: sqlite3.Connection, user_id: int, kind: str) -> None:
+    conn.execute("DELETE FROM user_secrets WHERE user_id=? AND kind=?", (user_id, kind))
+    conn.commit()
+
+
+def clear_credentials(conn: sqlite3.Connection, user_id: int) -> None:
+    """All of them, for an Admin password reset: the DEK that opened these died with the old password,
+    so the rows are already unreadable and keeping them would only be litter."""
+    conn.execute("DELETE FROM user_secrets WHERE user_id=?", (user_id,))
     conn.commit()
 
 
 # --- sessions ---------------------------------------------------------------
 
-def create_session(conn: sqlite3.Connection, user_id: int) -> str:
-    """Mint an opaque session token, store only its sha256, return the raw token to the client."""
+def create_session(conn: sqlite3.Connection, user_id: int, dek: bytes) -> str:
+    """Mint an opaque session token, store only its sha256, return the raw token to the client.
+
+    The `dek` is sealed into the row under a KEK derived from the **raw** token — the half that walks
+    out the door and is never written down. That is what lets every later request reach this User's
+    Credentials without their password, and it is why the wrap is worthless to anyone reading head.db.
+    Required, not optional: the invariant everything downstream leans on is that a live Session
+    always has a DEK."""
     token = secrets.token_urlsafe(_TOKEN_BYTES)
     expires = (_now() + timedelta(days=SESSION_TTL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO sessions (token_sha256, user_id, expires_at) VALUES (?,?,?)",
-        (_sha256(token), user_id, expires),
+        "INSERT INTO sessions (token_sha256, user_id, expires_at, dek_wrapped_tok) VALUES (?,?,?,?)",
+        (_sha256(token), user_id, expires, credentials.wrap(credentials.token_kek(token), dek)),
     )
     conn.commit()
     return token
 
 
 def lookup_session(conn: sqlite3.Connection, token: str) -> sqlite3.Row | None:
-    """Resolve a token to its user, or None if unknown/expired. Expiry checked in SQL (UTC)."""
+    """Resolve a token to its user, or None if unknown/expired. Expiry checked in SQL (UTC).
+
+    Selects the session's wrapped DEK alongside the user row, so `current_user` can unwrap it without
+    a second query. `u.*` first means a caller reading `row["id"]` still gets the *user* id."""
     return conn.execute(
-        """SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+        """SELECT u.*, s.dek_wrapped_tok FROM sessions s JOIN users u ON u.id = s.user_id
            WHERE s.token_sha256 = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')""",
         (_sha256(token),),
     ).fetchone()
