@@ -602,10 +602,11 @@ class _Surface:
     def room(self) -> int:
         """How many lines this prompt may draw, at the place it actually lands.
 
-        Inside a box that is the frame's budget — NOT the terminal height. The box is capped at
-        BOX_ROWS however tall the window is, so on any terminal taller than ~26 rows a prompt sized
-        to the terminal draws a row taller than the box can hold. Loose on the canvas or in a
-        transient Live, the terminal is the limit, less a margin for what sits around it.
+        Inside a box that is the frame's budget — NOT the terminal height. The box fills the alternate
+        screen but still has borders, and a transient Live (a section opened in a test, or a streaming
+        command) is not full height at all, so a prompt sized to the terminal draws a row taller than
+        the box can hold. Loose on the canvas or in a transient Live, the terminal is the limit, less
+        a margin for what sits around it.
         """
         if _FRAME is not None and not self.canvas and self.live is None:
             return _FRAME.budget()
@@ -1045,9 +1046,9 @@ def _canvas_render():
     `Setting up the Head` leaves the wizard's ✓ line in place rather than wiping it. Trimmed to the
     last screenful, the box included, so nothing renders past the top edge."""
     box = _FRAME._render() if _FRAME is not None else None
-    room = err.height or BOX_ROWS
+    room = err.height
     if box is not None:
-        room -= _height() or BOX_ROWS      # the rows the box itself will occupy
+        room -= _height() or room          # the rows the box itself will occupy
     loose = _LOOSE[-room:] if room > 0 else []
     parts = [*loose, *([box] if box is not None else [])]
     return Group(*parts) if parts else Text("")
@@ -1310,8 +1311,8 @@ def _tick_stop() -> None:
 
 # --- sections ---------------------------------------------------------------
 
-BOX_MAX = 96   # a box wider than this is harder to read, not more informative
-BOX_ROWS = 28  # and one taller than this is mostly empty: steps scroll, they do not accumulate
+BOX_MAX = 120  # a box wider than this is harder to read, not more informative — but 96 clipped the
+               # seven-column tables (`arm list`, `queue`, `history`) that this tool prints most
 
 
 _FRAME = None                          # the open _Frame, if any
@@ -1326,12 +1327,14 @@ def _width() -> int:
 
 
 def _height() -> int | None:
-    """A fixed, capped height on the alternate screen; natural height inline.
+    """The whole alternate screen; natural height inline.
 
     Fixed rather than content-sized, because the box owns the screen there — a frame that grew and
-    shrank with each step would jitter. Inline, None lets the Panel size to its content, which is
+    shrank with each step would jitter. It was also *capped*, at 28 rows, which spent the rest of a
+    tall terminal on nothing: the box scrolls its oldest rows away, so every row it is not given is a
+    step or a menu entry you cannot see. Inline, None lets the Panel size to its content, which is
     what a box printed into scrollback should do."""
-    return min(err.height, BOX_ROWS) if _ALT else None
+    return err.height if _ALT else None
 
 
 class _Frame:
@@ -1365,8 +1368,8 @@ class _Frame:
 
     def budget(self) -> int:
         """Rows available inside the borders. A prompt asks for this before it sizes itself — the box
-        is capped at BOX_ROWS however tall the terminal is, so a prompt that measured the *terminal*
-        would draw a row this trim then throws away (see `_render`)."""
+        is the terminal less its own borders, so a prompt that measured the *terminal* would draw a
+        row this trim then throws away (see `_render`)."""
         return max(3, (_height() or err.height) - 2)
 
     def _render(self):

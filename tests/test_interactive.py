@@ -548,7 +548,7 @@ def framed():
 class TestALongMenuIsStillAMenu:
     """A box that renders empty offers nothing and explains nothing — the flow is simply over, with
     no error and no way forward. `cuttle` did exactly that once logged in: 19 entries sized against
-    the terminal, drawn into a box capped at BOX_ROWS, trimmed away as one over-tall row."""
+    the terminal, drawn into a box shorter than they were, trimmed away as one over-tall row."""
 
     def _entries_drawn(self, frame) -> int:
         with ui.err.capture() as cap:
