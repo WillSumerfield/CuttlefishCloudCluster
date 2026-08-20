@@ -123,7 +123,7 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | Command | | Explained in |
 |---|---|---|
 | `cuttle wandb set` | Store your W&B key on the Head. Injected into every Spawn you submit. | [Telemetry](elements/telemetry.md) |
-| `cuttle wandb show` | Whether a key is stored, masked to its last four characters. | [Telemetry](elements/telemetry.md) |
+| `cuttle wandb show` | Whether a key is stored, and its last four characters. It cannot be read back in full. | [Telemetry](elements/telemetry.md) |
 | `cuttle wandb clear` | Forget it. Your Spawns go back to running with W&B disabled. | [Telemetry](elements/telemetry.md) |
 
 ## Operating the cluster

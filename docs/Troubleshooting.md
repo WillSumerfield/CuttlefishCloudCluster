@@ -66,9 +66,12 @@ eligibility: an unusual `--vram` or `--feature` may leave only one machine able 
 ### `wandb.init()` failed, or my runs are not logging
 
 If you have never run `cuttle wandb set`, your Spawns run with W&B explicitly **disabled** and you
-are told so at submit. If you *have*, and it stopped working, the Head may have been restored from a
-backup — stored keys deliberately do not survive that. Re-run `cuttle wandb set`. See
-[Telemetry](elements/telemetry.md).
+are told so at submit.
+
+If you *had* a key and it stopped working, an Admin most likely reset your password. Your key was
+encrypted with the old one, so the reset destroyed it — there is no way for it not to. Re-run
+`cuttle wandb set`. (Changing your own password with `cuttle passwd` does *not* do this, and neither
+does a restore from backup.) See [Telemetry](elements/telemetry.md).
 
 ### torch disappeared inside my Spawn
 
@@ -202,11 +205,13 @@ reverting to the LAN IP.
 Correct, and not a misconfiguration. The Head's network API exposes no administrative writes at all.
 See [Security](Security.md#the-head-api-has-no-admin-writes).
 
-### Everyone's W&B stopped working after a restore
+### I want to see my stored W&B key
 
-The keyfile is deliberately excluded from every backup. Each User re-pastes theirs with
-`cuttle wandb set` or the Dashboard's Account page. See
-[Backup & recovery](elements/backup-and-recovery.md#stored-wb-keys-do-not-come-back).
+You cannot, and neither can anyone else. A stored key is write-only: `cuttle wandb show` and the
+Dashboard's Account page give you its last four characters, which is enough to tell it from some
+other key. That is what lets it be kept under your password rather than somewhere the Head can reach
+on its own. Get the key from W&B, or just paste it again. See
+[Telemetry](elements/telemetry.md).
 
 ### No alert emails
 

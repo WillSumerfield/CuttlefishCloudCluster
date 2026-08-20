@@ -80,21 +80,41 @@ and nowhere else — not from another Spawn on the same machine, and not through
 |---|---|---|
 | User passwords | `head.db`, argon2id | One-way. Never recoverable, never printed. |
 | Session tokens | `head.db`, sha256 | One-way. `cuttle user reset` kills all of a User's sessions. |
-| W&B keys | `head.db`, AES-256-GCM | Encrypted under a keyfile beside the database. |
+| W&B keys, and every other Credential | `head.db`, AES-256-GCM | Encrypted under **the owner's password**. Write-only — never readable back, by anyone. |
+| Tide Pool private keys | `head.db`, AES-256-GCM | Encrypted under a keyfile beside the database. Deleted when the Spawn leaves the queue. |
 | Enrollment tokens | Minted, printed, expire | One machine, one use, about an hour. |
 | The munge key | `0400 munge:munge` on every node | Fetched over the mesh only; mesh membership is the authorization. |
 | Feature product keys | On the Arm, `0640`, CCC-owned | **Never sent to the Head.** Only the activation Spawn ever sees one. |
 | Backups | `/var/backups/ccc`, `root:root 0700` | Hold live secrets including session tokens. |
 
-**What at-rest encryption of W&B keys actually buys.** The Head decrypts unattended, so the keyfile
-sits next to the database and anything that can read one can read the other. It protects a `head.db`
-that leaks *on its own* — a copied database, a backup, a pulled disk. It does not protect a
-compromised Head, and it is not claimed to.
+**What password-bound encryption of Credentials actually buys, and what it does not.**
 
-This is why `cuttle backup` deliberately **excludes the keyfile**: it makes the tarball strictly less
-sensitive than the Head itself. The cost is that a restore comes back with every stored key
-unreadable, which the Head treats as unset rather than as an error. See
-[Backup & recovery](elements/backup-and-recovery.md#stored-wb-keys-do-not-come-back).
+A Credential — your W&B key, and anything like it — is sealed under a key derived from *your*
+password, not under anything the Head keeps. Concretely: a stolen `head.db` yields nothing. Not to
+someone who copied the database, not to someone holding a backup archive, not to someone who pulled
+the disk, and not to an Admin. **The Head cannot read your key while you are not logged in**, which
+is the whole point and also the source of every consequence below.
+
+What it does **not** buy: it is not a defence against a *live session*. Whoever holds your session
+token can submit a Spawn that echoes `$WANDB_API_KEY` back out, and no amount of encryption at rest
+changes that. This is exactly why there is no "reveal" — reveal would have cost the secret a trip
+across the wire and a stay in your terminal's scrollback, to defend against nothing that was not
+already reachable. Protect your session; that is the boundary that matters.
+
+Three consequences follow, none of them accidental:
+
+- **An Admin password reset destroys that User's Credentials.** Both keys that could open them die
+  with the old password and the sessions it authorized. An Admin who can reset a password
+  deliberately cannot read what that password was keeping.
+- **A Spawn submitted with no session carries no key.** `cuttle run --node` — Head-local, operator
+  only — has a User to attribute to but no login behind it, so it runs with W&B disabled and says so.
+- **A restore now keeps them.** Both halves of the wrapping live in `head.db`, so restoring the
+  database and logging in re-derives the key that opens them. This was not true before.
+
+`cuttle backup` still **excludes `secret.key`**, which now protects only Tide Pool private keys — it
+keeps the tarball strictly less sensitive than the Head itself, and costs a restore nothing, since a
+Tide Pool row belongs to a Spawn that ended long before anyone restores it. See
+[Backup & recovery](elements/backup-and-recovery.md).
 
 **Temporary passwords** are printed once, by the operator, and must be changed on the User's first
 login. Nothing in CCC ever prints or stores a reusable password.

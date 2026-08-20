@@ -7,7 +7,8 @@ sign-up.
 
 Your account is what ties everything together. Every [Spawn](spawns.md) you submit is yours, any
 [Arms](arms.md) you donate are marked as yours, your [Karma](karma.md) balance hangs off it, and
-your [W&B key](telemetry.md) is held under it.
+your [W&B key](telemetry.md) is held under it — under your *password*, specifically, which is why an
+Admin password reset destroys it.
 
 Logging in gets you a **session**: a token stored on the box you logged in from. It authorizes *you*
 to submit and to read your own things. It is a completely different thing from mesh membership,
@@ -67,8 +68,10 @@ The Admin creates your account and gives you a one-time temporary password. Your
 
 ### Sessions are per-box
 
-The token lands in `~/.ccc/credentials` on the machine you logged in from. Log in from a laptop and
+The token lands in `~/.ccc/session` on the machine you logged in from. Log in from a laptop and
 a desktop and you have two sessions; `cuttle logout` ends the one you are sitting at.
+
+A session is also what makes your stored keys usable: outside one the Head cannot reach them at all.
 
 The [Dashboard](../Dashboard.md) is the same account and the same cluster, in a browser.
 

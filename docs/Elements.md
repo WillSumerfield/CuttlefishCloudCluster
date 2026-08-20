@@ -87,8 +87,9 @@ enrollment tokens are secret and short-lived. **admin:** `munge rotate`.
 
 ### [Telemetry](elements/telemetry.md)
 
-Your W&B key, held once on the Head and injected into every Spawn you submit from either client —
-plus the Head-side watch for work running outside the scheduler. **admin:** the alert mailer.
+Your W&B key, held once on the Head under your own password and injected into every Spawn you submit
+from either client — plus the Head-side watch for work running outside the scheduler. **admin:** the
+alert mailer.
 
 ### [Backup & recovery](elements/backup-and-recovery.md)
 

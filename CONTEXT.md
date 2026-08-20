@@ -33,7 +33,7 @@
   reach the Head on, so a **Client** on the LAN and an Arm on the **Mesh** dial the same name and land
   on the same Head. A borrowed device CCC was never installed on has no way to learn the name, and
   reaches the **Dashboard** by address instead.
-- **Enrollment token** — a one-time, single-Arm, short-lived credential the **Admin** mints to
+- **Enrollment token** — a one-time, single-Arm, short-lived token the **Admin** mints to
   authorize one machine's enrollment. It also names the Arm's **owner** (a User, chosen by the Admin at
   mint), so the donor redeems it and declares nothing while the Head **auto-accepts** (no manual
   approval). It is the only thing that admits a new Arm; the Admin's own password never leaves the
@@ -63,10 +63,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 
 - **User** — a person with an account on the Head (admin-provisioned: username + password, argon2
   hash). A User's identity ties every Spawn they submit to them, marks any Arms they **own** (donate),
-  and anchors their Karma wallet. It also carries their **experiment-tracking credential**: the Head
-  holds it once, on their behalf, and injects it into every Spawn they submit from *either* client — so
-  a Spawn logs to its submitter's own account whichever machine it was launched from, and a User who
-  has set no credential is told their Spawns will log nothing rather than discovering it afterwards.
+  and anchors their Karma wallet. It also holds their **Credential**s, which is why the password is
+  more than a login: it is what those are kept under.
 - **Admin / Maintainer** — the privileged User (the operator) who provisions accounts, mints
   **enrollment tokens** (naming each Arm's owner), and can **override** Karma. One person today.
   The role's authority has two sources and they are not interchangeable: the **account**, which is what
@@ -79,7 +77,19 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   **contention**. A person who wants to use the cluster does so as an ordinary **User**, with an
   ordinary account.
 - **Session** — a User's authenticated login (a token) carrying the authority to submit jobs and read
-  their own data. Distinct from **Mesh** membership, which authorizes *machines*, not people.
+  their own data. Distinct from **Mesh** membership, which authorizes *machines*, not people. It is
+  also what makes a **Credential** usable: outside a Session the Head cannot reach one, so work
+  submitted with no Session behind it carries none.
+- **Credential** — a third-party secret a User hands the Head once — their W&B key, their GitHub key —
+  which the Head then injects into every Spawn they submit, from *either* client. So a Spawn reaches
+  the submitter's own accounts elsewhere whichever machine it was launched from, and no secret is
+  typed into code, an environment variable, or a config file.
+  A Credential is **write-only**: a User sets one and afterwards sees only a *hint* of it (the last few
+  characters, a fingerprint), never the value. Nobody reads one back — not the owner, not the **Admin**.
+  It is kept under the User's **password**, which decides its whole lifecycle. Changing a password
+  keeps every Credential; an Admin **reset** destroys them all, because a reset is precisely the case
+  where the password is gone. A User who has set none, or whose Credentials a reset took, is told their
+  Spawns will run without them rather than discovering it afterwards.
 
 ## Domains (bounded contexts that may deploy across roles)
 

@@ -19,7 +19,7 @@ The other thing on this page is the Head's own health monitor, which is the oper
 cuttle wandb set
 ```
 
-**Check there is one** (masked to its last four characters):
+**Check which one is stored** (its last four characters — the key itself cannot be read back):
 
 ```sh
 cuttle wandb show
@@ -42,21 +42,50 @@ cuttle wandb clear
 | | |
 |---|---|
 | `cuttle wandb set` | Store your key on the Head. |
-| `cuttle wandb show` | Whether one is stored, masked. |
+| `cuttle wandb show` | Whether one is stored, and its last four characters. |
 | `cuttle wandb clear` | Forget it. |
 
 ## Behavior
 
 ### The Head holds the key, and only the Head
 
-Your key is stored encrypted on the Head, under your account. It never touches the disk of the box
-you typed it on, and no other User can read it.
+Your key is stored on the Head, under your account, encrypted **with your password**. It never
+touches the disk of the box you typed it on. No other User can read it, no Admin can read it, and the
+Head itself cannot read it except while you are logged in — see
+[Security](../Security.md) for what that does and does not buy.
 
 At submit time the Head injects it into your Spawn's sandbox. It uses **its own stored copy**, never
 anything the client sent — a client cannot supply a key, and one that tries has it dropped.
 
 What the client *does* get to choose is the run's identity: `--project` and `--entity`. That is the
 whole of it.
+
+### You cannot read your key back
+
+Once stored, a key is **write-only**. `cuttle wandb show` and the Dashboard's Account page give you
+its last four characters and nothing more, which is enough to tell the key you meant from some other
+key. There is no reveal, no "print it in full", and no password prompt that would produce one.
+
+That is not caution for its own sake — it is what lets the key be kept under your password instead of
+under something the Head can reach on its own. If you need the key itself, get it from W&B; if you
+are not sure the stored one is right, paste it again.
+
+### Two things destroy it
+
+**An Admin password reset.** Your key was encrypted with your old password, and a reset means nobody
+has that password any more — including the Head. Your stored keys are deleted rather than left as
+ciphertext nothing can open. After a reset, paste your key again.
+
+**Nothing else.** Changing your own password with `cuttle passwd` keeps every key: the Head re-wraps
+them under the new password while you are logged in. A [restore from backup](backup-and-recovery.md)
+keeps them too.
+
+### A Spawn pinned from the Head gets no key
+
+`cuttle run --node`, which only an operator standing on the Head can run, submits with no login
+session behind it — so there is nothing to decrypt your key with, and that Spawn runs with W&B
+disabled. The command says so when you have a key stored. Submit through `cuttle run` or the
+Dashboard to log metrics.
 
 ### No key means no logging, and you are told
 

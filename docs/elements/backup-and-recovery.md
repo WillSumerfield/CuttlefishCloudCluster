@@ -1,7 +1,6 @@
 # Backup & recovery
 
-> This whole page is the operator's. Nothing here is available to, or affects, ordinary Users —
-> except one thing, which is that a restore loses everyone's stored W&B key. See the end.
+> This whole page is the operator's. Nothing here is available to, or affects, ordinary Users.
 
 ## What it is
 
@@ -47,19 +46,19 @@ It overwrites **every** Spawn, Karma event, session and Arm enrollment created s
 There is no selective restore of one store, and no undo short of restoring something else. It makes
 you type the archive's filename to confirm.
 
-### Stored W&B keys do not come back
+### Stored W&B keys do come back
 
-This is the one consequence that reaches Users, so it is worth knowing before you need it.
+They did not always. Each User's key used to be encrypted under a keyfile that was deliberately left
+out of every archive, so a restore left every stored key unreadable and each User had to re-paste
+theirs.
 
-Each User's W&B key is held in `head.db` encrypted under a keyfile, and **that keyfile is
-deliberately excluded from every backup**. That exclusion is the entire value of encrypting them: it
-keeps the tarball strictly *less* sensitive than the Head itself, which is the only thing at-rest
-encryption can buy on a box that has to decrypt unattended.
+That is no longer how keys are held: a [Credential](telemetry.md) is sealed under its owner's own
+password, and both halves of the wrapping are rows in `head.db`. Restore the database and the next
+login re-derives the key that opens them. Nobody has to re-paste anything.
 
-The cost is that after a restore, every stored key is unreadable. The Head treats an unreadable key
-as no key, so nothing breaks — Spawns simply run with W&B disabled, and say so. Each User re-pastes
-theirs with [`cuttle wandb set`](telemetry.md) or the Dashboard's Account page. `restore` prints this
-warning rather than letting it be discovered a Spawn later.
+`secret.key` is still excluded from every archive — it now protects only Tide Pool private keys, and
+those belong to Spawns that left the queue long before anyone restores a backup. The exclusion keeps
+the tarball strictly less sensitive than the Head itself and costs a restore nothing.
 
 ### What a backup is not
 
