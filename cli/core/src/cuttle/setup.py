@@ -1231,10 +1231,10 @@ def _update_client() -> None:
 def _session_line(url: str) -> str:
     """Whether this box currently holds a **Session**, said in one line. Validated against the Head
     rather than read off disk: a token file proves only that you logged in once."""
-    if not config.CREDENTIALS_FILE.exists():
+    if not config.SESSION_FILE.exists():
         return "not logged in (`cuttle login`)"
     try:
-        me = api.for_head().json("GET", "/me", token=config.CREDENTIALS_FILE.read_text().strip(),
+        me = api.for_head().json("GET", "/me", token=config.SESSION_FILE.read_text().strip(),
                                  timeout=5)
     except Exception:
         return f"could not reach {url} to check (`cuttle whoami`)"

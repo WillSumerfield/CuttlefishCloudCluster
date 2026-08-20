@@ -102,7 +102,7 @@ class ApiError(Exception):
 
 class Api:
     """A session against one Head. Holds the bearer so the TUI can log in mid-run without touching
-    disk; the CLI leaves it None and lets `for_head()`'s loader read `~/.ccc/credentials`."""
+    disk; the CLI leaves it None and lets `for_head()`'s loader read `~/.ccc/session`."""
 
     def __init__(self, client: httpx.Client, token: str | None = None, url: str = "",
                  per_request_timeout: bool = True):

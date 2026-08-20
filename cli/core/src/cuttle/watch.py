@@ -217,7 +217,7 @@ def _token() -> str | None:
     logging back in resumes them.
     """
     try:
-        return config.CREDENTIALS_FILE.read_text().strip() or None
+        return config.SESSION_FILE.read_text().strip() or None
     except OSError:
         return None
 

@@ -2,7 +2,7 @@
 
 Two halves with different trust models:
 - **Login/session** — `login`/`logout`/`whoami`/`passwd` talk to the Head API over HTTP (works from any
-  box; a submitter need never have run `setup`). The bearer token lands in `~/.ccc/credentials` (0600);
+  box; a submitter need never have run `setup`). The bearer token lands in `~/.ccc/session` (0600);
   the Head URL in `~/.ccc/config`.
 - **User-admin** — `user add|list|remove|reset` run *on the Head as the `ccc` service account* and write
   head.db directly via the API venv (`python -m ccc_head_api.admin`). Being the operator on the Head
@@ -46,7 +46,7 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
     test for us, and the answer is which road to take rather than what to print. Nothing else should
     use it — for every other command a 403 IS the outcome.
     """
-    # Loaded here, not in api.py: reading the credentials file is what makes "not logged in" a
+    # Loaded here, not in api.py: reading the session file is what makes "not logged in" a
     # *command* error, and `auth=False` callers (login) must never trigger it.
     if token is None and auth:
         token = _load_token()
@@ -85,20 +85,20 @@ def _set_head(head: str | None) -> None:
         settings.save(data)
 
 
-# --- credential store (~/.ccc/credentials, 0600) ----------------------------
+# --- session store (~/.ccc/session, 0600) -----------------------------------
 
 def _save_token(token: str) -> None:
     # mode explicitly, not the ambient umask: the file below is 0600, and a 0755 directory around it
     # still tells every local user that this box has a CCC session and when it was obtained.
     config.ensure_ccc_home()
-    config.CREDENTIALS_FILE.write_text(token)
-    config.CREDENTIALS_FILE.chmod(0o600)
+    config.SESSION_FILE.write_text(token)
+    config.SESSION_FILE.chmod(0o600)
 
 
 def _load_token() -> str:
-    if not config.CREDENTIALS_FILE.exists():
+    if not config.SESSION_FILE.exists():
         raise typer.BadParameter("not logged in — run `cuttle login`")
-    return config.CREDENTIALS_FILE.read_text().strip()
+    return config.SESSION_FILE.read_text().strip()
 
 
 # --- login / session --------------------------------------------------------
@@ -191,42 +191,46 @@ def account(as_json: bool = False) -> None:
     ui.emit(payload, as_json, render)
 
 
-# --- your stored W&B key (on the Head) --------------------------------------
-# The CLI-parity counterpart of the Dashboard's Account page: one key per User, held encrypted on the
-# Head, injected into every Spawn you submit from either client.
+# --- your Credentials (on the Head) -----------------------------------------
+# The CLI-parity counterpart of the Dashboard's Account page: one secret per kind per User, held on the
+# Head under that User's password, injected into every Spawn you submit from either client.
+#
+# **Write-only.** There is no reveal and no route that would serve one — the Head cannot decrypt a
+# Credential without a live session's key, and even with one it will not hand the plaintext back. What
+# you get afterwards is the `hint` (for a W&B key, its last 4 characters), which is enough to tell the
+# key you meant from some other key and is all `--reveal` was ever really used for.
+#
+# Verbs stay per-tool (`cuttle wandb …`) even though the storage and the routes are generic: a
+# scientist reaches for the name of the thing they have a key *for*, not for the abstraction the Head
+# files it under.
 
 def wandb_set(key: str) -> None:
-    _api("POST", "/account/wandb", token=_load_token(), body={"key": key})
+    _api("POST", "/account/credentials/wandb", token=_load_token(), body={"value": key})
     # The last 4 only, and only as confirmation you pasted what you meant to. Same masking the
     # Dashboard shows, for the same reason: a terminal keeps scrollback.
-    ui.ok(f"W&B key stored on the Head (…{key[-4:]})")
+    ui.ok(f"W&B key stored on the Head (…{key.strip()[-4:]})")
 
 
-def wandb_show(reveal: bool = False) -> None:
-    """Masked by default; `--reveal` prints the plaintext, which is the only way to check you pasted
-    the right key. No password re-prompt for it — the Head does not ask for one either (a session that
-    can submit a Spawn can already echo $WANDB_API_KEY out of one)."""
-    status = _api("GET", "/account/wandb", token=_load_token())
+def wandb_show() -> None:
+    """Masked, and that is the only view there is — see the section comment."""
+    status = _api("GET", "/account/credentials/wandb", token=_load_token())
     if not status["set"]:
         ui.say("no W&B key stored — your Spawns run with W&B disabled")
         ui.hint("set one with `cuttle wandb set`")
         return
-    if reveal:
-        ui.data(_api("GET", "/account/wandb/reveal", token=_load_token())["key"])
-        return
-    ui.data(f"•••••••••• {status['last4']}")
-    ui.hint("`cuttle wandb show --reveal` prints it in full")
+    ui.data(f"•••••••••• {status['hint']}")
+    ui.hint("the key itself cannot be read back — replace it with `cuttle wandb set`")
 
 
 def wandb_clear() -> None:
-    _api("DELETE", "/account/wandb", token=_load_token())
+    _api("DELETE", "/account/credentials/wandb", token=_load_token())
     ui.ok("W&B key cleared — your Spawns will run with W&B disabled")
 
 
 def logout() -> None:
-    if config.CREDENTIALS_FILE.exists():
+    if config.SESSION_FILE.exists():
         _api("POST", "/logout", token=_load_token())
-        config.CREDENTIALS_FILE.unlink()
+        config.SESSION_FILE.unlink()
     ui.ok("logged out")
     # Auto-download re-reads this file on every pass and never keeps a copy of the token, so logging
     # out genuinely stops it — which makes this the moment to say so, rather than leaving a User to

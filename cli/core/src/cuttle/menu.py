@@ -272,9 +272,9 @@ def _session() -> tuple[bool, str | None]:
     NOT guess 'logged in': we fall back to the offline safe-set (logged_in False, which shows `login`
     and hides the submit suite that could not work anyway) and return a line saying why.
     """
-    if not config.CREDENTIALS_FILE.exists():
+    if not config.SESSION_FILE.exists():
         return False, None
-    token = config.CREDENTIALS_FILE.read_text().strip()
+    token = config.SESSION_FILE.read_text().strip()
     try:
         api.for_head().json("GET", "/me", token=token, timeout=PROBE_TIMEOUT)
         return True, None

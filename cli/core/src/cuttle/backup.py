@@ -12,12 +12,17 @@ writes arms.json; the Head API + Karma tick write head.db; Headscale writes its 
 the archive's copies replace them at the right owner/perms, and everything restarts. All-or-nothing —
 there is no selective single-store restore.
 
-**`secret.key` is deliberately NOT in the archive.** head.db holds each User's W&B key encrypted under
-that keyfile, and leaving it out is the entire value of encrypting them: the tarball then stays
-strictly *less* sensitive than the Head itself, which is the one thing at-rest encryption can buy on a
-box that must decrypt unattended (see ccc_head_api/atrest.py). The cost is that a restore comes back
-with every stored W&B key unreadable — which the Head treats as unset, so nothing breaks and each User
-re-pastes theirs. `restore()` says so out loud rather than letting it be discovered a Spawn later.
+**`secret.key` is deliberately NOT in the archive.** It decrypts the Tide Pool private keys head.db
+holds (ccc_head_api/atrest.py), and leaving it out is the entire value of encrypting them: the tarball
+stays strictly *less* sensitive than the Head itself, which is the one thing at-rest encryption can buy
+on a box that must decrypt unattended. This costs nothing to a restore — a Tide Pool row belongs to a
+Spawn that was in the queue when the snapshot was taken and is long gone by the time anyone restores it.
+
+**Credentials, by contrast, come back.** A User's W&B key is sealed under their own password rather
+than under any keyfile (ccc_head_api/credentials.py), and both halves of that — the salt and the
+wrapped key — are rows in head.db. Restore the database and the next login re-derives the key that
+opens them. This was not true before: a restore used to leave every stored W&B key unreadable, and
+`restore()` had to warn about it.
 """
 
 from pathlib import Path

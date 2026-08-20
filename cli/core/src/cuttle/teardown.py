@@ -241,13 +241,13 @@ def remove_user_dirs() -> None:
 
 
 def revoke_session() -> None:
-    """Tell the Head to drop this box's session before the credentials file goes with ~/.ccc.
+    """Tell the Head to drop this box's session before the session file goes with ~/.ccc.
 
     Deleting the file only makes the token unreachable HERE; the row on the Head stays valid for the
     rest of its TTL, exactly the thing `cuttle logout` avoids. Best-effort by necessity — this same
     teardown may have just removed the Head, or be running on a box whose Head is long gone — so a
     failure is silent and the TTL remains the backstop."""
-    if not config.CREDENTIALS_FILE.exists():
+    if not config.SESSION_FILE.exists():
         return
     try:
         from . import auth
@@ -575,7 +575,7 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
 # --- client-only teardown ----------------------------------------------------
 
 def teardown_client() -> None:
-    """Reverse `setup --client`: ~/.ccc (config, credentials, the pinned CA), plus the two things setup
+    """Reverse `setup --client`: ~/.ccc (config, session token, the pinned CA), plus the two things setup
     put outside it — the **Cluster name** in /etc/hosts and the CA in this box's trust stores.
 
     Those two are why this now primes sudo, which a client teardown never used to need. `libnss3-tools`

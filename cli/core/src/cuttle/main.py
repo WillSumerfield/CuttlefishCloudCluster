@@ -1,5 +1,6 @@
 """`cuttle` CLI entrypoint."""
 
+import sys
 from pathlib import Path
 
 import typer
@@ -376,7 +377,7 @@ def login(
     head: str = typer.Option(
         None, "--head", help="Head address or URL (e.g. ccc.glados); saved for next time."),
 ):
-    """Log in to the Head and store a session token (~/.ccc/credentials). Forces a password change on
+    """Log in to the Head and store a session token (~/.ccc/session). Forces a password change on
     first login."""
     # A box, so the URL/username/password prompts draw as rows *inside* the frame rather than loose
     # lines below it. `who` carries the result out to the summary line the box collapses to.
@@ -539,21 +540,37 @@ def karma_ledger(
 @wandb_app.command("set")
 def wandb_set(
     key: str = typer.Argument(None, help="Your W&B API key (prompted for if omitted)."),
+    from_stdin: bool = typer.Option(False, "--stdin", help="Read the key from stdin instead of argv."),
 ):
     """Store your W&B API key on the Head. It is injected into every Spawn you submit, from the CLI
-    or the Dashboard, and is held encrypted — no other User can read it, and it never touches this
-    box's disk."""
-    # Visible, not a password prompt: a pasted key has to be verifiable by eye.
+    or the Dashboard.
+
+    Held under YOUR PASSWORD (see `cuttle passwd`): the Head cannot read it without a live session of
+    yours, no other User can read it, no Admin can, and it never touches this box's disk. You cannot
+    read it back either — afterwards `cuttle wandb show` gives you its last 4 characters and nothing
+    more. An Admin password reset destroys it, and you re-paste.
+
+    `--stdin` is the path for scripts: `cuttle wandb set --stdin < key.txt` keeps the key out of argv,
+    where `ps` and your shell history would both see it.
+    """
+    if from_stdin:
+        key = sys.stdin.read().strip()
+        if not key:
+            raise ui.abort("nothing on stdin")
+    # Visible, not a password prompt: a pasted key has to be verifiable by eye — and now this is the
+    # only moment it is ever visible.
     key = ui.need(key, "the key", lambda: ui.ask_text("Paste your W&B API key"))
     auth_mod.wandb_set(key)
 
 
 @wandb_app.command("show")
-def wandb_show(
-    reveal: bool = typer.Option(False, "--reveal", help="Print the key in full, not masked."),
-):
-    """Show whether a W&B key is stored for you, masked to its last 4 characters."""
-    auth_mod.wandb_show(reveal=reveal)
+def wandb_show():
+    """Show whether a W&B key is stored for you, as its last 4 characters.
+
+    There is no `--reveal`. The Head will not serve the plaintext back — a stored key is write-only,
+    which is what lets it be kept under your password rather than under something the Head can reach
+    on its own."""
+    auth_mod.wandb_show()
 
 
 @wandb_app.command("clear")
@@ -591,12 +608,6 @@ def backup_restore(
     with ui.section("Restoring cluster state", lambda: Path(archive).name):
         backup_mod.restore(Path(archive), setup_mod._write_root_file)
     ui.ok("restored — the Enroll API, Head API, Karma tick, and Headscale are back up")
-    # The one thing a restore silently does NOT bring back. Said here because the alternative is a User
-    # discovering it as a Spawn that quietly logged nothing (see backup.py's docstring for why the
-    # keyfile is left out of the archive on purpose).
-    ui.warn("stored W&B keys did not come back — the key that decrypts them is deliberately left out "
-            "of every backup, so each User must re-paste theirs (`cuttle wandb set`, or the "
-            "Dashboard's Account page)")
 
 
 @munge_app.command("rotate")

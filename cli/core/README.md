@@ -79,7 +79,7 @@ submit from any box, whether or not it ever ran `setup`.
 - `cuttle outputs <id>` — download the Spawn's declared outputs as a tar.
 
 ### Accounts
-- `cuttle login [--head <url>]` / `logout` / `whoami` / `passwd` — session lives in `~/.ccc/credentials`
+- `cuttle login [--head <url>]` / `logout` / `whoami` / `passwd` — session lives in `~/.ccc/session`
   (0600). First login on a fresh account forces a password rotation.
 - `cuttle user add|list|remove <name>` — Head-side only (runs as the Mantle against the auth store).
   `add` prints a one-time temp password; the operator never learns a reusable one.
@@ -111,7 +111,7 @@ doesn't happen on every redeploy.
 
 ## Config / artifacts
 - `cuttle setup` prompts for the W&B API key + default project/entity → `~/.ccc/config/config.yaml` (0600).
-- `~/.ccc` holds **only** the operator's settings + session credentials. Spawn artifacts are not here:
+- `~/.ccc` holds **only** the operator's settings + its session token. Spawn artifacts are not here:
   they live on the Head under `/var/lib/ccc/head/spawns/<id>/{out,err,exit,outputs}` (owned by the
   Mantle) and are read back over the API — a submitter never touches the Head's disk.
 - The Pod image is at `/opt/ccc/images/base.sif`, the same path on every node, so it is readable by the

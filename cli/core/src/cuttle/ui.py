@@ -112,6 +112,9 @@ _TROUBLE: list[str] = []        # warnings and failures, in order — surfaced a
 # argv positions that hold a secret rather than an argument. These logs are the ONE place a CCC
 # secret was landing in cleartext: everything else under ~/.ccc that holds one is explicitly 0600 and
 # holds it deliberately, while this file was simply the transcript nobody thought of as secret-bearing.
+# Note the limit: this scrubs the CLI's OWN run log and nothing else. A secret typed as a positional
+# is still visible to `ps` while the command runs and still lands in shell history, neither of which
+# this file can reach. `cuttle wandb set --stdin` is the path that avoids all three.
 _SECRET_FLAGS = {"--token"}                 # `cuttle setup --arm --token <blob>`
 _SECRET_AFTER = [("wandb", "set")]          # `cuttle wandb set <key>` — a positional, so match on path
 

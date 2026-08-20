@@ -13,7 +13,7 @@ server-side in `ccc_head_api.spawns`.
                 (`status`/`logs`/`outputs`), never off local disk. A remote submitter who never ran
                 setup gets results the same way — `cuttle outputs <id>` downloads the outputs tar.
 
-Auth: every call carries the bearer token from `~/.ccc/credentials`; the Head URL comes from
+Auth: every call carries the bearer token from `~/.ccc/session`; the Head URL comes from
 ~/.ccc/config. Every route needs it. Transport is HTTPS, verified against the Head's certificate
 pinned on this machine (see tls.py).
 """
