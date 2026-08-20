@@ -94,7 +94,7 @@ def ccc_home(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CCC_HOME", home)
     monkeypatch.setattr(config, "CONFIG_DIR", home / "config")
     monkeypatch.setattr(config, "CONFIG_FILE", home / "config" / "config.yaml")
-    monkeypatch.setattr(config, "CREDENTIALS_FILE", home / "credentials")
+    monkeypatch.setattr(config, "SESSION_FILE", home / "session")
     monkeypatch.setattr(config, "PINS_DIR", home / "pins")
     monkeypatch.setattr(config, "LOG_DIR", home / "logs")
     monkeypatch.setattr(config, "WATCH_DIR", home / "watch")

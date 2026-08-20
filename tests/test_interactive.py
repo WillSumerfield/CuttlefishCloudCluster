@@ -519,10 +519,10 @@ class TestTheSessionProbe:
     def _creds(self, monkeypatch, tmp_path):
         f = tmp_path / "credentials"
         f.write_text("tok")
-        monkeypatch.setattr(menu.config, "CREDENTIALS_FILE", f)
+        monkeypatch.setattr(menu.config, "SESSION_FILE", f)
 
     def test_no_token_is_logged_out_with_no_network_call(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(menu.config, "CREDENTIALS_FILE", tmp_path / "absent")
+        monkeypatch.setattr(menu.config, "SESSION_FILE", tmp_path / "absent")
         monkeypatch.setattr(menu.api, "for_head",
                             lambda *a, **k: pytest.fail("probed the Head with no token to check"))
         assert menu._session() == (False, None)

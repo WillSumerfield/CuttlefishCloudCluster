@@ -14,7 +14,7 @@ import io
 
 import pytest
 
-from ccc_head_api import admin, db, karma, spawns
+from ccc_head_api import admin, credentials, db, karma, spawns
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ class TestReset:
     def test_it_kills_existing_sessions(self, head_db):
         with db.connect() as conn:
             user = db.get_user(conn, "alice")
-            token = db.create_session(conn, user["id"])
+            token = db.create_session(conn, user["id"], credentials.new_dek())
             assert db.lookup_session(conn, token) is not None
         admin.main(["reset", "alice"])
         with db.connect() as conn:

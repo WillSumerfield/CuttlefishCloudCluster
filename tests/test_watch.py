@@ -142,7 +142,7 @@ class TestTheSessionIsNeverCopied:
 
     def test_logged_out_parks_rather_than_drops(self, logged_in, tmp_path):
         watch.arm(9, tmp_path)
-        config.CREDENTIALS_FILE.unlink()
+        config.SESSION_FILE.unlink()
         assert watch.drain_one(9) is True
         assert watch.read(9)["state"] == watch.PARKED
 
@@ -150,7 +150,7 @@ class TestTheSessionIsNeverCopied:
         """Logging out for five minutes must not permanently strand every outstanding result."""
         _outputs_on_head(10)
         watch.arm(10, tmp_path)
-        config.CREDENTIALS_FILE.unlink()
+        config.SESSION_FILE.unlink()
         watch.drain_one(10)
         logged_in("login", input="alice\nhunter2\n")
         watch.arm(10, tmp_path)          # what the re-arm hook's caller effectively restores

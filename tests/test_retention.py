@@ -288,7 +288,7 @@ class TestStatus(_Base):
 # Same in-process rig test_recovery.py uses for its two routes.
 
 def _client(monkeypatch, tmp_path) -> TestClient:
-    user = {"id": 1, "username": "alice", "is_admin": False, "must_change_password": False}
+    user = {"id": 1, "username": "alice", "is_admin": False, "must_change_password": False, "dek": None}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
     db.ensure_schema()

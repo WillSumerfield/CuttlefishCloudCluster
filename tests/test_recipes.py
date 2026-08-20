@@ -283,7 +283,7 @@ class TestDeletedUsers(_Base):
 # Same in-process rig test_retention.py uses.
 
 def _client(monkeypatch, tmp_path, user_id=1, is_admin=False) -> TestClient:
-    user = {"id": user_id, "username": "alice", "is_admin": is_admin, "must_change_password": False}
+    user = {"id": user_id, "username": "alice", "is_admin": is_admin, "must_change_password": False, "dek": None}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
     db.ensure_schema()

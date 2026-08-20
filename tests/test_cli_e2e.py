@@ -31,12 +31,12 @@ class TestSession:
         result = cli("login", input=f"alice\n{USERS['alice']}\n")
         assert result.exit_code == 0, result.output
         assert "logged in as alice" in result.output
-        assert config.CREDENTIALS_FILE.read_text().strip()
+        assert config.SESSION_FILE.read_text().strip()
 
     def test_login_refuses_a_wrong_password(self, cli):
         result = cli("login", input="alice\nnot-my-password\n")
         assert result.exit_code != 0
-        assert not config.CREDENTIALS_FILE.exists()
+        assert not config.SESSION_FILE.exists()
 
     def test_admin_login_says_so(self, cli):
         result = cli("login", input=f"root\n{USERS['root']}\n")
@@ -57,7 +57,7 @@ class TestSession:
         """A credential file that exists but holds a bearer the Head rejects (expired / revoked) is a
         different failure from having no file at all: the Head answers 401, not the local not-logged-in
         guard. It must remap to an actionable line, never echo the Head's raw 'Unauthorized'."""
-        config.CREDENTIALS_FILE.write_text("stale-token-the-head-never-issued")
+        config.SESSION_FILE.write_text("stale-token-the-head-never-issued")
         result = signed_in("whoami")
         assert result.exit_code != 0
         assert "session expired" in result.output
@@ -65,7 +65,7 @@ class TestSession:
 
     def test_logout_revokes_the_session_at_the_head(self, signed_in):
         assert signed_in("logout").exit_code == 0
-        assert not config.CREDENTIALS_FILE.exists()
+        assert not config.SESSION_FILE.exists()
         # The point of a logout is the *server* forgetting, not just the client. A second whoami
         # would pass on a stale local token if the Head still honoured the row.
         assert signed_in("whoami").exit_code != 0
@@ -73,7 +73,7 @@ class TestSession:
     def test_password_change_takes_effect(self, signed_in):
         result = signed_in("passwd", input=f"{USERS['alice']}\nnew-passphrase\nnew-passphrase\n")
         assert result.exit_code == 0, result.output
-        config.CREDENTIALS_FILE.unlink()
+        config.SESSION_FILE.unlink()
         assert signed_in("login", input="alice\nnew-passphrase\n").exit_code == 0
 
 
@@ -401,7 +401,7 @@ class TestCancel:
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
         spawn = self._spawn(cli)
-        config.CREDENTIALS_FILE.unlink()
+        config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         result = cli("cancel", spawn, "--yes")
         assert result.exit_code != 0
@@ -411,7 +411,7 @@ class TestCancel:
         """Someone else's live Spawn, and an operator standing on the Head looking at it."""
         cli("login", input=f"alice\n{USERS['alice']}\n")
         spawn = self._spawn(cli)
-        config.CREDENTIALS_FILE.unlink()
+        config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         monkeypatch.setattr(menu, "is_head", lambda: True)
         ran = []
@@ -730,7 +730,7 @@ class TestNoAdminWritesOverTheApi:
 
         What matters more than the status code: no Karma moved. A route that answered 500 while
         still crediting the balance would pass a status-code assertion and be a catastrophe."""
-        token = config.CREDENTIALS_FILE.read_text().strip()
+        token = config.SESSION_FILE.read_text().strip()
         r = head.post("/karma/override", json={"username": "alice", "amount": 500},
                       headers={"Authorization": f"Bearer {token}"})
         assert r.status_code in (404, 405)
@@ -742,7 +742,7 @@ class TestNoAdminWritesOverTheApi:
     def test_the_endpoint_itself_refuses_a_pin(self, head, signed_in, fake_slurm, project):
         """Driven at the API, not the CLI: a client that simply stopped sending `node` would make a
         client-side test pass while the endpoint stayed wide open."""
-        token = config.CREDENTIALS_FILE.read_text().strip()
+        token = config.SESSION_FILE.read_text().strip()
         r = head.post("/submit", content=b"",
                       headers={"Authorization": f"Bearer {token}",
                                # Named and otherwise complete, so the 403 below is unambiguously about

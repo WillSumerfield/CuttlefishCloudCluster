@@ -1004,7 +1004,7 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
     interesting state: with no Demand history every bucket forecasts 1.0, so the quote must come out
     exactly as it did before the Tide existed.
     """
-    user = {"id": 1, "username": "alice", "is_admin": is_admin, "must_change_password": False}
+    user = {"id": 1, "username": "alice", "is_admin": is_admin, "must_change_password": False, "dek": None}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
     # A fresh empty db every time. Not optional: the route reads the Tide from head.db even for an Admin
     # (whose hold is None). Tests that need rows (the cancel tests) seed AFTER this, into this same path.
