@@ -51,6 +51,7 @@ The per-capability docs live in [`elements/`](elements/) and are indexed by
 [Storage](elements/storage.md) ·
 [Mesh](elements/mesh.md) ·
 [Telemetry](elements/telemetry.md) ·
+[GitHub keys](elements/github-keys.md) ·
 [Backup & recovery](elements/backup-and-recovery.md)
 
 ## Working on CCC itself

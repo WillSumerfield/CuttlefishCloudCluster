@@ -91,6 +91,12 @@ Your W&B key, held once on the Head under your own password and injected into ev
 from either client — plus the Head-side watch for work running outside the scheduler. **admin:** the
 alert mailer.
 
+### [GitHub keys](elements/github-keys.md)
+
+An SSH key the Head **mints** for you and puts in every Spawn, so your work can clone the private
+repositories it lives in. You never see the private half; you register the public one with GitHub.
+It reaches everything your GitHub account reaches, so `--no-git` leaves it out of a Spawn.
+
 ### [Backup & recovery](elements/backup-and-recovery.md)
 
 **admin, entirely.** Snapshotting and restoring the Head's state: accounts, Karma, Arms, mesh.

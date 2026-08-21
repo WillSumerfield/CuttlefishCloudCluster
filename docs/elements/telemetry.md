@@ -11,6 +11,9 @@ file, and you never have to remember which machine has one.
 
 The other thing on this page is the Head's own health monitor, which is the operator's business.
 
+Your [GitHub key](github-keys.md) works the same way and is kept the same way, with one difference
+worth knowing: the Head *generates* that one, so you never paste it and never see its private half.
+
 ## Typical use
 
 **Store your key:**

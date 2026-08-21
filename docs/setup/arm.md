@@ -97,6 +97,20 @@ rather than letting a stranger's job die inside a shared library hours later.
 If a Feature has a product key, you are asked where that is too. It is copied into CCC's own state on
 **this box** and never leaves it — the Head never sees it.
 
+### It offers to log you in at the end
+
+Donating a machine does not require an account on the cluster, but you almost certainly want one: an
+Arm's owner is a User like everyone else, and this box can submit work as easily as it runs it. So
+setup finishes by offering a login. Enrolling has already pointed this box at the Head and installed
+its certificate, so there is nothing to configure.
+
+Say yes and it also asks the two account questions — your default
+[W&B](../elements/telemetry.md) project, and whether to mint a
+[GitHub key](../elements/github-keys.md) so your Spawns can reach your private repositories.
+
+Say no and setup ends there. Nothing about the Arm depends on it, and `cuttle login` picks the thread
+up whenever you want.
+
 ## 3. Confirm it worked
 
 Ask the admin to run `cuttle arm list`. Your Arm should be **admitted**, not merely *enrolled*.
@@ -126,8 +140,8 @@ after a 3-minute grace period if it hasn't exited. Whoever's Spawn that was pays
 
 **You do not have to be sitting at the machine.** Retract is a request to the Head, so it works from
 any box logged in as you — your laptop, a Client, the Arm itself — and it works whether or not the
-Arm is reachable, or even switched on. What it does need is a session: `cuttle login`. Setup points
-this box at the Head but does not log you in, so if you have never logged in *here*, do that first.
+Arm is reachable, or even switched on. What it does need is a session: `cuttle login`. Setup offers
+you one at the end, so you probably already have it here; if you declined, do that first.
 
 You can only retract an Arm **you own**; the Head refuses anyone else's, including the admin's own
 attempt over the network.

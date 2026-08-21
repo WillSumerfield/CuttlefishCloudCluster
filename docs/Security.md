@@ -81,6 +81,7 @@ and nowhere else — not from another Spawn on the same machine, and not through
 | User passwords | `head.db`, argon2id | One-way. Never recoverable, never printed. |
 | Session tokens | `head.db`, sha256 | One-way. `cuttle user reset` kills all of a User's sessions. |
 | W&B keys, and every other Credential | `head.db`, AES-256-GCM | Encrypted under **the owner's password**. Write-only — never readable back, by anyone. |
+| GitHub SSH keys | `head.db`, AES-256-GCM | The same envelope, but **minted** rather than pasted: the Head generates the pair and only the public half is ever shown. See [GitHub keys](elements/github-keys.md). |
 | Tide Pool private keys | `head.db`, AES-256-GCM | Encrypted under a keyfile beside the database. Deleted when the Spawn leaves the queue. |
 | Enrollment tokens | Minted, printed, expire | One machine, one use, about an hour. |
 | The munge key | `0400 munge:munge` on every node | Fetched over the mesh only; mesh membership is the authorization. |
@@ -118,6 +119,19 @@ Tide Pool row belongs to a Spawn that ended long before anyone restores it. See
 
 **Temporary passwords** are printed once, by the operator, and must be changed on the User's first
 login. Nothing in CCC ever prints or stores a reusable password.
+
+The cluster's **first Admin** is not even printed once. `setup --head` seeds that account, spends its
+one-time password itself on a login, and asks you to choose a real one before it finishes — so the
+password reaches no screen, no scrollback, and no run log. Earlier versions printed it as a result you
+were expected to use later, which made it the one reusable secret CCC ever put on a terminal.
+
+**An account key is a standing grant, and the GitHub key is one.** Everything above is about a secret
+being *readable*; this one is about a secret being *usable*. For the life of a Spawn, the ssh-agent
+holding your GitHub key is reachable by every process in that Pod — your code and every dependency
+your Environment installed — and that key reaches every repository your GitHub account reaches, with
+write access. The key itself never leaves the agent, so nothing can take a copy and use it next week.
+But while the Spawn runs, anything in it can sign as you. `cuttle run --no-git` and the Dashboard's
+composer toggle leave it out of a Spawn; running code you did not write is the reason to.
 
 ## Transport
 
@@ -158,6 +172,10 @@ Stated so nobody assumes otherwise:
 - **A stolen Head.** The authority's private key lives on the Head, so whoever holds that box can mint
   a certificate for any name in the cluster and every other box will trust it. This is the price of
   the browser no longer warning, and it is the same box that already holds every account and secret.
+- **Code you chose to run, inside your own Spawn.** A Spawn runs as you, with whatever you gave it —
+  your W&B key in its environment, your GitHub key in its agent. CCC isolates Users from each other,
+  not you from a dependency you installed. `--no-git` narrows what one Spawn holds; nothing narrows
+  what a Spawn does with what it holds.
 - **Denial of service by a legitimate User.** Karma makes queue-flooding self-punishing — an Escrow
   suppresses your standing the moment you queue, so flooding immediately costs you your own position
   — but it is an economic disincentive, not a rate limit.

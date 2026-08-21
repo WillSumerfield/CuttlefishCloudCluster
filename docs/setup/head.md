@@ -50,10 +50,25 @@ Along the way it asks which [Features](../elements/arm-features.md) *this* box h
 Arm is an Arm like any other — and, if you want alerting, for [SMTP credentials](../SMTP-Runbook.md).
 Both are skippable and both can be filled in by re-running setup later.
 
+**It finishes by logging you in.** The Admin account is created during setup with a one-time password
+that is never displayed: setup spends it on a login itself and asks you to choose your own, there and
+then. Nothing to copy down, and nothing left in your scrollback. Then it asks the two account
+questions — your default [W&B](../elements/telemetry.md) project, and whether to mint a
+[GitHub key](../elements/github-keys.md) so your Spawns can reach your private repositories. Both are
+skippable, and both can be done later with `cuttle wandb`/`cuttle github`.
+
+These are at the end, and that is why setup is not something you can start and walk away from. They
+need the Head API running and a session on it — a GitHub key cannot exist before you have logged in,
+because it is sealed under your password.
+
 Re-running `cuttle setup --head` is safe and is the normal way to change something. The one thing it
 will *not* redo is the Pod image: an existing `base.sif` is kept as-is and never compared against the
 definition setup would render now. Changing the image means `cuttle teardown --all` and setup again,
 on the Head and on every Arm.
+
+If you ever lose the Admin password, reset it from this box with
+`cuttle user reset admin` — the one path that does not need a session. Note what that costs: a
+password reset destroys that account's stored keys, because the password was what kept them.
 
 ## 3. Check it
 

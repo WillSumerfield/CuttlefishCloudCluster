@@ -105,6 +105,15 @@ A dependency declaration is code — a `pyproject.toml` can run arbitrary build 
 inside a [Pod](isolation.md), as your own [Guise](isolation.md), never as the cluster itself, with the
 same walls your script gets a moment later. Your code has no way to become the cluster, on any machine.
 
+### A private git dependency does not build
+
+Your [GitHub key](github-keys.md) reaches your Spawn's *payload*, not this build. So a manifest
+pinning a dependency to a private repository — `git+ssh://git@github.com/you/lib` — fails here, before
+your script ever starts, with an authentication error from `git`.
+
+Public git dependencies are fine. For a private one, clone it in your script instead, where the key
+is available.
+
 ### Nobody owns one
 
 Your Environment dies with the Spawn that built it; the next run builds it again. You do not own one,

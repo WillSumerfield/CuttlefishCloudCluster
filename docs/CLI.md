@@ -55,6 +55,7 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 |---|---|---|
 | `cuttle run` | Submit a Spawn: upload this directory and run a script on the cluster. | [Spawns](elements/spawns.md) |
 | `cuttle run --tidepool` | Ask for a live interactive shell instead of running a script. | [Tide Pool](elements/tide-pool.md) |
+| `cuttle run --no-git` | Submit without your GitHub key — for a Spawn running code you did not write. | [GitHub keys](elements/github-keys.md#what-it-costs-you) |
 | `cuttle run --tidepool --vscode` | The same session, opened in VS Code rather than this terminal. | [Tide Pool](elements/tide-pool.md#editing-in-vs-code) |
 | `cuttle status` | Is it queued, running, or finished — and with what exit code. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle logs` | Print or follow a Spawn's stdout and stderr. | [Spawns](elements/spawns.md#following-a-spawn) |
@@ -125,6 +126,15 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle wandb set` | Store your W&B key on the Head. Injected into every Spawn you submit. | [Telemetry](elements/telemetry.md) |
 | `cuttle wandb show` | Whether a key is stored, and its last four characters. It cannot be read back in full. | [Telemetry](elements/telemetry.md) |
 | `cuttle wandb clear` | Forget it. Your Spawns go back to running with W&B disabled. | [Telemetry](elements/telemetry.md) |
+
+## Private repositories
+
+| Command | | Explained in |
+|---|---|---|
+| `cuttle github mint` | Have the Head generate an SSH key for you, and print its public half. | [GitHub keys](elements/github-keys.md) |
+| `cuttle github show` | Your public key, in full — the half you paste into GitHub. | [GitHub keys](elements/github-keys.md) |
+| `cuttle github verify` | Ask GitHub whether it is registered, and who it authenticates as. | [GitHub keys](elements/github-keys.md) |
+| `cuttle github clear` | Forget it. Your Spawns stop carrying one. | [GitHub keys](elements/github-keys.md) |
 
 ## Operating the cluster
 
