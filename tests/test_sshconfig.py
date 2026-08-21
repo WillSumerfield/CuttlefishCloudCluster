@@ -9,6 +9,7 @@ NOT tested: a real VS Code, a real remote session — same hardware carve-out as
 Pool (see test_tidepool.py).
 """
 
+import inspect
 import shutil
 import stat
 import subprocess
@@ -190,6 +191,12 @@ class TestTheProjectFolder:
     def test_the_heads_own_arm(self):
         assert head_spawns.pod_project_dir(58, head_arm=True) == f"{head_spawns.SCRATCH_DIR}/58/proj"
 
+    def test_a_visit_is_the_tmp_form_on_the_heads_own_arm(self):
+        """The bug this class exists to catch, and the one it missed. A visit takes the remote branch
+        WHEREVER it lands, so `head_arm` on its own is the wrong question — see `pod_project_dir`."""
+        assert head_spawns.pod_project_dir(7, head_arm=True, visit=True) == "/tmp/ccc-7/proj"
+        assert head_spawns.pod_project_dir(7, head_arm=False, visit=True) == "/tmp/ccc-7/proj"
+
     def test_the_two_scratch_forms_agree_with_the_job_script(self):
         """Both forms are written longhand in JOB_SCRIPT, and this helper reads them back. If the
         script's scratch layout moves, this is what says so instead of a VS Code window opening on
@@ -198,6 +205,15 @@ class TestTheProjectFolder:
         assert 'scratch="%%HEAD_SCRATCH%%/$jid"' in script
         assert 'scratch="/tmp/ccc-$jid"' in script
         assert script.count('proj="$scratch/proj"') == 2
+
+    def test_the_gate_is_the_staging_dir_and_a_visit_empties_it(self):
+        """Why the `visit` argument exists at all, asserted against the two things that decide it: the
+        script branches on `[ -d "$staging_dir" ]`, and `_render` leaves that empty for a visit. Either
+        one moving breaks the reading above, and this is what says so."""
+        assert 'if [ -d "$staging_dir" ]; then' in head_spawns.JOB_SCRIPT
+        assert 'staging_dir="%%STAGING_DIR%%"' in head_spawns.JOB_SCRIPT
+        src = inspect.getsource(head_spawns._render)
+        assert '"%%STAGING_DIR%%": "" if workspace else str(staging)' in src
 
 
 class TestTheAttach:

@@ -474,6 +474,35 @@ class TestTidepoolRoute:
         assert c.get("/api/spawns/77/tidepool").json()["ready"] is True
         assert seen == [True]
 
+    def test_a_visit_on_the_heads_own_arm_reports_the_tmp_project(self, monkeypatch, tmp_path):
+        """The path VS Code opens and `scp` writes into. A **Workspace** visit renders an empty
+        `staging_dir`, so it takes the job script's remote branch even here — reporting the Head-local
+        form sent VS Code to a folder that is never created (spawn 7, 2026-08-21)."""
+        c = _client(monkeypatch, tmp_path)
+        self._seed(tmp_path, port=41007)
+        with db.connect() as conn:
+            ws = db.add_workspace(conn, 1, "TransformerRL", 1 << 30, 1, 24576, 60, "", [], [], "")
+            assert db.claim_workspace(conn, ws["id"], 77)
+        monkeypatch.setattr(head_spawns, "active_state", lambda jid: "RUNNING")
+        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "head-box"}])
+        monkeypatch.setattr(slurm, "arms",
+                            lambda: [{"name": "head-box", "mesh_ip": "100.99.0.1", "head": True}])
+        monkeypatch.setattr(head_tidepool, "ensure_relay", lambda *a, **kw: True)
+        assert c.get("/api/spawns/77/tidepool").json()["proj"] == "/tmp/ccc-77/proj"
+
+    def test_a_bare_tidepool_on_the_heads_own_arm_still_reports_head_scratch(
+            self, monkeypatch, tmp_path):
+        """The other side of the same branch — no claim, so the Head-local form is right and stays."""
+        c = _client(monkeypatch, tmp_path)
+        self._seed(tmp_path, port=41007)
+        monkeypatch.setattr(head_spawns, "active_state", lambda jid: "RUNNING")
+        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "head-box"}])
+        monkeypatch.setattr(slurm, "arms",
+                            lambda: [{"name": "head-box", "mesh_ip": "100.99.0.1", "head": True}])
+        monkeypatch.setattr(head_tidepool, "ensure_relay", lambda *a, **kw: True)
+        assert c.get("/api/spawns/77/tidepool").json()["proj"] == \
+            f"{head_spawns.SCRATCH_DIR}/77/proj"
+
     def test_not_ready_if_the_arm_has_no_mesh_ip_yet(self, monkeypatch, tmp_path):
         """Belt and suspenders: RUNNING in squeue but the registry hasn't caught up is not attachable."""
         c = _client(monkeypatch, tmp_path)

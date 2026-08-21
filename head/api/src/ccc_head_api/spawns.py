@@ -185,11 +185,17 @@ SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 CCC_SIF = Path(os.environ.get("CCC_SIF", "/opt/ccc/images/base.sif"))
 # Where the payload's working directory ends up ON THE NODE, which is also where it is bound INTO the
 # Pod (JOB_SCRIPT binds `$proj` by name, at the same path) — so this is the folder a VS Code remote
-# session opens. Two forms, because a Spawn's scratch differs between the Head's co-located Arm and a
-# donor's box; both are written out longhand in JOB_SCRIPT, and `test_the_two_scratch_forms_agree`
-# is what keeps this reading of them honest.
-def pod_project_dir(job_id: int, head_arm: bool) -> str:
-    scratch = f"{SCRATCH_DIR}/{job_id}" if head_arm else f"/tmp/ccc-{job_id}"
+# session opens, and the folder `scp` puts files into. Two forms, because a Spawn's scratch differs
+# between the Head's co-located Arm and a donor's box; both are written out longhand in JOB_SCRIPT, and
+# `test_the_two_scratch_forms_agree` is what keeps this reading of them honest.
+#
+# **`head_arm` alone does not decide it — the gate in JOB_SCRIPT is `[ -d "$staging_dir" ]`.** A
+# **Workspace** visit renders `%%STAGING_DIR%%` empty (`_render`: a visit has no staging copy, its tree
+# is served from the `[ws-…]` module instead), so that test is false for EVERY visit and one takes the
+# remote branch even on the Head's own Arm. Reading `head_arm` on its own reported a Head-local path
+# that a visit never creates, and VS Code opened on a folder that was not there.
+def pod_project_dir(job_id: int, head_arm: bool, *, visit: bool = False) -> str:
+    scratch = f"{SCRATCH_DIR}/{job_id}" if head_arm and not visit else f"/tmp/ccc-{job_id}"
     return f"{scratch}/proj"
 
 

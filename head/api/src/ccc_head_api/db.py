@@ -1693,6 +1693,18 @@ def release_workspace(conn: sqlite3.Connection, ws_id: int, job_id: int) -> None
     conn.commit()
 
 
+def is_visit(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Is this Spawn a **Workspace** visit? There is no column on `spawns` saying so — the claim is the
+    only link — and `spawns.pod_project_dir` needs the answer, because a visit's scratch layout differs
+    from every other Spawn's on the Head's own Arm.
+
+    Safe against `SUBMITTING`: that sentinel is negative and a Slurm job id never is, so an in-flight
+    claim can never be mistaken for a live visit.
+    """
+    return conn.execute("SELECT 1 FROM workspaces WHERE live_job_id=?",
+                        (job_id,)).fetchone() is not None
+
+
 def visited_workspace(conn: sqlite3.Connection, ws_id: int) -> None:
     conn.execute("UPDATE workspaces SET last_visited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
                  "WHERE id=?", (ws_id,))
