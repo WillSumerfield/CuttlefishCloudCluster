@@ -50,6 +50,7 @@ from uuid import uuid4
 from . import db
 from . import environments
 from . import features as features_mod
+from . import github
 from . import guises
 from . import recovery
 from . import siphons
@@ -646,6 +647,29 @@ py=""; envbind=""; envmount=""; featbind=""; featenv=""
 # fail rather than fall back to the account default.
 wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MODE=${WANDB_MODE:-},WANDB_NAME=spawn-$jid"
 [ -n "${WANDB_ENTITY:-}" ] && wenv="$wenv,WANDB_ENTITY=$WANDB_ENTITY"
+# This Spawn's **GitHub key** — the submitter's own, minted by the Head (ccc_head_api.credentials) and
+# rendered here base64'd. In the script body rather than the job environment for the same reason
+# RSYNC_PASSWORD above is: sudo scrubs the environment on the way to sbatch, and widening the sudoers
+# env_keep would buy a bigger standing grant for nothing, since Slurm stores the job env exactly as it
+# stores the script.
+#
+# EMPTY when the submitter has none stored, or declined it for this Spawn. Every line below is then a
+# no-op and the payload's stdin is an empty pipe — byte for byte what it was before any of this
+# existed, which is the property that keeps a Spawn with no GitHub key unaffected by all of it.
+#
+# Deliberately NOT in the apptainer --env list, so unlike the W&B key it stops at the Pod wall in the
+# other direction too: it reaches the Pod on the payload's **stdin**, is read once by the wrapper
+# below, and lives out the job in an ssh-agent's memory. It is never written to a file inside the Pod,
+# never in the Pod's environment, and never in anything `ps` can show.
+ccc_git_key="%%GIT_KEY%%"
+gitboot=""
+if [ -n "$ccc_git_key" ]; then
+    cat > "$scratch/tmp/ccc_git_boot.sh" <<'CCC_GIT_BOOT'
+%%GIT_BOOT%%
+CCC_GIT_BOOT
+    chmod +x "$scratch/tmp/ccc_git_boot.sh"
+    gitboot=/ccc-tmp/ccc_git_boot.sh
+fi
 # Under `--contain` (see the payloads below) apptainer auto-mounts NOTHING — not $HOME, not /tmp, not
 # the cwd — so every directory the payload needs is bound by name: $proj (the code, and the working dir)
 # and $ccc_out (where results are written and staged home from).
@@ -775,11 +799,53 @@ ccc_build_or_die() {
 # it can save anything is a script that runs everywhere except here, and the submitter who forgets finds
 # out after the GPU time is spent. What replaced it is that `-o runs` simply means the `runs/` the code
 # was already writing.
+# `printf | apptainer` rather than a redirect, and unconditionally: with no GitHub key `$ccc_git_key` is
+# empty, printf writes nothing, and the payload gets an empty pipe — which reaches EOF exactly as the
+# /dev/null stdin it had before. A `<<<` herestring would have handed every Spawn in the fleet one
+# blank line on stdin instead, which is not nothing to a script calling input().
+#
+# `$gitboot` is unquoted for the same reason `$dxg` and `$py` are: empty must expand to no argument at
+# all. When set it is the wrapper below, which drains the key off stdin and `exec`s the real command,
+# so the payload's own argv and stdin are what they always were.
 PAYLOAD_SCRIPT = """\
-apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group $dxg \\
+printf '%s' "$ccc_git_key" | apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group $dxg \\
   --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
-  "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
+  "$sif" $gitboot $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
+
+# The wrapper that turns a base64 key on stdin into a live ssh-agent, then gets out of the way.
+#
+# **The key never lands on a filesystem, here or on the Head** (ccc_head_api.github does the same dance
+# for the verify route). It is read once, handed to `ssh-add -` on ITS stdin, and lives in the agent's
+# memory for the job — the agent is a child in the Pod's own PID namespace (`--pid`), so it is reaped
+# with the Spawn whatever the payload does or fails to do.
+#
+# stdin is drained BEFORE anything can fail. An early `return` on a broken agent would leave the key
+# sitting unread in the pipe for the payload to read as its own stdin — the one way this design could
+# hand a User's private key to their own script.
+#
+# `git`, not `ssh`, is what gets configured: GIT_SSH_COMMAND carries the pinned host key, which reaches
+# `git clone`, `pip install git+ssh://` and uv's git dependencies alike, because all three shell out to
+# the same binary. A bare `ssh` in a payload does NOT get it — the Guise is homeless by design, so
+# there is no ~/.ssh/config to put it in, and inventing a home inside the Pod would collide with the
+# **Licence** bind that already takes that path.
+#
+# Failure is a line on stderr and then the Spawn runs anyway. A key that will not load is a reason for
+# the one `git clone` to fail with something legible, not for the eight-hour training run wrapped
+# around it to never start.
+GIT_BOOT = """\
+#!/bin/bash
+key=$(cat)
+kh=/ccc-tmp/ccc_known_hosts
+cat > "$kh" <<'CCC_GH_HOSTKEY'
+__GITHUB_HOST_KEY__
+CCC_GH_HOSTKEY
+export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=$kh -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519"
+if ! { eval "$(ssh-agent -s)" >/dev/null 2>&1 && printf '%s' "$key" | base64 -d | ssh-add - >/dev/null 2>&1; }; then
+    echo "ccc: your GitHub key could not be loaded into this Spawn — anything reaching a private repo will fail to authenticate." >&2
+fi
+exec "$@"
+""".replace("__GITHUB_HOST_KEY__", github.HOST_KEY)
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
 # runs with no --net — full host netns, same as the script path, because the Pod still needs W&B egress
@@ -1249,7 +1315,7 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
             stub_binds: list[environments.StubBind] | None = None,
             stub_log: list[str] | None = None, drop_lock: str = "",
             workspace: Path | None = None, workspace_storage: int = 0,
-            packages: list[str] | None = None) -> str:
+            packages: list[str] | None = None, git_key: str = "") -> str:
     payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
     # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
@@ -1356,6 +1422,11 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # exist before sbatch can return one.
         "%%TOKEN%%": token,
         "%%RSYNC_SECRET%%": secret,
+        # This Spawn's GitHub key (credentials.py), or "" for a submitter who has none stored or who
+        # declined it here. base64 for two reasons at once: it survives a shell double-quote with no
+        # escaping to get wrong, and a PEM's newlines could not cross this line otherwise.
+        "%%GIT_KEY%%": base64.b64encode(git_key.encode()).decode() if git_key else "",
+        "%%GIT_BOOT%%": GIT_BOOT,
         "%%FILELIST%%": "\n".join(files),
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
@@ -1495,7 +1566,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
            features: list[str] | None = None, source_dir: Path | None = None,
            activation: bool = False, recipe_name: str | None = None,
            workspace: Path | None = None, workspace_storage: int = 0,
-           name: str = "") -> int:
+           name: str = "", git_key: str = "") -> int:
     """Unpack an uploaded project (or copy an already-on-disk one), render + sbatch it **as the
     submitter's Guise**, and record the Attribution row + the Karma Escrow. Returns the Slurm job id
     (== the Spawn id). `node` pins the Spawn to one Arm.
@@ -1696,7 +1767,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
                    wants_licence=bool(features), features=features, activation=activation,
                    declared=declared, stub_files=stub_files, stub_binds=stub_binds,
                    stub_log=stub_log, drop_lock=drop_lock,
-                   workspace=workspace, workspace_storage=workspace_storage, packages=packages)
+                   workspace=workspace, workspace_storage=workspace_storage, packages=packages,
+                   git_key=git_key)
     # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
     # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
     # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
@@ -1825,9 +1897,32 @@ def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = Tr
     return {**env, "WANDB_API_KEY": key, "WANDB_MODE": "online"}
 
 
+def git_key_for(user_id: int, git: bool = True, dek: bytes | None = None) -> str:
+    """The submitter's GitHub key for this Spawn, or **""** for no key — which is the ordinary answer,
+    not an error: they have none stored, they said not this one, or the submission carries no Session
+    to open their Credentials with (`cuttle run --node`).
+
+    The same shape as compose_wandb_env above and for the same reasons — the Head reads and decrypts
+    it here rather than trusting anything the client sent, so a DEK belonging to the wrong User simply
+    fails to open the row and the Spawn runs without a key. There is no client-sent counterpart to
+    ignore: unlike W&B, a GitHub key has never had a way in from the client at all.
+
+    `git` is the client's *intent*, "not this one", per Spawn. It defaults to **True**, which is the
+    one place this differs from a secret the User pasted: they did not choose this key's value, only
+    whether it exists, so having minted one is the choice to use it. Declining is `--no-git`, and
+    docs/Security.md says why a User might: for the life of the Spawn, anything running in the Pod can
+    reach the agent, and therefore everything their GitHub account can.
+    """
+    if not git:
+        return ""
+    with db.connect() as conn:
+        return db.get_credential(conn, user_id, "github", dek) or ""
+
+
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
                    wandb_env: dict[str, str], tar_path: Path | None, minutes: int, vram_gb: int,
                    outputs: list[str], node: str | None = None, wandb: bool = True,
+                   git: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
@@ -1962,7 +2057,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                   tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
                   activation=activation,
                   source_dir=source_dir, recipe_name=recipe_name,
-                  workspace=workspace, workspace_storage=workspace_storage, name=name)
+                  workspace=workspace, workspace_storage=workspace_storage, name=name,
+                  git_key=git_key_for(user_id, git, dek))
 
 
 # --- reads ---------------------------------------------------------------------

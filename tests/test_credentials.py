@@ -20,8 +20,13 @@ only to keep that true, because a "just for checking what you pasted" reveal is 
 thing that gets added back.
 """
 
+import base64
 import io
+import os
+import shutil
 import sqlite3
+import subprocess
+import sys
 import tarfile
 import types
 from pathlib import Path
@@ -30,9 +35,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ccc_head_api import credentials, db, slurm
+from ccc_head_api import github as head_github
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
-from cuttle import ui
+from cuttle import auth, config, system, ui
+from cuttle import settings as cli_settings
+from cuttle import setup as cli_setup
 
 PW = "correct horse 7"
 HEAD_PW = "hunter2"   # what conftest's shared `head` fixture gives alice
@@ -382,9 +390,9 @@ class TestRoutes:
             assert b"wandb_deadbeef" not in client.get(path).content
 
     def test_an_unknown_kind_is_404(self, client):
-        assert client.get("/api/account/credentials/github").status_code == 404
-        assert client.post("/api/account/credentials/github", json={"value": "x"}).status_code == 404
-        assert client.delete("/api/account/credentials/github").status_code == 404
+        assert client.get("/api/account/credentials/gitlab").status_code == 404
+        assert client.post("/api/account/credentials/gitlab", json={"value": "x"}).status_code == 404
+        assert client.delete("/api/account/credentials/gitlab").status_code == 404
 
     def test_a_blank_value_is_refused(self, client):
         """Storing whitespace would report `set: true` and then disable W&B at submit."""
@@ -744,3 +752,264 @@ class TestItReachesSbatch:
         self._submit(tmp_path, {"WANDB_PROJECT": "vision"}, wandb=False, dek=dek)
         assert sbatch_env["WANDB_MODE"] == "disabled"
         assert "WANDB_API_KEY" not in sbatch_env
+
+
+class TestMinting:
+    """The GitHub key is the first **minted** Credential: the Head generates it, and the User never
+    sees the half that matters. Everything below is about what that inverts — the value never comes
+    *in*, so the public half has to come *out*, and it does so as the plaintext `hint` that every
+    other kind uses to hide itself."""
+
+    @pytest.fixture
+    def client(self, head_db, dek):
+        user = {"id": 1, "username": "alice", "is_admin": False, "must_change_password": False,
+                "dek": dek}
+        head_main.app.dependency_overrides[head_main.current_user] = lambda: user
+        yield TestClient(head_main.app)
+        head_main.app.dependency_overrides.clear()
+
+    def test_a_minted_kind_is_the_one_carrying_a_mint(self):
+        """How every caller asks, rather than keeping a second list of which kinds are which."""
+        assert credentials.mint("wandb") is None
+        assert credentials.mint("github").startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
+
+    def test_the_hint_is_the_whole_public_key(self):
+        key = credentials.mint("github")
+        hint = credentials.hint_for("github", key)
+        assert hint.startswith("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5")
+        assert "\n" not in hint          # one line, so it survives being pasted into GitHub
+        assert "PRIVATE" not in hint
+
+    def test_every_mint_is_a_different_key(self):
+        assert credentials.mint("github") != credentials.mint("github")
+
+    def test_minting_stores_it_and_answers_the_public_half(self, client):
+        """The reply is the status, not `{"ok": true}` — a mint produces something the caller has no
+        other way to learn, and this is the only moment it is offered."""
+        got = client.post("/api/account/credentials/github", json={}).json()
+        assert got["set"] is True
+        assert got["hint"].startswith("ssh-ed25519 ")
+        assert client.get("/api/account/credentials/github").json()["hint"] == got["hint"]
+
+    def test_the_private_half_never_leaves(self, client, dek):
+        client.post("/api/account/credentials/github", json={})
+        with db.connect() as conn:
+            private = db.get_credential(conn, 1, "github", dek)
+        body = b"".join([client.get("/api/account/credentials").content,
+                         client.get("/api/account/credentials/github").content,
+                         client.post("/api/account/credentials/github", json={}).content])
+        for line in private.strip().splitlines()[1:-1]:      # the base64 body, minus the PEM fences
+            assert line.encode() not in body
+
+    def test_sending_a_value_to_a_minted_kind_is_refused(self, client):
+        """Refused rather than ignored: a client sending its own key believes this one can be handed
+        over, and silently minting a different one would leave it holding a key nothing has heard of."""
+        assert client.post("/api/account/credentials/github",
+                           json={"value": "ssh-ed25519 AAAA"}).status_code == 422
+        assert client.get("/api/account/credentials/github").json()["set"] is False
+
+    def test_a_handed_over_kind_still_needs_its_value(self, client):
+        assert client.post("/api/account/credentials/wandb", json={}).status_code == 422
+
+    def test_re_minting_replaces_the_key(self, client):
+        first = client.post("/api/account/credentials/github", json={}).json()["hint"]
+        second = client.post("/api/account/credentials/github", json={}).json()["hint"]
+        assert first != second
+        assert client.get("/api/account/credentials/github").json()["hint"] == second
+
+    def test_verifying_with_nothing_stored_is_409(self, client):
+        assert client.post("/api/account/credentials/github/verify").status_code == 409
+
+
+class TestVerifyReadsGitHub:
+    """`ssh -T git@github.com` has no useful exit code: success is **1** (GitHub has no shell) and
+    both failures are **255**. So the three states are told apart by matching another project's
+    wording, which is the part worth pinning down."""
+
+    def test_a_greeting_names_the_account(self):
+        got = head_github.interpret(
+            "Hi WillSumerfield! You've successfully authenticated, but GitHub does not provide "
+            "shell access.\n")
+        assert got == {"status": "ok", "username": "WillSumerfield"}
+
+    def test_a_refusal_means_not_registered_yet(self):
+        got = head_github.interpret("git@github.com: Permission denied (publickey).\n")
+        assert got["status"] == "unregistered"
+
+    def test_anything_else_is_an_error_and_not_a_refusal(self):
+        """The distinction the setup poll rests on: `unregistered` means keep waiting, `error` means
+        stop. A Head with no route out must not read as a User who has not pasted the key in yet."""
+        for said in ("ssh: connect to host github.com port 22: Network is unreachable",
+                     "@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@",
+                     "", "   \n\n"):
+            assert head_github.interpret(said)["status"] == "error"
+
+    def test_the_key_is_never_written_to_disk(self, tmp_path, monkeypatch):
+        """The property the whole delivery mechanism rests on — an agent on a private socket, fed on
+        stdin — so a regression to a `chmod 600` keyfile fails here rather than in review."""
+        monkeypatch.setattr(head_github, "_TIMEOUT", 5)
+        seen = []
+        real = head_github.subprocess.run
+
+        def spy(cmd, **kw):
+            seen.append((cmd, kw.get("input")))
+            if cmd[0] == "ssh":
+                return types.SimpleNamespace(returncode=255, stdout="", stderr="Permission denied")
+            return real(cmd, **kw)
+
+        monkeypatch.setattr(head_github.subprocess, "run", spy)
+        key = credentials.mint("github")
+        assert head_github.verify(key)["status"] == "unregistered"
+        assert seen[0][0] == ["ssh-add", "-"] and seen[0][1] == key
+        # Isolation from whatever the Head operator has in their own ~/.ssh — without it this route
+        # would happily authenticate with the operator's key and report their username as the User's.
+        ssh_cmd = " ".join(seen[1][0])
+        assert "-F /dev/null" in ssh_cmd
+        assert "StrictHostKeyChecking=yes" in ssh_cmd
+        assert not any(key in str(part) for part in seen[1][0])
+
+
+def _store_github(dek, user_id: int = 1) -> str:
+    """Mint one the way the route does, and answer the private half so a test can look for it."""
+    key = credentials.mint("github")
+    with db.connect() as conn:
+        db.set_credential(conn, user_id, "github", dek, key)
+    return key
+
+
+class TestTheGitHubKeyReachesThePod:
+    """The GitHub key takes a different road into the Pod than the W&B key beside it, and the whole
+    point of these is that the road stays different.
+
+    W&B goes through sbatch's environment, which cost a permanent widening of the sudoers `env_keep`.
+    This one is rendered into the job script's body like the Siphon secret, arrives on the payload's
+    **stdin**, and is loaded into an ssh-agent that dies with the job. So: never in sbatch's
+    environment, never in the apptainer `--env` list, never in a file inside the Pod.
+    """
+
+    def _render(self, dek=None, git=True, user_id=1):
+        return head_spawns._render(Path("/tmp/u"), 1, "train.py", [], [], ["out"], None, 60, "",
+                                   "tok", "sec",
+                                   git_key=head_spawns.git_key_for(user_id, git, dek))
+
+    def test_the_key_is_rendered_base64_and_never_in_the_clear(self, head_db, dek):
+        key = _store_github(dek)
+        body = self._render(dek)
+        assert base64.b64encode(key.encode()).decode() in body
+        for line in key.strip().splitlines()[1:-1]:    # the PEM body, minus its fences
+            assert line not in body
+
+    def test_base64_because_a_pem_has_newlines(self, head_db, dek):
+        """A single shell line is the whole reason for the encoding — a raw PEM could not survive
+        being interpolated into one."""
+        _store_github(dek)
+        assert len([ln for ln in self._render(dek).splitlines()
+                    if ln.startswith("ccc_git_key=")]) == 1
+
+    def test_no_stored_key_renders_an_empty_one(self, head_db, dek):
+        assert 'ccc_git_key=""' in self._render(dek)
+
+    def test_declining_leaves_no_key_even_with_one_stored(self, head_db, dek):
+        """`--no-git`, per Spawn. Not merely unused inside the Pod — never sent."""
+        _store_github(dek)
+        assert 'ccc_git_key=""' in self._render(dek, git=False)
+
+    def test_no_dek_means_no_key(self, head_db, dek):
+        _store_github(dek)
+        assert 'ccc_git_key=""' in self._render(dek=None)
+
+    def test_the_wrong_dek_means_no_key(self, head_db, dek):
+        """Un-forgeable for the same reason the W&B key is: the composer does its own decrypt, so a
+        caller holding someone else's DEK gets nothing rather than someone else's GitHub account."""
+        _store_github(dek)
+        assert 'ccc_git_key=""' in self._render(dek=credentials.new_dek())
+
+    def test_it_is_not_in_the_pod_environment(self, head_db, dek):
+        """The line that separates this from the W&B key: apptainer's --env list is readable from
+        inside the Pod by anything that cares to look, and a Tide Pool's sshd would re-export it."""
+        key = _store_github(dek)
+        b64 = base64.b64encode(key.encode()).decode()
+        env_lines = [ln for ln in self._render(dek).splitlines()
+                     if "--env" in ln or ln.startswith("wenv=")]
+        assert env_lines                                   # the assertion is about these lines existing
+        assert not any(b64 in ln for ln in env_lines)
+
+    def test_it_arrives_on_the_payloads_stdin(self, head_db, dek):
+        _store_github(dek)
+        body = self._render(dek)
+        assert """printf '%s' "$ccc_git_key" | apptainer exec""" in body
+        assert '"$sif" $gitboot $py' in body
+
+    def test_the_boot_wrapper_is_written_once(self, head_db, dek):
+        """`.replace()` does not know a comment from code — the same trap the build block documents."""
+        assert self._render(dek).count("CCC_GIT_BOOT") == 2      # the heredoc's open and close
+
+    def test_the_script_is_valid_shell_with_and_without_a_key(self, head_db, dek):
+        """Both branches, because the no-key one is every Spawn in the fleet that has nothing to do
+        with GitHub."""
+        without = self._render(dek)
+        _store_github(dek)
+        for body in (without, self._render(dek)):
+            assert subprocess.run(["bash", "-n"], input=body, text=True,
+                                  capture_output=True).returncode == 0
+
+    def test_the_wrapper_drains_stdin_before_it_can_fail(self):
+        """The one way this design could hand a User their own private key: an early exit on a broken
+        agent would leave the base64 sitting in the pipe for the payload to read as its own stdin."""
+        boot = head_spawns.GIT_BOOT.splitlines()
+        assert boot[1] == "key=$(cat)"
+        assert boot[-1] == 'exec "$@"'
+
+    def test_the_wrapper_pins_githubs_host_key(self):
+        assert head_github.HOST_KEY in head_spawns.GIT_BOOT
+        assert "StrictHostKeyChecking=yes" in head_spawns.GIT_BOOT
+        assert "HostKeyAlgorithms=ssh-ed25519" in head_spawns.GIT_BOOT
+
+
+@pytest.mark.skipif(shutil.which("ssh-agent") is None or shutil.which("ssh-add") is None,
+                    reason="needs openssh-client, which the Pod image has by construction")
+class TestTheWrapperRuns:
+    """The wrapper, actually executed. Everything above checks what was written down; this checks that
+    what was written down works — run outside a Pod, but the Pod adds nothing this depends on."""
+
+    @pytest.fixture
+    def run_boot(self, tmp_path):
+        def go(key: str, payload: str):
+            boot = tmp_path / "boot.sh"
+            # /ccc-tmp is the Pod's bind of $scratch/tmp; outside one, tmp_path plays its part.
+            boot.write_text(head_spawns.GIT_BOOT.replace("/ccc-tmp", str(tmp_path)))
+            boot.chmod(0o755)
+            script = tmp_path / "payload.sh"
+            script.write_text(payload)
+            script.chmod(0o755)
+            return subprocess.run(
+                [str(boot), str(script)],
+                input=base64.b64encode(key.encode()).decode(), text=True, capture_output=True,
+                env={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "TMPDIR": str(tmp_path)})
+        return go
+
+    def test_the_payload_runs_with_the_key_in_an_agent(self, run_boot):
+        key = credentials.mint("github")
+        got = run_boot(key, "#!/bin/bash\nssh-add -l\n")
+        assert got.returncode == 0
+        assert "ED25519" in got.stdout
+
+    def test_the_payload_sees_an_empty_stdin(self, run_boot):
+        """Drained, and drained completely — a payload calling input() must not find a private key
+        waiting for it."""
+        got = run_boot(credentials.mint("github"), '#!/bin/bash\necho "stdin:[$(cat)]"\n')
+        assert "stdin:[]" in got.stdout
+
+    def test_git_is_pointed_at_the_pinned_host_key(self, run_boot, tmp_path):
+        got = run_boot(credentials.mint("github"), '#!/bin/bash\necho "$GIT_SSH_COMMAND"\n')
+        assert "UserKnownHostsFile=" in got.stdout
+        assert (tmp_path / "ccc_known_hosts").read_text().strip() == head_github.HOST_KEY
+
+    def test_a_key_that_will_not_load_still_runs_the_payload(self, run_boot):
+        """A Spawn is not a GitHub client. The eight-hour training run wrapped around one `git clone`
+        starts anyway, and says on stderr why the clone is about to fail."""
+        got = run_boot("not a key at all", "#!/bin/bash\necho ran\n")
+        assert got.returncode == 0
+        assert "ran" in got.stdout
+        assert "could not be loaded" in got.stderr
+

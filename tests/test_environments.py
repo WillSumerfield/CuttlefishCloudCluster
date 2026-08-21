@@ -300,7 +300,9 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     bind did not provide — a Pod that mounted no env but ran /opt/ccc/env/bin/python fails with a
     file-not-found the User cannot act on."""
     body = _script()
-    assert '"$sif" $py train.py' in body
+    # `$gitboot` sits between them: empty for a Spawn with no GitHub key, and the wrapper that loads
+    # one into an ssh-agent otherwise (spawns.GIT_BOOT). It changes nothing about the pairing below.
+    assert '"$sif" $gitboot $py train.py' in body
     assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind"' in body
 
 

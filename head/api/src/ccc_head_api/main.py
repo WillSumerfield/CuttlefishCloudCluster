@@ -30,7 +30,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import credentials, db, environments, guises, karma, ratelimit, retraction, slurm, tarstream
+from . import credentials, db, environments, github, guises, karma, ratelimit, retraction, slurm
+from . import tarstream
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import recipes as recipes_mod
 from . import recovery as recovery_mod
@@ -127,7 +128,9 @@ class PasswdRequest(BaseModel):
 
 
 class CredentialRequest(BaseModel):
-    value: str
+    # Optional because a *minted* kind takes no body at all: the Head generates that secret, so there
+    # is nothing for the client to send. See `credential_set`.
+    value: str | None = None
 
 
 def password_policy_error(new: str, current: str) -> str | None:
@@ -661,15 +664,17 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
 
 
 # --- your account: Credentials (authed) -------------------------------------
-# The Head holds each User's third-party secrets — today a W&B key, tomorrow a GitHub SSH key — and
-# injects them into every Spawn they submit, from either client (see spawns.compose_wandb_env). They
+# The Head holds each User's third-party secrets — a W&B key, a GitHub SSH key — and injects them
+# into every Spawn they submit, from either client (see spawns.compose_wandb_env). They
 # live here rather than in the CLI's config file because the **Dashboard** is the primary submission
 # surface and a browser has no config file to read: every Spawn from it ran with W&B disabled until
 # these routes existed.
 #
 # Routes are keyed by `kind` rather than named per secret, so adding one is a `credentials.KINDS` entry
 # and an input widget. POST, not PUT: the API has no PUT routes at all, and POST is already its
-# store-or-replace verb everywhere else.
+# store-or-replace verb everywhere else. The GitHub key added a second *origin* rather than a second
+# set of routes — the Head mints that one, so POSTing to it carries no body — and one route these do
+# not share: `/github/verify`, because only a minted Credential has a half that lives somewhere else.
 #
 # **There is no reveal.** A Credential is write-only by design and the plaintext never comes back out
 # over HTTP — see credentials.py. The old `/account/wandb/reveal` argued a stolen session could echo
@@ -698,22 +703,58 @@ def credential_get(kind: str, user: dict = Depends(current_user)) -> dict:
 @api.post("/account/credentials/{kind}")
 def credential_set(kind: str, req: CredentialRequest, user: dict = Depends(current_user)) -> dict:
     """Store (or replace) one. Sealed under this session's DEK, so it is readable only by a request
-    carrying a live Session of this User's — not by the Head on its own, and not by an Admin."""
+    carrying a live Session of this User's — not by the Head on its own, and not by an Admin.
+
+    **One route, both origins.** A handed-over kind (W&B) carries its value in the body; a minted kind
+    (GitHub) sends no body, and the Head generates the secret itself. The reply is the fresh status,
+    not `{"ok": true}`, because a mint produces something the caller has no other way to learn: the
+    public half, which they must paste into GitHub. It is the same masked status GET answers — a
+    minted Credential's `hint` being the whole public key is exactly what makes that safe.
+    """
     if kind not in credentials.KINDS:
         raise HTTPException(404, f"no such credential kind {kind!r}")
-    value = req.value.strip()
-    if not value:
-        raise HTTPException(422, "the value is empty")
     if user["dek"] is None:
         # Belt and braces: the invariant is that a live Session always has a DEK. Refusing beats
         # storing something under a key nobody can reproduce, which would look stored and never work.
         raise HTTPException(409, "your session cannot store credentials — log in again")
+    value = credentials.mint(kind)
+    if value is None:
+        value = (req.value or "").strip()
+        if not value:
+            raise HTTPException(422, "the value is empty")
+    elif req.value is not None:
+        # Refused rather than ignored: a client sending its own key here means it believes this
+        # Credential can be handed over, and silently minting a different one would leave it holding
+        # a secret the Head has never heard of.
+        raise HTTPException(422, f"the Head mints the {credentials.KINDS[kind]['label']} — send no value")
     with db.connect() as conn:
         db.set_credential(conn, user["id"], kind, user["dek"], value)
+        status = db.credential_status(conn, user["id"], kind)
     # Never the value, and never its length: this line goes to journald, which is not where a secret's
     # shape belongs. That a User set one is worth knowing; what they set is not.
     log.info("credential %s set by %s", kind, user["username"])
-    return {"ok": True}
+    return status
+
+
+@api.post("/account/credentials/github/verify")
+def credential_verify_github(user: dict = Depends(current_user)) -> dict:
+    """Ask GitHub whether this User's minted key is registered — the one question the Head cannot
+    answer from its own database, since registering a public key happens entirely on GitHub.
+
+    Three states, all 200 (see `github.verify`): `ok` with the GitHub username, `unregistered` while
+    the User still has the pubkey on their clipboard, `error` when nobody could tell. A poller needs
+    the middle one to mean "wait" and the last to mean "stop", so failure is a field here rather than
+    a status code — two different 4xx would say the request was wrong, and it wasn't.
+
+    POST, not GET: it opens a connection to a third party, which is not a thing a GET should do.
+    """
+    with db.connect() as conn:
+        key = db.get_credential(conn, user["id"], "github", user["dek"])
+    if key is None:
+        raise HTTPException(409, "no GitHub key is stored — mint one first")
+    result = github.verify(key)
+    log.info("github verify by %s: %s", user["username"], result["status"])
+    return result
 
 
 @api.delete("/account/credentials/{kind}", status_code=204)
@@ -827,6 +868,10 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     beside `wandb_env` rather than inside it so a client can still say "not this one" without being
     handed back the WANDB_MODE the Head just took off it.
 
+    `git` is the same flag for the submitter's **GitHub key**, and defaults to true for the same
+    reason: absent means "the behaviour you had", and a client that never heard of it keeps it. There
+    is no `git_env` beside it — a GitHub key has no client-owned half the way a W&B run has a project.
+
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
     with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
     for, and is OR-expanded here into a Slurm constraint over the fleet's real cards
@@ -897,7 +942,8 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
             meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
-            wandb=bool(meta.get("wandb", True)), features=meta.get("features") or [],
+            wandb=bool(meta.get("wandb", True)), git=bool(meta.get("git", True)),
+            features=meta.get("features") or [],
             tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
             name=meta.get("name") or "", dek=user["dek"])
     except ValueError as e:

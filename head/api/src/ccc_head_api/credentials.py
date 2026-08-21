@@ -33,9 +33,12 @@ submitted without a Session gets no key and runs with WANDB_MODE=disabled rather
 import os
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import (
+    Encoding, NoEncryption, PrivateFormat, PublicFormat, load_ssh_private_key)
 
 from argon2.low_level import Type, hash_secret_raw
 
@@ -124,23 +127,66 @@ def open_(dek: bytes | None, blob: bytes | None) -> str | None:
 
 # --- kinds ------------------------------------------------------------------
 # A Credential's *kind* is the only thing that differs between one secret and the next, so it is a
-# registry entry rather than a parallel stack of columns, routes and modules. Adding the GitHub SSH
-# key is meant to be one entry here plus an input widget — nothing in db.py, main.py or the envelope
-# above should have to learn a second secret exists.
+# registry entry rather than a parallel stack of columns, routes and modules: nothing in db.py or the
+# envelope above knows how many secrets exist.
 #
-# `hint` is the one part of a Credential stored in PLAINTEXT, and it is the whole answer to "did I
-# paste the right thing?" now that the value is write-only. It has to identify without revealing, so
-# it is per-kind: a W&B key is one opaque line and its last 4 characters are the natural handle; an
-# SSH key will want its fingerprint instead.
+# `hint` is the one part of a Credential stored in PLAINTEXT, and it is the whole answer to "is this
+# the key I meant?" now that the value is write-only. It has to identify without revealing, so it is
+# per-kind.
+#
+# Kinds differ on one other axis, their **origin**:
+#
+#   *handed over* — the User pastes a secret that already exists elsewhere (the W&B key). Its hint is
+#       a shortened handle, the last 4 characters: enough to recognise, useless to a thief.
+#   *minted* — the Head generates it and the User never sees it (the GitHub key). Its hint is the
+#       PUBLIC half, and so not shortened at all: it is the entire thing the User needs, since they
+#       paste it into github.com/settings/keys, and it is the only part that was ever theirs to see.
+#
+# `hint_for`'s `value -> hint` signature survives that: a public key is derived from the private one,
+# so a *pasted* GitHub key would hint identically to a minted one, and adding a paste path later costs
+# nothing here. A minted kind is just one carrying a `mint` callable — see `mint()` below, which is
+# also the test for which origin a kind has, so no caller keeps a second list.
 
 def _last4(value: str) -> str:
     return value.strip()[-4:]
 
 
+def _pubkey(value: str) -> str:
+    """The `ssh-ed25519 AAAA…` line for a stored OpenSSH private key.
+
+    No trailing comment. `hint_for` is handed the value and nothing else, so a comment could only be
+    invented here from thin air — and GitHub asks for a title of the User's own choosing when the key
+    is pasted in, which is the field a comment would have been trying to fill.
+    """
+    key = load_ssh_private_key(value.encode(), password=None)
+    return key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode()
+
+
+def mint_ssh_key() -> str:
+    """A fresh ed25519 keypair, as an unencrypted OpenSSH private key.
+
+    ed25519 because every party here agrees on it without argument: GitHub accepts it, OpenSSH has
+    defaulted to it for years, and it needs no key-size decision. **Unencrypted** because the DEK is
+    already the encryption — a passphrase would be a second secret the Head would have to hold beside
+    the first one, protecting it from nobody, and `ssh-add` would then have to be fed it on a terminal
+    that does not exist inside a Spawn.
+    """
+    return Ed25519PrivateKey.generate().private_bytes(
+        Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()).decode()
+
+
 KINDS: dict[str, dict] = {
     "wandb": {"label": "W&B key", "hint": _last4},
+    "github": {"label": "GitHub key", "hint": _pubkey, "mint": mint_ssh_key},
 }
 
 
 def hint_for(kind: str, value: str) -> str:
     return KINDS[kind]["hint"](value)
+
+
+def mint(kind: str) -> str | None:
+    """A freshly minted value for a minted kind, **None** for a handed-over one — which is also how
+    every caller asks which origin a kind has, rather than keeping a list that could disagree."""
+    fn = KINDS[kind].get("mint")
+    return fn() if fn else None
