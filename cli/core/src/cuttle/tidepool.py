@@ -275,6 +275,20 @@ def _warn_thread(spawn_id: int, deadline: float | None, stop: threading.Event,
     return t
 
 
+def _copy_hint(name: str, proj: str | None) -> None:
+    """How to get a file INTO the session. Printed with the alias, because the two are one answer: the
+    alias is the only thing carrying the Pod's relay port AND its ephemeral key, and a User who reaches
+    for `<guise>@<head>` instead lands on the Head's own sshd — where the Guise is a real, passwordless
+    account, so the prompt they get is one no password can answer.
+
+    The path is spelled out rather than left as `~`: an scp with no path lands in the Pod's home, which
+    is a 64MB tmpfs that dies with the session and is mirrored nowhere.
+    """
+    if proj:
+        ui.hint(f"copy files in with `scp <file> {name}:{proj}/` (that folder is the session's working "
+                f"directory — a bare `{name}:` would land in a home that keeps nothing)")
+
+
 def _wait_and_attach(spawn_id: int, workspace: str | None = None, vscode: bool = False) -> None:
     """Attach to a placed Spawn and hold the terminal until the shell detaches — or, with `vscode`,
     hand the session to VS Code and return immediately.
@@ -312,6 +326,7 @@ def _wait_and_attach(spawn_id: int, workspace: str | None = None, vscode: bool =
             ui.ok(f"opening {_noun(spawn_id, workspace)} in VS Code ({name})")
         ui.hint(f"reconnect any time with `ssh {name}`, or `{_reattach_hint(spawn_id, workspace)}` "
                 f"for a terminal here")
+        _copy_hint(name, proj)
         return
 
     ui.warn(f"this GPU is yours until you cancel it — `{_cancel_hint(spawn_id)}` — or --time runs "
@@ -331,6 +346,7 @@ def _wait_and_attach(spawn_id: int, workspace: str | None = None, vscode: bool =
     # acted on, because an editor is not what most people opened a terminal to get.
     ui.hint(f"editors and a second terminal reach this session as `{name}` (ssh {name}) — "
             f"`--vscode` opens it there instead")
+    _copy_hint(name, proj)
     stop = threading.Event()
     _warn_thread(spawn_id, deadline, stop, workspace)
     try:

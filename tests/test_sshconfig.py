@@ -278,6 +278,22 @@ class TestTheAttach:
         cli_tidepool._wait_and_attach(58, vscode=True)
         assert launched == [["/usr/bin/code", "--remote", "ssh-remote+ccc-tp-58"]]
 
+    def test_both_paths_say_how_to_copy_a_file_in(self, placed, capsys):
+        """The scp target is the one thing a User cannot derive: the alias is printed, but a bare
+        `<alias>:` lands in the Pod's 64MB tmpfs home and `<guise>@<head>` lands on the Head's own sshd
+        asking for a password that does not exist."""
+        cli_tidepool._wait_and_attach(58, vscode=True)
+        assert "scp <file> ccc-tp-58:/tmp/ccc-58/proj/" in capsys.readouterr().err
+        cli_tidepool._wait_and_attach(58)
+        assert "scp <file> ccc-tp-58:/tmp/ccc-58/proj/" in capsys.readouterr().err
+
+    def test_an_older_head_sending_no_folder_says_nothing_about_scp(self, monkeypatch, placed, capsys):
+        """No path on the wire means no target to name — better silent than wrong."""
+        monkeypatch.setattr(cli_tidepool, "_wait_for_relay",
+                            lambda _id: (41007, "PRIVATEKEY", "ccc-u60002", None))
+        cli_tidepool._wait_and_attach(58, vscode=True)
+        assert "scp" not in capsys.readouterr().err
+
     def test_no_code_on_path_says_so_and_leaves_the_alias(self, monkeypatch, placed, capsys):
         monkeypatch.setattr(sshconfig.shutil, "which", lambda _n: None)
         _, launched = placed
