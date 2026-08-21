@@ -84,6 +84,9 @@ export type RecipePayload = {
   wandb: boolean;
   wandb_project: string;
   wandb_entity: string;
+  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen like `wandb` beside it: a
+  // Recipe is durable config, so "run this without my key" is part of what it IS.
+  git: boolean;
   manifest: string;
   substrate: string;
   features: string[];
@@ -176,11 +179,17 @@ export function Composer(props: ComposerProps) {
   // Recipe, which never runs at save time.
   const [envNote, setEnvNote] = useState<string | null>(null);
   const [wandbLog, setWandbLog] = useState(editing?.wandb ?? true);
+  // The **GitHub key**'s off-switch for this Spawn (or this Recipe's runs). Defaults ON, unlike a
+  // pasted secret: the User did not choose this key's value, only whether it exists, so having minted
+  // one IS the choice to use it. `--no-git` is the CLI's spelling of these chips.
+  const [gitUse, setGitUse] = useState(editing?.git ?? true);
   const [wandbProject, setWandbProject] = useState(editing?.wandb_project ?? "");
   const [wandbEntity, setWandbEntity] = useState(editing?.wandb_entity ?? "");
   // Whether W&B is on for this User at all — Spawn-only (a Recipe asks regardless; see the module
   // docstring). Null until the Head answers; a failed read shows the fields rather than blocking.
   const [wandbOn, setWandbOn] = useState<boolean | null>(null);
+  // Whether a GitHub key exists for this User at all — same gating, same reason, as `wandbOn`.
+  const [gitOn, setGitOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +202,9 @@ export function Composer(props: ComposerProps) {
     getCredential("wandb")
       .then((s) => setWandbOn(s.set))
       .catch(() => setWandbOn(true)); // unreadable → assume on; the Head decides for real at submit
+    getCredential("github")
+      .then((s) => setGitOn(s.set))
+      .catch(() => setGitOn(true));
   }, [variant]);
 
   // The catalog is fetched once, independent of what's picked — what the Head knows exists, not what
@@ -423,7 +435,7 @@ export function Composer(props: ComposerProps) {
         const res = await submit({
           picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
-          wandb: wandbLog, wandbProject, wandbEntity, outputs, features, manifest,
+          wandb: wandbLog, git: gitUse, wandbProject, wandbEntity, outputs, features, manifest,
           substrate,
         });
         setEnvNote(res.environment);
@@ -441,7 +453,7 @@ export function Composer(props: ComposerProps) {
     if (!ready || variant !== "recipe") return;
     const settings = {
       script, args: args.split(/\s+/).filter(Boolean), outputs, gpus: gpu,
-      vram_mb: Number(vram) * 1024, minutes: Number(minutes), wandb: wandbLog,
+      vram_mb: Number(vram) * 1024, minutes: Number(minutes), wandb: wandbLog, git: gitUse,
       wandb_project: wandbProject.trim(), wandb_entity: wandbEntity.trim(), manifest: manifest.trim(),
       substrate: substrate.trim(),
       features,
@@ -618,6 +630,20 @@ export function Composer(props: ComposerProps) {
             ) : wandbOn === true ? (
               <Wandb log={wandbLog} setLog={setWandbLog} project={wandbProject} setProject={setWandbProject}
                     entity={wandbEntity} setEntity={setWandbEntity} />
+            ) : null}
+            {/* The **GitHub key**, gated exactly as W&B is above and for the same reason — except that
+                the invitation says "mint", because there is nothing to paste: the Head generates this
+                one and the User only registers its public half. */}
+            {variant === "recipe" ? (
+              <Git use={gitUse} setUse={setGitUse} />
+            ) : gitOn === false ? (
+              <p className="text-[13px] text-ink-mute sm:col-span-2 text-center py-1">
+                <Link to="/account" className="text-[var(--gold)] underline-offset-4 hover:underline">
+                  Mint a key for GitHub
+                </Link>
+              </p>
+            ) : gitOn === true ? (
+              <Git use={gitUse} setUse={setGitUse} />
             ) : null}
           </>
         )}
@@ -884,6 +910,32 @@ function Wandb({ log, setLog, project, setProject, entity, setEntity }: {
         </>
       )}
     </>
+  );
+}
+
+/**
+ * The GitHub key's per-Spawn off-switch. One question, unlike `Wandb` above, because a minted key has no
+ * client-owned half to configure: there is no project or entity to name, only whether the Pod gets an
+ * ssh-agent holding it.
+ *
+ * Framed as a cost rather than a feature in the Tip. The default is ON, and an account key reaches
+ * everything that GitHub account can — so the useful thing to say here is what turning it OFF is for.
+ */
+function Git({ use, setUse }: { use: boolean; setUse: (v: boolean) => void }) {
+  return (
+    <div className="sm:col-span-2">
+      <span className="label mb-1.5 block">Use your GitHub key?</span>
+      <Tip
+        className="block"
+        focusable={false}
+        text="Whether this Spawn carries your GitHub key, as an ssh-agent inside the Pod — so `git clone` and `pip install git+ssh://` reach your private repos. On for every Spawn unless you turn it off here. While it is on, anything running in that Pod can reach everything your GitHub account can, so turn it off for code you did not write."
+      >
+        <div className="flex gap-1">
+          <Chip on={use} onClick={() => setUse(true)}>Enabled</Chip>
+          <Chip on={!use} onClick={() => setUse(false)}>Disabled</Chip>
+        </div>
+      </Tip>
+    </div>
   );
 }
 

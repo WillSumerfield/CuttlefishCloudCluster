@@ -109,6 +109,8 @@ export function AccountPage() {
 
             <Credential kind="wandb" onUnauthorized={logout} />
 
+            <Credential kind="github" onUnauthorized={logout} />
+
             <PasswordForm onUnauthorized={logout} />
 
             <div>

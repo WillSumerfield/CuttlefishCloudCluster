@@ -162,7 +162,10 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
     row = db.add_recipe(conn, user_id, name, script, meta.get("args") or [], outputs,
                         max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]), int(meta["minutes"]),
                         bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                        meta.get("wandb_entity") or "", size, manifest, features, substrate)
+                        meta.get("wandb_entity") or "", size, manifest, features, substrate,
+                        # Absent reads as True, the same as it does at /submit — a client that predates
+                        # the flag saves a Recipe that behaves as its Recipes always have.
+                        bool(meta.get("git", True)))
     return to_json(row)
 
 
@@ -216,7 +219,8 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
                                 max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]),
                                 int(meta["minutes"]),
                                 bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                                meta.get("wandb_entity") or "", manifest, features, substrate)
+                                meta.get("wandb_entity") or "", manifest, features, substrate,
+                                bool(meta.get("git", True)))
     return to_json(row)
 
 
@@ -268,7 +272,8 @@ def run(conn, user_id: int, name: str, is_admin: bool, dek: bytes | None = None)
     return spawns.submit_checked(
         user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]), wandb_env,
         None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
-        wandb=bool(row["wandb"]), features=json.loads(row["features"]), manifest=row["manifest"],
+        wandb=bool(row["wandb"]), git=bool(row["git"]),
+        features=json.loads(row["features"]), manifest=row["manifest"],
         substrate=row["substrate"] or None,
         # The Recipe's own name is the Spawn's **Name**, INHERITED rather than asked for again: it was
         # chosen by a person when the Recipe was saved, so the rule that a human names every Spawn is
@@ -328,6 +333,9 @@ def to_json(row, running: bool = False) -> dict:
         "wandb": bool(row["wandb"]),
         "wandb_project": row["wandb_project"],
         "wandb_entity": row["wandb_entity"],
+        # Same reason as `wandb` above: the edit form prefills from this, so a Recipe saved with the
+        # GitHub key declined does not silently re-arm it on the next save.
+        "git": bool(row["git"]),
         # Frozen structurally only — see `save`'s note on why neither is checked against the fleet here.
         "manifest": row["manifest"],
         "substrate": row["substrate"],

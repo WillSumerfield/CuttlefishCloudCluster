@@ -488,11 +488,22 @@ CREATE TABLE user_secrets (
 );
 """
 
+# The **GitHub key**'s off-switch, stored on a Recipe exactly as `wandb` is beside it. A Recipe is
+# durable config, and "run this without my GitHub key" is as much a part of what a Recipe IS as "do not
+# log this one" — a flag the Composer offers on a Spawn but a Recipe forgot would be one that silently
+# stopped meaning anything the moment the work was saved.
+#
+# DEFAULT 1, so every Recipe frozen before this reads as "yes" — the same answer an absent `git` gets
+# from `/submit`, and the behaviour those Recipes already had.
+_SCHEMA_V21 = """
+ALTER TABLE recipes ADD COLUMN git INTEGER NOT NULL DEFAULT 1;
+"""
+
 # index i takes user_version i -> i+1
 _MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
               _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
               _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18, _SCHEMA_V19,
-              _SCHEMA_V20]
+              _SCHEMA_V20, _SCHEMA_V21]
 
 # DERIVED from the ladder, never written by hand. It was a standalone constant until it fell one behind
 # the list it describes: `init_schema` stamps this AFTER running `_MIGRATIONS[ver:]`, so a version that
@@ -1500,15 +1511,16 @@ def get_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row
 def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
                outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
                wandb_project: str, wandb_entity: str, size_bytes: int,
-               manifest: str | None, features: list[str], substrate: str = "") -> sqlite3.Row:
+               manifest: str | None, features: list[str], substrate: str = "",
+               git: bool = True) -> sqlite3.Row:
     conn.execute(
         """INSERT INTO recipes (user_id, name, script, args, outputs, gpus, vram_mb, minutes,
                                 wandb, wandb_project, wandb_entity, bytes, manifest, features,
-                                substrate)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                substrate, git)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (user_id, name, script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
          int(wandb), wandb_project, wandb_entity, size_bytes, manifest, json.dumps(features),
-         substrate))
+         substrate, int(git)))
     conn.commit()
     return get_recipe(conn, user_id, name)
 
@@ -1516,18 +1528,19 @@ def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, a
 def update_recipe_meta(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
                         outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
                         wandb_project: str, wandb_entity: str, manifest: str | None,
-                        features: list[str], substrate: str = "") -> sqlite3.Row:
+                        features: list[str], substrate: str = "",
+                        git: bool = True) -> sqlite3.Row:
     """Change what a Recipe runs and how, without touching its code or `bytes`/`frozen_at` — the settings-
     only sibling of `add_recipe`'s insert. `recipes.update_meta` has already checked `script` against the
     code already on disk, so this is a plain column write."""
     conn.execute(
         """UPDATE recipes SET script=?, args=?, outputs=?, gpus=?, vram_mb=?, minutes=?,
                               wandb=?, wandb_project=?, wandb_entity=?, manifest=?, features=?,
-                              substrate=?
+                              substrate=?, git=?
            WHERE user_id=? AND name=?""",
         (script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
          int(wandb), wandb_project, wandb_entity, manifest, json.dumps(features), substrate,
-         user_id, name))
+         int(git), user_id, name))
     conn.commit()
     return get_recipe(conn, user_id, name)
 

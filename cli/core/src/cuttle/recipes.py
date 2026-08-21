@@ -55,7 +55,11 @@ def _meta(name: str, script: str, args: list[str], minutes: int, vram: int, gpu:
             "vram_mb": vram * 1024, "minutes": minutes, "manifest": manifest,
             "substrate": substrate,
             "wandb": True, "wandb_project": wandb_env.get("WANDB_PROJECT", ""),
-            "wandb_entity": wandb_env.get("WANDB_ENTITY", "")}
+            "wandb_entity": wandb_env.get("WANDB_ENTITY", ""),
+            # The **GitHub key** rides along, as it does for every Spawn. There is no `--no-git` on a
+            # Recipe yet — the Dashboard is where one is declined — but `update` below carries a
+            # declined one through rather than letting this default undo it.
+            "git": True}
 
 
 def _validate(root: Path, script: str, outputs: list[str], manifest: str,
@@ -149,6 +153,11 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
         # the code, and silently re-pointing someone's runs at a different W&B project is not.
         meta.update(wandb=current["wandb"], wandb_project=current["wandb_project"],
                     wandb_entity=current["wandb_entity"])
+    # Unconditionally, unlike the W&B block above: nothing on this command line can express a GitHub-key
+    # choice, so `_meta`'s default "yes" is not an answer this User gave — it is the absence of one. Left
+    # alone it would re-arm the key on a Recipe that was saved with it declined, which is the same silent
+    # re-pointing that block exists to prevent.
+    meta["git"] = current["git"]
     if not yes:
         ui.kv([
             ("recipe", name),

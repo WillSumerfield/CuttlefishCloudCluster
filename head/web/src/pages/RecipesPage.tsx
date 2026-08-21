@@ -113,6 +113,7 @@ export function RecipesPage() {
         wandb: r.wandb,
         wandb_project: r.wandb_project,
         wandb_entity: r.wandb_entity,
+        git: r.git,
         manifest: r.manifest,
         substrate: r.substrate,
         features: r.features,
