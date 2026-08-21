@@ -1158,3 +1158,119 @@ class TestDecliningTheGitHubKey:
         assert self._run(signed_in).exit_code == 0
         assert seen["git_key"] == ""
 
+
+class TestTheSeededAdminPasswordIsSpentNotShown:
+    """`setup --head` mints the cluster's first Admin with a one-time password, and that password used
+    to be the one reusable secret CCC put on a screen: printed as a *result* so it survived the box
+    collapsing, and written to the run log on the way past.
+
+    It is spent instead — seeded, logged in with, rotated to one the operator chooses — so it never
+    leaves this process. `admin.py` is untouched and its own invariant holds: it still prints to ITS
+    stdout, which is captured here and goes nowhere else."""
+
+    def _fake_admin(self, monkeypatch, script: str):
+        monkeypatch.setattr(auth, "_admin_argv", lambda args: [sys.executable, "-c", script])
+        monkeypatch.setattr(system, "prime_sudo", lambda: None)
+        monkeypatch.setattr(auth, "ensure_guise_accounts", lambda: None)
+        real = subprocess.run
+        monkeypatch.setattr(subprocess, "run",
+                            lambda cmd, **kw: real(cmd[1:] if cmd[:1] == ["sudo"] else cmd, **kw))
+
+    def test_the_password_comes_back_as_a_value(self, monkeypatch, capsys):
+        self._fake_admin(monkeypatch, "print('temp password: s3cret')")
+        assert auth.seed_admin("admin") == "s3cret"
+
+    def test_it_reaches_no_screen_and_no_log(self, monkeypatch, capsys):
+        """Both halves matter, and the second is the one that lasted: `ui.data` prints AND writes to
+        ~/.ccc/logs, so the first Admin's password outlived itself by however long logs are kept."""
+        self._fake_admin(monkeypatch, "print('temp password: s3cret')")
+        auth.seed_admin("admin")
+        said = capsys.readouterr()
+        assert "s3cret" not in said.out + said.err
+        assert not any("s3cret" in f.read_text() for f in config.LOG_DIR.glob("*")) \
+            if config.LOG_DIR.exists() else True
+
+    def test_the_admin_is_still_named_as_a_result(self, monkeypatch):
+        """Who the account is stays worth keeping — only the secret went."""
+        self._fake_admin(monkeypatch, "print('temp password: s3cret')")
+        ui._FACTS.clear()
+        auth.seed_admin("admin")
+        assert ("admin", "admin") in ui._FACTS
+        assert not any("s3cret" in v for _, v in ui._FACTS)
+
+    def test_a_re_run_answers_none(self, monkeypatch):
+        """The account already exists, so nothing on this box knows its password — and setup must not
+        pretend otherwise by trying to log in with one it does not have."""
+        self._fake_admin(monkeypatch, "print('user admin already exists')")
+        assert auth.seed_admin("admin") is None
+
+
+class TestSetupLogsInWithoutAsking:
+    """Phase A end to end: the seeded password reaches `/login`, the forced rotation asks for a real
+    one, and neither prompt asks for a username — `setup --head` seeds exactly one account and knows
+    its name."""
+
+    def test_the_seeded_password_becomes_one_the_operator_chose(self, head, ccc_home, monkeypatch):
+        from cuttle import api as cli_api
+
+        monkeypatch.setattr(cli_api, "for_head",
+                            lambda url=None, token=None: cli_api.Api(head, token=token,
+                                                                     url="http://head",
+                                                                     per_request_timeout=False))
+        monkeypatch.setattr(auth, "_CLIENT", None)
+        with db.connect() as conn:
+            db.add_user(conn, "boss", is_admin=True)
+            temp = db.reset_password(conn, "boss")
+        ui.install_answers(ui.Answers("Brand New 9", "Brand New 9"))
+        try:
+            assert auth.login_seeded("boss", temp) == "boss (admin)"
+        finally:
+            ui.install_answers(None)
+        # The temp is spent: it no longer opens the account, and the chosen one does.
+        assert head.post("/login", json={"username": "boss", "password": temp}).status_code == 401
+        assert head.post("/login", json={"username": "boss",
+                                         "password": "Brand New 9"}).status_code == 200
+
+
+class TestTheAccountQuestionsAtTheEndOfSetup:
+    """Phase C: W&B defaults and the GitHub key, asked LAST because both need a live Session — a key
+    cannot be minted at all before one exists, since the Head seals it under the DEK only a login
+    produces. That is what moved `prompt_wandb` down off the top of `setup`, where it had been sitting
+    to keep the rest unattended: once one prompt has to be last, there is nothing left to protect."""
+
+    @pytest.fixture
+    def offline(self, monkeypatch):
+        state = {"status": "ok", "username": "WillSumerfield"}
+        monkeypatch.setattr(head_github, "verify", lambda key: state)
+        return state
+
+    def _answer(self, *answers):
+        ui.install_answers(ui.Answers(*answers))
+        try:
+            cli_setup.account_setup()
+        finally:
+            ui.install_answers(None)
+
+    def test_it_mints_when_accepted(self, signed_in, offline, capsys):
+        self._answer("vision", "lab", "y")
+        assert auth.github_minted() is True
+        assert "WillSumerfield" in " ".join(capsys.readouterr())
+
+    def test_declining_mints_nothing_and_says_how_to_later(self, signed_in, capsys):
+        self._answer("vision", "lab", "n")
+        assert auth.github_minted() is False
+        assert "cuttle github mint" in " ".join(capsys.readouterr())
+
+    def test_an_existing_key_is_left_alone(self, signed_in, capsys):
+        """A re-run of `setup --arm` on a box whose owner already has a working key must not talk them
+        into replacing it — the old public half stops authenticating the moment a new one is minted."""
+        before = signed_in("github", "mint", "--no-wait").output
+        key = [ln for ln in before.splitlines() if ln.startswith("ssh-ed25519 ")][0]
+        self._answer("vision", "lab")     # no third answer: nothing should ask for one
+        assert key in signed_in("github", "show").output
+
+    def test_the_wandb_defaults_are_still_asked(self, signed_in):
+        """Moved, not dropped. The project/entity are per-run defaults for THIS box, and setup is
+        still the moment to set them."""
+        self._answer("vision", "lab", "n")
+        assert cli_settings.load()["wandb"] == {"project": "vision", "entity": "lab"}

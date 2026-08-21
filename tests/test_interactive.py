@@ -617,15 +617,19 @@ class TestTheAlternateScreen:
         assert "\x1b[?1049l" in buf.getvalue()
 
     def test_results_survive_the_restore(self, on_a_tty, monkeypatch):
-        """The one-time admin password is drawn on a buffer that is about to be thrown away."""
+        """A result is drawn on a buffer that is about to be thrown away — the Dashboard's address is
+        the whole reason anyone ran `setup --head`, and it is written eleven phases before the end.
+
+        It used to be the one-time admin password. That is no longer a result, or anything else on a
+        screen: setup spends it itself now (auth.seed_admin)."""
         buf = io.StringIO()
         monkeypatch.setattr(ui, "err", Console(file=buf, force_terminal=True, theme=ui.THEME))
         with ui.fullscreen():
             with ui.section("Setting up the Head", lambda: "done"):
-                ui.result("temp password", "k7Qm")
+                ui.result("dashboard", "https://ccc.glados")
         errs = buf.getvalue()
-        assert "k7Qm" in errs
-        assert errs.index("k7Qm") > errs.index("\x1b[?1049l"), "result died with the buffer"
+        assert "ccc.glados" in errs
+        assert errs.index("ccc.glados") > errs.index("\x1b[?1049l"), "result died with the buffer"
 
     def test_stdout_survives_the_restore(self, on_a_tty, capsys):
         with ui.fullscreen():

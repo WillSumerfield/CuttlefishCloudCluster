@@ -85,6 +85,13 @@ def install_ca(url: str, pem: str) -> None:
     system.trust_ccc_ca_browsers(pem)
 
 
+def pinned(url: str) -> bool:
+    """Whether this box already verifies `url` against a pinned CA. Lets a caller that could install one
+    unattended (the Head, holding the CA it minted) skip the work rather than re-running the box-wide
+    trust install on every setup."""
+    return _pin_path(url).exists()
+
+
 def ensure_ca(url: str) -> None:
     """Obtain and trust this cluster's CA if we haven't already. Interactive: the operator confirms the
     fingerprint once. No-op for a plain-HTTP Head (nothing to verify) or when a pin already exists."""

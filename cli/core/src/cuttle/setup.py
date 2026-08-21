@@ -408,8 +408,58 @@ def provision_head_auth() -> None:
               config.HEAD_SCRATCH_DIR):
         run(["install", "-d", "-m", "0711", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
              str(d)], sudo=True)
-    admin_user = config.FIRST_ADMIN_USER
-    auth.seed_admin(admin_user)  # registers the one-time temp password as a result
+    # Returned, not printed — see `auth.seed_admin`. The caller spends it at the end of setup, on the
+    # login that turns it into a password of the operator's own choosing. None on a re-run, where the
+    # account already exists and this box has no idea what its password is.
+    return auth.seed_admin(config.FIRST_ADMIN_USER)
+
+
+def point_at_self() -> str:
+    """Point this Head at its own API, and pin the CA it just minted.
+
+    Until now `setup --head` left the operator's own box the ONE box in the cluster that could not talk
+    to the Head — every Arm is pointed at enrollment (`_setup_arm`) and every client by `point_at_head`,
+    but the Head itself recorded nothing, so `cuttle login` on it answered "no Head URL set".
+
+    Pinned directly rather than through `tls.ensure_ca`, which is the same argument `trust_own_ca` makes
+    a few lines below it: setup wrote these exact bytes minutes ago, so a fingerprint ceremony here
+    would be asking the operator to vouch for a certificate against nothing but the copy they are being
+    shown. There is no first use to trust on.
+    """
+    url = headapi.head_url(config.DOMAIN)
+    # Skipped on a re-run: `install_ca` also re-runs the box-wide trust install, and `trust_own_ca`
+    # already did that a few steps ago with the same bytes.
+    if not tls.pinned(url):
+        tls.install_ca(url, config.HEAD_CA_CERT.read_text())
+    data = settings.load()
+    data["head"] = url
+    settings.save(data)
+    return url
+
+
+def account_setup() -> None:
+    """The **your account** questions, and the reason every one of them is at the END of setup.
+
+    Both need a live **Session**: a W&B default is written beside the session this box holds, and a
+    GitHub key cannot be minted at all without one, because the Head seals it under the DEK only a
+    login produces. Neither could be asked before the Head API was up and someone had logged into it.
+
+    That inverts what `settings.prompt_wandb` used to buy by running first — "up front, so the rest runs
+    unattended". Once ANY prompt is at the end, the walk-away property is gone, so both live here
+    together rather than being split across a flow nobody can walk away from anyway.
+    """
+    settings.prompt_wandb()
+    if auth.github_minted():
+        ui.say("  [muted]a GitHub key is already minted for this account[/muted]")
+        return
+    ui.say("A GitHub key lets your Spawns reach your private repos — `git clone`, "
+           "`pip install git+ssh://`. The Head mints it and holds the private half; you paste the "
+           "public half into GitHub.")
+    if not ui.ask_confirm("Mint a GitHub SSH key for your account?", True):
+        ui.hint("mint one later with `cuttle github mint`")
+        return
+    auth.github_mint()
+    auth.github_await()
 
 
 def ensure_munge_key() -> None:
@@ -996,6 +1046,32 @@ def mesh_up_head(addr: str) -> str:
     return mesh_ip
 
 
+def _head_first_login(temp_pw: str | None) -> None:
+    """Turn the seeded first Admin into an account the operator actually holds — here, at the end of
+    `setup --head`, while they are still standing at the terminal.
+
+    Setup used to print the one-time temp password as a result and walk away, leaving the cluster's
+    only Admin account sitting on an operator-issued password that some scrollback also knew. It is
+    spent instead: seeded, logged in with, rotated to one the operator chooses, and never displayed.
+
+    No username prompt. `setup --head` seeds exactly one account and knows its name.
+
+    `temp_pw is None` is a re-run: the Admin already exists and nothing on this box knows its password,
+    so there is nothing to spend. The account questions still get asked if this box happens to hold a
+    Session already — a re-run should be able to finish setting up W&B and a key it skipped last time.
+    """
+    point_at_self()
+    with ui.section("Your account", lambda: "ready"):
+        if temp_pw is not None:
+            auth.login_seeded(config.FIRST_ADMIN_USER, temp_pw)
+        elif not auth.have_session():
+            ui.say(f"{config.FIRST_ADMIN_USER} already exists on this Head, and this box holds no "
+                   f"session for it.")
+            ui.hint("run `cuttle login` here to set your W&B defaults and mint a GitHub key")
+            return
+        account_setup()
+
+
 def setup_head(address: str | None = None, update: bool = False) -> None:
     with ui.section("Updating the Head" if update else "Setting up the Head",
                     lambda: "control plane + co-located Arm"):
@@ -1007,9 +1083,12 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     """`update` is the **Update** duty: lay this Head down again from what it already recorded. Every
     question below is skipped in favour of the stored answer — see `update_this_box`."""
     make_user_dirs()
-    if not update:
-        settings.prompt_wandb()  # up front, so the rest runs unattended
-    # Arm Features, also up front and for the same reason. Nothing is defined here — the catalog is
+    # The W&B prompt used to be here, "up front, so the rest runs unattended". It is at the END now,
+    # with the GitHub key beside it (`account_setup`) — that one needs a live Session, which needs the
+    # Head API this function is in the middle of installing, and once one prompt has to be last there
+    # is nothing left for an earlier one to protect.
+    #
+    # Arm Features stay up front, and the reason survives: nothing about them needs a running cluster. Nothing is defined here — the catalog is
     # config.FEATURE_NAMES, built in — so the Head answers exactly the question a donor's box answers:
     # which of them does THIS box have. Its co-located Arm is an Arm like any other. Asked before
     # write_slurm_config below, which bakes this box's own Features into its NodeName line.
@@ -1061,8 +1140,9 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     with ui.step("Installing the Enroll API"):
         headapi.install_enroll_sudoers(_write_root_file)   # one grant: read-only `headscale nodes list`
         headapi.install_enroll(_write_root_file, mesh_ip)  # after munge: it serves munge.key
+    temp_pw: str | None = None
     with ui.step("Provisioning the Mantle and the auth store"):
-        provision_head_auth()                    # ccc account + head.db + submission dirs (needs venv)
+        temp_pw = provision_head_auth()          # ccc account + head.db + submission dirs (needs venv)
         # our co-located Arm is admin-owned (needs the admin), and carries the Features declared above
         enroll.register_head_arm(mesh_ip, head_features)
     with ui.step("Provisioning Guises"):
@@ -1106,6 +1186,8 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     enroll.ensure_priced(system.hostname())
     enroll.activate_arm(system.hostname(), head_features)
     verify()
+    if not update:
+        _head_first_login(temp_pw)
     lan = system.primary_ip()
     # Results, not `ui.kv` — kv writes straight to stdout, which inside a box is both uncounted (so
     # the erase lands in the wrong place) and unreadable by the time eleven phases have scrolled by.
@@ -1473,8 +1555,8 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     # coordinator lives in tailscaled's root-owned state file.
     t = enroll.decode_token(token) if token else enroll.enrollment_from_state()
     node_name = t["node_name"]
-    if not update:
-        settings.prompt_wandb()
+    # W&B (and now the GitHub key) are asked at the END — see `account_setup`. Both need a Session,
+    # and nothing on this box can reach the Head until the enrollment below has pointed it at one.
     preflight("arm")
 
     with ui.step("Joining the mesh"):
@@ -1610,9 +1692,34 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         with ui.step("Forwarding the Dashboard to Windows"):
             install_wsl_dashboard_forward(t["mesh_ip"])  # browse the Head via localhost
 
+    if not update:
+        _arm_first_login()
+
     ui.result("arm", node_name)
     ui.result("mesh ip", mesh_ip)
     ui.result("check it", "run `sinfo` on the Head")
+
+
+def _arm_first_login() -> None:
+    """Offer the Arm's owner a **Session** on the box they just donated, and then the account questions.
+
+    Declinable, because an Arm is not necessarily a box its owner works from — the point of donating one
+    is that the cluster can use it while nobody is sitting there. But default **yes**: an Arm's owner is
+    a User like any other, and enrolling has just finished doing everything a login needs (this box is
+    pointed at the Head by name and has its CA, from `/enroll`), so the one thing standing between them
+    and submitting from their own machine is a question nobody was asking.
+
+    Declining skips the account questions with it — they are all things done to a Session.
+    """
+    if auth.have_session():
+        return account_setup()
+    with ui.section("Your account", lambda: "ready"):
+        ui.say("This box can submit Spawns too — logging in here sets up W&B and your GitHub key.")
+        if not ui.ask_confirm("Log in to the cluster on this box?", True):
+            ui.hint("`cuttle login` whenever you want to submit from here")
+            return
+        auth.login(None)
+        account_setup()
 
 
 def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None) -> None:

@@ -103,6 +103,13 @@ def _load_token() -> str:
     return config.SESSION_FILE.read_text().strip()
 
 
+def have_session() -> bool:
+    """Whether this box holds a token at all. Deliberately NOT a validity check — `setup` uses it to
+    decide whether it can go on and ask the account questions, and the routes it would then call say
+    "session expired" perfectly well on their own."""
+    return config.SESSION_FILE.exists()
+
+
 # --- login / session --------------------------------------------------------
 
 def login(head: str | None = None) -> str:
@@ -112,8 +119,22 @@ def login(head: str | None = None) -> str:
     # Trust BEFORE prompting: the password is the thing we are protecting, so the operator must have
     # accepted the Head's identity before it is ever typed, let alone sent.
     tls.ensure_ca(_head_url())
-    username = ui.ask_text("Username")
-    password = ui.ask_password("Password")
+    return _login_with(ui.ask_text("Username"), ui.ask_password("Password"))
+
+
+def login_seeded(username: str, temp_password: str) -> str:
+    """Log in with a password nobody typed — the one `setup --head` just seeded this account with.
+
+    Split from `login` because the two prompts are exactly what must NOT happen here: setup knows the
+    username (there is only ever one first Admin) and holds the temp password in memory, and asking
+    for either would mean printing the secret first so it could be typed back in. The forced rotation
+    below is where the operator does get asked — for a password of their own, once, while they are
+    still standing at the terminal that ran setup.
+    """
+    return _login_with(username, temp_password)
+
+
+def _login_with(username: str, password: str) -> str:
     resp = _api("POST", "/login", token="", body={"username": username, "password": password})
     _save_token(resp["token"])
     if resp["must_change_password"]:
@@ -365,7 +386,7 @@ def _admin_argv(args: list[str], env: dict[str, str] | None = None) -> list[str]
             str(config.API_VENV / "bin" / "python"), "-m", "ccc_head_api.admin", *args]
 
 
-def _admin(args: list[str], check: bool = True):
+def _admin(args: list[str], check: bool = True, echo: bool = True):
     """Run a Head-local admin subcommand **and show what it said**.
 
     These are the commands whose stdout is the whole point: `add` prints a one-time temp password
@@ -374,9 +395,15 @@ def _admin(args: list[str], check: bool = True):
     re-emits rather than letting output depend on a global verbosity flag.
 
     stdout is re-emitted as data: `pw=$(cuttle user add bob)` has to keep working.
+
+    `echo=False` for the ONE caller whose stdout is not for anyone to read: `seed_admin`, which spends
+    the temp password itself and never shows it. Worth a flag rather than a second run() call, because
+    the re-emit is not only a print — `ui.data` also writes to the run log, so `setup --head` was
+    leaving the cluster's first Admin password in cleartext under ~/.ccc/logs, outliving the password
+    itself by however long the operator keeps their logs.
     """
     r = run(_admin_argv(args), sudo=True, capture_output=True, text=True, check=check)
-    if (r.stdout or "").strip():
+    if echo and (r.stdout or "").strip():
         ui.data(r.stdout.rstrip())
     if (r.stderr or "").strip():
         ui.say(r.stderr.rstrip())
@@ -491,16 +518,22 @@ def user_exists(username: str) -> bool:
     return run(_admin_argv(["exists", username]), sudo=True, check=False).returncode == 0
 
 
-def seed_admin(username: str) -> None:
-    """First-admin seed at `setup --head`. Tolerant of re-runs (already-exists is non-fatal).
+def seed_admin(username: str) -> str | None:
+    """First-admin seed at `setup --head`. Tolerant of re-runs — **None** then, meaning this account
+    already exists and nothing here knows its password.
 
-    The temp password is lifted out of the output and registered as a *result*, so it survives the
-    box collapsing. It is stored hashed and printed exactly once: if it scrolls past under six more
-    phases of provisioning, it is gone, and the cluster's first admin cannot log in.
+    **The temp password is returned, never printed.** It used to be lifted into a `ui.result` so it
+    survived the box collapsing, which made it the one reusable secret CCC ever put on a screen: it sat
+    in the operator's scrollback, and in their terminal's history, long after it had been spent. Setup
+    now spends it immediately — `login_seeded` above, then the forced rotation — so it lives only in
+    this process's memory and only for as long as those two calls take.
+
+    `admin.py` is untouched by that and its stated invariant holds: it still prints the temp password to
+    ITS stdout, which is captured here and goes nowhere else.
     """
-    r = _admin(["add", "--admin", username], check=False)
+    r = _admin(["add", "--admin", username], check=False, echo=False)
+    ui.result("admin", username)
     for line in (r.stdout or "").splitlines():
         if line.startswith("temp password:"):
-            ui.result("admin", username)
-            ui.result("temp password", line.split(":", 1)[1].strip())
-            ui.result("change it with", "cuttle login --head <url>, then cuttle passwd")
+            return line.split(":", 1)[1].strip()
+    return None
