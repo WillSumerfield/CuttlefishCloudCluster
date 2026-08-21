@@ -296,7 +296,7 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
            features: list[str] | None = None, manifest: str | None = None,
            substrate: str | None = None,
            download: bool = True, dest: Path | None = None, root: Path | None = None,
-           name: str = "") -> None:
+           name: str = "", git: bool = True) -> None:
     root = root or Path.cwd()
     files = None if no_gitignore else _project_files(root)
     tar_bytes = _make_tar(root, files)
@@ -312,6 +312,9 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     # for everyone — so a pinned Spawn takes the Head-local path below instead.
     env_note = None
     if node:
+        # `git` is not threaded down this road: a pinned Spawn is submitted on the Head with no
+        # Session behind it, so `git_key_for` has no DEK to open a Credential with and every pinned
+        # Spawn already carries no key. A flag here would be one that could only ever say "no" twice.
         spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
                                             wandb_env, outputs, features=features, manifest=manifest,
                                             substrate=substrate, name=name)
@@ -327,7 +330,11 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
                 "manifest": manifest or "",
                 # Optional for every Spawn, so omitted rather than sent empty — the Head reads an
                 # absent key as "no system package needed", which is the ordinary case.
-                **({"substrate": substrate} if substrate else {})}
+                **({"substrate": substrate} if substrate else {}),
+                # `--no-git`, and sent ONLY when declining: the Head reads an absent key as "yes",
+                # which is what keeps a client that predates this flag behaving as it always did.
+                # There is no `--no-wandb` beside it yet — the W&B off-switch is Dashboard-only.
+                **({} if git else {"git": False})}
         client = auth._client()
         client.token = auth._load_token()
         try:

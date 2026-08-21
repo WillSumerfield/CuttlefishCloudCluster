@@ -9,6 +9,8 @@ Two halves with different trust models:
   is the authorization — no session (mirrors `cuttle arm authorize`).
 """
 
+import time
+
 import typer
 
 from . import api, config, headapi, settings, tls, ui, watch
@@ -225,6 +227,106 @@ def wandb_show() -> None:
 def wandb_clear() -> None:
     _api("DELETE", "/account/credentials/wandb", token=_load_token())
     ui.ok("W&B key cleared — your Spawns will run with W&B disabled")
+
+
+# --- your GitHub key --------------------------------------------------------
+# The second Credential kind, and the first **minted** one: the Head generates the keypair and you
+# never see the private half. So these verbs are the inverse of `wandb`'s in the one way that matters —
+# `wandb show` masks its secret, and `github show` prints its key in FULL, because what it prints is
+# the PUBLIC half and printing it is the entire point. You cannot use this key without pasting that
+# line into github.com/settings/keys.
+
+GITHUB_KEYS_URL = "https://github.com/settings/ssh/new"
+
+
+def _github_registered(status: dict) -> None:
+    """The pubkey, and what to do with it. Shared by mint and show so the instructions cannot drift
+    apart from the thing they are instructions for."""
+    ui.data(status["hint"])
+    ui.hint(f"add it at {GITHUB_KEYS_URL} — any title you like")
+
+
+def github_mint(force: bool = False) -> None:
+    """Mint (or replace) the keypair. The Head keeps the private half sealed under your password; you
+    get the public one.
+
+    Replacing is destructive in a way `wandb set` is not, so it asks first: the old public key stays
+    on your GitHub account doing nothing, and every Spawn authenticates with the new one from here —
+    which will fail until you have pasted it in.
+    """
+    status = _api("GET", "/account/credentials/github", token=_load_token())
+    if status["set"] and not force:
+        ui.warn("a GitHub key is already minted for you")
+        ui.hint("replacing it means pasting a new public key into GitHub — until you do, your Spawns "
+                "cannot reach your private repos")
+        if not ui.ask_confirm("Replace it?", False):
+            raise ui.abort("kept the existing key")
+    fresh = _api("POST", "/account/credentials/github", token=_load_token(), body={})
+    ui.ok("GitHub key minted — the Head holds the private half, under your password")
+    _github_registered(fresh)
+
+
+def github_show() -> None:
+    """The public key, in full — the deliberate inverse of `wandb show`."""
+    status = _api("GET", "/account/credentials/github", token=_load_token())
+    if not status["set"]:
+        ui.say("no GitHub key minted — your Spawns cannot reach your private repos")
+        ui.hint("mint one with `cuttle github mint`")
+        return
+    _github_registered(status)
+
+
+def github_clear() -> None:
+    _api("DELETE", "/account/credentials/github", token=_load_token())
+    ui.ok("GitHub key forgotten — your Spawns no longer carry one")
+    ui.hint(f"the public half is still on your GitHub account and now opens nothing; remove it at "
+            f"{GITHUB_KEYS_URL.rsplit('/', 1)[0]}")
+
+
+def github_minted() -> bool:
+    """Whether this account already has a GitHub key. `setup` asks before offering to mint one — an
+    Arm's owner re-running setup should not be talked into replacing a key that already works."""
+    return bool(_api("GET", "/account/credentials/github", token=_load_token())["set"])
+
+
+def github_verify() -> dict:
+    """Ask the Head to authenticate to GitHub with your stored key, and say what came back.
+
+    Three answers, not two (ccc_head_api.github): registered, not-registered-yet, and nobody could
+    tell. The last is why this is not a bool — a Head with no route to github.com must not read as a
+    key you have not pasted in yet.
+    """
+    return _api("POST", "/account/credentials/github/verify", token=_load_token())
+
+
+def github_await(timeout: float = 300.0, interval: float = 3.0) -> bool:
+    """Poll until GitHub accepts the key. True if it did.
+
+    **Skippable, and loudly.** Ctrl-C leaves you with a key that is armed on the Head and registered
+    nowhere, which surfaces much later as `Permission denied (publickey)` inside a Spawn, blamed on
+    the job. Saying so here is the difference between that and a mystery.
+    """
+    ui.say("waiting for GitHub to accept it — paste the key above, or press Ctrl-C to skip")
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            got = github_verify()
+            if got["status"] == "ok":
+                ui.ok(f"GitHub accepts it — authenticated as {got['username']}")
+                return True
+            if got["status"] == "error":
+                ui.warn(f"could not check with GitHub — {got['detail']}")
+                ui.hint("the key is stored either way; `cuttle github verify` re-checks")
+                return False
+            if time.monotonic() >= deadline:
+                ui.warn("GitHub has not accepted the key yet")
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        ui.warn("skipped — GitHub has not accepted the key")
+    ui.hint(f"paste it at {GITHUB_KEYS_URL}, then run `cuttle github verify`. Until you do, a Spawn "
+            f"reaching a private repo fails with `Permission denied (publickey)`")
+    return False
 
 
 def logout() -> None:

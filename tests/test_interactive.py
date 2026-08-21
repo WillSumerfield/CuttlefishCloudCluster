@@ -196,7 +196,8 @@ class TestTheMenuIsDerived:
         check renders arm/user/karma as leaves and silently loses all their subcommands."""
         root = self._root()
         assert [n for n, c in root.commands.items() if menu._is_group(c)] == \
-            ["arm", "user", "karma", "backup", "wandb", "munge", "feature", "recipe", "workspace"]
+            ["arm", "user", "karma", "backup", "wandb", "github", "munge", "feature", "recipe",
+             "workspace"]
 
     def test_hiding_is_menu_only(self, monkeypatch):
         """The command must stay reachable when typed. A detection bug that removed it outright is

@@ -1013,3 +1013,148 @@ class TestTheWrapperRuns:
         assert "ran" in got.stdout
         assert "could not be loaded" in got.stderr
 
+
+class TestTheGitHubCommands:
+    """`cuttle github mint|show|verify|clear`. The mirror image of `cuttle wandb` above, and the ways
+    they differ are the ways a minted Credential differs from a pasted one: nothing is typed in, and
+    `show` prints its key in FULL rather than masking it — what it prints is the public half, and
+    copying it into GitHub is the only way the key becomes useful at all."""
+
+    @pytest.fixture
+    def offline(self, monkeypatch):
+        """`verify` reaches github.com over the network, which no test may. Returns a setter so each
+        test picks the answer it is about."""
+        state = {"status": "unregistered", "detail": "GitHub refused the key"}
+        monkeypatch.setattr(head_github, "verify", lambda key: state)
+        return state
+
+    def test_mint_prints_the_public_key_in_full(self, signed_in):
+        got = signed_in("github", "mint", "--no-wait")
+        assert got.exit_code == 0, got.output
+        assert "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5" in got.output
+        assert "github.com/settings" in got.output
+
+    def test_show_prints_the_same_key(self, signed_in):
+        minted = signed_in("github", "mint", "--no-wait").output
+        key = [ln for ln in minted.splitlines() if ln.startswith("ssh-ed25519 ")][0]
+        assert key in signed_in("github", "show").output
+
+    def test_show_with_nothing_minted_says_so(self, signed_in):
+        assert "no GitHub key minted" in signed_in("github", "show").output
+
+    def test_the_private_half_is_never_printed(self, signed_in):
+        """The property the whole design rests on: there is no route that would serve it, so there is
+        nothing for a command to print."""
+        for words in (("github", "mint", "--no-wait"), ("github", "show")):
+            assert "PRIVATE KEY" not in signed_in(*words).output
+
+    def test_re_minting_asks_first(self, signed_in):
+        """Destructive in a way `wandb set` is not: the public key already on GitHub stops matching,
+        so every Spawn fails to authenticate until the new one is pasted in."""
+        first = signed_in("github", "mint", "--no-wait").output
+        key = [ln for ln in first.splitlines() if ln.startswith("ssh-ed25519 ")][0]
+        declined = signed_in("github", "mint", "--no-wait", input="n\n")
+        assert declined.exit_code != 0
+        assert key in signed_in("github", "show").output
+
+    def test_force_replaces_without_asking(self, signed_in):
+        first = signed_in("github", "mint", "--no-wait").output
+        key = [ln for ln in first.splitlines() if ln.startswith("ssh-ed25519 ")][0]
+        second = signed_in("github", "mint", "--no-wait", "--force")
+        assert second.exit_code == 0, second.output
+        assert key not in second.output
+        assert key not in signed_in("github", "show").output
+
+    def test_clear_forgets_it(self, signed_in):
+        signed_in("github", "mint", "--no-wait")
+        assert signed_in("github", "clear").exit_code == 0
+        assert "no GitHub key minted" in signed_in("github", "show").output
+
+    def test_verify_names_the_account(self, signed_in, offline):
+        signed_in("github", "mint", "--no-wait")
+        offline.update({"status": "ok", "username": "WillSumerfield"})
+        assert "WillSumerfield" in signed_in("github", "verify").output
+
+    def test_verify_says_when_github_has_not_seen_it(self, signed_in, offline):
+        signed_in("github", "mint", "--no-wait")
+        got = signed_in("github", "verify")
+        assert got.exit_code == 0
+        assert "does not know this key yet" in got.output
+
+    def test_an_unreachable_github_is_not_an_unregistered_key(self, signed_in, offline):
+        """The three-state answer, at the surface a human reads: "we could not ask" must not print as
+        "you have not pasted it in", which would send them to GitHub to fix a broken Head."""
+        signed_in("github", "mint", "--no-wait")
+        offline.update({"status": "error", "detail": "could not reach github.com"})
+        got = signed_in("github", "verify")
+        assert got.exit_code != 0
+        assert "could not reach github.com" in got.output
+
+    def test_the_poll_stops_on_success(self, signed_in, offline):
+        offline.update({"status": "ok", "username": "WillSumerfield"})
+        got = signed_in("github", "mint")
+        assert got.exit_code == 0, got.output
+        assert "WillSumerfield" in got.output
+
+    def test_the_poll_gives_up_loudly(self, signed_in, offline, capsys):
+        """Giving up leaves a key armed on the Head and registered nowhere — which surfaces much later
+        as `Permission denied (publickey)` inside a Spawn, blamed on the job. So it says so, and says
+        what to do about it. Called directly, with the wait wound down to nothing."""
+        signed_in("github", "mint", "--no-wait")
+        capsys.readouterr()
+        assert auth.github_await(timeout=0.0, interval=0.0) is False
+        # Rich wraps to the terminal width, so the hint's own line breaks are not the test's business.
+        out, err = capsys.readouterr()
+        said = " ".join((out + err).split())
+        assert "has not accepted the key" in said
+        assert "Permission denied (publickey)" in said
+
+    def test_an_unreachable_github_stops_the_poll_rather_than_spinning(self, signed_in, offline,
+                                                                       capsys):
+        """`error` must break out immediately. Treating it as "not yet" is how a Head with no route
+        out becomes a spinner that means "waiting for you" when it means "broken"."""
+        signed_in("github", "mint", "--no-wait")
+        offline.update({"status": "error", "detail": "could not reach github.com"})
+        capsys.readouterr()
+        assert auth.github_await(timeout=600.0, interval=600.0) is False
+        said = capsys.readouterr()
+        assert "could not reach github.com" in said.out + said.err
+
+
+class TestDecliningTheGitHubKey:
+    """`cuttle run --no-git`, end to end — the flag has to reach the Head's composer, not just the
+    client's argv."""
+
+    def _spy(self, monkeypatch):
+        seen: dict[str, str] = {}
+        real = head_spawns.submit
+
+        def spy(*a, git_key="", **kw):
+            seen["git_key"] = git_key
+            return real(*a, git_key=git_key, **kw)
+
+        monkeypatch.setattr(head_spawns, "submit", spy)
+        return seen
+
+    def _run(self, signed_in, *extra):
+        return signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
+                         "--output", "out", "--manifest", "requirements.txt", *extra)
+
+    def test_a_minted_key_rides_along_by_default(self, signed_in, fake_slurm, project, monkeypatch):
+        signed_in("github", "mint", "--no-wait")
+        seen = self._spy(monkeypatch)
+        assert self._run(signed_in).exit_code == 0
+        assert "PRIVATE KEY" in seen["git_key"]
+
+    def test_no_git_leaves_it_behind(self, signed_in, fake_slurm, project, monkeypatch):
+        signed_in("github", "mint", "--no-wait")
+        seen = self._spy(monkeypatch)
+        assert self._run(signed_in, "--no-git").exit_code == 0
+        assert seen["git_key"] == ""
+
+    def test_with_nothing_minted_there_is_nothing_to_decline(self, signed_in, fake_slurm, project,
+                                                             monkeypatch):
+        seen = self._spy(monkeypatch)
+        assert self._run(signed_in).exit_code == 0
+        assert seen["git_key"] == ""
+
