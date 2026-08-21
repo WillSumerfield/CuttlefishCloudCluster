@@ -458,8 +458,7 @@ def account_setup() -> None:
     if not ui.ask_confirm("Mint a GitHub SSH key for your account?", True):
         ui.hint("mint one later with `cuttle github mint`")
         return
-    auth.github_mint()
-    auth.github_await()
+    auth.github_await(auth.github_mint()["hint"])
 
 
 def ensure_munge_key() -> None:

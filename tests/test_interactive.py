@@ -573,6 +573,28 @@ class TestTheBox:
         assert cap.out == "raw print\nvia data\n"
         assert "raw print" not in cap.err     # never drawn inside the box
 
+    def test_a_block_is_drawn_while_the_box_is_open(self, on_a_tty, capsys, monkeypatch):
+        """The bug this fixes: `cuttle setup` printed a fresh GitHub public key with `ui.data` and
+        then said "press c to copy it" — with nothing on screen to copy, because stdout was held
+        until the box closed minutes later. Output the very next line refers to has to be drawn.
+
+        Forced onto a buffer, like `test_results_survive_the_restore`: the box only draws on a real
+        terminal, and a test does not have one."""
+        buf = io.StringIO()
+        monkeypatch.setattr(ui, "err", Console(file=buf, force_terminal=True, theme=ui.THEME))
+        with ui.section("T", lambda: ""):
+            ui.block("ssh-ed25519 AAAAC3")
+            assert "ssh-ed25519 AAAAC3" in buf.getvalue(), "the key never reached the screen"
+            assert capsys.readouterr().out == ""   # and still not on the pipeable stream
+
+    def test_a_block_stays_pipeable_with_no_box_in_the_way(self, capsys):
+        """`cuttle github show | …` is a real use. With no frame to draw into there is nothing to
+        route around, so this is `data` and goes to stdout like any other command output."""
+        ui.block("ssh-ed25519 AAAAC3")
+        cap = capsys.readouterr()
+        assert cap.out == "ssh-ed25519 AAAAC3\n"
+        assert cap.err == ""
+
     def test_the_box_gives_stdout_back(self, on_a_tty, monkeypatch):
         """The box borrows stdout; it has to give it back, or everything printed *after* it goes
         into a released buffer nobody reads — which is where `cuttle user add`'s one-time password

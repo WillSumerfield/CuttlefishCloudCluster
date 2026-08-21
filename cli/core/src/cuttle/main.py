@@ -602,19 +602,22 @@ def github_mint(
     An account key reaches EVERYTHING your GitHub account can, read and write, and for the life of a
     Spawn anything running in that Pod can use it. `cuttle run --no-git` leaves it out of one.
     """
-    auth_mod.github_mint(force=force)
+    minted = auth_mod.github_mint(force=force)
     if wait:
-        auth_mod.github_await()
+        auth_mod.github_await(minted["hint"])
 
 
 @github_app.command("show")
-def github_show():
+def github_show(
+    to_clipboard: bool = typer.Option(False, "--copy", "-c",
+                                      help="Also put it on your clipboard. Works over SSH."),
+):
     """Print your GitHub public key, in full.
 
     In full, unlike `cuttle wandb show` — this is the half that is meant to be copied, and copying it
     into github.com/settings/keys is the only way the key becomes useful. The private half cannot be
     read back by anyone, including you."""
-    auth_mod.github_show()
+    auth_mod.github_show(to_clipboard=to_clipboard)
 
 
 @github_app.command("verify")

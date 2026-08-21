@@ -225,6 +225,103 @@ def data(text: str = "", log: bool = True) -> None:
     out.print(text, markup=False, soft_wrap=True)
 
 
+def block(text: str) -> None:
+    """Output the reader has to act on **now** — a public key to paste, an address to open.
+
+    `data` is the pipeable stream, and inside a `section` stdout is CAPTURED for the life of the box
+    (see there for why). That is right for a command's output and wrong for something the very next
+    sentence tells you to copy: it reappears when the box closes, minutes later, under a line that
+    said "the key above". So this draws where the reader is actually looking — a row of the box, or a
+    loose row on the canvas — and falls back to `data` when there is no frame in the way, which keeps
+    `cuttle github show | …` pipeable.
+
+    Not `markup=False` territory: an ssh public key is base64 and cannot contain Rich markup. Anything
+    that could must come through `data` instead.
+    """
+    if _FRAME is not None or _SCREEN is not None:
+        _log(text)
+        _emit(text)
+        return
+    data(text)
+
+
+# Copying to the clipboard, in the two situations CCC actually runs in.
+#
+# A local terminal has a clipboard tool; an SSH session into the Head does not — and `setup --head` is
+# routinely run over SSH, which is exactly when a public key most needs copying. **OSC 52** is what
+# covers that case: an escape sequence asking the *terminal emulator* to set its own clipboard, so it
+# crosses SSH, and tmux, without anything installed on the far side.
+#
+# Tried in order, tool first: a tool that succeeds is certain, while OSC 52 is a write into the void —
+# no terminal ever answers it, so "copied" is a claim we cannot check. Terminals that do not implement
+# it ignore the sequence.
+_OSC52_LIMIT = 100_000   # generous; a public key is ~100 bytes and terminals cap around 100KB
+
+
+def _clipboard_tool() -> list[str] | None:
+    """The local clipboard command, if this box has a graphical session and something to run in it."""
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
+        return ["wl-copy"]
+    if os.environ.get("DISPLAY"):
+        if shutil.which("xclip"):
+            return ["xclip", "-selection", "clipboard"]
+        if shutil.which("xsel"):
+            return ["xsel", "--clipboard", "--input"]
+    return None
+
+
+def copy(text: str) -> bool:
+    """Put `text` on the clipboard. False only when there was nowhere at all to put it."""
+    tool = _clipboard_tool()
+    if tool is not None:
+        try:
+            subprocess.run(tool, input=text.encode(), check=True)
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            pass       # fall through — a broken tool is no worse than an absent one
+    if not _tty() or len(text) > _OSC52_LIMIT:
+        return False
+    payload = base64.b64encode(text.encode()).decode()
+    try:
+        # To the terminal, not through Rich: this is a control sequence, not something to draw, and
+        # `err` would wrap and style it. stderr because that is the terminal Rich is already on.
+        sys.stderr.write(f"\033]52;c;{payload}\a")
+        sys.stderr.flush()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+@contextmanager
+def hotkeys():
+    """Raw stdin for the life of a **wait**, so a polling loop can offer a keystroke without blocking
+    on one. Yields a file descriptor for `waited_key`, or None when there is no human to press
+    anything — the caller then just polls, and must not read stdin at all."""
+    if not _tty():
+        yield None
+        return
+    with _raw() as fd:
+        yield fd
+
+
+def waited_key(fd, seconds: float) -> str:
+    """The key pressed within `seconds`, or "" if none was. Sleeps when `fd` is None, so a caller
+    written for the interactive case works unchanged without one.
+
+    ^C is a byte here rather than a signal (see `_raw`), so it is turned back into the exception every
+    other prompt raises — a wait must stay interruptible in the one way the rest of the CLI handles.
+    """
+    if fd is None:
+        time.sleep(seconds)
+        return ""
+    if not select.select([fd], [], [], seconds)[0]:
+        return ""
+    key = _key(fd)
+    if key in ("\x03", "\x04"):
+        raise KeyboardInterrupt
+    return key
+
+
 def result(key: str, value: object) -> None:
     """A fact worth keeping from a long operation — shown in a panel after the box collapses.
 

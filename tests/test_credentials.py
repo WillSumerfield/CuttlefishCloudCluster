@@ -21,6 +21,7 @@ thing that gets added back.
 """
 
 import base64
+import contextlib
 import io
 import os
 import shutil
@@ -1232,6 +1233,76 @@ class TestSetupLogsInWithoutAsking:
                                          "password": "Brand New 9"}).status_code == 200
 
 
+class TestCopyingTheKeyOut:
+    """A minted public key is useless until it reaches github.com, and the moment it is wanted is the
+    moment `mint` prints it — you are about to walk to a browser. Two things had to be true for that
+    and neither was: the key has to be ON SCREEN (see ui.block), and there has to be a way to take it
+    that is not selecting 90 characters with a mouse."""
+
+    def test_a_local_clipboard_tool_is_used_when_there_is_one(self, monkeypatch):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        monkeypatch.setattr(ui.shutil, "which", lambda n: "/usr/bin/wl-copy" if n == "wl-copy" else None)
+        seen = {}
+        monkeypatch.setattr(ui.subprocess, "run",
+                            lambda cmd, **kw: seen.update(cmd=cmd, input=kw.get("input")))
+        assert ui.copy("ssh-ed25519 AAAA") is True
+        assert seen["cmd"] == ["wl-copy"] and seen["input"] == b"ssh-ed25519 AAAA"
+
+    def test_it_falls_back_to_the_terminals_own_clipboard(self, monkeypatch, capsys):
+        """OSC 52, and this is the case that matters: `setup --head` is routinely run over SSH, where
+        the Head has no clipboard tool and the clipboard you want is on the box you are sitting at.
+        The escape asks the terminal emulator itself, so it crosses SSH."""
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.setattr(ui, "_tty", lambda: True)
+        assert ui.copy("ssh-ed25519 AAAA") is True
+        said = capsys.readouterr().err
+        assert said.startswith("\033]52;c;") and said.endswith("\a")
+        assert base64.b64decode(said[7:-1]).decode() == "ssh-ed25519 AAAA"
+
+    def test_a_broken_tool_falls_through_rather_than_failing(self, monkeypatch):
+        """An installed-but-unusable xclip (no X authority, a dead display) is no worse than none."""
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(ui.shutil, "which", lambda n: "/usr/bin/xclip" if n == "xclip" else None)
+        monkeypatch.setattr(ui.subprocess, "run",
+                            lambda cmd, **kw: (_ for _ in ()).throw(OSError("no display")))
+        monkeypatch.setattr(ui, "_tty", lambda: True)
+        assert ui.copy("ssh-ed25519 AAAA") is True      # via OSC 52
+
+    def test_nowhere_to_copy_to_is_false_not_a_crash(self, monkeypatch):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.setattr(ui, "_tty", lambda: False)
+        assert ui.copy("ssh-ed25519 AAAA") is False
+
+    def test_c_copies_while_the_poll_waits(self, signed_in, monkeypatch, capsys):
+        """The keystroke is answered on the poll's own timer, so pressing `c` does not sit unread
+        until whatever sleep it landed in expires."""
+        signed_in("github", "mint", "--no-wait")     # /verify 409s with nothing stored
+        monkeypatch.setattr(head_github, "verify",
+                            lambda key: {"status": "unregistered", "detail": "no"})
+        copied = []
+        monkeypatch.setattr(ui, "copy", lambda text: (copied.append(text), True)[1])
+        keys = iter(["c", ""])
+        monkeypatch.setattr(ui, "hotkeys", lambda: contextlib.nullcontext(7))
+        monkeypatch.setattr(ui, "waited_key", lambda fd, seconds: next(keys, ""))
+        assert auth.github_await("ssh-ed25519 AAAA", timeout=0.4, interval=0.0) is False
+        assert copied == ["ssh-ed25519 AAAA"]
+        assert "copied" in " ".join(capsys.readouterr())
+
+    def test_with_no_key_to_hand_it_does_not_offer_the_keystroke(self, signed_in, monkeypatch,
+                                                                 capsys):
+        """`github_await()` with no pubkey — nothing to copy, so nothing is promised."""
+        signed_in("github", "mint", "--no-wait")
+        monkeypatch.setattr(head_github, "verify",
+                            lambda key: {"status": "unregistered", "detail": "no"})
+        monkeypatch.setattr(ui, "waited_key",
+                            lambda fd, s: pytest.fail("read a key with nothing to copy"))
+        auth.github_await(timeout=0.0, interval=0.0)
+        assert "press c" not in " ".join(capsys.readouterr())
+
+
 class TestTheAccountQuestionsAtTheEndOfSetup:
     """Phase C: W&B defaults and the GitHub key, asked LAST because both need a live Session — a key
     cannot be minted at all before one exists, since the Head seals it under the DEK only a login
@@ -1274,3 +1345,23 @@ class TestTheAccountQuestionsAtTheEndOfSetup:
         still the moment to set them."""
         self._answer("vision", "lab", "n")
         assert cli_settings.load()["wandb"] == {"project": "vision", "entity": "lab"}
+
+
+class TestShowCanCopyToo:
+    """The other half of "copy it easily": someone who skipped the wait, or came back a day later,
+    reaches for `cuttle github show`."""
+
+    def test_the_flag_copies_and_the_key_still_reaches_stdout(self, signed_in, monkeypatch):
+        signed_in("github", "mint", "--no-wait")
+        copied = []
+        monkeypatch.setattr(ui, "copy", lambda text: (copied.append(text), True)[1])
+        out = signed_in("github", "show", "--copy").output
+        assert copied and copied[0].startswith("ssh-ed25519 ")
+        assert copied[0] in out          # a flag, never a redirect: the pipe still gets the key
+
+    def test_without_the_flag_nothing_touches_the_clipboard(self, signed_in, monkeypatch):
+        """`cuttle github show | …` must not stop, and must not reach for a clipboard nobody asked
+        about — which on a headless box means a subprocess that may not exist."""
+        signed_in("github", "mint", "--no-wait")
+        monkeypatch.setattr(ui, "copy", lambda text: pytest.fail("copied without being asked"))
+        assert signed_in("github", "show").exit_code == 0

@@ -26,15 +26,19 @@ up in `ps`.
 cuttle github mint
 ```
 
-It prints a public key and waits. Paste that key at
+It prints a public key and waits. Press **c** to copy it, paste it at
 [github.com/settings/ssh/new](https://github.com/settings/ssh/new) — any title you like — and the
 command confirms which GitHub account it authenticates as, then exits. You can skip the wait with
 Ctrl-C, but until the key is registered it opens nothing.
 
-**See it again:**
+Copying works over SSH: with no clipboard tool on the box, CCC asks your *terminal* for its own
+clipboard instead, which is the one you actually want when you are logged into the Head from
+somewhere else.
+
+**See it again, and copy it:**
 
 ```sh
-cuttle github show
+cuttle github show --copy
 ```
 
 **Check GitHub still has it:**
@@ -63,7 +67,7 @@ a toggle in the composer beside the W&B one.
 | | |
 |---|---|
 | `cuttle github mint` | Generate a key and print its public half. Replacing one asks first. |
-| `cuttle github show` | Print your public key, in full. |
+| `cuttle github show` | Print your public key, in full. `--copy` puts it on your clipboard. |
 | `cuttle github verify` | Ask GitHub whether it is registered, and who it authenticates as. |
 | `cuttle github clear` | Forget it. Your Spawns stop carrying one. |
 

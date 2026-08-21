@@ -262,12 +262,17 @@ GITHUB_KEYS_URL = "https://github.com/settings/ssh/new"
 
 def _github_registered(status: dict) -> None:
     """The pubkey, and what to do with it. Shared by mint and show so the instructions cannot drift
-    apart from the thing they are instructions for."""
-    ui.data(status["hint"])
+    apart from the thing they are instructions for.
+
+    `ui.block`, not `ui.data`: a `section` captures stdout for the life of its box, so during
+    `cuttle setup` the key printed here was held back and replayed minutes later — under a line
+    telling the operator to copy "the key above", with nothing above.
+    """
+    ui.block(status["hint"])
     ui.hint(f"add it at {GITHUB_KEYS_URL} — any title you like")
 
 
-def github_mint(force: bool = False) -> None:
+def github_mint(force: bool = False) -> dict:
     """Mint (or replace) the keypair. The Head keeps the private half sealed under your password; you
     get the public one.
 
@@ -285,16 +290,28 @@ def github_mint(force: bool = False) -> None:
     fresh = _api("POST", "/account/credentials/github", token=_load_token(), body={})
     ui.ok("GitHub key minted — the Head holds the private half, under your password")
     _github_registered(fresh)
+    # Returned so the caller can hand it to `github_await`, which offers to copy it while it waits.
+    return fresh
 
 
-def github_show() -> None:
-    """The public key, in full — the deliberate inverse of `wandb show`."""
+def github_show(to_clipboard: bool = False) -> None:
+    """The public key, in full — the deliberate inverse of `wandb show`.
+
+    `to_clipboard` is the flag rather than a keystroke: this command's stdout is its deliverable
+    (`cuttle github show | …`), so it must not stop and wait for anyone. The keystroke belongs to the
+    wait in `github_await`, which is already stopping.
+    """
     status = _api("GET", "/account/credentials/github", token=_load_token())
     if not status["set"]:
         ui.say("no GitHub key minted — your Spawns cannot reach your private repos")
         ui.hint("mint one with `cuttle github mint`")
         return
     _github_registered(status)
+    if to_clipboard:
+        if ui.copy(status["hint"]):
+            ui.ok("copied to your clipboard")
+        else:
+            ui.warn("nowhere to copy to on this box — no clipboard tool, and no terminal to ask")
 
 
 def github_clear() -> None:
@@ -320,29 +337,42 @@ def github_verify() -> dict:
     return _api("POST", "/account/credentials/github/verify", token=_load_token())
 
 
-def github_await(timeout: float = 300.0, interval: float = 3.0) -> bool:
+def github_await(pubkey: str = "", timeout: float = 300.0, interval: float = 3.0) -> bool:
     """Poll until GitHub accepts the key. True if it did.
 
     **Skippable, and loudly.** Ctrl-C leaves you with a key that is armed on the Head and registered
     nowhere, which surfaces much later as `Permission denied (publickey)` inside a Spawn, blamed on
     the job. Saying so here is the difference between that and a mystery.
+
+    `c` copies the key while the wait runs. The wait is the moment it is wanted — you are about to
+    walk to a browser — and the poll would otherwise hold the terminal for five minutes with nothing
+    to do but stare at a key you have to select by hand. `ui.copy` reaches the clipboard of an SSH
+    client too (OSC 52), which is where `setup --head` usually runs from.
     """
-    ui.say("waiting for GitHub to accept it — paste the key above, or press Ctrl-C to skip")
+    hint = "press c to copy it, or Ctrl-C to skip" if pubkey else "or press Ctrl-C to skip"
+    ui.say(f"waiting for GitHub to accept the key — {hint}")
     deadline = time.monotonic() + timeout
     try:
-        while True:
-            got = github_verify()
-            if got["status"] == "ok":
-                ui.ok(f"GitHub accepts it — authenticated as {got['username']}")
-                return True
-            if got["status"] == "error":
-                ui.warn(f"could not check with GitHub — {got['detail']}")
-                ui.hint("the key is stored either way; `cuttle github verify` re-checks")
-                return False
-            if time.monotonic() >= deadline:
-                ui.warn("GitHub has not accepted the key yet")
-                break
-            time.sleep(interval)
+        with ui.hotkeys() as fd:
+            while True:
+                got = github_verify()
+                if got["status"] == "ok":
+                    ui.ok(f"GitHub accepts it — authenticated as {got['username']}")
+                    return True
+                if got["status"] == "error":
+                    ui.warn(f"could not check with GitHub — {got['detail']}")
+                    ui.hint("the key is stored either way; `cuttle github verify` re-checks")
+                    return False
+                if time.monotonic() >= deadline:
+                    ui.warn("GitHub has not accepted the key yet")
+                    break
+                # The poll interval IS the keystroke wait — one timer, so pressing `c` is answered
+                # at once rather than at the end of whatever sleep it landed in.
+                if pubkey and ui.waited_key(fd, interval).lower() == "c":
+                    if ui.copy(pubkey):
+                        ui.ok("copied to your clipboard")
+                    else:
+                        ui.warn("nowhere to copy to on this box — select the key above instead")
     except KeyboardInterrupt:
         ui.warn("skipped — GitHub has not accepted the key")
     ui.hint(f"paste it at {GITHUB_KEYS_URL}, then run `cuttle github verify`. Until you do, a Spawn "

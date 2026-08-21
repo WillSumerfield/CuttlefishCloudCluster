@@ -132,7 +132,7 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | Command | | Explained in |
 |---|---|---|
 | `cuttle github mint` | Have the Head generate an SSH key for you, and print its public half. | [GitHub keys](elements/github-keys.md) |
-| `cuttle github show` | Your public key, in full — the half you paste into GitHub. | [GitHub keys](elements/github-keys.md) |
+| `cuttle github show` | Your public key, in full — the half you paste into GitHub. `--copy` to the clipboard. | [GitHub keys](elements/github-keys.md) |
 | `cuttle github verify` | Ask GitHub whether it is registered, and who it authenticates as. | [GitHub keys](elements/github-keys.md) |
 | `cuttle github clear` | Forget it. Your Spawns stop carrying one. | [GitHub keys](elements/github-keys.md) |
 
