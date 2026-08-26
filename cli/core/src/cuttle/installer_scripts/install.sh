@@ -41,9 +41,21 @@ if [ -d "$here/head" ]; then
     #     names — so without this line the client is pointed somewhere it cannot reach. This is the
     #     one part of installing that needs root; it is also why a baked bundle asks for sudo at all.
     #     build-installer baked the finished line, marker and all, so nothing is reconstructed here.
+    #     Every line resolving the name goes, not just ours: WSL2 regenerates /etc/hosts from the
+    #     Windows hosts file on each distro start and drops our marker doing it, so a marker-only
+    #     match would leave the inherited copy and resolve the name twice. Mirrors system.claims_name.
     if [ -f "$here/head/hosts" ]; then
         echo "cuttle: adding the cluster name to /etc/hosts (needs sudo) ..."
-        sudo sh -c "sed -i '/# cuttle\$/d' /etc/hosts && cat '$here/head/hosts' >> /etc/hosts"
+        name=$(awk '$1 !~ /^#/ && NF > 1 { print $2; exit }' "$here/head/hosts")
+        tmp=$(mktemp)
+        awk -v n="$name" '{
+            line = $0; sub(/#.*/, "", line); count = split(line, f, /[ \t]+/)
+            for (i = 2; i <= count; i++) if (f[i] == n) next
+            print
+        }' /etc/hosts > "$tmp"
+        cat "$here/head/hosts" >> "$tmp"
+        sudo install -m 644 "$tmp" /etc/hosts
+        rm -f "$tmp"
     fi
     # 3b. Trust the cluster's CA, so the Dashboard loads without "your connection is not private".
     #     Three stores, because Linux has no one store every browser reads: the OS store (curl,

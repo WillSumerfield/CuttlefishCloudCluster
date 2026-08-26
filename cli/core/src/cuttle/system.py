@@ -310,35 +310,56 @@ def is_wsl() -> bool:
         return "microsoft" in f.read().lower()
 
 
+def is_crostini() -> bool:
+    """ChromeOS's Linux VM. Debian, and native-looking from the inside — the giveaway is the file
+    ChromeOS drops in every container it builds. Clients only: a Chromebook donates nothing (no
+    passthrough GPU, no reachable mesh), so nothing here is ever an Arm."""
+    return Path("/dev/.cros_milestone").exists() or Path("/opt/google/cros-containers").is_dir()
+
+
 # --- the Cluster name -------------------------------------------------------
 # CCC has no DNS — the mesh runs no resolver and there is no router to configure — so the **Cluster
-# name** is carried by /etc/hosts on every box `setup` touches. One managed line, marked with
-# config.HOSTS_MARKER, rewritten in place rather than appended to: setup is re-run routinely (a full
-# teardown+setup is the normal redeploy here) and a box that accumulated one stale line per run would
-# resolve the name to whichever address happened to be listed first.
+# name** is carried by /etc/hosts on every box `setup` touches. One line for the name, rewritten in
+# place rather than appended to: setup is re-run routinely (a full teardown+setup is the normal
+# redeploy here) and a box that accumulated one stale line per run would resolve the name to whichever
+# address happened to be listed first. config.HOSTS_MARKER says the line is ours; what makes a line
+# ours to REPLACE is the name it resolves, which is not the same test (see claims_name).
+
+def claims_name(line: str, name: str = config.DOMAIN) -> bool:
+    """Whether an /etc/hosts line resolves `name` — ours or anyone else's.
+
+    Matched on the NAME, not on config.HOSTS_MARKER, because our marker does not always survive.
+    WSL2 regenerates /etc/hosts from the *Windows* hosts file on every distro start and re-emits each
+    entry as `ADDRESS<tab>name`, comment stripped. A marker-only match leaves that inherited copy in
+    place: two lines for the name after the next setup, and — worse — a name that still resolves
+    after a teardown, which is exactly the residue teardown exists to remove.
+
+    The address field is not a name, hence `[1:]`, and a commented-out line resolves nothing.
+    """
+    return name in line.split("#", 1)[0].split()[1:]
+
 
 def write_hosts_entry(addr: str, name: str = config.DOMAIN) -> None:
-    """Point `name` at `addr` in /etc/hosts. Idempotent, and a no-op when the line is already right —
-    setup writes this on every run, and rewriting an unchanged file for nothing is a root mutation
-    with nothing to show for it."""
+    """Point `name` at `addr` in /etc/hosts, and let nothing else claim it. Idempotent, and a no-op
+    when the file already says exactly this — setup writes this on every run, and rewriting an
+    unchanged file for nothing is a root mutation with nothing to show for it."""
     want = f"{addr}\t{name} {config.HOSTS_MARKER}"
     current = Path("/etc/hosts").read_text().splitlines()
-    if want in current:
+    kept = [ln for ln in current if not claims_name(ln, name)]
+    if [*kept, want] == current:
         return
-    kept = [ln for ln in current if not ln.rstrip().endswith(config.HOSTS_MARKER)]
     install_file("\n".join([*kept, want]) + "\n", Path("/etc/hosts"), "644")
     print(f"cuttle: {name} → {addr} (/etc/hosts)")
 
 
 def remove_hosts_entry() -> None:
-    """Drop our managed line. Every teardown, every role: the name is cuttle's own state, and a box
-    that has left the cluster resolving it to a machine it no longer talks to is worse than one that
-    does not resolve it at all."""
+    """Drop every line resolving the **Cluster name**. Every teardown, every role: the name is
+    cuttle's own state, and a box that has left the cluster resolving it to a machine it no longer
+    talks to is worse than one that does not resolve it at all."""
     path = Path("/etc/hosts")
     if not path.exists():
         return
-    lines = [ln for ln in path.read_text().splitlines()
-             if not ln.rstrip().endswith(config.HOSTS_MARKER)]
+    lines = [ln for ln in path.read_text().splitlines() if not claims_name(ln)]
     install_file("\n".join(lines) + "\n", path, "644")
 
 
