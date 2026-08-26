@@ -5,20 +5,28 @@ URL is exactly the one this box already logs in to. That is the whole point of t
 address is *already on disk* in `~/.ccc/config.yaml`, and asking a User to recall the Head's IP weeks
 after `setup` is asking them to remember something the tool knows.
 
-WSL is the one place the saved URL is the wrong answer: the CCC mesh lives inside WSL and the Windows
-browser has no route to the Head's mesh IP, so `setup` installs a localhost forward
-(`setup.install_wsl_dashboard_forward`) and the address to hand the browser is that instead.
+A **guest** is where the saved URL can be the wrong answer, because the browser is not on this box at
+all — it is on the OS hosting the virtual machine (Windows under WSL2, ChromeOS under Crostini), which
+holds neither the **Cluster name** nor the cluster's CA unless someone put them there (`guest.py`).
+Three cases come out of that, and `url` is the whole of where they are decided:
 
-It is also the one place the certificate warning survives. Everywhere else CCC installs, setup puts
-the cluster's CA in the box's trust stores and the Dashboard loads clean — but here the browser is on
-the *Windows* side, which shares neither the Linux trust store nor the /etc/hosts entry carrying the
-**Cluster name**. Hence localhost, and hence one click-through per Windows browser.
+  * a **WSL Arm** — the mesh lives inside WSL and Windows cannot route to the Head's mesh IP, so
+    `setup --arm` installs a localhost forward and that is what the browser gets;
+  * a **guest client whose host OS lacks the name** — it gets the *address*, which is in the Head
+    certificate's SANs and so loads, rather than a name that fails exactly like a Head that is down.
+    Always the case on ChromeOS, which has no hosts file anyone can write;
+  * everything else — the saved URL, which is the name, as it is on every box CCC installs on.
+
+The certificate warning is the guest's other tax, and only Windows can be spared it: the script
+`guest.offer` hands over installs the CA there. ChromeOS clicks through once per browser.
 """
 
+import socket
 import subprocess
 import webbrowser
+from urllib.parse import urlparse
 
-from . import config, headapi, settings, system, ui
+from . import config, guest, headapi, settings, system, ui
 
 
 def url() -> str:
@@ -31,7 +39,26 @@ def url() -> str:
     # listening on localhost, and its saved URL already reaches the Head over the LAN.
     if system.is_wsl() and config.DASH_FORWARD_SOCKET_UNIT.exists():
         return headapi.head_url("localhost") + "/"
+    if not guest.outside_browser_has_name():
+        return _by_address(head)
     return head.rstrip("/") + "/"
+
+
+def _by_address(head: str) -> str:
+    """The saved URL with the **Cluster name** swapped for the address it means on this box.
+
+    The name is resolved here rather than stored anywhere: a client keeps its Head's address in its
+    /etc/hosts line and nowhere else (`setup.point_at_head`), and that is still true of a guest — the
+    host OS's browser is simply told the answer instead of being able to look it up. Falls back to the
+    saved URL if the name does not resolve, since a box in that state has a larger problem than which
+    spelling of the address its browser gets.
+    """
+    u = urlparse(head.rstrip("/") + "/")
+    try:
+        addr = socket.gethostbyname(u.hostname)
+    except (OSError, TypeError):
+        return head.rstrip("/") + "/"
+    return u._replace(netloc=addr + (f":{u.port}" if u.port else "")).geturl()
 
 
 def launch(target: str) -> bool:
@@ -52,6 +79,11 @@ def launch(target: str) -> bool:
 
 
 def open_dashboard(print_only: bool = False) -> None:
+    # Before the URL is chosen, not after: on a guest this is what may put the **Cluster name** on the
+    # host OS, and it is the only command a bundle-installed client is guaranteed to reach (install.sh
+    # points and trusts the box itself, so `setup --client` may never run there). Silent unless the
+    # host OS is actually missing something.
+    guest.offer()
     target = url()
     # `data`, not `result`: printed to stdout before the launch and whether or not it works, because
     # over SSH or on a headless Head the URL *is* the answer — and because `--print` is worth piping.
