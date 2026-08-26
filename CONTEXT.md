@@ -27,12 +27,14 @@
   Mesh, then registers with the scheduler.
 - **Registration** — an Arm's node agent announcing its own hardware to the scheduler at runtime,
   rather than being declared in advance by the Head.
-- **Cluster name** — the one name every machine CCC installs on uses to reach the **Head**, in place of
-  an address. It is not a public domain and nothing outside the cluster resolves it; a machine simply
-  learns it when CCC is installed there. The name means whichever address that machine can actually
-  reach the Head on, so a **Client** on the LAN and an Arm on the **Mesh** dial the same name and land
-  on the same Head. A borrowed device CCC was never installed on has no way to learn the name, and
-  reaches the **Dashboard** by address instead.
+- **Cluster name** — the one name a machine uses to reach the **Head**, in place of an address. It is
+  not a public domain and nothing outside the cluster resolves it: a machine has the name only because
+  something put it there, normally CCC installing there. The name means whichever address that machine
+  can actually reach the Head on, so a **Client** on the LAN and an Arm on the **Mesh** dial the same
+  name and land on the same Head. Where CCC is installed inside a virtual machine, the OS around it is
+  a separate machine for this purpose: it holds the name only if its owner puts it there, and on some
+  platforms it cannot hold it at all. Anything without the name reaches the **Dashboard** by address
+  instead.
 - **Enrollment token** — a one-time, single-Arm, short-lived token the **Admin** mints to
   authorize one machine's enrollment. It also names the Arm's **owner** (a User, chosen by the Admin at
   mint), so the donor redeems it and declares nothing while the Head **auto-accepts** (no manual

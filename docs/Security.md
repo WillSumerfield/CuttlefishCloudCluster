@@ -145,6 +145,13 @@ trust that root — the OS store, and the separate stores Chromium-family browse
 the Dashboard loads at `ccc.glados` with no warning. A device CCC never installed on gets neither the
 name nor the trust, and sees the warning as before.
 
+A **guest** install is the one case where CCC asks for trust outside the box it was invited onto. On
+WSL the browser is on the Windows side, so `setup` — `--client` and `--arm` both — writes a script its
+owner runs from Windows as Administrator; it installs the same root into the Windows machine store, where it is
+trusted by every user of that machine and outlives the distro. CCC cannot remove it from in here — a
+teardown prints the same script's `-Remove`, and the removal is the owner's act just as the install
+was. ChromeOS is not offered the trust at all: its store can only be written by hand.
+
 The CLI does not settle for that. It verifies the Head against this one authority and **nothing else**,
 so a public CA that mis-issued for `ccc.glados` still could not impersonate the Head to `cuttle`. The
 authority is pinned on first contact the way `ssh` pins a host key, and an attacker present at that

@@ -124,6 +124,23 @@ running. The machine donates itself whenever it is switched on.
 To watch what your Arm is doing, `cuttle dashboard` opens the cluster's web page in a browser. It
 already knows the address, and on WSL it opens the one your *Windows* browser can actually reach.
 
+**Under WSL, one thing is left for you to do on the Windows side.** Windows is a separate machine as
+far as CCC is concerned: it does not trust the cluster's certificate, and it does not have the
+cluster's name. `setup --arm` leaves **`ccc-windows.ps1`** and `ccc-ca.crt` in your Windows Downloads
+for it. Run the script once, from Windows, as Administrator:
+
+```
+powershell -ExecutionPolicy Bypass -File "%USERPROFILE%\Downloads\ccc-windows.ps1"
+```
+
+Two things then stop bothering you: the Dashboard loads with no certificate warning, and `ccc.glados`
+stops disappearing inside WSL after a Windows restart — WSL rebuilds `/etc/hosts` from the Windows one
+each time it starts, so once Windows has the line, WSL inherits it. Skipping it costs you a warning to
+click through and a re-run of `cuttle setup --arm` (or `cuttle update`) after each restart.
+
+`cuttle teardown --arm` prints the same command with `-Remove`, which is the only way to take those
+back out of Windows.
+
 ## Taking your machine back
 
 This is the part worth remembering.

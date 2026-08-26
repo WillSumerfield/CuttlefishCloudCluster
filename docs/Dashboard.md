@@ -38,8 +38,18 @@ Log in with the account the Admin created for you. First login forces a password
 **On a WSL Arm**, `cuttle dashboard` opens `https://localhost/` instead. The CCC mesh lives
 inside WSL and your Windows browser has no route to the Head's mesh IP, so `setup --arm` installs a
 local forward and this command hands the browser that rather than an address that could never load.
-This is also the one place the certificate warning survives: the browser is on the Windows side, which
-shares neither the Linux trust store nor the `/etc/hosts` entry. Click through it once.
+The certificate warning there is not permanent: `setup --arm` also leaves `ccc-windows.ps1` in your
+Windows Downloads, and running it once as Administrator installs the cluster's authority on the
+Windows side (see [Set up an Arm](setup/arm.md)).
+
+**On a WSL or Chromebook client**, your browser is not on the box CCC set up — it is on Windows or on
+ChromeOS, which have neither the name nor the certificate authority. `cuttle setup --client` leaves
+Windows a script (`ccc-windows.ps1`, in your Downloads) that gives it both: run it once from Windows
+as Administrator and the Dashboard loads at `https://ccc.glados` exactly as anywhere else. Until then
+— and always on a Chromebook, where ChromeOS has no hosts file anyone can write — `cuttle dashboard`
+opens the Head's **address** rather than the name, and the browser warns about the certificate. On a
+Chromebook you can be rid of the warning by importing the `ccc-ca.crt` CCC leaves in your Downloads
+(or your Linux files): Settings → Privacy and security → Manage certificates → Authorities → Import.
 
 ## What is there
 
