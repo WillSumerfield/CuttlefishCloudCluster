@@ -52,6 +52,15 @@ CCC runs its **own isolated instance** on its own socket, separate from any pers
 box, and deliberately declines three host-global things a second daemon would fight over: DNS,
 firewall chains, and the route table. It addresses nodes by mesh IP, so it loses nothing by doing so.
 
+**Declining is one-directional, and the other direction had to be answered.** Writing no firewall
+rules stops CCC clobbering a personal Tailscale; it does nothing about that Tailscale dropping CCC.
+By default it drops all traffic from the `100.64.0.0/10` block that arrives on any interface but its
+own — and CCC's addresses must live inside that block (nothing outside it is routable to a Tailscale
+peer) while arriving on `ccc0`. So CCC adds one narrow exemption for `ccc0`, kept in place by a timer
+because a personal Tailscale rebuilds its chains on every restart. The exemption is a `RETURN`, not an
+`ACCEPT`: it removes `ccc0` from the anti-spoof check and grants nothing, leaving the host firewall
+the only thing deciding what the mesh may reach. See [Mesh](elements/mesh.md).
+
 Enrollment is by an Admin-minted one-time token that also names the Arm's owner. Mesh membership
 authorizes a **machine** — never a person. See [Mesh](elements/mesh.md).
 

@@ -111,6 +111,27 @@ The operator rotated the cluster's shared key. On the Arm:
 cuttle arm sync-key
 ```
 
+### My Arm worked until I restarted the machine
+
+If you also run Tailscale personally, it is dropping CCC's traffic. Tailscale installs a rule that
+discards anything from `100.64.0.0/10` not arriving on its own interface; CCC's mesh addresses are
+inside that range and arrive on `ccc0`. Which of the two firewalls wins is decided at boot, so a
+restart can flip a machine that had been working. Check for the rule:
+
+```sh
+sudo iptables -S ts-input
+```
+
+A line ending `-s 100.64.0.0/10 -j DROP` is the cause. The fix is to update the Arm — this installs
+the exemption and the timer that keeps it in place, and it works even while the mesh is being dropped:
+
+```sh
+cuttle update
+```
+
+To confirm afterwards, `sudo iptables -S ts-input` should now show `-i ccc0 -j RETURN` as its first
+rule, above the DROP.
+
 ### Setup fails partway, or the box is in a strange state
 
 If the box is still on the mesh, just run setup again — no token needed:

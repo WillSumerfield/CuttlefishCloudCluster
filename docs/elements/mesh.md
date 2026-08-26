@@ -19,11 +19,32 @@ cannot ([Siphons](isolation.md#siphons--what-it-can-reach)).
 ### It does not touch your existing network
 
 CCC runs its own isolated networking daemon, separate from anything else on the box. It deliberately
-stays off three host-global things a second daemon would otherwise fight over: it does not take over
-DNS, it does not install firewall rules, and it does not touch your route table.
+stays off two host-global things a second daemon would otherwise fight over: it does not take over
+DNS, and it does not touch your route table.
 
-If you already use Tailscale personally, CCC's mesh runs alongside it and neither knows about the
-other.
+Firewall rules are the exception, and there are exactly two. CCC opens its own mesh interface (`ccc0`)
+if — and only if — you already run `ufw`; it never switches a firewall on for you. And if you use
+Tailscale personally, it adds one rule to keep that Tailscale from dropping CCC's traffic.
+
+### If you already use Tailscale personally
+
+CCC's mesh runs alongside your own Tailscale, on its own daemon, and neither is aware of the other.
+One thing does have to be arranged between them.
+
+Tailscale reserves a large block of addresses (`100.64.0.0/10`) and, by default, drops anything from
+that block that did not arrive on its own network interface — a sensible anti-spoofing measure. CCC's
+mesh addresses have to live inside that same block, because Tailscale refuses to route anything
+outside it, and they arrive on `ccc0`. Left alone, your personal Tailscale therefore drops every CCC
+packet, and this machine goes quiet the moment both are running.
+
+So CCC adds one narrow rule exempting `ccc0`, and a small timer that puts the rule back — your
+Tailscale rebuilds its firewall from scratch every time it restarts, including on every reboot, which
+is what takes the rule away. The exemption grants nothing: it only says "packets on `ccc0` are not
+spoofed", and your firewall still decides what they may reach. `cuttle teardown` removes it.
+
+If you administer your own tailnet and would rather fix it upstream, the node attribute
+`disable-linux-cgnat-drop-rule` in your tailnet's policy file tells Tailscale not to install that DROP
+at all. CCC cannot do this for you — it is a setting on *your* tailnet, not on the cluster.
 
 ### Joining is by token, and only by token
 
