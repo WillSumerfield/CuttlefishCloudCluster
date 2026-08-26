@@ -382,7 +382,9 @@ def join_mesh(login_server: str, hostname: str, authkey: str) -> None:
       domain and point all lookups at its own MagicDNS, killing name resolution host-wide.
     - `--netfilter-mode=off`: tailscaled installs `ts-input`/`ts-forward`/`ts-postrouting` chains
       under fixed names; two daemons rewrite each other's, breaking unrelated traffic. CCC runs no
-      subnet router or exit node, so it needs no firewall rules.
+      subnet router or exit node, so it needs no firewall rules. NB this buys coexistence in one
+      direction only — it stops CCC clobbering a personal daemon, not that daemon dropping CCC, which
+      it does by default. See `ensure_ts_exemption` for the other half.
     - `--accept-routes=false`: no subnet routers here; keeps CCC out of the host route table.
     CCC addresses Arms by mesh IP, so it loses nothing.
 
@@ -479,6 +481,208 @@ def _wipe_local_state() -> None:
     """Stop CCC's tailscaled and delete its identity. The Arm half of forget_state()."""
     run(["systemctl", "stop", config.CCC_TS_SERVICE], sudo=True, check=False)
     run(["rm", "-f", str(config.CCC_TS_STATE)], sudo=True, check=False)
+
+
+# --- coexisting with a personal Tailscale's anti-spoof DROP ------------------
+# `join_mesh`'s `--netfilter-mode=off` keeps CCC from clobbering a personal tailscaled's chains. That
+# is only ONE direction of coexistence, and the other one blackholes us:
+#
+#   ts-input:  ! -i tailscale0 -s 100.64.0.0/10 -j DROP
+#
+# "CGNAT traffic that did not arrive on MY tun is spoofed." CCC is exactly that, by construction — its
+# addresses must live inside that /10 (config.MESH_V4_PREFIX explains why there is no way out) and they
+# arrive on ccc0. Every inbound mesh packet is dropped: the Head's replies to an Arm, slurmctld dialling
+# slurmd, all of it. Both provisioned roles are hit, the Head included, since it is administered over
+# its own personal tailnet.
+#
+# It went unnoticed because it is a race, not a constant. ufw applies its ruleset with
+# `iptables-restore`, a whole-table replace that deletes ts-input outright; tailscaled installs
+# `-I INPUT 1 -j ts-input` once and only re-adds it when missing. Whichever service touches the table
+# last wins, and systemd orders neither, so a reboot re-rolls the dice. Nodes were winning it.
+#
+# The fix is the same verdict tailscale itself uses when told to stand down (CGNATModeReturn):
+#
+#   ts-input rule 1:  -i ccc0 -j RETURN
+#
+# RETURN leaves ts-input and continues down INPUT into ufw's chains, so it exempts ccc0 from the
+# anti-spoof check and grants nothing — `system.allow_mesh_iface` stays the only thing deciding what
+# ccc0 may reach. It cannot be written as ACCEPT ahead of the ts-input jump instead: ACCEPT is the only
+# verdict that escapes the DROP from INPUT, and it would skip ufw too, leaving two divergent sources of
+# truth for mesh policy.
+#
+# v4 only. addBase6 carries a literal "TODO: only allow traffic from Tailscale's ULA range to come from
+# tailscale0" — the v6 anti-spoof DROP was never implemented, so MESH_V6_PREFIX needs nothing and an
+# ip6tables rule here would be dead code.
+#
+# Upstream has a supported knob for this, and it is deliberately not what we use: the node attribute
+# `disable-linux-cgnat-drop-rule` (tailcfg, capver 136) flips that daemon to CGNATModeReturn for the
+# whole /10. It is a *control-plane* attribute of the PERSONAL tailnet — CCC's Headscale cannot reach
+# it, and a donor may not administer the tailnet their laptop is on. Documented in docs/elements/mesh.md
+# as an alternative for those who can.
+
+_FW_SCRIPT = r'''"""Keep ccc0 exempt from a personal Tailscale's CGNAT anti-spoof DROP.
+Installed by cuttle at this path and run by a timer; safe to run by hand when diagnosing — it prints
+only when it changes something. See cuttle/mesh.py for why this exists.
+Usage: sudo ccc-mesh-firewall.py <tun> <chain>"""
+import os, subprocess, sys
+
+
+def _run(cmd):
+    """None means the tool isn't installed — a different answer from "it ran and said no"."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return None
+
+
+def _via_iptables(tun, chain):
+    """True if the chain lives here and now carries the exemption; False if it isn't this backend;
+    None if iptables could not be consulted at all."""
+    listed = _run(["iptables", "-S", chain])
+    if listed is None:
+        return None
+    if listed.returncode != 0:
+        return False
+    rule = ["-i", tun, "-j", "RETURN"]
+    if _run(["iptables", "-C", chain, *rule]).returncode == 0:
+        return True
+    _run(["iptables", "-I", chain, "1", *rule])
+    print(f"re-inserted the {tun} exemption at the top of {chain} (iptables)")
+    return True
+
+
+def _via_nft(tun, chain):
+    """Same contract as _via_iptables, for a tailscaled that chose the native nftables backend. Its
+    chain is a regular chain in table `ip filter`, invisible to the iptables binary."""
+    listed = _run(["nft", "list", "chain", "ip", "filter", chain])
+    if listed is None:
+        return None
+    if listed.returncode != 0:
+        return False
+    # tailscale's own DROP reads `iifname != "tailscale0" ip saddr 100.64.0.0/10 drop`, so matching on
+    # our own iifname cannot collide with it.
+    if f'iifname "{tun}"' in listed.stdout:
+        return True
+    # `nft insert` (as against `add`) prepends, which is the whole point — the exemption is worthless
+    # anywhere below the DROP.
+    _run(["nft", "insert", "rule", "ip", "filter", chain, "iifname", f'"{tun}"', "return"])
+    print(f"re-inserted the {tun} exemption at the top of {chain} (nftables)")
+    return True
+
+
+def main(tun, chain):
+    # Refused rather than attempted, because the failure mode is worse than useless: unprivileged,
+    # `iptables -S` exits non-zero exactly as it does when the chain is absent, so a hand-run would
+    # report "nothing to do" on a box that is in fact being blackholed. The timer always has root.
+    if os.geteuid() != 0:
+        print("must run as root to read the firewall — try `sudo`", file=sys.stderr)
+        return 2
+    probes = {}
+    for name, probe in (("iptables", _via_iptables), ("nft", _via_nft)):
+        probes[name] = probe(tun, chain)
+        if probes[name] is True:
+            return 0
+    # No such chain on either backend. Almost always benign: no personal tailscaled, or its netfilter
+    # is off, or ufw's iptables-restore wiped the chain — and wiping it removes the DROP too, so there
+    # is nothing left to be exempt from.
+    #
+    # The exception is a backend we could not read, which looks identical from here and is NOT benign.
+    # Only worth saying when a stock tailscaled is actually running: absent that, a missing tool means
+    # nothing at all.
+    blind = [name for name, r in probes.items() if r is None]
+    if blind and _run(["systemctl", "is-active", "--quiet", "tailscaled"]).returncode == 0:
+        print(f"a personal tailscaled is running but {'/'.join(blind)} is not installed, so its "
+              f"{chain} chain cannot be read. If it holds the CGNAT anti-spoof DROP, this box's mesh "
+              f"traffic is being dropped and cuttle cannot see it.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(*sys.argv[1:3]))
+'''
+
+_FW_SERVICE_UNIT = f"""\
+[Unit]
+Description=CCC mesh firewall exemption (keep {config.CCC_TS_TUN} out of a personal Tailscale's DROP)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {config.MESH_FW_SCRIPT} {config.CCC_TS_TUN} {config.TS_INPUT_CHAIN}
+"""
+
+# Why a timer rather than ordering after tailscaled.service: the chain does not exist when that unit
+# reports started. tailscaled creates it later, asynchronously, once it has a netmap — so a one-shot
+# ordered after it would routinely find nothing, correctly do nothing, and leave the box blackholed
+# with nothing scheduled to look again. We cannot know when the chain appears, only that it will.
+#
+# And why it keeps firing rather than settling after boot: the rule dies on every GRACEFUL tailscaled
+# restart, not just reboots — Close() drives the router to netfilterOff, which runs DelChains() and
+# takes ts-input with it. `apt upgrade`, `tailscale down/up`, or a crash that systemd restarts all land
+# there. The last of those is silent, and boot-only would leave that node dead until someone rebooted.
+#
+# A plain re-add is harmless, for what it's worth: AddBase and AddExternalCGNATRules both APPEND, so a
+# rule at position 1 stays ahead of the DROP. Only a chain flush loses it.
+#
+# AccuracySec is pinned because systemd's default is 1min, which would stretch a 60s interval to an
+# effective 60-120s. These are always-on GPU boxes, so nothing is being saved by letting it drift.
+_FW_TIMER_UNIT = f"""\
+[Unit]
+Description=CCC mesh firewall exemption timer
+
+[Timer]
+OnBootSec={config.MESH_FW_BOOT_S}s
+OnUnitActiveSec={config.MESH_FW_INTERVAL_S}s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def ensure_ts_exemption(write_unit) -> None:
+    """Install the exemption and the timer that keeps it there. Idempotent, and safe on a box with no
+    personal Tailscale at all — the script no-ops when there is no ts-input chain to exempt from.
+
+    `enable --now` runs the one-shot immediately, so the rule is in place when this returns rather than
+    up to a tick later. That ordering is load-bearing on the Arm path: `_setup_arm` calls this inside
+    "Joining the mesh", and the very next thing it does is dial the Head's MESH address for /enroll.
+    Without the rule already in, that dial is the call that fails.
+    """
+    write_unit(config.MESH_FW_SCRIPT, _FW_SCRIPT, "755")
+    write_unit(config.MESH_FW_SERVICE_UNIT, _FW_SERVICE_UNIT, "644")
+    write_unit(config.MESH_FW_TIMER_UNIT, _FW_TIMER_UNIT, "644")
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", "--now", f"{config.MESH_FW_SERVICE}.timer"], sudo=True)
+    # `start` on a oneshot blocks until it has run, which is what makes the rule present on return
+    # rather than up to a tick later. check=False because the script exits non-zero to FLAG a firewall
+    # it could not read — a warning worth surfacing in `systemctl status`, but not worth aborting a
+    # setup over, and certainly not on a box where the mesh may be working fine.
+    run(["systemctl", "start", config.MESH_FW_SERVICE], sudo=True, check=False)
+
+
+def remove_ts_exemption() -> None:
+    """Reverse of ensure_ts_exemption. Deletes the RETURN rule itself as well as the timer that would
+    otherwise put it back — and does it in that order, since a live timer would re-insert the rule
+    between the two steps.
+
+    Tolerant throughout: teardown must survive partial state, and every one of these is a no-op on a
+    box where the rule or the chain was already gone.
+    """
+    run(["systemctl", "disable", "--now", f"{config.MESH_FW_SERVICE}.timer"], sudo=True, check=False)
+    run(["iptables", "-D", config.TS_INPUT_CHAIN, "-i", config.CCC_TS_TUN, "-j", "RETURN"],
+        sudo=True, check=False)
+    # The nft backend has no delete-by-spec, only delete-by-handle, so the rule has to be looked up.
+    r = run(["nft", "-a", "list", "chain", "ip", "filter", config.TS_INPUT_CHAIN],
+            sudo=True, capture_output=True, text=True, check=False)
+    for line in (r.stdout or "").splitlines():
+        if f'iifname "{config.CCC_TS_TUN}"' in line and "handle" in line:
+            handle = line.rsplit("handle", 1)[1].strip()
+            run(["nft", "delete", "rule", "ip", "filter", config.TS_INPUT_CHAIN, "handle", handle],
+                sudo=True, check=False)
+    run(["rm", "-f", str(config.MESH_FW_SCRIPT), str(config.MESH_FW_SERVICE_UNIT),
+         str(config.MESH_FW_TIMER_UNIT)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
 # --- node removal (Head only) ----------------------------------------------

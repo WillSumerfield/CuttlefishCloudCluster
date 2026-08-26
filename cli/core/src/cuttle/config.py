@@ -736,8 +736,31 @@ CCC_TS_PORT = 41642  # default tailscaled uses 41641 — keep them distinct
 # Avoids 100.100.0.0/16, which would contain Tailscale's MagicDNS resolver at 100.100.100.100.
 # Cosmetic only: measured, tailscaled routes quad100 into its tun whatever the prefix, so both
 # daemons fight over it either way.
+#
+# And NOT 100.115.92.0/23, which looks like the perfect home and is a trap. A personal tailscaled's
+# anti-spoof rule RETURNs that range instead of dropping it (it is Tailscale's ChromeOS-VM carve-out),
+# so a mesh addressed from it would need no firewall exemption at all — see mesh.ensure_ts_exemption.
+# But it is the SAME predicate on both sides: tsaddr.IsTailscaleIPv4 is
+# `CGNATRange().Contains(ip) && !ChromeOSVMRange().Contains(ip)` (read at v1.102.3), so exempt from the
+# DROP and rejected by the peer-route check are one condition. It reproduces the 10.99.0.0/16 failure
+# above exactly.
 MESH_V4_PREFIX = "100.99.0.0/16"
 MESH_V6_PREFIX = "fd7a:115c:a1e0:cc::/64"
+
+# --- coexisting with a personal Tailscale's anti-spoof DROP ---
+# A personal tailscaled blackholes CCC unless exempted; mesh.ensure_ts_exemption carries the full
+# story. Its rule dies on every graceful tailscaled restart, so a timer re-asserts it on every
+# provisioned box (Head and Arm — a Client joins no Mesh and has no ccc0 to be dropped).
+MESH_FW_SCRIPT = Path("/opt/ccc/bin/ccc-mesh-firewall.py")
+MESH_FW_SERVICE = "ccc-mesh-firewall"
+MESH_FW_SERVICE_UNIT = Path("/etc/systemd/system/ccc-mesh-firewall.service")
+MESH_FW_TIMER_UNIT = Path("/etc/systemd/system/ccc-mesh-firewall.timer")
+TS_INPUT_CHAIN = "ts-input"  # tailscaled's own chain name, on both its netfilter backends
+# 60s worst-case blackhole after a tailscaled restart. Far inside Slurm's default SlurmdTimeout (300s,
+# and templates.py sets ReturnToService=2), so this never costs a job — it costs an `srun` a stall.
+MESH_FW_INTERVAL_S = 60
+MESH_FW_BOOT_S = 5  # first tick after boot; tailscaled builds the chain asynchronously, so the
+                    # interval — not this — is what actually catches it. See the timer unit.
 HEADSCALE_DB = HEADSCALE_LIB / "db.sqlite"  # node keys, preauth keys — never touched directly except
                                             # by cuttle backup (see backup.py); everywhere else goes
                                             # through the `headscale` binary.
@@ -878,4 +901,8 @@ MONITOR_ROGUE_STREAK = 3
 MONITOR_COOLDOWN_S = 24 * 3600  # at most one email per check-type per day
 # Every daemon _setup_head installs — liveness-checked each run.
 MONITOR_SERVICES = ["slurmctld", "munge", "headscale", CCC_TS_SERVICE, ENROLL_API_SERVICE,
-                    HEAD_API_SERVICE, KARMA_SERVICE, RSYNCD_SERVICE]
+                    HEAD_API_SERVICE, KARMA_SERVICE, RSYNCD_SERVICE,
+                    # The only `.timer` in this list, and it has to be: the service behind it is a
+                    # oneshot, which reads `inactive` whenever it isn't mid-tick. If this stops, the
+                    # Head silently loses its mesh exemption the next time tailscaled restarts.
+                    f"{MESH_FW_SERVICE}.timer"]

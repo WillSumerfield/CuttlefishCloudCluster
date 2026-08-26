@@ -11,7 +11,7 @@ import glob
 import shutil
 import time
 
-from . import api, config, guest, menu, settings, sshconfig, system, ui
+from . import api, config, guest, menu, mesh, settings, sshconfig, system, ui
 from .system import run
 
 
@@ -69,6 +69,10 @@ def _leave_ccc_mesh() -> None:
     # Drop the ufw rule setup added, before ccc0 disappears. Inert afterwards, but setup's mutations
     # are reversed exactly, the same reason purge_packages works off a recorded manifest.
     system.deny_mesh_iface(config.CCC_TS_TUN)
+    # Likewise the ts-input exemption and its timer — and this one is NOT merely inert if left: it is a
+    # rule inside the personal daemon's chain, on a box that may keep using that daemon long after CCC
+    # is gone.
+    mesh.remove_ts_exemption()
     run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", "down"], sudo=True, check=False)
     run(["systemctl", "disable", "--now", config.CCC_TS_SERVICE], sudo=True, check=False)
     run(["rm", "-f", str(config.CCC_TS_UNIT)], sudo=True, check=False)

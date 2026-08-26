@@ -1107,6 +1107,9 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     with ui.step("Joining the mesh"):
         mesh_ip = mesh_up_head(address)
         system.allow_mesh_iface(config.CCC_TS_TUN)
+        # Before anything dials this box over the mesh: a personal tailscaled — which the Head has, by
+        # design, since it is administered over its own tailnet — drops ccc0 traffic until exempted.
+        mesh.ensure_ts_exemption(_write_root_file)
     with ui.step("Adding package repositories"):
         add_repos(head=True)  # the apptainer PPA is added HERE and nowhere else in the fleet
     with ui.step("Installing Slurm, munge, Apptainer and Node"):
@@ -1573,6 +1576,10 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         mesh_ip = mesh.up_arm(t["coordinator"], node_name, t["authkey"], _write_root_file,
                               re_enroll=re_enroll)
         system.allow_mesh_iface(config.CCC_TS_TUN)  # before slurmd: slurmctld dials us on 6818
+        # Before /enroll, not just before slurmd: the next step dials the Head's MESH address, and a
+        # personal tailscaled on this box drops every reply until ccc0 is exempted. This is also what
+        # makes `cuttle update` the cure for a box already blackholed by it.
+        mesh.ensure_ts_exemption(_write_root_file)
     ui.say(f"  [muted]on the mesh as {node_name} — {mesh_ip}[/muted]")
 
     # Enroll IMMEDIATELY, before the long apt run: `cuttle arm authorize` is blocked on the Head
