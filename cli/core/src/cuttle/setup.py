@@ -24,8 +24,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import (api, auth, backup, config, enroll, headapi, menu, mesh, monitor, settings, system,
-               templates, tls, ui)
+from . import (api, auth, backup, config, enroll, guest, headapi, menu, mesh, monitor, settings,
+               system, templates, tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -942,7 +942,10 @@ ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
     ui.result("dashboard (Windows)", headapi.head_url("localhost") + "/")
-    ui.say("  [muted]self-signed cert — click through the browser warning once[/muted]")
+    # Not "click through the warning once" any more: `guest.offer` follows this and hands Windows the
+    # authority that removes it. Until that script is run, the warning is what you get.
+    ui.say("  [muted]the browser warns until Windows is given the cluster's authority (next "
+           "step)[/muted]")
 
 
 def make_user_dirs() -> None:
@@ -1276,6 +1279,10 @@ def setup_client(update: bool = False) -> None:
         # Before login, which is what would otherwise ask: `auth.login` calls tls.ensure_ca itself, so
         # this is only the difference between confirming a fingerprint inside the wizard and outside it.
         tls.ensure_ca(pointed["head"])
+        # A guest's owner browses from the OS around this box, which has just been given neither the
+        # name nor the CA — because it cannot be, from in here. `force`: this box was re-pointed a
+        # moment ago, so whatever the host OS holds came from an EARLIER run.
+        guest.offer(force=True)
     who: dict[str, str] = {}
     with ui.section("Log in", lambda: who.get("as", "")):
         who["as"] = auth.login(None)
@@ -1305,6 +1312,10 @@ def _update_client() -> None:
                            f"gone, and a client keeps its Head's address nowhere else",
                            next_step="re-point it with `cuttle setup --client`")
         tls.refresh_pin(url)
+        # The third thing that can rot on a guest, and the only one this box cannot see from its own
+        # state: the name and the CA on the OS around it. Both readable unelevated, so drift is caught
+        # here — an `--all` teardown and a redeploy leave a stale CA trusted on Windows otherwise.
+        guest.offer()
     ui.result("head", url)
     ui.result("session", _session_line(url))
 
@@ -1690,6 +1701,11 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     if system.is_wsl():
         with ui.step("Forwarding the Dashboard to Windows"):
             install_wsl_dashboard_forward(t["mesh_ip"])  # browse the Head via localhost
+        # After the forward, which is what decides what the script is FOR here: an Arm's Windows
+        # browser reaches the Dashboard over that forward either way, so what the script buys is the
+        # certificate warning going away — and the name surviving the next Windows restart, which
+        # WSL otherwise erases when it rebuilds /etc/hosts from the Windows one.
+        guest.offer(force=True)
 
     if not update:
         _arm_first_login()

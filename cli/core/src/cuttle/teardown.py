@@ -11,7 +11,7 @@ import glob
 import shutil
 import time
 
-from . import config, menu, settings, sshconfig, system, ui
+from . import config, guest, menu, settings, sshconfig, system, ui
 from .system import run
 
 
@@ -323,7 +323,13 @@ def untrust_and_unname() -> None:
     left. A machine still resolving `ccc.glados` to a Head it no longer talks to, and still trusting a
     CA whose private key lives there, is exactly the residue a teardown exists to remove. Same
     reasoning, and the same unconditional placement, as the headscale CA in `_leave_ccc_mesh`.
+
+    On a guest, the OS around this box may hold both as well — and cannot be made to give them up
+    from in here, so `guest.withdraw` hands its owner the means instead. It goes FIRST: the address
+    baked into the script it leaves behind is read from the very /etc/hosts line the next call
+    removes.
     """
+    guest.withdraw()
     system.remove_hosts_entry()
     system.untrust_ccc_ca()
 

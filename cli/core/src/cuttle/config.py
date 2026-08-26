@@ -512,6 +512,20 @@ HEAD_CA_NICKNAME = "CCC Head CA"       # the name it goes in (and comes out) of 
 NSSDB_DIR = ".pki/nssdb"               # relative to $HOME
 NSS_TOOLS_PKG = "libnss3-tools"        # provides `certutil`
 
+# --- the OS around a guest install (cuttle/guest.py) ------------------------
+# Three stores above cover every browser on THIS box. On a guest — WSL2 under Windows, Crostini under
+# ChromeOS — the browser its owner actually uses is on none of them: it runs on the host OS, which has
+# neither the **Cluster name** nor this CA, and which CCC cannot install onto (writing the Windows
+# hosts file and machine trust store needs Administrator, and `sudo` in here is not that). So the host
+# OS's owner is handed an artifact instead, by name — where it lands is the host OS's business.
+WIN_SCRIPT_NAME = "ccc-windows.ps1"    # generated per box: it carries this cluster's address and CA
+GUEST_CA_NAME = "ccc-ca.crt"           # the CA, dropped where the host OS can import it by hand
+# ChromeOS's own Downloads, as Crostini sees it — but ONLY once its owner has shared that folder with
+# Linux (Files app -> right-click Downloads -> Share with Linux). It is not shared by default, which is
+# why anything dropped there falls back to $HOME: the home directory is always visible to the Files app
+# as "Linux files", so it is the one drop point that cannot be missing.
+CHROMEOS_DOWNLOADS = Path("/mnt/chromeos/MyFiles/Downloads")
+
 # --- subordinate ids: what lets an unprivileged `apptainer build` map a fakeroot namespace ---
 # `adduser` writes a range here for a LOCAL account and for nothing else, so a directory-managed
 # operator (LDAP/AD) has none — apptainer then says "User not listed in /etc/subuid", falls back to a
