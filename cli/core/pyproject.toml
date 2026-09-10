@@ -3,7 +3,19 @@ name = "cuttle"
 version = "0.0.1"
 description = "CCC front-door CLI (Python core)"
 requires-python = ">=3.12"
-dependencies = ["typer>=0.12", "rich>=13.8", "pyyaml>=6.0", "httpx>=0.27"]
+dependencies = [
+    # Ceiling, not just a floor: `ui.run_app` and `menu.py` reach into typer's vendored click
+    # (`typer._click`), which typer reshuffles in *patch* releases — 0.27.2 moved a class out of it
+    # and every installed CLI died on import. `uv tool install` resolves against this line and
+    # ignores uv.lock, so this line is the only thing standing between a user and that. Floor is
+    # 0.26 because that is where typer vendored click at all; below it `typer._click` does not exist.
+    # Bump deliberately, after `tests/test_pinning.py` passes on the new minor.
+    "typer~=0.26.8",
+    # The rest are public API only, so a floor is enough.
+    "rich>=13.8",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
 
 [project.scripts]
 cuttle = "cuttle.main:main"

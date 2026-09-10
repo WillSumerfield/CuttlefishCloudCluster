@@ -7,6 +7,7 @@ enrolled six months later gets a different apptainer, a rebuilt Pod image gets a
 
 import hashlib
 import json
+import re
 import subprocess
 import tomllib
 
@@ -489,3 +490,52 @@ class TestTheApiVenvInterpreter:
         """Teardown+setup is the normal redeploy here, and a venv built on the wrong interpreter has
         to be replaced. uv warns that it will one day refuse to without this."""
         assert "--clear" in self._venv_argv(monkeypatch)
+
+
+class TestCuttleDependsOnTyperInternals:
+    """`ui.run_app` renders usage errors with typer's own renderer, and `menu.py` walks typer's
+    command tree — both reach past the public API into `typer._click`, typer's vendored copy of
+    click. Typer reshuffles that copy in *patch* releases: 0.27.2 moved `Abort` out of
+    `typer._click.exceptions`, and because `uv tool install` resolves against pyproject.toml and
+    ignores uv.lock, every installed CLI died with an ImportError on the next `cuttle` anything.
+
+    These tests hold the two halves of the fix together — the ceiling that stops the resolver, and
+    the symbols themselves, so a lockfile bump onto a typer that moved them fails here first.
+    """
+
+    CORE = headapi.REPO_ROOT / "cli" / "core" / "pyproject.toml"
+
+    def _requirement(self, name: str) -> str:
+        deps = tomllib.loads(self.CORE.read_text())["project"]["dependencies"]
+        return next(d for d in deps if d.split("~")[0].split(">")[0].split("=")[0].strip() == name)
+
+    def test_the_typer_requirement_has_a_ceiling(self):
+        """A floor-only `typer>=x` lets the resolver hand a fresh install whatever typer shipped
+        today. `~=0.26.8` is `>=0.26.8,<0.27` — patch fixes flow, a new minor does not."""
+        req = self._requirement("typer")
+        assert req.startswith("typer~=") or "<" in req, \
+            f"{req!r} has no upper bound; cuttle uses typer internals and cannot take a blind bump"
+
+    def test_the_floor_is_where_typer_vendored_click(self):
+        """Below 0.26 typer depended on click and `typer._click` does not exist at all, so the old
+        `typer>=0.12` was broken at both ends — it just happened to resolve upwards."""
+        floor = re.search(r"[\d.]+", self._requirement("typer")).group()
+        assert tuple(int(n) for n in floor.split(".")) >= (0, 26)
+
+    def test_the_internals_the_cli_reaches_for_are_there(self):
+        """Named one by one: an ImportError here is the whole failure, caught in CI rather than on
+        a user's box after a `uv tool install`."""
+        from typer import Abort, rich_utils
+        from typer._click.exceptions import ClickException
+
+        assert issubclass(Abort, BaseException)
+        assert issubclass(ClickException, BaseException)
+        assert callable(rich_utils.rich_format_error)
+        assert callable(typer.main.get_command)
+
+    def test_the_installed_typer_satisfies_the_declared_pin(self):
+        """The venv the tests run in has to be the one the pin describes, or everything above is
+        checking a typer nobody ships."""
+        floor = re.search(r"[\d.]+", self._requirement("typer")).group()
+        assert typer.__version__.split(".")[:2] == floor.split(".")[:2], \
+            f"tests run on typer {typer.__version__}, pyproject pins ~={floor}"
