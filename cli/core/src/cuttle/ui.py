@@ -1700,8 +1700,13 @@ def run_app(app) -> None:
     # Typer vendors its own click, so its exceptions are `typer._click.*`, not `click.*` — catching
     # the stdlib classes would miss them entirely (see `abort`'s note). rich_utils.rich_format_error
     # is the same renderer standalone mode would have used, so the panel is unchanged.
-    from typer._click.exceptions import Abort, ClickException
-    from typer import rich_utils
+    #
+    # `Abort` comes from the top-level export, not from `typer._click.exceptions`: typer moved that
+    # class between the two in 0.27.2 — a *patch* release — and every installed CLI started with an
+    # ImportError. `typer.Abort` has named the same class through all of it. `ClickException` has no
+    # such export, so it stays an internal import and is why the typer pin carries a ceiling.
+    from typer import Abort, rich_utils
+    from typer._click.exceptions import ClickException
     try:
         # Every command takes the terminal and gives it back — not just the bare-`cuttle` menu.
         # `fullscreen` is a no-op off a terminal, so pipes, cron and `--json` are untouched.
