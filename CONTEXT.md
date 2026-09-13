@@ -78,10 +78,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   hold no **Balance**: their **Spawns** are never **Escrow**ed, never **Settled**, and never lose
   **contention**. A person who wants to use the cluster does so as an ordinary **User**, with an
   ordinary account.
-- **Session** — a User's authenticated login (a token) carrying the authority to submit jobs and read
-  their own data. Distinct from **Mesh** membership, which authorizes *machines*, not people. It is
-  also what makes a **Credential** usable: outside a Session the Head cannot reach one, so work
-  submitted with no Session behind it carries none.
+- **Session** — a User's authenticated login carrying the authority to submit jobs and read their own
+  data. It is the **Head**'s own record of that login; the token a client holds is only the User's copy
+  of it. So a Session ends when the Head is told to end it, or when its own lifetime runs out — never
+  merely because a client discarded its copy, which makes the Session unreachable *from that box* while
+  leaving it live everywhere else. Distinct from **Mesh** membership, which authorizes *machines*, not
+  people. It is also what makes a **Credential** usable: outside a Session the Head cannot reach one, so
+  work submitted with no Session behind it carries none.
 - **Credential** — a third-party secret the Head holds for one User — their W&B key, their GitHub key —
   and injects into every Spawn they submit, from *either* client. Most are **handed over**: the User
   pastes a secret that already exists elsewhere. One is **minted**: the Head generates the secret itself
