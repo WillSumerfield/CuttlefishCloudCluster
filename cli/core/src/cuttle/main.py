@@ -369,7 +369,7 @@ def arm_remove(
     # Typed confirmation, not y/N: this evicts a donor's machine from the mesh, and the mesh is what
     # authorizes fetching the munge key — re-adding it is a full re-enrollment, not an undo.
     if not yes and ui.interactive():
-        ui.warn(f"removing {name} from Slurm, the registry and the mesh — the donor must re-enroll")
+        ui.caution(f"removing {name} from Slurm, the registry and the mesh — the donor must re-enroll")
         if not ui.ask_typed(f"Remove {name}?", name):
             raise ui.abort("not removed")
     enroll_mod.remove_arm(name, setup_mod._write_root_file)
@@ -461,7 +461,7 @@ def user_remove(
     """Delete a user."""
     username = ui.need(username, "the username", lambda: pickers.pick_user("Which user to delete?"))
     if not yes and ui.interactive():
-        ui.warn(f"deleting {username} and every session they hold")
+        ui.caution(f"deleting {username} and every session they hold")
         if not ui.ask_typed(f"Delete {username}?", username):
             raise ui.abort("not deleted")
     auth_mod.user_remove(username)
@@ -663,8 +663,8 @@ def backup_restore(
     """
     archive = ui.need(archive, "the archive path", lambda: pickers.pick_backup())
     if not yes and ui.interactive():
-        ui.warn("this overwrites LIVE head.db, arms.json, and Headscale's db — "
-                "anything created since this backup is gone")
+        ui.caution("this overwrites LIVE head.db, arms.json, and Headscale's db — "
+                   "anything created since this backup is gone")
         if not ui.ask_typed(f"Restore {Path(archive).name}?", Path(archive).name):
             raise ui.abort("not restored")
     with ui.section("Restoring cluster state", lambda: Path(archive).name):
@@ -678,8 +678,8 @@ def munge_rotate(yes: bool = typer.Option(False, "--yes", "-y", help="Skip the c
     the instant this returns — each one needs `cuttle arm sync-key`, run by its owner, before it can
     reach slurmctld again. Prints the list of Arms that need it."""
     if not yes and ui.interactive():
-        ui.warn("this replaces the key every Arm authenticates to slurmctld with — every "
-                "already-admitted Arm needs `cuttle arm sync-key` afterward, run by its owner")
+        ui.caution("this replaces the key every Arm authenticates to slurmctld with — every "
+                   "already-admitted Arm needs `cuttle arm sync-key` afterward, run by its owner")
         if not ui.ask_confirm("Rotate the cluster's munge key?", False):
             raise ui.abort("not rotated")
     enroll_mod.rotate_munge_key()
@@ -1090,8 +1090,8 @@ def teardown(
                 raise ui.abort("not removed")
         else:
             host = system.hostname()
-            ui.warn("this removes Slurm, the mesh, head.db (every account, Balance and ledger row) "
-                    "and ~/.ccc" + (" — plus base.sif and the TLS cert" if all_ else ""))
+            ui.caution("this removes Slurm, the mesh, head.db (every account, Balance and ledger row) "
+                       "and ~/.ccc" + (" — plus base.sif and the TLS cert" if all_ else ""))
             if not ui.ask_typed(f"Tear down {host}?", host):
                 raise ui.abort("not torn down")
 

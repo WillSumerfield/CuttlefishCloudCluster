@@ -201,6 +201,18 @@ def warn(message: str) -> None:
     _emit(f"[warn]![/warn] {message}")
 
 
+def caution(message: str) -> None:
+    """What a destructive command is about to do, said *before* the confirmation that authorizes it.
+
+    Looks exactly like `warn` and is deliberately NOT one: a warning is trouble, and `_TROUBLE` is
+    replayed by `_closing` as the reason a run went wrong. A caution is the contract of the thing you
+    are being asked to say yes to, so recording it made a clean `teardown` sign off with "1 warning",
+    and a `teardown` that hit any error at all re-served "this removes head.db" as a *cause*.
+    """
+    _log(f"CAUTION {message}")
+    _emit(f"[warn]![/warn] {message}")
+
+
 def fail(message: str) -> None:
     _log(f"FAIL {message}")
     _TROUBLE.append(f"[err]✗[/err] {message}")
