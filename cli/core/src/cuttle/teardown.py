@@ -11,7 +11,7 @@ import glob
 import shutil
 import time
 
-from . import config, guest, menu, settings, sshconfig, system, ui
+from . import api, config, guest, menu, settings, sshconfig, system, ui
 from .system import run
 
 
@@ -233,7 +233,7 @@ def remove_repos() -> None:
 
 
 def remove_user_dirs() -> None:
-    revoke_session()
+    # No `revoke_session` here: it is the FIRST thing every teardown path does, not the last. See there.
     # Before ~/.ccc goes: the aliases in the User's own ~/.ssh name keys that live under it, so
     # removing one without the other leaves Host entries pointing at nothing (sshconfig.remove).
     sshconfig.remove()
@@ -241,19 +241,36 @@ def remove_user_dirs() -> None:
 
 
 def revoke_session() -> None:
-    """Tell the Head to drop this box's session before the session file goes with ~/.ccc.
+    """Tell the Head to drop this box's Session. The FIRST thing every teardown path does.
 
-    Deleting the file only makes the token unreachable HERE; the row on the Head stays valid for the
-    rest of its TTL, exactly the thing `cuttle logout` avoids. Best-effort by necessity — this same
-    teardown may have just removed the Head, or be running on a box whose Head is long gone — so a
-    failure is silent and the TTL remains the backstop."""
+    Deleting the session file only makes the token unreachable HERE; the Head's own record of the login
+    stays valid for the rest of its lifetime, exactly the thing `cuttle logout` avoids.
+
+    **First, because teardown spends its whole run destroying the road to the Head.** Three separate
+    steps each cut it: `stop_daemons` (on a Head box the API is local, and it is stopped in step one),
+    `_leave_ccc_mesh` (an Arm may reach the Head only over the mesh) and `untrust_and_unname` (the
+    Cluster name in /etc/hosts, and the pinned authority the TLS dial needs). Called from
+    `remove_user_dirs` — the last step — this could never once have succeeded on a Head.
+
+    **The api layer directly, never `auth._api`.** That is the *command* layer: it translates a failure
+    into a verdict via `ui.abort`, which prints and records a ✗ before it raises. Swallowing the
+    exception here never swallowed the message, so a teardown that had removed everything correctly
+    still ended under a red "Warnings" panel saying the Head was unreachable — while the caller's own
+    `except` hid the one thing that would have explained it.
+
+    Best-effort by necessity — this same box may be the Head, or its Head may be long gone — so a
+    failure reaches the run log and nothing else, and the Session's own expiry remains the backstop.
+    """
     if not config.SESSION_FILE.exists():
         return
     try:
-        from . import auth
-        auth._api("POST", "/logout", token=auth._load_token())
-    except Exception:
-        pass
+        api.for_head().json("POST", "/logout", token=config.SESSION_FILE.read_text().strip(),
+                            timeout=api.TIMEOUT_BEST_EFFORT)
+    except Exception as e:
+        # `_log`, not `warn`/`fail`: see above. The log directory goes with ~/.ccc moments later, so in
+        # practice this survives in the terminal's scrollback — which is where anyone asking why a
+        # Session outlived a teardown is looking anyway.
+        ui._log(f"CAUTION session not revoked ({e}) — it expires on its own")
 
 
 def remove_arm_state() -> None:
@@ -509,6 +526,7 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
 
 
 def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
+    revoke_session()      # before the mesh goes: it may be this box's only road to the Head
     with ui.step("Stopping Slurm and munge"):
         stop_arm_daemons()
     with ui.step("Leaving the mesh"):
@@ -551,6 +569,7 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
 
 
 def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
+    revoke_session()      # before stop_daemons: on a Head box the API it asks is the one being stopped
     with ui.step("Ending any Spawns still running"):
         cancel_spawns()   # before stop_daemons: scancel needs slurmctld
     with ui.step("Stopping the cluster's services"):
@@ -590,6 +609,7 @@ def teardown_client() -> None:
     """
     with ui.section("Removing client state", lambda: "removed"):
         system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
+        revoke_session()      # before untrust_and_unname takes the Cluster name and the pinned CA
         with ui.step("Removing this box's CCC state"):
             untrust_and_unname()
             remove_user_dirs()
@@ -611,6 +631,7 @@ def teardown_full(keep_packages: bool = False) -> None:
     installed, files absent), so the belt-and-suspenders pass is safe on a plain client too."""
     with ui.section("Removing everything CCC", lambda: "removed"):
         system.prime_sudo()     # sudo as the box's first row, before any step rows grow the frame
+        revoke_session()        # before anything below cuts the road to the Head — whichever box this is
         with ui.step("Stopping every CCC service"):
             cancel_spawns()     # first: scancel needs the slurmctld the next line stops
             stop_daemons()      # Head services (no-ops where the units never existed)

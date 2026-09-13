@@ -433,3 +433,44 @@ class TestTheRunDiff:
 
     def test_a_run_reaching_the_last_row_is_closed(self):
         assert ui._changed_runs(["a", "y"], ["a", "b"]) == [(1, ["y"])]
+
+
+class TestACleanRunNeverReportsWarnings:
+    """`_TROUBLE` is replayed by `_closing` as *the reason a run went wrong* — so anything recorded
+    there is a claim that something broke. Two things put lines in it that had not.
+
+    Together they produced the worst available outcome for `teardown`: a full sweep that removed
+    everything correctly, printed `✓ Removing everything CCC  removed`, and then signed off under a
+    red "Warnings" panel reporting an unreachable Head and re-serving the pre-flight caution about
+    head.db as its cause.
+    """
+
+    def test_a_caution_before_a_confirmation_is_not_trouble(self, monkeypatch):
+        """What a destructive command is about to do is the contract of the thing you are being asked
+        to authorize, not a fault. Recorded, it made even a clean `teardown` end with "1 warning"."""
+        monkeypatch.setattr(ui, "_TROUBLE", [])
+        emitted = []
+        monkeypatch.setattr(ui, "_emit", lambda m: emitted.append(m))
+        ui.caution("this removes head.db")
+        assert ui._TROUBLE == []
+        assert "this removes head.db" in emitted[0]   # said to the user, just not counted against them
+
+    def test_a_swallowed_revocation_failure_says_nothing(self, monkeypatch, tmp_path):
+        """`teardown` revokes this box's Session best-effort and swallows the failure — but going
+        through `auth._api` meant `ui.abort` had already printed and recorded a ✗ before raising, so
+        the `except` hid the exception and nothing else. The Head here is unreachable, which on a
+        teardown is the *normal* case: the box may be the Head it is trying to call."""
+        from cuttle import api, config, teardown
+        monkeypatch.setattr(ui, "_TROUBLE", [])
+        monkeypatch.setattr(config, "SESSION_FILE", tmp_path / "session")
+        config.SESSION_FILE.write_text("tok-abc123")
+
+        def unreachable(*a, **kw):
+            raise api.ApiError("/logout", api.UNREACHABLE.format(where="https://ccc.glados"))
+
+        monkeypatch.setattr(api, "for_head", unreachable)
+        emitted = []
+        monkeypatch.setattr(ui, "_emit", lambda m: emitted.append(m))
+        teardown.revoke_session()          # must not raise: the box is being wiped either way
+        assert ui._TROUBLE == []
+        assert emitted == []
