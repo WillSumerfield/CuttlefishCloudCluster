@@ -39,6 +39,13 @@ TIMEOUT_JSON = 15
 TIMEOUT_RAW = 30
 TIMEOUT_UPLOAD = 120
 
+# A call whose answer nothing waits on must never delay what the user actually asked for. Two callers
+# have that shape: the menu's session probe (bare `cuttle` opens a menu, and a menu must not hang) and
+# teardown's session revocation (a courtesy to the Head, on a box that is being wiped either way). Both
+# would otherwise spend TIMEOUT_JSON staring at a Head that is off or off-mesh, which is the one case
+# they are most likely to meet.
+TIMEOUT_BEST_EFFORT = 2.0
+
 # A streamed download's budget is per-chunk, never per-download. `timeout=30` as a bare float sets all
 # four phases at once, which on a body the Head streams means "give up 30s in" — the bug that made a
 # working 3GB transfer read as an unreachable Head. Split out, `read` is the gap BETWEEN chunks, which

@@ -53,10 +53,6 @@ LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recov
                   "tide", "account", "logout", "whoami", "passwd", "wandb", "github", "recipe",
                   "workspace"}
 
-# How long the session probe (GET /me) may take before we give up and show the offline safe-set.
-# Short on purpose: this runs every time bare `cuttle` opens a menu, and a menu must never hang.
-PROBE_TIMEOUT = 2.0
-
 
 @dataclass
 class MenuState:
@@ -284,7 +280,10 @@ def _session() -> tuple[bool, str | None]:
         return False, None
     token = config.SESSION_FILE.read_text().strip()
     try:
-        api.for_head().json("GET", "/me", token=token, timeout=PROBE_TIMEOUT)
+        # TIMEOUT_BEST_EFFORT, not the JSON default: this runs every time bare `cuttle` opens a menu,
+        # and a menu must never hang on a Head that is off or off-mesh — the offline safe-set below is
+        # a perfectly good answer, and it is wanted promptly.
+        api.for_head().json("GET", "/me", token=token, timeout=api.TIMEOUT_BEST_EFFORT)
         return True, None
     except api.ApiError as e:
         if e.status in (401, 403):
