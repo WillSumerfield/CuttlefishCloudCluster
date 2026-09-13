@@ -544,6 +544,27 @@ class TestTheFleetActuallyGetsTheNewConfig:
         assert not [c for c in pushed if "NodeName=unadmitted" in c]
         assert ran.index(pushed[0]) > ran.index(["scontrol", "reconfigure"])
 
+    def test_every_admitted_arms_features_are_re_pushed_too(self, monkeypatch):
+        """The same reset, on the attribute where it costs placement rather than card order. A donor
+        Arm's Features come from slurmd's `--conf` and no config file mentions a dynamic node, so a
+        reconfigure leaves slurmctld nothing to restore them from — while the registry keeps showing
+        them, so the Dashboard and the feasibility check both still say the Arm carries the Feature."""
+        reg = {"donor": {"admitted": True, "vram_mb": 24576, "gpu_devices": ["/dev/nvidia0"],
+                         "features": [{"name": "vsim", "path": "/opt/vsim"}]}}
+        ran = self._daemons(monkeypatch, reg)
+        pushed = [c for c in ran if c[:2] == ["scontrol", "update"] and "NodeName=donor" in c]
+        assert ["AvailableFeatures=vram24,vsim", "ActiveFeatures=vram24,vsim"] == \
+            [a for c in pushed for a in c if "Features=" in a]
+        assert ran.index(pushed[0]) > ran.index(["scontrol", "reconfigure"])
+
+    def test_the_vram_bucket_rides_along_with_the_declared_features(self, monkeypatch):
+        """`scontrol update` takes the feature set whole, so a re-push naming only the Arm Features
+        would restore those by dropping the node out of `--vram` matching — trading one placement
+        failure for another. An Arm declaring nothing still has its bucket re-stated."""
+        reg = {"bare": {"admitted": True, "vram_mb": 49152, "gpu_devices": ["/dev/nvidia0"]}}
+        ran = self._daemons(monkeypatch, reg)
+        assert any("AvailableFeatures=vram48" in c for c in ran)
+
 
 class TestJobContainerConf:
     """The per-node file the plugin refuses to start without — its contents, and its lifetime."""

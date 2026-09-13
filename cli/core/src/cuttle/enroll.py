@@ -300,8 +300,7 @@ def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
     quotes *inside* an expanded variable, so the distro's `$SLURMD_OPTIONS` hook cannot express a
     `--conf` with a space in it. Quotes written literally in a unit file are honoured.
     """
-    feature = ",".join([config.vram_feature(vram_mb), *sorted(feature_names or [])])
-    conf = f"Gres=gpu:{gpus} Feature={feature}"
+    conf = f"Gres=gpu:{gpus} Feature={config.node_features(vram_mb, feature_names)}"
     return (
         "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
         "[Service]\n"
@@ -427,7 +426,38 @@ def reconfigure(reg: dict | None = None, check: bool = True) -> None:
     nothing.
     """
     run(["scontrol", "reconfigure"], sudo=True, check=check)
-    reapply_weights(load_registry() if reg is None else reg)
+    reg = load_registry() if reg is None else reg
+    reapply_weights(reg)
+    reapply_features(reg)
+
+
+def reapply_features(reg: dict) -> None:
+    """Re-push every admitted Arm's Slurm Features after a reconfigure — the same reset that costs
+    dynamic nodes their Weight, on the attribute where it costs placement instead.
+
+    A donor Arm sets its Features from slurmd's `--conf` at registration, and no config file mentions
+    a dynamic node, so `scontrol reconfigure` leaves slurmctld with nothing to restore them from. The
+    registry row is untouched by that, so the Dashboard and `slurm.arms_with_features` keep reporting
+    a Feature the node can no longer be selected for: the request is judged feasible, the constraint
+    is built, and the Spawn then waits on a node Slurm no longer believes carries it.
+
+    Both halves of the set go, because `scontrol update` takes it whole — `config.node_features` is
+    why that is stated in one place. The Arm's own `--conf` still carries the same set, so this
+    survives the donor's next slurmd restart rather than fighting it.
+
+    The Head's co-located Arm is static and already states its Features in slurm.conf; it is re-pushed
+    anyway, to the identical value, because one loop is simpler than an exception (as with Weight).
+    """
+    for name, e in sorted(reg.items()):
+        if not (e["admitted"] and e.get("vram_mb")):
+            continue
+        features = config.node_features(e["vram_mb"],
+                                        [f["name"] for f in (e.get("features") or [])])
+        # AvailableFeatures is what the node HAS; ActiveFeatures is what a constraint matches. CCC
+        # never uses changeable features (no node reboots into a different personality), so the two
+        # are always the same set — and setting only the former would restore nothing schedulable.
+        run(["scontrol", "update", f"NodeName={name}",
+             f"AvailableFeatures={features}", f"ActiveFeatures={features}"], sudo=True)
 
 
 def reapply_weights(reg: dict) -> None:

@@ -237,6 +237,18 @@ def vram_feature(vram_mb: int) -> str:
     return f"vram{card_gb(vram_mb)}"
 
 
+def node_features(vram_mb: int, feature_names: list[str] | None = None) -> str:
+    """Every Slurm Feature a node carries, as the one comma-joined set Slurm stores.
+
+    The vram bucket and the declared Arm Features are one flat set to Slurm — there is no structural
+    difference between them once rendered (see `enroll.slurmd_dropin`). Written once here because two
+    places state it and `scontrol update` takes the whole set at a time: a re-push that named only the
+    Arm Features would silently drop the node out of `--vram` matching, and one that named only the
+    bucket would undo the Features it was issued to restore.
+    """
+    return ",".join([vram_feature(vram_mb), *sorted(feature_names or [])])
+
+
 # --- Slurm dynamic nodes (donor Arms self-register via `slurmd -Z`) ---
 # MaxNodeCount is a ceiling on static+dynamic nodes; raising it later needs a slurmctld restart.
 MAX_NODE_COUNT = 64
