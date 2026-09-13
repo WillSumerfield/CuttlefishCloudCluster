@@ -1238,7 +1238,7 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
     # AFTER the Environment: this prefix is CCC's, not the submitter's, so a Feature's libraries must not
     # be what a submitter waits through before learning their own declaration was broken.
     for feat, argv in zip(specs, environments.render_featlib_build(specs)):
-        what = f"the '{feat}' Arm Feature's system libraries"
+        what = features_mod.lib_prefix_label(feat)
         cmds.append(f"ccc_building={shlex.quote(what)}")
         cmds.append(f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}")
     if specs:

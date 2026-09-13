@@ -72,6 +72,12 @@ class Profile:
     Each entry is `(spec, why)` — the reason travels with the requirement, since "why is assimp pinned
     to 5" is the question a future reader of this list will actually have.
 
+    `alt_libs` are specs that CONFLICT with `libs` and so cannot share its prefix — a second major
+    version of the same package. Each entry becomes its own prefix at `FEATLIB_MOUNT/<name>-<suffix>`,
+    and the profile's `setup` puts it on LD_LIBRARY_PATH alongside the first. The loader resolves by
+    SONAME, so two majors on one path do not compete: a binary naming `libcudart.so.12` finds the one
+    prefix carrying that file and never sees the other.
+
     `supplies` names the packages that come from the ARM and must therefore never be installed into a
     submitter's Environment — see `SUPPLIED_BY` and `environments.substitute_supplied`.
     """
@@ -81,6 +87,7 @@ class Profile:
     python: str = ""
     python_why: str = ""
     libs: tuple[tuple[str, str], ...] = ()
+    alt_libs: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     supplies: tuple[str, ...] = ()
     setup: str = ""
     # Bash appended to `setup` for an ACTIVATION Spawn only (`spawns.submit(activation=True)`), and the
@@ -173,7 +180,9 @@ featbind="$featbind,$VLEARN_PATH/assets:$VLEARN_PATH/assets:ro,$VLEARN_PATH/shad
 # conda manifest may still carry its own copies, and the nvidia wheel dirs the probe found go last:
 # a torch install brings its own libcudart, and if it did, that is the one its extensions were built
 # against.
-vl_ld="%%FEATURE_MOUNT%%/vlearn/vlearn/lib:%%FEATLIB_MOUNT%%/vlearn/lib"
+# Both CUDA majors, because which one this Arm's build wants is not knowable here (see
+# VLEARN.alt_libs). Distinct SONAMEs, so the loader takes whichever the binary names.
+vl_ld="%%FEATURE_MOUNT%%/vlearn/vlearn/lib:%%FEATLIB_MOUNT%%/vlearn/lib:%%FEATLIB_MOUNT%%/vlearn-cuda12/lib"
 [ -n "$envbind" ] && vl_ld="$vl_ld:$envmount/lib"
 [ -n "$feature_nvlibs" ] && vl_ld="$vl_ld:$feature_nvlibs"
 featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=%%VLWD_MOUNT%%,LD_LIBRARY_PATH=$vl_ld"
@@ -246,6 +255,19 @@ VLEARN = Profile(
         # `apptainer --nv`; only the runtime comes from here.)
         ("cuda-cudart=13", "libcudart.so.13, which libvsimdynamics.so needs and neither a uv "
                            "Environment nor a torch-free conda one has any other source for"),
+    ),
+    # The CUDA major is a property of the ARM's vlearn build, not of the cluster — and it is pinned
+    # here, on the Head, for every Arm at once. An Arm whose wheel was built against CUDA 12 failed on
+    # `OSError: libcudart.so.12: cannot open shared object file` with everything else on its
+    # LD_LIBRARY_PATH supplying 13, and nothing in CCC could tell it apart from an Arm needing 13.
+    #
+    # Both are shipped rather than detected: they cost one extra conda solve per Spawn and cannot
+    # collide (see `alt_libs`), where detection would need the major recorded per Arm at enroll, a
+    # Head-side render that varies by placement, and a migration for every Arm already enrolled.
+    alt_libs=(
+        ("cuda12", (("cuda-cudart=12", "libcudart.so.12, for an Arm whose vlearn was built against "
+                                       "CUDA 12 — the majors are not compatible and the SONAME is "
+                                       "what the loader matches"),)),
     ),
     setup=VLEARN_SETUP,
     activation=VLEARN_ACTIVATION,
@@ -361,8 +383,33 @@ def lib_specs(features: list[str]) -> dict[str, list[str]]:
     Ordered by Feature name so the same request builds the same prefix — a solve that varies with
     argument order would make two identical Spawns ship different bytes.
     """
-    return {n: [s for s, _why in PROFILES[n].libs]
-            for n in sorted(set(features)) if n in PROFILES and PROFILES[n].libs}
+    out: dict[str, list[str]] = {}
+    for n in sorted(set(features)):
+        p = PROFILES.get(n)
+        if not p:
+            continue
+        if p.libs:
+            out[n] = [s for s, _why in p.libs]
+        # After its Feature's own prefix, so the build order a Spawn watches reads as one Feature's
+        # libraries then its alternates, rather than interleaving two Features.
+        for suffix, extra in p.alt_libs:
+            out[f"{n}-{suffix}"] = [s for s, _why in extra]
+    return out
+
+
+def lib_prefix_label(key: str) -> str:
+    """What one `lib_specs` key means in prose, for the line a Spawn's log shows while it builds.
+
+    A key is usually a Feature name, but an `alt_libs` prefix is not a Feature and saying so would
+    invent one — the Dashboard would then show a Spawn building "the 'vlearn-cuda12' Arm Feature".
+    """
+    if key in PROFILES:
+        return f"the '{key}' Arm Feature's system libraries"
+    for n, p in PROFILES.items():
+        for suffix, _extra in p.alt_libs:
+            if key == f"{n}-{suffix}":
+                return f"the '{n}' Arm Feature's alternate system libraries ({suffix})"
+    return f"system libraries for {key}"
 
 
 # The activation Spawn's whole manifest: an interpreter of the right version and nothing else.
@@ -442,7 +489,7 @@ def runtime_summary(name: str) -> str:
     if p.libs:
         out.append("CCC builds these into every Spawn that asks for this Feature. Do not declare them")
         out.append("yourself — they are system libraries, and no Python manifest can install them:")
-        for s, why in p.libs:
+        for s, why in [*p.libs, *(e for _suffix, extra in p.alt_libs for e in extra)]:
             out.append(f"  {s}" + (f"   # {why}" if why and len(s) + len(why) < 88 else ""))
             if why and len(s) + len(why) >= 88:
                 out += textwrap.wrap(why, 92, initial_indent="      # ", subsequent_indent="      # ")

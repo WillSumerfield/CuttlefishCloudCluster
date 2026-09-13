@@ -693,6 +693,40 @@ def test_the_feature_library_prefix_is_mounted_for_the_payload():
     assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" in body, "and on LD_LIBRARY_PATH"
 
 
+def test_both_cuda_majors_are_on_the_library_path():
+    """The CUDA major belongs to the ARM's vlearn build, but the pin lives on the Head and applies to
+    every Arm. A wheel built against CUDA 12 died on `OSError: libcudart.so.12` with only the 13
+    prefix on the path — and nothing in CCC could distinguish that Arm from one needing 13. Both
+    prefixes ship; distinct SONAMEs mean the loader takes whichever the binary actually names."""
+    body = _script(features=["vlearn"])
+    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" in body
+    assert f"{hf.FEATLIB_MOUNT}/vlearn-cuda12/lib" in body
+
+
+def test_the_conflicting_majors_get_separate_prefixes():
+    """One conda prefix cannot hold two versions of the same package, which is the whole reason
+    `alt_libs` exists rather than another entry in `libs`."""
+    specs = hf.lib_specs(["vlearn"])
+    assert "cuda-cudart=13" in specs["vlearn"]
+    assert specs["vlearn-cuda12"] == ["cuda-cudart=12"]
+    assert "cuda-cudart=12" not in specs["vlearn"]
+
+
+def test_an_alternate_prefix_is_not_described_as_a_feature():
+    """It is a second prefix for one Feature, not a Feature — a Spawn's build log saying it is
+    installing "the 'vlearn-cuda12' Arm Feature" would name something no Arm can declare."""
+    assert hf.lib_prefix_label("vlearn") == "the 'vlearn' Arm Feature's system libraries"
+    label = hf.lib_prefix_label("vlearn-cuda12")
+    assert "vlearn-cuda12" not in label and "'vlearn'" in label and "cuda12" in label
+
+
+def test_the_feature_description_lists_both_majors():
+    """`cuttle feature show vlearn` is the canonical answer to "what does CCC install for me". An
+    alternate prefix that only appeared in the job script would be half a gigabyte nothing explains."""
+    text = hf.runtime_summary("vlearn")
+    assert "cuda-cudart=13" in text and "cuda-cudart=12" in text
+
+
 def test_the_library_prefix_is_built_outside_the_project():
     """$proj is what recover_scratch() measures against RECOVERY_MAX_BYTES and rsyncs home. Half a
     gigabyte of CCC's own libraries built in there would silently disable recovery for every Spawn that
