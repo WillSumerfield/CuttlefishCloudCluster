@@ -1098,7 +1098,8 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     head_licence = _head_licence_home()
     if not update:
         head_features = _prompt_arm_features(head_features)
-        head_licence = _prompt_licence_home(head_licence) if head_features else ""
+        head_licence = _prompt_licence_home(head_features, head_licence) if head_features else ""
+    head_licence = _require_licence_home(head_features, head_licence)
     preflight("head")
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
@@ -1503,7 +1504,7 @@ def _head_licence_home() -> str:
     return _features_env_value(config.LICENCE_HOME_VAR)
 
 
-def _prompt_licence_home(existing: str = "") -> str:
+def _prompt_licence_home(features: list[dict], existing: str = "") -> str:
     """Where this box keeps the machine-locked **Licence** state for its Feature software.
 
     ONE directory per Arm, not one per Feature: a licence is locked to hardware, and an Arm is one
@@ -1525,20 +1526,45 @@ def _prompt_licence_home(existing: str = "") -> str:
     rather than advisory.
     """
     if not ui.interactive():
-        return existing
+        return existing   # the caller's _require_licence_home refuses an empty one
     ui.say("  [muted]Some of that software is licensed to the machine, and looks for its activation "
            "files in the home directory of whoever runs it — never at $HOME, always at the home in "
            "/etc/passwd. So CCC gives the licence its own account, and mounts that account's home "
            "into a Spawn.[/muted]")
-    if not ui.ask_confirm("Does this box hold a machine licence for any of that software?",
-                          bool(existing)):
+    # A Feature with a product key IS machine-licensed, so there is nothing to ask. The yes/no used to be
+    # asked regardless, defaulting to no — and Enter on it left a vlearn Arm with no Licence directory,
+    # whose activation then landed in a tmpfs home and was thrown away.
+    needs = _licensed_features(features)
+    if not needs and not ui.ask_confirm("Does this box hold a machine licence for any of that software?",
+                                        bool(existing)):
         return ""
     ui.hint(f"Name a directory that does not exist yet — CCC creates it as {config.LICENCE_USER}'s "
             f"home. You then activate the software ONCE as that account and the files land there; you "
             f"never have to find or copy them. Not your own home: all of it is mounted into every "
             f"Spawn that asks for a Feature.")
-    return ui.ask_text("Licence directory for CCC to create (absolute, e.g. /opt/ccc/licence)",
-                       existing).strip()
+    while True:
+        path = ui.ask_text("Licence directory for CCC to create (absolute, e.g. /opt/ccc/licence)",
+                           existing).strip()
+        if path.startswith("/") or (not path and not needs):
+            return path
+        ui.warn(f"  {', '.join(needs) or 'the licence'} needs an absolute Licence directory")
+
+
+def _licensed_features(features: list[dict]) -> list[str]:
+    """The declared Features whose software is licensed to the machine (their profile has a key)."""
+    return [f["name"] for f in features
+            if (p := feature_profiles.ARM_PROFILES.get(f["name"])) and p.licence_key]
+
+
+def _require_licence_home(features: list[dict], licence_home: str) -> str:
+    """`licence_home`, or abort when a declared Feature needs one and there is none — the path taken with
+    no prompt (`cuttle update`, no tty), which would otherwise carry an earlier "no" forward silently."""
+    needs = _licensed_features(features)
+    if needs and not licence_home:
+        raise ui.abort(f"{', '.join(needs)} is licensed to the machine, but this box has no Licence "
+                       f"directory recorded",
+                       next_step="re-run `cuttle setup --arm` (or `--head`) interactively and name one")
+    return licence_home
 
 
 def setup_arm(token: str | None, re_enroll: bool = False, update: bool = False) -> None:
@@ -1598,7 +1624,8 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         features = _prompt_arm_features(features)
         # Only asked when this box actually declared something to licence — a Licence with no Feature
         # to unlock is a directory nothing would ever bind.
-        licence_home = _prompt_licence_home(licence_home) if features else ""
+        licence_home = _prompt_licence_home(features, licence_home) if features else ""
+    licence_home = _require_licence_home(features, licence_home)
 
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)

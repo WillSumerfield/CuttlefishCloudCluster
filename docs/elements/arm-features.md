@@ -140,3 +140,8 @@ as a [Guise](isolation.md) with no relationship to you, and cannot traverse your
 
 Features that have a product key ask for its path too. The key is mirrored into this box's own state
 at `0640` and **never leaves the Arm** — the Head never sees it, and no ordinary Spawn ever does.
+
+A Feature with a product key also needs a **Licence directory**: a path CCC creates, where the
+activation CCC runs as the Arm joins writes the machine's licence, and which every Spawn asking for
+that Feature reads. Setup will not finish without one, and an activation on an Arm that has none fails
+rather than activating into a Spawn's throwaway home.

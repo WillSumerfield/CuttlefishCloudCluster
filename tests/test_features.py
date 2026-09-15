@@ -563,6 +563,34 @@ def test_the_licence_key_is_bound_only_for_an_activation_spawn():
     assert hf.setup_snippet(["vlearn"]).strip() in activating
 
 
+def test_an_activation_with_no_licence_directory_fails_instead_of_burning_one():
+    """No Licence directory bound = `$HOME` is a tmpfs: TurboActivate would activate into it, exit 0, and
+    the Arm would be marked activated with nothing kept. The guard must precede the activation itself."""
+    activating = _script(features=["vlearn"], activation=True)
+    guard = activating.index('[ -n "$licbind" ] || feature_fail')
+    assert guard < activating.index('ln -sf "$VLEARN_LICENCE_KEY"')
+    assert '[ -n "$licbind" ]' not in _script(features=["vlearn"])
+
+
+def test_a_licensed_feature_never_gets_past_setup_without_a_licence_directory(monkeypatch):
+    """Enter on the old "does this box hold a licence?" (default no) left a vlearn Arm with none."""
+    import typer
+    from cuttle import setup, ui
+    vlearn = [{"name": "vlearn", "path": "/opt/vlearn", "key": "/opt/vlearn/License.key"}]
+    with pytest.raises(typer.Exit):
+        setup._require_licence_home(vlearn, "")
+    assert setup._require_licence_home([{"name": "isaaclab", "path": "/opt/i"}], "") == ""
+
+    # Interactive: no yes/no, and an empty answer is re-asked rather than accepted.
+    a = ui.Answers("", "/opt/ccc/licence")
+    ui.install_answers(a)
+    try:
+        assert setup._prompt_licence_home(vlearn) == "/opt/ccc/licence"
+    finally:
+        ui.install_answers(None)
+    assert not any("Does this box hold" in m for m in a.asked)
+
+
 def test_an_activation_spawn_is_still_valid_bash():
     r = subprocess.run(["bash", "-n"], input=_script(features=["vlearn"], activation=True),
                        text=True, capture_output=True)
