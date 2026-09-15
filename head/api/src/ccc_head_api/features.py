@@ -197,6 +197,11 @@ featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=%%VLW
 # this binds that copy at its own host path, so it has one name inside the Pod and out.
 VLEARN_ACTIVATION = r"""
 # --- Arm Feature: vlearn, ACTIVATION ---------------------------------------
+# No Licence directory bound means `$HOME` is the Pod's throwaway tmpfs: TurboActivate would activate
+# INTO it, exit 0, and the Arm would be marked activated with nothing kept -- one vendor activation
+# burnt and every later Spawn unlicensed. `$licbind` is JOB_SCRIPT's answer to "is it bound".
+[ -n "$licbind" ] || feature_fail \
+  "this Arm has no Licence directory (CCC_LICENCE_HOME in /etc/ccc/features.env is unset or missing), so an activation would be written nowhere that lasts. Its owner should re-run 'cuttle setup --arm' and name one."
 [ -n "${VLEARN_LICENCE_KEY:-}" ] || feature_fail \
   "this Arm declared the 'vlearn' Feature but recorded no licence key path, so CCC cannot activate it. Its owner should re-run 'cuttle setup --arm'."
 [ -f "$VLEARN_LICENCE_KEY" ] || feature_fail \
