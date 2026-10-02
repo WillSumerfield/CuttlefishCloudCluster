@@ -10,6 +10,9 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+# The caller's PATH, before step 1 extends ours: whether `cuttle` resolves in *their* shell is
+# judged against this, not against what this subshell can see.
+caller_path=$PATH
 
 # 1. Ensure uv — the isolated tool installer. It puts each tool (and its deps) in its own venv, so
 #    nothing leaks into the system Python and uninstalling is exact.
@@ -102,3 +105,22 @@ else
     echo "cuttle: next -> cuttle setup --arm --token <token>   (donate this box's GPU)"
     echo "cuttle:      -> cuttle setup --client                (submit only)"
 fi
+
+# 4. A shell started before this script has no ~/.local/bin on PATH (fresh uv, or a distro that only
+#    adds it at login), so its first `cuttle` is "command not found". update-shell writes the rc
+#    line so a new terminal has it; the message is uv's/rustup's own, for the shell already open.
+bin=$(uv tool dir --bin)
+case ":$caller_path:" in
+    *":$bin:"*) ;;
+    *)
+        uv tool update-shell >/dev/null 2>&1 || true
+        echo
+        echo "cuttle: to add $bin to your PATH, either restart your shell or run:"
+        if [ -f "$bin/env" ]; then
+            echo "    source $bin/env (sh, bash, zsh)"
+            if [ -f "$bin/env.fish" ]; then echo "    source $bin/env.fish (fish)"; fi
+        else
+            echo "    export PATH=\"$bin:\$PATH\""
+        fi
+        ;;
+esac
