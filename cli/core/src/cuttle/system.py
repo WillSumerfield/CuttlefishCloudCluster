@@ -43,7 +43,7 @@ def prime_sudo() -> None:
     if not ui.interactive() or sudo_available():
         _SUDO_PRIMED = True
         return
-    password = ui.ask_password("Your sudo password")
+    password = ui.ask_password("Your sudo password", permission=True)
     # -S reads the password from stdin; -p '' suppresses sudo's own prompt (we drew ours); -v just
     # refreshes the timestamp, running no command.
     r = subprocess.run(["sudo", "-S", "-p", "", "-v"],

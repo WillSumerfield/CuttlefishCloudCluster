@@ -860,7 +860,10 @@ def _ask(kind: str, message: str, **kw):
     """One prompt, through the seam. The scripted human and the real one must agree on *every*
     rule, including that a None answer means ^C — a fake that is merely permissive lets a caller
     ship a None-valued menu entry that dies the moment a human touches it."""
-    if _REFUSE is not None:
+    # `permission` is sudo's password: asking leave to act, not for an answer, so a flow that
+    # promised to ask nothing (`no_prompting`) still has to be able to ask it.
+    permission = kw.pop("permission", False)
+    if _REFUSE is not None and not permission:
         raise abort(f"{_REFUSE} asks nothing, but something tried to ask {message!r}",
                     next_step=f"this is a bug in CCC — run `cuttle setup` to answer it for now")
     if _ANSWERS is not None:
@@ -932,8 +935,8 @@ def ask_float(message: str, default: str = "") -> float:
             warn(f"{raw!r} isn't a number — enter a number (e.g. -50)")
 
 
-def ask_password(message: str) -> str:
-    return _ask("password", message)
+def ask_password(message: str, permission: bool = False) -> str:
+    return _ask("password", message, permission=permission)
 
 
 def ask_confirm(message: str, default: bool = False) -> bool:

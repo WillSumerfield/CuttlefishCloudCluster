@@ -71,6 +71,13 @@ class TestAnUpdateAsksNothing:
                 ui.ask_text("anything")
         assert ui._REFUSE is None
 
+    def test_sudo_still_asks_for_its_password(self, answers):
+        """A sudo password is permission, not an answer this box already holds — refusing it made
+        `cuttle update` abort on every box whose sudo needs a password."""
+        answers("hunter2")
+        with ui.no_prompting("`cuttle update`"):
+            assert ui.ask_password("Your sudo password", permission=True) == "hunter2"
+
     def test_the_head_flow_runs_under_it(self, monkeypatch):
         """Not just that `setup_head` is called with update=True — that it is called somewhere it
         *cannot* ask, which is the promise a User is actually given."""

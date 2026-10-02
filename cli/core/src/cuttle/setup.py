@@ -1357,8 +1357,8 @@ def update_this_box() -> None:
     """
     # Wrapped, not merely trusted: every prompt in the two flows below is guarded by `update`, and
     # `ui.no_prompting` is what turns "we guarded them all" from a claim into a fact — including for
-    # the prompt somebody adds to a shared step next year. sudo still asks; it is not a `ui` prompt,
-    # and it is asking for permission rather than for an answer.
+    # the prompt somebody adds to a shared step next year. sudo's password still asks: it is permission,
+    # not an answer (`ask_password(permission=True)`).
     if menu.is_head():
         with ui.no_prompting("`cuttle update`"):
             return setup_head(update=True)
