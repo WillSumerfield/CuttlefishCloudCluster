@@ -17,12 +17,6 @@ time, but always on one machine — never spread across two donors.
 The Python your code runs against, built from a dependency file you name. Nothing declares one in 2.0
 until Dives bring them back.
 
-### [Tide Pool](elements/tide-pool.md)
-
-An interactive shell on real cluster hardware, for when you need to poke at something rather than run
-it. It bills Karma for as long as you hold it, and closing your laptop does not end it. It keeps
-nothing when the session ends.
-
 ### [Karma](elements/karma.md)
 
 Standing, not currency. You earn it by donating a machine and spend it by running work — but it never

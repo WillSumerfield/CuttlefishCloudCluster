@@ -91,7 +91,7 @@ export type SpawnDetail = {
   gpus?: number | null
   vram_gb?: number | null
   minutes?: number | null
-  /** Demanded (Admin `--node`), not where it ran — see `placed_node`. */
+  /** A demanded node, not where it ran — see `placed_node`. Nothing sets it in 2.0 (always null). */
   node?: string | null
   /** Where the cluster actually put it, recorded by the meter. Null while it is still queued, and for
    *  a Spawn that ended before a single meter pass caught it running. */
@@ -164,7 +164,7 @@ type HistoryRow = {
   cancelled: boolean
   // The entry script (what RAN).
   script: string
-  // What the submitter DEMANDED (Admin-only `--node`), which is null for almost every Spawn — never
+  // A node the submitter DEMANDED — nothing sets it in 2.0, so always null. Never
   // where it ran. `placed_node` is that, recorded by the meter; null when the Spawn ended too fast to
   // be metered at all, or predates the column.
   node: string | null

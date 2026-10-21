@@ -174,14 +174,6 @@ class TestTheProjectFolder:
     def test_the_heads_own_arm(self):
         assert head_spawns.pod_project_dir(58, head_arm=True) == f"{head_spawns.SCRATCH_DIR}/58/proj"
 
-    def test_the_two_scratch_forms_agree_with_the_job_script(self):
-        """Both forms are written longhand in JOB_SCRIPT, and this helper reads them back. If the
-        script's scratch layout moves, this is what says so instead of a VS Code window opening on
-        an empty directory."""
-        script = head_spawns.JOB_SCRIPT
-        assert 'scratch="%%HEAD_SCRATCH%%/$jid"' in script
-        assert 'scratch="/tmp/ccc-$jid"' in script
-        assert script.count('proj="$scratch/proj"') == 2
 
 class TestTheAttach:
     """`_wait_and_attach` with the network taken out of it."""

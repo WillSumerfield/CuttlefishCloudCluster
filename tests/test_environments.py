@@ -186,7 +186,7 @@ def test_pip_is_seeded_with_uv_not_with_pip(tmp_path):
 
 @pytest.mark.parametrize("kind", ["uv-project", "uv-requirements", "conda"])
 def test_the_interpreter_is_under_the_mount(kind):
-    """What the rendered JOB_SCRIPT names as `$py`. It has to resolve inside the Pod, against the bind —
+    """What the job script names as `$py`. It has to resolve inside the Pod, against the bind —
     not against whatever path the env happened to be built in on the Head. Per-SHAPE now rather than one
     constant: micromamba owns ENV_MOUNT outright, while a uv env keeps its venv one level down."""
     m = env.Manifest(kind, "m")

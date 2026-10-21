@@ -247,7 +247,7 @@ def feature_constraint(features: list[str]) -> str:
 
 def arms_with_features(features: list[str]) -> list[str]:
     """Every ADMITTED Arm whose declared Feature set is a superset of `features` — the feasibility
-    check `submit_checked` runs before ever calling sbatch, mirroring `vram_constraint`'s "no Arm has
+    check a submission runs before ever calling sbatch, mirroring `vram_constraint`'s "no Arm has
     that much VRAM" refusal."""
     need = set(features)
     return [name for name, e in load_registry().items()

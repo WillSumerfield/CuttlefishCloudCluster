@@ -212,7 +212,7 @@ def quote_hold(conn: sqlite3.Connection, arms: list[dict], need: dict, minutes: 
                is_admin: bool, now: datetime | None = None) -> float | None:
     """The Escrow to place on a Spawn at submit — the pricing decision, in one place.
 
-    Extracted so `/submit` and the Fake Cluster quote a Spawn through the SAME code — a quote re-derived
+    Extracted so submission and the Fake Cluster quote a Spawn through the SAME code — a quote re-derived
     independently in the simulation harness could hide a pricing bug that runs in production.
 
     Returns **None** for an Admin: outside the economy, never held. Otherwise the hold over the eligible

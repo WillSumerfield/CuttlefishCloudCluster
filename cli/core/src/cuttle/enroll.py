@@ -355,12 +355,12 @@ def list_features(as_json: bool = False) -> None:
     for n in names:
         ui.say(f"  {n}")
     ui.hint("Declare which of these this box has with `cuttle setup --arm` (or `--head` for the "
-            "Head's own Arm); ask for one with `cuttle run --feature <name>`.")
+            "Head's own Arm).")
 
 
 def render_features_env(features: list[dict], licence_home: str = "") -> str:
     """One `export <NAME>_PATH=<path>` line per declared Arm Feature, written to config.ARM_FEATURES_ENV
-    by `setup --arm`. `export`, not a bare assignment: ccc_head_api.spawns.JOB_SCRIPT sources this file
+    by `setup --arm`. `export`, not a bare assignment: the Spawn job script sources this file
     with no `set -a`, and Apptainer's default (non `--cleanenv`) behaviour is to pass the WHOLE calling
     environment into the Pod — so only an exported var actually reaches a Spawn's payload.
 
@@ -370,7 +370,7 @@ def render_features_env(features: list[dict], licence_home: str = "") -> str:
     `licence_home` is this Arm's **Licence** directory (temp/FEATURES_LICENCE.md) — ONE per Arm, not one
     per Feature, because a licence is locked to hardware and an Arm is one machine. It rides this same
     file for the same reason a Feature's path does: the value is Arm-local, so the Head cannot bake it
-    into a job script it renders for the whole fleet. The Arm supplies it; JOB_SCRIPT decides whether
+    into a job script it renders for the whole fleet. The Arm supplies it; the job script decides whether
     this Spawn may see it.
     """
     # `install_path`, not `f['path']`: for a Feature CCC mirrors, the owner's own directory is not

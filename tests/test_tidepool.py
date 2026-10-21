@@ -1,14 +1,13 @@
 """Tide Pool (docs/TODO.md): a Spawn whose payload is a live shell instead of a script.
 
 What is tested here: the port reservation (has to be race-safe before a job_id exists), the keypair
-round-trip through at-rest encryption, the relaxed submit check (script optional), the
-`GET /spawns/{id}/tidepool` route's auth/ownership/readiness contract, tick.py's reap, and the CLI's
-flag wiring. NOT tested: a real sshd/ssh session — that needs real
+round-trip through at-rest encryption, the `GET /spawns/{id}/tidepool` route's
+auth/ownership/readiness contract, tick.py's reap, the CLI's session-ending copy, and the zsh the Head
+renders. Dormant in 2.0: nothing submits a Tide Pool until Dives. NOT tested: a real sshd/ssh session — that needs real
 hardware (same carve-out the Beak/MIG work already has in docs/TODO.md).
 """
 
 import os
-import re
 import socket
 import tempfile
 import threading
@@ -132,142 +131,7 @@ class TestTidepoolCrud:
         assert row["tidepool"] == 1
 
 
-# --- submit() renders and records a Tide Pool ----------------------------
-
-class TestSubmitRecordsATidepool:
-    @pytest.fixture(autouse=True)
-    def _rig(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
-        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-        db.ensure_schema()
-        with db.connect() as conn:
-            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
-                        "VALUES (1,'alice',0,'x',0)")
-            conn.commit()
-        counter = iter(range(5000, 5100))
-        # Stands in for `sbatch` (which reports through stdout).
-        monkeypatch.setattr(
-            head_spawns.subprocess, "run",
-            lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n", "stderr": "",
-                                            "returncode": 0})())
-
-    def test_it_submits(self, tmp_path):
-        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=30, constraint="vram24")
-        assert job_id >= 5000
-
-    def test_a_tidepools_row_is_written(self, tmp_path):
-        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=30, constraint="vram24")
-        with db.connect() as conn:
-            tp = db.get_tidepool(conn, job_id)
-        assert tp is not None
-        assert head_tidepool.PORT_BASE <= tp["port"] < head_tidepool.PORT_BASE + head_tidepool.PORT_RANGE
-
-    def test_the_rendered_script_carries_the_sshd_payload(self, tmp_path):
-        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=30, constraint="vram24")
-        with db.connect() as conn:
-            tp = db.get_tidepool(conn, job_id)
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s3cr3t",
-                                   tp["port"], tp["pubkey"])
-        assert f"sshd -D -e -p {tp['port']}" in body
-        assert tp["pubkey"].strip() in body
-        assert "%%TIDEPOOL_PORT%%" not in body
-        assert "%%TIDEPOOL_PUBKEY%%" not in body
-
-    def test_the_ephemeral_key_is_not_written_into_the_guises_home(self, tmp_path):
-        """A Spawn that requests an Arm **Feature** gets the Arm's **Licence** directory bound OVER the
-        Guise's home (`licbind`), and that directory is `2770 ccc-licence:ccc-guises`. sshd's StrictModes
-        refuses an authorized_keys under a home that is group-writable and owned by someone else, so
-        pubkey auth was skipped and the User met a password prompt for an account with no password —
-        every Tide Pool with a --feature was unreachable.
-
-        Turning StrictModes off is the wrong repair and must stay wrong: that directory is the shared
-        home of every feature-requesting Pod on the Arm and every Guise is in `ccc-guises`, so an
-        honoured authorized_keys there lets one User write their key into another User's Tide Pool.
-        """
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
-                                   "ssh-ed25519 AAAA x")
-        boot = body[body.index("tp_boot.sh"):]
-        code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
-        assert "AuthorizedKeysFile=/ccc_authorized_keys" in code
-        assert "chmod 600 /ccc_authorized_keys" in code
-        # The home is never resolved, let alone written into — no ~/.ssh, and no `home=` to build one from.
-        assert ".ssh" not in code
-        assert "StrictModes" not in code
-
-    def test_the_pod_repairs_its_own_passwd_before_sshd_starts(self, tmp_path):
-        """A **Guise** is `nologin` on the host, and apptainer patches the Pod's /etc/passwd with
-        that host entry verbatim — shell field included. sshd then execs nologin and the User
-        gets "This account is currently not available" instead of a shell, with the Spawn
-        running and billing Karma the whole time.
-
-        Ordering is the test: repaired before `exec sshd`, or the first login is the broken one."""
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
-                                   "ssh-ed25519 AAAA x")
-        # The backreference is spelled `\\1` in the Python source for a reason: `"\1"` in a non-raw
-        # literal is chr(1), which renders a sed expression that silently replaces the whole line.
-        assert r"\1:/usr/bin/zsh|" in body
-        assert "\x01" not in body
-        assert body.index("/etc/passwd") < body.index("exec /usr/sbin/sshd")
-
-    def test_the_shell_is_named_outright_with_no_fallback(self, tmp_path):
-        """One shell, chosen by the Head, on every Arm — never "zsh if this node has one, else bash".
-
-        A User cannot name the machine they land on (CONTEXT.md, **Eligibility**), so a fallback would
-        make the shell they get a property of the placement rather than of the cluster: the same command
-        run twice would behave differently, and the difference would be invisible from the client. An Arm
-        whose base.sif predates zsh is meant to fail loudly instead, which is the bargain every
-        image-level change in this project already makes (`cuttle teardown --all` + `setup`).
-        """
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
-                                   "ssh-ed25519 AAAA x")
-        boot = body[body.index("tp_boot.sh"):]
-        code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
-        assert "/bin/bash" not in code          # not as a fallback, not as a second branch
-        assert "command -v zsh" not in code
-        assert "which zsh" not in code
-
-    def test_neither_identity_file_is_edited_in_place(self, tmp_path):
-        """`sed -i` writes a temp file and rename()s it over the original, which the --writable-tmpfs
-        overlay refuses with "Device or resource busy" (found on hardware with the tty-group
-        workaround). Both repairs must redirect to /tmp and truncate the target instead — a `sed -i`
-        creeping into either one fails at runtime, inside the Pod, where nobody is reading stderr."""
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
-                                   "ssh-ed25519 AAAA x")
-        boot = body[body.index("tp_boot.sh"):]
-        # Comments are where the constraint is explained, so they mention `sed -i` on purpose.
-        code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
-        assert "sed -i" not in code
-        for f in ("/etc/passwd", "/etc/group"):
-            assert f"> {f}\n" in code          # truncated in place, never renamed over
-
-    def test_the_shell_writes_temp_files_to_disk_not_to_the_64mb_ram_tmp(self, tmp_path):
-        """`--contain` gives the Pod a /tmp carved from apptainer's session directory — a RAM tmpfs
-        capped at 64MB by `sessiondir max size`, and shared with the --writable-tmpfs overlay. A Tide
-        Pool is where `pip install` is most used, and any wheel bigger than what is left of that dies
-        with an ENOSPC pip reports as "an issue with network connectivity, not pip"."""
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
-                                   "ssh-ed25519 AAAA x")
-        assert "$scratch/tmp:/ccc-tmp" in body            # the disk-backed bind
-        assert 'export TMPDIR=/ccc-tmp' in body           # ...and the login shell told to use it
-
-    def test_the_vscode_server_unpacks_onto_disk_not_into_the_ram_home(self, tmp_path):
-        """~150MB of server into a 64MB tmpfs home: it dies as ENOSPC partway through the unpack, and
-        Remote-SSH reports that as "Cannot resolve authority" with the real cause several screens down
-        its own log. The symlink is the load-bearing half — the two variables name the legacy server
-        script's folder and the Rust CLI's data dir respectively, and which one a given client reads
-        is not ours to know."""
-        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
-                                   "ssh-ed25519 AAAA x")
-        assert 'ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"' in body
-        assert "VSCODE_AGENT_FOLDER=/ccc-tmp/vscode" in body
-        assert "VSCODE_CLI_DATA_DIR=/ccc-tmp/vscode" in body
-        # ...and the directory it points at is created on the disk scratch, host-side, before any of it.
-        assert '"$scratch/tmp/vscode"' in body
-        assert body.index("ln -sfn /ccc-tmp/vscode") < body.index("exec /usr/sbin/sshd")
-
-
-# --- GET /submit + /spawns/{id}/tidepool over HTTP ---------------------------
+# --- GET /spawns/{id}/tidepool over HTTP --------------------------------------
 
 def _client(monkeypatch, tmp_path, user_id=1, is_admin=False):
     user = {"id": user_id, "username": "alice", "is_admin": is_admin, "must_change_password": False}
@@ -276,8 +140,6 @@ def _client(monkeypatch, tmp_path, user_id=1, is_admin=False):
     db.ensure_schema()
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-    monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
-    monkeypatch.setattr(slurm, "queue", lambda: [])
     return TestClient(head_main.app)
 
 
@@ -285,30 +147,6 @@ def _client(monkeypatch, tmp_path, user_id=1, is_admin=False):
 def _clear_overrides():
     yield
     head_main.app.dependency_overrides.clear()
-
-
-class TestSubmitRouteAcceptsTidepool:
-    def test_no_script_is_accepted(self, monkeypatch, tmp_path):
-        c = _client(monkeypatch, tmp_path)
-        monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
-        meta = {"minutes": 60, "vram": 24, "tidepool": True}
-        r = c.post("/api/submit", json=meta)
-        assert r.status_code == 200, r.text
-        assert r.json() == {"id": 4242}
-
-    def test_still_requires_minutes_and_vram(self, monkeypatch, tmp_path):
-        c = _client(monkeypatch, tmp_path)
-        meta = {"vram": 24, "tidepool": True}
-        r = c.post("/api/submit", json=meta)
-        assert r.status_code == 422
-        assert "minutes" in r.json()["detail"]
-
-    def test_a_request_without_tidepool_is_refused(self, monkeypatch, tmp_path):
-        """Batch Spawns are gone: no `tidepool` flag is a refusal, not a script Spawn."""
-        c = _client(monkeypatch, tmp_path)
-        r = c.post("/api/submit", json={"minutes": 60, "vram": 24})
-        assert r.status_code == 422
-        assert "Tide Pool" in r.json()["detail"]
 
 
 # The first uid the allocator hands out. These tests seed `users` with raw SQL, so nobody has a Guise
@@ -597,38 +435,6 @@ class TestReap:
             assert db.get_tidepool(conn, 2) is not None
 
 
-# --- CLI: wiring, id-vs-fresh-request resolution -------
-
-class TestExistingIdResolution:
-    def test_a_digit_string_resolves_to_an_id(self):
-        assert cli_tidepool._existing_id("123") == 123
-
-    def test_none_is_a_fresh_request(self):
-        assert cli_tidepool._existing_id(None) is None
-
-    def test_a_non_numeric_string_is_a_fresh_request(self):
-        """`cuttle run train.py` — a stray argument, not a Spawn id. run() warns and
-        ignores it rather than treating it as one."""
-        assert cli_tidepool._existing_id("train.py") is None
-
-
-class TestCliRunWiring:
-    def test_tidepool_needs_time_and_vram_like_any_spawn(self, signed_in):
-        r = signed_in("run")
-        assert r.exit_code != 0
-        assert "--time" in r.output or "--vram" in r.output
-
-    def test_a_request_submits(self, signed_in, fake_slurm):
-        """A real submission happens (tidepool=1 in the ledger), even though this fake
-        cluster can never actually place it (no real Slurm, so attach then fails loudly — that failure
-        is expected and not what this test is about)."""
-        signed_in("run", "--time", "10", "--vram", "4")
-        with db.connect() as conn:
-            row = conn.execute("SELECT tidepool FROM spawns").fetchone()
-        assert row is not None
-        assert row["tidepool"] == 1
-
-
 class TestHowASessionSaysItEnded:
     """`_report_ending` — the three ways out of an attached shell, and what each may truthfully claim.
 
@@ -717,9 +523,6 @@ class TestTheShellTheUserGets:
     """zsh + powerlevel10k, rendered by the Head (ccc_head_api.zshrc) and written into the Pod's overlay
     at boot. The tree it needs is baked into base.sif; only these two files come from here."""
 
-    def render(self):
-        return head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000, "ssh-ed25519 AAAA x")
-
     def test_the_profile_is_bridged_into_zsh_or_it_is_silently_lost(self):
         """The single line without which this whole change is a regression, and a silent one.
 
@@ -734,10 +537,6 @@ class TestTheShellTheUserGets:
         """
         assert "source /etc/profile" in templates.render_base_def()
         assert "/etc/zsh/zprofile" in templates.render_base_def()
-
-    def test_the_rc_is_written_before_sshd_starts(self):
-        body = self.render()
-        assert body.index("/etc/zsh/zshrc") < body.index("exec /usr/sbin/sshd")
 
     def test_nothing_zsh_writes_lands_in_the_home_or_the_64mb_overlay(self):
         """Two different hazards, one answer. The overlay and the Pod's /tmp share 64 MB of RAM; and for
@@ -758,20 +557,6 @@ class TestTheShellTheUserGets:
         rc = zshrc.render()
         assert rc.index("mkdir -p $ZSH_CACHE_DIR") < rc.index("source $ZSH/oh-my-zsh.sh")
 
-    def test_a_user_startup_file_always_exists_or_the_wizard_opens_the_session(self):
-        """zsh runs `zsh-newuser-install` — a full-screen "you have no zsh startup files" wizard — when
-        NONE of .zshenv/.zprofile/.zshrc/.zlogin exists in ${ZDOTDIR:-$HOME}. A *global* rc does not
-        count: /etc/zsh/zshrc is read and the wizard fires anyway, which is what every Tide Pool opened
-        on. `--contain` guarantees the empty home that triggers it, so the file has to be created.
-
-        Measured: setting ZDOTDIR alone does NOT suppress it. Only a file in the directory it names
-        does, which is what makes these two lines one fix rather than two half-fixes."""
-        body = self.render()
-        assert f"export ZDOTDIR={zshrc.POD_ZDOTDIR}" in body
-        assert f"cat > {zshrc.POD_USER_ZSHRC} <<" in body
-        assert body.index(f"mkdir -p {zshrc.POD_ZDOTDIR}") < body.index(f"cat > {zshrc.POD_USER_ZSHRC}")
-        assert body.index("/etc/zsh/zshenv") < body.index("exec /usr/sbin/sshd")
-
     def test_the_users_own_rc_is_not_in_the_home_another_user_can_write(self):
         """zsh sources $ZDOTDIR/.zshrc, and for a Spawn requesting a **Feature** the home is the Arm's
         **Licence** directory — `2770 ccc-licence:ccc-guises`, shared by every feature Pod on the node,
@@ -781,18 +566,6 @@ class TestTheShellTheUserGets:
         seeded it, so pointing ZDOTDIR at private per-session scratch is load-bearing, not tidiness."""
         assert zshrc.POD_ZDOTDIR.startswith("/ccc-tmp"), zshrc.POD_ZDOTDIR
         assert zshrc.POD_USER_ZSHRC.startswith("/ccc-tmp"), zshrc.POD_USER_ZSHRC
-        # Comments are where the trap is written down, so they name the rejected path on purpose.
-        body = "\n".join(l for l in self.render().splitlines() if not l.lstrip().startswith("#"))
-        assert "$guise_home/.zshrc" not in body and "~/.zshrc" not in body
-
-    def test_the_zshenv_line_is_appended_and_never_overwrites_the_distros(self):
-        """Same bargain as the /etc/profile bridge BASE_DEF_TMPL appends to /etc/zsh/zprofile: the image
-        is Ubuntu and ships its own zshenv. It goes in zshenv rather than anywhere else because that is
-        the one file zsh reads before it decides whether to run the wizard, and because it is global —
-        sshd builds a fresh environment per session and would drop an exported ZDOTDIR."""
-        body = self.render()
-        assert ">> /etc/zsh/zshenv" in body
-        assert "> /etc/zsh/zshenv" not in body.replace(">> /etc/zsh/zshenv", "")
 
     def test_gitstatus_is_neither_pointed_at_nor_switched_off(self):
         """Both of the obvious spellings break it, and both were measured. GITSTATUS_DAEMON makes the
@@ -817,12 +590,3 @@ class TestTheShellTheUserGets:
         reads `ccc-u60002@<arm>` — the **Guise**, a uid nobody knows for an identity that is explicitly
         not an account."""
         assert "'tidepool@%m'" in zshrc.render()
-        assert "'tidepool@%m'" in self.render()
-
-    def test_no_substitution_token_survives_into_the_rendered_script(self):
-        """The rc and the p10k config are spliced in AFTER the token loop, precisely so their contents
-        are never scanned for a `%%…%%`. This is the guard that the ordering did not get shuffled back.
-
-        A BARE `%%` is not the thing being looked for and must not be: it is zsh's escape for a literal
-        `%` and the p10k config contains ten of them. Only the token shape counts."""
-        assert re.search(r"%%[A-Z_]+%%", self.render()) is None

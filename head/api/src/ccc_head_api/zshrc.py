@@ -1,5 +1,6 @@
 """The zsh a **Tide Pool** hands its User: `/etc/zsh/zshrc`, rendered here and written into the Pod by
-`spawns.PAYLOAD_TIDEPOOL`'s boot script at every session.
+the Tide Pool's boot script at every session (that script went with the 2.0 submit path; dormant until
+Dives).
 
 **Why the Head renders this instead of `base.sif` baking it.** The image is built once per node and
 never compared against its definition afterwards (`cuttle.setup.build_base_sif`), so anything inside it
@@ -15,11 +16,11 @@ files that configure it come from here. Changing a prompt is an edit plus a Head
 next Tide Pool has it.
 
 **Everything zsh writes is redirected to /ccc-tmp, and that is not tidiness.** `--contain` gives the Pod
-an empty tmpfs at the Guise's home, carved out of the same 64 MB that backs `--writable-tmpfs` (see
-spawns.py's note above PAYLOAD_TIDEPOOL). Two things follow. The small one is the budget: a compdump and
+an empty tmpfs at the Guise's home, carved out of the same 64 MB that backs `--writable-tmpfs` (the
+Tide Pool's boot script). Two things follow. The small one is the budget: a compdump and
 a history file are nothing, but they share that 64 MB with everything else the session writes. The large
 one is that for a Spawn requesting an Arm **Feature**, the home is not private at all — `licbind`
-(spawns.py) binds the Arm's **Licence** directory over it, a `2770 ccc-licence:ccc-guises` tree shared by
+(the job script) binds the Arm's **Licence** directory over it, a `2770 ccc-licence:ccc-guises` tree shared by
 every feature Pod on that Arm, and every **Guise** is in that group. Shell history written there would be
 one User's keystrokes in a directory another User's Tide Pool can read. `/ccc-tmp` is this Spawn's own
 node-local scratch, destroyed by the job script's EXIT trap, and is the only correct answer for all of it.
@@ -58,10 +59,10 @@ POD_ZSH_STATE = "/ccc-tmp/zsh"
 #
 # It points at this Spawn's own scratch rather than at the home, and that is the security half. zsh
 # sources `$HOME/.zshrc` after the global rc, and on a Spawn requesting an Arm **Feature** the home is
-# the Arm's **Licence** directory (`licbind` in spawns.JOB_SCRIPT) — `2770 ccc-licence:ccc-guises`,
+# the Arm's **Licence** directory (`licbind` in the job script) — `2770 ccc-licence:ccc-guises`,
 # shared by every feature Pod on the node, with every **Guise** in the group. A `.zshrc` left there by
 # one User would be sourced by the next User's shell. That is the hole StrictModes already closes for
-# `authorized_keys` (see the note above PAYLOAD_TIDEPOOL), reopened by the shell instead of sshd; the
+# `authorized_keys` (the Tide Pool's sshd config), reopened by the shell instead of sshd; the
 # obvious fix for the wizard — touching `$HOME/.zshrc` — would have seeded it. Pointing ZDOTDIR at
 # private, per-session scratch closes it and fixes the wizard with one file.
 POD_ZDOTDIR = POD_ZSH_STATE

@@ -185,7 +185,7 @@ class TestFeatureConstraint:
 
 
 class TestArmsWithFeatures:
-    """The feasibility check `submit_checked` runs before ever calling sbatch — mirroring
+    """The feasibility check a submission runs before ever calling sbatch — mirroring
     `vram_constraint`'s "no Arm has that much VRAM" refusal, but for an exact-name AND instead of a
     size OR."""
 

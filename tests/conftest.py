@@ -96,7 +96,7 @@ def ccc_home(monkeypatch, tmp_path):
 
 @pytest.fixture
 def cli(monkeypatch, head, ccc_home):
-    """Invoke real `cuttle` commands. Returns a callable: `cli("run", "train.py", "--time", "60")`.
+    """Invoke real `cuttle` commands. Returns a callable: `cli("cancel", "58", "--yes")`.
 
     `for_head` is replaced rather than stubbed per-command, so anything the CLI does over HTTP —
     including code written later — lands on the in-process Head automatically.
@@ -130,9 +130,8 @@ def cli(monkeypatch, head, ccc_home):
 def _siphon_dir(monkeypatch, tmp_path_factory):
     """Every **Siphon** a test opens lands in a throwaway directory.
 
-    Autouse, and deliberately not opt-in: `submit()` mints one for every Spawn, so ANY test that
-    reaches real submission would otherwise write rsync module files into the live /var/lib/ccc of
-    whatever box the suite is running on. A test that wants to inspect them just re-patches this.
+    Autouse, and deliberately not opt-in: a test that reaches `siphons.open` would otherwise write rsync
+    module files into the live /var/lib/ccc of whatever box the suite is running on. A test that wants to inspect them just re-patches this.
     """
     monkeypatch.setattr(siphons, "RSYNCD_DIR", tmp_path_factory.mktemp("rsyncd.d"))
 
@@ -158,52 +157,27 @@ def _head_state(monkeypatch, tmp_path_factory):
 
 @pytest.fixture
 def fake_slurm(monkeypatch, tmp_path):
-    """Stand in for Slurm with two throwaway executables on PATH.
-
-    Faking the *binaries* rather than `head_spawns.submit` keeps the interesting half real: the job
-    script is genuinely rendered, and — the part that matters — the
-    Attribution row and the Karma **Escrow** are genuinely written, in their real transaction. Stubbing
-    `submit()` wholesale would skip all of that and leave the ledger empty, which is exactly the state
-    these tests exist to check is *not* reachable.
-    """
+    """Stand in for Slurm with throwaway executables on PATH (`squeue`, and a pass-through `sudo`), plus
+    one admitted Arm."""
     state = tmp_path / "head-state"
-    # `scripts` is not a real Head directory: it is where the sbatch stub below keeps the job script
-    # it was fed on stdin, so a test can read back what the Arm would actually have run.
-    for name in ("spawns", "scratch", "scripts"):
+    for name in ("spawns", "scratch"):
         (state / name).mkdir(parents=True)
     monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
     monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
-    # A real Head always knows its mesh address (the unit injects it) and refuses to submit without
-    # one, since a remote Arm would have nowhere to rsync from. Read from the environment at import,
-    # which no test process sets.
-    monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    # sbatch --parsable prints just the job id. A counter file gives each Spawn a distinct, stable id.
-    counter = tmp_path / "job-counter"
-    counter.write_text("4200")
-    # The job script arrives on stdin (spawns.submit feeds it there rather than writing a temp file),
-    # so it is kept before the id is printed — otherwise the one artefact the Head actually produces
-    # for an Arm would be unreadable to the tests.
-    (bin_dir / "sbatch").write_text(
-        f'#!/bin/sh\nn=$(cat {counter}); n=$((n+1)); echo $n > {counter}\n'
-        f'cat > {state / "scripts"}/$n.sh\necho $n\n')
     # Two call shapes share this one stub: `squeue -h -j <id> -o %T` (spawns.active_state — no
     # matching job prints NOTHING, which is how the Head decides a Spawn is finished) and
-    # `squeue --json` (slurm.queue/spawns — submit_checked's concurrent-Spawn cap + the Karma tick,
-    # neither of which exists yet with any live jobs, but still needs valid empty JSON, not silence).
+    # `squeue --json` (slurm.queue/spawns — the Karma tick and the live queue, which still need valid
+    # empty JSON, not silence).
     (bin_dir / "squeue").write_text(
         '#!/bin/sh\ncase "$*" in\n  *--json*) echo \'{"jobs": []}\' ;;\n  *) exit 0 ;;\nesac\n')
-    # A **Guise** owns every Spawn now (temp/spawn-isolation.md Phase 3), so the Head reaches Slurm
-    # through `sudo -n -u ccc-u<uid>`. Faked at the same level as the binaries above, and for the same
-    # reason: the real argv is still built by guises.as_owner, the real sbatch stub still runs, and the
-    # account it was asked to become is recorded so a test can assert WHO submitted rather than just
-    # that something did. Anything else would mean stubbing out the one line Phase 3 is about.
+    # A **Guise** owns every Spawn, so the Head reaches Slurm through `sudo -n -u ccc-u<uid>`.
     (bin_dir / "sudo").write_text(
-        f'#!/bin/sh\nwhile [ "$1" = "-n" ]; do shift; done\n'
-        f'if [ "$1" = "-u" ]; then echo "$2" >> {tmp_path / "sudo-users"}; shift 2; fi\nexec "$@"\n')
+        '#!/bin/sh\nwhile [ "$1" = "-n" ]; do shift; done\n'
+        'if [ "$1" = "-u" ]; then shift 2; fi\nexec "$@"\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
@@ -211,7 +185,6 @@ def fake_slurm(monkeypatch, tmp_path):
     monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box", "vram_mb": 24564,
                                                  "admitted": True, "state": "idle",
                                                  "powers": [60.0], "gpu": 1, "gpus": 1}])
-    monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: f"vram{gb}")
     return state
 
 

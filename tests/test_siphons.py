@@ -15,7 +15,6 @@ on the next connection.
 See temp/spawn-isolation.md.
 """
 
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -233,117 +232,6 @@ class TestTheTickClosesThem:
 
         assert not (siphons.RSYNCD_DIR / "1.conf").exists()
         assert not (siphons.RSYNCD_DIR / "1.secrets").exists()
-
-
-class TestTheRenderedScript:
-    """What the Spawn itself was told. These are the assertions that would catch a Siphon that is
-    minted correctly and then never used."""
-
-    def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24")
-        return head_spawns._render(sink_tag="deadbeef", gpu=1, token="a3f9", secret="s3cr3t",
-                                   tidepool_port=31000, tidepool_pubkey="ssh-ed25519 AAAA", **kw)
-
-    def test_it_names_no_shared_module(self):
-        """The shared modules this phase deletes. A script still naming either would work today (the
-        Head-local branch never rsyncs) and fail the first time Slurm placed the Spawn elsewhere."""
-        body = self.render()
-        for line in body.splitlines():
-            if "rsync://" in line:
-                assert "/project/" not in line and "/spawns/" not in line, line
-
-    def test_every_transfer_goes_through_this_spawns_own_siphon(self):
-        body = self.render()
-        assert "rsync://a3f9@%%HEAD_IP%%" not in body  # the placeholder really was substituted
-        for line in body.splitlines():
-            if "rsync://" in line and "rsync -a" in line:
-                assert "/out-a3f9/" in line, line
-
-    def test_the_secret_is_exported_for_rsync(self):
-        assert "export RSYNC_PASSWORD=s3cr3t" in self.render()
-
-    def test_the_pod_never_sees_the_secret(self):
-        """A Tide Pool's shell is a User's. Apptainer's --env list is explicit, so the credential the
-        wrapper stages out with stops at the Pod wall — and this pins that it stays that way."""
-        body = self.render()
-        for line in body.splitlines():
-            if "--env" in line:
-                assert "RSYNC_PASSWORD" not in line
-
-class TestSubmitOpensAndBindsOne:
-    """The join between the two halves of this phase: what was minted, and what the Spawn was told."""
-
-    @pytest.fixture
-    def submitted(self, state, conn, monkeypatch, tmp_path):
-        """One real submit — render, Attribution row, Escrow — against a captured sbatch.
-        Returns the rendered script body."""
-        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", tmp_path / "scratch")
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        db.add_user(conn, "alice")
-        bodies = {}
-
-        def fake_run(argv, **kw):
-            if "sbatch" in argv:
-                bodies["script"] = kw["input"]
-            return type("R", (), {"stdout": "4812\n", "stderr": "", "returncode": 0})()
-
-        monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
-
-        def go():
-            jid = head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="vram24")
-            return jid, bodies["script"]
-        return go
-
-    def test_a_submitted_spawn_has_a_siphon_named_for_its_job_id(self, submitted):
-        job_id, _ = submitted()
-        assert (siphons.RSYNCD_DIR / f"{job_id}.conf").exists()
-        assert (siphons.RSYNCD_DIR / f"{job_id}.secrets").exists()
-
-    def test_the_script_carries_the_secret_that_was_minted(self, submitted):
-        """A render that baked in a different secret than the module checks would produce a Spawn that
-        runs and then cannot send anything home — visible only as a Spawn the Head reports as lost."""
-        job_id, body = submitted()
-        tok, secret = (siphons.RSYNCD_DIR / f"{job_id}.secrets").read_text().strip().split(":", 1)
-        assert f"export RSYNC_PASSWORD={secret}" in body
-        assert f"/out-{tok}/" in body
-
-    def test_the_siphon_is_open_before_sbatch_is_called(self, state, conn, monkeypatch, tmp_path):
-        """Ordering, not tidiness: the token and secret are baked into the job script, so they must
-        exist before sbatch is handed it."""
-        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", tmp_path / "scratch")
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        db.add_user(conn, "alice")
-        seen = {}
-
-        def fake_run(argv, **kw):
-            if "sbatch" in argv:
-                seen["secrets"] = sorted(p.name for p in siphons.RSYNCD_DIR.glob("*.secrets"))
-            return type("R", (), {"stdout": "4812\n", "stderr": "", "returncode": 0})()
-
-        monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
-        head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="vram24")
-        assert len(seen["secrets"]) == 1
-
-    def test_an_sbatch_that_fails_leaves_no_siphon_behind(self, state, conn, monkeypatch, tmp_path):
-        """It never reaches a job id, so nothing else would ever close it — `sweep` reaps orphans only
-        by age, an hour later, and until then the module is live for a Spawn that does not exist."""
-        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", tmp_path / "scratch")
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        db.add_user(conn, "alice")
-
-        def boom(argv, **kw):
-            if "sbatch" in argv:
-                raise subprocess.CalledProcessError(1, argv)
-            return type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
-
-        monkeypatch.setattr(head_spawns.subprocess, "run", boom)
-        # RuntimeError, not the CalledProcessError raised above: the same handler that discards the
-        # Siphon re-raises sbatch's refusal carrying what it said (head_spawns._said). The type is
-        # incidental here — what this test is about is the module not surviving the failure.
-        with pytest.raises(RuntimeError):
-            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="vram24")
-        assert list(siphons.RSYNCD_DIR.iterdir()) == []
 
 
 class TestTheDaemonConfig:

@@ -39,7 +39,7 @@ log = logging.getLogger("ccc.api")
 
 # Included by the root-owned /etc/ccc-rsyncd.conf via `&include`, which reads every *.conf in here and
 # re-reads them on EVERY connection — so opening/closing a Siphon needs no reload, no signal, no root.
-# Read from the environment rather than off spawns.HEAD_STATE_DIR: this module is imported BY spawns.
+# Read from the environment (the same var spawns.HEAD_STATE_DIR reads), not off spawns itself.
 RSYNCD_DIR = Path(os.environ.get("CCC_HEAD_STATE", "/var/lib/ccc/head")) / "rsyncd.d"
 
 # A token whose sbatch never returned. `bind()` follows `open()` within milliseconds, so anything still

@@ -361,7 +361,7 @@ def render_ubuntu_snapshot_list() -> str:
 # * `git` — the binary every other git tool shells out to: `git clone`, `pip install git+https://`,
 #   and uv's git dependencies all end up here. ~15MB.
 # * `openssh-server` — sshd runs INSIDE the Pod, unprivileged, as the Mantle (see
-#   ccc_head_api.spawns.PAYLOAD_TIDEPOOL). It never setuid()s: the "login" is to the SAME uid already
+#   the Tide Pool payload). It never setuid()s: the "login" is to the SAME uid already
 #   running the Pod, so there is no privilege drop and no per-User account to provision on the Arm.
 #   It pulls in openssh-client, which is where `ssh-keygen -A` comes from.
 # * `ca-certificates` — an Environment is built in a Pod off THIS image, and uv fetches every package
@@ -393,7 +393,7 @@ def render_ubuntu_snapshot_list() -> str:
 #   Head at every session (ccc_head_api.zshrc), because a prompt is the part anybody actually iterates on
 #   and this image can only be changed by a fleet-wide teardown.
 # * `/etc/zsh/zprofile` gets one appended line, and it is the load-bearing half of the whole change.
-#   PAYLOAD_TIDEPOOL puts the `cd` into the project and the scratch TMPDIR in
+#   The Tide Pool payload puts the `cd` into the project and the scratch TMPDIR in
 #   `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
 #   drops apptainer's `--env`. **zsh does not read /etc/profile.d.** Debian's zprofile sources
 #   /etc/profile and Ubuntu's ships as comments only, so without this line every one of those is silently
@@ -514,7 +514,7 @@ From: {image}
     echo "mantle:x:{gid}:" >> /etc/group
     mkdir -p /home/mantle && chown {uid}:{gid} /home/mantle
     # The bridge. See the note above this template — without it a zsh login silently loses everything
-    # PAYLOAD_TIDEPOOL writes to /etc/profile.d.
+    # the Tide Pool payload writes to /etc/profile.d.
     echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile
     # %files preserves the building operator's ownership and mode. Asserted here instead, so the tree is
     # identical whoever built the node: oh-my-zsh runs `compaudit` over its own directories at every

@@ -840,13 +840,13 @@ class TestFeaturesEnv:
         assert f"export {config.LICENCE_HOME_VAR}=/opt/ccc/licence" in out
 
     def test_an_arm_with_no_licence_exports_none(self):
-        """Absent, not empty: spawns.JOB_SCRIPT guards on `[ -d "${CCC_LICENCE_HOME:-}" ]`, so an
+        """Absent, not empty: the job script guards on `[ -d "${CCC_LICENCE_HOME:-}" ]`, so an
         exported empty string and an unset var behave alike — but only one of them says nothing."""
         out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}])
         assert config.LICENCE_HOME_VAR not in out
 
     def test_everything_is_exported_not_merely_assigned(self):
-        """JOB_SCRIPT sources this with no `set -a`, and apptainer passes the calling environment in
+        """The job script sources this with no `set -a`, and apptainer passes the calling environment in
         (no --cleanenv) — so a bare assignment would reach the wrapper and stop at the Pod wall."""
         out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}],
                                          licence_home="/opt/ccc/licence")

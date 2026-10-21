@@ -223,7 +223,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   construction, and nobody has to find or copy anything. Submitted as the Arm is admitted, beside the
   Power benchmark, and for the same reason: **an Arm joins with its declarations true or it does not
   join**. It is the one Spawn permitted to see the Arm's product *key*, and nothing a User can submit
-  asks for that — `/submit` has no equivalent and never should.
+  asks for that.
 
 ## Economy concepts
 

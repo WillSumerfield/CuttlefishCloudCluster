@@ -305,7 +305,7 @@ def provision_licence_home(path: str) -> None:
     and ignores $HOME, so the identity that activates decides where the licence lives. Give an account
     this directory as its home, activate as that account, and the files appear here at whatever names
     the installed release uses — nobody ever has to find, name or copy them.
-    `ccc_head_api.spawns.JOB_SCRIPT` then binds this directory at the Guise's home inside the Pod, which
+    The Spawn job script then binds this directory at the Guise's home inside the Pod, which
     is where the same getpwuid call looks from in there.
 
     Group-owned by GUISE_GROUP and 2770, because a Spawn runs as a **Guise** — a different uid — and
@@ -340,7 +340,7 @@ def provision_mantle() -> None:
     cluster-wide, is what makes a Spawn the same Spawn on any node.
 
     Home-less on purpose: the Mantle owns no per-node state anywhere. It reads base.sif from the
-    world-readable CCC_IMAGES_DIR and scratches in /tmp (see the API's JOB_SCRIPT), so a donor box is
+    world-readable CCC_IMAGES_DIR and scratches in /tmp (see the Spawn job script), so a donor box is
     left with nothing. `nologin` is fine — slurmd execs the batch script by its shebang, not a shell.
 
     Idempotent (re-runs are non-fatal), but a uid/gid COLLISION is fatal by design: useradd fails,
@@ -1058,7 +1058,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         # arrive together and the Dashboard is never briefly resolvable but untrusted.
         system.write_hosts_entry("127.0.0.1")
     with ui.step("Starting the Head API and the Karma tick"):
-        headapi.install_head(_write_root_file, mesh_ip)  # board + SPA + auth + submit, LAN+mesh
+        headapi.install_head(_write_root_file, mesh_ip)  # board + SPA + auth, LAN+mesh
         headapi.install_karma(_write_root_file)  # ranks the queue by standing (same venv)
     with ui.step("Installing the nightly backup timer"):
         backup.install_timer(_write_root_file)   # head.db + arms.json + headscale db, see backup.py
@@ -1160,7 +1160,7 @@ def setup_client(update: bool = False) -> None:
 
     No sudo on the box means this fails, and is meant to: a client that could not be given the name is
     a client on a different configuration from every other, and finding that out here beats finding it
-    out at the first `cuttle run`.
+    out at the first request.
     """
     if update:
         return _update_client()
@@ -1178,7 +1178,7 @@ def setup_client(update: bool = False) -> None:
     who: dict[str, str] = {}
     with ui.section("Log in", lambda: who.get("as", "")):
         who["as"] = auth.login(None)
-    ui.ok("Client ready. `cuttle run --time <min> --vram <GB>` opens a Tide Pool.")
+    ui.ok("Client ready.")
 
 
 def _update_client() -> None:
@@ -1394,7 +1394,7 @@ def _prompt_licence_home(features: list[dict], existing: str = "") -> str:
     """Where this box keeps the machine-locked **Licence** state for its Feature software.
 
     ONE directory per Arm, not one per Feature: a licence is locked to hardware, and an Arm is one
-    machine. Bound at a Spawn's Guise home inside the Pod (ccc_head_api.spawns.JOB_SCRIPT) because that
+    machine. Bound at a Spawn's Guise home inside the Pod (the Spawn job script) because that
     is where a licence manager looks: TurboActivate resolves its state directory through
     getpwuid()->pw_dir and cannot be redirected by any env var.
 
@@ -1585,7 +1585,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         # World-readable like the other rendered configs here: install paths aren't secret, and a
         # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The
         # Licence PATH is likewise not secret — what is secret lives inside that directory, and is
-        # bound only into Spawns that asked for a Feature (ccc_head_api.spawns.JOB_SCRIPT).
+        # bound only into Spawns that asked for a Feature (the Spawn job script).
         #
         # Unconditional, as on the Head: an empty declaration on a re-run must erase the mirror and
         # rewrite the env file, not skip both and leave the old one standing.

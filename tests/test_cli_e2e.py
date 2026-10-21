@@ -17,14 +17,12 @@ from cuttle import spawns as spawns_mod
 from conftest import USERS
 
 
-def _submit(head) -> int:
-    """A Tide Pool requested over the API as whoever is logged in. `cuttle run` goes on to wait for
-    placement and ssh in (test_tidepool covers that half); the request itself is this POST."""
-    token = config.SESSION_FILE.read_text().strip()
-    r = head.post("/submit", headers={"Authorization": f"Bearer {token}"},
-                  json={"tidepool": True, "minutes": 60, "vram": 24})
-    assert r.status_code == 200, r.text
-    return r.json()["id"]
+def _seed_spawn(username: str = "alice") -> int:
+    """A Spawn attributed to `username`, written straight into the ledger — nothing submits in 2.0."""
+    with db.connect() as conn:
+        uid = db.get_user(conn, username)["id"]
+        db.record_spawn(conn, 4201, uid, "", minutes=60, gpus=1, vram_gb=24, tidepool=True)
+    return 4201
 
 
 class TestSession:
@@ -145,52 +143,6 @@ class TestPasswordPolicy:
         assert cli("login", input=f"carol\n{temp}\n").exit_code != 0
 
 
-class TestSubmit:
-    """A Tide Pool request — the one submission left until Dives."""
-
-    def test_a_spawn_is_submitted_and_attributed(self, head, signed_in, fake_slurm):
-        spawn_id = _submit(head)
-        # Attribution is the ledger's, not Slurm's. If this row is missing the Spawn is unowned.
-        with db.connect() as conn:
-            alice = db.get_user(conn, "alice")
-            spawn = db.get_spawn(conn, spawn_id)
-        assert spawn is not None, "no Attribution row was recorded"
-        assert spawn["user_id"] == alice["id"]
-        assert spawn["tidepool"]
-
-    def test_the_escrow_is_held_at_submit(self, head, signed_in, fake_slurm):
-        """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
-        been charged for — precisely the window a queue-flooder wants."""
-        spawn_id = _submit(head)
-        with db.connect() as conn:
-            escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
-        assert spawn_id in escrows
-
-    def test_a_batch_request_is_refused(self, head, signed_in, fake_slurm):
-        """Batch Spawns are gone. A request without `tidepool` is refused, never read as one."""
-        token = config.SESSION_FILE.read_text().strip()
-        r = head.post("/submit", headers={"Authorization": f"Bearer {token}"},
-                      json={"script": "t.py", "minutes": 60, "vram": 24})
-        assert r.status_code == 422
-        assert "Tide Pool" in r.json()["detail"]
-
-    def test_time_and_vram_are_required(self, signed_in, fake_slurm):
-        """Nothing can price a Spawn whose length nobody declared, nor place one whose needs
-        nobody did — asserted via the missing flag, not just `exit_code != 0`, so a broken rig
-        can't pass silently. Both are promptable, so the refusal is ours, not click's: no
-        terminal to ask on, never a quietly-filled default.
-        """
-        no_time = signed_in("run", "--vram", "24")
-        assert no_time.exit_code != 0 and "--time" in no_time.output
-        no_vram = signed_in("run", "--time", "60")
-        assert no_vram.exit_code != 0 and "--vram" in no_vram.output
-
-    def test_submitting_without_a_session_is_refused(self, cli, fake_slurm):
-        result = cli("run", "--time", "60", "--vram", "24")
-        assert result.exit_code != 0
-        assert "not logged in" in result.output
-
-
 class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
@@ -198,7 +150,7 @@ class TestCancel:
     def test_you_may_cancel_your_own(self, head, signed_in, fake_slurm, monkeypatch):
         killed = []
         monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
-        spawn = _submit(head)
+        spawn = _seed_spawn()
         result = signed_in("cancel", spawn, "--yes")
         assert result.exit_code == 0, result.output
         assert killed == [spawn]
@@ -206,7 +158,7 @@ class TestCancel:
     def test_the_confirmation_can_be_declined(self, head, signed_in, fake_slurm, monkeypatch):
         """The Dashboard asks before cancelling; so does this. Declining must not scancel."""
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
-        spawn = _submit(head)
+        spawn = _seed_spawn()
         assert signed_in("cancel", spawn, input="n\n").exit_code != 0
 
     def test_you_may_not_cancel_someone_elses(self, head, cli, fake_slurm, monkeypatch):
@@ -215,7 +167,7 @@ class TestCancel:
         monkeypatch.setattr(menu, "is_head", lambda: False)
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
-        spawn = _submit(head)
+        spawn = _seed_spawn()
         config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         result = cli("cancel", spawn, "--yes")
@@ -225,7 +177,7 @@ class TestCancel:
     def _as_root_on_the_head(self, head, cli, monkeypatch):
         """Someone else's live Spawn, and an operator standing on the Head looking at it."""
         cli("login", input=f"alice\n{USERS['alice']}\n")
-        spawn = _submit(head)
+        spawn = _seed_spawn()
         config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         monkeypatch.setattr(menu, "is_head", lambda: True)

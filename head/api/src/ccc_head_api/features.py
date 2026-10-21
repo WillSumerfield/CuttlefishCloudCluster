@@ -194,7 +194,7 @@ VLEARN_ACTIVATION = r"""
 # --- Arm Feature: vlearn, ACTIVATION ---------------------------------------
 # No Licence directory bound means `$HOME` is the Pod's throwaway tmpfs: TurboActivate would activate
 # INTO it, exit 0, and the Arm would be marked activated with nothing kept -- one vendor activation
-# burnt and every later Spawn unlicensed. `$licbind` is JOB_SCRIPT's answer to "is it bound".
+# burnt and every later Spawn unlicensed. `$licbind` is the job script's answer to "is it bound".
 [ -n "$licbind" ] || feature_fail \
   "this Arm has no Licence directory (CCC_LICENCE_HOME in /etc/ccc/features.env is unset or missing), so an activation would be written nowhere that lasts. Its owner should re-run 'cuttle setup --arm' and name one."
 [ -n "${VLEARN_LICENCE_KEY:-}" ] || feature_fail \
@@ -323,8 +323,8 @@ feature_fail() {
 # vanish rather than become an empty argument). With no Environment declared it expands to NOTHING, so
 # apptainer takes the next word as the command and answers `FATAL: "-c": executable file not found in
 # $PATH` — an error about a flag, logged above the one line that explains what actually went wrong.
-# `submit_checked` refuses this at submit now (a profiled Feature needs an Environment to attach to),
-# so reaching here means that gate was bypassed rather than that a User did something ordinary.
+# `profiled()` is the submit-time gate meant to refuse this (a profiled Feature needs an Environment to
+# attach to), so reaching here means that gate was bypassed rather than that a User did something ordinary.
 [ -n "$py" ] || feature_fail \
   "could not run this Spawn's interpreter () to identify it, which every Feature below needs. The Pod image supplies none, so this is a Spawn that declared no Environment -- a Tide Pool opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to."
 feature_probe=$(apptainer exec --contain --bind "$proj$envbind" "$sif" $py -c '

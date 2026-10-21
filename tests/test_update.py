@@ -227,7 +227,7 @@ class TestAClientUpdateOnlyRepairsItsTrust:
     """Almost nothing is installed on a client, so almost nothing can go out of date. What can is the
     pinned CA — and the way a client meets that is the Head being torn down and set up again behind
     the same name, after which every request fails verification and the error surfaces at the next
-    `cuttle run` looking like a network fault."""
+    `cuttle queue` looking like a network fault."""
 
     def test_a_lost_hosts_line_is_refused_rather_than_guessed(self, ccc_home, monkeypatch):
         """A client keeps its Head's address in that /etc/hosts line and nowhere else — the stored URL

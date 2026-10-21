@@ -49,7 +49,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
-LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "cancel", "karma",
+LOGIN_REQUIRED = {"queue", "history", "status", "logs", "cancel", "karma",
                   "tide", "account", "logout", "whoami", "passwd"}
 
 
@@ -95,7 +95,6 @@ LABELS = {
     f"{FOLDER}admin": "Run the cluster",
     f"{FOLDER}box": "This box",
 
-    "run": "Open a Tide Pool",
     "dashboard": "Open the dashboard",
     "login": "Log in",
 
@@ -188,7 +187,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # Top-level order — by how often you reach for it, not by declaration order in main.py. The first
 # entry is pre-selected, so it should be the daily verb rather than the one that re-provisions the
 # box. Anything unlisted keeps its declared position, after these.
-# `login` trails the submit verbs but leads everything unlisted, so on a freshly-installed box the
+# `login` trails the Spawn folders but leads everything unlisted, so on a freshly-installed box the
 # pre-selected row is "Log in" — what install.sh printed as the next step — rather than `setup`. It
 # only ever shows when logged out, so this costs the everyday menu nothing.
 # `dashboard` sits *after* login for the same reason: it shows on any pointed box, including the
@@ -196,7 +195,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
 # inside a real group the declaration order does — both because the sort is stable and everything
 # unlisted ties.
-ORDER = ["run", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
+ORDER = [f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
          "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 

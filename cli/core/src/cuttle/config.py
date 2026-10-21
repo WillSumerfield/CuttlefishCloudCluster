@@ -386,12 +386,12 @@ FEATURE_NAMES = ("vlearn", "isaaclab")
 # what arrives over the wire at /enroll — the CLI no longer takes a typed feature name anywhere.
 FEATURE_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 # Where `cuttle setup --arm` records this box's declared features + install paths, so a Spawn's payload
-# can find e.g. $VSIM_PATH without knowing whether this node has it — see
-# ccc_head_api.spawns.JOB_SCRIPT, which sources this unconditionally (a no-op where it's absent).
+# can find e.g. $VSIM_PATH without knowing whether this node has it — the
+# Spawn job script sources this unconditionally (a no-op where it's absent).
 ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
 # This Arm's **Licence** directory, exported into that same file. ONE per Arm regardless of how many
 # Features it offers: a licence is locked to the machine, and an Arm is one machine — so two Features
-# can never collide over it. ccc_head_api.spawns.JOB_SCRIPT binds it at the Guise's home inside the Pod
+# can never collide over it. The Spawn job script binds it at the Guise's home inside the Pod
 # (the only place a licence manager looks), and only for a Spawn that requested a Feature.
 LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
 # The apptainer .deb the Head serves to every Arm, and the record that pins it:

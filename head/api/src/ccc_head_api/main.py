@@ -584,49 +584,6 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 # `cuttle user add` and `cuttle karma bump`. See ccc_head_api.admin.
 
 
-# --- submission (authed) ----------------------------------------------------
-
-@api.post("/submit")
-async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
-    """Request a Tide Pool attributed to the caller. The only authed mutation. Body = JSON
-    {tidepool, gpus, features, minutes, vram}. Runs the render/sbatch/Attribution as the Mantle;
-    returns the Spawn id.
-
-    `tidepool` must be true: batch (script) Spawns are gone in 2.0, and a request without it is refused
-    rather than read as one.
-
-    `features` is optional, and empty when absent. Each name is checked against every currently
-    admitted Arm's declared features (`slurm.arms_with_features`); a request no Arm can satisfy is
-    refused with 422 before ever reaching sbatch, same hard-validation stance as `vram`.
-
-    `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
-    with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
-    for, and is OR-expanded here into a Slurm constraint over the fleet's real cards
-    (slurm.vram_constraint); the client can't do it, because only the Head knows what hardware exists.
-    """
-    if user["must_change_password"]:
-        raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
-    meta = await request.json()
-    if not meta.get("tidepool"):
-        raise HTTPException(422, "only Tide Pools can be requested — batch Spawns are gone")
-    for field in ("minutes", "vram"):
-        if not meta.get(field):
-            raise HTTPException(422, f"missing '{field}' — --time and --vram are required")
-    # `gpus` is the current name; `gpu` is what older clients send. Either is accepted — see
-    # spawns.submit_checked, which is where a count no Arm can host is refused.
-    minutes, vram_gb = int(meta["minutes"]), int(meta["vram"])
-    gpus = int(meta.get("gpus", meta.get("gpu", 1)))
-    try:
-        # ValueError covers the per-User concurrent-Spawn cap and an unsatisfiable request.
-        job_id = spawns_mod.submit_checked(user["id"], user["is_admin"], gpus, minutes, vram_gb,
-                                           features=meta.get("features") or [])
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-    log.info("submit tidepool id=%s by %s (gpu=%d vram=%d min=%d)", job_id, user["username"], gpus,
-             vram_gb, minutes)
-    return {"id": job_id}
-
-
 @api.get("/spawns/{job_id}/tidepool")
 def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     """The one authenticated channel a Tide Pool's ephemeral SSH keypair ever travels over — the CLI
@@ -640,8 +597,7 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     Pool outright — see `ensure_relay`); `ready` there means the Pod's own sshd has finished booting.
 
     The SAME port + private key are returned every time, for the Spawn's whole life: a dropped
-    connection or a reattach both go through `cuttle run <id>`, and
-    both need the identical credential back, not a fresh one.
+    connection or a reattach both need the identical credential back, not a fresh one.
 
     `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md). It
     is on the wire because the CLI cannot derive it: it is `ccc-u<uid>`, and a uid is a Head-side fact.

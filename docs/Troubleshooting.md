@@ -4,12 +4,6 @@ Symptom, cause, fix. Grouped by who you are.
 
 ## Submitting work
 
-### My Spawn was refused at submit, with no id
-
-You asked for something the fleet can never satisfy — more VRAM than the biggest card, or a
-[Feature](elements/arm-features.md) no enrolled Arm carries. Refusing is deliberate: the alternative
-is queuing forever for a machine that may never exist.
-
 ### My Spawn died at exactly `--time`
 
 That is what `--time` is. It is a kill, not a warning. Over-estimating costs you only queue position

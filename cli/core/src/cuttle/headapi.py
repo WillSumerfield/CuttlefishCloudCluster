@@ -122,13 +122,13 @@ def install_slurm_sudoers(write_unit) -> None:
 
 
 # --- Head API (⑥): read API + SPA, bound to LAN + mesh ----------------------
-# A second unit off the SAME venv (enroll app = munge key; main app = read board + auth + submit +
+# A second unit off the SAME venv (enroll app = munge key; main app = read board + auth +
 # SPA). Binds 0.0.0.0 so a LAN box reaches it too (the Enroll API stays mesh-only). See config.HEAD_API_*.
 
 def _head_unit(mesh_ip: str) -> str:
     return f"""\
 [Unit]
-Description=CCC Head API (board + SPA + auth + submit; bound to LAN + mesh)
+Description=CCC Head API (board + SPA + auth; bound to LAN + mesh)
 # squeue/sinfo/sbatch need munge to authenticate and slurmctld to answer; until they're up we just 503.
 After=munge.service slurmctld.service
 Wants=slurmctld.service
@@ -148,9 +148,9 @@ Environment=CCC_HEAD_DB={config.HEAD_DB}
 # Served open at GET /ca.pem: the public half of the CA, so a box can trust this Head instead of
 # clicking through a warning. The key beside it is 0600 {config.HEAD_API_USER}-owned and stays here.
 Environment=CCC_CA_CERT={config.HEAD_CA_CERT}
-# Submission: the Head's mesh IP is baked into each rendered job script so a remote Arm can rsync
-# results home. Fixed submission paths (state dir, sif) match cuttle.config defaults. CCC_SIF is the
-# cluster-wide image path — the same on every node, so the script names it once.
+# Submission: the Head's mesh IP (so a remote Arm can rsync results home) and the cluster-wide image
+# path. Nothing reads CCC_MESH_IP/CCC_SIF in 2.0 until Dives bring submission back; the state dir is
+# still read (spawns, siphons). Paths match cuttle.config defaults.
 Environment=CCC_MESH_IP={mesh_ip}
 Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
 Environment=CCC_SIF={config.CCC_SIF}

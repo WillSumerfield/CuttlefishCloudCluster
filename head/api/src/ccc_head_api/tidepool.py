@@ -81,8 +81,8 @@ def reserve_port(conn) -> int:
 def grant(conn) -> tuple[int, str, str]:
     """Mint a Tide Pool's port + keypair, BEFORE the job script is rendered (both are baked into it).
     Returns (port, pubkey_line, privkey_pem). The `tidepools` row itself is written by the caller once
-    the real job_id exists (spawns.submit, after sbatch returns — mirrors how the staging uuid is minted
-    before sbatch and the Attribution row is written after)."""
+    the real job_id exists, after sbatch returns — the same minted-before/bound-after split as a
+    Siphon's token (siphons.open/bind)."""
     port = reserve_port(conn)
     private, public = _keypair()
     return port, public, private

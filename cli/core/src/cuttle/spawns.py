@@ -1,9 +1,7 @@
-"""Spawn inspection + the Tide Pool request: `status` / `logs` / `queue` / `history` / `cancel`.
+"""Spawn inspection: `status` / `logs` / `queue` / `history` / `cancel`.
 
 A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif ...`. The Slurm job id IS the spawn
-id. A Tide Pool request is not Head-local: it POSTs to the Head API (authenticated), which renders and
-submits it as the submitter's Guise, recording who submitted it. So this module is a thin API client —
-the render machinery lives server-side in `ccc_head_api.spawns`.
+id. This module is a thin API client; nothing here submits (the submit path is gone in 2.0 until Dives).
 
   * results   — out/err/exit live on the Head under ccc; read them back over the API
                 (`status`/`logs`), never off local disk.
@@ -32,25 +30,6 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
         if ui.DEBUG:
             raise
         raise ui.abort(e.user_message()) from None
-
-
-def _post_submit(meta: dict) -> int:
-    client = auth._client()
-    client.token = auth._load_token()
-    try:
-        return client.json("POST", "/submit", body=meta)["id"]
-    except api.ApiError as e:
-        if ui.DEBUG:
-            raise
-        raise ui.abort(e.user_message()) from None
-
-
-def submit_tidepool(minutes: int, vram: int, gpu: int, features: list[str] | None = None) -> int:
-    """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run`'s own flow, in
-    tidepool.py, owns the UI from here, since it still has to poll for placement and attach)."""
-    return _post_submit({"minutes": minutes, "vram": vram, "gpu": gpu, "tidepool": True,
-                         # Omitted rather than sent empty — the Head reads an absent key as "none".
-                         **({"features": features} if features else {})})
 
 
 def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:

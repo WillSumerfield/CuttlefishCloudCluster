@@ -89,8 +89,8 @@ class FakeCluster:
 
     def submit(self, user: dict, vram_gb: int, minutes: int, gpus: int = 1,
                node: str | None = None) -> int:
-        """Enqueue a Spawn. The hold is quoted by karma.quote_hold — the identical code the /submit route
-        runs — so the simulation cannot price a Spawn differently from production."""
+        """Enqueue a Spawn. The hold is quoted by karma.quote_hold — the identical code a real
+        submission runs — so the simulation cannot price a Spawn differently from production."""
         jid = self._next_id
         self._next_id += 1
         need = {"node": node, "vram_gb": vram_gb, "gpus": gpus}

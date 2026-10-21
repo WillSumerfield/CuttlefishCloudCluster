@@ -122,7 +122,7 @@ def refresh_pin(url: str) -> None:
 
     The case this exists for: the Head was torn down and set up again, minting a fresh CA. Nothing on
     the client changed, but every request to it now fails verification, and the error arrives at the
-    next `cuttle run` looking like a network fault. A box that is merely out of date should be able to
+    next `cuttle queue` looking like a network fault. A box that is merely out of date should be able to
     say so and fix itself.
 
     **Still a confirmation, not a repair.** Re-pinning silently would turn trust-on-first-use into

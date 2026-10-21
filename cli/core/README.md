@@ -57,17 +57,9 @@ machine to the mesh, and the pre-declared name is what the mesh-only Enroll API 
 over the munge key. A machine on the mesh that no Admin named gets nothing.
 
 ### Spawns
-All of these go through the Head API and need `cuttle login` — the CLI is a network client, so you can
-submit from any box, whether or not it ever ran `setup`.
+All of these go through the Head API and need `cuttle login` — the CLI is a network client, so they
+work from any box, whether or not it ever ran `setup`. Nothing submits a Spawn in 2.0 until Dives.
 
-- `cuttle run [ID] --time MIN --vram GB [--gpu N] [--feature F] [--vscode]` — request a **Tide Pool**
-  (a live shell in a Pod on whichever **Arm** it lands on), or reattach to one by id. Job id = spawn id.
-  - `--time` (wall-clock minutes) and `--vram` (GB) are **required, with no defaults**. Nothing can
-    price a Spawn whose length nobody declared, and a `--vram` that defaulted to the fleet's biggest
-    card would make every untouched field eligible for that one GPU alone — queued behind everything,
-    for work that might need 2 GB. You say what you *need*; the Head finds every card that qualifies
-    and Slurm gives you the fastest one that's free. Over-estimating either costs you queue position,
-    not Karma.
 - `cuttle status <id>` — `queued`/`running`, `DONE (EXIT N)`, or `FAILED` (the Spawn was killed or its
   Arm dropped before staging its logs home — no exit code was ever recorded).
 - `cuttle logs <id> [-f]` — print/tail the Spawn's stdout. A co-located Spawn streams live; a remote

@@ -89,7 +89,7 @@ def interactive() -> bool:
     error message, because nothing is printed and nothing ever returns.
 
     Both streams are checked: stdin because that is where an answer would come from, stderr because
-    that is where the question is drawn. `cuttle run < /dev/null` and `cuttle run 2>log` are both
+    that is where the question is drawn. `cuttle cancel < /dev/null` and `cuttle cancel 2>log` are both
     non-interactive, and neither should block.
     """
     if NO_INPUT:
@@ -464,7 +464,7 @@ def progress(label: str, total: int | None = None):
 # Every prompt in `cuttle` goes through `_ask`. Three reasons, and the last is the important one:
 #
 # **Prompts are commentary, so they must draw on stderr.** A prompt on stdout would land in the
-# middle of the data stream `id=$(cuttle run …)` is capturing.
+# middle of the data stream `$(cuttle queue --json)` is capturing.
 #
 # **It is the test seam.** Prompts block on a real keyboard, so tests install a scripted `Answers`
 # here and never reach the terminal at all. One pty smoke test covers the wiring the seam bypasses.
@@ -913,15 +913,10 @@ _TICK_STOP = None
 # so the one command whose output must be live would show nothing at all until it was over. These
 # runs stay inline. Read off argv rather than the parsed flag because the screen is claimed before
 # any command function is entered.
-#
-# `--tidepool` (docs/TODO.md) needs the same exemption for a different reason: it execs a real `ssh`
-# that takes the terminal into raw mode and draws its own remote pty. Fighting the alternate screen's
-# absolute repaints (or having its bytes captured by fullscreen's stdout redirect, meant for a box's
-# results) would corrupt the session rather than merely look wrong.
 STREAMING = False
 
 # Flags that mark a command as streaming.
-_STREAMING_FLAGS = ("--follow", "-f", "--tidepool")
+_STREAMING_FLAGS = ("--follow", "-f")
 
 
 def _detect_streaming() -> bool:
@@ -987,7 +982,7 @@ def _replay(held: str) -> None:
     """Say again, on the real terminal, everything the canvas showed outside a box.
 
     The alternate screen is discarded on exit, so a command whose whole result is a line of
-    commentary — `cuttle run`'s submitted-spawn echo, `cuttle cancel`'s confirmation — left nothing
+    commentary — `cuttle cancel`'s confirmation — left nothing
     behind at all. Box rows are deliberately not here: those are progress, and progress is meant to
     be transient. Loose rows are the outcome.
 

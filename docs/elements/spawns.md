@@ -4,9 +4,8 @@
 
 A **Spawn** is one job on the cluster: a GPU held on some machine, for a declared time.
 
-Batch (script) Spawns are gone in 2.0. The one kind left is the [Tide Pool](tide-pool.md) — a live
-shell in a sandbox — requested with `cuttle run`. CCC finds a machine with a free GPU big enough,
-starts it there, and keeps its logs and exit code on the Head.
+**Nothing can request a Spawn in 2.0 until Dives.** What is left reads back and ends the Spawns the
+Head already knows: CCC keeps their logs and exit code on the Head.
 
 The thing worth internalising: a Spawn runs **once**. If the machine it landed on is taken back by
 its owner mid-run, that Spawn is over. Nothing silently retries somewhere else. So "Spawn 412" always
@@ -16,7 +15,6 @@ names one attempt — what it cost and what it produced both refer to the same s
 
 | | |
 |---|---|
-| `cuttle run` | Request a Tide Pool. See [Tide Pool](tide-pool.md). |
 | `cuttle status <id>` | Queued, running, or done — and with what exit code. |
 | `cuttle logs <id>` | Print its stdout and stderr. `--follow` to stream. |
 | `cuttle queue` | Everything pending or running on the cluster, and whose it is. |
@@ -25,42 +23,10 @@ names one attempt — what it cost and what it produced both refer to the same s
 
 ## Behavior
 
-### The two things you must declare
-
-`--time` and `--vram` have no defaults, and this is deliberate in each case.
-
-**`--time`** is your wall-clock limit in **minutes**. Your Spawn is killed at it. Karma is escrowed
-against it, so over-estimating costs you queue position and nothing else — the hold is released and
-you are billed for the seconds you actually held, not the ones you asked for. Nothing can price a
-Spawn whose length nobody declared, which is why there is no default.
-
-**`--vram`** is GPU memory in GB — the **total** across every card you asked for. Every card holding
-its share becomes eligible, and the scheduler takes the fastest free set. It is a *need*, not a
-machine — you never name the box you want. A default here would be actively harmful: defaulting to
-the fleet's biggest card would make every unspecified job eligible for that one GPU alone, queued
-behind everything else, at the highest price, for work that might need 2 GB.
-
-### Asking for more than one card
-
-`--gpus N` holds N cards at once. They are always on **one machine** — a Spawn never spans two
-[Arms](arms.md) — and `--vram` is the total across them, so `--gpus 2 --vram 128` asks for two cards
-of 64 GB or better, not two of 128.
-
-You are billed for each card separately, for as long as you hold it, whether or not your code uses
-it. Asking for a second card you never touch doubles your bill and buys nothing: nothing in CCC
-splits work across cards for you. That is your code's job (`torchrun`, DDP, or your own device
-placement), and `--gpus` only makes the cards visible to it.
-
-A count no single Arm in the fleet has is refused at submit, naming what would fit — never queued
-against a machine that does not exist.
-
 ### What happens when it goes wrong
 
 - **It ends non-zero** — the Spawn is *settled, not requeued*. You pay for the seconds it actually
   consumed and it does not quietly run again.
-- **You asked for something the fleet can never do** — 80 GB of VRAM when the biggest card is 24, or
-  a [Feature](arm-features.md) no enrolled Arm carries — it is *refused at submit*, not queued
-  forever.
 - **The machine it was on is retracted underneath it** — the Spawn dies, and **settles at zero**.
   You pay nothing for work someone else stopped, and the Arm's owner earns nothing for stopping it.
   See [Arms](arms.md#retract-and-return).

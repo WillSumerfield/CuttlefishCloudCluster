@@ -10,14 +10,8 @@ There are two names today — `vlearn` and `isaaclab` — and the list is **buil
 a tag anyone curates. CCC has to know what each name *means*: at minimum where the software is
 installed, and for some, the whole runtime environment a Spawn needs to load it.
 
-You ask for a Feature the same way you ask for VRAM: as a **need**, not a machine name.
-
-```sh
-cuttle run --time 30 --vram 16 --feature isaaclab
-```
-
-That widens or narrows which Arms your Spawn can land on, and nothing else. You still never choose
-the box.
+A Feature is a **need**, like VRAM, not a machine name: it narrows which Arms a Spawn can land on,
+and nothing else. Nothing can request a Spawn in 2.0 until Dives, so nothing can ask for one yet.
 
 ## Typical use
 
@@ -28,14 +22,6 @@ cuttle feature list
 ```
 
 Runs anywhere, needs no login — the catalog is a constant.
-
-**Require one:**
-
-```sh
-cuttle run --time 60 --vram 24 --feature isaaclab
-```
-
-Repeatable, if you need more than one.
 
 **See what CCC arranges** for a Feature — the system libraries it builds, and which Python an
 Environment has to be:
@@ -69,13 +55,6 @@ That last part has to be CCC's job rather than yours. `LD_LIBRARY_PATH` is read 
 once, at `exec` — nothing running inside your Spawn can set it for itself. Whatever arranges it has
 to run outside your process.
 
-### Profiled Features are refused for now
-
-A runtime profile attaches the Feature's software to an [Environment](environments.md) — it probes
-the interpreter for its ABI and site-packages — and nothing builds one in 2.0 until Dives. So a
-request for a profiled Feature (`vlearn`) is refused at submit, before any GPU is held. A Feature with
-no profile (`isaaclab`) is placement plus an install path and still works.
-
 ### Licences
 
 A licence belongs to the *machine*, not to you and not to the software. An Arm has at most one set,
@@ -87,8 +66,6 @@ software: the install is not the scarce thing, the licence is.
 
 ### What happens when it goes wrong
 
-- **You asked for a Feature no enrolled Arm has** — refused at submit, immediately, the same as an
-  impossible VRAM request. Not queued forever waiting for a machine that may never exist.
 - **An Arm declared a Feature it cannot actually serve** — the Spawn fails with a sentence naming the
   Arm and what was wrong, written into your Spawn's stderr. It reads as a mismatch rather than as an
   `ImportError` you would blame on your own code.

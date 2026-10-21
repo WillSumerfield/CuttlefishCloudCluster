@@ -122,14 +122,10 @@ class TestStreams:
         assert captured.err == ""
 
 
-class TestTheAlternateScreenLetsGoForALiveShell:
-    """A command that hands the terminal to a program of its own must NOT take the alternate screen.
-
-    `fullscreen()` claims a canvas and `_tick_start()` re-asserts it ~12×/s, absolutely. Against a real
-    `ssh` drawing its own remote pty that is not a cosmetic clash: the repaint wins, and the session is
-    a blank screen with the shell alive and unreadable underneath it.
-
-    Detected off `sys.argv` because the screen is claimed before any command function is entered.
+class TestAStreamingCommandSkipsTheAlternateScreen:
+    """`--follow` output must arrive live, so it must NOT take the alternate screen (which holds stdout
+    back until the flow ends). Detected off `sys.argv` because the screen is claimed before any command
+    function is entered.
     """
 
     def _streaming(self, monkeypatch, *argv):
@@ -137,9 +133,8 @@ class TestTheAlternateScreenLetsGoForALiveShell:
         return ui._detect_streaming()
 
     def test_the_flag_driven_exemptions_still_hold(self, monkeypatch):
-        assert self._streaming(monkeypatch, "run", "--tidepool")
-        assert self._streaming(monkeypatch, "run", "train.py", "--follow")
-        assert not self._streaming(monkeypatch, "run", "train.py")
+        assert self._streaming(monkeypatch, "logs", "58", "--follow")
+        assert not self._streaming(monkeypatch, "logs", "58")
 
 
 class TestHeadLocalOutputSurvivesQuietMode:
@@ -200,7 +195,7 @@ class TestTheRunLogKeepsNoSecrets:
             "cuttle", "setup", "--arm", "--token", "<redacted>", "--verbose"]
 
     def test_an_ordinary_command_is_untouched(self):
-        argv = ["cuttle", "run", "--time", "60", "--vram", "24"]
+        argv = ["cuttle", "queue", "--limit", "5"]
         assert ui._redact_argv(argv) == argv
 
     def test_the_logs_are_capped(self, tmp_path, monkeypatch):

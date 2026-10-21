@@ -20,7 +20,6 @@ from . import setup as setup_mod
 from . import spawns as spawns_mod
 from . import system
 from . import teardown as teardown_mod
-from . import tidepool as tidepool_mod
 from . import ui
 
 # pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
@@ -655,45 +654,6 @@ def teardown(
         teardown_mod.teardown_arm(keep_packages=keep_packages, all_=all_)
     else:
         teardown_mod.teardown_client()
-
-
-@app.command()
-def run(
-    spawn_id: str = typer.Argument(
-        None, help="A Tide Pool's Spawn id to attach/reattach to instead of requesting a new one."),
-    time: int = typer.Option(
-        None, "--time", help="Wall-clock limit, in MINUTES. Required. The Spawn is killed at this "
-                            "limit, and Karma is escrowed against it — over-estimating costs you "
-                            "only queue position, and is refunded when the Spawn ends."),
-    vram: int = typer.Option(
-        None, "--vram", help="TOTAL GPU memory this Spawn needs, in GB, across the cards you asked "
-                            "for. Required. Every card holding its share is eligible; Slurm takes the "
-                            "fastest set that is free."),
-    gpu: int = typer.Option(
-        1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. --vram is the total "
-                                   "across them. Refused if no Arm has this many."),
-    feature: list[str] = typer.Option(
-        None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
-                                "none; unsatisfiable requests are refused, not queued."),
-    vscode: bool = typer.Option(
-        False, "--vscode", help="Open the shell in VS Code instead of this terminal. Writes an ssh "
-                                "alias this box can reach the Pod by, then launches VS Code straight "
-                                "into the Pod's working directory. Without it the alias is printed and "
-                                "VS Code's own 'Connect to Host' picker finds it."),
-):
-    """Request (or reattach to) a Tide Pool: a live shell in a Pod. Requires `cuttle login`.
-
-    Requests one (or attaches to an existing id given as the positional arg), waits for placement, and
-    drops you into it — see docs/elements/tide-pool.md. Disconnecting does NOT end it: `cuttle cancel
-    <id>` does, or --time running out.
-
-    --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody
-    declared, and a --vram that defaulted to the fleet's biggest card would make every untouched
-    field eligible for that one GPU alone — queued behind everything, at the highest Demand, for work
-    that may need 2 GB.
-    """
-    tidepool_mod.run(spawn_id, minutes=time, vram=vram, gpu=gpu,
-                     features=list(feature) if feature else [], vscode=vscode)
 
 
 @app.command()

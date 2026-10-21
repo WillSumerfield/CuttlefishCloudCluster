@@ -314,8 +314,7 @@ def provision_guise(uid: int) -> None:
 
     That shell does NOT stay behind in the Pod, though — apptainer patches the Pod's /etc/passwd with
     this entry verbatim, shell field included, so a Tide Pool's sshd would exec nologin and refuse the
-    session ("This account is currently not available") unless repaired; see PAYLOAD_TIDEPOOL in
-    ccc_head_api.spawns. Its private group (gid == uid) keeps the shared group from ever owning a
+    session ("This account is currently not available") unless repaired by the Tide Pool payload. Its private group (gid == uid) keeps the shared group from ever owning a
     file — that group exists only to be the Runas list on the Head's sudoers rule.
     """
     name = config.guise_name(uid)

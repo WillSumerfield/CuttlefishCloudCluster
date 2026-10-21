@@ -44,7 +44,6 @@ The per-capability docs live in [`elements/`](elements/) and are indexed by
 [Karma](elements/karma.md) ·
 [Arms](elements/arms.md) ·
 [Arm Features](elements/arm-features.md) ·
-[Tide Pool](elements/tide-pool.md) ·
 [Users & access](elements/users-and-access.md) ·
 [Isolation](elements/isolation.md) ·
 [Mesh](elements/mesh.md) ·

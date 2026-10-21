@@ -64,30 +64,12 @@ After the first time, both the menu and a bare `cuttle login` remember where to 
 
 Your first login **forces you to change the temporary password**. You cannot skip it.
 
-## 3. Run something
+## 3. Follow the cluster
 
-Open the menu and pick **Open a Tide Pool** — a live shell on a GPU machine:
+Nothing can request a Spawn in 2.0 until Dives. What works now reads the cluster and ends your own
+Spawns.
 
-```sh
-cuttle
-```
-
-It asks for the things a Spawn cannot be requested without:
-
-- `--time` — wall-clock minutes. Your job is killed at it.
-- `--vram` — GPU memory in GB, totalled across the cards you asked for. Every card holding its share
-  becomes eligible.
-
-`--gpus N` holds more than one card, all on one machine — see
-[Spawns](../elements/spawns.md#asking-for-more-than-one-card).
-
-None have defaults. If you already know them, skip the prompting entirely:
-
-```sh
-cuttle run --time 60 --vram 24
-```
-
-Every command works this way — give it what you have, and it asks for the rest. Then:
+Every command takes what you give it and asks for the rest:
 
 ```sh
 cuttle status <id>       # queued, running, or done

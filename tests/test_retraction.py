@@ -2,14 +2,13 @@
 
 App-layer, not real Slurm DRAIN (see ccc_head_api.retraction's module docstring): a head.db flag
 steers NEW placement away from a node, plus signals whatever is RUNNING right now. Covers what
-`retraction.retract` catches/signals, that Return never reprieves a caught Spawn, and what
-submit_checked refuses/excludes.
+`retraction.retract` catches/signals, and that Return never reprieves a caught Spawn.
 """
 
 
 import pytest
 
-from ccc_head_api import db, retraction, spawns
+from ccc_head_api import db, retraction
 
 
 @pytest.fixture
@@ -74,16 +73,3 @@ class TestRetract:
         assert {r["job_id"] for r in db.retracting_jobs(conn)} == {304}  # still doomed
 
 
-class TestExclude:
-    """The submission side: a Spawn is steered off a retracted node with a plain
-    --exclude=, never a real Slurm DRAIN."""
-
-    def test_render_adds_an_exclude_line(self):
-        body = spawns._render("deadbeef", 1, 60, "", "a3f9", "s3cr3t", 31000, "ssh-ed25519 AAAA",
-                              exclude="gpu-box,gpu-box2")
-        assert "#SBATCH --exclude=gpu-box,gpu-box2" in body
-
-    def test_no_exclude_line_when_nothing_is_retracted(self):
-        body = spawns._render("deadbeef", 1, 60, "", "a3f9", "s3cr3t", 31000, "ssh-ed25519 AAAA",
-                              exclude="")
-        assert "--exclude" not in body

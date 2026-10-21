@@ -293,7 +293,7 @@ def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
         ]
     # The one package every uv env gets that its manifest did not ask for: `pip`, because uv does not
     # seed one and the env's own interpreter would otherwise answer "No module named pip" — which breaks
-    # a **Tide Pool**'s promise that `pip install` at the shell works (spawns.PAYLOAD_TIDEPOOL). ~10MB,
+    # a **Tide Pool**'s promise that `pip install` at the shell works. ~10MB,
     # shipped on every Spawn; the alternative was putting uv itself in every Arm's image. A conda prefix
     # already has one.
     #
@@ -561,7 +561,7 @@ def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], lis
       which resolves into the Spawn's own scratch. Apptainer creates that mountpoint even though its
       parent is not itself bound, which is what makes it work under `--contain`.
     * **A wheel inside it** — bound over as a single FILE. The project's own copy is untouched on the
-      host, and `spawns.submit` need not
+      host, and a Spawn need not
       transfer a licensed wheel to a donor at all (`StubBind.over_project`).
     * **`uv.lock`** — rewritten in memory and bound over, when it records a hash for one of them. uv
       verifies that hash on EVERY sync, so a stub the lock does not know about fails the build outright.

@@ -1,10 +1,8 @@
-"""`cuttle run`: request-or-attach to a Tide Pool — an interactive Spawn that drops the
-User into a live shell.
+"""Attach to a Tide Pool — an interactive Spawn that drops the User into a live shell.
 
-A Tide Pool is a normal Spawn end to end (same queue, Eligibility, Escrow/Karma billing — see
-ccc_head_api.spawns.submit_checked); this module is the CLI-only half nothing else needed: submit (or
-resolve an existing one), poll for placement, fetch the ephemeral keypair the Head minted, and exec a
-REAL `ssh` — the Head-side relay (ccc_head_api.tidepool/relay.py) is what makes an Arm reachable from a
+Dormant in 2.0: the request half (`cuttle run`) went with the submit path, and nothing calls
+`_wait_and_attach` until Dives. What is left: poll for placement, fetch the ephemeral keypair the Head
+minted, and exec a REAL `ssh` — the Head-side relay (ccc_head_api.tidepool/relay.py) is what makes an Arm reachable from a
 client that is not a Mesh member, but nothing on this end knows or cares that a relay exists; it looks
 like any other `ssh -p <port> <host>`.
 
@@ -38,19 +36,6 @@ _WARN_MAX_S = 5 * 60
 _WARN_MIN_S = 30
 
 
-def _existing_id(token: str | None) -> int | None:
-    """The positional arg, if it parses as a Spawn id — `None` (fresh request) otherwise, including when
-    nothing was given at all. Ownership/type ("is this actually a Tide Pool of mine?") is NOT checked
-    here — the Head's `GET /spawns/{id}/tidepool` is the one place that answers it, and answering it
-    twice would just be two ways to disagree."""
-    if not token:
-        return None
-    try:
-        return int(token)
-    except ValueError:
-        return None
-
-
 def _head_host() -> str:
     """The bare host the CLI already talks to for the Head API — the Tide Pool relay listens on the
     SAME box, at a different port, so there is no separate address to configure or discover. (When the
@@ -67,37 +52,8 @@ def _cancel_hint(spawn_id: int) -> str:
     return f"cuttle cancel {spawn_id}"
 
 
-def _reattach_hint(spawn_id: int) -> str:
-    """How to get back into this session."""
-    return f"cuttle run {spawn_id}"
-
-
 def _noun(spawn_id: int) -> str:
     return f"tide pool {spawn_id}"
-
-
-def run(id_arg: str | None, minutes: int | None, vram: int | None, gpu: int,
-        features: list[str], vscode: bool = False) -> None:
-    """Entry point from `cuttle run`. Requests a new Tide Pool (needing --time/--vram like any
-    Spawn) unless `id_arg` resolves to an existing one, then attaches either way."""
-    existing = _existing_id(id_arg)
-    if existing is not None:
-        spawn_id = existing
-    else:
-        if id_arg:
-            ui.warn(f"ignoring {id_arg!r} — not a Spawn id (pass one to reattach to a Tide Pool)")
-        spawn_id = _request(minutes, vram, gpu, features)
-    _wait_and_attach(spawn_id, vscode=vscode)
-
-
-def _request(minutes: int | None, vram: int | None, gpu: int, features: list[str]) -> int:
-    """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
-    nothing here weakens that gate."""
-    minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
-    vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
-    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, features=features)
-    ui.ok(f"requested tide pool {spawn_id}")
-    return spawn_id
 
 
 def _wait_for_running(spawn_id: int) -> None:
@@ -112,7 +68,7 @@ def _wait_for_running(spawn_id: int) -> None:
                                f"({spawns_mod._outcome(st)})")
             if time.monotonic() > deadline:
                 raise ui.abort(f"tide pool {spawn_id} is still queued after an hour — it is not gone, "
-                               f"just not placed yet; `cuttle run {spawn_id}` to keep waiting")
+                               f"just not placed yet")
             time.sleep(_POLL_S)
 
 
@@ -133,8 +89,7 @@ def _wait_for_relay(spawn_id: int) -> tuple[int, str, str, str | None]:
                 return (info["port"], info["private_key"],
                         info.get("user") or config.HEAD_API_USER, info.get("proj"))
             if time.monotonic() > deadline:
-                raise ui.abort(f"tide pool {spawn_id} is running but never came up for SSH — "
-                               f"`cuttle run {spawn_id}` to retry")
+                raise ui.abort(f"tide pool {spawn_id} is running but never came up for SSH")
             time.sleep(_POLL_S)
 
 
@@ -234,8 +189,7 @@ def _wait_and_attach(spawn_id: int, vscode: bool = False) -> None:
                 f"out. Closing VS Code does NOT free it.")
         if sshconfig.open_vscode(name, proj):
             ui.ok(f"opening {_noun(spawn_id)} in VS Code ({name})")
-        ui.hint(f"reconnect any time with `ssh {name}`, or `{_reattach_hint(spawn_id)}` "
-                f"for a terminal here")
+        ui.hint(f"reconnect any time with `ssh {name}`")
         _copy_hint(name, proj)
         return
 
@@ -247,8 +201,7 @@ def _wait_and_attach(spawn_id: int, vscode: bool = False) -> None:
     ui.hint("type `exit` to leave the shell — the Tide Pool itself keeps running either way")
     # The alias is live from here on whether or not anyone asked for VS Code — printed rather than
     # acted on, because an editor is not what most people opened a terminal to get.
-    ui.hint(f"editors and a second terminal reach this session as `{name}` (ssh {name}) — "
-            f"`--vscode` opens it there instead")
+    ui.hint(f"editors and a second terminal reach this session as `{name}` (ssh {name})")
     _copy_hint(name, proj)
     stop = threading.Event()
     _warn_thread(spawn_id, deadline, stop)
@@ -261,7 +214,7 @@ def _wait_and_attach(spawn_id: int, vscode: bool = False) -> None:
         # Login account is the submitter's own **Guise**, never `mantle@` or `ccc@`: apptainer's
         # --writable-tmpfs patches the invoking uid's /etc/passwd entry to its real host identity,
         # so the invoking uid is the Guise owning this Spawn. User never types it (nobody knows
-        # their own uid) — see spawns.PAYLOAD_TIDEPOOL.
+        # their own uid).
         subprocess.run([
             "ssh", "-i", keypath, "-p", str(port),
             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
@@ -303,6 +256,6 @@ def _report_ending(spawn_id: int) -> None:
         ui.ok(f"{noun} hit its --time limit and has stopped billing")
     elif state is not None:
         ui.warn(f"{noun} is still running and still billing Karma — `{_cancel_hint(spawn_id)}` to end "
-                f"it, or `{_reattach_hint(spawn_id)}` to reattach")
+                f"it")
     else:
         ui.ok(f"{noun} has ended")

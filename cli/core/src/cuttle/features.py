@@ -75,7 +75,7 @@ FEATURE_PKG_DIR = config.CCC_LIB / "features"
 INSTALL_DIRNAME = "install"
 
 # The **Licence** key, mirrored the same way but NOT world-readable. Deliberately not in the Licence
-# directory, which JOB_SCRIPT binds as `$HOME` into every Spawn that asked for the Feature — the key is
+# directory, which the job script binds as `$HOME` into every Spawn that asked for the Feature — the key is
 # the credential that PRODUCED that directory's contents, and only the activation Spawn may see it.
 LICENCE_KEY_NAME = "licence.key"
 
@@ -215,7 +215,7 @@ def mirror_licence_key(f: dict) -> None:
     Same reason as `mirror_install`: the activation Spawn is a Pod, can't reach a key under the owner's
     home. Mode 0640 root:ccc-guises, not the a+rX everything else here gets — real gate is that no
     ordinary Spawn ever binds it, but the mode is cheap insurance against a bind mistake. Not stored in
-    the Licence directory (JOB_SCRIPT binds that as `$HOME` into every Spawn that asked for the
+    the Licence directory (the job script binds that as `$HOME` into every Spawn that asked for the
     Feature, which would expose the key to exactly the Spawns that must never see it).
     """
     p = ARM_PROFILES.get(f["name"])

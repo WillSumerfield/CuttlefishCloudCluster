@@ -72,15 +72,7 @@ cuttle login --head <head-address>
 
 Your first login forces a password change.
 
-**3. Get a GPU shell.** `cuttle` → **Open a Tide Pool**. It asks how long and how much GPU memory,
-then drops you into a shell on a machine that has it. The same thing, typed:
-
-```sh
-cuttle run --time 60 --vram 24
-```
-
-Both are required and have no defaults: minutes, and GB of GPU memory. (Batch script Spawns are gone
-in 2.0.)
+**3. Request work.** Nothing can request a Spawn in 2.0 until Dives.
 
 **4. Watch it.** **Check a Spawn** and **Read a Spawn's output** in the menu,
 or:

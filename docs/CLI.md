@@ -6,7 +6,7 @@ A map of every command, and where each one is explained properly. **Flags are no
 ## You can just run `cuttle`
 
 On a terminal, `cuttle` with nothing after it opens an arrow-key menu. It shows only what this box
-can do *right now* — the submit commands appear once you are logged in, the admin ones only on the
+can do *right now* — the Spawn commands appear once you are logged in, the admin ones only on the
 Head — so you are never picking from a list of things that would refuse you. Pick something and it
 asks for what it needs.
 
@@ -14,8 +14,8 @@ In a pipe or a script it prints help instead, because a menu there would wait fo
 nobody can send.
 
 The same is true one level down: leave a command's required arguments out and it prompts for them
-rather than failing. `cuttle run` and `cuttle setup` especially — both walk you through and show you
-what they are about to do before they do it. The rest of this page is the typed form, which is what
+rather than failing. `cuttle setup` especially walks you through and shows you
+what it is about to do before it does it. The rest of this page is the typed form, which is what
 you want once you know the command and what a script needs.
 
 ## Who can run what
@@ -49,12 +49,10 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle user remove` | **admin** Delete a User. | [Users & access](elements/users-and-access.md#admin--on-the-head) |
 | `cuttle user reset` | **admin** Reset a password and kill that User's sessions. | [Users & access](elements/users-and-access.md#admin--on-the-head) |
 
-## Running work
+## Following work
 
 | Command | | Explained in |
 |---|---|---|
-| `cuttle run` | Ask for a Tide Pool: a live interactive shell on a GPU. | [Tide Pool](elements/tide-pool.md) |
-| `cuttle run --vscode` | The same session, opened in VS Code rather than this terminal. | [Tide Pool](elements/tide-pool.md#editing-in-vs-code) |
 | `cuttle status` | Is it queued, running, or finished — and with what exit code. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle logs` | Print or follow a Spawn's stdout and stderr. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle queue` | Everything pending or running on the cluster, and whose it is. | [Spawns](elements/spawns.md#following-a-spawn) |

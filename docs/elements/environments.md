@@ -6,7 +6,7 @@ The **Environment** is the Python your code runs against inside its sandbox: a c
 own interpreter included, built from a dependency file you name and nothing else.
 
 **There is no way to declare one right now.** Batch Spawns were the only thing that built one, and
-they are gone in 2.0; a [Tide Pool](tide-pool.md) runs with none. Environments come back, optional,
+they are gone in 2.0. Environments come back, optional,
 with Dives: a named dependency file built on the Arm when the Dive starts.
 
 What the Head still knows how to build (`ccc_head_api.environments`, unused until then):
