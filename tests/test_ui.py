@@ -194,7 +194,7 @@ class TestRunPrintsTheIdToStdout:
     confirmation."""
 
     def test_stdout_is_just_the_spawn_id(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                           "--manifest", "requirements.txt")
         assert result.exit_code == 0, result.output
         assert result.stdout.strip().isdigit()

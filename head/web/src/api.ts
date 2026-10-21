@@ -72,11 +72,7 @@ export type ArchivedSpawn = Spawn & {
   held: number | null
   // Epoch ms it finished — the sort key. History is one flat stream, newest first.
   finished_at: number
-  // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are deleted
-  // — 7 days after it ended, or sooner if the submitter's 32GB Allowance needed the room.
   // Null once gone, or before the tick has registered them.
-  output_bytes?: number | null
-  output_expires_at?: string | null
 }
 
 export type Me = { username: string; is_admin: boolean; must_change_password: boolean }
@@ -110,14 +106,8 @@ export type SpawnDetail = {
   // What it settled at. Null while it still holds an Escrow, and for a Spawn that never settled at all
   // (Admin-owned, or ended before the meter reached it).
   cost?: number | null
-  output_bytes?: number | null
-  output_expires_at?: string | null
 }
 
-// Output retention (docs/TODO.md "Storage retention"): the Spawn's DECLARED results — held 7 days from
-// its end, and only while the submitter's 32GB Allowance has room. `expires_at` is an ISO timestamp;
-// callers compute their own countdown from it.
-export type RetentionStatus = { bytes: number; expires_at: string }
 
 export class Unauthorized extends Error {}
 
@@ -223,8 +213,6 @@ type HistoryRow = {
   minutes: number | null
   submitted_by: string | null
   cost: number | null
-  output_bytes: number | null
-  output_expires_at: string | null
 }
 
 // The `finished_at` guard is FIRST, and it is the whole reason this function is not two lines. A Spawn
@@ -264,8 +252,6 @@ export const getHistory = () =>
         cost: r.cost,
         held: null, // the Head does not report actual held minutes yet, only the declared limit
         finished_at: r.finished_at ? Date.parse(r.finished_at) : Date.now(),
-        output_bytes: r.output_bytes,
-        output_expires_at: r.output_expires_at,
       }),
     ),
   )
@@ -275,16 +261,6 @@ export const getSpawn = (id: number) => json<SpawnDetail>(`/spawns/${id}`)
 export const getStderr = (id: number) => req(`/spawns/${id}/stderr`).then((r) => r.text())
 /** The Environment build's output — empty string for a Spawn that declared none. The Head's work, not
  *  the Spawn's, which is why it is its own stream rather than the head of stdout. */
-// null = nothing held (produced nothing, not yet registered by the tick, expired, or evicted for the
-// Allowance) — a normal outcome, not an error.
-export async function getRetention(id: number): Promise<RetentionStatus | null> {
-  try {
-    return await json<RetentionStatus>(`/spawns/${id}/retention`)
-  } catch (e) {
-    if (e instanceof Unauthorized) throw e
-    return null
-  }
-}
 export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.text())
 
 /** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
@@ -381,20 +357,6 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   })
 }
 
-/**
- * Where the browser fetches a Spawn's declared outputs as a tar. A plain link — not a fetch.
- *
- * This used to `await r.blob()` and hand the result to `URL.createObjectURL`, which put the entire
- * download in the tab before a single byte reached the disk. On a 3GB result that is minutes during
- * which the page shows nothing, offers no cancel, reports no progress and can run the tab out of
- * memory — while the Head, which streams precisely so none of that is necessary, has already sent it.
- *
- * As a link it belongs to the browser's own download manager: progress, a destination, a pause, a
- * retry, all of it free and none of it in this tab. The session cookie is `SameSite=Lax` and the API
- * is same-origin, so it goes out with the request; the filename comes from the route's own
- * `Content-Disposition` and is repeated in the `download` attribute for the same-origin case.
- */
-export const outputsDownloadUrl = (id: number) => `${API}/spawns/${id}/outputs`
 
 export type SubmitOpts = {
   picked: Picked
@@ -410,9 +372,6 @@ export type SubmitOpts = {
   vram: number
   node: string | null // admin-only; the Head 403s it for everyone else
   args: string[]
-  // Folders the payload writes results to, each a path in the Spawn's own project (or, `/`-prefixed,
-  // absolute inside the Pod) — required, non-empty; the Head 422s a Spawn that declares none.
-  outputs: string[]
   // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
   // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
   features: string[]
@@ -435,13 +394,13 @@ export type SubmitResult = { id: number; environment: string | null }
  * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
  */
 export async function submit({
-  picked, name, script, gpu, minutes, vram, node, args, outputs, features, manifest, substrate,
+  picked, name, script, gpu, minutes, vram, node, args, features, manifest, substrate,
 }: SubmitOpts): Promise<SubmitResult> {
   const body = await projectBody(picked)
   // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
   // absent key the same as an empty list.
   const meta = {
-    name, script, gpu, minutes, vram, node, args, outputs,
+    name, script, gpu, minutes, vram, node, args,
     ...(features.length ? { features } : {}),
     // Always sent, unlike the fields above: the Head refuses a Spawn that names no dependency file, and
     // an omitted key would meet that refusal as a confusing "missing" rather than the empty box it is.
@@ -489,7 +448,7 @@ export async function submitTidepool({
   // end-of-archive blocks tar readers expect, same as Python's tarfile for no members.
   const body = await projectBody(picked ?? EMPTY_PICK)
   const meta = {
-    minutes, vram, gpu, node, tidepool: true, outputs: [], name,
+    minutes, vram, gpu, node, tidepool: true, name,
     ...(features.length ? { features } : {}),
     // Omitted rather than sent empty, unlike submit()'s above: a Tide Pool is the one Spawn the Head
     // lets decline to declare an Environment, so absent here means "a bare shell" rather than an

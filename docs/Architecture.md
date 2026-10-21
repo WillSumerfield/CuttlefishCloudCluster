@@ -125,18 +125,8 @@ OS. Its walls enclose the whole Spawn, including the wrapper that stages files i
 There is **no NFS, no CephFS, no live mount**. Every Arm stages.
 
 A Spawn's project — gitignore-aware — is staged in over an rsync daemon bound to the Head's mesh
-address, into node-local scratch. At the end, the declared output directories stage back. Fresh
-copy per Spawn; there is no persistent cache yet.
-
-**The last hop is automatic, and it does not stop at the Head.** `cuttle run` records what your box
-is owed, and a single detached sweeper brings each Spawn's outputs down into
-`~/ccc/outputs/spawn-<id>-outputs/` as it finishes. One predictable place, rather than results
-scattered across every directory anyone ever submitted from — and nothing is lost to a reboot, since
-the on-disk entry *is* the intent and any later `cuttle` command re-arms a sweeper for it.
-
-The Head is unchanged by this: retention stays a pure function of time and Allowance, so the same
-result is still fetchable by hand, from a second machine, for its 7 days. See
-[Storage](elements/storage.md).
+address, into node-local scratch. At the end, its logs and exit code stage back. Fresh copy per
+Spawn; there is no persistent cache yet.
 
 ## Environments
 

@@ -47,7 +47,6 @@ The per-capability docs live in [`elements/`](elements/) and are indexed by
 [Tide Pool](elements/tide-pool.md) ·
 [Users & access](elements/users-and-access.md) ·
 [Isolation](elements/isolation.md) ·
-[Storage](elements/storage.md) ·
 [Mesh](elements/mesh.md) ·
 [Telemetry](elements/telemetry.md) ·
 [Backup & recovery](elements/backup-and-recovery.md)

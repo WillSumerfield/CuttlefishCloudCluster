@@ -145,7 +145,7 @@ class TestSubmit:
     """`cuttle run` — the operation the whole cluster exists for."""
 
     def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                           "--manifest", "requirements.txt")
         assert result.exit_code == 0, result.output
         assert "submitted spawn" in result.output
@@ -160,14 +160,14 @@ class TestSubmit:
     def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm, project):
         """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
         been charged for — precisely the window a queue-flooder wants."""
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                           "--manifest", "requirements.txt")
         with db.connect() as conn:
             escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
         assert _spawn_id(result.output) in escrows
 
     def test_the_uploaded_project_reaches_the_head(self, signed_in, fake_slurm, project):
-        signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                           "--manifest", "requirements.txt")
         staged = list((fake_slurm / "projects").glob("*/train.py"))
         assert staged, "the project tree was not unpacked on the Head"
@@ -185,7 +185,7 @@ class TestSubmit:
         assert no_vram.exit_code != 0 and "--vram" in no_vram.output
 
     def test_submitting_without_a_session_is_refused(self, cli, fake_slurm, project):
-        result = cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                           "--manifest", "requirements.txt")
         assert result.exit_code != 0
         assert "not logged in" in result.output
@@ -203,7 +203,7 @@ class TestProjectDir:
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         monkeypatch.chdir(elsewhere)
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                            "--manifest", "requirements.txt", "--dir", str(project))
         assert result.exit_code == 0, result.output
         staged = list((fake_slurm / "projects").glob("*/train.py"))
@@ -218,7 +218,7 @@ class TestProjectDir:
         elsewhere.mkdir()
         (elsewhere / "requirements.txt").write_text("")
         monkeypatch.chdir(project)
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                            "--manifest", "requirements.txt", "--dir", str(elsewhere))
         assert result.exit_code != 0
         # Not the full path: ui wraps it across lines at the terminal width.
@@ -226,7 +226,7 @@ class TestProjectDir:
         assert "relative to the project" in result.output
 
     def test_a_dir_that_is_not_a_directory_is_refused(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                            "--manifest", "requirements.txt", "--dir", str(project / "train.py"))
         assert result.exit_code != 0
         assert "not a directory" in result.output
@@ -236,7 +236,7 @@ class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
     def _spawn(self, cli):
-        return _spawn_id(cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24", "--output", "out",
+        return _spawn_id(cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
                           "--manifest", "requirements.txt").output)
 
     def test_you_may_cancel_your_own(self, signed_in, fake_slurm, project, monkeypatch):
@@ -606,6 +606,6 @@ class TestNoAdminWritesOverTheApi:
                                # Named and otherwise complete, so the 403 below is unambiguously about
                                # the pin rather than about some earlier gate.
                                "X-CCC-Meta": '{"script":"t.py","minutes":60,"vram":24,"node":"gpu-box",'
-                                             '"outputs":["out"],"name":"a spawn"}'})
+                                             '"name":"a spawn"}'})
         assert r.status_code == 403
         assert "on the Head" in r.json()["detail"]

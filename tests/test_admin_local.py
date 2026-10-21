@@ -130,8 +130,7 @@ class TestPinnedSubmit:
 
     def test_a_pinned_spawn_is_recorded_and_attributed(self, rig, capsys):
         rc = admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
-                         "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                         "--output", "out", "--manifest", "requirements.txt"])
+                         "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--manifest", "requirements.txt"])
         assert rc == 0
         job_id = int(capsys.readouterr().out.strip())
         with db.connect() as conn:
@@ -145,7 +144,7 @@ class TestPinnedSubmit:
         """The whole reason this path reuses submit_checked. A Spawn submitted around the pricing
         code would occupy a donated card that nobody is charged for."""
         admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
-                    "--minutes", "60", "--vram", "24", "--node", "gpu-box", "--output", "out",
+                    "--minutes", "60", "--vram", "24", "--node", "gpu-box",
                     "--manifest", "requirements.txt"])
         job_id = int(capsys.readouterr().out.strip())
         with db.connect() as conn:
@@ -153,8 +152,7 @@ class TestPinnedSubmit:
 
     def test_an_unknown_arm_is_refused(self, rig, capsys):
         assert admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py", "--tar", str(rig),
-                           "--minutes", "60", "--vram", "24", "--node", "typo",
-                           "--output", "out"]) == 1
+                           "--minutes", "60", "--vram", "24", "--node", "typo"]) == 1
         assert "unknown Arm" in capsys.readouterr().err
 
     def test_an_unknown_user_is_refused(self, rig, capsys):

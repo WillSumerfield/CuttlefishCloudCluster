@@ -33,7 +33,6 @@ class TestRenderedSbatch:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -69,7 +68,7 @@ class TestTheSbatchSinkOutlivesItsJobId:
 
     def render(self, staging="/var/lib/ccc/head/projects/deadbeef-1234-5678"):
         return head_spawns._render(
-            staging=staging, gpu=1, script="train.py", args=[], files=[], outputs=["outputs"],
+            staging=staging, gpu=1, script="train.py", args=[], files=[],
             node=None, minutes=60, constraint="", token="a3f9", secret="s3cr3t")
 
     def test_the_header_and_the_shell_name_the_same_file(self):
@@ -146,7 +145,7 @@ class TestTeardownSweepsWhatItMakesAmbiguous:
 
 class TestRemoteLiveStreaming:
     """docs/TODO.md's now-closed "Live log streaming for remote Spawns": a backgrounded loop in the
-    REMOTE branch of JOB_SCRIPT pushes out/err/outputs home every 5s instead of only at stage_out()'s
+    REMOTE branch of JOB_SCRIPT pushes out/err home every 5s instead of only at stage_out()'s
     one-shot call at job end. The Head's own co-located branch writes straight to the final path
     already (`stage_out() { :; }`) and must stay untouched — these tests pin that boundary too."""
 
@@ -154,9 +153,6 @@ class TestRemoteLiveStreaming:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
-        # Deliberately not the literal name "outputs": the keep directory is itself called
-        # `outputs`, so declaring that name would make the doubling check below match its own bind.
-        kw.setdefault("outputs", ["results"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -206,16 +202,10 @@ class TestRemoteLiveStreaming:
     def test_out_err_push_every_5_seconds_no_settle_check(self):
         remote = self._remote_branch(self.render())
         assert "sleep 5" in remote
-        # the out/err line syncs unconditionally — no -newermt / find gate, unlike outputs below.
+        # the out/err line syncs unconditionally — no -newermt / find gate.
         outerr_line = next(l for l in remote.splitlines() if 'rsync -a "$out" "$err"' in l)
         assert "newermt" not in outerr_line
         assert "find" not in outerr_line
-
-    def test_outputs_push_is_gated_on_a_settle_check(self):
-        remote = self._remote_branch(self.render())
-        assert '-not -newermt "@$(( $(date +%s) - 10 ))"' in remote
-        assert "-printf '%P\\n'" in remote   # relative paths, matching the outputs/ --files-from dest
-        assert "$ccc_out/outputs/" not in remote  # sanity: dest is .../$jid/outputs/, not doubled
 
     def test_head_branch_has_no_pusher_at_all(self):
         """The Head's co-located Arm already streams live (same-FS write) — a pusher there would be
@@ -239,7 +229,6 @@ class TestTheHeadStageInIsChecked:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -289,7 +278,6 @@ class TestStageOutIsRetried:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -317,7 +305,7 @@ class TestStageOutIsRetried:
 class TestAnUnrecordedSpawnIsNeverLeftRunning:
     """`sbatch` returns a real, running job before anything records it. Between those two points a
     failure leaves a Spawn no reaper can see (tick.once walks the DB), that is never billed, that holds
-    a Device, and whose outputs retention deletes an hour later as orphan debris — with the User told
+    a Device — with the User told
     none of it. If we cannot finish recording it, we do not leave it running."""
 
     def _tar(self, tmp_path: Path) -> Path:
@@ -357,8 +345,7 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
                             lambda *a, **kw: (_ for _ in ()).throw(OSError("disk gone")))
         with pytest.raises(OSError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=self._tar(tmp_path), minutes=60, constraint="",
-                               outputs=["out"], manifest="requirements.txt")
+                               tar_path=self._tar(tmp_path), minutes=60, constraint="", manifest="requirements.txt")
         assert rig == [9001], "the job sbatch already started must not be left running"
 
     def test_a_cancel_that_itself_fails_does_not_mask_the_real_error(self, rig, monkeypatch, tmp_path):
@@ -370,13 +357,11 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
                             lambda jid: (_ for _ in ()).throw(RuntimeError("scancel missing")))
         with pytest.raises(OSError, match="disk gone"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=self._tar(tmp_path), minutes=60, constraint="",
-                               outputs=["out"], manifest="requirements.txt")
+                               tar_path=self._tar(tmp_path), minutes=60, constraint="", manifest="requirements.txt")
 
     def test_a_clean_submit_cancels_nothing(self, rig, tmp_path):
         job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                                    tar_path=self._tar(tmp_path), minutes=60, constraint="",
-                                    outputs=["out"], manifest="requirements.txt")
+                                    tar_path=self._tar(tmp_path), minutes=60, constraint="", manifest="requirements.txt")
         assert job_id == 9001
         assert rig == []
 
@@ -434,7 +419,7 @@ class TestSbatchsRefusalReachesTheOperator:
         self._only_sbatch_fails(monkeypatch, self._err(stderr="sbatch: error: Invalid user id 60002"))
         with pytest.raises(RuntimeError, match="Invalid user id 60002"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=rig, minutes=60, constraint="", outputs=["out"],
+                               tar_path=rig, minutes=60, constraint="",
                                manifest="requirements.txt")
 
     def test_the_siphon_is_still_closed_on_the_way_out(self, monkeypatch, tmp_path):
@@ -447,7 +432,7 @@ class TestSbatchsRefusalReachesTheOperator:
         self._only_sbatch_fails(monkeypatch, self._err(stderr="nope"))
         with pytest.raises(RuntimeError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=rig, minutes=60, constraint="", outputs=["out"],
+                               tar_path=rig, minutes=60, constraint="",
                                manifest="requirements.txt")
         assert len(discarded) == 1
 
@@ -458,7 +443,7 @@ class TestSbatchsRefusalReachesTheOperator:
         self._only_sbatch_fails(monkeypatch, OSError("disk gone"))
         with pytest.raises(OSError, match="disk gone"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=rig, minutes=60, constraint="", outputs=["out"],
+                               tar_path=rig, minutes=60, constraint="",
                                manifest="requirements.txt")
 
     def _pinned_failure(self, monkeypatch, stderr: str) -> str:
@@ -579,13 +564,12 @@ class TestPodContainment:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
 
     def tidepool(self):
-        return self.render(outputs=[], tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        return self.render(tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
 
     @pytest.mark.parametrize("what", ["script", "tidepool"])
     def test_both_payloads_are_contained(self, what):
@@ -626,7 +610,7 @@ class TestPodContainment:
         now a bind source and a --pwd target, and apptainer treats a missing one as fatal."""
         script = self.tidepool()
         remote = script[script.index("\nelse"):script.index("\nfi\n")]
-        assert 'mkdir -p "$scratch/outputs" "$proj"' in remote
+        assert 'mkdir -p "$proj"' in remote
 
     @pytest.mark.parametrize("what", ["script", "tidepool"])
     def test_a_mig_card_reaches_the_pod_as_a_uuid(self, what):
@@ -717,7 +701,7 @@ class TestSpawnsRunAsTheirSubmitter:
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
         return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[],
-                                  tar_path=tar, minutes=60, constraint="vram24", outputs=["out"],
+                                  tar_path=tar, minutes=60, constraint="vram24",
                                   manifest="requirements.txt")
 
     def _sbatch(self, calls):
@@ -800,93 +784,6 @@ class TestSpawnsRunAsTheirSubmitter:
         assert 'cp -a --no-preserve=ownership "$staging_dir/." "$proj/"' in script
 
 
-class TestDeclaredOutputsBecomeBinds:
-    """An **Output** is a path in the submitter's OWN project, and the keep directory is mounted onto it —
-    so an unmodified script writes its results straight into what is staged home, with no `$CCC_OUT` to
-    be taught about. Set up ONCE, after the if/else that sets `$ccc_out` in EITHER branch and before the
-    payload runs, which is what makes it apply to the Head-local and remote paths alike."""
-
-    def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24|vram80")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
-            token="a3f9", secret="s3cr3t", **kw)
-
-    def _setup_block(self, script: str) -> str:
-        """The rendered %%OUTPUT_SETUP%% block alone — between `outbind=""` and the `cd "$proj"` that
-        follows it. Scoped, because JOB_SCRIPT's prose upstream mentions `cp -a` and `$ccc_out` freely."""
-        return script[script.index('outbind=""'):script.index('\ncd "$proj"\n')]
-
-    def test_a_relative_output_is_bound_over_the_path_in_the_project(self):
-        """The whole point: `-o runs` is the `runs/` the code already writes to."""
-        script = self.render(outputs=["runs"])
-        assert 'outbind="$outbind,$ccc_out/runs:$proj/runs"' in script
-        assert 'mkdir -p "$ccc_out/runs"' in script
-        assert 'mkdir -p "$proj/runs"' in script
-
-    def test_a_nested_output_keeps_its_shape_on_both_sides(self):
-        script = self.render(outputs=["out/ckpt"])
-        assert 'outbind="$outbind,$ccc_out/out/ckpt:$proj/out/ckpt"' in script
-
-    def test_an_absolute_output_is_bound_at_that_pod_path_and_kept_without_the_slash(self):
-        """For what a profiled Arm Feature writes outside the project (features.VLWD_MOUNT), which no
-        project path could name."""
-        script = self.render(outputs=["/ccc/vlwd/logs"])
-        assert 'outbind="$outbind,$ccc_out/ccc/vlwd/logs:/ccc/vlwd/logs"' in script
-
-    def test_an_absolute_output_is_never_mkdir_d_on_the_host(self):
-        """Everything in this block runs on the host as the Guise, where `mkdir -p /ccc/vlwd/logs` is
-        EPERM at `/` — and that error would land in $sink, making it non-empty, which leaves a file in
-        /tmp for every Spawn ever run (the litter that poisoned job ids). Apptainer makes the mountpoint."""
-        script = self.render(outputs=["/ccc/vlwd/logs"])
-        assert 'mkdir -p "/ccc/vlwd/logs"' not in script
-        assert 'mkdir -p "$ccc_out/ccc/vlwd/logs"' in script
-
-    def test_a_relative_output_is_seeded_from_whatever_the_upload_had_there(self):
-        """`-o checkpoints` on a project that uploaded a checkpoint to resume from must NOT present an
-        empty directory and silently restart training."""
-        script = self.render(outputs=["checkpoints"])
-        assert 'cp -a "$proj/checkpoints/." "$ccc_out/checkpoints/"' in script
-
-    def test_an_absolute_output_is_not_seeded(self):
-        """Nothing was ever uploaded to a path inside the Pod."""
-        assert "cp -a" not in self._setup_block(self.render(outputs=["/ccc/vlwd/logs"]))
-
-    def test_one_bind_per_declared_output(self):
-        script = self.render(outputs=["checkpoints", "logs"])
-        assert script.count('outbind="$outbind,') == 2
-
-    def test_nothing_names_ccc_out_to_the_payload(self):
-        """There is no CCC_OUT in the Pod environment, and $ccc_out is not bound — the only way into the
-        keep directory is through the declared paths."""
-        script = self.render(outputs=["runs"])
-        payload = script.split("\ncd \"$proj\"\n", 1)[1]
-        assert "CCC_OUT=" not in payload
-        assert '--bind "$proj,$ccc_out' not in payload
-
-    def test_setup_lands_after_both_branches_close_and_before_the_payload_runs(self):
-        script = self.render(outputs=["checkpoints"])
-        mkdir_at = script.index('mkdir -p "$ccc_out/checkpoints"')
-        # The LAST "\nfi\n" — the branch has its own nested if/fi (the stage-in failure check) that
-        # closes earlier; what matters is being after the OUTER one.
-        fi_at = script.rindex("\nfi\n", 0, mkdir_at)
-        # Anchored with the leading newline: `cd "$proj"` also appears inside a comment a few lines
-        # earlier ("walks on into `cd \"$proj\"`"), which a bare substring search would match instead.
-        cd_at = script.index('\ncd "$proj"\n')
-        assert fi_at < mkdir_at < cd_at
-
-    def test_not_duplicated_into_either_branch(self):
-        """The mkdir line is written ONCE in the template, not once per branch — so it must not appear
-        inside the Head-local `if` block or the remote `else` block, only between them and the payload."""
-        script = self.render(outputs=["checkpoints"])
-        head_branch = script[script.index('if [ -d "$staging_dir" ]'):script.index("\nelse")]
-        remote_branch = script[script.index("\nelse"):script.index("\nfi\n")]
-        assert "mkdir -p \"$ccc_out/checkpoints\"" not in head_branch
-        assert "mkdir -p \"$ccc_out/checkpoints\"" not in remote_branch
-
-
 class FakeUser(dict):
     pass
 
@@ -921,7 +818,6 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 
 def post(c: TestClient, **meta):
     meta.setdefault("script", "train.py")
-    meta.setdefault("outputs", ["outputs"])
     # Every Spawn declares its **Environment** — see TestManifestIsRequired below for the gate itself.
     # Defaulted here so the tests about everything ELSE aren't all about this one field.
     meta.setdefault("manifest", "requirements.txt")
@@ -1033,7 +929,7 @@ class TestTheEnvironmentMustBeDeclared:
         """The one Spawn exempt: it is a shell, not a run, and a bare one uploads an empty tar with no
         file in it to name."""
         r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, tidepool=True,
-                 script=None, outputs=[], manifest=None)
+                 script=None, manifest=None)
         assert r.status_code == 200
 
 
@@ -1224,34 +1120,9 @@ class TestConcurrentSpawnCap:
         assert post(c, minutes=60, vram=24).status_code == 200
 
 
-class TestOutputsRequiredOverTheApi:
-    """docs/TODO.md's now-closed "Spawn Output Enforcement": a Spawn that names no output folder is one
-    whose results have nowhere retrievable to land, so the Head 422s it — same tier of hard requirement
-    as `minutes`/`vram`, checked at the same route-level gate (`submit` in `spawns.py` is mocked here,
-    same as TestSubmitRequiresDeclarations above)."""
-
-    def test_an_empty_list_is_refused(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, outputs=[])
-        assert r.status_code == 422
-        assert "outputs" in r.json()["detail"]
-
-    def test_a_missing_field_is_refused(self, monkeypatch):
-        c = client(monkeypatch, is_admin=False)
-        # Named, so the refusal is about the missing 'outputs' and not about the missing Name — the
-        # name gate sits ahead of this one.
-        meta = {"script": "train.py", "minutes": 60, "vram": 24, "name": "a spawn"}  # no 'outputs' key
-        r = c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
-        assert r.status_code == 422
-        assert "outputs" in r.json()["detail"]
-
-    def test_declaring_one_still_works(self, monkeypatch):
-        assert post(client(monkeypatch, is_admin=False), minutes=60, vram=24,
-                    outputs=["checkpoints"]).status_code == 200
-
-
-class TestSubmitValidatesOutputsAndScript:
-    """The real `spawns.submit()` (not the mocked route above) — since non-empty outputs, a safe output
-    name, and the script actually being present in the tar are all checked here, before anything is
+class TestSubmitValidatesScript:
+    """The real `spawns.submit()` (not the mocked route above) — the script actually being present in
+    the tar is checked here, before anything is
     written to disk or handed to sbatch. This is what the Head-local pinned path (`cuttle run --node`,
     which never travels over HTTP) gets for free by sharing this function."""
 
@@ -1271,76 +1142,10 @@ class TestSubmitValidatesOutputsAndScript:
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
         monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
         kw.setdefault("script", "train.py")
-        kw.setdefault("outputs", ["out"])
         kw.setdefault("manifest", "requirements.txt")
         kw.setdefault("tar_path", self._tar(tmp_path, "train.py", "requirements.txt"))
         return head_spawns.submit(user_id=1, gpu=1, args=[], minutes=60,
                                   constraint="", **kw)
-
-    def test_empty_outputs_is_refused(self, monkeypatch, tmp_path):
-        with pytest.raises(ValueError, match="output"):
-            self._submit(monkeypatch, tmp_path, outputs=[])
-
-    def test_a_traversal_attempt_is_refused(self, monkeypatch, tmp_path):
-        with pytest.raises(ValueError, match="invalid output path"):
-            self._submit(monkeypatch, tmp_path, outputs=["../../etc"])
-
-    def test_a_dot_segment_anywhere_in_the_path_is_refused(self, monkeypatch, tmp_path):
-        """Every segment is matched, not just the first, so `.` and `..` are unreachable at any depth
-        and no separate traversal check is needed."""
-        for bad in (".", "..", "a/../b", "a/./b", "runs/.hidden"):
-            with pytest.raises(ValueError, match="invalid output path"):
-                self._submit(monkeypatch, tmp_path, outputs=[bad])
-
-    def test_two_outputs_kept_in_the_same_place_are_refused(self, monkeypatch, tmp_path):
-        """Different directories in the Pod, one directory on the Head — one would overwrite the other
-        in the tar. Decidable here, so it is decided here."""
-        with pytest.raises(ValueError, match="would both be kept"):
-            self._submit(monkeypatch, tmp_path, outputs=["out/x", "/out/x"])
-
-    def test_an_output_nested_inside_another_is_refused(self, monkeypatch, tmp_path):
-        """Binding $ccc_out/runs/nn onto a path inside the $ccc_out/runs bind is a mount over its own
-        source."""
-        with pytest.raises(ValueError, match="is inside output"):
-            self._submit(monkeypatch, tmp_path, outputs=["runs", "runs/nn"])
-
-    def test_an_output_reached_through_a_symlink_in_the_project_is_refused(self, monkeypatch, tmp_path):
-        """CCC mounts the keep directory at that path; a link would resolve the mountpoint somewhere
-        else, and the Spawn would keep whatever lives there instead of what it wrote."""
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for n in ("train.py", "requirements.txt"):
-                data = b"x\n"
-                info = tarfile.TarInfo(n); info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
-            # In-TREE on purpose: extractall(filter="data") already drops an absolute or escaping
-            # symlink, so the one that can actually reach this check is a link to a sibling directory —
-            # which would still make the Spawn keep the wrong folder.
-            link = tarfile.TarInfo("runs")
-            link.type, link.linkname = tarfile.SYMTYPE, "data"
-            tf.addfile(link)
-        tar = tmp_path / "linked.tar.gz"; tar.write_bytes(buf.getvalue())
-        with pytest.raises(ValueError, match="passes through a symlink"):
-            self._submit(monkeypatch, tmp_path, outputs=["runs"], tar_path=tar)
-
-    def test_a_normal_name_is_accepted(self, monkeypatch, tmp_path):
-        """Sanity check the regex isn't so strict it refuses ordinary names — carried all the way
-        through to a (faked) sbatch, which needs a real user row for record_spawn's FK. A distinct job
-        id per name: record_spawn's job_id is a PRIMARY KEY, and the same fake id twice would collide."""
-        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-        db.ensure_schema()
-        with db.connect() as conn:
-            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
-                        "VALUES (1,'alice',0,'x',0)")
-            conn.commit()
-        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
-        counter = iter(range(4200, 4300))
-        monkeypatch.setattr(head_spawns.subprocess, "run",
-                            lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n",
-                                                            "stderr": "", "returncode": 0})())
-        for good in ("checkpoints", "run-1", "epoch_09", "v2.final", "out/ckpt", "/ccc/vlwd/logs"):
-            job_id = self._submit(monkeypatch, tmp_path, outputs=[good])
-            assert job_id >= 4200
 
     def test_a_script_missing_from_the_tar_is_refused(self, monkeypatch, tmp_path):
         with pytest.raises(ValueError, match="was not found in the uploaded project"):
@@ -1354,68 +1159,9 @@ class TestSubmitValidatesOutputsAndScript:
         monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
         with pytest.raises(ValueError):
             head_spawns.submit(user_id=1, script="missing.py", gpu=1, args=[],
-                              tar_path=self._tar(tmp_path, "other.py"), minutes=60, constraint="",
-                              outputs=["out"])
+                              tar_path=self._tar(tmp_path, "other.py"), minutes=60, constraint="")
         projects = tmp_path / "projects"
         assert not projects.exists() or not any(projects.iterdir())
-
-
-class TestOutputsPlumbThroughToTheRenderedScript:
-    """End-to-end: what `cuttle run --output` declares is what actually reaches the script sbatch is
-    handed — not just what a mocked `submit` was called with, capturing the script BODY. The body
-    arrives on sbatch's STDIN now — there is no temp file to read off disk any more, because a 0600 file
-    owned by the Mantle is not readable by the **Guise** sbatch runs as."""
-
-    @pytest.fixture
-    def rendered(self, monkeypatch, tmp_path):
-        state = tmp_path / "head-state"
-        for name in ("projects", "spawns", "scratch"):
-            (state / name).mkdir(parents=True)
-        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
-        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
-        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-        monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
-        monkeypatch.setattr(slurm, "queue", lambda: [])
-        # submit_checked reads the DB even for a non-admin's cap check, retracted-node check, and Tide
-        # quote — and submit() writes the Attribution row at the end (FK'd to a real user).
-        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-        db.ensure_schema()
-        with db.connect() as conn:
-            conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
-                        "VALUES (1,'alice',0,'x',0)")
-            conn.commit()
-        captured: dict[str, str] = {}
-
-        def fake_run(argv, **kw):
-            # Two shell-outs reach here: the project lend (`setfacl ...`) and the submission itself.
-            # Only the latter carries the script, and it carries it on stdin.
-            if "sbatch" in argv:
-                captured["argv"] = list(argv)
-                captured["body"] = kw["input"]
-            return type("R", (), {"stdout": "4242\n", "stderr": "", "returncode": 0})()
-
-        monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
-        return captured
-
-    def test_declared_outputs_reach_the_actual_sbatch_script(self, rendered, tmp_path):
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for name in ("train.py", "requirements.txt"):
-                data = b"print('hi')\n"
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
-        tar_path = tmp_path / "upload.tar.gz"
-        tar_path.write_bytes(buf.getvalue())
-
-        head_spawns.submit_checked(1, False, "train.py", 1, [], tar_path, 60, 24,
-                                   ["checkpoints", "logs"], manifest="requirements.txt",
-                                   name="a spawn")
-
-        assert 'mkdir -p "$ccc_out/checkpoints"' in rendered["body"]
-        assert 'mkdir -p "$ccc_out/logs"' in rendered["body"]
 
 
 class TestCancel:
@@ -1516,7 +1262,6 @@ class TestLicenceBind:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -1552,6 +1297,6 @@ class TestLicenceBind:
         """A Tide Pool is a Spawn that happens to run a shell — a User debugging why their licensed
         software will not start is exactly who needs the licence present."""
         kw = {"tidepool_port": tp, "tidepool_pubkey": "ssh-ed25519 AAAA x"} if tp else {}
-        body = self.render(wants_licence=True, outputs=[] if tp else ["outputs"], **kw)
+        body = self.render(wants_licence=True, **kw)
         payload = body[body.index("apptainer exec"):]
         assert "$envbind$licbind" in payload

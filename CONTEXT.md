@@ -52,9 +52,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   - *Client duties* (from any machine): the alternative to the **Dashboard**, at operation **parity**
     with it — login, job submission, and following work. Scriptable throughout; `setup` is additionally
     offered as a guided **wizard**. Parity covers what can be asked of the *cluster*, not what each
-    client can do to the machine it runs on: the CLI alone brings a finished **Spawn**'s results down
-    onto that machine by itself, unattended, because a browser cannot write to a folder with nobody
-    there. On the same terms it is the CLI that arranges the machine it runs on so a program already
+    client can do to the machine it runs on: it is the CLI that arranges the machine it runs on so a program already
     installed there — an editor, most obviously — can reach a live **Tide Pool**; a browser can
     describe that session but cannot hand it to anything outside itself.
   - *Host duties* (only on the machine being changed): node bring-up and removal (`setup`/`teardown`).
@@ -169,7 +167,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   built in a **Pod**, as that User's **Guise** — a declaration is code, and CCC runs no User's code as
   the **Mantle** on any machine.
   An Environment is kept by nobody: it dies with the Spawn that built it and the next run builds it
-  again, so it is never something a User owns or spends **Allowance** on. What
+  again, so it is never something a User owns. What
   each Arm keeps instead is the *downloads*, cached node-locally, which is what makes rebuilding every
   time affordable.
   Everything decidable without building is still refused at submit, before the Spawn exists: no
@@ -193,40 +191,6 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   archive can be consulted at submit — but a file that is not there, or one holding something that is
   not a package name, is refused at submit like every other declaration that can be judged without
   building.
-- **Output** — a folder a **Spawn** declares as holding its results, and the only thing it produces that
-  is deliberately *kept*. Named as a path in the Spawn's **own project**, because the folder a script
-  writes to is one its author already chose: a cluster that named a second place of its own would be
-  asking every submitter to teach their code about CCC, and the ones who did not would discover the
-  omission only once the work was done and the results already destroyed. A place *outside* the project
-  is named the same way and kept on the same terms — what an **Arm Feature** sites elsewhere is as much a
-  result as what the project holds — so an Output is wherever its submitter points, and not only what
-  lies beneath their code.
-  It names a *place*, never a thing: what is kept is whatever that folder holds when the Spawn ends, so a
-  Spawn that declares one and writes nothing into it has produced nothing, and declaring one is a promise
-  about where results will be rather than a claim that there will be any. Whatever the project already
-  held there is kept too — declaring a folder an Output never hides from a Spawn what its submitter
-  uploaded into it.
-  Every ordinary Spawn declares at least one, and a Spawn with nowhere to put its results is refused
-  before it exists. A **Tide Pool** may decline, on the same terms it may decline an **Environment** —
-  and a Tide Pool that declines keeps nothing, because there is no other place the cluster offers.
-  An Output is held for as long as its submitter's **Allowance** allows.
-  An Output is *collected*, and what the **Head** holds is never the copy that matters. Work submitted
-  from a machine comes home to that machine on its own once the Spawn ends — not while it runs, since
-  what a folder holds mid-run is a half-written thing nobody asked for — and that collection is what
-  makes the two ceilings above safe to enforce: nothing here is an archive, so results that expire or
-  are evicted are results already elsewhere. Declaring the Output is the whole of what a submitter does
-  to arrange it, whenever it is declared — at submission or on rejoining a **Tide Pool** — because an Output whose collection depended on *how* it came to be declared
-  would be one whose results quietly stayed behind. Work submitted from somewhere with nowhere to come
-  home to is collected by whoever asks for it instead.
-- **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
-  held thing has its own, independent of the others: filling one never costs a User any of another. An
-  Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
-  and a full Allowance never affects who wins **Contention**. An output arrives on its own from work
-  already done, so it is always accepted and the oldest are dropped to fit.
-  An Allowance is not the only thing that ends a
-  held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
-  even when there is room to spare. Uploaded projects belong to no Allowance at all — the Head keeps
-  them only while a Spawn is starting.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the

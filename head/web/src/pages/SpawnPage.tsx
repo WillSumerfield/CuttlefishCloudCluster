@@ -1,71 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
 import {
-  outputsDownloadUrl,
   getLogs,
-  getRetention,
   getSpawn,
   getStderr,
   Unauthorized,
   errMessage,
-  type RetentionStatus,
   type SpawnDetail,
 } from "../api";
 import { useAuth } from "../app/auth";
 import { session } from "../app/session";
 import { Tip } from "../app/Tip";
-import { human } from "../project";
 import { CancelSpawn } from "../queue/CancelSpawn";
 import { duration, armLabel, placedLabel } from "../queue/format";
-
-/**
- * The declared results, and how long the Head keeps them (docs/TODO.md "Storage retention"): 7 days
- * from the Spawn's end, or until the submitter's 32GB Allowance needs the room for newer ones.
- *
- * Renders nothing when nothing is held, and no "expired" state — that would be the loudest thing on a page about a Spawn that ran fine.
- */
-function OutputsPanel({ id }: { id: string }) {
-  const jobId = Number(id);
-  const [status, setStatus] = useState<RetentionStatus | null>(null);
-
-  useEffect(() => {
-    if (!Number.isFinite(jobId)) return;
-    let alive = true;
-    getRetention(jobId).then((st) => alive && setStatus(st));
-    return () => {
-      alive = false;
-    };
-  }, [jobId]);
-
-  if (!status) return null;
-  // Days, not minutes, and not live-ticking: a week-long deadline that re-renders every 15 seconds
-  // would claim an urgency it does not have. The final day is where the wording earns its keep.
-  const hours = (new Date(status.expires_at).getTime() - Date.now()) / 3_600_000;
-  if (hours <= 0) return null;
-  const left = hours < 24 ? `${Math.max(1, Math.round(hours))}h` : `${Math.round(hours / 24)}d`;
-
-  return (
-    <div className="shard mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <Tip
-          className="block text-[14px] text-ink"
-          text="What the run wrote into the folders it declared. Kept 7 days, or until your storage allowance needs the room for newer results."
-        >
-          Outputs kept for <span className="num">{left}</span> more
-        </Tip>
-        <p className="mt-0.5 text-[12px] text-ink-mute">
-          <span className="num">{human(status.bytes)}</span> written to this Spawn's declared outputs.
-          Fetch them before then — results are not kept forever.
-        </p>
-      </div>
-      {/* A link, not a fetch, so a 3 GB result is the download manager's problem and not this
-          tab's memory. This panel only renders when the retention route reported bytes held. */}
-      <a className="btn-primary" href={outputsDownloadUrl(jobId)} download>
-        Download outputs
-      </a>
-    </div>
-  );
-}
 
 /** How a Spawn's state should read, and whether it is worth colour. Only a real failure is loud — a
  *  cancelled Spawn is a decision somebody made, not a fault, and drawing it in alarm would say otherwise. */
@@ -318,7 +265,6 @@ export function SpawnPage({ id }: { id: string }) {
     >
       {error && <p className="mb-6 text-[13px]" style={{ color: "var(--alarm)" }}>{error}</p>}
 
-      <OutputsPanel id={id} />
 
       {detail && (
         <div className="grid gap-8 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">

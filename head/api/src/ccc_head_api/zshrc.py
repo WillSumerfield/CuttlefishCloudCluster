@@ -105,7 +105,7 @@ _ZSHRC_TMPL = """\
 # is not in your home on purpose (see POD_ZDOTDIR in ccc_head_api.zshrc).
 
 # Off, and load-bearing rather than a preference. /etc/profile is sourced before this file (see the
-# bridge in cuttle.templates.BASE_DEF_TMPL) and prints the "kept when this session ends" notice, which
+# bridge in cuttle.templates.BASE_DEF_TMPL) and anything it prints is what
 # instant prompt would flag as console output during initialization on every single login.
 typeset -g POWERLEVEL9K_INSTANT_PROMPT=off
 

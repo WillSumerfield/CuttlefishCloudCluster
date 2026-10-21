@@ -73,14 +73,12 @@ cd my-project
 cuttle
 ```
 
-It asks for the three things a Spawn cannot be submitted without, then shows you the whole thing and
+It asks for the things a Spawn cannot be submitted without, then shows you the whole thing and
 asks before it sends anything:
 
 - `--time` — wall-clock minutes. Your job is killed at it.
 - `--vram` — GPU memory in GB, totalled across the cards you asked for. Every card holding its share
   becomes eligible.
-- `--output`/`-o` — a folder in your project your script writes results into, relative to the project
-  root (`/`-prefixed for a path absolute inside the Pod). Repeatable.
 
 `--gpus N` holds more than one card, all on one machine — see
 [Spawns](../elements/spawns.md#asking-for-more-than-one-card).
@@ -88,7 +86,7 @@ asks before it sends anything:
 None have defaults. If you already know them, skip the prompting entirely:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
 ```
 
 Every command works this way — give it what you have, and it asks for the rest. Then:
@@ -100,10 +98,6 @@ cuttle queue             # what the whole cluster is doing
 ```
 
 or **Check a Spawn**, **Read a Spawn's output** and **See the queue** in the menu.
-
-**Your results come to you.** As soon as the Spawn finishes, its declared outputs download into
-`~/ccc/outputs/spawn-<id>-outputs/` — you do not have to be watching, or even have this machine
-switched on at the time. If it was off, the download resumes next time you run `cuttle`.
 
 ## Worth doing next
 

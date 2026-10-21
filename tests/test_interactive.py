@@ -256,12 +256,12 @@ class TestTheMenuGatesByState:
     def test_logged_out_hides_the_submit_suite_and_offers_login(self):
         paths = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
         assert "login" in paths
-        assert paths.isdisjoint({"run", "status", "logs", "outputs", "cancel", "karma"})
+        assert paths.isdisjoint({"run", "status", "logs", "cancel", "karma"})
         assert "logout" not in paths and "whoami" not in paths
 
     def test_logged_in_shows_the_submit_suite_and_hides_login(self):
         paths = self._paths(logged_in=True, provisioned=True, pointed=True, on_head=False)
-        assert {"run", "status", "logs", "outputs", "cancel", "karma"} <= paths
+        assert {"run", "status", "logs", "cancel", "karma"} <= paths
         assert {"logout", "whoami", "passwd"} <= paths
         assert "login" not in paths
 
@@ -274,7 +274,7 @@ class TestTheMenuGatesByState:
         Checked at every level, not just the first: filing a command into a folder must not be a way
         to smuggle it past its own gate."""
         logged_out = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
-        assert logged_out.isdisjoint({"run", "queue", "history", "status", "logs", "outputs",
+        assert logged_out.isdisjoint({"run", "queue", "history", "status", "logs",
                                       "cancel", "karma", "tide", "account"})
 
     def test_the_menu_never_falls_back_to_a_truncated_help_string(self):

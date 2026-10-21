@@ -60,8 +60,7 @@ def read(project: Path, declared: str | None) -> list[str]:
     rel = (declared or "").strip()
     if not rel:
         return []
-    # The containment rule the manifest gets (`environments.detect`) and declared outputs get
-    # (`spawns.OUTPUT_SEG_RE`): this path is joined onto a directory the Head owns, so `../../etc`
+    # The containment rule the manifest gets (`environments.detect`): this path is joined onto a directory the Head owns, so `../../etc`
     # must not be a way out of it.
     target = (project / rel).resolve()
     if not str(target).startswith(str(project.resolve()) + "/") or not target.is_file():

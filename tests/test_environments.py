@@ -88,8 +88,7 @@ def test_the_named_manifest_must_exist(tmp_path):
 
 
 def test_the_named_manifest_cannot_escape_the_project(tmp_path):
-    """The containment rule declared output paths get (spawns.OUTPUT_SEG_RE), for the same reason: this
-    path is joined onto a directory the Head owns, and `..` must not be a way out of it."""
+    """This path is joined onto a directory the Head owns, and `..` must not be a way out of it."""
     (tmp_path.parent / "outside.txt").write_text("")
     with pytest.raises(env.BuildError, match="no such manifest"):
         env.detect(_project(tmp_path), "../outside.txt")
@@ -221,7 +220,6 @@ def _script(**kw):
     kw.setdefault("minutes", 60)
     kw.setdefault("constraint", "")
     kw.setdefault("node", None)
-    kw.setdefault("outputs", ["outputs"])
     return spawns._render(staging=Path("/tmp/u"), gpu=1, script="train.py", args=[], files=[],
                           token="a3f9", secret="s3cr3t", **kw)
 
@@ -289,7 +287,7 @@ def test_payload_runs_the_environments_interpreter_and_binds_it_together():
     file-not-found the User cannot act on."""
     body = _script()
     assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind"' in body
+    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$migbind"' in body
 
 
 @pytest.mark.parametrize("kind,expect", [
@@ -645,7 +643,7 @@ def _submit(tmp_path, *names, **kw):
     kw.setdefault("manifest", names[0] if names else None)
     return spawns.submit(user_id=1, gpu=1, args=[],
                          tar_path=_tar(tmp_path, "train.py", *names), minutes=60,
-                         constraint="", outputs=["out"], **kw)
+                         constraint="", **kw)
 
 
 def _sbatch(calls):

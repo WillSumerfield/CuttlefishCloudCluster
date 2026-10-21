@@ -28,7 +28,7 @@ from ccc_head_api import ratelimit
 from ccc_head_api import siphons
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
-from cuttle import api, auth, config, settings, ui, watch
+from cuttle import api, auth, config, settings, ui
 from cuttle.main import app as cli_app
 
 USERS = {"alice": "hunter2", "root": "toor"}  # root is the Admin
@@ -70,22 +70,6 @@ def no_stray_log(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "_TROUBLE", [])
 
 
-@pytest.fixture(autouse=True)
-def no_real_sweeper(monkeypatch):
-    """No test ever forks the auto-download sweeper for real.
-
-    Autouse and unconditional: `cuttle run` arms a watch entry now, and the root callback of EVERY
-    command asks whether a sweeper should be running — so a test that never mentions downloading can
-    still reach the fork. The child is a fresh interpreter, so it inherits none of the monkeypatching
-    that keeps this suite off the operator's real `~/.ccc` and away from the real Head.
-
-    The launches are recorded rather than dropped, so a test can assert one was attempted.
-    """
-    launched: list[None] = []
-    monkeypatch.setattr(watch, "_launch", lambda: launched.append(None))
-    return launched
-
-
 @pytest.fixture
 def ccc_home(monkeypatch, tmp_path):
     """Redirect every piece of client-side state into tmp. A test that wrote a session into the real
@@ -97,8 +81,6 @@ def ccc_home(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SESSION_FILE", home / "session")
     monkeypatch.setattr(config, "PINS_DIR", home / "pins")
     monkeypatch.setattr(config, "LOG_DIR", home / "logs")
-    monkeypatch.setattr(config, "WATCH_DIR", home / "watch")
-    monkeypatch.setattr(config, "OUTPUTS_DIR", home / "outputs")
     monkeypatch.setattr(config, "TIDEPOOL_DIR", home / "tidepool")
     # The User's own ~/.ssh, redirected for the same reason as everything above and then some: a test
     # that regenerated the operator's real ssh config would rewrite the file their whole machine's ssh
@@ -160,11 +142,10 @@ def _siphon_dir(monkeypatch, tmp_path_factory):
 def _head_state(monkeypatch, tmp_path_factory):
     """No test touches the live Head state dir, for the same reason as `_siphon_dir` above.
 
-    Autouse and unconditional: `tick.once` walks the Spawn tree on its own (retention's
-    register/reap pass), so a test that never mentions a directory can still reach one — and
-    retention *unlinks*. On a box that is also a real Head, a simulated Spawn whose id collides with
-    a real one reads, and deletes, that real Spawn's files (the Fake Cluster counts ids from 1, so
-    this is not hypothetical).
+    Autouse and unconditional: `tick.once` walks Head state on its own, so a test that never mentions
+    a directory can still reach one. On a box that is also a real Head, a simulated Spawn whose id
+    collides with a real one could read or delete that real Spawn's files (the Fake Cluster counts
+    ids from 1, so this is not hypothetical).
 
     `fake_slurm` sets the same four attributes to its own tmp dir; a test using it simply overrides
     this, and both are undone at teardown."""
@@ -190,7 +171,7 @@ def _env_tools_exist(monkeypatch, tmp_path_factory):
     no apptainer to require.
 
     Autouse and unconditional, for the same reason as `_head_state` above — a Spawn is submitted by
-    tests that are about Karma, Siphons, watches and the CLI, none of which mention Environments.
+    tests that are about Karma, Siphons and the CLI, none of which mention Environments.
     Autouse fixtures are set up before requested ones, so `tests/test_environments.py`'s own
     `no_tools`/`with_tools` still override this and stay in charge of the path they are about.
     """

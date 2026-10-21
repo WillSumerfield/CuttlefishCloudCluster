@@ -1,7 +1,7 @@
 import type { ArchivedSpawn, Outcome } from "../api";
 import { Tip } from "../app/Tip";
 import { Link } from "../app/router";
-import { duration, placedLabel, outputsLabel } from "../queue/format";
+import { duration, placedLabel } from "../queue/format";
 
 /**
  * One finished Spawn in the archive. NOT a shard: the archive is a single surface and rows are soft pools
@@ -12,7 +12,7 @@ import { duration, placedLabel, outputsLabel } from "../queue/format";
  * Outcome colour is binary, per temp/DESIGN.md §State colour: done and cancelled are quiet (ink-mute);
  * failed and retracted are the loud ones and turn --alarm. No status pills, no glyphs — just the word.
  *
- * The whole row is a link to the Spawn's detail (verdict, logs, outputs); there are no per-row buttons.
+ * The whole row is a link to the Spawn's detail (verdict, logs); there are no per-row buttons.
  */
 
 const LOUD: Record<Outcome, boolean> = {
@@ -60,10 +60,6 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
   // so the archive sinks into the dark instead of stopping on a line. Newest (depth 0) sits at the surface.
   const band = Math.max(0, 20 * (1 - depth * 0.9));
   const dim = 1 - depth * 0.42;
-  // The declared results' countdown (docs/TODO.md "Storage retention"): a quiet TEXT indicator, never a
-  // button — this row's whole docstring rule ("no per-row buttons") stands; the download is on the
-  // Spawn's own page.
-  const outputs = outputsLabel(spawn.output_expires_at);
   return (
     <li>
       <Link
@@ -87,12 +83,6 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
                 <>
                   <span aria-hidden>·</span>
                   <span className="num">{duration(spawn.held)} held</span>
-                </>
-              )}
-              {outputs && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span className="num" style={{ color: "var(--ink-soft)" }}>{outputs}</span>
                 </>
               )}
             </div>

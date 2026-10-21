@@ -14,8 +14,7 @@ waits.
 
 **It bills for as long as you hold it.** Closing your laptop does not end it.
 
-**It keeps nothing.** When the session ends, the directory you were working in is gone — only
-declared outputs come home.
+**It keeps nothing.** When the session ends, the directory you were working in is gone.
 
 ## Typical use
 
@@ -69,26 +68,17 @@ like Ctrl-C on `cuttle run --follow`, which stops the log stream and not the Spa
 It keeps billing Karma until either `--time` runs out or you run `cuttle cancel <id>`. Every way out
 of the session prints that command on the way past.
 
-### The shell ends abruptly at `--time` — your work does not
+### The shell ends abruptly at `--time`
 
 At the limit your shell closes mid-keystroke, with no chance to finish what you were doing. So CCC
 interrupts the session with a warning before the cutoff (a quarter of the total, at most 5 minutes and
 at least 30 seconds ahead), so the ending is not a surprise.
-
-**Your declared outputs are not lost, though.** The Tide Pool gets a **grace period** at the limit —
-ten minutes between the signal that ends it and the kill that enforces it — and it spends that window
-sending declared outputs home, as any Spawn's do. Everything else is gone.
+Everything in the session is gone once it ends.
 
 ### You are told which machine you got
 
 Like any Spawn, you declare what you *need* — `--time`, `--vram`, `--feature` — and you are placed.
 You cannot name the Arm you want. You are told which one you were given.
-
-### Declaring outputs is optional here
-
-`--output` is required for an ordinary Spawn and merely offered for a Tide Pool, with a warning if
-you decline. Anything you leave behind in the working directory is gone when the session ends — if
-you made something you want to keep, declare it.
 
 ### Editing in VS Code
 

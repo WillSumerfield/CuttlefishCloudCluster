@@ -1,4 +1,4 @@
-"""Spawn submission + inspection: `cuttle run` / `status` / `logs` / `outputs`.
+"""Spawn submission + inspection: `cuttle run` / `status` / `logs`.
 
 A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif <its own env's python> <script>`. The
 image supplies no interpreter — every Spawn declares an **Environment** and brings one. The Slurm job id
@@ -9,16 +9,14 @@ server-side in `ccc_head_api.spawns`.
 
   * upload    — a gzip-tar of the working dir. Gitignore-aware by default (skip .git, venvs, data,
                 checkpoints); `--no-gitignore` uploads the whole tree.
-  * results   — out/err/exit/outputs live on the Head under ccc; read them back over the API
-                (`status`/`logs`/`outputs`), never off local disk. A remote submitter who never ran
-                setup gets results the same way — `cuttle outputs <id>` downloads the outputs tar.
+  * results   — out/err/exit live on the Head under ccc; read them back over the API
+                (`status`/`logs`), never off local disk.
 
 Auth: every call carries the bearer token from `~/.ccc/session`; the Head URL comes from
 ~/.ccc/config. Every route needs it. Transport is HTTPS, verified against the Head's certificate
 pinned on this machine (see tls.py).
 """
 
-import contextlib
 import io
 import re
 import subprocess
@@ -27,7 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import api, auth, config, menu, mesh, ui, watch
+from . import api, auth, config, menu, mesh, ui
 from .system import run
 
 
@@ -115,10 +113,9 @@ def _make_tar(root: Path, files: list[str] | None) -> bytes:
 
 
 def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
-    """Authed GET of a raw body (logs text / outputs tar) — carries the bearer like every other call.
+    """Authed GET of a raw body (logs text) — carries the bearer like every other call.
 
-    `missing_ok` returns None on a 404 instead of raising: a Spawn that wrote nothing to its outputs is a
-    normal outcome, not a malformed command.
+    `missing_ok` returns None on a 404 instead of raising.
     """
     client = auth._client()
     client.token = auth._load_token()
@@ -178,7 +175,7 @@ def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
 
 
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
-                   gpu: int, node: str, outputs: list[str],
+                   gpu: int, node: str,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
@@ -208,10 +205,9 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
             "submit", "--user", me, "--script", script, "--tar", tar_path,
             "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
             "--node", node, "--name", name,
-            # Repeatable, one `--output NAME` / `--feature NAME` per declared name — placed before the
-            # trailing `*args` positional (the admin parser's `nargs="*"`) so argparse never mistakes a
-            # script argument for another output/feature name.
-            *[f for name in outputs for f in ("--output", name)],
+            # Repeatable, one `--feature NAME` per declared name — placed before the trailing `*args`
+            # positional (the admin parser's `nargs="*"`) so argparse never mistakes a script argument
+            # for another feature name.
             *[f for name in (features or []) for f in ("--feature", name)],
             *(["--activation"] if activation else []),
             *(["--tidepool"] if tidepool else []),
@@ -248,7 +244,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
 
 
 def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
-           outputs: list[str], features: list[str] | None = None, manifest: str | None = None,
+           features: list[str] | None = None, manifest: str | None = None,
            substrate: str | None = None,
            root: Path | None = None) -> None:
     """Show what is about to be uploaded, before it is.
@@ -280,15 +276,13 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
         ("limit", f"{minutes} min"),
         ("needs", f"{vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"
                   + (f", features: {', '.join(features)}" if features else "")),
-        ("outputs", ", ".join(outputs)),
     ], title="About to submit")
 
 
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
-           outputs: list[str], no_gitignore: bool = False, node: str | None = None,
+           no_gitignore: bool = False, node: str | None = None,
            features: list[str] | None = None, manifest: str | None = None,
-           substrate: str | None = None,
-           download: bool = True, dest: Path | None = None, root: Path | None = None,
+           substrate: str | None = None, root: Path | None = None,
            name: str = "") -> None:
     root = root or Path.cwd()
     files = None if no_gitignore else _project_files(root)
@@ -303,11 +297,11 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     env_note = None
     if node:
         spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
-                                            outputs, features=features, manifest=manifest,
+                                            features=features, manifest=manifest,
                                             substrate=substrate, name=name)
     else:
         meta = {"script": script, "gpu": gpu, "args": args, "name": name,
-                "minutes": minutes, "vram": vram, "outputs": outputs,
+                "minutes": minutes, "vram": vram,
                 # Omitted rather than sent empty, matching the rest of this dict's optional fields —
                 # most Spawns declare none, and the Head reads an absent key as "no requirement".
                 **({"features": features} if features else {}),
@@ -337,41 +331,11 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     if env_note:
         ui.say(f"  [muted]{env_note}[/muted]")
     ui.data(str(spawn_id))
-    # Armed BEFORE anything blocks, and armed even when we are about to follow: the entry is the
-    # durable intent (cuttle.watch), so a Ctrl-C out of `--follow` leaves the obligation standing and
-    # the next `cuttle` invocation of any kind picks it up.
-    if download:
-        # config.OUTPUTS_DIR, not `root`: results land in one predictable place a User can find rather
-        # than beside whichever directory they happened to submit from. Said out loud, in full, because
-        # a path nobody was told about is a result nobody collects.
-        target = Path(dest) if dest else config.OUTPUTS_DIR
-        watch.arm(spawn_id, target)
-        ui.say(f"  [muted]results → {target / f'spawn-{spawn_id}-outputs'}[/muted]")
     if follow:
         _follow(spawn_id)
-    if download:
-        if follow:
-            # Already waited for it on this terminal — fetch inline rather than forking a sweeper to
-            # re-poll a Spawn we just watched end. A failure here settles nothing: the entry survives
-            # and is retried later, exactly as if we had never been watching.
-            _download_now(spawn_id)
-        else:
-            watch.ensure_sweeper()
 
 
-def _download_now(spawn_id: int) -> None:
-    """The foreground half of auto-download, for `--follow`. Says out loud what the sweeper would only
-    have written to a log file, because here there is a terminal and a User still in front of it."""
-    if not watch.drain_one(spawn_id):
-        # Not settled: the Head could not be reached, or the results have not landed from a remote Arm
-        # yet. Hand it to the sweeper rather than blocking this terminal any longer.
-        ui.hint("results are not on the Head yet — they will be downloaded in the background")
-        watch.ensure_sweeper()
-        return
-    ui.say(f"  [muted]{watch.summary(spawn_id)}[/muted]")
-
-
-def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
+def submit_tidepool(minutes: int, vram: int, gpu: int, node: str | None = None,
                     features: list[str] | None = None, manifest: str | None = None,
                     substrate: str | None = None,
                     no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
@@ -399,10 +363,10 @@ def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node:
     else:
         tar = _make_tar(root, [])
     if node:
-        return _submit_pinned(tar, "", [], minutes, vram, gpu, node, outputs,
+        return _submit_pinned(tar, "", [], minutes, vram, gpu, node,
                               features=features, tidepool=True, manifest=manifest,
                               substrate=substrate, name=name)[0]
-    meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,
+    meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "tidepool": True,
            "name": name,
            **({"features": features} if features else {}),
            # Absent means "no Environment", which for a Tide Pool alone is legal — so unlike an
@@ -602,23 +566,8 @@ def history(days: int = 30, as_json: bool = False, limit: int = 0) -> None:
              for r in rows])
         if limit and len(rows) >= limit:
             ui.hint(f"showing {limit}; use --limit 0 for all")
-        _hint_downloads()
 
     ui.emit(rows, as_json, render)
-
-
-def _hint_downloads() -> None:
-    """What auto-download (cuttle.watch) still owes this box. A line under `history` rather than a
-    column in it: the table is *everyone's* Spawns and this is only ever about yours. The actionable
-    case is the blocked one — a parked entry is waiting on a login nobody has been told to perform."""
-    blocked = [e for e in watch.entries() if e.get("state") == watch.PARKED]
-    if blocked:
-        ids = ", ".join(str(e["spawn_id"]) for e in blocked)
-        ui.warn(f"{len(blocked)} download(s) blocked ({ids}) — {blocked[0].get('note') or ''}")
-    waiting = watch.pending()
-    if waiting:
-        ui.hint(f"{len(waiting)} result(s) will download here when their Spawns finish "
-                f"({', '.join(str(e['spawn_id']) for e in waiting)})")
 
 
 def status(spawn_id: int, as_json: bool = False) -> None:
@@ -626,12 +575,6 @@ def status(spawn_id: int, as_json: bool = False) -> None:
 
     def render():
         ui.data(_outcome(st).upper() if st.get("done") else st["state"])
-        # Where this box's copy of the results went, if it is owed one. `cuttle status` is the one
-        # command a User runs *about a specific Spawn*, so it is where "downloaded → ./spawn-41-outputs/"
-        # belongs — the sweeper had no terminal to say it on.
-        line = watch.summary(spawn_id)
-        if line:
-            ui.say(f"  [muted]{line}[/muted]")
 
     ui.emit(st, as_json, render)
 
@@ -647,58 +590,3 @@ def logs(spawn_id: int, follow: bool) -> None:
         return
     # Both sections always, so a FAILED Spawn's traceback (in stderr, out empty) is never hidden.
     ui.data(f"=== stdout ===\n{out}\n\n=== stderr ===\n{err}")
-
-
-def _fetch(path: str, dest: Path, label: str, member=None) -> None:
-    """Stream a tar off the Head straight into `dest`, drawing how far along it is.
-
-    The bar is not decoration. A 3GB result is minutes of transfer, and the whole reason this command
-    was unusable is that minutes of silence and a wedged connection look identical from the outside.
-
-    Opened lazily, on the first byte rather than here, and that is the whole reason for the stack: a
-    Spawn that wrote nothing is a *normal* answer, and a progress line already on screen when it comes
-    back would have to resolve into a ✗ — which is how this CLI says a command failed. Nothing failed.
-
-    The denominator rides in on the response's own `X-CCC-Bytes` header and reaches `ui.progress`
-    through `update`. There is no pre-flight lookup: this used to GET `/spawns/<id>/retention` first,
-    a ledger row the Head writes on a 30s tick, so collecting results the moment a Spawn ended — the
-    common case — reliably found nothing and drew no bar.
-    """
-    client = auth._client()
-    client.token = auth._load_token()
-    with contextlib.ExitStack() as stack:
-        drawn = []
-
-        def update(done: int, total: int | None = None) -> None:
-            if not drawn:
-                drawn.append(stack.enter_context(ui.progress(label, total=total)))
-            drawn[0](done, total)
-
-        client.download_extract(path, dest, member=member, on_progress=update)
-
-
-def outputs(spawn_id: int) -> None:
-    """Download and unpack a Spawn's declared outputs into `~/ccc/outputs/spawn-<id>-outputs/`.
-
-    Extracted, not left as a tar: the tar is how results travel, not what anybody wanted. And into the
-    same place the auto-download uses rather than the cwd, so results live in one predictable location
-    however they were fetched — which also means running this twice is idempotent instead of leaving a
-    second copy wherever the second shell happened to be standing.
-
-    Two different misses, and the Head is the one that can tell them apart (see main.spawn_outputs), so
-    its 404 detail is printed verbatim rather than replaced by a guess here: a Spawn that WROTE nothing,
-    versus one whose results were held and are now gone — 7 days elapsed, or evicted for the submitter's
-    32GB Allowance. Telling a User their Spawn produced nothing when it produced 3GB they simply came
-    back too late for is the one answer worse than saying neither."""
-    dest = config.OUTPUTS_DIR / f"spawn-{spawn_id}-outputs"
-    try:
-        _fetch(f"/spawns/{spawn_id}/outputs", dest, f"downloading spawn {spawn_id}",
-               member=watch._member)
-    except api.ApiError as e:
-        if e.status != 404:
-            if ui.DEBUG:
-                raise
-            raise ui.abort(e.user_message()) from None
-        ui.warn(e.user_message())
-        return
-    ui.ok(f"results are in {dest}")

@@ -143,7 +143,7 @@ def _return(node: str) -> int:
 
 
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
-            node: str | None, args: list[str], outputs: list[str],
+            node: str | None, args: list[str],
             features: list[str] | None = None, tidepool: bool = False,
             manifest: str | None = None, substrate: str | None = None,
             activation: bool = False, name: str = "") -> int:
@@ -169,7 +169,7 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
             return 1
     try:
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
-                                       Path(tar), minutes, vram, outputs, node,
+                                       Path(tar), minutes, vram, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
                                        substrate=substrate, activation=activation, name=name)
     except ValueError as e:
@@ -238,8 +238,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--vram", type=int, required=True)
     s.add_argument("--gpu", type=int, default=1)
     s.add_argument("--node")
-    s.add_argument("--output", action="append", default=[], dest="outputs",
-                   help="declared output subdir name (repeatable; required unless --tidepool).")
     s.add_argument("--feature", action="append", default=[], dest="features",
                    help="required Arm Feature (repeatable; optional — default none).")
     s.add_argument("--activation", action="store_true",
@@ -276,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         return _return(args.node)
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
-                       args.node, args.args, args.outputs, args.features,
+                       args.node, args.args, args.features,
                        tidepool=args.tidepool, manifest=args.manifest, substrate=args.substrate,
                        activation=args.activation, name=args.name)
     if args.cmd == "feature-activation":

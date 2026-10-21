@@ -886,7 +886,7 @@ def _activate_one(name: str, feat: str, project: dict[str, str], spawn_client) -
         tar = spawn_client.tar_from_files(project)
         spawn_id, _ = spawn_client._submit_pinned(
             tar, "activate.py", [], minutes=ACTIVATION_MINUTES, vram=0, gpu=1, node=name,
-            outputs=[config.ACTIVATION_OUTPUT_DIR], features=[feat],
+            features=[feat],
             manifest="pyproject.toml", activation=True,
             name=config.ACTIVATION_SPAWN_NAME % feat,
             # The first admin, who owns the Head's own Arm. Not "whoever is logged in": this Spawn is

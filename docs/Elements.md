@@ -34,11 +34,6 @@ gates anything. There is no balance at which CCC refuses your job; low standing 
 someone else when you both want the cluster at the same time. On an idle cluster it does nothing at
 all. **admin:** `override`, `bump`.
 
-### [Storage](elements/storage.md)
-
-Where your things live and how long they last: uploaded projects (until the Spawn starts), results
-(7 days, 32 GB).
-
 ## Donating a machine
 
 ### [Arms](elements/arms.md)

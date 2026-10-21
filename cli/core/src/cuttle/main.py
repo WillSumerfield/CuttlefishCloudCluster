@@ -22,7 +22,6 @@ from . import system
 from . import teardown as teardown_mod
 from . import tidepool as tidepool_mod
 from . import ui
-from . import watch as watch_mod
 
 # pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
 # --debug); two competing renderers would be unpredictable.
@@ -73,10 +72,6 @@ def _root(
 ) -> None:
     """CCC front door."""
     ui.configure(debug=debug, verbose=verbose, no_input=no_input)
-    # Sweeper is a detached process with nothing keeping it alive across reboot, so every command
-    # is an opportunity to notice results are still owed and restart one. Swallows all errors — a
-    # client whose watch dir is unreadable must still be able to run `status`.
-    watch_mod.ensure_sweeper()
     if ctx.invoked_subcommand is None:
         _no_command()
 
@@ -713,19 +708,11 @@ def run(
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
     directory: Path = typer.Option(
-        None, "--dir", help="Project directory to upload (default: the current one). The script, "
-                            "--manifest and --output paths are all relative to it. Results still "
-                            "download to where you are, not to it."),
+        None, "--dir", help="Project directory to upload (default: the current one). The script "
+                            "and --manifest paths are relative to it."),
     node: str = typer.Option(
         None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
                              "need (--vram), never which machine they want."),
-    output: list[str] = typer.Option(
-        None, "--output", "-o", help="A folder IN YOUR PROJECT your script writes results to, relative "
-                                     "to the project root (e.g. `-o runs`, `-o out/ckpt`); repeatable. "
-                                     "Start it with `/` for a path absolute inside the Pod instead. "
-                                     "Required — at least one (optional, with a y/n warning, for "
-                                     "--tidepool). Anything your script writes OUTSIDE these folders is "
-                                     "gone when the Spawn ends."),
     feature: list[str] = typer.Option(
         # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
@@ -750,46 +737,19 @@ def run(
                                 "launches VS Code straight into your project directory. Without it "
                                 "the alias is printed and VS Code's own 'Connect to Host' picker "
                                 "finds it."),
-    no_download: bool = typer.Option(
-        False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
-                                     "they are downloaded into ~/ccc/outputs/spawn-<id>-outputs/ as "
-                                     "soon as it finishes, whether or not this command is running."),
-    dest: Path = typer.Option(
-        None, "--dest", help="Where to put this Spawn's results (default: ~/ccc/outputs)."),
 ):
     """Submit a Spawn: uploads the working dir to the Head, which builds the environment you
     declared and runs your script against it inside a Pod. Requires `cuttle login`. Extra args after the
-    script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -o checkpoints -- --epochs 5`).
+    script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -- --epochs 5`).
 
     --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody
     declared, and a --vram that defaulted to the fleet's biggest card would make every untouched
     field eligible for that one GPU alone — queued behind everything, at the highest Demand, for work
     that may need 2 GB.
 
-    --output/-o has no default either, and none is offered anywhere: a Spawn nobody named an output
-    for is one whose results (docs/elements/spawns.md) have nowhere retrievable to land.
-
-    An output is a path in YOUR OWN project — `-o runs` is the `runs/` your script already writes to,
-    relative to the project root, and CCC keeps whatever is in it when the Spawn ends. Your code needs
-    no changes and no knowledge of CCC to work here. A path starting with `/` is absolute inside the
-    Pod instead, for keeping something an Arm Feature writes outside your project entirely.
-
-    Whatever you uploaded at that path is still there when the run starts — declaring `-o checkpoints`
-    never hides a checkpoint you sent along to resume from.
-
-    What you DID declare is downloaded automatically, into ~/ccc/outputs/spawn-<id>-outputs/, as the
-    Spawn finishes — you do not have to be running this command, or logged into this terminal, or even
-    have this machine switched on at the time (it resumes next time you run `cuttle`). `--no-download`
-    turns that off for one Spawn.
-
-    On the Head that same copy is kept 7 days, and only while your 32GB of output space has room for
-    it — past either, `cuttle outputs <id>` says so rather than 404ing (docs/elements/storage.md).
-    Nothing on the Head is an archive; the automatic download is what makes that safe.
-
-    --tidepool replaces the whole script/output/upload story above with a live shell — see
+    --tidepool replaces the whole script/upload story above with a live shell — see
     cuttle.tidepool for that flow; everything below this point is the ordinary script path.
     """
-    output = list(output) if output else []
     feature = list(feature) if feature else []
     # Resolved once, before anything is validated or packed, so every path below means the same thing.
     root = spawns_mod.project_root(directory)
@@ -803,8 +763,8 @@ def run(
         if substrate and not (root / substrate).is_file():
             raise ui.abort(f"substrate {substrate!r} was not found (looked for it relative to the "
                            f"project directory, {root})")
-        return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node, outputs=output,
-                                features=feature, follow=follow, download=not no_download,
+        return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node,
+                                features=feature, follow=follow,
                                 manifest=manifest, substrate=substrate, no_gitignore=no_gitignore,
                                 vscode=vscode, root=root, name=name)
     if vscode:
@@ -837,21 +797,6 @@ def run(
             gpu = ui.ask_int("How many GPUs? (all on one machine)", default=str(gpu))
             no_gitignore = not ui.ask_confirm("Honor .gitignore when uploading?", True)
             follow = follow or ui.ask_confirm("Stream output until it ends?", False)
-            # Collected here, like every other wizard field — but never pre-filled, and the hard gate
-            # below still runs regardless of how these were collected. At least one is required before
-            # the loop lets you move on; blank only ends it once you have one.
-            # `folder`/`feat`, not `name`: that is this command's own --name parameter now, and a loop
-            # variable would quietly overwrite the Spawn's Name with the last output folder typed.
-            while not output:
-                folder = ui.ask_text("Output folder name (--output) — where your script writes results")
-                if folder:
-                    output.append(folder)
-                else:
-                    ui.warn("at least one output folder is required")
-            while ui.ask_confirm("Add another output folder?", False):
-                folder = ui.ask_text("Output folder name")
-                if folder:
-                    output.append(folder)
             # Optional, never gates submission. Offered from the built-in catalog
             # (config.FEATURE_NAMES) — a constant, so no Head call and no failure mode here. Whether
             # an Arm actually carries a Feature is checked at submit, not here.
@@ -861,11 +806,7 @@ def run(
                         feature.append(feat)
     # Hard validation, unconditional — NOT gated on `wizard`. A flag-driven `cuttle run` never passes
     # through the wizard block above, so this is the only gate a direct invocation ever sees. No y/n
-    # override for either: a Spawn with no output declared or a script that isn't there is refused, not
-    # warned about.
-    if not output:
-        raise ui.abort("at least one --output/-o is required — name the folder(s) in your project your "
-                       "script writes results to (e.g. `--output checkpoints`)")
+    # override: a script that isn't there is refused, not warned about.
     if not (root / script).is_file():
         raise ui.abort(f"script {script!r} was not found (looked for it relative to the project "
                        f"directory, {root})")
@@ -882,14 +823,14 @@ def run(
                        f"directory, {root})")
     if wizard:
         spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore,
-                          outputs=output, features=feature, manifest=manifest, substrate=substrate,
+                          features=feature, manifest=manifest, substrate=substrate,
                           root=root)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args,
-                      no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
+                      no_gitignore=no_gitignore, node=node, minutes=time, vram=vram,
                       features=feature, manifest=manifest, substrate=substrate,
-                      download=not no_download, dest=dest, root=root, name=name)
+                      root=root, name=name)
 
 
 @app.command()
@@ -973,13 +914,6 @@ def logs(
     """Print (or follow) a Spawn's stdout and stderr."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Read which Spawn?"))
     spawns_mod.logs(spawn_id, follow=follow)
-
-
-@app.command()
-def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
-    """Download a Spawn's declared outputs into ~/ccc/outputs/spawn-<id>-outputs/."""
-    spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Download which Spawn?"))
-    spawns_mod.outputs(spawn_id)
 
 
 def main() -> None:

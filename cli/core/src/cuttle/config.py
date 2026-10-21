@@ -398,11 +398,6 @@ ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
 # can never collide over it. ccc_head_api.spawns.JOB_SCRIPT binds it at the Guise's home inside the Pod
 # (the only place a licence manager looks), and only for a Spawn that requested a Feature.
 LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
-# The `--output` an activation Spawn declares (cuttle.enroll.activate_arm). Every Spawn but a Tide Pool
-# must name at least one, and this one has nothing to bring home — what it produces is the activation
-# state, written into the Arm's own Licence directory and left there. So the directory is real, empty,
-# and named once here rather than as a string in the middle of the admit path.
-ACTIVATION_OUTPUT_DIR = "activation"
 # What an **Activation Spawn** is called in the queue and the archive. Every Spawn carries a **Name** a
 # person chose (CONTEXT.md) — and this one is no exception, it just has no submitter standing there to
 # be asked: it is CCC's own work, run during an admit. So the name is chosen once, here, by whoever
@@ -568,7 +563,7 @@ HEAD_DB = HEAD_STATE_DIR / "head.db"
 # Submission state (all ccc-owned, 0700, under HEAD_STATE_DIR so `ccc` can create/traverse them):
 #   projects/<uuid>/  — an uploaded project tree, unpacked by the Head API from a `cuttle run` tar.
 #                       Also the rsync [project] module root (a remote Arm pulls <uuid>/... from here).
-#   spawns/<id>/      — a Spawn's out/err/exit/outputs (the rsync [spawns] stage-out target). The CLI
+#   spawns/<id>/      — a Spawn's out/err/exit (the rsync [spawns] stage-out target). The CLI
 #                       reads these back over the API, never off local disk (jobs run as ccc now).
 #   scratch/<id>/     — the co-located Arm's per-Spawn run dir. A job NEVER runs in the served
 #                       projects tree (that would mutate the rsync source); it's copied here first.
@@ -811,17 +806,13 @@ PINS_DIR = CCC_HOME / "pins"
 # and is gone when it closes — so the log is the only place the detail survives. One file per run,
 # named for when it started, so a failure days later still has its own.
 LOG_DIR = CCC_HOME / "logs"
-# Cap on the run logs, mirroring watch.MAX_ENTRIES. One file per invocation with no reaper is a leak
+# Cap on the run logs. One file per invocation with no reaper is a leak
 # on a CLI built to be scripted — and every one of them holds a transcript, which is why this is a cap
 # and not a policy of keeping them all (ui._prune_logs).
 MAX_LOGS = 500
 # CLI session bearer: the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 SESSION_FILE = CCC_HOME / "session"
-# Auto-download bookkeeping (cuttle.watch): one `<id>.json` per Spawn whose results this box is still
-# owed, plus its `<id>.log`. The FILE is the durable intent and the sweeper process is only the
-# current attempt at it — which is what lets a reboot, a logout or a `pkill` cost nothing but time.
-WATCH_DIR = CCC_HOME / "watch"
 # One `<id>.key` (0600) + `<id>.json` per Tide Pool this box can still reach. The key used to be a
 # tempfile unlinked the moment `ssh` exited, which made it unusable by anything that is not this
 # process — and VS Code is exactly that. A key's lifetime is now its Tide Pool's: the same sweep that
@@ -836,14 +827,6 @@ SSH_CCC_CONFIG = SSH_DIR / "ccc.config"
 # Under ~/.ccc rather than apptainer's own ~/.apptainer/cache so that teardown reclaims it: the build
 # runs unprivileged, and a multi-GB cache in the operator's home is outside every tree CCC removes.
 APPTAINER_CACHE_DIR = CCC_HOME / "cache"
-# Where an auto-download lands. Results are the User's, never CCC's: nothing under here is ever expired
-# or swept, unlike the Head's own copy.
-#
-# `~/ccc`, deliberately NOT under the dot-directory: this is the one path in CCC a User is expected to
-# open, and results a User cannot find are results they did not get. It is also now the DEFAULT rather
-# than a fallback for a vanished submit directory — one predictable place beats results scattered
-# across every directory anyone ever submitted from. `cuttle run --dest` overrides it per Spawn.
-OUTPUTS_DIR = Path(os.environ.get("CCC_OUTPUTS") or Path.home() / "ccc" / "outputs")
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
 

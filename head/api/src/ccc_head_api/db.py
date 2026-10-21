@@ -204,7 +204,7 @@ ALTER TABLE users ADD COLUMN wandb_key BLOB;
 """
 
 # Tide Pool: a Spawn whose payload is a live shell instead of a script. `spawns.tidepool` marks which
-# ones (submit_checked skips the outputs/script requirements for them). Two tables because the port has
+# ones (submit_checked skips the script requirement for them). Two tables because the port has
 # to be reserved BEFORE the job_id exists (baked into the job script, rendered before sbatch ever runs
 # — sshd inside the Pod and the Head's relay both bind it), and `tidepools.job_id` can't be a key
 # nothing has yet:
@@ -282,6 +282,8 @@ INSERT INTO guises (uid, user_id)
   SELECT {guises.UID_BASE} + ROW_NUMBER() OVER (ORDER BY id) - 1, id FROM users;
 """
 
+# Unused since 2.0 dropped Outputs and retention; kept only until the schema collapse.
+#
 # Output retention. Exactly `recovery_copies`' shape, one row per Spawn whose declared Output results
 # the Head is holding, and `created_at` again does both jobs — the 7-day expiry clock AND the
 # oldest-first eviction order. It is copied from the Spawn's `finished_at`, not stamped at
@@ -870,19 +872,14 @@ def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, 
 # the list and another on its own page. The settled cost joins in from the ledger's `settle` row (a
 # Spawn that never settled — Admin-owned, or ended before its escrow was metered — has NULL cost,
 # which reads as `—`).
-#
-# output_copies joins in NULL for a Spawn whose results are not held — main.py turns
-# `output_created_at` into the wire-facing `output_expires_at`, since the TTL (retention.TTL_DAYS) is
-# that module's constant, not this one's business.
 _SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script, s.name,
                        s.gpus, s.vram_gb, s.minutes, s.node, s.placed_node,
                        u.username AS submitted_by,
-                       l.amount AS cost,
-                       o.bytes AS output_bytes, o.created_at AS output_created_at
+                       l.amount AS cost
                 FROM spawns s
                 LEFT JOIN users u ON u.id = s.user_id
                 LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
-                LEFT JOIN output_copies o ON o.job_id = s.job_id"""
+"""
 
 
 def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int],
@@ -1225,67 +1222,3 @@ def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
     conn.execute("DELETE FROM tidepools WHERE job_id=?", (job_id,))
     conn.execute("DELETE FROM tidepool_ports WHERE port=?", (row["port"],))
     conn.commit()
-
-
-# --- Output retention -------------------------------------------------------------
-# See _SCHEMA_V11 for the table shape. Driven by ccc_head_api.retention from the karma tick; the TTL and
-# the per-User Allowance are that module's constants, never decided here.
-
-def output_registration_rows(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlite3.Row]:
-    """Map job_id -> `(user_id, finished_at, registered)` for the Spawns whose outputs are on disk.
-
-    `registered` is the LEFT JOIN's "is there already a row" as a 0/1, so one query answers all three
-    of `register_new`'s questions. Takes the disk's list for the same reason
-    `spawns_by_staging_uuid` does: it is bounded by the TTL, while the ledger is not."""
-    if not job_ids:
-        return {}
-    marks = ",".join("?" * len(job_ids))
-    rows = conn.execute(
-        f"""SELECT s.job_id, s.user_id, s.finished_at, (o.job_id IS NOT NULL) AS registered
-            FROM spawns s LEFT JOIN output_copies o ON o.job_id = s.job_id
-            WHERE s.job_id IN ({marks})""",
-        job_ids,
-    ).fetchall()
-    return {r["job_id"]: r for r in rows}
-
-
-def add_output(conn: sqlite3.Connection, job_id: int, size_bytes: int, at: str | None = None) -> None:
-    if at is None:
-        conn.execute("INSERT INTO output_copies (job_id, bytes) VALUES (?,?)", (job_id, size_bytes))
-    else:
-        conn.execute("INSERT INTO output_copies (job_id, bytes, created_at) VALUES (?,?,?)",
-                     (job_id, size_bytes, at))
-    conn.commit()
-
-
-def get_output(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM output_copies WHERE job_id=?", (job_id,)).fetchone()
-
-
-def delete_output(conn: sqlite3.Connection, job_id: int) -> None:
-    conn.execute("DELETE FROM output_copies WHERE job_id=?", (job_id,))
-    conn.commit()
-
-
-def expired_outputs(conn: sqlite3.Connection, cutoff: str) -> list[int]:
-    """Every Spawn whose outputs were created at or before `cutoff` — reap_expired's candidates."""
-    return [r["job_id"] for r in
-            conn.execute("SELECT job_id FROM output_copies WHERE created_at <= ?", (cutoff,)).fetchall()]
-
-
-def user_output_bytes(conn: sqlite3.Connection, user_id: int) -> int:
-    """What one User currently holds, against their 32GB Allowance. Scoped through `spawns.user_id`
-    rather than a column here — see _SCHEMA_V11 for why there isn't one."""
-    (total,) = conn.execute(
-        """SELECT COALESCE(SUM(o.bytes), 0) FROM output_copies o
-           JOIN spawns s ON s.job_id = o.job_id WHERE s.user_id = ?""", (user_id,)).fetchone()
-    return total
-
-
-def oldest_output(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
-    """That User's longest-held result — `_make_room`'s eviction candidate. Theirs alone: one User's
-    results can never evict another's (CONTEXT.md, **Allowance**)."""
-    return conn.execute(
-        """SELECT o.job_id, o.bytes FROM output_copies o
-           JOIN spawns s ON s.job_id = o.job_id WHERE s.user_id = ?
-           ORDER BY o.created_at LIMIT 1""", (user_id,)).fetchone()

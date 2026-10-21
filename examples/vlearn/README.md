@@ -2,8 +2,7 @@
 
 Ant PPO on VSim, submitted as an ordinary Spawn. Exercises the whole `vlearn` **Feature** path end to
 end: Eligibility narrowing to the one licensed Arm, an Environment built on the Head, the Arm's own
-vlearn package and assets arranged by CCC, its **Licence** bound at the Spawn's Guise home, and
-declared outputs staged back.
+vlearn package and assets arranged by CCC, and its **Licence** bound at the Spawn's Guise home.
 
 ## Prerequisites
 
@@ -22,7 +21,7 @@ Spawn that asks for a Feature.
 ```bash
 ./prepare.sh                  # copies train/ out of a vlearn checkout — that is the whole project
 cuttle run run.py --feature vlearn --manifest pyproject.toml --no-gitignore \
-  --output runs --vram 16 --gpu 1 --time 30 --follow
+  --vram 16 --gpu 1 --time 30 --follow
 ```
 
 `--feature vlearn` is the entire request. It restricts placement to an Arm that holds the licence, and
@@ -71,8 +70,8 @@ passes. So the mount point is not something a submitter can influence; CCC binds
 
 ## Expected output
 
-`runs/Ant_<timestamp>/` in the project, declared with `-o runs`, holding rl_games checkpoints (`nn/*.pth`) and TensorBoard
-event files, downloaded to your machine when the Spawn finishes.
+`runs/Ant_<timestamp>/` in the Spawn's working directory, holding rl_games checkpoints (`nn/*.pth`)
+and TensorBoard event files. Not kept once the Spawn ends; the training log is what comes home.
 
 ## If it fails
 

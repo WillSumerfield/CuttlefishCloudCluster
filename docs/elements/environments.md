@@ -5,10 +5,10 @@
 The **Environment** is the Python your code actually runs against inside its sandbox.
 
 **Every Spawn declares one, and names the file it is built from.** There is no default and nothing is
-detected — `--manifest` is required, alongside `--time`, `--vram` and `--output`:
+detected — `--manifest` is required, alongside `--time` and `--vram`:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
 ```
 
 You declare it the way you already do, in the dependency file your own tooling writes:
@@ -47,16 +47,16 @@ One package arrives that you did not ask for: **`pip`**, so `pip install` works 
 **Name the file you already have:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml
-cuttle run train.py --time 60 --vram 24 -o out --manifest requirements.txt
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
+cuttle run train.py --time 60 --vram 24 --manifest requirements.txt
 ```
 
 **Keep several and pick one** — nothing has to sit in your project root, and nothing has to be
 called what uv or conda call it:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --manifest requirements-gpu.txt
-cuttle run train.py --time 60 --vram 24 -o out --manifest envs/cuda12.yml
+cuttle run train.py --time 60 --vram 24 --manifest requirements-gpu.txt
+cuttle run train.py --time 60 --vram 24 --manifest envs/cuda12.yml
 ```
 
 **Pin your Python version** by declaring it, in `pyproject.toml`:
@@ -71,7 +71,7 @@ That exact interpreter is fetched and built against. The cluster's image has not
 ahead of anything your script prints:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml --follow
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml --follow
 ```
 
 There are six worked projects in [`examples/environments/`](../../examples/environments/), one per
@@ -112,8 +112,8 @@ Public git dependencies are fine. For a private one, clone it in your script ins
 
 ### Nobody owns one
 
-Your Environment dies with the Spawn that built it; the next run builds it again. You do not own one,
-hold one, or spend any allowance on one. Only the *declaration* persists, and only because it is part
+Your Environment dies with the Spawn that built it; the next run builds it again. You do not own one
+or hold one. Only the *declaration* persists, and only because it is part
 of your code.
 
 ### A package an Arm Feature supplies is replaced before the build

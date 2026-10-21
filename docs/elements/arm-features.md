@@ -13,7 +13,7 @@ installed, and for some, the whole runtime environment a Spawn needs to load it.
 You ask for a Feature the same way you ask for VRAM: as a **need**, not a machine name.
 
 ```sh
-cuttle run sim.py --time 30 --vram 16 -o results --manifest pyproject.toml --feature isaaclab
+cuttle run sim.py --time 30 --vram 16 --manifest pyproject.toml --feature isaaclab
 ```
 
 That widens or narrows which Arms your Spawn can land on, and nothing else. You still never choose
@@ -32,7 +32,7 @@ Runs anywhere, needs no login — the catalog is a constant.
 **Require one:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o out --manifest pyproject.toml --feature vlearn
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml --feature vlearn
 ```
 
 Repeatable, if you need more than one.

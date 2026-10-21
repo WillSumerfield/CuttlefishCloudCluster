@@ -11,7 +11,7 @@ Two halves with different trust models:
 
 import typer
 
-from . import api, config, headapi, settings, tls, ui, watch
+from . import api, config, headapi, settings, tls, ui
 from .system import run
 
 
@@ -217,14 +217,6 @@ def logout() -> None:
         _api("POST", "/logout", token=_load_token())
         config.SESSION_FILE.unlink()
     ui.ok("logged out")
-    # Auto-download re-reads this file on every pass and never keeps a copy of the token, so logging
-    # out genuinely stops it — which makes this the moment to say so, rather than leaving a User to
-    # find out days later that results they were promised never arrived.
-    waiting = watch.pending()
-    if waiting:
-        ui.hint(f"{len(waiting)} result(s) were still waiting to download here "
-                f"({', '.join(str(e['spawn_id']) for e in waiting)}) — they resume when you log "
-                f"back in, as long as the Head still holds them")
 
 
 # --- user-admin (on the Head, as ccc) ---------------------------------------

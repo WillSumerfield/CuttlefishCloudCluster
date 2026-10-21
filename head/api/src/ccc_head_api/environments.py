@@ -48,8 +48,7 @@ not install into a venv on its own and whose absence would break a **Tide Pool**
 who declared their own version keeps it, exactly as they used to when the image supplied one.
 
 **Nothing is cached except downloads.** The built env lives in the Spawn's node-local scratch and dies
-with it, like the working directory around it — no box grows a permanent env store, and **Allowance**
-keeps meaning a ceiling on things a User would *lose*, which a rebuildable env is not. The package
+with it, like the working directory around it — no box grows a permanent env store. The package
 *download* cache on each Arm persists: node-local, size-capped, never staged, shared by every Guise on
 the box — the only reason "rebuild every time" is affordable. The second Spawn to want a given torch
 hard-links it out of that cache instead of fetching it.
@@ -223,8 +222,7 @@ def detect(project: Path, manifest: str | None) -> Manifest:
     rel = (manifest or "").strip()
     if not rel:
         raise BuildError(NOTHING_DECLARED)
-    # The same containment rule declared output paths get (spawns.OUTPUT_SEG_RE): a manifest
-    # path is joined onto a directory the Head owns, so `../../etc` must not be a way out of it.
+    # Containment: a manifest path is joined onto a directory the Head owns, so `../../etc` must not be a way out of it.
     # Resolved against the project and required to stay inside it.
     target = (project / rel).resolve()
     if not str(target).startswith(str(project.resolve()) + os.sep) or not target.is_file():

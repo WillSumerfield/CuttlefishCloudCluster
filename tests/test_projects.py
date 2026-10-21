@@ -30,7 +30,6 @@ class TestTheStagedMarker:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(
             staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
             token="a3f9", secret="s3cr3t", **kw)
@@ -84,7 +83,7 @@ class TestNoRequeue:
             uid = db.get_user(conn, "alice")["id"]
         tar = tmp_path / "p.tar.gz"
         _write_tar(tar)
-        head_spawns.submit(uid, "train.py", 1, [], tar, 60, "", ["outputs"],
+        head_spawns.submit(uid, "train.py", 1, [], tar, 60, "",
                            manifest="requirements.txt")
         sbatch = next(c for c in calls if "sbatch" in c)
         assert "--no-requeue" in sbatch
@@ -321,11 +320,10 @@ class TestWhatASubmissionLandsAs:
         parent grants exactly the traversal a guessed name needs."""
         old = os.umask(0o022)
         try:
-            d = head_spawns._make_spawn_dir(4321, outputs=True)
+            d = head_spawns._make_spawn_dir(4321)
         finally:
             os.umask(old)
         assert stat.S_IMODE(d.stat().st_mode) == head_spawns.SPAWN_DIR_MODE
-        assert stat.S_IMODE((d / "outputs").stat().st_mode) == head_spawns.SPAWN_DIR_MODE
         assert not stat.S_IMODE(d.stat().st_mode) & 0o007, "other has nothing"
 
     def test_a_lent_directory_is_left_alone(self, monkeypatch):

@@ -4,18 +4,6 @@ Symptom, cause, fix. Grouped by who you are.
 
 ## Submitting work
 
-### "at least one --output/-o is required"
-
-Not a bug. Name the folder(s) **in your project** your script writes results into — `-o runs` is the
-`runs/` your code already writes to, relative to the project root:
-
-```sh
-cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
-```
-
-There is no default and none is offered — a Spawn with no declared output has nowhere retrievable for
-its results to land. See [Spawns](elements/spawns.md#the-three-things-you-must-declare).
-
 ### My Spawn was refused at submit, with no id
 
 You asked for something the fleet can never satisfy — more VRAM than the biggest card, or a
@@ -30,21 +18,6 @@ naming a file that is not in your project.
 
 Usually the [Environment](elements/environments.md) build. `cuttle logs <id>` has the resolver's
 complaint. A failed build costs nothing — the Spawn never reached a machine.
-
-### My results are missing
-
-They download automatically to `~/ccc/outputs/spawn-<id>-outputs/`. If they are not there:
-
-- **The Spawn is still finishing.** The last copy home can arrive after the Spawn is already billed.
-- **You submitted with `--no-download`.** `cuttle outputs <id>`.
-- **This machine was off when it ended.** Run any `cuttle` command; the download resumes.
-- **You wrote them somewhere you did not declare.** Only declared outputs are kept.
-
-### `cuttle outputs` says the results are gone
-
-Seven days from when the Spawn ended, or your 32 GB filled up and older outputs were evicted to make
-room. Nothing on the Head is an archive — the automatic download is what makes that safe. See
-[Storage](elements/storage.md).
 
 ### My Spawn died at exactly `--time`
 

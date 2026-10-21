@@ -19,16 +19,11 @@ Isolation: a job NEVER runs in the tree the rsync daemon serves — that would
 mutate the copy it serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
 branch is "are the files already on this node?":
   * Head's co-located Arm — the <uuid> upload is on this FS. COPY it into node-local scratch, run
-    there, and write out/err/exit/outputs STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
+    there, and write out/err/exit STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
     streams live).
   * remote Arm — the upload isn't here. rsync-stage the project in over this Spawn's own **Siphon**
-    (siphons.py) into ephemeral /tmp scratch, run, then stage out/err/exit/outputs BACK through it.
-Either way: fresh copy in, the keep directory (`$ccc_out`) out, source untouched.
-
-Nothing in the Pod is ever *told* where that keep directory is. A declared **Output** names a path the
-payload already writes to — inside the project, or absolute in the Pod — and `$ccc_out/<path>` is mounted
-onto it, so the results land in what is staged home without the submitter's code knowing CCC exists.
-There is no `CCC_OUT` variable any more; see PAYLOAD_SCRIPT.
+    (siphons.py) into ephemeral /tmp scratch, run, then stage out/err/exit BACK through it.
+Either way: fresh copy in, logs out, source untouched.
 
 Paths are fixed (defaults below match cuttle.config; this package never imports the CLI). Only the
 Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a remote Arm can rsync home.
@@ -38,11 +33,9 @@ import base64
 import logging
 import os
 import posixpath
-import re
 import shlex
 import subprocess
 import tarfile
-from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -53,91 +46,9 @@ from . import guises
 from . import siphons
 from . import slurm
 from . import substrate as substrate_mod
-from . import tarstream
 from . import zshrc
 
 log = logging.getLogger("ccc.api")
-
-# One segment of a declared **Output** path. Anchored, no leading dot, so neither a hidden directory nor
-# `.` / `..` can appear — which is what stops a path walking out of the tree it is resolved against. Paths
-# are split on `/` and every segment is matched, rather than matching the whole path in one go, because
-# the interesting failures are all per-segment and the error should say which one.
-#
-# This is the ONLY thing standing between a submitted path and a shell string (JOB_SCRIPT interpolates it
-# inside double quotes), so it is checked here and not left to the client — the CLI validates too, but the
-# Head never trusts that a client did.
-OUTPUT_SEG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
-@dataclass(frozen=True)
-class OutputPath:
-    """One declared **Output**, resolved into the two paths the job script needs.
-
-    An Output is named as a path in the submitter's own project (CONTEXT.md), so `runs/nn` is
-    `$proj/runs/nn` — the directory their script already writes to, not a second place CCC invented and
-    they would have had to teach their code about. A `/`-prefixed path is absolute *inside the Pod*
-    instead, which is the only way to keep what a profiled Arm **Feature** writes: its working directory
-    is sited at FEATURE_MOUNT-style paths of CCC's own, deliberately outside `$proj` (features.py), so
-    nothing written there is reachable as a project path.
-
-    `dest` is where the Pod sees it; `store` is where the bytes actually live, under the one `$ccc_out`
-    root, and is what `cuttle outputs` tars. The two differ only in the leading `/`: the kept tree mirrors
-    the path that was written to, so `-o /ccc/vlwd/logs` arrives as `outputs/ccc/vlwd/logs/`. That is also
-    why `-o data/x` and `-o /data/x` cannot both be declared — see `output_plan`.
-    """
-    declared: str          # exactly what the submitter wrote, for error messages
-    store: str             # relative to $ccc_out — the declared path with any leading '/' stripped
-    absolute: bool
-
-    @property
-    def dest(self) -> str:
-        """The bind destination, as a shell expression for JOB_SCRIPT (already inside double quotes)."""
-        return self.declared if self.absolute else f"$proj/{self.store}"
-
-
-def output_plan(outputs: list[str]) -> list[OutputPath]:
-    """Validate declared **Output** paths and resolve each one. Raises ValueError naming what is wrong.
-
-    Beyond the per-segment charset, three whole-list rules — all decidable here, at submit, and all of
-    them things that would otherwise go wrong silently on the Arm:
-
-    * **No duplicate `store`.** Two declarations that keep to the same place. This is what catches
-      `-o data/x` together with `-o /data/x`: they are different directories in the Pod but one directory
-      on the Head, so one would quietly overwrite the other in the tar.
-    * **No nesting.** `-o runs` with `-o runs/nn` asks to bind `$ccc_out/runs/nn` onto a path that is
-      *inside* the `$ccc_out/runs` bind — a mount over its own source. Refused rather than reasoned about.
-    * **At least one segment.** `-o /` keeps the whole Pod.
-    """
-    plan: list[OutputPath] = []
-    for declared in outputs:
-        if not isinstance(declared, str):
-            raise ValueError(f"an output must be a path, not {type(declared).__name__}")
-        absolute = declared.startswith("/")
-        # Trailing slashes only: an interior `//` leaves an empty segment, which is a typo worth naming
-        # rather than silently collapsing.
-        rel = declared.rstrip("/").lstrip("/") if absolute else declared.rstrip("/")
-        segs = rel.split("/") if rel else []
-        if not segs:
-            raise ValueError(f"invalid output path {declared!r} — it names no folder")
-        for seg in segs:
-            if not OUTPUT_SEG_RE.match(seg):
-                raise ValueError(
-                    f"invalid output path {declared!r}: the part {seg!r} must be letters/digits/'.'/"
-                    f"'_'/'-' and may not start with '.' (so no '..', and no hidden folders)")
-        plan.append(OutputPath(declared=declared, store="/".join(segs), absolute=absolute))
-
-    for i, a in enumerate(plan):
-        for b in plan[i + 1:]:
-            if a.store == b.store:
-                raise ValueError(
-                    f"outputs {a.declared!r} and {b.declared!r} would both be kept as {a.store!r} — "
-                    f"declare one of them, or point one somewhere else")
-            hi, lo = sorted((a, b), key=lambda p: len(p.store))
-            if lo.store.startswith(hi.store + "/"):
-                raise ValueError(
-                    f"output {lo.declared!r} is inside output {hi.declared!r} — declare the outer folder "
-                    f"on its own; everything under it is kept with it")
-    return plan
 
 # A Spawn's **Name** (CONTEXT.md) — deliberately NOT shaped like the two names above. Those are
 # identifiers: they become path segments and are looked up by, so they
@@ -193,9 +104,8 @@ MESH_IP = os.environ.get("CCC_MESH_IP", "")
 # bind. Backs the sparse ext3 overlay every payload carries (see POD_OVERLAY in JOB_SCRIPT).
 #
 # A number at all, rather than "whatever the disk has", because this is the one writable surface a Pod
-# gained that nothing else meters. A Spawn's declared **Output**s are charged to its submitter's
-# Allowance and its scratch dies with the job, but `apt install` writes to a place no accounting
-# reaches — so the cap is the accounting. Filesystem-enforced, which is what makes it honest: a runaway
+# gained that nothing else meters. A Spawn's scratch dies with the job, but `apt install` writes to a
+# place no accounting reaches — so the cap is the accounting. Filesystem-enforced, which is what makes it honest: a runaway
 # install hits ENOSPC inside its own Pod instead of filling the Arm's disk under every other Spawn
 # running on it.
 #
@@ -314,8 +224,8 @@ IFS=, read -ra ccc_held <<< "${CUDA_VISIBLE_DEVICES:-}"
 sink="/tmp/ccc-$jid-%%SINK_TAG%%.slurm"
 # kill "$loop_pid": a no-op on the Head branch (never set there) and at the two remote-branch call
 # sites that already kill it explicitly first for ordering (see the stage_out call sites below) — this
-# is the fallback for any OTHER way the script ends (e.g. scancel's TERM), so the periodic out/err/
-# outputs pusher (below) never outlives the script as an orphan.
+# is the fallback for any OTHER way the script ends (e.g. scancel's TERM), so the periodic out/err
+# pusher (below) never outlives the script as an orphan.
 #
 # `rm -rf "$scratch" 2>/dev/null`: on the Head branch this ALWAYS fails on the directory itself. The
 # prolog hands the Guise the scratch dir but not its ccc-owned parent, so the Guise can empty it and not
@@ -337,7 +247,7 @@ if [ -d "$staging_dir" ]; then
     # Named BEFORE the copy, and so are the two functions below — all of it so the copy's failure branch
     # has somewhere to report and a trap that is fully armed when it fires. The remote branch names its
     # out/err ahead of its own stage-in for the same reason.
-    out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"; ccc_out="$spawn_dir/outputs"
+    out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"
     stage_out() { :; }  # already on the Head
     # --no-preserve=ownership is load-bearing, not tidiness: the upload is ccc:ccc and this now runs as
     # the submitter's **Guise**, so plain `cp -a` would try to chown the copy back to the Mantle, get
@@ -364,13 +274,13 @@ if [ -d "$staging_dir" ]; then
     : > "$spawn_dir/staged"
 else
     # remote Arm: none of these files are here. Stage the project in from the Head's rsync daemon into
-    # ephemeral scratch, run, and stage out/err/exit/outputs back at the end.
+    # ephemeral scratch, run, and stage out/err/exit back at the end.
     #
     # Scratch is /tmp, NOT the Guise's home: a Guise is home-less by design (one pinned uid per User,
     # cluster-wide, owning no per-node state — the account itself is `useradd -M`), so a donor box is
     # left with nothing after the trap fires. The Pod does NOT see this path as /tmp — `--contain` gives it a private, empty /tmp of its
     # own (that is the point: the host /tmp on a shared Arm holds every concurrent Spawn's scratch) — so
-    # the two directories the payload actually needs, $proj and $ccc_out, are bound in by name.
+    # the directory the payload actually needs, $proj, is bound in by name.
     scratch="/tmp/ccc-$jid"
     proj="$scratch/proj"
     trap cleanup EXIT
@@ -379,40 +289,30 @@ else
     # otherwise leave the directory absent — and $proj is now an explicit `--bind` source and `--pwd`
     # target for both payloads, which apptainer treats as fatal when it does not exist. The Head branch
     # has always mkdir'd it; this makes the two branches agree.
-    mkdir -p "$scratch/outputs" "$proj"
+    mkdir -p "$proj"
     # Named BEFORE the stage-in, so a stage-in that fails still has somewhere to say so and a way to
     # send it home. Nothing has run yet, so out/err start empty rather than absent — rsync would skip
     # a missing file and the Head would show no reason at all.
-    out="$scratch/out"; err="$scratch/err"; exitf="$scratch/exit"; ccc_out="$scratch/outputs"
+    out="$scratch/out"; err="$scratch/err"; exitf="$scratch/exit"
     : > "$out"; : > "$err"
     stage_out() {
-        # out/err/outputs first, then exit LAST — its arrival is the Head's "done" marker. Bail before
+        # out/err first, then exit LAST — its arrival is the Head's "done" marker. Bail before
         # sending exit if the logs did not land: a "done" marker with no logs beside it is worse than
         # no marker, because it claims the Spawn was accounted for. The destination spawns/<jid>/
         # already exists: the API pre-created it at submit, for every Spawn.
-        rsync -a "$out" "$err" "$ccc_out" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" || return 1
+        rsync -a "$out" "$err" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" || return 1
         rsync -a "$exitf" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/"
     }
     # Live streaming (docs/TODO.md's now-closed "Live log streaming for remote Spawns"): a backgrounded
     # loop pushes out/err home every 5s so `cuttle logs -f` tracks a remote run instead of staying blind
     # until stage_out() at the very end. rsync -a of a growing file needs no --append/--partial — it
     # just re-sends the file's current bytes, and the CLI's _drain() already tolerates a partial
-    # trailing line. The keep directory rides the same loop, but gated on a settle check: a checkpoint caught
-    # mid-write would land corrupted, unlike append-only log text, so only files whose mtime is older
-    # than the quiet window (10s = 2x the push interval, long enough a normal write has finished) go
-    # out. `-printf '%P\\n'` gives paths already relative to $ccc_out, which is what the outputs/
-    # --files-from below wants. Best-effort throughout: a failed tick just retries next one, and the
+    # trailing line. Best-effort throughout: a failed tick just retries next one, and the
     # unconditional stage_out() at EXIT remains the real source of truth regardless.
     push_periodic() {
         while true; do
             sleep 5
             rsync -a "$out" "$err" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
-            find "$ccc_out" -type f -not -newermt "@$(( $(date +%s) - 10 ))" -printf '%P\\n' \
-                > "$scratch/outputs_filelist" 2>/dev/null
-            if [ -s "$scratch/outputs_filelist" ]; then
-                rsync -a --files-from="$scratch/outputs_filelist" "$ccc_out/" \
-                    "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/outputs/" 2>/dev/null || true
-            fi
         done
     }
     push_periodic &
@@ -451,27 +351,6 @@ CCC_FILELIST
     : > "$scratch/staged"
     rsync -a "$scratch/staged" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
 fi
-
-# The declared **Output**s. Each one names a path the payload ALREADY writes to — inside the project, or
-# absolute in the Pod — and what happens here is that the kept directory is mounted *onto* that path, so
-# an unmodified script writes its results straight into what gets staged home. Nothing is exported for it
-# to find and there is no second root to write to: the folder it was already using IS the output.
-#
-# Three steps per output, and the order matters:
-#   1. mkdir the KEEP side ($ccc_out/<store>), which is the bind source and what `cuttle outputs` tars.
-#   2. SEED it from whatever the upload already had at that path, so declaring a folder an output never
-#      hides from the payload what its submitter put there — `-o checkpoints` on a project that uploaded
-#      a checkpoint to resume from must not silently present an empty directory and restart training.
-#      Relative outputs only: nothing was ever uploaded to an absolute Pod path.
-#   3. mkdir the bind DESTINATION, so apptainer has a mountpoint. Free for a relative output ($proj is
-#      itself a bind, so the host directory is the mountpoint); an absolute one relies on apptainer
-#      making it, which stock `enable overlay` does.
-#
-# `outbind` accumulates the `--bind` entries, appended to both payloads' bind lists. Empty for a Spawn
-# that declared no outputs at all — every ordinary Spawn declares one, so that is a **Tide Pool**, the
-# one that may decline.
-outbind=""
-%%OUTPUT_SETUP%%
 
 cd "$proj"
 # Scratch for whatever the payload runs, on DISK — the same fix `environments.py` makes for the BUILD
@@ -553,8 +432,8 @@ py=""; envbind=""; envmount=""; featbind=""; featenv=""
 %%ENV_BUILD%%
 %%FEATURE_SETUP%%
 # Under `--contain` (see the payloads below) apptainer auto-mounts NOTHING — not $HOME, not /tmp, not
-# the cwd — so every directory the payload needs is bound by name: $proj (the code, and the working dir)
-# and $ccc_out (where results are written and staged home from).
+# the cwd — so every directory the payload needs is bound by name: $proj (the code, and the working
+# dir).
 %%PAYLOAD%%
 rc=$?
 echo $rc > "$exitf"
@@ -648,7 +527,7 @@ ccc_build_or_die() {
 %%POST%%"""
 
 # The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
-# periodic outputs pusher — is identical either way, which is the whole point of the slot: a Tide Pool
+# periodic log pusher — is identical either way, which is the whole point of the slot: a Tide Pool
 # is a normal Spawn that happens to run a live shell instead of a script, not a second pipeline.
 #
 # `--contain --pid --pwd "$proj"` is the containment set (apptainer 1.5.3), and it is what makes a Pod a
@@ -674,16 +553,9 @@ ccc_build_or_die() {
 # `$py` is this Spawn's declared **Environment**'s interpreter, and there is no other kind: the image
 # has none (cuttle.templates.BASE_DEF_TMPL). It is set together with `$envbind`, which mounts it, so the
 # interpreter named here can never be one the bind did not provide.
-#
-# `$ccc_out` is NOT bound and NOT exported. It is the Head-side keep directory, reached only through the
-# `$outbind` mounts that put each declared **Output** at the path the payload already writes to. There is
-# no `CCC_OUT` in the Pod environment: a script that has to be taught a cluster-specific variable before
-# it can save anything is a script that runs everywhere except here, and the submitter who forgets finds
-# out after the GPU time is spent. What replaced it is that `-o runs` simply means the `runs/` the code
-# was already writing.
 PAYLOAD_SCRIPT = """\
 apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$migbind" \\
   --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
   "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
@@ -781,22 +653,6 @@ rm -f /tmp/ccc_passwd.new
 # An EMPTY dir when no project was picked, never a missing one (both branches mkdir it) — `cd` into an
 # empty dir is a harmless no-op.
 echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" > /etc/profile.d/ccc-tidepool.sh
-# There is no $CCC_OUT any more, here or anywhere (see PAYLOAD_SCRIPT). A Tide Pool's declared **Output**s
-# are bound at the paths they name, exactly as a Script Spawn's are, so saving something is `cp x results/`
-# and not a variable to remember. What a shell DOES need is to be told which folders those are — the one
-# thing a script never needs, because a script was written knowing where it writes. Printed at login
-# rather than exported, because the answer is for the person, not the process.
-#
-# A Tide Pool may decline to declare any (CONTEXT.md), and then this says so plainly. That is a real
-# warning and not a formality: with no Output there is no place in this Pod whose contents outlive it,
-# and everything written is gone.
-if [ -n "$CCC_KEPT" ]; then
-  echo "echo \\"ccc: kept when this session ends — \\$CCC_KEPT\\"" >> /etc/profile.d/ccc-tidepool.sh
-else
-  echo "echo 'ccc: this Tide Pool declared no output — nothing you write here is kept.'" \\
-    >> /etc/profile.d/ccc-tidepool.sh
-fi
-echo "export CCC_KEPT='$CCC_KEPT'" >> /etc/profile.d/ccc-tidepool.sh
 # A Tide Pool gets the SAME **Environment** its Spawn would get, so what you debug is what runs — put it
 # first on PATH rather than making the User type the interpreter's full path. Writable, too (it is this
 # session's own node-local copy, so read-only would buy no safety): `pip install` at the shell works and
@@ -847,7 +703,7 @@ ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"
 # The shell's own configuration (ccc_head_api.zshrc), which the Head renders rather than the image
 # bakes — that module's docstring says why. Everything ABOVE this point still lands in /etc/profile.d
 # and is reached through the one line BASE_DEF_TMPL appends to /etc/zsh/zprofile: there is exactly one
-# generator for CCC_KEPT, the Environment PATH and the `cd`, and switching shells did not
+# generator for the Environment PATH and the `cd`, and switching shells did not
 # fork it. zprofile is read before zshrc, so by the time the rc below runs, all of it is already set.
 #
 # Both heredocs are QUOTED. The rc is full of `$ZSH_CACHE_DIR` and the p10k config is 95 KB of prompt
@@ -896,7 +752,7 @@ CCC_TP_USERRC
 # script for why it has to. An absolute path with no %u/%h token, because there is exactly one account
 # that ever logs into a Pod.
 #
-# The XDG four and VSCODE_AGENT_FOLDER ride here rather than in /etc/profile.d beside CCC_KEPT,
+# The XDG four and VSCODE_AGENT_FOLDER ride here rather than in /etc/profile.d,
 # and the difference matters: profile.d is read by LOGIN shells only. An editor attached over
 # Remote-SSH runs a non-login, non-interactive command and would see none of it — which is exactly the
 # session that most needs somewhere to write. SetEnv is sshd's own, applied to every session of every
@@ -926,8 +782,8 @@ featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' '
 featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" \\
   $overlay --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind$migbind" \\
-  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$migbind" \\
+  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
@@ -1066,7 +922,7 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
 
 
 def _render(staging: Path, gpu: int, script: str, args: list[str],
-            files: list[str], outputs: list[str], node: str | None, minutes: int, constraint: str,
+            files: list[str], node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
             features: list[str] | None = None, activation: bool = False,
@@ -1100,10 +956,6 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # script, including the Environment's mount point, it takes from a shell variable set above.
     body = body.replace("%%FEATURE_SETUP%%",
                         features_mod.setup_snippet(features or [], activation=activation))
-    # Resolved here rather than handed in already-resolved, so this function takes what the submitter
-    # declared and nothing derived. `submit` runs the same call for its own symlink check; it is pure and
-    # costs a few string splits, and the alternative is a resolved type threaded through every caller.
-    plan = output_plan(outputs)
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -1156,35 +1008,6 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         "%%FILELIST%%": "\n".join(files),
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
-        # The declared **Output**s, resolved (output_plan) before this is ever built — every segment is
-        # charset-checked, so interpolating into double quotes is enough. See the block this fills in
-        # JOB_SCRIPT for what the three lines per output are doing and why they are in that order.
-        #
-        # Empty for a Tide Pool that declared none, the one Spawn that may decline.
-        "%%OUTPUT_SETUP%%": "\n".join(
-            "\n".join(filter(None, (
-                f'mkdir -p "$ccc_out/{p.store}"',
-                # Seed, and make the mountpoint — RELATIVE outputs only, and for the same reason both
-                # times: `$proj` is a host directory, and everything on these lines runs on the host as
-                # the **Guise**, outside any Pod. An absolute output names a path in the Pod's own root,
-                # where the Guise can create nothing (`mkdir -p /ccc/vlwd/logs` is EPERM at `/`) and where
-                # there was never an upload to seed from. Apptainer makes that mountpoint itself, in the
-                # overlay, which is the ordinary "bind to a path the image does not have" case.
-                #
-                # Getting this wrong is not merely a no-op: the mkdir's "Permission denied" lands in
-                # $sink, which makes the sink non-empty, which defeats the keep-only-if-non-empty rule and
-                # leaves a file in /tmp for every Spawn ever run — the litter that poisoned job ids (see
-                # the `sink=` note in JOB_SCRIPT).
-                None if p.absolute else
-                f'[ -n "$(ls -A "{p.dest}" 2>/dev/null)" ] && '
-                f'cp -a "{p.dest}/." "$ccc_out/{p.store}/"',
-                None if p.absolute else f'mkdir -p "{p.dest}"',
-                f'outbind="$outbind,$ccc_out/{p.store}:{p.dest}"',
-            ))) for p in plan),
-        # What a **Tide Pool**'s login shell tells the person sitting in it (see PAYLOAD_TIDEPOOL). The
-        # declared paths as written, since that is what they will type; empty when none were declared,
-        # which the boot script turns into the warning that nothing is kept.
-        "%%KEPT_LIST%%": " ".join(p.declared for p in plan),
         # Only ever non-empty when `payload` is PAYLOAD_TIDEPOOL, which is the only place either token
         # appears — an ordinary Spawn's rendered script never even contains the literal string.
         "%%TIDEPOOL_PORT%%": str(tidepool_port) if tidepool_port is not None else "",
@@ -1277,7 +1100,7 @@ def _said(e: subprocess.CalledProcessError) -> str:
 
 
 def submit(user_id: int, script: str | None, gpu: int, args: list[str],
-           tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
+           tar_path: Path | None, minutes: int, constraint: str,
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None, substrate: str | None = None,
            features: list[str] | None = None,
@@ -1298,14 +1121,8 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     uploads one (an empty gzip-tar — every client sends the same wire shape) since there is no project
     to run; `script` rides along as None and the tar's member list is never checked against it.
 
-    `outputs` names paths in the submitter's own project (or, `/`-prefixed, absolute inside the Pod) —
-    resolved and checked by `output_plan` here, not just at the HTTP boundary, so the Head-local pinned
-    path (`cuttle run --node`) gets the identical guarantee. Both checks below (outputs
-    non-empty, script present in the project) are hard validation for an ORDINARY Spawn: a Spawn that
-    failed either would either write nowhere retrievable or never start at all, so neither is worth a
-    Spawn's Escrow and a wasted place in the queue. `tidepool=True` skips both — a live shell has no
-    script to find, and where it keeps anything is where a User happens to point it, not a name the Head
-    can enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
+    The script-present-in-the-project check below is hard validation for an ORDINARY Spawn: one that
+    failed it would never start at all. `tidepool=True` skips it — a live shell has no script to find.
 
     """
     # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
@@ -1316,10 +1133,6 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         raise ValueError("the Head does not know its own mesh address (CCC_MESH_IP is empty in the "
                          "ccc-head-api unit) — a remote Arm would have nowhere to fetch this Spawn's "
                          "files from. Re-run `cuttle setup --head` on the Head to rewrite the unit")
-    if not outputs and not tidepool:
-        raise ValueError("at least one output folder (--output/-o) is required — declare where your "
-                         "script writes its results before submitting")
-    plan = output_plan(outputs)
 
     uuid = uuid4().hex
     staging = PROJECTS_DIR / uuid
@@ -1339,26 +1152,6 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         # nothing for the Spawn that owns it.
         staging.mkdir(parents=True, mode=0o700)
         tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
-    # A declared **Output** is a path in the project, and the job script mounts the keep directory onto
-    # it — so a SYMLINK anywhere along that path would resolve the mountpoint somewhere else entirely, and
-    # the Spawn would keep whatever lives there instead of what it wrote. Refused here rather than
-    # reasoned about on the Arm: the upload is already on disk, the answer is a stat, and a Spawn cannot
-    # be given a mountpoint whose meaning depends on a link its submitter may not have known was there.
-    #
-    # `is_symlink()` per ancestor, not `resolve()`: what matters is whether a link is traversed, not
-    # whether the destination happens to land back inside the project. Nothing to check for an absolute
-    # output — no upload was ever written to a Pod path.
-    for p in plan:
-        if p.absolute:
-            continue
-        walked = staging
-        for seg in p.store.split("/"):
-            walked = walked / seg
-            if walked.is_symlink():
-                raise ValueError(
-                    f"output {p.declared!r} passes through a symlink in your project "
-                    f"({walked.relative_to(staging).as_posix()!r}) — CCC mounts the folder it keeps "
-                    f"at that path, and a link would send it somewhere else. Declare a real folder")
     # The Guise is allocated HERE rather than just before sbatch, because the **Environment** build
     # below runs as it — a manifest is code, and CCC runs no User's code as the Mantle (CONTEXT.md,
     # **Guise**). `_lend_project` comes with it: the build enters a Pod with the project bound and this
@@ -1432,7 +1225,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     # milliseconds of starting, and sbatch returning the id is the same instant it becomes runnable, so
     # a module named for the id could not exist in time. See ccc_head_api.siphons.
     token, secret = siphons.open(uuid)
-    body = _render(staging, gpu, script or "", args, files, outputs, node, minutes, constraint,
+    body = _render(staging, gpu, script or "", args, files, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
                    wants_licence=bool(features), features=features, activation=activation,
                    declared=declared, stub_files=stub_files, stub_binds=stub_binds,
@@ -1471,14 +1264,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     job_id = int(r.stdout.strip())
     # Everything from here to the `spawns` row is the window where a real, running job exists that
     # nothing has recorded — invisible to every reaper the tick runs (tick.once), never billed, holding
-    # a Device, and an hour after it ends retention.register_new deletes its outputs as orphan debris.
+    # a Device.
     # The User is told none of it. So the same bargain as the sbatch above: if we cannot finish
     # recording the Spawn, we do not leave it running.
     try:
-        # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its results
+        # Create the Spawn dir for EVERY Spawn, not just Head-local ones: a remote Arm stages its logs
         # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory
         # a module points at. Safe after sbatch — the job cannot start before sbatch returned its id.
-        _make_spawn_dir(job_id, outputs=True)
+        _make_spawn_dir(job_id)
         # The Environment echo, written where both clients can read it back rather than returned, so no
         # caller's signature changes and the Spawn page can still say months later what this Spawn ran
         # against. Said at submit because the worst case — a manifest one directory too deep — is not a
@@ -1517,7 +1310,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
 
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
                    tar_path: Path | None, minutes: int, vram_gb: int,
-                   outputs: list[str], node: str | None = None,
+                   node: str | None = None,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
@@ -1539,8 +1332,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     turns into the per-card need; the two are checked as one question, so a Spawn nothing can host is
     refused here rather than left to pend forever.
 
-    `tidepool` rides straight through to `submit()`, which is the one place either the
-    outputs-required gate or the script-in-tar check are actually skipped — placement, pricing and
+    `tidepool` rides straight through to `submit()`, which is the one place the script-in-tar check is
+    actually skipped — placement, pricing and
     Attribution are otherwise completely unaffected, because a Tide Pool holds a Device exactly like any
     other Spawn.
 
@@ -1622,7 +1415,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args, tar_path,
-                  minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
+                  minutes, constraint, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
                   activation=activation, name=name)
 
@@ -1639,7 +1432,7 @@ def _spawn_dir(job_id: int) -> Path:
 SPAWN_DIR_MODE = 0o770
 
 
-def _make_spawn_dir(job_id: int, outputs: bool = False) -> Path:
+def _make_spawn_dir(job_id: int) -> Path:
     """The Spawn's directory, at SPAWN_DIR_MODE rather than the service's ambient umask.
 
     Explicit because the prolog only covers the Head's own co-located Arm — `if [ -d "$head_spawns" ]`
@@ -1647,19 +1440,18 @@ def _make_spawn_dir(job_id: int, outputs: bool = False) -> Path:
     keeps whatever umask the API service happened to run with, for good. That matters more here than
     for an upload: `projects/<uuid>` is named by an unguessable uuid, but a Spawn dir is named by a
     sequential job id, and the 0711 parent grants exactly the traversal that makes a guessed name
-    enough to read someone else's `out`, `err` and results.
+    enough to read someone else's `out` and `err`.
     """
     d = _spawn_dir(job_id)
-    (d / "outputs" if outputs else d).mkdir(parents=True, exist_ok=True)
-    for p in (d, d / "outputs") if outputs else (d,):
-        try:
-            # chmod, not mkdir(mode=): mkdir's mode is masked by the umask, which is the whole problem.
-            p.chmod(SPAWN_DIR_MODE)
-        except PermissionError:
-            # The prolog has lent this directory to the **Guise** and we are the Mantle, so we no
-            # longer own it — which only happens once the job is RUNNING, and `mark_cancelled` runs
-            # exactly then. Nothing to do: the prolog set this same mode when it took it.
-            pass
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        # chmod, not mkdir(mode=): mkdir's mode is masked by the umask, which is the whole problem.
+        d.chmod(SPAWN_DIR_MODE)
+    except PermissionError:
+        # The prolog has lent this directory to the **Guise** and we are the Mantle, so we no
+        # longer own it — which only happens once the job is RUNNING, and `mark_cancelled` runs
+        # exactly then. Nothing to do: the prolog set this same mode when it took it.
+        pass
     return d
 
 
@@ -1705,15 +1497,6 @@ def was_cancelled(job_id: int) -> bool:
     return (_spawn_dir(job_id) / "cancelled").exists()
 
 
-def swept(job_id: int) -> bool:
-    """True when this Spawn's whole directory is gone — `retention._evict` took it.
-
-    `submit` creates the directory for every Spawn before sbatch, so its absence is never "nothing was
-    written yet". It is what lets `/logs` say the logs expired instead of returning the empty string a
-    Spawn that printed nothing also returns."""
-    return not _spawn_dir(job_id).exists()
-
-
 def out_text(job_id: int) -> str | None:
     f = _spawn_dir(job_id) / "out"
     return f.read_text() if f.exists() else None
@@ -1723,27 +1506,3 @@ def err_text(job_id: int) -> str | None:
     """The Spawn's stderr — the traceback of a Spawn that died is here, not in `out`."""
     f = _spawn_dir(job_id) / "err"
     return f.read_text() if f.exists() else None
-
-
-def outputs_tar(job_id: int):
-    """gzip-tar of the Spawn's keep directory, for `cuttle outputs <id>` — as `(chunks, bytes)`, or
-    None if it produced none.
-
-    The tree inside mirrors the paths that were declared: `-o runs` arrives as `outputs/runs/…`, and an
-    absolute `-o /ccc/vlwd/logs` as `outputs/ccc/vlwd/logs/…` (the leading `/` is what is dropped, and the
-    only thing that is — see OutputPath).
-
-    Emptiness — not existence — is the test: submit() pre-creates the dir for every Spawn, so its mere
-    presence says nothing. An empty dir means "nothing written yet / nothing produced", not "ready".
-    Asked here, before the generator is handed back, because the caller's 404 has to be decidable while
-    it is still possible to send one (`tarstream.weigh`).
-
-    That same walk returns what the tree weighs, which the route sends as `X-CCC-Bytes` so the client
-    has a denominator. Read off the disk rather than the retention ledger: the ledger row is written by
-    a 30s tick, so a User collecting results the moment their Spawn ended got no bar at all.
-    """
-    outputs = _spawn_dir(job_id) / "outputs"
-    total = tarstream.weigh(outputs)
-    if total is None:
-        return None
-    return tarstream.chunks(outputs, "outputs"), total

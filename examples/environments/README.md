@@ -1,7 +1,7 @@
 # Environment test projects
 
 Six one-file projects, one per path through `ccc_head_api.environments`. Each runs the same
-`check_env.py`, which prints four lines and writes them to `results/env.txt` (submit with `-o results`):
+`check_env.py`, which prints four lines:
 
 ```
 interpreter: <path>     # /opt/ccc/env/... = an Environment was built; anything else = the base image
@@ -17,17 +17,17 @@ you name is resolved inside it. So `cd` in first:
 
 ```sh
 cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8 -o out --manifest requirements.txt
+cuttle run check_env.py --time 10 --vram 8 --manifest requirements.txt
 ```
 
 Each directory is named for the manifest it declares — `uv-project/` is `--manifest pyproject.toml`,
 `conda/` is `--manifest environment.yml`, and so on. `default/` has none, which is the point of it.
 
-`cuttle run` prints the Environment it will build before it returns. Results download themselves once
-the Spawn ends, so the answer is:
+`cuttle run` prints the Environment it will build before it returns. Once the Spawn ends, the answer
+is in its log:
 
 ```sh
-cat spawn-<id>-outputs/env.txt
+cuttle logs <id>
 ```
 
 Add `-f` to watch it happen instead of waiting — the build runs first, on the machine the Spawn was
@@ -75,7 +75,7 @@ nothing to declare cannot be submitted.
 
 ```sh
 cd examples/environments/fails
-cuttle run check_env.py --time 10 --vram 8 -o out --manifest requirements.txt   # id; does NOT error
+cuttle run check_env.py --time 10 --vram 8 --manifest requirements.txt   # id; does NOT error
 cuttle logs <id>                                       # the resolver's complaint
 cuttle status <id>                                     # done, exit 1
 ```
@@ -87,7 +87,7 @@ it appears in your history explaining itself, and settles for nothing because it
 
 ```sh
 cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8 -o out
+cuttle run check_env.py --time 10 --vram 8
 ```
 
 Refused before anything is uploaded, naming the flag — there is no default and nothing is detected,
@@ -95,7 +95,7 @@ even with a `requirements.txt` sitting right there. At a terminal `cuttle run` a
 instead.
 
 ```sh
-cuttle run check_env.py --time 10 --vram 8 -o out --manifest nope.txt
+cuttle run check_env.py --time 10 --vram 8 --manifest nope.txt
 ```
 
 Refused at submit, with a 422 and no Spawn — a manifest you *named* and that is not there is bad

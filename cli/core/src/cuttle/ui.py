@@ -129,8 +129,8 @@ def _redact_argv(argv: list[str]) -> list[str]:
 
 def _prune_logs(log_dir) -> None:
     """Cap the run logs at MAX_LOGS, oldest first. The CLI is built to be scripted — anything polling
-    `cuttle status` in a loop writes one file per call — and unlike watch's bookkeeping no entry here
-    is an obligation, so plain age is the whole rule."""
+    `cuttle status` in a loop writes one file per call — and no entry here is an obligation, so plain
+    age is the whole rule."""
     from . import config
     logs = sorted(log_dir.glob("cuttle-*.log"))
     for old in logs[:max(0, len(logs) - config.MAX_LOGS)]:

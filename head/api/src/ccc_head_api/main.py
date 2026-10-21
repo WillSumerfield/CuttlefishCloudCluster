@@ -25,14 +25,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, environments, guises, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
-from . import retention as retention_mod
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod
 
@@ -324,23 +323,15 @@ def spawns(limit: int | None = None, user: dict = Depends(current_user)) -> list
 
 
 def _archive_row(r: dict) -> dict:
-    """Finish an archive row from db.py — the two countdowns, and whether an exit-less end was asked for.
+    """Finish an archive row from db.py — whether an exit-less end was asked for.
 
     Shared by `/spawns/history` and `/spawns/{job_id}` so a Spawn cannot read `failed` in the list and
-    `cancelled` on its own page, or show two different expiry times for the same copy on disk. The
-    created_at → expires_at conversion lives here rather than in the SQL because the TTL is
-    retention_mod.TTL_DAYS, not db.py's business.
+    `cancelled` on its own page.
     """
     # The ledger cannot answer cancelled-vs-failed — it records the absent exit code, not the reason —
     # so the marker is consulted, and only for the rows that lack one.
     r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
                       and spawns_mod.was_cancelled(r["job_id"]))
-    created = r.pop("output_created_at")
-    r["output_expires_at"] = None
-    if created is not None:
-        expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        r["output_expires_at"] = (expires + timedelta(days=retention_mod.TTL_DAYS)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ")
     return r
 
 
@@ -353,9 +344,7 @@ def spawns_history(days: int = 30, limit: int | None = None,
     forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
     history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
     carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
-    finished_at). Also carries `output_expires_at`: when the
-    Spawn's declared results are deleted, 7 days after it ended (null once they are, or before the tick
-    has registered them)."""
+    finished_at)."""
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.connect() as conn:
@@ -409,70 +398,16 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     return out
 
 
-# What a swept Spawn's logs read as. A Spawn that printed nothing also returns "", so without this the
-# two are the same answer — and after retention takes the directory, every old Spawn looks silent.
-_SWEPT = "this Spawn's logs and results have expired\n"
-
-
 @api.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
 def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stdout so far (a remote Spawn's arrives only at stage-out — post-hoc)."""
-    return _SWEPT if spawns_mod.swept(job_id) else (spawns_mod.out_text(job_id) or "")
+    return spawns_mod.out_text(job_id) or ""
 
 
 @api.get("/spawns/{job_id}/stderr", response_class=PlainTextResponse)
 def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
     """The Spawn's stderr — where a crash's traceback lands (`/logs` serves stdout, empty on a crash)."""
-    return _SWEPT if spawns_mod.swept(job_id) else (spawns_mod.err_text(job_id) or "")
-
-
-@api.get("/spawns/{job_id}/outputs")
-def spawn_outputs(job_id: int, user: dict = Depends(current_user)) -> Response:
-    """gzip-tar of the Spawn's declared outputs — a remote submitter's only way to get results back.
-
-    Results are not permanent: 7 days from the Spawn's end,
-    or sooner if the submitter's 32GB Allowance evicted them to make room for newer ones. Both read as
-    404 here, and the detail says which of the two applies where the ledger still knows — a Spawn that
-    produced nothing and one whose results were deleted are very different things to be told.
-
-    **Every one of those 404s is decided before the first chunk goes out.** Streaming buys the fix this
-    route exists to have (a 3GB result no longer spends four silent minutes compressing while the client
-    times out), and costs exactly one thing: once a byte is sent the 200 is committed, and a refusal
-    after that is a truncated tar rather than a message. Hence the shape below — ask, then stream.
-
-    `X-CCC-Bytes` is what the tree weighs uncompressed, from the same walk that decided the 404. A
-    streamed body carries no `Content-Length`, so without it a client has no denominator and can only
-    count upwards — which on a 3GB result is the silence this route already fixed once."""
-    weighed = spawns_mod.outputs_tar(job_id)
-    if weighed is None:
-        with db.connect() as conn:
-            known = db.get_spawn(conn, job_id) is not None
-        if known and retention_mod.evicted(job_id):
-            raise HTTPException(404, f"Spawn {job_id}'s outputs are no longer held — results are kept "
-                                     f"for {retention_mod.TTL_DAYS} days after a Spawn ends, and only "
-                                     f"until the submitter's newer results need the room")
-        raise HTTPException(404, f"Spawn {job_id} wrote no outputs — the folders it declared with "
-                                 f"--output were empty when it ended")
-    stream, total = weighed
-    return StreamingResponse(stream, media_type="application/gzip", headers={
-        "Content-Disposition": f'attachment; filename="spawn-{job_id}-outputs.tar.gz"',
-        "X-CCC-Bytes": str(total)})
-
-
-@api.get("/spawns/{job_id}/retention")
-def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """How much of Spawn `job_id`'s declared results the Head still holds, and when it deletes them.
-    404 means nothing held: the Spawn produced nothing, the tick has
-    not registered it yet, its 7 days are up, or the submitter's 32GB Allowance evicted it.
-
-    Named for the policy rather than `/outputs/…` because `/spawns/{id}/outputs` is already the tar
-    itself, and one path returning metadata for a GET and bytes for a sibling GET is the kind of shape
-    nobody reads twice. Same permission as that route: authed, no ownership check."""
-    with db.connect() as conn:
-        st = retention_mod.status(conn, job_id)
-    if st is None:
-        raise HTTPException(404, f"no outputs held for Spawn {job_id}")
-    return st
+    return spawns_mod.err_text(job_id) or ""
 
 
 @api.delete("/spawns/{job_id}", status_code=204)
@@ -667,18 +602,13 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
     authed mutation. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
-    {script, gpu, args, node, outputs, features}. Runs the render/sbatch/Attribution as the
+    {script, gpu, args, node, features}. Runs the render/sbatch/Attribution as the
     Mantle; returns the Spawn id.
 
     `features` is optional, and empty when absent — a Spawn that requests none is placed exactly as it
     always was. Each name is checked against every currently admitted Arm's declared features
     (`slurm.arms_with_features`); a request no Arm can satisfy is refused with 422 before ever reaching
     sbatch, same hard-validation stance as `vram`.
-
-    `outputs` is a non-empty list of folders the payload writes results to, each a path in the Spawn's
-    own project (or, `/`-prefixed, absolute inside the Pod) — required, with no default: a Spawn nobody
-    named an output for would produce results with nowhere retrievable to land. See
-    `spawns.output_plan` for what is and is not a legal path.
 
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
     with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
@@ -693,7 +623,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     have run it.
 
     `tidepool` is the one flag that changes what the other fields mean: a
-    live shell instead of a script. It relaxes exactly two of the checks below — `script` and `outputs`
+    live shell instead of a script. It relaxes exactly two of the checks below — `script` and `manifest`
     — and nothing else; time/vram/gpu/features/pricing/placement/Attribution are all identical to any
     other Spawn. The Dashboard's Tide Pool mode sends an EMPTY body (no project — there is nothing to
     upload) and omits `script`; the CLI does the same for `cuttle run --tidepool`.
@@ -715,21 +645,10 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         spawns_mod.clean_name(meta.get("name"))
     except ValueError as e:
         raise HTTPException(422, str(e))
-    # At least one declared output subdir: a Spawn nobody named an output for is one whose results have
-    # nowhere retrievable to land, which is worse discovered after the fact than refused up front.
-    # `outputs` also gets the shell-injection check (spawns.output_plan) in spawns.submit — this is only the
-    # "did the client send any" gate. Skipped for a Tide Pool alone — see submit_checked's docstring.
-    outputs = meta.get("outputs") or []
-    if not isinstance(outputs, list):
-        raise HTTPException(422, "'outputs' in X-CCC-Meta must be a list")
-    if not outputs and not tidepool:
-        raise HTTPException(422, "missing 'outputs' in X-CCC-Meta — at least one output folder name is "
-                                 "required (--output/-o)")
     if meta.get("node"):
         raise HTTPException(403, "pinning a Spawn to an Arm is not available over the API — it is "
                                  "`cuttle run --node`, on the Head.")
-    # The **Environment** every Spawn declares (ccc_head_api.environments). Gated here, beside the
-    # outputs gate and for the same reason: refused before the upload is spooled to disk rather than
+    # The **Environment** every Spawn declares (ccc_head_api.environments). Gated here: refused before the upload is spooled to disk rather than
     # after. `spawns.submit` re-checks it against the extracted project — this is only the "did the
     # client send one" half. Skipped for a Tide Pool alone, the one Spawn that may decline to declare.
     if not (meta.get("manifest") or "").strip() and not tidepool:
@@ -745,11 +664,11 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         # Placement, pricing and the Attribution row all live in submit_checked, shared with the
         # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
         # ValueError covers both the unknown-Arm case (Head-local only in practice — `node` can never
-        # reach here, see above), the per-User concurrent-Spawn cap, an invalid output name, and a
+        # reach here, see above), the per-User concurrent-Spawn cap, and a
         # `script` that isn't actually in the uploaded tar.
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
-            tar_path, minutes, vram_gb, outputs,
+            tar_path, minutes, vram_gb,
             features=meta.get("features") or [],
             tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
             name=meta.get("name") or "")

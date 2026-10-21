@@ -2,12 +2,7 @@
 
 vlearn runtime setup (LD_LIBRARY_PATH, VL_WORKING_DIRECTORY, cache dir, licence key) is handled by
 `--feature vlearn` (ccc_head_api.features). Nothing else is needed: rl_games writes `runs/` from the
-current working directory with no flag to move it, the CWD is the project, and `-o runs` keeps exactly
-that folder. Submit with `--output runs`.
-
-This script used to chdir into $CCC_OUT so rl_games' output would land somewhere that was staged home.
-That variable no longer exists, and neither does the problem — a declared output IS the folder in the
-project the code already writes to (CONTEXT.md, **Output**).
+current working directory with no flag to move it, and the CWD is the project.
 """
 import pathlib
 import runpy

@@ -61,7 +61,6 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle queue` | Everything pending or running on the cluster, and whose it is. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle history` | Past Spawns, with their cost and outcome. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle cancel` | End a Spawn early. Yours from anywhere; anyone's on the Head. | [Spawns](elements/spawns.md#ending-one-early) |
-| `cuttle outputs` | Download a finished Spawn's declared results again. | [Storage](elements/storage.md) |
 | `cuttle dashboard` | Open the web Dashboard in a browser. `--print` gives the URL instead. | [Dashboard](Dashboard.md#getting-to-it) |
 
 ## Karma

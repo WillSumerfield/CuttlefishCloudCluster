@@ -53,7 +53,7 @@ files): Settings → Privacy and security → Manage certificates → Authoritie
 | **Account** | Your password, and where you stand. |
 | **Users** | Admin only. |
 
-Click a Spawn anywhere to open its detail page: state, logs, cost, outputs.
+Click a Spawn anywhere to open its detail page: state, logs, cost.
 
 ## Submitting from the browser
 
@@ -64,26 +64,18 @@ you what you picked — name, file count, total size — as a preview.
 repick, toggle `.gitignore` handling, and change your mind for free.
 
 You then fill in the same three required things the CLI requires — the script, the wall-clock limit,
-the VRAM — plus your output folders. There is a [Tide Pool](elements/tide-pool.md) mode which hides
+the VRAM. There is a [Tide Pool](elements/tide-pool.md) mode which hides
 the project and upload story entirely and asks only for the resource needs.
 
 **GPUs** is a dropdown rather than a number, because only some counts are real: it lists what the
 fleet can actually place, and greys out the rest. Memory is the *total* across the cards you pick, so
 choosing 2 shows you what each one will have to hold.
 
-## The one thing the CLI does that this cannot
-
-**Downloading results unattended.**
-
-When a Spawn finishes, the CLI pulls its outputs down to `~/ccc/outputs/spawn-<id>-outputs/` on its
-own — you do not have to be watching, logged in, or even have that machine switched on.
-
-A browser cannot do that, for a mundane reason: it cannot write into a folder on a machine with
-nobody sitting at it. From the Dashboard you download a finished Spawn's results by asking for them.
+## What the CLI does that this cannot
 
 Parity covers what you can ask of the *cluster*. It does not cover what each client can do to the
-machine it is running on. The other half of that same rule is that the Dashboard can never run
-`setup` or `teardown` — those provision the box you run them on.
+machine it is running on: the Dashboard can never run `setup` or `teardown` — those provision the box
+you run them on.
 
 ## Admin in the Dashboard
 

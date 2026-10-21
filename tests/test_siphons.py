@@ -301,7 +301,6 @@ class TestTheRenderedScript:
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24")
         kw.setdefault("node", None)
-        kw.setdefault("outputs", ["outputs"])
         return head_spawns._render(staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
                                    token="a3f9", secret="s3cr3t", **kw)
 
@@ -369,8 +368,7 @@ class TestSubmitOpensAndBindsOne:
             tar = tmp_path / "up.tar.gz"
             tar.write_bytes(buf.getvalue())
             jid = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                                     tar_path=tar, minutes=60, constraint="vram24",
-                                     outputs=["outputs"], manifest="requirements.txt")
+                                     tar_path=tar, minutes=60, constraint="vram24", manifest="requirements.txt")
             return jid, bodies["script"]
         return go
 
@@ -412,7 +410,7 @@ class TestSubmitOpensAndBindsOne:
         tar.write_bytes(buf.getvalue())
         head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], tar_path=tar,
                            manifest="requirements.txt",
-                           minutes=60, constraint="vram24", outputs=["outputs"])
+                           minutes=60, constraint="vram24")
         assert len(seen["confs"]) == 1
 
     def test_an_sbatch_that_fails_leaves_no_siphon_behind(self, state, conn, monkeypatch, tmp_path):
@@ -441,7 +439,7 @@ class TestSubmitOpensAndBindsOne:
         # incidental here — what this test is about is the module not surviving the failure.
         with pytest.raises(RuntimeError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=tar, minutes=60, constraint="vram24", outputs=["outputs"],
+                               tar_path=tar, minutes=60, constraint="vram24",
                                manifest="requirements.txt")
         assert list(siphons.RSYNCD_DIR.iterdir()) == []
 

@@ -19,21 +19,8 @@ import { Tip } from "./Tip";
 
 const GB = 1024 ** 3;
 
-// Mirrors the Head's OUTPUT_SEG_RE (ccc_head_api.spawns), applied per `/`-separated segment, because an
-// output is a PATH now — `runs`, `out/ckpt`, or a `/`-prefixed absolute path inside the Pod. Every
-// segment becomes a shell-interpolated path component, which is why the charset is what it is. A
-// client-side reject is instant; the Head's output_plan is the one that actually matters (it never
-// trusts this one), and it additionally rejects the whole-list cases this does not bother with:
-// duplicates, nesting, and a relative/absolute pair that would be kept in the same place.
-const OUTPUT_SEG_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-
-const validOutput = (raw: string) => {
-  const segs = raw.replace(/\/+$/, "").replace(/^\//, "").split("/");
-  return segs.length > 0 && segs.every((s) => OUTPUT_SEG_RE.test(s));
-};
-
 // Mirrors the Head's MAX_SPAWN_NAME (ccc_head_api.spawns), and only as a typing limit — the Head is
-// what enforces it. Deliberately NOT paired with a charset check the way outputs are: a Spawn's
+// what enforces it. Deliberately NOT paired with a charset check: a Spawn's
 // **Name** is a label rather than a path segment, so there is nothing to escape and nothing to reject
 // beyond the length and the control characters the Head strips out.
 const MAX_SPAWN_NAME = 48;
@@ -78,9 +65,6 @@ export function Composer(props: ComposerProps) {
   const [vram, setVram] = useState("");
   const [node, setNode] = useState("");
   const [args, setArgs] = useState("");
-  const [outputs, setOutputs] = useState<string[]>([]);
-  const [outputDraft, setOutputDraft] = useState("");
-  const [outputError, setOutputError] = useState<string | null>(null);
   const [featureCatalog, setFeatureCatalog] = useState<string[]>([]);
   const [features, setFeatures] = useState<string[]>([]);
   const [manifest, setManifest] = useState("");
@@ -187,20 +171,6 @@ export function Composer(props: ComposerProps) {
     await rescan(lastList.current, v);
   };
 
-  const addOutput = () => {
-    const out = outputDraft.trim();
-    if (!out) return;
-    if (!validOutput(out)) {
-      setOutputError(`"${out}" isn't a valid output path — letters, digits, '.', '_', '-' and '/' only, and no part may start with '.'`);
-      return;
-    }
-    setOutputError(null);
-    setOutputs((prev) => (prev.includes(out) ? prev : [...prev, out]));
-    setOutputDraft("");
-  };
-
-  const removeOutput = (out: string) => setOutputs((prev) => prev.filter((o) => o !== out));
-
   // Clears the whole form and stays open, ready for another.
   const reset = () => {
     setPicked(null);
@@ -210,8 +180,6 @@ export function Composer(props: ComposerProps) {
     setVram("");
     setArgs("");
     setNode("");
-    setOutputs([]);
-    setOutputDraft("");
     setFeatures([]);
     setManifest("");
     if (fileRef.current) fileRef.current.value = "";
@@ -231,7 +199,7 @@ export function Composer(props: ComposerProps) {
   // a choice already made, so readiness re-asks the same question of what is currently selected.
   // A count past the end of the list is unplaceable too, not merely unlisted.
   const placeable = !known || !!gpuOptions[gpu - 1] && !gpuOptions[gpu - 1].disabled;
-  // A Tide Pool asks for a shell, not a run: no script, no outputs, and an upload only if it declared
+  // A Tide Pool asks for a shell, not a run: no script, and an upload only if it declared
   // something to build out of one.
   const tide = mode === "tidepool";
 
@@ -253,7 +221,6 @@ export function Composer(props: ComposerProps) {
   if (!tide && !named) blockers.push("name the dependency file its environment is built from");
   if (!(Number(minutes) > 0)) blockers.push("set a time limit");
   if (!(Number(vram) > 0)) blockers.push("set the GPU memory it needs");
-  if (!tide && outputs.length === 0) blockers.push("name at least one output folder");
   // Already drawn elsewhere on the form (the greyed card rows). Said again here anyway: this list
   // answers "why is this dead", and an answer with a hole in it sends someone hunting the form for a
   // message they have already scrolled past.
@@ -291,7 +258,7 @@ export function Composer(props: ComposerProps) {
         const res = await submit({
           picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
-          outputs, features, manifest, substrate,
+          features, manifest, substrate,
         });
         setEnvNote(res.environment);
       }
@@ -363,45 +330,6 @@ export function Composer(props: ComposerProps) {
             </Labeled>
             <Labeled label="Arguments" className="sm:col-span-2" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
               <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
-            </Labeled>
-            <Labeled label="Output folders" className="sm:col-span-2" help="Folders in your own project that your results are written into — `runs` means the runs/ your script already writes to, so your code needs no changes. Start with / for a path absolute inside the Pod. Anything written outside them is gone when the Spawn ends. What lands in them is kept 7 days.">
-              <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
-                {outputs.map((o) => (
-                  <span
-                    key={o}
-                    className="inline-flex items-center gap-1.5 rounded-[var(--radius-control)] px-3 py-1.5 text-[13px]"
-                    style={{ background: "color-mix(in oklab, var(--shoal) 45%, transparent)", color: "var(--ink)" }}
-                  >
-                    {o}
-                    <button
-                      type="button"
-                      onClick={() => removeOutput(o)}
-                      aria-label={`Remove output ${o}`}
-                      className="text-ink-mute hover:text-ink"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-                <input
-                  className="field min-w-[140px] flex-1"
-                  placeholder={outputs.length ? "another folder…" : "runs, checkpoints, out/ckpt…"}
-                  value={outputDraft}
-                  onChange={(e) => setOutputDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === ",") {
-                      e.preventDefault();
-                      addOutput();
-                    } else if (e.key === "Backspace" && !outputDraft && outputs.length) {
-                      removeOutput(outputs[outputs.length - 1]);
-                    }
-                  }}
-                  onBlur={addOutput}
-                />
-              </div>
-              {outputError && (
-                <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>{outputError}</span>
-              )}
             </Labeled>
           </>
         )}

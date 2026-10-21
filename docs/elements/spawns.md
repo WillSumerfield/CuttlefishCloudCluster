@@ -6,7 +6,7 @@ A **Spawn** is one run of your code on the cluster.
 
 You point `cuttle run` at a script in the directory you are standing in. CCC uploads that directory,
 builds whatever Python you declared, finds a machine with a free GPU big enough, runs your script
-inside a sandbox, and copies your results back down onto your own machine when it is done.
+inside a sandbox, and keeps its logs and exit code on the Head.
 
 The thing worth internalising: a Spawn runs **once**. If your script crashes, or the machine it
 landed on is taken back by its owner mid-run, that Spawn is over. Nothing silently retries somewhere
@@ -18,25 +18,25 @@ same single run.
 **Run a training script for an hour on a 24 GB card:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
 ```
 
 **Pass arguments through to your own script** — everything after `--` is yours:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o checkpoints --manifest pyproject.toml -- --epochs 5 --lr 3e-4
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml -- --epochs 5 --lr 3e-4
 ```
 
 **Watch it happen** rather than walking away:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 -o checkpoints --manifest pyproject.toml --follow
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml --follow
 ```
 
 **Ask for a machine that has particular software on it** (see [Arm Features](arm-features.md)):
 
 ```sh
-cuttle run sim.py --time 30 --vram 16 -o results --manifest pyproject.toml --feature isaaclab
+cuttle run sim.py --time 30 --vram 16 --manifest pyproject.toml --feature isaaclab
 ```
 
 **Leave the flags off entirely** and let it ask you:
@@ -58,13 +58,12 @@ and ask before submitting.
 | `cuttle queue` | Everything pending or running on the cluster, and whose it is. |
 | `cuttle history` | Past Spawns, with their cost and outcome. |
 | `cuttle cancel <id>` | End one of yours early. |
-| `cuttle outputs <id>` | Download its results again. See [Storage](storage.md). |
 
 ## Behavior
 
-### The three things you must declare
+### The two things you must declare
 
-`--time`, `--vram` and `--output` have no defaults, and this is deliberate in each case.
+`--time` and `--vram` have no defaults, and this is deliberate in each case.
 
 **`--time`** is your wall-clock limit in **minutes**. Your Spawn is killed at it. Karma is escrowed
 against it, so over-estimating costs you queue position and nothing else — the hold is released and
@@ -93,40 +92,17 @@ against a machine that does not exist. In the [Dashboard](../Dashboard.md) the s
 greyed out in the dropdown.
 
 ```sh
-cuttle run train.py --time 60 --gpus 2 --vram 128 -o checkpoints --manifest pyproject.toml
+cuttle run train.py --time 60 --gpus 2 --vram 128 --manifest pyproject.toml
 ```
-
-**`--output`/`-o`** names a folder **in your own project** that your script writes results into,
-relative to the project root. `-o runs` means the `runs/` your code already writes to — it needs no
-changes, no environment variable, and no knowledge that CCC exists. Repeatable, and at least one is
-required. The folder is always there when your script starts, and whatever you uploaded in it is still
-in it, so `-o checkpoints` never hides a checkpoint you sent along to resume from.
-
-Nested paths work (`-o out/ckpt`). A path starting with `/` is absolute *inside the Pod* instead — for
-keeping something an Arm Feature writes outside your project entirely, such as under `/ccc/vlwd`. Two
-outputs may not nest inside one another, and a relative and an absolute path that would be kept in the
-same place (`out/x` and `/out/x`) are refused at submit.
-
-### Where your results go
-
-They come to you. As soon as the Spawn finishes, its declared outputs are downloaded into
-`~/ccc/outputs/spawn-<id>-outputs/` — you do not have to be running `cuttle run`, or still logged
-into that terminal, or even have the machine switched on at the time. If it was off, the download
-resumes the next time you run `cuttle`.
-
-`--no-download` turns that off for one Spawn; `--dest` puts them somewhere other than `~/ccc/outputs`.
-
-This is the one thing the CLI does that the [Dashboard](../Dashboard.md) cannot, and the reason is
-mundane: a browser cannot write into a folder on a machine with nobody sitting at it.
 
 ### What gets uploaded
 
 The working directory you run from, honouring `.gitignore`. `--no-gitignore` uploads everything.
-`--dir <path>` uploads a different directory instead — the script, `--manifest` and `--output` paths
-are then all relative to *it*, while results still download to where you are.
+`--dir <path>` uploads a different directory instead — the script and `--manifest` paths are then
+relative to *it*.
 
 The Head keeps that upload only while the Spawn is *starting* — it is deleted the moment it has
-staged in. It is not backed by any allowance, and it is not recoverable.
+staged in, and it is not recoverable.
 
 ### What happens when it goes wrong
 
@@ -140,8 +116,6 @@ staged in. It is not backed by any allowance, and it is not recoverable.
 - **The machine it was on is retracted underneath it** — the Spawn dies, and **settles at zero**.
   You pay nothing for work someone else stopped, and the Arm's owner earns nothing for stopping it.
   See [Arms](arms.md#retract-and-return).
-- **You wrote results somewhere you did not declare** — they are gone. Only declared outputs are
-  kept.
 
 ### Following a Spawn
 

@@ -284,9 +284,8 @@ export RSYNC_PASSWORD={bench_secret}
 # `cuttle setup` (setup.build_bench_env) into config.BENCH_ENV_DIR, so nothing is fetched here — the
 # env was 4.6 GB and pulling it from the Head measured 29 minutes against this job's 10-minute wall.
 #
-# CCC_BENCH_OUT is the benchmark's OWN channel and has nothing to do with a Spawn's declared outputs
-# (there is no CCC_OUT in a Spawn's Pod any more — see ccc_head_api.spawns' PAYLOAD_SCRIPT). This is
-# CCC's own script writing to CCC's own path, so it may name it whatever it likes.
+# CCC_BENCH_OUT is the benchmark's OWN channel. This is CCC's own script writing to CCC's own path,
+# so it may name it whatever it likes.
 #
 {mig_resolver}
 # This node's Devices in gres.conf order — the list a Slurm GRES index indexes into. `sort -V` so
@@ -395,7 +394,7 @@ def render_ubuntu_snapshot_list() -> str:
 #   and this image can only be changed by a fleet-wide teardown. Nothing else in CCC has a shell in it:
 #   PAYLOAD_SCRIPT execs the Environment's python directly and never starts one.
 # * `/etc/zsh/zprofile` gets one appended line, and it is the load-bearing half of the whole change.
-#   PAYLOAD_TIDEPOOL puts the Feature runtime, the Environment's PATH, CCC_KEPT and the `cd` into the
+#   PAYLOAD_TIDEPOOL puts the Feature runtime, the Environment's PATH and the `cd` into the
 #   project in `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
 #   drops apptainer's `--env`. **zsh does not read /etc/profile.d.** Debian's zprofile sources
 #   /etc/profile and Ubuntu's ships as comments only, so without this line every one of those is silently

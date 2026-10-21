@@ -73,10 +73,9 @@ submit from any box, whether or not it ever ran `setup`.
     not Karma.
   - `--node NAME` pins a Spawn to one Arm, and is **admin-only**.
 - `cuttle status <id>` — `queued`/`running`, `DONE (EXIT N)`, or `FAILED` (the Spawn was killed or its
-  Arm dropped before staging results home — no exit code was ever recorded).
+  Arm dropped before staging its logs home — no exit code was ever recorded).
 - `cuttle logs <id> [-f]` — print/tail the Spawn's stdout. A co-located Spawn streams live; a remote
   Arm's output arrives at stage-out, so `-f` there is post-hoc.
-- `cuttle outputs <id>` — download the Spawn's declared outputs as a tar.
 
 ### Accounts
 - `cuttle login [--head <url>]` / `logout` / `whoami` / `passwd` — session lives in `~/.ccc/session`
@@ -87,7 +86,7 @@ submit from any box, whether or not it ever ran `setup`.
 ## Dashboard
 `cuttle setup --head` serves the web Dashboard (Vite/React) at `https://<head>/`, reachable over
 the LAN and the CCC mesh. It is the **primary** surface: log in, drop a project folder, and submit a
-Spawn; then watch the queue, tail a Spawn's log, and download its outputs. Enrollment stays on a
+Spawn; then watch the queue and tail a Spawn's log. Enrollment stays on a
 separate **mesh-only** API (`:8081`) so the munge-key handout never touches the LAN.
 
 Uploading a folder reads nothing and sends nothing until you press Submit — you first see the file
@@ -111,7 +110,7 @@ doesn't happen on every redeploy.
 
 ## Config / artifacts
 - `~/.ccc` holds **only** the operator's settings + its session token. Spawn artifacts are not here:
-  they live on the Head under `/var/lib/ccc/head/spawns/<id>/{out,err,exit,outputs}` (owned by the
+  they live on the Head under `/var/lib/ccc/head/spawns/<id>/{out,err,exit}` (owned by the
   Mantle) and are read back over the API — a submitter never touches the Head's disk.
 - The Pod image is at `/opt/ccc/images/base.sif`, the same path on every node, so it is readable by the
   home-less Mantle. It is Ubuntu + sshd + CA certs (~150 MB) and carries no Python — every Spawn

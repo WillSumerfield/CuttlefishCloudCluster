@@ -73,27 +73,23 @@ cuttle login --head <head-address>
 Your first login forces a password change.
 
 **3. Run something.** From your project folder, `cuttle` → **Submit a Spawn**. It asks how long, how
-much GPU memory, and which folder holds your results, then shows you the whole submission before it
+much GPU memory, and which dependency file to build from, then shows you the whole submission before it
 sends anything. The same thing, typed:
 
 ```sh
 cd my-project
-cuttle run train.py --time 60 --vram 24 --output checkpoints --manifest pyproject.toml
+cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
 ```
 
-Those three are required and have no defaults: minutes, GB of GPU memory, and the folder your script
-writes into.
+Those three are required and have no defaults: minutes, GB of GPU memory, and the dependency file.
 
-**4. Watch it, then find your results.** **Check a Spawn** and **Read a Spawn's output** in the menu,
+**4. Watch it.** **Check a Spawn** and **Read a Spawn's output** in the menu,
 or:
 
 ```sh
 cuttle status <id>
 cuttle logs <id> -f
 ```
-
-Results download themselves into `~/ccc/outputs/spawn-<id>-outputs/` as the Spawn finishes — you do
-not have to be watching, or even have the machine switched on.
 
 ## Documentation
 

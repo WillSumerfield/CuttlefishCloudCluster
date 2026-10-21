@@ -16,7 +16,6 @@ Four lines, printed and written to results/env.txt:
 """
 
 import sys
-from pathlib import Path
 
 lines = [f"interpreter: {sys.executable}",
          f"python: {'.'.join(str(n) for n in sys.version_info[:3])}"]
@@ -29,9 +28,3 @@ for name in ("pyfiglet", "torch"):
 
 report = "\n".join(lines)
 print(report)
-# An ordinary relative path — the folder this script would write to anywhere. Submit with
-# `-o results` and CCC keeps exactly this directory; anything written outside a declared output
-# dies with the scratch dir. Nothing here knows it is running on a cluster.
-out = Path("results")
-out.mkdir(exist_ok=True)
-(out / "env.txt").write_text(report + "\n")

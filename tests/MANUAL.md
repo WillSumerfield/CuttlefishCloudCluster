@@ -49,13 +49,12 @@ cuttle setup --arm --token <token>
 
 ```sh
 cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8 -o out --manifest requirements.txt
+cuttle run check_env.py --time 10 --vram 8 --manifest requirements.txt
 ```
 
 - [ ] The submit echo names the manifest you declared.
 - [ ] `cuttle queue` shows `building`, then pending, then running.
-- [ ] Results land in `~/ccc/outputs/spawn-<id>-outputs/` **without** the command still running.
-- [ ] `env.txt` matches the table in [`../examples/environments/README.md`](../examples/environments/README.md).
+- [ ] `cuttle logs <id>` matches the table in [`../examples/environments/README.md`](../examples/environments/README.md).
 
 Walk the other example projects, naming each one's manifest. `torch` should come back MISSING from
 every one that builds — an Environment inherits nothing. `uv-project/` should report python
@@ -107,8 +106,7 @@ cuttle arm retract test-arm
 Typed, and looked at. This is the part the suite explicitly does not cover.
 
 - [ ] Bare `cuttle` opens the menu on a terminal; `cuttle | cat` prints help instead of hanging.
-- [ ] `cuttle run` with no flags walks the wizard, refuses to continue with no output declared, and
-      previews before submitting.
+- [ ] `cuttle run` with no flags walks the wizard and previews before submitting.
 - [ ] Ctrl-C at every prompt leaves the terminal usable — no `reset` needed.
 - [ ] `cuttle setup` off-terminal refuses rather than guessing a role.
 - [ ] A destructive command (`teardown`, `arm remove`, `backup restore`) demands the typed name and
@@ -139,8 +137,6 @@ cuttle backup restore <archive>
 
 - [ ] Every command in [`../docs/CLI.md`](../docs/CLI.md) exists, and every command that exists is
       listed there.
-- [ ] The numbers in [`../docs/elements/storage.md`](../docs/elements/storage.md) match the
-      constants.
 - [ ] The worked examples in the docs run as written.
 
 There is no automated check for any of this, deliberately — a doc test that policed the command list

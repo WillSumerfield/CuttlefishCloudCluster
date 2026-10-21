@@ -25,16 +25,14 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import auth, config, settings, spawns as spawns_mod, sshconfig, ui, watch
+from . import auth, config, settings, spawns as spawns_mod, sshconfig, ui
 
 _POLL_S = 1.0
 _PLACEMENT_TIMEOUT_S = 3600     # an hour queued is already a long wait; fail loud rather than hang forever
 _RELAY_TIMEOUT_S = 30           # the relay is brought up synchronously by the poll itself — this is slack
-# How long before `--time` expires to interrupt the live session with a warning. Nothing is LOST at the
-# limit: Slurm sends TERM and waits `KillWait` (600s — cli.templates) before KILL, and bash runs the job
-# script's EXIT trap on TERM, which stages declared outputs home (ccc_head_api.spawns). What the User loses is the *shell* — it closes mid-keystroke
-# with nothing they can do about it — which is the whole of what this warns about, and why the warning
-# says what happens to the files rather than "save now".
+# How long before `--time` expires to interrupt the live session with a warning. At the limit Slurm
+# sends TERM and waits `KillWait` (600s — cli.templates) before KILL; the shell closes mid-keystroke and
+# the session's files go with it.
 # A quarter of the total, capped at 5 minutes and floored at 30s, is not exact science;
 # it just has to exist (this feature's own spec is explicit that the threshold is an engineering call).
 _WARN_MAX_S = 5 * 60
@@ -80,8 +78,8 @@ def _noun(spawn_id: int) -> str:
 
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
-        node: str | None, outputs: list[str], features: list[str], follow: bool,
-        download: bool = True, manifest: str | None = None, substrate: str | None = None,
+        node: str | None, features: list[str], follow: bool,
+        manifest: str | None = None, substrate: str | None = None,
         no_gitignore: bool = False, vscode: bool = False,
         root: Path | None = None, name: str = "") -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
@@ -100,63 +98,23 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
         if script_or_id:
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
-        spawn_id = _request(minutes, vram, gpu, node, outputs, features, manifest=manifest,
+        spawn_id = _request(minutes, vram, gpu, node, features, manifest=manifest,
                             substrate=substrate, no_gitignore=no_gitignore, root=root, name=name)
-    if download:
-        arm(spawn_id)
     _wait_and_attach(spawn_id, vscode=vscode)
-    # Again on the way out, and this is the arming that matters. A Tide Pool's **Output**s are most
-    # often declared by the session itself rather than at submission — a `--output` handed to a
-    # reattach, or simply the folder someone decided to write to — and the moment the shell closes is
-    # the first time the whole picture exists. Arming at attach as well is what survives a crash or a
-    # dropped link in between, and re-arming an entry that already settled costs one re-fetch of a
-    # Spawn the Head 404s in the usual case.
-    if download:
-        arm(spawn_id)
-        # After the shell detaches, not before: attaching blocks, and a sweeper forked ahead of it
-        # would spend the whole session polling a Spawn this very process is sitting inside.
-        watch.ensure_sweeper()
-
-
-def arm(spawn_id: int) -> None:
-    """Record that this box is owed `spawn_id`'s results, in the one predictable place (see config).
-
-    Unconditional — never gated on whether an **Output** was declared here, because the declaration
-    can happen anywhere: at submission or on rejoining a Tide Pool. An Output
-    whose collection depended on *how* it came to be declared would be one whose results quietly
-    stayed behind, which is exactly what the gate this replaces did. A Spawn that produced nothing
-    costs a 404 the sweeper settles as EMPTY.
-    """
-    watch.arm(spawn_id, config.OUTPUTS_DIR)
-
-
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
-            outputs: list[str], features: list[str], manifest: str | None = None,
+            features: list[str], manifest: str | None = None,
             substrate: str | None = None,
             no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
-    nothing here weakens that gate; `--output` and `--manifest` alone are optional, the first gated
-    behind a confirm instead and the second simply absent when nobody asked for one."""
+    nothing here weakens that gate; `--manifest` alone is optional, simply absent when nobody asked
+    for one."""
     minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
     vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
     # A bare Tide Pool is one of the two Spawns with no name of its own to inherit, so it is asked for
     # one exactly like the two declarations above. Reattaching to an existing id never reaches here —
     # that Spawn was named when it was requested.
     name = ui.need(name, "--name", lambda: ui.ask_text("What should this tide pool be called?"))
-    outputs = list(outputs) if outputs else []
-    if not outputs:
-        # With no --output there is nowhere in this Pod whose contents outlive it.
-        warning = ("no --output declared — nothing this Tide Pool writes is kept; it is gone when "
-                   "the session ends")
-        if ui.interactive():
-            ui.warn(warning)
-            if not ui.ask_confirm("Continue with no declared output dir?", False):
-                raise ui.abort("not submitted")
-        else:
-            # No terminal to confirm on — this is optional, not a hard gate (unlike --time/--vram), so a
-            # scripted request proceeds; it just cannot be asked first.
-            ui.warn(warning)
-    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, outputs, node=node, features=features,
+    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, node=node, features=features,
                                           manifest=manifest, substrate=substrate,
                                           no_gitignore=no_gitignore, root=root, name=name)
     ui.ok(f"requested tide pool {spawn_id}")
@@ -227,8 +185,7 @@ def _deadline(spawn_id: int) -> float | None:
 
 def _warn_text(spawn_id: int, left: int) -> str:
     """The `--time` warning, `\\r\\n`-framed for a terminal `ssh` has in raw mode."""
-    what = ("the shell closes with no warning. Declared outputs come home as normal; "
-            "everything else is gone")
+    what = "the shell closes with no warning, and everything in it is gone"
     return f"\r\n*** ccc: --time runs out in ~{left // 60}m{left % 60}s — {what} ***\r\n"
 
 
@@ -307,8 +264,7 @@ def _wait_and_attach(spawn_id: int, vscode: bool = False) -> None:
             f"out. Disconnecting (closing this terminal, a dropped connection) does NOT free it.")
     # Said up front, not only at the limit: where the files go is what a User plans the session
     # around, and learning it five minutes before the cutoff is learning it too late to act on.
-    ui.hint(f"declared outputs come home as normal (`cuttle outputs {spawn_id}`); everything "
-            f"else is gone when it ends")
+    ui.hint("everything in this session is gone when it ends")
     ui.hint("type `exit` to leave the shell — the Tide Pool itself keeps running either way")
     # The alias is live from here on whether or not anyone asked for VS Code — printed rather than
     # acted on, because an editor is not what most people opened a terminal to get.
@@ -351,11 +307,10 @@ def _report_ending(spawn_id: int) -> None:
     billing, which is the warning that has to be repeated with the command to stop it.
 
     `--time` ran out -> Slurm TERM'd the job and the shell died under us. The job is now COMPLETING
-    while its EXIT trap sends the work home, for up to `KillWait` (600s — cli.templates). It is NOT
+    while its EXIT trap sends the logs home, for up to `KillWait` (600s — cli.templates). It is NOT
     running and it is NOT billing — the tick only accrues onto RUNNING Spawns (ccc_head_api.tick) — so
     the running-and-billing warning is false in both halves, and at a 10-minute KillWait it would stay
-    false for ten minutes. `done` cannot tell us this: it stays False through COMPLETING on purpose,
-    because `watch` gates the output download on it and a download fired mid-stage-out fetches nothing.
+    false for ten minutes. `done` cannot tell us this: it stays False through COMPLETING.
 
     Already settled -> plain end.
     """
@@ -366,8 +321,7 @@ def _report_ending(spawn_id: int) -> None:
         state = "RUNNING"   # can't check — say the thing with a cost attached
     noun = _noun(spawn_id)
     if state == "COMPLETING":
-        ui.ok(f"{noun} hit its --time limit and has stopped billing — your files are being "
-              f"copied home now, `cuttle outputs {spawn_id}` once it settles")
+        ui.ok(f"{noun} hit its --time limit and has stopped billing")
     elif state is not None:
         ui.warn(f"{noun} is still running and still billing Karma — `{_cancel_hint(spawn_id)}` to end "
                 f"it, or `{_reattach_hint(spawn_id)}` to reattach")
