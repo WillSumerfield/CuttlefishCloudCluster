@@ -392,8 +392,7 @@ class TestTheCanvasWritesOnlyWhatMoved:
         assert len(canvas()) > 5000
 
     def test_a_frame_is_wrapped_in_synchronized_output(self, canvas):
-        """Inert on gnome-terminal, and kept for the terminals it does reach: on WSL the full
-        re-assert still crosses ConPTY."""
+        """Inert on gnome-terminal, and kept for the terminals it does reach."""
         self._row("hello")
         out = canvas()
         assert out.startswith(ui._BSU) and out.endswith(ui._ESU)

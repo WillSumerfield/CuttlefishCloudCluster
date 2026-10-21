@@ -6,27 +6,23 @@ address is *already on disk* in `~/.ccc/config.yaml`, and asking a User to recal
 after `setup` is asking them to remember something the tool knows.
 
 A **guest** is where the saved URL can be the wrong answer, because the browser is not on this box at
-all — it is on the OS hosting the virtual machine (Windows under WSL2, ChromeOS under Crostini), which
-holds neither the **Cluster name** nor the cluster's CA unless someone put them there (`guest.py`).
-Three cases come out of that, and `url` is the whole of where they are decided:
+all — it is on the OS hosting the virtual machine (ChromeOS under Crostini), which holds neither the
+**Cluster name** nor the cluster's CA (`guest.py`). Two cases come out of that, and `url` is the whole
+of where they are decided:
 
-  * a **WSL Arm** — the mesh lives inside WSL and Windows cannot route to the Head's mesh IP, so
-    `setup --arm` installs a localhost forward and that is what the browser gets;
-  * a **guest client whose host OS lacks the name** — it gets the *address*, which is in the Head
+  * a **guest whose host OS lacks the name** — it gets the *address*, which is in the Head
     certificate's SANs and so loads, rather than a name that fails exactly like a Head that is down.
     Always the case on ChromeOS, which has no hosts file anyone can write;
   * everything else — the saved URL, which is the name, as it is on every box CCC installs on.
 
-The certificate warning is the guest's other tax, and only Windows can be spared it: the script
-`guest.offer` hands over installs the CA there. ChromeOS clicks through once per browser.
+The certificate warning is the guest's other tax: ChromeOS clicks through once per browser.
 """
 
 import socket
-import subprocess
 import webbrowser
 from urllib.parse import urlparse
 
-from . import config, guest, headapi, settings, system, ui
+from . import guest, settings, ui
 
 
 def url() -> str:
@@ -35,10 +31,6 @@ def url() -> str:
     if not head:
         raise ui.abort("this box is not pointed at a Head",
                        next_step="cuttle setup --client")
-    # Only when the forward is actually installed: a WSL *client* (no `setup --arm`) has no proxy
-    # listening on localhost, and its saved URL already reaches the Head over the LAN.
-    if system.is_wsl() and config.DASH_FORWARD_SOCKET_UNIT.exists():
-        return headapi.head_url("localhost") + "/"
     if not guest.outside_browser_has_name():
         return _by_address(head)
     return head.rstrip("/") + "/"
@@ -62,19 +54,7 @@ def _by_address(head: str) -> str:
 
 
 def launch(target: str) -> bool:
-    """Hand `target` to a browser. False when there was none to hand it to.
-
-    Under WSL the browser is on the Windows side, where `webbrowser` cannot see it — it probes for
-    Linux handlers and, finding none, opens nothing while reporting success. `explorer.exe` is the
-    one launcher that is always present, and its exit status is famously not a result, so the call
-    itself succeeding is the whole test.
-    """
-    if system.is_wsl():
-        try:
-            subprocess.run(["explorer.exe", target], check=False, capture_output=True, timeout=10)
-            return True
-        except (OSError, subprocess.TimeoutExpired):
-            return False
+    """Hand `target` to a browser. False when there was none to hand it to."""
     return webbrowser.open(target)
 
 

@@ -153,21 +153,15 @@ class TestGresConf:
         assert gres_lines(conf) == ["NodeName=gappy Name=gpu File=/dev/nvidia0",
                                     "NodeName=gappy Name=gpu File=/dev/nvidia2"]
 
-    def test_a_wsl_arm_gets_exactly_one_dxg_line(self, fake_host):
-        """Permanent, not deferred: /dev/dxg is one device node for ALL of a Windows box's cards and a
-        device cgroup cannot partition it, so a WSL Arm is one Device however many GPUs it holds."""
-        conf = templates.render_gres_conf([("wsl-box", ["/dev/dxg"])])
-        assert gres_lines(conf) == ["NodeName=wsl-box Name=gpu File=/dev/dxg"]
-
     def test_the_head_and_the_arms_share_one_file(self, monkeypatch, fake_host):
         """Configless serves ONE gres.conf to the whole fleet, so the Head's own co-located Arm and
         every donor are described in the same file — and the Head is the box most likely to be the
         multi-card one."""
         monkeypatch.setattr(system, "gpu_devices", lambda: ["/dev/nvidia0", "/dev/nvidia1"])
-        conf = templates.render_gres_conf([templates.head_gres_node(), ("donor", ["/dev/dxg"])])
+        conf = templates.render_gres_conf([templates.head_gres_node(), ("donor", ["/dev/nvidia0"])])
         assert gres_lines(conf) == ["NodeName=headbox Name=gpu File=/dev/nvidia0",
                                     "NodeName=headbox Name=gpu File=/dev/nvidia1",
-                                    "NodeName=donor Name=gpu File=/dev/dxg"]
+                                    "NodeName=donor Name=gpu File=/dev/nvidia0"]
 
     def test_the_head_node_declares_all_of_its_cards(self, monkeypatch, fake_host):
         """slurm.conf's static NodeName line must agree with the gres.conf lines above, or slurmctld
@@ -201,9 +195,8 @@ class TestCgroupIsolation:
         assert "ConstrainCores" not in d
 
     def test_cgroup_version_is_autodetected(self):
-        """The fleet is mixed: native Ubuntu 24.04 is cgroup v2, a WSL Arm presents a fake v1 `tmpfs`.
-        One file is served to every node (configless has no per-node override), so it cannot pin
-        either version."""
+        """One file is served to every node (configless has no per-node override), so it does not
+        pin either cgroup version."""
         assert directives(templates.render_cgroup_conf())["CgroupPlugin"] == "autodetect"
 
 
@@ -721,8 +714,7 @@ class TestBenchmarkSbatch:
 
     def test_runs_inside_the_pod(self):
         """Measured in the Pod, not on the host and not from a spec sheet — so the number reflects the
-        machine as Spawns really meet it (a WSL GPU behind /dev/dxg, a throttling laptop card, a stale
-        driver). None of that is on a spec sheet, and all of it is what an hour on the card is worth."""
+        machine as Spawns really meet it (a throttling laptop card, a stale driver). None of that is on a spec sheet, and all of it is what an hour on the card is worth."""
         job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
         assert "apptainer exec --nv" in job
         assert str(config.CCC_SIF) in job

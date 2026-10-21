@@ -1,7 +1,6 @@
 """Shell + host-detection helpers."""
 
 import json
-import os
 import platform
 import shutil
 import socket
@@ -181,30 +180,18 @@ def real_memory_mb() -> int:
 
 
 def nvidia_smi() -> str:
-    """Path to the `nvidia-smi` binary. On PATH everywhere native; on WSL the binary sits in
-    /usr/lib/wsl/lib, which is on PATH only in an interactive login shell — so a non-interactive caller
-    (an srun step, a service) can't find it by name and the GPU checks would fail for a reason that has
-    nothing to do with the GPU. Fall back to the known WSL location. If it's on neither, return the bare
-    name so the caller fails loudly (a native box with no driver — a genuine failure, as before)."""
-    return (shutil.which("nvidia-smi")
-            or (config.WSL_NVIDIA_SMI if is_wsl() and os.path.exists(config.WSL_NVIDIA_SMI)
-                else "nvidia-smi"))
+    """Path to the `nvidia-smi` binary, or the bare name when it is not on PATH so the caller fails
+    loudly (a box with no driver — a genuine failure)."""
+    return shutil.which("nvidia-smi") or "nvidia-smi"
 
 
 def gpu_devices() -> list[str]:
     """Every GPU **Device** node this box can hand to a Spawn, in Slurm's GRES index order.
 
-    **WSL2 is permanently single, and that is not a deferral.** `/dev/dxg` is ONE device node for ALL
-    of the Windows box's cards, and a device cgroup can only grant or deny that node whole — there is
-    nothing in it to partition. So a WSL Arm registers `gpu:1` however many physical cards it holds,
-    and no Slurm release can change that: the limit is the device node, not the scheduler.
-
     Sorted NUMERICALLY, not lexically. This order is the mapping from a Slurm GRES index to a device
     (see templates.render_gres_conf) and therefore from a Spawn's held index to the Power it is billed
     at — and `/dev/nvidia10` sorts before `/dev/nvidia2` as a string.
     """
-    if Path("/dev/dxg").exists():
-        return ["/dev/dxg"]
     # `nvidia[0-9]*` and not `nvidia*`: /dev/nvidiactl, /dev/nvidia-uvm and /dev/nvidia-caps are
     # control nodes, not cards, and a Spawn holds none of them.
     return sorted((str(p) for p in Path("/dev").glob("nvidia[0-9]*")),
@@ -212,11 +199,7 @@ def gpu_devices() -> list[str]:
 
 
 def gpu_inventory() -> list[tuple[str, int]]:
-    """(model, VRAM MiB) for every GPU nvidia-smi can see, in its index order.
-
-    On WSL this lists every *physical* card even though `gpu_devices()` reports one — which is the
-    point: `gpu_profile()` must still judge the real hardware, not the one device node fronting it.
-    """
+    """(model, VRAM MiB) for every GPU nvidia-smi can see, in its index order."""
     out = subprocess.run(
         [nvidia_smi(), "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
         check=True, capture_output=True, text=True).stdout
@@ -303,13 +286,6 @@ def is_native_linux_x86() -> bool:
     return platform.system() == "Linux" and platform.machine() == "x86_64"
 
 
-def is_wsl() -> bool:
-    """WSL2 satisfies is_native_linux_x86() completely, so that check cannot see it. The kernel
-    release is the giveaway: `...-microsoft-standard-WSL2`."""
-    with open("/proc/sys/kernel/osrelease") as f:
-        return "microsoft" in f.read().lower()
-
-
 def is_crostini() -> bool:
     """ChromeOS's Linux VM. Debian, and native-looking from the inside — the giveaway is the file
     ChromeOS drops in every container it builds. Clients only: a Chromebook donates nothing (no
@@ -328,11 +304,10 @@ def is_crostini() -> bool:
 def claims_name(line: str, name: str = config.DOMAIN) -> bool:
     """Whether an /etc/hosts line resolves `name` — ours or anyone else's.
 
-    Matched on the NAME, not on config.HOSTS_MARKER, because our marker does not always survive.
-    WSL2 regenerates /etc/hosts from the *Windows* hosts file on every distro start and re-emits each
-    entry as `ADDRESS<tab>name`, comment stripped. A marker-only match leaves that inherited copy in
-    place: two lines for the name after the next setup, and — worse — a name that still resolves
-    after a teardown, which is exactly the residue teardown exists to remove.
+    Matched on the NAME, not on config.HOSTS_MARKER: a line for the name that lacks our marker (added
+    by hand, or by an older setup) would otherwise stay in place — two lines for the name after the
+    next setup, and, worse, a name that still resolves after a teardown, which is exactly the residue
+    teardown exists to remove.
 
     The address field is not a name, hence `[1:]`, and a commented-out line resolves nothing.
     """

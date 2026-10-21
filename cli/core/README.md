@@ -22,7 +22,7 @@ uv run cuttle --help
 - `cuttle setup --arm --token <blob> [--re-enroll]` — enroll **this** box as a remote Arm, redeeming
   the enrollment token its owner was given: join the mesh (unattended — nobody approves anything),
   fetch the munge key, register a dynamic `slurmd -Z`. The token names the Arm, so there is nothing to
-  choose. On WSL it also forwards the Head dashboard to `localhost` for the Windows browser.
+  choose.
 - Both roles create the **Mantle** (the `ccc` account every Spawn runs as, at a uid pinned
   cluster-wide) and build `/opt/ccc/images/base.sif`.
 - `cuttle teardown --local | --arm [--keep-packages] [--all]` — reverse setup. Default keeps `~/.ccc`
@@ -41,7 +41,7 @@ by hand.
   wasn't at their desk yet.
 - `cuttle arm benchmark <name>` — measure an Arm's **Power** (fp32 TFLOP/s) by running a matmul inside
   the Pod, on that node, submitted down the ordinary Slurm path — so the number reflects the machine as
-  Spawns really meet it (a WSL GPU behind `/dev/dxg`, a throttling laptop card, a stale driver), not
+  Spawns really meet it (a throttling laptop card, a stale driver), not
   what a spec sheet claims. Sets the node's Slurm `Weight` ∝ 1/Power, so the fastest *free* eligible
   card wins. Runs automatically as part of `authorize`; re-run it by hand after a GPU or driver change.
 - `cuttle arm chown <name> --user <owner>` — re-point an Arm at a different owner. Touches neither the

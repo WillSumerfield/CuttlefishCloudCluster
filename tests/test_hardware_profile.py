@@ -103,9 +103,8 @@ def fake_smi(monkeypatch, gpus: list[tuple[str, int]]) -> None:
                         lambda *a, **kw: SimpleNamespace(stdout=csv, returncode=0))
 
 
-def fake_dev(monkeypatch, names: list[str], dxg: bool = False) -> None:
+def fake_dev(monkeypatch, names: list[str]) -> None:
     """Stand in for /dev: the device nodes a box exposes."""
-    monkeypatch.setattr(system.Path, "exists", lambda self: dxg and str(self) == "/dev/dxg")
     monkeypatch.setattr(system.Path, "glob", lambda self, pat: [Path(f"/dev/{n}") for n in names])
 
 
@@ -137,15 +136,6 @@ class TestDeviceEnumeration:
         got = system.gpu_devices()
         assert got == ["/dev/nvidia0", "/dev/nvidia1"]
         assert all(g.removeprefix("/dev/nvidia").isdigit() for g in got)
-
-    def test_wsl_is_permanently_one_device_however_many_cards(self, monkeypatch):
-        """Not a deferral. /dev/dxg is ONE device node for ALL of a Windows box's GPUs and a device
-        cgroup can only grant or deny it whole — there is nothing in it to partition, and no Slurm
-        release can change that. So a WSL Arm with four 4090s still registers exactly one Device."""
-        fake_smi(monkeypatch, [("NVIDIA GeForce RTX 4090", 24564)] * 4)
-        fake_dev(monkeypatch, [], dxg=True)
-        assert system.gpu_devices() == ["/dev/dxg"]
-        assert len(system.gpu_inventory()) == 4   # the cards are really there; only one is offered
 
 
 class TestMixedGpusAreRefused:

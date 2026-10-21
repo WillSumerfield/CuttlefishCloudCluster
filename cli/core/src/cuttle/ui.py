@@ -1171,8 +1171,8 @@ def _canvas_render():
 
 # DEC private mode 2026, "synchronized output": between BSU and ESU a terminal buffers what arrives
 # and presents it in one go, so a frame is never shown half-drawn. Kept, because it is what makes the
-# full repaints below atomic on WSL/Windows Terminal, where the write crosses ConPTY and a torn frame
-# is *visible* — the box blinks and rows appear to jump.
+# full repaints below atomic on terminals that honour it, where a torn frame is otherwise *visible* —
+# the box blinks and rows appear to jump.
 #
 # It is NOT a general answer, and this is why the diff below exists. gnome-terminal answers the
 # DECRQM query for 2026 with status 4, "permanently reset": VTE knows the mode and will never honour
@@ -1287,9 +1287,8 @@ def _tick_start() -> None:
     _TICK.start()
 
 
-# Ordered by how well each fits the box we are on: Wayland, then X11, then WSL's bridge to Windows.
-# `clip.exe` is last because it exists on a WSL box that may also be running a real X server.
-_CLIPBOARD_CMDS = (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"], ["clip.exe"])
+# Ordered by how well each fits the box we are on: Wayland, then X11.
+_CLIPBOARD_CMDS = (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"])
 
 
 def _clipboard_cmd() -> list[str] | None:

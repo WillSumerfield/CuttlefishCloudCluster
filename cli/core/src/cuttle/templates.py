@@ -117,8 +117,7 @@ PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 """
 
 # Distro slurm-wlm is built without NVML → AutoDetect=nvml is fatal. Map each node's devices
-# explicitly. Per-node lines are unavoidable once Arms disagree about the device path: native Linux
-# has /dev/nvidia0, WSL2 has /dev/dxg. Served to Arms over configless, so the Head authors all of it.
+# explicitly, per node. Served to Arms over configless, so the Head authors all of it.
 #
 # **One line per Device**, rather than the `File=/dev/nvidia[0-3]` range form or `MultipleFiles`
 # (man 5 gres.conf offers all three):
@@ -148,13 +147,9 @@ GRES_CONF_LINE = "NodeName={node} Name=gpu File={device}\n"
 # ConstrainRAMSpace/ConstrainCores stay OFF (their default). Nothing drives them yet — a Spawn declares
 # --time and --vram, not a RAM or core budget — and turning on a limit no one sets would OOM-kill jobs
 # for hitting a number they never asked for.
-#
-# WSL Arms: unverified. WSL2 presents a fake cgroup-v1 `tmpfs`, and what slurmd does with it here is
-# not known — this file ships cluster-wide anyway and the WSL box is a live test. A WSL Arm cannot be
-# GPU-isolated regardless: /dev/dxg is ONE device node for all its GPUs.
 CGROUP_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
-# Detect cgroup v1 vs v2 rather than pinning either — the fleet is mixed (native Ubuntu is v2).
+# Detect cgroup v1 vs v2 rather than pinning either — this one file serves every node.
 CgroupPlugin=autodetect
 # Confine a Spawn to the GPUs it was allocated, and no others.
 ConstrainDevices=yes
@@ -163,8 +158,8 @@ ConstrainDevices=yes
 # --- the Power benchmark ------------------------------------------------------
 # What a device can *do*, measured — never a spec sheet. It runs **inside the Pod**, submitted by the
 # Head down the ordinary Slurm path and pinned to the node, so the number reflects the machine as
-# Spawns will really meet it: a WSL GPU reached through /dev/dxg, a laptop card that thermally
-# throttles, a stale driver, a starved PCIe link. None of that is on a spec sheet, and all of it is
+# Spawns will really meet it: a laptop card that thermally throttles, a stale driver, a starved PCIe
+# link. None of that is on a spec sheet, and all of it is
 # what an hour on the card is actually worth.
 #
 # Power is the term that stops the meter paying an owner MORE for being SLOWER. Bill seconds alone and

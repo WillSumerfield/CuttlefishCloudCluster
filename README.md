@@ -8,7 +8,7 @@ and a script; it finds a machine, builds your Python, runs your code in a contai
 that is not you, and pulls the results back down to you when it is done — whether or not you were
 still watching.
 
-Machines run **Ubuntu 24.04**, natively or under **WSL2** on Windows. GPUs are **NVIDIA** only.
+Machines run native **Ubuntu 24.04**. GPUs are **NVIDIA** only.
 
 > Names are themed (cuttlefish) and canonical. [`CONTEXT.md`](CONTEXT.md) is the glossary;
 > [`docs/`](docs/README.md) is the documentation.

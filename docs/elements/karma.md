@@ -78,8 +78,8 @@ Cost is settled at the moment a Spawn ends, and it is:
 *Held*, not busy — you paid for exclusive access to the card whether or not you kept it fed.
 
 **Power** is what the device can do, measured by running a benchmark on it inside a sandbox when its
-Arm enrolls — so it reflects the machine as your Spawn will really meet it: a virtualized WSL GPU, a
-throttled laptop card, a stale driver. Not what the spec sheet claims. This is what stops the meter
+Arm enrolls — so it reflects the machine as your Spawn will really meet it: a throttled laptop card,
+a stale driver. Not what the spec sheet claims. This is what stops the meter
 from paying an owner *more* for being *slower*.
 
 **Demand** is how badly that card is wanted right now: the device-time being asked for, running

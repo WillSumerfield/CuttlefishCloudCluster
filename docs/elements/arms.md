@@ -3,7 +3,7 @@
 ## What it is
 
 An **Arm** is a machine donated to the cluster — a desktop with a spare GPU, a lab box, a laptop
-under a desk. It runs Ubuntu 24.04, natively or under WSL2 on Windows, and the GPU has to be NVIDIA.
+under a desk. It runs native Ubuntu 24.04, and the GPU has to be NVIDIA.
 
 Every Arm has an **owner**: the User whose Karma goes up when someone else's work runs on their
 machine.
@@ -101,8 +101,7 @@ Karma spent there is destroyed rather than transferred.
 
 When your Arm enrolls, CCC runs a matmul benchmark on it, inside a sandbox, and that number is your
 Arm's Power for pricing and scheduling. It is measured rather than read off a spec sheet so it
-reflects the machine as Spawns will really meet it: a virtualized WSL GPU, a throttled laptop card,
-a stale driver. It is also what stops the meter from paying you *more* for being *slower*.
+reflects the machine as Spawns will really meet it: a throttled laptop card, a stale driver. It is also what stops the meter from paying you *more* for being *slower*.
 
 ### The states an Arm can be in
 

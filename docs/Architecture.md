@@ -30,9 +30,8 @@ designed but not built, see [TODO](TODO.md).
 store, the economy, the dashboard, and the place projects and results live. It also donates its own
 GPU — the Head runs a co-located Arm like any other.
 
-**Many Arms.** Each runs `slurmd` and Apptainer, on Ubuntu 24.04, natively or under WSL2. `slurmd`
-and the container runtime always run in the Linux layer, so there is a single Linux code path
-everywhere. GPUs are NVIDIA-only, and required: a machine without one is refused at enroll, because
+**Many Arms.** Each runs `slurmd` and Apptainer, on native Ubuntu 24.04, so there is a single Linux
+code path everywhere. GPUs are NVIDIA-only, and required: a machine without one is refused at enroll, because
 every Spawn holds at least one card. Several cards of the *same* model are welcome — a Spawn can ask
 for more than one of them at a time — but a box mixing models cannot advertise one honest VRAM size,
 so it is refused too.
@@ -175,8 +174,7 @@ needs no special rule.
 
 Price is **Power × Demand** — capability and scarcity, measured separately. Power is measured at
 enrollment by a benchmark Spawn submitted down the normal Slurm path, inside a Pod, so it sees the GPU
-as real Spawns will: WSL's virtualized `/dev/dxg`, a throttled laptop card, a stale driver, an x4
-PCIe lane. None of that is on a spec sheet, and all of it is the norm on donated personal machines.
+as real Spawns will: a throttled laptop card, a stale driver, an x4 PCIe lane. None of that is on a spec sheet, and all of it is the norm on donated personal machines.
 It runs against one pinned torch built once on the Head and pulled by each Arm at enrollment, so two
 cards measured a year apart are still comparable — the number is the card, not the software.
 Power is not optional: a meter counting only seconds would pay a slow card *more* for the same work,

@@ -9,7 +9,7 @@ Monorepo, split by **deployment context**. Each top-level dir is one bounded con
 |---|---|
 | [`cli/`](cli/) | The `cuttle` tool — a single Python CLI (setup/teardown, submit, follow, admin). |
 | [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out, auth + Karma (SQLite `head.db`). |
-| [`arm/`](arm/) | Compute node: Linux-layer bring-up (native/WSL2), `slurmd`, Apptainer, staging. |
+| [`arm/`](arm/) | Compute node: Linux-layer bring-up, `slurmd`, Apptainer, staging. |
 | [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, override. Ships inside `head/api` — see `karma/setup/README.md`. |
 | [`telemetry/`](telemetry/) | W&B injection, Head-box rogue-actor detection + email alerting. |
 | [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). Lives in `cli/core` + `head/api` — see `gateway/setup/README.md`. |

@@ -332,7 +332,7 @@ feature_fail() {
 # so reaching here means that gate was bypassed rather than that a User did something ordinary.
 [ -n "$py" ] || feature_fail \
   "could not run this Spawn's interpreter () to identify it, which every Feature below needs. The Pod image supplies none, so this is a Spawn that declared no Environment -- a Tide Pool opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to."
-feature_probe=$(apptainer exec --contain $dxg --bind "$proj$envbind" "$sif" $py -c '
+feature_probe=$(apptainer exec --contain --bind "$proj$envbind" "$sif" $py -c '
 import glob, os, sys, sysconfig
 print("cp%d%d" % sys.version_info[:2])
 print(":".join(sorted(glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "*", "lib")))))

@@ -1,7 +1,7 @@
 # arm/setup
 
-Provisioning for the Arm role, composed by `cuttle setup --arm --token <blob>`: Linux-layer bring-up
-(native / WSL2 on Windows), unattended mesh join against an admin-minted enrollment token, munge-key
+Provisioning for the Arm role, composed by `cuttle setup --arm --token <blob>`: Linux-layer bring-up,
+unattended mesh join against an admin-minted enrollment token, munge-key
 fetch, and a dynamic `slurmd -Z` that fetches its config from the Head (configless). Apptainer +
 `base.sif` for Pods.
 

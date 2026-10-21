@@ -150,46 +150,25 @@ rebuilt from scratch (`teardown --all`), it minted a new one and nothing here re
 `cuttle setup --client` again, or take a fresh bundle.
 
 **`ccc.glados` does not resolve.** The `/etc/hosts` line is missing — re-run `cuttle setup --client`.
-The Head's IP still works for everything, so this never blocks you. Under WSL this happens on its own
-after a Windows restart, because WSL rebuilds `/etc/hosts` from the Windows one each time the distro
-starts; running `ccc-windows.ps1` fixes it for good (see below).
+The Head's IP still works for everything, so this never blocks you.
 
 **The browser still says "not private".** The name and the certificate are per-machine, and a phone or
 a borrowed laptop gets neither. On a box CCC did set up, check that `libnss3-tools` installed (Chrome
-and Edge need it) and restart the browser. Under WSL or on a Chromebook the browser is not on the box
-CCC set up at all — see below.
+and Edge need it) and restart the browser. On a Chromebook the browser is not on the box CCC set up
+at all — see below.
 
 More at [Troubleshooting](../Troubleshooting.md).
 
-## Inside WSL, or on a Chromebook
+## On a Chromebook
 
-Both are the same situation: CCC installs into a Linux virtual machine, and the browser you actually
-use runs on the OS around it — Windows, or ChromeOS. That OS is a separate machine as far as CCC is
-concerned. It has neither `ccc.glados` nor the cluster's certificate authority, and `sudo` in here
-cannot give it them.
+CCC installs into ChromeOS's Linux virtual machine, and the browser you actually use runs on ChromeOS
+around it. That OS is a separate machine as far as CCC is concerned. It has neither `ccc.glados` nor
+the cluster's certificate authority, and `sudo` in here cannot give it them.
 
 `cuttle` works regardless — it resolves the name inside the VM — and `cuttle dashboard` always opens
-something that loads. What differs is whether it opens the name or the Head's address, and whether
-your browser warns.
+something that loads.
 
-**WSL.** `cuttle setup --client` writes **`ccc-windows.ps1`** and `ccc-ca.crt` into your Windows
-Downloads. Run the script once from Windows, as Administrator:
-
-```
-powershell -ExecutionPolicy Bypass -File "%USERPROFILE%\Downloads\ccc-windows.ps1"
-```
-
-It adds `ccc.glados` to the Windows hosts file and installs the cluster's CA machine-wide (Chrome,
-Edge and Firefox all read that store). Two things then work that did not: the Dashboard opens at
-`https://ccc.glados` with no warning, and the name stops disappearing inside WSL after a Windows
-restart — WSL rebuilds `/etc/hosts` from the Windows one, so from then on it inherits the right line.
-Until you run it, `cuttle dashboard` opens the Head's address and you click through a warning.
-
-`cuttle teardown --client` cannot take any of that back either, so it prints the same command with
-`-Remove`, which undoes exactly what the script did.
-
-**Chromebook.** Nothing can be automated: ChromeOS has no hosts file at any privilege, so
-`cuttle dashboard` always opens the Head's **address** there. The certificate warning you can be rid
-of, by hand — CCC drops `ccc-ca.crt` in your Downloads (or in "Linux files", if you have not shared
+Nothing can be automated: ChromeOS has no hosts file at any privilege, so `cuttle dashboard` always
+opens the Head's **address** there. The certificate warning you can be rid of, by hand — CCC drops `ccc-ca.crt` in your Downloads (or in "Linux files", if you have not shared
 Downloads with Linux), and ChromeOS imports it under Settings → Privacy and security → Manage
 certificates → Authorities → Import.

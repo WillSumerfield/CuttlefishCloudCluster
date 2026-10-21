@@ -64,12 +64,10 @@ class TestTheHostsLine:
         system.write_hosts_entry("10.0.0.5")
         assert writes == []
 
-    def test_a_line_wsl_regenerated_is_replaced_rather_than_joined(self, hosts):
-        """WSL2 rebuilds /etc/hosts from the *Windows* hosts file every time the distro starts, and
-        re-emits each entry as `ADDRESS<tab>name` — our marker comment does not survive that. Matching
-        on the marker alone would leave the inherited copy and append a second line for the same name,
-        which resolves to whichever came first: the address Windows was told, not the one setup just
-        wrote."""
+    def test_an_unmarked_line_is_replaced_rather_than_joined(self, hosts):
+        """A line for the name without our marker (added by hand, say). Matching on the marker alone
+        would leave it and append a second line for the same name, which resolves to whichever came
+        first — not the address setup just wrote."""
         hosts.write_text(f"127.0.0.1\tlocalhost\n10.0.0.5\t{config.DOMAIN}\n")
         system.write_hosts_entry("10.0.0.9")
         lines = [ln for ln in hosts.read_text().splitlines() if config.DOMAIN in ln]
@@ -78,7 +76,7 @@ class TestTheHostsLine:
     def test_teardown_takes_an_inherited_line_too(self, hosts):
         """The same line, at the other end of the box's life. A teardown that left it behind would
         leave the box resolving the name to a Head it no longer talks to — which is the one outcome
-        `untrust_and_unname` exists to prevent, and it would do it silently on every WSL box."""
+        `untrust_and_unname` exists to prevent."""
         hosts.write_text(f"127.0.0.1\tlocalhost\n10.0.0.5\t{config.DOMAIN}\n")
         system.remove_hosts_entry()
         assert config.DOMAIN not in hosts.read_text()

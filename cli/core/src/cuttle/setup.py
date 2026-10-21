@@ -39,10 +39,7 @@ def _write_root_file(path: Path, content: str, mode: str = "644") -> None:
     system.install_file(content, path, mode)
 
 
-def preflight(role: str) -> None:
-    """`role` is "head" or "arm". WSL2 is a proven Arm platform (mesh, slurmd, and CUDA inside a Pod
-    all verified on an RTX 4090) but an unproven Head: headscale and slurmctld have never run there,
-    and a Head is expected to stay up."""
+def preflight() -> None:
     rel = system.os_release()
     # ui.say, not print: inside a section this is a row of the box. print goes to stdout, which
     # `ui.fullscreen` holds back until the whole flow is over — so the box would sit empty while the
@@ -57,40 +54,14 @@ def preflight(role: str) -> None:
     if rel.get("VERSION_ID") != "24.04":
         raise ui.abort(f"this MVP is pinned to Ubuntu 24.04 (this box is {rel.get('VERSION_ID')!r})",
                        next_step="use Ubuntu 24.04")
-    if system.is_wsl():
-        if role != "arm":
-            raise ui.abort("WSL2 can host an Arm, but not the Head (headscale/slurmctld unproven here)",
-                           next_step="run `cuttle setup --arm` on this box, and host the Head elsewhere")
-        ui.say("  [muted]WSL2 — supported as an Arm, with one permanent limit: /dev/dxg is a single "
-               "device node for ALL GPUs, so Slurm can never isolate GPUs per-Spawn here — this box "
-               "registers one Device however many cards it has[/muted]")
     run([system.nvidia_smi(), "--query-gpu=name,driver_version", "--format=csv,noheader"])
     # Before anything is installed, joined, or written: a box whose GPUs are not all the same cannot be
     # described by ONE `vramN` Feature, and both roles hit this — the Head's own co-located Arm is an
     # Arm like any other. Aborts (a clean ✗ naming the cards it found), never a traceback.
     model, vram_mb = system.gpu_profile()
-    # Physical cards vs schedulable Devices: equal natively, and deliberately NOT on WSL, where every
-    # card sits behind the one /dev/dxg. Printed together so a WSL donor sees why their second card
-    # bought them nothing.
     cards, devices = len(system.gpu_inventory()), len(system.gpu_devices())
     ui.say(f"  [muted]gpu={cards}x {model} ({vram_mb} MiB each) → "
            f"Gres=gpu:{devices} Feature={config.vram_feature(vram_mb)}[/muted]")
-
-
-def configure_apptainer_wsl() -> None:
-    """Make `apptainer exec --nv` work on a WSL Arm, so nothing above the node ever learns what WSL
-    is. Contains the platform quirk at the platform boundary: `cuttle run`, Tide Pools, and any
-    future API-launched job all keep emitting one portable exec line.
-
-    Two additive lines (see config.WSL_LIB_ROOT for the measurements). Idempotent: `setup --arm`
-    re-runs, and a duplicate `bind path` would be applied twice.
-    """
-    sh(f"grep -qxF 'bind path = {config.WSL_LIB_ROOT}' {config.APPTAINER_CONF} || "
-       f"echo 'bind path = {config.WSL_LIB_ROOT}' >> {config.APPTAINER_CONF}", sudo=True)
-    sh(f"grep -qxF '{config.WSL_EXTRA_NVLIB}' {config.APPTAINER_NVLIBLIST} || "
-       f"echo '{config.WSL_EXTRA_NVLIB}' >> {config.APPTAINER_NVLIBLIST}", sudo=True)
-    ui.say(f"  [muted]WSL Arm — Apptainer binds {config.WSL_LIB_ROOT} and injects "
-           f"{config.WSL_EXTRA_NVLIB}; --nv now behaves as on native Linux[/muted]")
 
 
 def add_repos(head: bool = False) -> None:
@@ -769,12 +740,10 @@ def required_sans(mesh_ip: str) -> list[str]:
     or TLS rejects the connection with a name mismatch:
       - the **Cluster name** — what everything canonically uses now (config.DOMAIN),
       - the LAN IP + hostname  — a browser or CLI on the local network, or a device with no hosts entry,
-      - the mesh IP            — a remote Arm's owner browsing over the mesh,
-      - localhost/127.0.0.1    — a WSL Arm's dashboard forward, which surfaces the Head at
-                                 https://localhost in the Windows browser.
+      - the mesh IP            — a remote Arm's owner browsing over the mesh.
     """
-    return [f"DNS:{config.DOMAIN}", f"DNS:{system.hostname()}", "DNS:localhost",
-            f"IP:{system.primary_ip()}", f"IP:{mesh_ip}", "IP:127.0.0.1"]
+    return [f"DNS:{config.DOMAIN}", f"DNS:{system.hostname()}",
+            f"IP:{system.primary_ip()}", f"IP:{mesh_ip}"]
 
 
 def _cert_sans(cert: Path) -> set[str]:
@@ -906,46 +875,6 @@ def build_spa() -> None:
     system.allow_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE,
                                 "ccc tide pool relay (LAN+mesh)")
     print(f"cuttle: Dashboard SPA built → {config.HEAD_API_WEB_DIR}")
-
-
-def install_wsl_dashboard_forward(head_mesh_ip: str) -> None:
-    """WSL-only: forward a local port to the Head API so the Arm's owner can open the Dashboard from
-    their Windows browser at https://localhost/. The CCC mesh lives inside WSL and
-    Windows can't reach the Head's mesh IP, but WSL2 forwards Windows localhost to WSL listeners —
-    so a listener here bridges the gap. Socket-activated proxy (systemd-socket-proxyd, no package).
-    Idempotent: `enable --now` on re-run is a no-op.
-
-    HTTPS, not HTTP: the proxy is raw TCP so it carries TLS untouched, and the Head speaks nothing but
-    TLS now. `localhost`/127.0.0.1 are in the cert's SANs for exactly this path (see provision_tls)."""
-    socket_unit = f"""\
-[Unit]
-Description=CCC dashboard forward (WSL->Windows localhost bridge)
-
-[Socket]
-ListenStream={config.HEAD_API_PORT}
-
-[Install]
-WantedBy=sockets.target
-"""
-    # No [Install]: this is started on demand by the .socket (names match), never enabled directly.
-    service_unit = f"""\
-[Unit]
-Description=CCC dashboard forward: proxy to the Head API over the mesh
-Requires={config.DASH_FORWARD_SERVICE}.socket
-After={config.DASH_FORWARD_SERVICE}.socket {config.CCC_TS_SERVICE}.service
-
-[Service]
-ExecStart={config.SOCKET_PROXYD} {head_mesh_ip}:{config.HEAD_API_PORT}
-"""
-    _write_root_file(config.DASH_FORWARD_SOCKET_UNIT, socket_unit)
-    _write_root_file(config.DASH_FORWARD_SERVICE_UNIT, service_unit)
-    run(["systemctl", "daemon-reload"], sudo=True)
-    run(["systemctl", "enable", "--now", f"{config.DASH_FORWARD_SERVICE}.socket"], sudo=True)
-    ui.result("dashboard (Windows)", headapi.head_url("localhost") + "/")
-    # Not "click through the warning once" any more: `guest.offer` follows this and hands Windows the
-    # authority that removes it. Until that script is run, the warning is what you get.
-    ui.say("  [muted]the browser warns until Windows is given the cluster's authority (next "
-           "step)[/muted]")
 
 
 def make_user_dirs() -> None:
@@ -1100,7 +1029,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         head_features = _prompt_arm_features(head_features)
         head_licence = _prompt_licence_home(head_features, head_licence) if head_features else ""
     head_licence = _require_licence_home(head_features, head_licence)
-    preflight("head")
+    preflight()
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
     # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
@@ -1318,7 +1247,7 @@ def _update_client() -> None:
         tls.refresh_pin(url)
         # The third thing that can rot on a guest, and the only one this box cannot see from its own
         # state: the name and the CA on the OS around it. Both readable unelevated, so drift is caught
-        # here — an `--all` teardown and a redeploy leave a stale CA trusted on Windows otherwise.
+        # here — an `--all` teardown and a redeploy leave a stale CA on the host OS otherwise.
         guest.offer()
     ui.result("head", url)
     ui.result("session", _session_line(url))
@@ -1596,7 +1525,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     node_name = t["node_name"]
     # W&B (and now the GitHub key) are asked at the END — see `account_setup`. Both need a Session,
     # and nothing on this box can reach the Head until the enrollment below has pointed it at one.
-    preflight("arm")
+    preflight()
 
     with ui.step("Joining the mesh"):
         mesh_ip = mesh.up_arm(t["coordinator"], node_name, t["authkey"], _write_root_file,
@@ -1610,9 +1539,9 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
 
     # Enroll IMMEDIATELY, before the long apt run: `cuttle arm authorize` is blocked on the Head
     # waiting for exactly this POST, and an unroutable Head is better learned now than after apt.
-    # It reports our GPU devices (one /dev/nvidiaN per card natively, a single /dev/dxg under WSL2)
-    # for the Head to author gres.conf, and returns the munge key — held in memory, since writing it
-    # needs the `munge` user, which apt has not created yet.
+    # It reports our GPU devices (one /dev/nvidiaN per card) for the Head to author gres.conf, and
+    # returns the munge key — held in memory, since writing it needs the `munge` user, which apt has
+    # not created yet.
     # Arm Features (docs/TODO.md): asked before /enroll so the declaration rides the same POST as the
     # hardware report. The catalog is config.FEATURE_NAMES, a local constant, so this needs nothing
     # from the Head. A re-setup offers what this box declared last time (settings) rather than
@@ -1655,8 +1584,6 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         install_apptainer(deb)
         deb.unlink()  # 35 MB, kept only as long as apt needed to read it
         record_installed(before)
-        if system.is_wsl():
-            configure_apptainer_wsl()  # after apptainer is installed, before base.sif is built
         enroll.write_munge_key(info["munge_key"])  # now that `munge` exists to own it
 
     data = settings.load()
@@ -1731,15 +1658,6 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     with ui.step("Checking the Head can reach us"):
         # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
         enroll.check_head_can_reach_us(t["mesh_ip"])
-
-    if system.is_wsl():
-        with ui.step("Forwarding the Dashboard to Windows"):
-            install_wsl_dashboard_forward(t["mesh_ip"])  # browse the Head via localhost
-        # After the forward, which is what decides what the script is FOR here: an Arm's Windows
-        # browser reaches the Dashboard over that forward either way, so what the script buys is the
-        # certificate warning going away — and the name surviving the next Windows restart, which
-        # WSL otherwise erases when it rebuilds /etc/hosts from the Windows one.
-        guest.offer(force=True)
 
     if not update:
         _arm_first_login()

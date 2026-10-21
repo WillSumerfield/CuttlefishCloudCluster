@@ -271,25 +271,8 @@ export RSYNC_PASSWORD=%%RSYNC_SECRET%%
 jid=$SLURM_JOB_ID
 staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
-# WSL's GPU, resolved on the NODE so the Head never has to know which of its Arms is WSL. Native Linux
-# exposes /dev/nvidia*, which `--nv` binds itself; WSL2 exposes ONE node, /dev/dxg, plus a driver stack
-# under /usr/lib/wsl that libcuda dlopens at runtime. Phase 1 cost us BOTH, for two different reasons:
-#
-#   * `--contain` cuts /dev from ~241 entries to 12 (measured), and --nv puts back only the nvidia*
-#     nodes — it knows nothing about /dev/dxg.
-#   * `--contain` also IGNORES apptainer.conf's `bind path` entries — "except for /etc/hosts and
-#     /etc/localtime", says the config's own note — which is exactly how cuttle.setup's
-#     configure_apptainer_wsl had been putting /usr/lib/wsl into the Pod.
-#
-# --nv still injects libdxcore.so (it is in nvliblist, found via ldconfig), so the failure looks like
-# working GPU support right up until it doesn't: torch imports, reports its CUDA build, and then
-# torch.cuda.is_available() is False. Both halves are needed; neither alone is enough.
-#
-# Unquoted on purpose below: empty must expand to no argument at all, not to an empty one.
-dxg=""; [ -e /dev/dxg ] && dxg="--bind /dev/dxg,/usr/lib/wsl"
-
-# This Spawn's card, when that card is in MIG mode. Resolved on the NODE for exactly the reason $dxg is:
-# the Head renders one job script for a mixed fleet and has no business knowing which of its Arms carve.
+# This Spawn's card, when that card is in MIG mode. Resolved on the NODE: the Head renders one job
+# script for a mixed fleet and has no business knowing which of its Arms carve.
 #
 # ⚠ DUPLICATED from cuttle.templates.MIG_RESOLVER_SH — head/api depends on nothing in cli/core (separate
 # packages, separate venvs, and this one is served to Arms). Change one, change the other. See that
@@ -321,7 +304,7 @@ ccc_mig_uuid() {
 # capability nodes a MIG device is actually opened through live in a SUBDIRECTORY of it — without them
 # the Pod holds a device it has no way to reach. The Arm's prolog is what makes them readable to this
 # Guise; this only carries them across the Pod wall.
-# Same shape as $dxg above, deliberately: an empty expansion must add no argument at all.
+# Unquoted below on purpose: an empty expansion must add no argument at all.
 migbind=""; migenv=""; ccc_uuid=""
 mapfile -t ccc_devs < <(printf '%s\n' /dev/nvidia[0-9]* | sort -V)
 IFS=, read -ra ccc_held <<< "${CUDA_VISIBLE_DEVICES:-}"
@@ -810,11 +793,11 @@ ccc_build_or_die() {
 # /dev/null stdin it had before. A `<<<` herestring would have handed every Spawn in the fleet one
 # blank line on stdin instead, which is not nothing to a script calling input().
 #
-# `$gitboot` is unquoted for the same reason `$dxg` and `$py` are: empty must expand to no argument at
+# `$gitboot` is unquoted for the same reason `$py` is: empty must expand to no argument at
 # all. When set it is the wrapper below, which drains the key off stdin and `exec`s the real command,
 # so the payload's own argv and stdin are what they always were.
 PAYLOAD_SCRIPT = """\
-printf '%s' "$ccc_git_key" | apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group $dxg \\
+printf '%s' "$ccc_git_key" | apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
   "$sif" $gitboot $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
@@ -1105,7 +1088,7 @@ chmod +x "$scratch/tp_boot.sh"
 # special case. Splitting on commas is exactly as safe as the `--env` list below, which already does.
 featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' ' ')
 featnames=${featnames% }
-apptainer exec --nv --contain --pid --pwd "$proj" $dxg \\
+apptainer exec --nv --contain --pid --pwd "$proj" \\
   $overlay --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind$migbind" \\
   --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\

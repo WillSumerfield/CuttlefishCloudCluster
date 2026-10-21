@@ -12,7 +12,7 @@
 - **Arm** — a compute node that donates resources to the cluster. One role, with no permanent/
   reclaimable distinction to declare: every Arm is its owner's to reclaim at any moment, through
   **Retract**, so there is no kind of Arm that is more lent than another. Arms run on
-  **Ubuntu 24.04** — natively or under **WSL2** on Windows.
+  native **Ubuntu 24.04**.
 - **Gateway** — the authenticated network entryway that fronts all access to the cluster.
   Distinct from the **Mesh**: the Gateway fronts human/CLI access, the Mesh is node-to-node.
 
@@ -444,8 +444,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   And no Spawn is ever given a Slice larger than it asked for — the Beak reshapes rather than hand out
   Power nobody requested, so what a Spawn is billed for is always what it declared.
 - **Power** — what a device can *do*: its throughput, **measured** when its Arm enrolls, by running a
-  benchmark **inside a Pod** — so it reflects the machine as Spawns will really meet it (a virtualized
-  WSL GPU, a throttled laptop card, a stale driver), not what its spec sheet claims. Intrinsic and
+  benchmark **inside a Pod** — so it reflects the machine as Spawns will really meet it (a throttled
+  laptop card, a stale driver), not what its spec sheet claims. Intrinsic and
   fixed. It is what stops the meter paying an owner *more* for being *slower*: a second is worth only
   what a second on that card actually buys.
   A **carvable** card is measured once *per size of **Slice*** it can be divided into. A Slice's Power

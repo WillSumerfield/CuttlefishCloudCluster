@@ -177,22 +177,14 @@ was rebuilt from scratch (`teardown --all`), it minted a new one and nothing rec
 Nothing outside the cluster resolves that name; each box gets an `/etc/hosts` line from `cuttle setup`.
 Re-run `setup` for the box's role to rewrite it. The Head's IP works for everything in the meantime.
 
-**Under WSL, after a Windows restart.** WSL rebuilds `/etc/hosts` from the *Windows* hosts file every
-time the distro starts, which drops the line `setup` wrote. The fix is to give Windows the name, which
-is what `ccc-windows.ps1` (in your Windows Downloads) does — run it once from Windows as
-Administrator and WSL inherits the line from then on. Clients and Arms alike; `setup` writes that
-script on both, and `cuttle dashboard` and `cuttle update` rewrite it whenever Windows is missing it.
-
 ### The browser still warns about the Dashboard
 
 Expected on a device CCC never installed on — a phone or a borrowed laptop. On a box CCC did set up: check `libnss3-tools` is installed (Chrome, Chromium,
 Edge and Brave read a separate store that needs `certutil`), then restart the browser. Snap-packaged
 Firefox and Chromium may not read the files `setup` writes.
 
-Also expected on a **guest** — WSL or a Chromebook — where the browser runs on the OS around the box
-and shares none of its trust. On Windows, client or Arm, run `ccc-windows.ps1` from your Downloads as
-Administrator: it installs the CA machine-wide, which Chrome, Edge and Firefox all read. On ChromeOS,
-import `ccc-ca.crt` by hand (Settings → Privacy and security → Manage certificates → Authorities →
+Also expected on a **guest** — a Chromebook — where the browser runs on the OS around the box and
+shares none of its trust. Import `ccc-ca.crt` by hand (Settings → Privacy and security → Manage certificates → Authorities →
 Import); there is no scriptable way to do it.
 
 ### `cuttle` opens a menu when I wanted help

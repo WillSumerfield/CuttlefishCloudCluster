@@ -837,8 +837,7 @@ def activate_arm(name: str, features: list[dict], force: bool = False) -> None:
     **CCC drives this, not the Arm's owner, and not by hand.** The software is licensed to the machine
     through a vendor library, and the only supported way to activate it is to import the library and
     create a gym — which needs the exact runtime a Spawn gets: the Arm's own wheel, a Python it has a
-    build for, the system libraries, and `libcuda.so.1`. CCC already assembles all of that for a Spawn,
-    including on WSL, where an out-of-Pod activation would have had to solve the driver stack by hand.
+    build for, the system libraries, and `libcuda.so.1`. CCC already assembles all of that for a Spawn.
     So the activation IS a Spawn, pinned to the Arm being admitted.
 
     **The Environment comes from the Feature's own profile** (`GET /features/<name>/environment.yml`),

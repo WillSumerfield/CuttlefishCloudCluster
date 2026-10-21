@@ -384,32 +384,6 @@ def stop_arm_daemons() -> None:
     run(["systemctl", "disable", "--now", *_ARM_SERVICES], sudo=True, check=False)
 
 
-def undo_apptainer_wsl() -> None:
-    """Reverse `setup.configure_apptainer_wsl` — strip the two additive lines. Only meaningful on a
-    WSL Arm (guarded), so a native-Linux Arm's apptainer.conf is never touched. Idempotent: the sed
-    deletes are no-ops if the lines are already gone."""
-    if not system.is_wsl():
-        return
-    # `\#...#` picks # as the address delimiter so the /usr/lib/wsl path needs no escaping.
-    run(["sed", "-i", f"\\#^bind path = {config.WSL_LIB_ROOT}$#d", str(config.APPTAINER_CONF)],
-        sudo=True, check=False)
-    run(["sed", "-i", f"/^{config.WSL_EXTRA_NVLIB}$/d", str(config.APPTAINER_NVLIBLIST)],
-        sudo=True, check=False)
-    ui.say(f"  [muted]reverted the WSL Apptainer config ({config.WSL_LIB_ROOT} bind + "
-           f"{config.WSL_EXTRA_NVLIB})[/muted]")
-
-
-def remove_wsl_dashboard_forward() -> None:
-    """Reverse install_wsl_dashboard_forward. Tolerant of partial state (a native Arm never had it,
-    so these are harmless no-ops) — no is_wsl guard needed, matching the rest of teardown."""
-    run(["systemctl", "disable", "--now",
-         f"{config.DASH_FORWARD_SERVICE}.socket", f"{config.DASH_FORWARD_SERVICE}.service"],
-        sudo=True, check=False)
-    run(["rm", "-f", str(config.DASH_FORWARD_SOCKET_UNIT), str(config.DASH_FORWARD_SERVICE_UNIT)],
-        sudo=True, check=False)
-    run(["systemctl", "daemon-reload"], sudo=True, check=False)
-
-
 def remove_munge_key() -> None:
     """The cluster-wide shared secret this Arm was seeded with. Purging the munge package would drop
     it too, but --keep-packages must not leave a live key behind on a departed Arm."""
@@ -537,8 +511,6 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         _leave_ccc_mesh()
     with ui.step("Removing Slurm's config and this node's integration"):
         remove_slurm_config()
-        undo_apptainer_wsl()
-        remove_wsl_dashboard_forward()
     with ui.step("Removing the cluster key and the CCC accounts"):
         remove_munge_key()
         remove_mantle()  # created by setup_arm.provision_mantle
@@ -645,8 +617,6 @@ def teardown_full(keep_packages: bool = False) -> None:
         with ui.step("Tearing down the mesh"):
             remove_mesh(keep_packages=keep_packages)
         with ui.step("Removing Slurm, the cluster key and the CCC accounts"):
-            undo_apptainer_wsl()
-            remove_wsl_dashboard_forward()
             remove_munge_key()
             remove_slurm_config()   # shared by both roles
             remove_mantle()

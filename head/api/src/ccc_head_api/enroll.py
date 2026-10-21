@@ -79,7 +79,7 @@ FEATURE_NAMES = ("vlearn", "isaaclab")
 # the name the donor claims. An uppercase name therefore cannot pass `/enroll` however it got here, so
 # it is refused with an explanation rather than left to fail as an unexplained 403 two checks later.
 NODE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-GPU_DEVICE_RE = re.compile(r"^/dev/(nvidia[0-9]+|dxg)$")
+GPU_DEVICE_RE = re.compile(r"^/dev/nvidia[0-9]+$")
 # Same shape as cuttle.config.FEATURE_NAME_RE — it also becomes a Slurm Feature= token and an env var.
 FEATURE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -96,8 +96,7 @@ class FeatureDecl(BaseModel):
 class EnrollRequest(BaseModel):
     node_name: str
     # Every GPU **Device** the Arm can hand to a Spawn, in the order its gres.conf lines must be
-    # written — /dev/nvidiaN per card natively, and exactly ONE /dev/dxg under WSL2 however many
-    # physical cards the box has (one device node fronts them all; a cgroup cannot split it).
+    # written — one /dev/nvidiaN per card.
     gpu_devices: list[str]
     mesh_ip: str
     # The memory of one card. One number for the whole box, because `setup --arm` refuses to enroll a
@@ -234,8 +233,7 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         raise HTTPException(422, "an Arm must report at least one GPU device")
     for device in req.gpu_devices:
         if not GPU_DEVICE_RE.match(device):
-            raise HTTPException(422, f"unsupported GPU device {device!r} — expected /dev/nvidiaN "
-                                     f"(native Linux) or /dev/dxg (WSL2)")
+            raise HTTPException(422, f"unsupported GPU device {device!r} — expected /dev/nvidiaN")
     # Hard-validate every declared Arm Feature against the catalog — no free typing. An unknown name
     # means the donor's CCC is NEWER than this Head's (both ends carry the same constant), so the
     # remedy names that, not an operator command.

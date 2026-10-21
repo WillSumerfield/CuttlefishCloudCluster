@@ -44,9 +44,8 @@ if [ -d "$here/head" ]; then
     #     names — so without this line the client is pointed somewhere it cannot reach. This is the
     #     one part of installing that needs root; it is also why a baked bundle asks for sudo at all.
     #     build-installer baked the finished line, marker and all, so nothing is reconstructed here.
-    #     Every line resolving the name goes, not just ours: WSL2 regenerates /etc/hosts from the
-    #     Windows hosts file on each distro start and drops our marker doing it, so a marker-only
-    #     match would leave the inherited copy and resolve the name twice. Mirrors system.claims_name.
+    #     Every line resolving the name goes, not just ours: a marker-only match would leave an
+    #     unmarked line for the name in place and resolve it twice. Mirrors system.claims_name.
     if [ -f "$here/head/hosts" ]; then
         echo "cuttle: adding the cluster name to /etc/hosts (needs sudo) ..."
         name=$(awk '$1 !~ /^#/ && NF > 1 { print $2; exit }' "$here/head/hosts")

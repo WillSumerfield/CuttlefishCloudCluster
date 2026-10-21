@@ -417,9 +417,9 @@ ACTIVATION_SPAWN_NAME = "activate %s licence"
 HEAD_DEBS_DIR = CCC_LIB / "debs"
 APPTAINER_RECORD = CCC_LIB / "apptainer.json"
 
-# An Arm's GPU device node. Native Linux exposes /dev/nvidiaN; WSL2 exposes /dev/dxg with CUDA
-# shimmed via /usr/lib/wsl/lib. Re-validated root-side before it ever reaches gres.conf.
-GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
+# An Arm's GPU device node, one /dev/nvidiaN per card. Re-validated root-side before it ever reaches
+# gres.conf.
+GPU_DEVICE_RE = r"^/dev/nvidia[0-9]+$"
 
 # --- Head API (⑥: read board + SPA + auth + submission): LAN+mesh ---
 # The LAN+mesh service backing both the web Dashboard and the CLI (glossary: *Head API*). Split from
@@ -525,12 +525,10 @@ NSSDB_DIR = ".pki/nssdb"               # relative to $HOME
 NSS_TOOLS_PKG = "libnss3-tools"        # provides `certutil`
 
 # --- the OS around a guest install (cuttle/guest.py) ------------------------
-# Three stores above cover every browser on THIS box. On a guest — WSL2 under Windows, Crostini under
-# ChromeOS — the browser its owner actually uses is on none of them: it runs on the host OS, which has
-# neither the **Cluster name** nor this CA, and which CCC cannot install onto (writing the Windows
-# hosts file and machine trust store needs Administrator, and `sudo` in here is not that). So the host
-# OS's owner is handed an artifact instead, by name — where it lands is the host OS's business.
-WIN_SCRIPT_NAME = "ccc-windows.ps1"    # generated per box: it carries this cluster's address and CA
+# Three stores above cover every browser on THIS box. On a guest — Crostini under ChromeOS — the
+# browser its owner actually uses is on none of them: it runs on the host OS, which has neither the
+# **Cluster name** nor this CA, and which CCC cannot install onto. So the host OS's owner is handed an
+# artifact instead, by name — where it lands is the host OS's business.
 GUEST_CA_NAME = "ccc-ca.crt"           # the CA, dropped where the host OS can import it by hand
 # ChromeOS's own Downloads, as Crostini sees it — but ONLY once its owner has shared that folder with
 # Linux (Files app -> right-click Downloads -> Share with Linux). It is not shared by default, which is
@@ -626,32 +624,6 @@ KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 TIDEPOOL_PORT_BASE = 31000
 TIDEPOOL_PORT_RANGE = 200
 
-# --- WSL Arm dashboard forward (⑥ convenience) ---
-# A WSL Arm's owner can't browse the Head Dashboard from Windows: the CCC mesh lives INSIDE WSL, and
-# Windows has no route to the Head's mesh IP. So on a WSL Arm we forward a local port to the Head
-# API — WSL2's localhost-forwarding then surfaces it at https://localhost/ in the Windows browser.
-# Socket-activated proxy: no extra package (systemd-socket-proxyd ships with systemd), and systemd
-# binds the socket itself, as root, so the privileged HEAD_API_PORT needs no capability on this side.
-# WSL-only — a native-Linux Arm reaches the mesh Dashboard directly.
-DASH_FORWARD_SERVICE = "ccc-dash-forward"  # the .socket/.service basename (they must match to pair)
-DASH_FORWARD_SOCKET_UNIT = Path("/etc/systemd/system/ccc-dash-forward.socket")
-DASH_FORWARD_SERVICE_UNIT = Path("/etc/systemd/system/ccc-dash-forward.service")
-SOCKET_PROXYD = "/usr/lib/systemd/systemd-socket-proxyd"
-
-# --- WSL2 Arms (see setup.configure_apptainer_wsl) ---
-# `apptainer exec --nv` alone yields torch.cuda.is_available() == False on WSL. Measured: --nv finds
-# libcuda.so.1 (ldconfig knows /usr/lib/wsl/lib) and injects it, but WSL's libcuda is a shim that
-# loads libdxcore.so, which is absent from nvliblist AND enumerates GPUs from /usr/lib/wsl/DRIVERS —
-# a directory of Windows driver files no library list can supply. cuInit then returns 100
-# (CUDA_ERROR_NO_DEVICE). Binding the parent /usr/lib/wsl + listing libdxcore.so gives cuInit 0.
-APPTAINER_CONF = Path("/etc/apptainer/apptainer.conf")
-APPTAINER_NVLIBLIST = Path("/etc/apptainer/nvliblist.conf")
-WSL_LIB_ROOT = "/usr/lib/wsl"  # holds both lib/ and drivers/ — bind the parent, not lib/
-WSL_EXTRA_NVLIB = "libdxcore.so"
-# nvidia-smi on WSL lives here, and this dir is on PATH only in an interactive login shell — so a
-# non-interactive caller (an srun step, a service) can't find it by name. system.nvidia_smi() falls
-# back to this absolute path so the GPU checks don't depend on who invoked them.
-WSL_NVIDIA_SMI = f"{WSL_LIB_ROOT}/lib/nvidia-smi"
 # **Lowercase only, and that is Headscale's rule rather than ours.** An Arm's name is one string in
 # three systems (`mesh.join_mesh`: the Slurm node name IS the Headscale hostname IS the registry key),
 # and Headscale normalizes a node's `given_name` to DNS rules — which lowercases it, unconditionally and

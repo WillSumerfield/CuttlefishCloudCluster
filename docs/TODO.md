@@ -12,7 +12,7 @@ does not.
 
 **MIG only.** A card is sliceable or whole — "shared" always means hardware-isolated, never an honour
 system. MPS/time-slicing is rejected: no memory isolation, so one Spawn can OOM another. Consequence:
-the RTX 5080 and every WSL Arm (`/dev/dxg` is one node for all GPUs) are permanently whole-card. The
+the RTX 5080 is permanently whole-card. The
 Blackwell 6000 Pros live on the **Head**, so all carvable hardware is Commons — Karma spent on a Slice
 is destroyed, not transferred.
 

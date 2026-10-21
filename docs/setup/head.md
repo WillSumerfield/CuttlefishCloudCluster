@@ -10,7 +10,7 @@ The Head also donates its own GPU — it runs a co-located Arm — so it is not 
 
 ## Before you start
 
-- **Ubuntu 24.04.** Native, not WSL.
+- **Ubuntu 24.04**, native.
 - **NVIDIA** GPU with working drivers.
 - `sudo`.
 - **Decide the address remote Arms will reach this box at** before you run setup. See

@@ -395,7 +395,7 @@ def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
     The Attribution ledger is what distinguishes "this Spawn died" from "no such Spawn". A Spawn that
     is gone from squeue with no `exit` file never recorded one — it was scancel'd, OOM-killed, or its
     Arm dropped off the mesh before staging out. That is `failed`, not 404, and only the ledger can say
-    so. Remote Arms are the flakiest nodes in the cluster (donor box sleeps, WSL shuts down), so this
+    so. Remote Arms are the flakiest nodes in the cluster (donor box sleeps, loses power), so this
     is the common case there, not a corner.
 
     A Spawn somebody *cancelled* lands in that same exit-code-less state, and reporting it as died-on-
