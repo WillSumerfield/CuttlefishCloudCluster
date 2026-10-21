@@ -106,3 +106,19 @@ class TestRetractAny:
         assert admin.main(["retract", "not-a-real-arm"]) == 1
         assert "no such Arm" in capsys.readouterr().err
 
+
+
+class TestTheSchema:
+    """2.0 is a clean install: one schema, no migration ladder."""
+
+    def test_a_second_init_is_a_no_op(self, head_db):
+        with db.connect() as conn:
+            db.init_schema(conn)
+            assert db.get_user(conn, "alice") is not None
+
+    def test_a_1x_store_is_refused_not_upgraded(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "old.db")
+        with db.connect() as conn:
+            conn.execute("PRAGMA user_version=21")
+            with pytest.raises(RuntimeError, match="clean install"):
+                db.init_schema(conn)

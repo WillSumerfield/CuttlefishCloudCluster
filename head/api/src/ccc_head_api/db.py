@@ -39,9 +39,61 @@ _TOKEN_BYTES = 32  # secrets.token_urlsafe → ~43 url-safe chars, 256 bits
 
 _ph = PasswordHasher()
 
-# Schema as a migration ladder keyed by PRAGMA user_version: each step takes the DB from version N-1
-# to N, so a fresh DB runs the whole ladder and a deployed one runs only what it's missing.
-_SCHEMA_V1 = """
+# The whole schema, created once on a fresh head.db. 2.0 is a clean install (teardown + setup), so there
+# is no migration ladder: a 1.x store is refused rather than upgraded (see `init_schema`).
+#
+# `users` / `sessions` — the auth store. Session tokens are stored hashed (see the module docstring).
+#
+# `spawns` — the Attribution ledger: one row per submitted Spawn, keyed by the Slurm job id (the spawn
+# id). `user_id` is ON DELETE SET NULL so removing a user keeps the historical row (shown as "unknown"
+# rather than vanishing). The single source of truth for who submitted what.
+#   * `minutes`/`gpus`/`vram_gb`/`node` — what the User DECLARED, frozen at submit. The tick needs a
+#     queued Spawn's needs to know which Arms it is eligible for (and so which Arms' Demand it adds to);
+#     eligibility itself is re-derived from the live registry each pass. `node` is what the submitter
+#     *demanded* (an Admin pin; nothing sets it since 2.0 dropped pinning, so it is NULL).
+#   * `exit_code`/`finished_at` — the ending, recorded once by the tick the pass it notices the Spawn has
+#     left the queue (squeue forgets a finished job and there is no slurmdbd). `exit_code` NULL with
+#     `finished_at` set is a Spawn that ended without recording one — a failure.
+#   * `placed_node` — where the cluster actually PUT it, which is not `node` and must never be folded
+#     into it: `spawn_needs` reads `node` as the declaration. Copied off the escrow row by the meter,
+#     since `clear_escrow` deletes that at Settlement — precisely when History starts wanting it. NULL
+#     means "not known", never "unplaced".
+#   * `tidepool` — the payload is a live shell (every Spawn since 2.0 dropped batch ones).
+#   * `script` — what a 1.x batch Spawn ran; written '' since. Still read by the history views.
+#
+# The Karma economy, deliberately with no balances table: Decay is linear, so a decayed sum over the
+# ledger and a decay-on-touch running total are exactly equal, and a cached balance could only disagree.
+#   * `karma_ledger` — ONE ROW PER EVENT, both parties nullable: a NULL `from_user` is Karma conjured
+#     (an Override credit), a NULL `to_user` is Karma destroyed (a Spawn on a commons Arm).
+#   * `karma_escrow` — a Spawn's outstanding claim, and so the meter itself. `hold` is the forecast
+#     quoted at submit (a FLOOR); `accrued` is what it has really cost so far, ticked while it RUNS (a
+#     RATCHET). Share subtracts MAX(hold, accrued). At Settlement the row is DELETED and one ledger row
+#     written; the escrow is a live claim, never history, and does not decay.
+#   * `karma_demand` — history ONLY, never a pricing path: raw samples (one row per Arm per tick) so the
+#     Tide can forecast Demand by hour-of-day and the Dashboard can chart it. Pruned at 30 days.
+#
+# Arm Retract/Return — two tables because the two things they track have different lifetimes:
+#   * `arm_retractions` — a row means "this node takes no NEW placement"; submit builds --exclude= from
+#     it. Return deletes the row, and that is all Return ever does.
+#   * `retracted_jobs` — one row per Spawn RUNNING on the node when Retract fired; `deadline` is when the
+#     tick force-kills it. Survives Return (a caught Spawn is doomed regardless); cleared when the tick
+#     settles the job, at zero.
+#
+# Tide Pool — two tables because the port has to be reserved BEFORE the job_id exists (baked into the
+# job script, rendered before sbatch runs):
+#   * `tidepool_ports` — the reservation, keyed by the port alone, so two submissions racing the same
+#     "lowest free port" collide on ITS primary key (tidepool.reserve_port retries).
+#   * `tidepools` — everything else, written once the job_id is known. `pubkey`/`privkey` are minted
+#     once at submit and never regenerated, so a reattach gets the SAME key; `privkey` is encrypted at
+#     rest (atrest.py), the ONLY thing the Head decrypts unattended. `relay_pid`/`node` are the Head-side
+#     relay, once started. Both rows are deleted the moment the Spawn leaves the queue (tick reap_dead).
+#
+# `guises` — the uid a User's Spawns run as, on every node (guises.py). This table is only the allocator,
+# and its one job is **never hand out a uid twice**: `remove_user` HARD-deletes, so a removed User
+# leaves a tombstone here (`user_id` goes NULL, the row stays forever to keep that uid retired). UNIQUE
+# on user_id makes it one Guise per User — SQLite allows many NULLs in a UNIQUE column, which is exactly
+# right: many tombstones, one live row each.
+_SCHEMA = """
 CREATE TABLE users (
   id                   INTEGER PRIMARY KEY,
   username             TEXT    NOT NULL UNIQUE,
@@ -57,40 +109,23 @@ CREATE TABLE sessions (
   expires_at   TEXT    NOT NULL
 );
 CREATE INDEX idx_sessions_user ON sessions(user_id);
-"""
 
-# The attribution ledger: one row per submitted Spawn, keyed by the Slurm job id (the spawn id).
-# user_id is ON DELETE SET NULL so removing a user keeps the historical attribution row (shown as
-# "unknown" rather than vanishing). This is the single source of truth for who submitted what — no
-# sbatch --comment stamp to drift against.
-#
-# `staging_uuid` is unused since 2.0 dropped project upload; written '' (it is NOT NULL) until the schema
-# collapse.
-_SCHEMA_V2 = """
 CREATE TABLE spawns (
   job_id       INTEGER PRIMARY KEY,
   user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
   submitted_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  script       TEXT    NOT NULL,
-  staging_uuid TEXT    NOT NULL
+  script       TEXT    NOT NULL DEFAULT '',
+  minutes      INTEGER,
+  gpus         INTEGER,
+  vram_gb      INTEGER,
+  node         TEXT,
+  exit_code    INTEGER,
+  finished_at  TEXT,
+  tidepool     INTEGER NOT NULL DEFAULT 0,
+  placed_node  TEXT
 );
 CREATE INDEX idx_spawns_user ON spawns(user_id);
-"""
 
-# The Karma economy. Two tables, deliberately NOT a third holding balances:
-#
-# `karma_ledger` is ONE ROW PER EVENT, both parties nullable — a NULL `from_user` is Karma conjured (an
-# Override credit), a NULL `to_user` is Karma destroyed (a Spawn on a commons Arm, no owner to pay). Σ
-# of every User's balance is then a single query.
-#
-# No `karma_balance` table: Decay is linear, so a decayed sum over the rows and a decay-on-touch
-# running total are exactly — not approximately — equal. A cached balance could only ever disagree with
-# the ledger. See karma.py for the arithmetic.
-#
-# `karma_escrow` is a live hold, not a movement: it suppresses a submitter's Share while their Spawn is
-# outstanding (so flooding the queue instantly costs your own queue position), released at Settlement.
-# Does not decay — it is not history, it is an outstanding claim.
-_SCHEMA_V3 = """
 CREATE TABLE karma_ledger (
   id        INTEGER PRIMARY KEY,
   at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -106,42 +141,6 @@ CREATE INDEX idx_karma_ledger_to   ON karma_ledger(to_user);
 CREATE TABLE karma_escrow (
   job_id  INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  amount  REAL    NOT NULL,
-  at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-CREATE INDEX idx_karma_escrow_user ON karma_escrow(user_id);
-"""
-
-# The meter. Two moves:
-#
-# 1. `spawns` learns what the User DECLARED. The tick needs a queued Spawn's needs to know which Arms
-#    it is eligible for (and so which Arms' Demand it adds to), and its `minutes` to quote a hold — all
-#    known at submit, none worth re-parsing out of Slurm's ~120-field job schema every 30s. Eligibility
-#    itself is NOT frozen here, only the need is — the tick re-derives the Arm set from the live
-#    registry each pass, so an Arm admitted after this Spawn queued joins its eligible set, and a
-#    drained one leaves it (making the rest scarcer, which is correct).
-#
-# 2. `karma_escrow` becomes the Spawn's **outstanding claim** — and so the meter itself. It holds both:
-#      * `hold`    — the forecast, quoted once at submit. A FLOOR under the claim.
-#      * `accrued` — what the Spawn has really cost so far, ticked while it RUNS. A RATCHET on top.
-#    Share subtracts MAX(hold, accrued), so the claim only ever goes UP: an under-quoted hold cannot be
-#    exploited, and a Demand spike that overshoots the forecast is felt in the submitter's standing
-#    immediately rather than as a surprise at Settlement. At Settlement the row is DELETED and one
-#    ledger row (= accrued) is written; the escrow is a live claim, never history.
-#
-# `karma_demand` is history ONLY — never a pricing path. The tick consumes each sample the instant it
-# takes it; these rows exist so the Tide can forecast Demand by hour-of-day and the Dashboard can chart
-# it. Raw (one row per Arm per tick), pruned at 30 days: ~10MB/month at 3 Arms.
-_SCHEMA_V4 = """
-ALTER TABLE spawns ADD COLUMN minutes INTEGER;
-ALTER TABLE spawns ADD COLUMN gpus    INTEGER;
-ALTER TABLE spawns ADD COLUMN vram_gb INTEGER;
-ALTER TABLE spawns ADD COLUMN node    TEXT;
-
-DROP TABLE karma_escrow;
-CREATE TABLE karma_escrow (
-  job_id  INTEGER PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   hold    REAL    NOT NULL,
   accrued REAL    NOT NULL DEFAULT 0,
   node    TEXT,
@@ -149,38 +148,13 @@ CREATE TABLE karma_escrow (
   at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE INDEX idx_karma_escrow_user ON karma_escrow(user_id);
-
 CREATE TABLE karma_demand (
   at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   node   TEXT NOT NULL,
   demand REAL NOT NULL
 );
 CREATE INDEX idx_karma_demand_at ON karma_demand(at);
-"""
 
-# `spawns` learns its ENDING: the exit code, and when it ended. Recorded once, by the tick, the pass it
-# notices the Spawn has left the queue — the durable outcome `GET /spawns/history` reads, because squeue
-# forgets a finished job after MinJobAge and we run no slurmdbd. `exit_code` NULL with `finished_at` set
-# is a Spawn that ended without recording one (scancel'd, OOM, or its Arm dropped before stage-out) — a
-# failure, exactly as `GET /spawns/{id}` already reports it live.
-_SCHEMA_V5 = """
-ALTER TABLE spawns ADD COLUMN exit_code   INTEGER;
-ALTER TABLE spawns ADD COLUMN finished_at TEXT;
-"""
-
-# Arm Retract/Return — an owner's self-service pause of their own machine. Two tables because the two
-# things they track have different lifetimes:
-#
-# `arm_retractions` — presence of a row means "this node takes no NEW placement". submit_checked reads
-# it to build --exclude= and to refuse a pinned Spawn aimed at it. Return deletes the row; that is all
-# Return ever does.
-#
-# `retracted_jobs` — one row per Spawn that was RUNNING on the node at the moment Retract fired,
-# deadline = when the Karma tick should force-kill it if it hasn't exited on its own. Survives Return —
-# a Spawn already caught by a Retract is doomed regardless of an early Return (it never held the
-# arm_retractions row to begin with, and Return doesn't touch this table). Cleared only when the tick
-# settles the job, which is also where it is forced to zero regardless of what it accrued.
-_SCHEMA_V6 = """
 CREATE TABLE arm_retractions (
   node TEXT PRIMARY KEY
 );
@@ -189,47 +163,7 @@ CREATE TABLE retracted_jobs (
   node     TEXT NOT NULL,
   deadline TEXT NOT NULL
 );
-"""
 
-# A User's own W&B key, so the **Dashboard** can log metrics at all: the browser has no ~/.ccc to read
-# a key out of, so every Spawn submitted from it ran with WANDB_MODE=disabled. The key belongs to the
-# User, not the box, so it is a column on `users` — NULL is unset, and deleting a User takes their key
-# with them.
-#
-# BLOB, not TEXT: it was stored encrypted under a keyfile beside this database, which protected a
-# head.db that leaked on its own and nothing more — the Head could decrypt unattended.
-#
-# **Superseded by _SCHEMA_V20**, which drops this column for the `user_secrets` envelope. Kept here
-# because the ladder is history: a database at version 6 still has to grow this column before V20 can
-# drop it.
-_SCHEMA_V7 = """
-ALTER TABLE users ADD COLUMN wandb_key BLOB;
-"""
-
-# Tide Pool: a Spawn whose payload is a live shell instead of a script. `spawns.tidepool` marks which
-# ones (submit_checked skips the script requirement for them). Two tables because the port has
-# to be reserved BEFORE the job_id exists (baked into the job script, rendered before sbatch ever runs
-# — sshd inside the Pod and the Head's relay both bind it), and `tidepools.job_id` can't be a key
-# nothing has yet:
-#   * `tidepool_ports` — the reservation itself, keyed by the port alone, so two submissions racing the
-#                  same "lowest free port" collide on ITS primary key (caught and retried — see
-#                  tidepool.reserve_port) instead of racing a job_id neither has yet.
-#   * `tidepools`  — everything else, written once the job_id is known. `port` is copied in here too,
-#                  for reads that only care about one Tide Pool's state and would otherwise need a
-#                  second table just to find its port.
-#     - `pubkey`/`privkey` — a keypair minted once at submit, baked into the job script's
-#                  authorized_keys (pubkey), never regenerated, so a reattach after a dropped connection
-#                  or a Dashboard-requested Tide Pool gets the SAME key back. `privkey` is encrypted at
-#                  rest (atrest.py): must come back out in plaintext for the CLI, so it cannot be
-#                  hashed, and it is the ONLY thing the Head decrypts unattended.
-#     - `relay_pid` — the Head-side TCP relay subprocess forwarding this port to the Arm, once started
-#                  (tidepool.ensure_relay). NULL until the Spawn is actually RUNNING somewhere.
-#     - `node`     — the Arm the relay is forwarding to, cached so a restarted relay's liveness check
-#                  doesn't have to re-derive it from squeue every poll.
-# Both rows are deleted (not decayed like the escrow, ended like retracted_jobs) the moment the Spawn
-# leaves the queue — tick.py's reap_dead is the one place that happens, and it kills relay_pid first.
-_SCHEMA_V8 = """
-ALTER TABLE spawns ADD COLUMN tidepool INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE tidepool_ports (
   port        INTEGER PRIMARY KEY,
   reserved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
@@ -242,275 +176,17 @@ CREATE TABLE tidepools (
   relay_pid  INTEGER,
   node       TEXT
 );
-"""
 
-# Unused since 2.0 dropped the Recovery Window; kept only until the schema collapse.
-#
-# Recovery Window: one row per Spawn currently holding a copy of its undeclared working dir on the Head
-# (ccc_head_api.recovery). `bytes` feeds both caps — SUM across every row for the pool, SUM joined
-# through `spawns.user_id` for one User's Allowance (no user_id column here, for _SCHEMA_V11's reason:
-# the Attribution row already answers whose it is, and a copy of the answer could only drift from it).
-# `created_at` is both the expiry clock AND the oldest-first eviction order — the same column does both
-# jobs because they're the same question ("how long has this been held?") asked two ways. A row here always
-# has a matching `SPAWNS_DIR/<id>/recovery/` dir on disk; recovery.py's `_evict` deletes both together.
-_SCHEMA_V9 = """
-CREATE TABLE recovery_copies (
-  job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
-  bytes      INTEGER NOT NULL,
-  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-"""
-
-# **Guises** (temp/spawn-isolation.md): the uid a User's Spawns run as, on every node. See guises.py
-# for what one is; this table is only the allocator, and it has exactly one job the obvious
-# `MAX(users.uid)+1` cannot do — **never hand out a uid twice**.
-#
-# `remove_user` HARD-deletes, so an allocator keyed off the users table would give a deleted User's uid
-# to the next one created, along with every file they left behind on every Arm they ever ran on. That
-# is precisely the failure a per-User uid exists to prevent, so the allocation is kept here instead,
-# where a removed User leaves a **tombstone**: `uid` is the primary key, `user_id` goes NULL when they
-# are deleted (ON DELETE SET NULL), and the row stays forever to keep that uid retired. UNIQUE on
-# user_id is what makes it one Guise per User — SQLite allows many NULLs in a UNIQUE column, which is
-# exactly right: many tombstones, one live row each.
-#
-# Backfilled for every User already in the database, in `id` order, so an upgrade needs no separate
-# migration step and no User is left without one.
-_SCHEMA_V10 = f"""
 CREATE TABLE guises (
   uid        INTEGER PRIMARY KEY,
   user_id    INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-INSERT INTO guises (uid, user_id)
-  SELECT {guises.UID_BASE} + ROW_NUMBER() OVER (ORDER BY id) - 1, id FROM users;
 """
 
-# Unused since 2.0 dropped Outputs and retention; kept only until the schema collapse.
-#
-# Output retention. Exactly `recovery_copies`' shape, one row per Spawn whose declared Output results
-# the Head is holding, and `created_at` again does both jobs — the 7-day expiry clock AND the
-# oldest-first eviction order. It is copied from the Spawn's `finished_at`, not stamped at
-# registration, so a Spawn registered late by a tick that was down still expires 7 days after it RAN
-# (see retention.py). A row here always has a matching `SPAWNS_DIR/<id>/outputs/` dir on disk;
-# `retention._evict` deletes both together.
-#
-# No user_id column: the 32GB Allowance is per User, but `spawns.user_id` already says whose a Spawn is,
-# and duplicating it here would be a second answer that could disagree with the first — including after
-# `remove_user` NULLs the original.
-_SCHEMA_V11 = """
-CREATE TABLE output_copies (
-  job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
-  bytes      INTEGER NOT NULL,
-  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-"""
-
-# Unused since 2.0 dropped Recipes; kept only until the schema collapse.
-#
-# Recipes: a User's frozen, re-runnable snapshots. This row is *how* to run one, and
-# `recipes/<user_id>/<name>/` on disk is the code itself. `bytes` is what that tree costs against the
-# 32GB per-User **Allowance**, measured UNCOMPRESSED — the composer blocks a doomed save from
-# `File.size` before spending the upload, and a Head that counted the gzip instead would be answering a
-# different question than the one the browser asked.
-#
-# Unlike `output_copies` this table does carry `user_id`: there is no Spawn to ask whose it is. And it
-# CASCADEs rather than leaving a `guises`-style tombstone — a Recipe is private to its owner and outlives
-# nothing, so a deleted User's shelf goes with them (`recipes.sweep_orphans` takes the directories, which
-# the cascade cannot reach).
-#
-# UNIQUE(user_id, name) is the shelf's own rule. A name is how its owner refers to a Recipe on a page
-# that shows no ids at all, so two called the same thing would be indistinguishable in the only place
-# they are ever seen. Scoped per User: two Users may both keep a "resnet".
-_SCHEMA_V12 = """
-CREATE TABLE recipes (
-  id            INTEGER PRIMARY KEY,
-  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name          TEXT    NOT NULL,
-  script        TEXT    NOT NULL,
-  args          TEXT    NOT NULL DEFAULT '[]',
-  outputs       TEXT    NOT NULL DEFAULT '[]',
-  gpus          INTEGER NOT NULL,
-  vram_mb       INTEGER NOT NULL,
-  minutes       INTEGER NOT NULL,
-  wandb         INTEGER NOT NULL DEFAULT 1,
-  wandb_project TEXT    NOT NULL DEFAULT '',
-  wandb_entity  TEXT    NOT NULL DEFAULT '',
-  bytes         INTEGER NOT NULL,
-  frozen_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  UNIQUE (user_id, name)
-);
-"""
-
-# `build_state`, the one state CCC owned rather than read off `squeue`. Added when the Head built each
-# Spawn's **Environment** and `sbatch --hold`ed it until the build finished, because squeue reports a
-# held job as PENDING and CCC had to be able to tell the two apart. **Dropped again in _SCHEMA_V16** —
-# the Arm builds its own Environment now and there is no hold. Left here because migrations are history:
-# a Head that was ever on v13 ran this.
-_SCHEMA_V13 = """
-ALTER TABLE spawns ADD COLUMN build_state TEXT;
-CREATE INDEX idx_spawns_build ON spawns(build_state) WHERE build_state IS NOT NULL;
-"""
-
-# `placed_node` — where the cluster actually PUT a Spawn, which is not `node` and must never be folded
-# into it. `node` is what the submitter *demanded* (`--node`, Admin-only, NULL for everyone else), and
-# the distinction is the economy's: Users declare needs, only an Admin names a machine. `spawn_needs`
-# reads `node` as that declaration to compute Eligibility and Demand, so overwriting it with the real
-# placement would quietly change what a queued Spawn is thought to be eligible for.
-#
-# The fact was always known and always thrown away: the meter writes the live node to `karma_escrow`
-# every pass, and `clear_escrow` deletes that row at Settlement — precisely when History starts wanting
-# it. So it is copied here on the way past instead, and outlives the claim that carried it.
-#
-# NULL for every Spawn that ended before this migration (their placement is genuinely gone), and for any
-# that never ran long enough to be metered. Readers must treat NULL as "not known", never as "unplaced".
-_SCHEMA_V14 = """
-ALTER TABLE spawns ADD COLUMN placed_node TEXT;
-"""
-
-# Unused since 2.0 dropped Recipes (`recipes.*` and `spawns.recipe_name` alike); kept only until the
-# schema collapse.
-#
-# `manifest`/`features` — the two declared-need fields `/submit` already carried that a Recipe couldn't
-# freeze until now. Structural only, like `vram_mb`/`gpus` above: stored as declared, never checked
-# against the fleet's current capability at save time — that check happens for real when the Recipe is
-# actually run, exactly like any other Spawn (`spawns.submit_checked`).
-#
-# `recipe_name` on `spawns` is the other half of the same change: the link `recipes.running` reads to
-# tell whether a Spawn on the live queue came from this Recipe. NULL for every ad-hoc Spawn (nearly all
-# of them) and for every Spawn that predates this migration. Not a foreign key — a Recipe can be deleted
-# out from under a Spawn that already ran from it, and that Spawn's history should not go with it.
-_SCHEMA_V15 = """
-ALTER TABLE recipes ADD COLUMN manifest TEXT;
-ALTER TABLE recipes ADD COLUMN features TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE spawns ADD COLUMN recipe_name TEXT;
-"""
-
-# `build_state` goes away with the thing it described. It existed because a Spawn whose **Environment**
-# the Head was building had to be `sbatch --hold`ed, and a held job is reported by squeue as PENDING —
-# indistinguishable from one waiting for a card, so CCC had to remember the difference itself. The Arm
-# builds its own Environment now, inside its own allocation, so there is no hold, no build the Head is
-# waiting on, and no state Slurm cannot see. Dropped rather than left NULL forever: a column nothing
-# writes is a column the next reader has to work out is dead.
-_SCHEMA_V16 = """
-DROP INDEX IF EXISTS idx_spawns_build;
-ALTER TABLE spawns DROP COLUMN build_state;
-"""
-
-# Unused since 2.0 dropped Workspaces; kept only until the schema collapse.
-#
-# Workspaces: the Tide Pool's durable form. This row is the DECLARATION (what a visit asks for) and
-# `workspaces/<user_id>/<name>/` on disk is the tree itself — the same split as `recipes`, and the same
-# `<user_id>/<name>` layout so `workspaces.sweep_orphans` can tell whose a directory is without the DB.
-#
-# **No `bytes` column, unlike `recipes`.** A Recipe's tree only changes when its owner uploads, so a
-# stored figure is exact; a Workspace's changes every 60 seconds from inside a live session, over rsyncd,
-# with nothing on the Head watching. A cached number would be stale the moment a visit started, and it
-# is the number that decides whether a shrink is refused — so usage is measured off the disk instead
-# (`workspaces.usage`) and the only thing stored is what was RESERVED.
-#
-# `storage_bytes` is this Workspace's **Storage**: what it may hold, carved out of its owner's Workspace
-# Allowance when they created it (CONTEXT.md, **Storage**). The Allowance is the sum of these, so the pool
-# is a query rather than a column.
-#
-# `live_job_id` is the current visit's Spawn, claimed transactionally before sbatch so two simultaneous
-# opens cannot both submit, and cleared by the karma tick when that Spawn leaves the queue. Not a foreign
-# key: `spawns` rows outlive nothing here, and a claim must be clearable even if the Spawn row is gone.
-# NULL means idle, which is also what a Head that crashed mid-visit will show once the tick catches up.
-_SCHEMA_V17 = """
-CREATE TABLE workspaces (
-  id              INTEGER PRIMARY KEY,
-  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name            TEXT    NOT NULL,
-  storage_bytes     INTEGER NOT NULL,
-  gpus            INTEGER NOT NULL,
-  vram_mb         INTEGER NOT NULL,
-  minutes         INTEGER NOT NULL,
-  manifest        TEXT    NOT NULL DEFAULT '',
-  outputs         TEXT    NOT NULL DEFAULT '[]',
-  features        TEXT    NOT NULL DEFAULT '[]',
-  created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  last_visited_at TEXT,
-  live_job_id     INTEGER,
-  UNIQUE (user_id, name)
-);
-"""
-
-# Unused since 2.0 dropped Spawn Names; kept only until the schema collapse.
-_SCHEMA_V18 = """
-ALTER TABLE spawns ADD COLUMN name TEXT NOT NULL DEFAULT '';
-"""
-
-# Unused since 2.0 dropped Recipes and Workspaces; kept only until the schema collapse.
-#
-# The **Substrate** declaration, frozen wherever the other declarations are (`manifest`, `features`).
-# The path a Spawn named, not the packages it resolved to: what a Recipe freezes is the declaration,
-# and the file itself is in the tree the Recipe already holds — storing the resolved list instead would
-# be a second copy that goes stale the moment its owner edits the file they can still see.
-#
-# `DEFAULT ''` on both, meaning "declared none", which is the ordinary case and the only thing a row
-# predating this column could have meant.
-_SCHEMA_V19 = """
-ALTER TABLE recipes ADD COLUMN substrate TEXT NOT NULL DEFAULT '';
-ALTER TABLE workspaces ADD COLUMN substrate TEXT NOT NULL DEFAULT '';
-"""
-
-# Unused since 2.0 dropped the Credentials vault; kept only until the schema collapse.
-#
-# **Credentials** — the envelope that replaces the keyfile. This is only the shape it needed.
-#   * `users.dek_salt` / `dek_wrapped_pw` — the master wrap. NULL for a User who has not logged in
-#     since this migration; `/login` mints the pair lazily, which is the one place a password and a
-#     fresh token coexist.
-#   * `sessions.dek_wrapped_tok` — the working wrap, one per live login, openable only with the raw
-#     token the client holds. This is what lets a request reach a Credential without a password.
-#   * `user_secrets` — the secrets themselves, keyed by (user, kind) so a second kind is a row and not
-#     a column. `ct` is AESGCM(DEK); `hint` is deliberately PLAINTEXT, the only part anyone ever sees
-#     again. ON DELETE CASCADE so removing a User takes their Credentials with them, as `users.wandb_key`
-#     did by being a column on the row.
-#
-# **Every existing session is deleted** and **`users.wandb_key` is dropped, unrecovered.** Neither is
-# salvageable and that is by design, not an oversight: a stored key could only be re-encrypted by first
-# decrypting it with the keyfile, and a migration that did that would be doing the exact unattended
-# decrypt this change exists to make impossible. Users re-paste; everyone logs in again.
-_SCHEMA_V20 = """
-ALTER TABLE users ADD COLUMN dek_salt BLOB;
-ALTER TABLE users ADD COLUMN dek_wrapped_pw BLOB;
-ALTER TABLE users DROP COLUMN wandb_key;
-ALTER TABLE sessions ADD COLUMN dek_wrapped_tok BLOB;
-DELETE FROM sessions;
-CREATE TABLE user_secrets (
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind    TEXT    NOT NULL,
-  ct      BLOB    NOT NULL,
-  hint    TEXT    NOT NULL,
-  set_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  PRIMARY KEY (user_id, kind)
-);
-"""
-
-# Unused since 2.0 dropped the Credentials vault; kept only until the schema collapse.
-#
-# The **GitHub key**'s off-switch, stored on a Recipe exactly as `wandb` is beside it. A Recipe is
-# durable config, and "run this without my GitHub key" is as much a part of what a Recipe IS as "do not
-# log this one" — a flag the Composer offers on a Spawn but a Recipe forgot would be one that silently
-# stopped meaning anything the moment the work was saved.
-#
-# DEFAULT 1, so every Recipe frozen before this reads as "yes" — the same answer an absent `git` gets
-# from `/submit`, and the behaviour those Recipes already had.
-_SCHEMA_V21 = """
-ALTER TABLE recipes ADD COLUMN git INTEGER NOT NULL DEFAULT 1;
-"""
-
-# index i takes user_version i -> i+1
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6, _SCHEMA_V7,
-              _SCHEMA_V8, _SCHEMA_V9, _SCHEMA_V10, _SCHEMA_V11, _SCHEMA_V12, _SCHEMA_V13,
-              _SCHEMA_V14, _SCHEMA_V15, _SCHEMA_V16, _SCHEMA_V17, _SCHEMA_V18, _SCHEMA_V19,
-              _SCHEMA_V20, _SCHEMA_V21]
-
-# DERIVED from the ladder, never written by hand. It was a standalone constant until it fell one behind
-# the list it describes: `init_schema` stamps this AFTER running `_MIGRATIONS[ver:]`, so a version that
-# undercounts re-runs the last step on the very next call and dies on whatever it already did ("duplicate
-# column name"). Every future migration is now one append with nothing to remember.
-SCHEMA_VERSION = len(_MIGRATIONS)
+# PRAGMA user_version of a 2.0 head.db. Above every step of the 1.x ladder (1..21), so a 1.x store can
+# never read as this one.
+SCHEMA_VERSION = 22
 
 
 # --- connection + schema ----------------------------------------------------
@@ -547,11 +223,15 @@ def _restrict() -> None:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Idempotent: run any migrations the DB is behind on, tracked by PRAGMA user_version. A fresh DB
-    (version 0) runs the whole ladder; a deployed v1 DB runs only the v2 step."""
+    """Idempotent: create the schema on a fresh store (user_version 0); no-op on a current one. A 1.x
+    store is refused — 2.0 has no upgrade path, only teardown + setup."""
     (ver,) = conn.execute("PRAGMA user_version").fetchone()
-    for step in _MIGRATIONS[ver:]:
-        conn.executescript(step)
+    if ver == SCHEMA_VERSION:
+        return
+    if ver:
+        raise RuntimeError(f"head.db is schema v{ver}, not v{SCHEMA_VERSION} — 2.0 is a clean install: "
+                           f"`cuttle teardown` then `cuttle setup --head`")
+    conn.executescript(_SCHEMA)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
 
@@ -652,7 +332,7 @@ _DUMMY_HASH = _ph.hash("__ccc_dummy__")
 
 
 # --- Guises (temp/spawn-isolation.md) ----------------------------------------
-# See _SCHEMA_V10 for the table and why it is its own. Allocating a uid needs no privilege whatsoever —
+# See _SCHEMA for the table and why it is its own. Allocating a uid needs no privilege whatsoever —
 # it is one row in head.db — which is what lets `cuttle user add` stay a Head-local command with an
 # operator at a tty, and keeps a root helper out of the Head API entirely. CREATING the Unix account
 # from that uid is the privileged half, and it lives in the CLI (cuttle.auth.ensure_guise_accounts).
@@ -740,10 +420,9 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
     Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
     """
     conn.execute(
-        """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
-                              tidepool)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, "", minutes, gpus, vram_gb, node, int(tidepool)),
+        """INSERT INTO spawns (job_id, user_id, script, minutes, gpus, vram_gb, node, tidepool)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, script, minutes, gpus, vram_gb, node, int(tidepool)),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -989,7 +668,7 @@ def record_placement(conn: sqlite3.Connection, job_id: int, node: str) -> None:
 
     The escrow row already carries the live node, but `clear_escrow` deletes it at Settlement —
     precisely when History starts wanting it — so it is copied somewhere durable on the way past (see
-    _SCHEMA_V14). Kept OFF the meter deliberately: an Admin's Spawn and the enrollment benchmark have
+    _SCHEMA). Kept OFF the meter deliberately: an Admin's Spawn and the enrollment benchmark have
     no Escrow at all, and both still ran somewhere worth naming.
 
     Write-once (`WHERE placed_node IS NULL`): one write per Spawn rather than one per 30s pass, and a
@@ -1120,7 +799,7 @@ def clear_retracting_job(conn: sqlite3.Connection, job_id: int) -> None:
 
 
 # --- Tide Pool -------------------------------------------------------------------
-# See _SCHEMA_V8's comment for the table shapes. `privkey` is always encrypted (atrest.encrypt) going in
+# See _SCHEMA's comment for the table shapes. `privkey` is always encrypted (atrest.encrypt) going in
 # and decrypted (atrest.decrypt) coming out — nothing outside this module ever sees the ciphertext.
 
 def used_tidepool_ports(conn: sqlite3.Connection) -> set[int]:

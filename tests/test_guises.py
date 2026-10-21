@@ -90,22 +90,6 @@ class TestAllocation:
         """60000 is the Mantle itself. Allocating it would hand a User the account that owns head.db."""
         assert guises.UID_BASE > 60000
 
-    def test_existing_users_are_backfilled_on_upgrade(self, monkeypatch, tmp_path):
-        """A deployed Head has Users who predate this table. The migration allocates for all of them,
-        in `id` order, so nobody is left without one and no separate backfill step exists to forget."""
-        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-        with db.connect() as c:
-            # A v9 database: the ladder up to (not including) guises, then Users, then the last step.
-            for step in db._MIGRATIONS[:9]:
-                c.executescript(step)
-            c.execute("PRAGMA user_version=9")
-            for name in ("alice", "bob"):
-                c.execute("INSERT INTO users (username, pw_hash) VALUES (?, 'x')", (name,))
-            c.commit()
-            db.init_schema(c)
-            rows = {r["username"]: r["uid"] for r in db.live_guises(c)}
-        assert rows == {"alice": guises.UID_BASE, "bob": guises.UID_BASE + 1}
-
     def test_live_guises_excludes_tombstones(self, conn):
         """It is what the Head provisions ACCOUNTS for — a retired uid has nobody to make one for."""
         _user(conn, "alice")

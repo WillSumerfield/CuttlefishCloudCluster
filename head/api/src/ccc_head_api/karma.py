@@ -13,7 +13,7 @@ The arithmetic, end to end:
 **A Balance is derived, never stored.** It is summed from each row's own age every time it is asked
 for. A `karma_balance` column decayed on touch would not merely be a cache that could drift — it would
 be *wrong*: `decay` is a stretched exponential and is not memoryless, so decaying a running total is
-not the same arithmetic as decaying each contribution. See db._SCHEMA_V3.
+not the same arithmetic as decaying each contribution. See db._SCHEMA.
 
 **Escrow suppresses Share immediately**, which is what makes queue-flooding self-punishing: 500 queued
 Spawns move no Balance until they finish, so settle-at-end alone would let a burst hold the top of the
