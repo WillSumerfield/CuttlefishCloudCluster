@@ -79,7 +79,6 @@ From inside a Tide Pool (`cuttle run --tidepool --time 10 --vram 8`):
 - [ ] `ls /` is the Pod, not the host.
 - [ ] Another User's spawn directory is unreachable.
 - [ ] `ps aux` shows nothing belonging to the host or another Spawn.
-- [ ] `echo $WANDB_API_KEY` is *your* key, and is unreachable from a second concurrent Spawn.
 - [ ] The Guise is not an account: `su - <guise>` fails.
 
 ## 5. Retract does what it promises

@@ -176,17 +176,15 @@ class TestTheInterpreterIsChosenNotInherited:
         assert "--python" not in self._venv(p)
 
 
-@pytest.mark.parametrize("pkg", ["wandb", "pip"])
-def test_every_uv_env_is_seeded_without_overriding_a_declared_version(tmp_path, pkg):
-    """Two packages no manifest asked for. `wandb`, because nothing is inherited any more and without
-    it "a Spawn logs to its submitter's own account" (CONTEXT.md) stops being true. `pip`, because uv
-    does not seed one and a **Tide Pool** promises `pip install` at the shell works.
+def test_every_uv_env_is_seeded_with_pip_without_overriding_a_declared_version(tmp_path):
+    """A package no manifest asked for: `pip`, because uv does not seed one and a **Tide Pool**
+    promises `pip install` at the shell works.
 
     UNPINNED: an already-satisfied requirement is a no-op, so a User who declared their own version
     keeps it — as they did when the image supplied one."""
     for name in ("uv.lock", "requirements.txt"):
         cmds = env.render_build(env.detect(_project(tmp_path / name, **{name: ""}), name))
-        seed = next(c for c in cmds if pkg in c and "install" in c)
+        seed = next(c for c in cmds if "pip" in c and "install" in c)
         assert not any("==" in part for part in seed), name
 
 
@@ -196,14 +194,6 @@ def test_pip_is_seeded_with_uv_not_with_pip(tmp_path):
     cmds = env.render_build(env.detect(_project(tmp_path, **{"uv.lock": ""}), "uv.lock"))
     seed = next(c for c in cmds if "pip" in c and "install" in c)
     assert seed[0] == str(env.UV_BIN) and "-m" not in seed
-
-
-def test_conda_build_injects_wandb(tmp_path):
-    """A conda env replaces the image's Python and inherits nothing — including wandb. Without this the
-    Head's promise that a Spawn logs to its submitter's own account (CONTEXT.md) silently stops holding
-    for exactly the Users who declared the most."""
-    cmds = env.render_build(env.detect(_project(tmp_path, **{"environment.yml": ""}), "environment.yml"))
-    assert any("wandb" in part for cmd in cmds for part in cmd)
 
 
 @pytest.mark.parametrize("kind", ["uv-project", "uv-requirements", "conda"])
@@ -658,7 +648,7 @@ def _tar(tmp_path, *names):
 def _submit(tmp_path, *names, **kw):
     kw.setdefault("script", "train.py")
     kw.setdefault("manifest", names[0] if names else None)
-    return spawns.submit(user_id=1, gpu=1, args=[], wandb_env={},
+    return spawns.submit(user_id=1, gpu=1, args=[],
                          tar_path=_tar(tmp_path, "train.py", *names), minutes=60,
                          constraint="", outputs=["out"], **kw)
 
@@ -745,7 +735,7 @@ def test_a_recipe_is_code_and_a_declaration_not_a_built_tree(head, tmp_path, mon
     (d / "train.py").write_text("print('hi')\n")
     (d / "requirements.txt").write_text("numpy\n")
     seen = _rendered(monkeypatch)
-    spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, tar_path=None,
+    spawns.submit(user_id=1, gpu=1, args=[], tar_path=None,
                   source_dir=d, recipe_name="resnet", script="train.py",
                   manifest="requirements.txt", minutes=60, constraint="", outputs=["out"])
     assert "--hold" not in _sbatch(head)

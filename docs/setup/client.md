@@ -107,13 +107,6 @@ switched on at the time. If it was off, the download resumes next time you run `
 
 ## Worth doing next
 
-**Set your W&B key**, once, so every Spawn logs to your own account no matter which machine you
-submitted from:
-
-```sh
-cuttle wandb set
-```
-
 **Check where you stand:**
 
 ```sh

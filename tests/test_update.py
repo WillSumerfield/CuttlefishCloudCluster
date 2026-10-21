@@ -53,7 +53,7 @@ class TestAnUpdateAsksNothing:
     def test_a_prompt_raised_inside_it_is_refused_not_answered(self):
         with pytest.raises(typer.Exit):
             with ui.no_prompting("`cuttle update`"):
-                ui.ask_text("Default W&B project", default="ccc")
+                ui.ask_text("Default project", default="ccc")
 
     def test_it_is_refused_even_with_an_answer_available(self, answers):
         """Checked ahead of the scripted human deliberately: a test that answers the question would
@@ -61,7 +61,7 @@ class TestAnUpdateAsksNothing:
         answers("ccc")
         with pytest.raises(typer.Exit):
             with ui.no_prompting("`cuttle update`"):
-                ui.ask_text("Default W&B project", default="ccc")
+                ui.ask_text("Default project", default="ccc")
 
     def test_the_guard_is_lifted_again_afterwards(self):
         """It is a property of one flow, not of the process. A leaked guard would turn the next

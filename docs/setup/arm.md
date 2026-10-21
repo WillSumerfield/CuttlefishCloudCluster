@@ -104,9 +104,8 @@ Arm's owner is a User like everyone else, and this box can submit work as easily
 setup finishes by offering a login. Enrolling has already pointed this box at the Head and installed
 its certificate, so there is nothing to configure.
 
-Say yes and it also asks the two account questions — your default
-[W&B](../elements/telemetry.md) project, and whether to mint a
-[GitHub key](../elements/github-keys.md) so your Spawns can reach your private repositories.
+Say yes and it also asks whether to mint a [GitHub key](../elements/github-keys.md) so your Spawns
+can reach your private repositories.
 
 Say no and setup ends there. Nothing about the Arm depends on it, and `cuttle login` picks the thread
 up whenever you want.

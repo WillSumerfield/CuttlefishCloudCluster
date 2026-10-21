@@ -11,7 +11,7 @@ const FADE_MS = 150;
 const CLOSED_FADE_MS = Math.round(GROW_MS / 4);
 
 // Generous fixed caps, not a measured target height (the Composer's real height varies with its content
-// — W&B fields, feature chips, an error line — and there's no single right answer). Picked comfortably
+// — feature chips, an error line — and there's no single right answer). Picked comfortably
 // above what either side ever naturally renders at, so overflow:hidden never actually clips anything —
 // the animation is purely a max-height tween between two constants, no JS measurement involved.
 const CLOSED_CAP = 230;
@@ -49,7 +49,7 @@ type Phase = "closed" | "growing" | "open" | "closing" | "shrinking";
  * The shared "becomes a composer" shell — used both for the New-recipe tile and for a RecipeCard's own
  * Update action. One persistent <li> (the actual grid item) so the box can grow instead of an instant
  * unmount/remount. `open` only mounts once a grow starts, so an idle shelf of many cards never fires the
- * Composer's own fetches (feature catalog, W&B key) once per card.
+ * Composer's own fetches (feature catalog, GitHub key) once per card.
  *
  * Opening: shell starts growing (GROW_MS) and `closed` fades out quickly alongside it (CLOSED_FADE_MS,
  * a quarter of the grow — old content clears out of the way early rather than sitting opaque over most

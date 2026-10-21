@@ -63,16 +63,6 @@ Check `cuttle karma` — someone with better standing wins contention. Karma nev
 run; it is behind, not blocked. If the cluster is idle and it is still not running, look at
 eligibility: an unusual `--vram` or `--feature` may leave only one machine able to take it.
 
-### `wandb.init()` failed, or my runs are not logging
-
-If you have never run `cuttle wandb set`, your Spawns run with W&B explicitly **disabled** and you
-are told so at submit.
-
-If you *had* a key and it stopped working, an Admin most likely reset your password. Your key was
-encrypted with the old one, so the reset destroyed it — there is no way for it not to. Re-run
-`cuttle wandb set`. (Changing your own password with `cuttle passwd` does *not* do this, and neither
-does a restore from backup.) See [Telemetry](elements/telemetry.md).
-
 ### torch disappeared inside my Spawn
 
 You declared an Environment, and an Environment inherits nothing from the base image — whichever file
@@ -228,14 +218,6 @@ reverting to the LAN IP.
 
 Correct, and not a misconfiguration. The Head's network API exposes no administrative writes at all.
 See [Security](Security.md#the-head-api-has-no-admin-writes).
-
-### I want to see my stored W&B key
-
-You cannot, and neither can anyone else. A stored key is write-only: `cuttle wandb show` and the
-Dashboard's Account page give you its last four characters, which is enough to tell it from some
-other key. That is what lets it be kept under your password rather than somewhere the Head can reach
-on its own. Get the key from W&B, or just paste it again. See
-[Telemetry](elements/telemetry.md).
 
 ### No alert emails
 

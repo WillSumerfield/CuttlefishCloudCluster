@@ -43,12 +43,10 @@ also what makes a **Recipe**'s freeze true of what its work runs *in*, not merel
 Inheriting was the alternative, and it cannot be frozen: `--system-site-packages` is a runtime flag, not
 a set of per-package links, so an inherited torch is whatever the image holds on the day the Spawn runs.
 
-**Two packages are seeded into every env that its manifest did not ask for**: `wandb`, or "a Spawn
-logs to its submitter's own account" (CONTEXT.md) quietly stops holding now that nothing is inherited;
-and `pip`, which uv does not install into a venv on its own and whose absence would break a **Tide
-Pool**'s promise that `pip install` at the shell works. Both unpinned, because an already-satisfied
-requirement is a no-op for both installers: a User who declared their own version keeps it, exactly as
-they used to when the image supplied one.
+**One package is seeded into every uv env that its manifest did not ask for**: `pip`, which uv does
+not install into a venv on its own and whose absence would break a **Tide Pool**'s promise that
+`pip install` at the shell works. Unpinned, because an already-satisfied requirement is a no-op: a User
+who declared their own version keeps it, exactly as they used to when the image supplied one.
 
 **Nothing is cached except downloads.** The built env lives in the Spawn's node-local scratch and dies
 with it, like the working directory around it — no box grows a permanent env store, and **Allowance**
@@ -134,11 +132,6 @@ CACHE_MAX_GB = int(os.environ.get("CCC_ENV_CACHE_MAX_GB", 20))
 # and one Spawn's prune must not delete another's half-downloaded wheel.
 POD_TMP = "/ccc-tmp"
 POD_CACHE = "/ccc-cache"
-
-# wandb, injected into every env because nothing is inherited any more (module docstring). UNPINNED on
-# purpose: an already-satisfied requirement is a no-op, so a User who declared their own version keeps
-# it — the same way a manifest naming a package the image shipped used to win silently.
-WANDB_PKG = "wandb"
 
 # The build Pod's environment, identical on every node because the Pod's own paths are. Rendered into
 # the job script by `spawns._render`; nothing here reads it at build time any more.
@@ -298,21 +291,16 @@ def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
     if m.kind == "conda":
         return [
             [str(MICROMAMBA_BIN), "create", "--yes", "--prefix", ENV_MOUNT, "--file", m.path],
-            [m.interpreter, "-m", "pip", "install", "--no-cache-dir", WANDB_PKG],
         ]
-    # Two packages every uv env gets that its manifest did not ask for, in one command.
+    # The one package every uv env gets that its manifest did not ask for: `pip`, because uv does not
+    # seed one and the env's own interpreter would otherwise answer "No module named pip" — which breaks
+    # a **Tide Pool**'s promise that `pip install` at the shell works (spawns.PAYLOAD_TIDEPOOL). ~10MB,
+    # shipped on every Spawn; the alternative was putting uv itself in every Arm's image. A conda prefix
+    # already has one.
     #
-    # `pip` because uv does not seed one and the env's own interpreter would otherwise answer "No
-    # module named pip" — which breaks a **Tide Pool**'s promise that `pip install` at the shell works
-    # (spawns.PAYLOAD_TIDEPOOL). ~10MB, shipped on every Spawn; the alternative was putting uv itself in
-    # every Arm's image. A conda prefix already has one, so its own line below still uses `python -m pip`.
-    #
-    # `wandb` because nothing is inherited any more, and without it "a Spawn logs to its submitter's own
-    # account" (CONTEXT.md) quietly stops holding.
-    #
-    # Both UNPINNED, and `uv pip` rather than `python -m pip` — which could not run before pip is there.
-    # An already-satisfied requirement is a no-op, so a User who declared either one keeps their version.
-    seed = [uv, "pip", "install", "--python", m.interpreter, "pip", WANDB_PKG]
+    # UNPINNED, and `uv pip` rather than `python -m pip` — which could not run before pip is there. An
+    # already-satisfied requirement is a no-op, so a User who declared it keeps their version.
+    seed = [uv, "pip", "install", "--python", m.interpreter, "pip"]
     if m.kind == "uv-requirements":
         # A `requirements.txt` names no interpreter, so one is named here. `.python-version` is uv's own
         # convention and it reads the file itself — passing --python as well would override the User's
@@ -334,7 +322,7 @@ def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
     # write, which fails every pyproject.toml/uv.lock Spawn with "Permission denied". UV_PROJECT_ENVIRONMENT
     # (set in `build`'s --env) names the path outright instead, same as the `uv pip` branch's --python.
     # `uv sync` still writes `uv.lock` into the project itself, unavoidably — see spawns._lend_project
-    # for why the Guise may. --inexact keeps the wandb below from being pruned away by a later sync.
+    # for why the Guise may. --inexact keeps the seeded pip below from being pruned away by a later sync.
     return [[uv, "sync", "--inexact", "--no-dev"], seed]
 
 

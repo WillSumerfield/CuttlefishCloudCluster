@@ -132,7 +132,7 @@ class TestTheImageCarriesNoRuntime:
 
     def test_no_python_and_no_torch(self):
         d = templates.render_base_def()
-        for word in ("python", "torch", "pip", "wandb", "conda", "cuda"):
+        for word in ("python", "torch", "pip", "conda", "cuda"):
             assert word not in d.lower(), f"{word} came back into the image"
 
     def test_sshd_stays(self):

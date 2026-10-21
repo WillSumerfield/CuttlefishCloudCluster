@@ -1509,25 +1509,22 @@ def get_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row
 
 
 def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
-               outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
-               wandb_project: str, wandb_entity: str, size_bytes: int,
+               outputs: list[str], gpus: int, vram_mb: int, minutes: int, size_bytes: int,
                manifest: str | None, features: list[str], substrate: str = "",
                git: bool = True) -> sqlite3.Row:
     conn.execute(
         """INSERT INTO recipes (user_id, name, script, args, outputs, gpus, vram_mb, minutes,
-                                wandb, wandb_project, wandb_entity, bytes, manifest, features,
-                                substrate, git)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                bytes, manifest, features, substrate, git)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (user_id, name, script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         int(wandb), wandb_project, wandb_entity, size_bytes, manifest, json.dumps(features),
-         substrate, int(git)))
+         size_bytes, manifest, json.dumps(features), substrate, int(git)))
     conn.commit()
     return get_recipe(conn, user_id, name)
 
 
 def update_recipe_meta(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
-                        outputs: list[str], gpus: int, vram_mb: int, minutes: int, wandb: bool,
-                        wandb_project: str, wandb_entity: str, manifest: str | None,
+                        outputs: list[str], gpus: int, vram_mb: int, minutes: int,
+                        manifest: str | None,
                         features: list[str], substrate: str = "",
                         git: bool = True) -> sqlite3.Row:
     """Change what a Recipe runs and how, without touching its code or `bytes`/`frozen_at` — the settings-
@@ -1535,12 +1532,10 @@ def update_recipe_meta(conn: sqlite3.Connection, user_id: int, name: str, script
     code already on disk, so this is a plain column write."""
     conn.execute(
         """UPDATE recipes SET script=?, args=?, outputs=?, gpus=?, vram_mb=?, minutes=?,
-                              wandb=?, wandb_project=?, wandb_entity=?, manifest=?, features=?,
-                              substrate=?, git=?
+                              manifest=?, features=?, substrate=?, git=?
            WHERE user_id=? AND name=?""",
         (script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         int(wandb), wandb_project, wandb_entity, manifest, json.dumps(features), substrate,
-         int(git), user_id, name))
+         manifest, json.dumps(features), substrate, int(git), user_id, name))
     conn.commit()
     return get_recipe(conn, user_id, name)
 

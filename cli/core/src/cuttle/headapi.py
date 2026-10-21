@@ -105,11 +105,6 @@ def install_enroll_sudoers(write_unit) -> None:
 # files — it can't read head.db, head.key, or another User's upload, same as any Guise. Root would
 # undo that isolation. This is the only unattended sudo grant here; `cuttle user add`'s useradd runs
 # under the operator's own sudo at a tty.
-#
-# `env_keep` is load-bearing: sbatch propagates its own env to the job (how a submitting User's W&B
-# key reaches the Pod, ccc_head_api.spawns.compose_wandb_env), and sudo scrubs env by default — without
-# this every Spawn silently runs with no key. Four named vars, scoped to this user — not
-# `SETENV:`+`--preserve-env` (too wide) and never `sbatch --export=...WANDB_API_KEY=` (leaks via `ps`).
 _SUDOERS_CCC_SLURM = f"""\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
 # The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Spawns as the Guise that owns
@@ -117,7 +112,6 @@ _SUDOERS_CCC_SLURM = f"""\
 # NO `apptainer`. It was granted here while the Head built each Spawn's **Environment**; the Arm that
 # runs the Spawn builds it now, inside its own job, so the Head API runs no User's code at all and has
 # no business entering a Pod. Slurm's four verbs are the whole grant.
-Defaults:{config.HEAD_API_USER} env_keep += "WANDB_API_KEY WANDB_MODE WANDB_PROJECT WANDB_ENTITY"
 {config.HEAD_API_USER} ALL=(%{config.GUISE_GROUP}) NOPASSWD: /usr/bin/sbatch, /usr/bin/scancel, \
 /usr/bin/scontrol
 """

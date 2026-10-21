@@ -634,18 +634,6 @@ class TestSlurmSudoers:
         assert set(c.strip() for c in cmds.replace("\\\n", "").split(",")) == {
             "/usr/bin/sbatch", "/usr/bin/scancel", "/usr/bin/scontrol"}
 
-    def test_the_wandb_environment_survives_sudos_scrub(self):
-        """sbatch propagates its own env to the job — that is how a User's W&B key reaches the Pod.
-        sudo scrubs it by default, so without this every Spawn silently logs nothing, which its
-        submitter only discovers afterwards in an empty W&B project."""
-        rule = headapi._SUDOERS_CCC_SLURM
-        assert "env_keep" in rule
-        for var in ("WANDB_API_KEY", "WANDB_MODE", "WANDB_PROJECT", "WANDB_ENTITY"):
-            assert var in rule
-        # NOT the blanket alternatives, both of which grant more than is needed.
-        assert "SETENV" not in rule
-
-
 class TestSlurmdDropin:
     """A donor Arm's slurmd flags. The node is *dynamic*, so this string is re-sent to slurmctld on
     every single registration — it is the only durable home for the node's Feature."""

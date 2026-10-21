@@ -26,8 +26,8 @@ import { ALLOWANCE, size } from "../recipes/format";
  *     Recipe (CONTEXT.md: it runs from any machine with nothing to hand, so pinning a node contradicts
  *     the point, and there is no "live shell" to freeze).
  *   · The 32GB wall is a Recipe-only hard gate, checked from `File.size` at pick time.
- *   · W&B is gated on whether the User has a key stored for a Spawn (it runs NOW); ungated for a
- *     Recipe, which is durable config that outlives today's answer.
+ *   · The GitHub key is gated on whether the User has one minted for a Spawn (it runs NOW); ungated
+ *     for a Recipe, which is durable config that outlives today's answer.
  *   · Saving: a Spawn composer performs its own submit (busy/error/reset live here). A Recipe composer
  *     hands a validated payload to `onSave` — the page owns the optimistic card and the wall preview,
  *     because a Recipe's save has to update a shelf of many, not one queue.
@@ -81,11 +81,8 @@ export type RecipePayload = {
   gpus: number;
   vram_mb: number;
   minutes: number;
-  wandb: boolean;
-  wandb_project: string;
-  wandb_entity: string;
-  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen like `wandb` beside it: a
-  // Recipe is durable config, so "run this without my key" is part of what it IS.
+  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen with it: a Recipe is
+  // durable config, so "run this without my key" is part of what it IS.
   git: boolean;
   manifest: string;
   substrate: string;
@@ -178,17 +175,12 @@ export function Composer(props: ComposerProps) {
   // What the Head says it will build, echoed after a successful Spawn submit — meaningless for a
   // Recipe, which never runs at save time.
   const [envNote, setEnvNote] = useState<string | null>(null);
-  const [wandbLog, setWandbLog] = useState(editing?.wandb ?? true);
   // The **GitHub key**'s off-switch for this Spawn (or this Recipe's runs). Defaults ON, unlike a
   // pasted secret: the User did not choose this key's value, only whether it exists, so having minted
   // one IS the choice to use it. `--no-git` is the CLI's spelling of these chips.
   const [gitUse, setGitUse] = useState(editing?.git ?? true);
-  const [wandbProject, setWandbProject] = useState(editing?.wandb_project ?? "");
-  const [wandbEntity, setWandbEntity] = useState(editing?.wandb_entity ?? "");
-  // Whether W&B is on for this User at all — Spawn-only (a Recipe asks regardless; see the module
-  // docstring). Null until the Head answers; a failed read shows the fields rather than blocking.
-  const [wandbOn, setWandbOn] = useState<boolean | null>(null);
-  // Whether a GitHub key exists for this User at all — same gating, same reason, as `wandbOn`.
+  // Whether a GitHub key exists for this User at all — Spawn-only (a Recipe asks regardless; see the
+  // module docstring). Null until the Head answers; a failed read shows the chips rather than blocking.
   const [gitOn, setGitOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -199,12 +191,9 @@ export function Composer(props: ComposerProps) {
 
   useEffect(() => {
     if (variant !== "spawn") return;
-    getCredential("wandb")
-      .then((s) => setWandbOn(s.set))
-      .catch(() => setWandbOn(true)); // unreadable → assume on; the Head decides for real at submit
     getCredential("github")
       .then((s) => setGitOn(s.set))
-      .catch(() => setGitOn(true));
+      .catch(() => setGitOn(true)); // unreadable → assume on; the Head decides for real at submit
   }, [variant]);
 
   // The catalog is fetched once, independent of what's picked — what the Head knows exists, not what
@@ -329,9 +318,6 @@ export function Composer(props: ComposerProps) {
     setVram("");
     setArgs("");
     setNode("");
-    setWandbLog(true);
-    setWandbProject("");
-    setWandbEntity("");
     setOutputs([]);
     setOutputDraft("");
     setFeatures([]);
@@ -435,8 +421,7 @@ export function Composer(props: ComposerProps) {
         const res = await submit({
           picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
-          wandb: wandbLog, git: gitUse, wandbProject, wandbEntity, outputs, features, manifest,
-          substrate,
+          git: gitUse, outputs, features, manifest, substrate,
         });
         setEnvNote(res.environment);
       }
@@ -453,8 +438,7 @@ export function Composer(props: ComposerProps) {
     if (!ready || variant !== "recipe") return;
     const settings = {
       script, args: args.split(/\s+/).filter(Boolean), outputs, gpus: gpu,
-      vram_mb: Number(vram) * 1024, minutes: Number(minutes), wandb: wandbLog, git: gitUse,
-      wandb_project: wandbProject.trim(), wandb_entity: wandbEntity.trim(), manifest: manifest.trim(),
+      vram_mb: Number(vram) * 1024, minutes: Number(minutes), git: gitUse, manifest: manifest.trim(),
       substrate: substrate.trim(),
       features,
     };
@@ -614,26 +598,10 @@ export function Composer(props: ComposerProps) {
                 <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>{outputError}</span>
               )}
             </Labeled>
-            {/* W&B. Gated on whether the User has a key, for a Spawn only — it runs NOW, so the now-
-                state is the right thing to gate it on. A Recipe is durable config that outlives it:
-                hiding these because there's no key today would freeze a Recipe with no project for a
-                reason that stops being true the moment a key is pasted in. */}
-            {variant === "recipe" ? (
-              <Wandb log={wandbLog} setLog={setWandbLog} project={wandbProject} setProject={setWandbProject}
-                    entity={wandbEntity} setEntity={setWandbEntity} />
-            ) : wandbOn === false ? (
-              <p className="text-[13px] text-ink-mute sm:col-span-2 text-center py-1">
-                <Link to="/account" className="text-[var(--gold)] underline-offset-4 hover:underline">
-                  Add a key for W&amp;B
-                </Link>
-              </p>
-            ) : wandbOn === true ? (
-              <Wandb log={wandbLog} setLog={setWandbLog} project={wandbProject} setProject={setWandbProject}
-                    entity={wandbEntity} setEntity={setWandbEntity} />
-            ) : null}
-            {/* The **GitHub key**, gated exactly as W&B is above and for the same reason — except that
-                the invitation says "mint", because there is nothing to paste: the Head generates this
-                one and the User only registers its public half. */}
+            {/* The **GitHub key**. Gated on whether the User has one, for a Spawn only — it runs NOW, so
+                the now-state is the right thing to gate it on. A Recipe is durable config that outlives
+                it. The invitation says "mint", because there is nothing to paste: the Head generates
+                this one and the User only registers its public half. */}
             {variant === "recipe" ? (
               <Git use={gitUse} setUse={setGitUse} />
             ) : gitOn === false ? (
@@ -879,44 +847,9 @@ export function Composer(props: ComposerProps) {
   );
 }
 
-function Wandb({ log, setLog, project, setProject, entity, setEntity }: {
-  log: boolean; setLog: (v: boolean) => void;
-  project: string; setProject: (v: string) => void;
-  entity: string; setEntity: (v: string) => void;
-}) {
-  return (
-    <>
-      <div className="sm:col-span-2">
-        <span className="label mb-1.5 block">Use W&amp;B?</span>
-        <Tip
-          className="block"
-          focusable={false}
-          text="Whether this run logs to Weights &amp; Biases. Your stored key is used for every Spawn unless you turn it off here."
-        >
-          <div className="flex gap-1">
-            <Chip on={log} onClick={() => setLog(true)}>Enabled</Chip>
-            <Chip on={!log} onClick={() => setLog(false)}>Disabled</Chip>
-          </div>
-        </Tip>
-      </div>
-      {log && (
-        <>
-          <Labeled label="W&B project" help="Which W&B project this run logs into. Blank uses the cluster's default.">
-            <input className="field" placeholder="ccc" value={project} onChange={(e) => setProject(e.target.value)} />
-          </Labeled>
-          <Labeled label="W&B entity" help="The W&B team or account the run logs under. Blank uses whatever your key's account defaults to.">
-            <input className="field" placeholder="account default" value={entity} onChange={(e) => setEntity(e.target.value)} />
-          </Labeled>
-        </>
-      )}
-    </>
-  );
-}
-
 /**
- * The GitHub key's per-Spawn off-switch. One question, unlike `Wandb` above, because a minted key has no
- * client-owned half to configure: there is no project or entity to name, only whether the Pod gets an
- * ssh-agent holding it.
+ * The GitHub key's per-Spawn off-switch. One question, because a minted key has no client-owned half
+ * to configure: only whether the Pod gets an ssh-agent holding it.
  *
  * Framed as a cost rather than a feature in the Tip. The default is ON, and an account key reaches
  * everything that GitHub account can — so the useful thing to say here is what turning it OFF is for.

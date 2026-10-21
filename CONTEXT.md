@@ -85,7 +85,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   leaving it live everywhere else. Distinct from **Mesh** membership, which authorizes *machines*, not
   people. It is also what makes a **Credential** usable: outside a Session the Head cannot reach one, so
   work submitted with no Session behind it carries none.
-- **Credential** — a third-party secret the Head holds for one User — their W&B key, their GitHub key —
+- **Credential** — a third-party secret the Head holds for one User — their GitHub key —
   and injects into every Spawn they submit, from *either* client. Most are **handed over**: the User
   pastes a secret that already exists elsewhere. One is **minted**: the Head generates the secret itself
   and the User never sees it, registering only its public half with the third party. So a Spawn reaches
@@ -106,13 +106,13 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Karma** — the token economy. Deploys on the Head. Covers wallets/balances, dynamic
   pricing, congestion effects, and the admin **override** (privileged add/remove of Karma). Sets
   Slurm priority directly — no FairShare, no accounting database.
-- **Telemetry** — monitoring & alerting. Spans Head + Arm: experiment-tracking injection (W&B) into
-  every Spawn, and rogue-actor/out-of-scheduler detection with operator email alerting.
+- **Telemetry** — monitoring & alerting. Deploys on the Head: rogue-actor/out-of-scheduler detection
+  on the Head's own machine, with operator email alerting.
 
 ## Job/experiment concepts
 
 - **Recipe** — a **User**'s saved, re-runnable snapshot of a piece of work: the project code itself,
-  plus how to run it (entry point, arguments, declared needs, experiment-tracking config, which
+  plus how to run it (entry point, arguments, declared needs, which
   **Credential**s its runs carry). Private to
   its owner. Because it holds the code, a Recipe can be re-run from any machine with nothing to hand —
   and it is **frozen**: it keeps running what it captured until its owner deliberately updates it. The

@@ -350,14 +350,10 @@ export type Recipe = {
   frozen_at: number       // epoch ms the code was last captured; Update code refreshes it
   updating: boolean       // a new snapshot is uploading right now → the bloom
   running: boolean        // a Spawn of this Recipe is live on the cluster right now → the passing cloud
-  // Experiment tracking, frozen with the code. Read back (not just written) so Update code prefills what
-  // the owner already answered instead of quietly resetting it to the defaults on every re-capture.
-  wandb: boolean
-  wandb_project: string
-  wandb_entity: string
-  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen for the same reason `wandb`
-  // is: a Recipe is durable config, so "run this without my key" is part of what the Recipe IS, not a
-  // decision to re-make every time. Absent on a Recipe saved before this existed, which reads as true.
+  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen with the code, and read back
+  // (not just written) so Update code prefills it: a Recipe is durable config, so "run this without my
+  // key" is part of what the Recipe IS, not a decision to re-make every time. Absent on a Recipe saved
+  // before this existed, which reads as true.
   git: boolean
   // The same two declared-need fields a Spawn carries (SubmitOpts below), frozen with the code rather
   // than asked again on every run. `features` is usually empty; `manifest` never is — a Recipe freezes
@@ -387,11 +383,6 @@ export type NewRecipe = {
   gpus: number
   vram_mb: number
   minutes: number
-  // The Recipe's experiment-tracking config — the same three questions a Spawn answers, frozen with the
-  // code rather than asked again on every run.
-  wandb: boolean
-  wandb_project: string
-  wandb_entity: string
   git: boolean
   // Same as above — asked once, frozen with the code. `manifest` is REQUIRED: a Recipe that named no
   // dependency file could never be run, so the Head refuses the save rather than freezing a dead one.
@@ -410,7 +401,7 @@ async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
   const meta = {
     name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
     vram_mb: r.vram_mb, minutes: r.minutes,
-    wandb: r.wandb, wandb_project: r.wandb_project, wandb_entity: r.wandb_entity, git: r.git,
+    git: r.git,
     // `features` is omitted rather than sent empty — absent means "no features required", which is
     // not the same instruction as any other value. `manifest` is required, so it always travels.
     ...(r.features.length ? { features: r.features } : {}),
@@ -447,9 +438,6 @@ export type RecipeSettings = {
   gpus: number
   vram_mb: number
   minutes: number
-  wandb: boolean
-  wandb_project: string
-  wandb_entity: string
   git: boolean
   manifest: string
   substrate: string
@@ -785,20 +773,11 @@ export type SubmitOpts = {
   vram: number
   node: string | null // admin-only; the Head 403s it for everyone else
   args: string[]
-  // Log this Spawn to W&B at all. A stored key is otherwise used for EVERY Spawn, and "not this one"
-  // has to be sayable — but only as intent: we send a boolean, never WANDB_MODE, so the Head stays the
-  // one composing the environment. False disables it there even with a key stored.
-  wandb: boolean
   // Carry the submitter's **GitHub key** into this Spawn — an ssh-agent inside the Pod, so `git clone`
-  // and `pip install git+ssh://` reach their private repos. On by default and declinable per Spawn, the
-  // same shape as `wandb` above: an account key reaches everything that account can, and for the life
-  // of the Spawn anything running in the Pod can use it.
+  // and `pip install git+ssh://` reach their private repos. On by default and declinable per Spawn: an
+  // account key reaches everything that account can, and for the life of the Spawn anything running in
+  // the Pod can use it.
   git: boolean
-  // Which W&B run this Spawn is — the only part of the W&B environment a client gets to decide (the
-  // Head holds the key). Blank means "unset": the project falls back to the Head's `ccc` default, the
-  // entity to the W&B account's own. Ignored by the Head when `wandb` is false.
-  wandbProject: string
-  wandbEntity: string
   // Folders the payload writes results to, each a path in the Spawn's own project (or, `/`-prefixed,
   // absolute inside the Pod) — required, non-empty; the Head 422s a Spawn that declares none.
   outputs: string[]
@@ -824,25 +803,13 @@ export type SubmitResult = { id: number; environment: string | null }
  * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
  */
 export async function submit({
-  picked, name, script, gpu, minutes, vram, node, args, wandb, git, wandbProject, wandbEntity, outputs,
-  features, manifest, substrate,
+  picked, name, script, gpu, minutes, vram, node, args, git, outputs, features, manifest, substrate,
 }: SubmitOpts): Promise<SubmitResult> {
   const body = await projectBody(picked)
-  // Head owns the key, client owns the run: send WANDB_PROJECT/WANDB_ENTITY only — never a key (browser
-  // has none), never WANDB_MODE. Head fills in the key it holds for you.
-  //
-  // Blank fields are OMITTED, not sent empty: WANDB_ENTITY="" breaks wandb.init() instead of falling back
-  // to the account default, and a blank project already maps to the Head's `ccc` default.
-  //
-  // `wandb` is the off-switch, travels OUTSIDE wandb_env: inside it, it'd have to be a WANDB_MODE, which
-  // the Head no longer honours from a client. Head reads an absent flag as true, so it's always sent.
-  const wandb_env: Record<string, string> = {}
-  if (wandbProject.trim()) wandb_env.WANDB_PROJECT = wandbProject.trim()
-  if (wandbEntity.trim()) wandb_env.WANDB_ENTITY = wandbEntity.trim()
-  // Omitted rather than sent empty, matching wandb_env's fields above — most Spawns require none, and
-  // the Head reads an absent key the same as an empty list.
+  // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
+  // absent key the same as an empty list.
   const meta = {
-    name, script, gpu, minutes, vram, node, args, wandb, git, wandb_env, outputs,
+    name, script, gpu, minutes, vram, node, args, git, outputs,
     ...(features.length ? { features } : {}),
     // Always sent, unlike the fields above: the Head refuses a Spawn that names no dependency file, and
     // an omitted key would meet that refusal as a confusing "missing" rather than the empty box it is.

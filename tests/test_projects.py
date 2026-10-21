@@ -84,7 +84,7 @@ class TestNoRequeue:
             uid = db.get_user(conn, "alice")["id"]
         tar = tmp_path / "p.tar.gz"
         _write_tar(tar)
-        head_spawns.submit(uid, "train.py", 1, [], {}, tar, 60, "", ["outputs"],
+        head_spawns.submit(uid, "train.py", 1, [], tar, 60, "", ["outputs"],
                            manifest="requirements.txt")
         sbatch = next(c for c in calls if "sbatch" in c)
         assert "--no-requeue" in sbatch

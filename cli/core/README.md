@@ -60,11 +60,11 @@ over the munge key. A machine on the mesh that no Admin named gets nothing.
 All of these go through the Head API and need `cuttle login` — the CLI is a network client, so you can
 submit from any box, whether or not it ever ran `setup`.
 
-- `cuttle run <script> --time MIN --vram GB [--gpu N] [-f] [--project P] [--entity E]
+- `cuttle run <script> --time MIN --vram GB [--gpu N] [-f]
   [--no-gitignore] [-- ARGS]` — submit a **Spawn**: uploads the working dir (honoring `.gitignore`
   unless `--no-gitignore`) to the Head, which resolves the declared **Environment** into build commands
   and queues the job. The **Arm** it lands on builds that env, then runs
-  `apptainer exec --nv base.sif <that env's python> <script>` as the **Mantle**. `--project`/`--entity` set W&B per-Spawn. `-f` streams stdout. Job id = spawn id.
+  `apptainer exec --nv base.sif <that env's python> <script>` as the **Mantle**. `-f` streams stdout. Job id = spawn id.
   - `--time` (wall-clock minutes) and `--vram` (GB) are **required, with no defaults**. Nothing can
     price a Spawn whose length nobody declared, and a `--vram` that defaulted to the fleet's biggest
     card would make every untouched field eligible for that one GPU alone — queued behind everything,
@@ -110,7 +110,6 @@ you delete the stale pin and log in again. A plain `teardown` preserves the cert
 doesn't happen on every redeploy.
 
 ## Config / artifacts
-- `cuttle setup` prompts for the W&B API key + default project/entity → `~/.ccc/config/config.yaml` (0600).
 - `~/.ccc` holds **only** the operator's settings + its session token. Spawn artifacts are not here:
   they live on the Head under `/var/lib/ccc/head/spawns/<id>/{out,err,exit,outputs}` (owned by the
   Mantle) and are read back over the API — a submitter never touches the Head's disk.

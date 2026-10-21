@@ -8,11 +8,10 @@ install a dependency pinned to it.
 
 So the Head keeps an SSH key for you, and puts it inside every Spawn you submit.
 
-**The Head generates the key; you never see the private half.** That is the difference between this
-and your [W&B key](telemetry.md), which you paste in because it already exists somewhere else. Here
-there is nothing to paste and nothing to leak from your terminal: the Head mints an ed25519 keypair,
-seals the private half under your password, and hands you the public half to register with GitHub.
-That public half is the only part of this key anyone ever sees.
+**The Head generates the key; you never see the private half.** There is nothing to paste and nothing
+to leak from your terminal: the Head mints an ed25519 keypair, seals the private half under your
+password, and hands you the public half to register with GitHub. That public half is the only part of
+this key anyone ever sees.
 
 Inside the Spawn it is served by an **ssh-agent**, started before your code runs and gone when the job
 ends. The key is never written to a file in the Pod, never appears in the environment, and never shows
@@ -60,7 +59,7 @@ cuttle github clear
 ```
 
 From the [Dashboard](../Dashboard.md), all of this is on the Account page, and the per-Spawn switch is
-a toggle in the composer beside the W&B one.
+a toggle in the composer.
 
 ## Commands
 
@@ -110,8 +109,8 @@ is not a job that verified anything.
 
 ### The private half never leaves the Head
 
-Not to you, not to an Admin, not to anyone holding a copy of the database. It is sealed the same way
-your W&B key is — under a key derived from your password — with all the same consequences, spelled out
+Not to you, not to an Admin, not to anyone holding a copy of the database. It is sealed under a key
+derived from your password, with all the same consequences, spelled out
 in [Security](../Security.md). The two that matter most here:
 
 - **An Admin password reset destroys it.** Mint a new one and register it again.

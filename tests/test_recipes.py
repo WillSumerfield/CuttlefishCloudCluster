@@ -22,7 +22,6 @@ from ccc_head_api import spawns as head_spawns
 
 _META = {"name": "resnet", "script": "train.py", "args": ["--lr", "1e-3"], "outputs": ["checkpoints"],
          "gpus": 1, "vram_mb": 24576, "minutes": 120,
-         "wandb": True, "wandb_project": "ccc", "wandb_entity": "me",
          # A Recipe freezes the **Environment** its work runs in, not just the code, so naming one is
          # required to save at all — see test_saving_without_a_manifest_is_refused.
          "manifest": "requirements.txt"}
@@ -78,8 +77,6 @@ class TestSaving(_Base):
         assert saved["args"] == ["--lr", "1e-3"]
         assert saved["outputs"] == ["checkpoints"]
         assert (saved["gpus"], saved["vram_mb"], saved["minutes"]) == (1, 24576, 120)
-        # Experiment tracking rides with the code rather than being re-answered on every run.
-        assert (saved["wandb"], saved["wandb_project"], saved["wandb_entity"]) == (True, "ccc", "me")
         tree = recipes._dir(1, "resnet")
         assert (tree / "train.py").read_bytes() == b"print('hi')\n"
 
@@ -390,7 +387,7 @@ class TestRunRoute:
         monkeypatch.setattr(slurm, "arms_with_features", lambda names: [{"name": "gpu-box"}])
         captured = {}
 
-        def fake_submit(user_id, script, gpu, args, wandb_env, tar_path, minutes, constraint, outputs,
+        def fake_submit(user_id, script, gpu, args, tar_path, minutes, constraint, outputs,
                         node=None, **kw):
             captured.update(script=script, gpu=gpu, minutes=minutes, outputs=outputs, **kw)
             return 99
@@ -461,8 +458,7 @@ def _spool_body(body: bytes):
 
 
 class TestTheGitHubKeyIsFrozenToo:
-    """A Recipe remembers whether its runs carry the owner's **GitHub key**, exactly as it remembers
-    whether they log to W&B.
+    """A Recipe remembers whether its runs carry the owner's **GitHub key**.
 
     Not a per-run question, because a Recipe is durable config: "run this without my key" is part of
     what the Recipe IS. The flag a Spawn passes once has to survive being saved, or the Composer would

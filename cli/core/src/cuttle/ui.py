@@ -114,23 +114,16 @@ _TROUBLE: list[str] = []        # warnings and failures, in order — surfaced a
 # holds it deliberately, while this file was simply the transcript nobody thought of as secret-bearing.
 # Note the limit: this scrubs the CLI's OWN run log and nothing else. A secret typed as a positional
 # is still visible to `ps` while the command runs and still lands in shell history, neither of which
-# this file can reach. `cuttle wandb set --stdin` is the path that avoids all three.
+# this file can reach.
 _SECRET_FLAGS = {"--token"}                 # `cuttle setup --arm --token <blob>`
-_SECRET_AFTER = [("wandb", "set")]          # `cuttle wandb set <key>` — a positional, so match on path
 
 
 def _redact_argv(argv: list[str]) -> list[str]:
-    """`argv` with every secret value replaced. Enrollment tokens expire in an hour; a **W&B** key
-    does not, which is what makes this worth doing rather than trusting the lifetime."""
+    """`argv` with every secret value replaced."""
     out = list(argv)
     for i, a in enumerate(out[:-1]):
         if a in _SECRET_FLAGS:
             out[i + 1] = "<redacted>"
-    for path in _SECRET_AFTER:
-        n = len(path)
-        for i in range(len(out) - n):
-            if out[i:i + n] == list(path) and not out[i + n].startswith("-"):
-                out[i + n] = "<redacted>"
     return out
 
 

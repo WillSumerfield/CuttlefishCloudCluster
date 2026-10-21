@@ -71,8 +71,8 @@ Two consequences worth calling out:
 Environment is running a dependency declaration, which is code, so it happens in a Pod as that User's
 Guise — on the Head. There is no path by which submitted code becomes the Mantle.
 
-**Injected credentials do not leak sideways.** A Spawn's W&B key is visible from inside its own Pod
-and nowhere else — not from another Spawn on the same machine, and not through `/proc`.
+**A Spawn's environment does not leak sideways.** It is visible from inside its own Pod and nowhere
+else — not from another Spawn on the same machine, and not through `/proc`.
 
 ## Secrets, and how each is handled
 
@@ -97,7 +97,7 @@ the disk, and not to an Admin. **The Head cannot read your key while you are not
 is the whole point and also the source of every consequence below.
 
 What it does **not** buy: it is not a defence against a *live session*. Whoever holds your session
-token can submit a Spawn that echoes `$WANDB_API_KEY` back out, and no amount of encryption at rest
+token can submit a Spawn that uses your GitHub key from inside its Pod, and no amount of encryption at rest
 changes that. This is exactly why there is no "reveal" — reveal would have cost the secret a trip
 across the wire and a stay in your terminal's scrollback, to defend against nothing that was not
 already reachable. Protect your session; that is the boundary that matters.
@@ -108,7 +108,7 @@ Three consequences follow, none of them accidental:
   with the old password and the sessions it authorized. An Admin who can reset a password
   deliberately cannot read what that password was keeping.
 - **A Spawn submitted with no session carries no key.** `cuttle run --node` — Head-local, operator
-  only — has a User to attribute to but no login behind it, so it runs with W&B disabled and says so.
+  only — has a User to attribute to but no login behind it, so it runs without your GitHub key.
 - **A restore now keeps them.** Both halves of the wrapping live in `head.db`, so restoring the
   database and logging in re-derives the key that opens them. This was not true before.
 
@@ -176,7 +176,7 @@ Stated so nobody assumes otherwise:
   a certificate for any name in the cluster and every other box will trust it. This is the price of
   the browser no longer warning, and it is the same box that already holds every account and secret.
 - **Code you chose to run, inside your own Spawn.** A Spawn runs as you, with whatever you gave it —
-  your W&B key in its environment, your GitHub key in its agent. CCC isolates Users from each other,
+  your GitHub key in its agent. CCC isolates Users from each other,
   not you from a dependency you installed. `--no-git` narrows what one Spawn holds; nothing narrows
   what a Spawn does with what it holds.
 - **Denial of service by a legitimate User.** Karma makes queue-flooding self-punishing — an Escrow

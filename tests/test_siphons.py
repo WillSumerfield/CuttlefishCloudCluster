@@ -388,7 +388,7 @@ class TestSubmitOpensAndBindsOne:
                     tf.addfile(info, io.BytesIO(b""))
             tar = tmp_path / "up.tar.gz"
             tar.write_bytes(buf.getvalue())
-            jid = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            jid = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                      tar_path=tar, minutes=60, constraint="vram24",
                                      outputs=["outputs"], manifest="requirements.txt")
             return jid, bodies["script"]
@@ -430,7 +430,7 @@ class TestSubmitOpensAndBindsOne:
                 tf.addfile(info, io.BytesIO(b""))
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
-        head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={}, tar_path=tar,
+        head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], tar_path=tar,
                            manifest="requirements.txt",
                            minutes=60, constraint="vram24", outputs=["outputs"])
         assert len(seen["confs"]) == 1
@@ -460,7 +460,7 @@ class TestSubmitOpensAndBindsOne:
         # Siphon re-raises sbatch's refusal carrying what it said (head_spawns._said). The type is
         # incidental here — what this test is about is the module not surviving the failure.
         with pytest.raises(RuntimeError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=tar, minutes=60, constraint="vram24", outputs=["outputs"],
                                manifest="requirements.txt")
         assert list(siphons.RSYNCD_DIR.iterdir()) == []

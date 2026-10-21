@@ -632,10 +632,6 @@ overlay="--overlay $scratch/overlay.img"
 py=""; envbind=""; envmount=""; featbind=""; featenv=""
 %%ENV_BUILD%%
 %%FEATURE_SETUP%%
-# Build the Pod env list. WANDB_ENTITY is appended only when set — an empty entity makes wandb.init
-# fail rather than fall back to the account default.
-wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MODE=${WANDB_MODE:-},WANDB_NAME=spawn-$jid"
-[ -n "${WANDB_ENTITY:-}" ] && wenv="$wenv,WANDB_ENTITY=$WANDB_ENTITY"
 # This Spawn's **GitHub key** — the submitter's own, minted by the Head (ccc_head_api.credentials) and
 # rendered here base64'd. In the script body rather than the job environment for the same reason
 # RSYNC_PASSWORD above is: sudo scrubs the environment on the way to sbatch, and widening the sudoers
@@ -646,7 +642,7 @@ wenv="WANDB_API_KEY=${WANDB_API_KEY:-},WANDB_PROJECT=${WANDB_PROJECT:-},WANDB_MO
 # no-op and the payload's stdin is an empty pipe — byte for byte what it was before any of this
 # existed, which is the property that keeps a Spawn with no GitHub key unaffected by all of it.
 #
-# Deliberately NOT in the apptainer --env list, so unlike the W&B key it stops at the Pod wall in the
+# Deliberately NOT in the apptainer --env list, so it stops at the Pod wall in the
 # other direction too: it reaches the Pod on the payload's **stdin**, is read once by the wrapper
 # below, and lives out the job in an ssh-agent's memory. It is never written to a file inside the Pod,
 # never in the Pod's environment, and never in anything `ps` can show.
@@ -769,7 +765,7 @@ ccc_build_or_die() {
 #   passwd/group bind by itself (host 55 lines -> image 21), which is why `--no-mount` below is
 #   belt-and-braces rather than load-bearing.
 # * `--pid` puts the payload in its own PID namespace with its own procfs — the single flag that closes
-#   `/proc/<pid>/root` and `/proc/<pid>/environ` (another Spawn's WANDB_API_KEY). Apptainer starts its
+#   `/proc/<pid>/root` and `/proc/<pid>/environ` (another Spawn's environment). Apptainer starts its
 #   own `appinit` shim as PID 1, so there is no zombie-reaping problem and no tini to ship.
 # * `--pwd "$proj"` is load-bearing, not cosmetic: `--contain` drops the cwd auto-bind, so $proj must be
 #   bound EXPLICITLY and named as the working dir, or cwd is $HOME and `python <script>` fails outright.
@@ -799,7 +795,7 @@ ccc_build_or_die() {
 PAYLOAD_SCRIPT = """\
 printf '%s' "$ccc_git_key" | apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$outbind$migbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
+  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
   "$sif" $gitboot $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
 
 # The wrapper that turns a base64 key on stdin into a live ssh-agent, then gets out of the way.
@@ -837,7 +833,7 @@ exec "$@"
 """.replace("__GITHUB_HOST_KEY__", github.HOST_KEY)
 
 # sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
-# runs with no --net — full host netns, same as the script path, because the Pod still needs W&B egress
+# runs with no --net — full host netns, same as the script path, because the Pod still needs internet egress
 # and the mesh to stage its results home) — the Head-side relay (ccc_head_api.tidepool/relay.py) is what
 # makes that reachable from a client that is not a Mesh member.
 #
@@ -958,28 +954,13 @@ echo "export CCC_KEPT='$CCC_KEPT'" >> /etc/profile.d/ccc-tidepool.sh
 # a TMPDIR set in sshd's own environment both come back EMPTY inside the session. So everything
 # apptainer hands this Pod through --env reaches THIS script and stops here.
 #
-# W&B is the half that was silently missing. `$wenv` puts the submitter's key in the Pod's environment
-# exactly as it does for a Script Spawn — but a Script Spawn runs `$py` directly under apptainer, while
-# here sshd stands in between and drops it. So `wandb.init()` at a Tide Pool shell ran unauthenticated,
-# and the Head's promise that "a Spawn logs to its submitter's own account" (CONTEXT.md) was not true
-# of the one Spawn a User is actually sitting inside. Only the names that are SET are written: an empty
-# WANDB_ENTITY makes wandb.init() fail rather than fall back to the account default (see `wenv` above).
-#
-# Single-quoted, and the file is then 0600: this writes a User's API key to disk inside the Pod. No new
-# exposure — it is already in PID 1's environment in this same Pod, the overlay dies with the session,
-# and a **Guise** is the only account that can log in here — but a secret in a world-readable
-# /etc/profile.d is not a thing to leave lying around even for an hour.
-for v in WANDB_API_KEY WANDB_PROJECT WANDB_ENTITY WANDB_MODE WANDB_NAME; do
-  if [ -n "${!v-}" ]; then echo "export $v='${!v}'" >> /etc/profile.d/ccc-tidepool.sh; fi
-done
-# The Arm **Feature** runtime, which was the other half sshd was silently eating — found the same way as
-# W&B above, one Feature later. `$featenv` (ccc_head_api.features) is handed to this Pod through --env
-# and stops at this script, so a **Tide Pool** or **Workspace** visit that asked for a profiled Feature
-# had its package bound, its system libraries built and its working directory arranged, and then got a
-# shell with none of the three variables that make any of that reachable: `import vlearn` was a
-# ModuleNotFoundError and `pip list` showed nothing, on the one Spawn whose entire point was the Feature.
-# LD_LIBRARY_PATH especially cannot be recovered from inside — the loader reads it at `exec`, which is
-# the whole reason a profile exists.
+# The Arm **Feature** runtime is what sshd was silently eating. `$featenv` (ccc_head_api.features) is
+# handed to this Pod through --env and stops at this script, so a **Tide Pool** or **Workspace** visit
+# that asked for a profiled Feature had its package bound, its system libraries built and its working
+# directory arranged, and then got a shell with none of the three variables that make any of that
+# reachable: `import vlearn` was a ModuleNotFoundError and `pip list` showed nothing, on the one Spawn
+# whose entire point was the Feature. LD_LIBRARY_PATH especially cannot be recovered from inside — the
+# loader reads it at `exec`, which is the whole reason a profile exists.
 #
 # The NAMES arrive as one more --env entry (CCC_FEATURE_VARS, derived from `$featenv` below) rather than
 # being listed here: a profile that introduces a variable then needs no edit in this file, and the
@@ -1011,7 +992,7 @@ ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"
 # The shell's own configuration (ccc_head_api.zshrc), which the Head renders rather than the image
 # bakes — that module's docstring says why. Everything ABOVE this point still lands in /etc/profile.d
 # and is reached through the one line BASE_DEF_TMPL appends to /etc/zsh/zprofile: there is exactly one
-# generator for the W&B key, CCC_KEPT, the Environment PATH and the `cd`, and switching shells did not
+# generator for CCC_KEPT, the Environment PATH and the `cd`, and switching shells did not
 # fork it. zprofile is read before zshrc, so by the time the rc below runs, all of it is already set.
 #
 # Both heredocs are QUOTED. The rc is full of `$ZSH_CACHE_DIR` and the p10k config is 95 KB of prompt
@@ -1060,7 +1041,7 @@ CCC_TP_USERRC
 # script for why it has to. An absolute path with no %u/%h token, because there is exactly one account
 # that ever logs into a Pod.
 #
-# The XDG four and VSCODE_AGENT_FOLDER ride here rather than in /etc/profile.d beside the W&B keys,
+# The XDG four and VSCODE_AGENT_FOLDER ride here rather than in /etc/profile.d beside CCC_KEPT,
 # and the difference matters: profile.d is read by LOGIN shells only. An editor attached over
 # Remote-SSH runs a non-login, non-interactive command and would see none of it — which is exactly the
 # session that most needs somewhere to write. SetEnv is sshd's own, applied to every session of every
@@ -1091,7 +1072,7 @@ featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" \\
   $overlay --no-mount /etc/passwd,/etc/group \\
   --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$outbind$migbind" \\
-  --env "$wenv,LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
+  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,CCC_KEPT=%%KEPT_LIST%%,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
@@ -1548,7 +1529,7 @@ def _said(e: subprocess.CalledProcessError) -> str:
     return f"it printed nothing at all, and exited {e.returncode}"
 
 
-def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_env: dict[str, str],
+def submit(user_id: int, script: str | None, gpu: int, args: list[str],
            tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None, substrate: str | None = None,
@@ -1758,12 +1739,6 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
                    stub_log=stub_log, drop_lock=drop_lock,
                    workspace=workspace, workspace_storage=workspace_storage, packages=packages,
                    git_key=git_key)
-    # sbatch propagates its own environment to the job, which is how WANDB_* reaches the wrapper's
-    # `wenv` line. Already composed by submit_checked (compose_wandb_env) — the submitting User's
-    # stored key, never the client's. sudo scrubs the environment, so the four WANDB_* names are in
-    # `env_keep` on the sudoers rule (cuttle.headapi) — without that every Spawn would silently log
-    # nothing, which a User only discovers afterwards in an empty W&B project.
-    env = {**os.environ, **wandb_env}
     # The script goes in on STDIN, not as a path: a temp file would need to be readable by the Guise
     # sbatch runs as, and feeding it here is strictly better anyway — there is no temp file to leak the
     # project's full file list, and no delete-after-return dance needed.
@@ -1785,7 +1760,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
         # ran `cuttle` from — which the Guise that will run the job cannot necessarily enter. "/" is
         # traversable by everyone and the job script uses absolute paths throughout.
         r = subprocess.run(guises.as_owner(argv, guise), input=body, cwd="/",
-                           capture_output=True, text=True, check=True, env=env)
+                           capture_output=True, text=True, check=True)
     except Exception as e:
         siphons.discard(token)  # no job id will ever exist for it, so nothing else would ever close it
         # `capture_output` means sbatch's refusal goes into the exception and nowhere else, and
@@ -1843,58 +1818,14 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str], wandb_en
     return job_id
 
 
-def compose_wandb_env(user_id: int, client_env: dict[str, str], wandb: bool = True,
-                      dek: bytes | None = None) -> dict[str, str]:
-    """The Spawn's W&B environment: **the Head owns the key, the client owns the run.**
-
-    The key belongs to the Head, tied to the submitting User (db.get_credential) — a browser has no
-    config file to hold one. Only the run's *identity* still comes from the client: WANDB_PROJECT and
-    WANDB_ENTITY, which are `cuttle run --project/--entity`.
-
-    `dek` is the submitting Session's key to that User's Credentials, threaded down from
-    `current_user`. **None means no key**, and that is the ordinary answer for a session-less
-    submission (`cuttle run --node`), not an error. Note what is passed and what is not: the DEK, not
-    the plaintext and not the session token. Because this function still does its own read and its own
-    decrypt, a DEK belonging to the wrong User simply fails to open the row and degrades to disabled —
-    the "you cannot log another User's Spawn into your account" rule below stays true by construction
-    rather than by every caller remembering it.
-
-    Anything else the client sent is dropped, `WANDB_API_KEY` and `WANDB_MODE` above all. Honouring a
-    client-sent key would let a submitter log another User's Spawns into an account of their choosing,
-    and honouring a client-sent mode would let one silently disable the metrics they had just asked the
-    Head to enable. Neither is the client's to decide any more, so neither is read.
-
-    No stored key means no W&B, and that has to be said out loud: an EMPTY env leaves WANDB_MODE unset,
-    which makes `wandb.init()` fail rather than skip. WANDB_ENTITY stays absent when there is none — an
-    empty entity breaks `wandb.init` too, instead of falling back to the account default (see the
-    rendered job script's `wenv` line).
-
-    `wandb` is the client's *intent* — "not this one", per Spawn — and it is a separate flag rather
-    than a client-sent WANDB_MODE precisely so the rule above still holds: the client says whether to
-    log, never how. False means disabled even with a key stored, and the key is not injected at all —
-    there is no reason to hand a Pod a secret it was just told not to use. Absent is True, so every
-    client that never heard of this keeps the behaviour it had.
-    """
-    if not wandb:
-        return {"WANDB_MODE": "disabled"}
-    env = {k: v for k, v in client_env.items() if k in ("WANDB_PROJECT", "WANDB_ENTITY") and v}
-    with db.connect() as conn:
-        key = db.get_credential(conn, user_id, "wandb", dek)
-    if key is None:
-        return {"WANDB_MODE": "disabled"}
-    env.setdefault("WANDB_PROJECT", "ccc")
-    return {**env, "WANDB_API_KEY": key, "WANDB_MODE": "online"}
-
-
 def git_key_for(user_id: int, git: bool = True, dek: bytes | None = None) -> str:
     """The submitter's GitHub key for this Spawn, or **""** for no key — which is the ordinary answer,
     not an error: they have none stored, they said not this one, or the submission carries no Session
     to open their Credentials with (`cuttle run --node`).
 
-    The same shape as compose_wandb_env above and for the same reasons — the Head reads and decrypts
-    it here rather than trusting anything the client sent, so a DEK belonging to the wrong User simply
-    fails to open the row and the Spawn runs without a key. There is no client-sent counterpart to
-    ignore: unlike W&B, a GitHub key has never had a way in from the client at all.
+    The Head reads and decrypts it here rather than trusting anything the client sent, so a DEK
+    belonging to the wrong User simply fails to open the row and the Spawn runs without a key. There is
+    no client-sent counterpart to ignore: a GitHub key has never had a way in from the client at all.
 
     `git` is the client's *intent*, "not this one", per Spawn. It defaults to **True**, which is the
     one place this differs from a secret the User pasted: they did not choose this key's value, only
@@ -1909,8 +1840,8 @@ def git_key_for(user_id: int, git: bool = True, dek: bytes | None = None) -> str
 
 
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
-                   wandb_env: dict[str, str], tar_path: Path | None, minutes: int, vram_gb: int,
-                   outputs: list[str], node: str | None = None, wandb: bool = True,
+                   tar_path: Path | None, minutes: int, vram_gb: int,
+                   outputs: list[str], node: str | None = None,
                    git: bool = True,
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, substrate: str | None = None,
@@ -1925,17 +1856,9 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     out to `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that
     consumes a donated card while nobody pays for it, and that no ledger can explain.
 
-    `wandb_env` arrives as whatever the client asked for and is **recomposed here**, not taken as
-    given — see compose_wandb_env. Here rather than in the route so the Head-local pinned path
-    (`cuttle run --node`) gets the identical treatment, for the same reason the Escrow does. `wandb`
-    is the per-Spawn off-switch that rides alongside it, and defaults on: a caller that never sets it
-    submits exactly the Spawn it always did.
-
     `dek` is the submitting Session's key to the User's Credentials, and carrying it this far is the
     price of the Head no longer being able to decrypt one by itself. `cuttle run --node` has a User to
-    attribute to but no Session, so it passes None and its Spawns get WANDB_MODE=disabled — see
-    admin._submit, which says so on stderr rather than letting it be discovered in a run that logged
-    nothing.
+    attribute to but no Session, so it passes None and its Spawns get no GitHub key.
 
     `features` is optional and empty by default — most Spawns need none.
     When given, every name must be carried by at least one currently-admitted Arm or the Spawn is
@@ -2040,8 +1963,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
-    return submit(user_id, script, gpu, args, compose_wandb_env(user_id, wandb_env, wandb, dek),
-                  tar_path,
+    return submit(user_id, script, gpu, args, tar_path,
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
                   activation=activation,

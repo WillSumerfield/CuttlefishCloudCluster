@@ -402,11 +402,11 @@ def render_ubuntu_snapshot_list() -> str:
 #   and this image can only be changed by a fleet-wide teardown. Nothing else in CCC has a shell in it:
 #   PAYLOAD_SCRIPT execs the Environment's python directly and never starts one.
 # * `/etc/zsh/zprofile` gets one appended line, and it is the load-bearing half of the whole change.
-#   PAYLOAD_TIDEPOOL puts the W&B credentials, the Environment's PATH, CCC_KEPT and the `cd` into the
+#   PAYLOAD_TIDEPOOL puts the Feature runtime, the Environment's PATH, CCC_KEPT and the `cd` into the
 #   project in `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
 #   drops apptainer's `--env`. **zsh does not read /etc/profile.d.** Debian's zprofile sources
 #   /etc/profile and Ubuntu's ships as comments only, so without this line every one of those is silently
-#   lost — the session opens, the prompt looks right, and `wandb.init()` runs unauthenticated. That exact
+#   lost — the session opens, the prompt looks right, and `import` finds nothing. That exact
 #   bug was already found and fixed once on the bash path (spawns.py, 2026-08-07); this is the line that
 #   keeps switching shells from re-introducing it.
 # * `ncurses-term` — sshd forwards the connecting client's TERM, and `ncurses-base` carries 61 entries
@@ -524,7 +524,7 @@ From: {image}
     echo "mantle:x:{gid}:" >> /etc/group
     mkdir -p /home/mantle && chown {uid}:{gid} /home/mantle
     # The bridge. See the note above this template — without it a zsh login silently loses everything
-    # PAYLOAD_TIDEPOOL writes to /etc/profile.d, including the submitter's W&B credentials.
+    # PAYLOAD_TIDEPOOL writes to /etc/profile.d.
     echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile
     # %files preserves the building operator's ownership and mode. Asserted here instead, so the tree is
     # identical whoever built the node: oh-my-zsh runs `compaudit` over its own directories at every

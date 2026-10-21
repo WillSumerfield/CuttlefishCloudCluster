@@ -20,7 +20,6 @@ pinned on this machine (see tls.py).
 
 import contextlib
 import io
-import json
 import re
 import subprocess
 import tarfile
@@ -29,7 +28,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, auth, config, menu, mesh, settings, ui, watch
+from . import api, auth, config, menu, mesh, ui, watch
 from .system import run
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
@@ -181,7 +180,7 @@ def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
 
 
 def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
-                   gpu: int, node: str, wandb_env: dict[str, str], outputs: list[str],
+                   gpu: int, node: str, outputs: list[str],
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
@@ -192,9 +191,6 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
     Authorization is *being the operator on this box*; attribution is whoever is logged in here. It
     shells into the API venv rather than reimplementing submission, so the Escrow and the Attribution
     row are written by the same code that serves `/submit` (see spawns.submit_checked).
-
-    `wandb_env` rides across as JSON — the same dict the HTTP path puts in its meta, so `--project`
-    and `--entity` mean the same thing on both roads.
 
     `tidepool` lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
     node-pinning, threaded through for completeness (the common Tide Pool path is unpinned).
@@ -213,7 +209,7 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         r = run(auth._admin_argv([
             "submit", "--user", me, "--script", script, "--tar", tar_path,
             "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-            "--node", node, "--wandb-env", json.dumps(wandb_env), "--name", name,
+            "--node", node, "--name", name,
             # Repeatable, one `--output NAME` / `--feature NAME` per declared name — placed before the
             # trailing `*args` positional (the admin parser's `nargs="*"`) so argparse never mistakes a
             # script argument for another output/feature name.
@@ -291,8 +287,7 @@ def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
 
 
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
-           outputs: list[str], project: str | None = None, entity: str | None = None,
-           no_gitignore: bool = False, node: str | None = None,
+           outputs: list[str], no_gitignore: bool = False, node: str | None = None,
            features: list[str] | None = None, manifest: str | None = None,
            substrate: str | None = None,
            download: bool = True, dest: Path | None = None, root: Path | None = None,
@@ -304,10 +299,6 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     # The Head turns `vram` into a Slurm constraint: it knows every distinct card in the fleet and we
     # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
     # works if someone OR-expands it (`--constraint=vram24|vram48`). That someone is the Head.
-    #
-    # Composed once, for both roads: which W&B run this Spawn is (project/entity, and nothing else —
-    # the Head owns the key).
-    wandb_env = settings.wandb_env(project, entity)
     # `node` pins the Spawn to one Arm. It does not travel over HTTP at all — the Head API refuses it
     # for everyone — so a pinned Spawn takes the Head-local path below instead.
     env_note = None
@@ -316,11 +307,11 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
         # Session behind it, so `git_key_for` has no DEK to open a Credential with and every pinned
         # Spawn already carries no key. A flag here would be one that could only ever say "no" twice.
         spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
-                                            wandb_env, outputs, features=features, manifest=manifest,
+                                            outputs, features=features, manifest=manifest,
                                             substrate=substrate, name=name)
     else:
         meta = {"script": script, "gpu": gpu, "args": args, "name": name,
-                "minutes": minutes, "vram": vram, "wandb_env": wandb_env, "outputs": outputs,
+                "minutes": minutes, "vram": vram, "outputs": outputs,
                 # Omitted rather than sent empty, matching the rest of this dict's optional fields —
                 # most Spawns declare none, and the Head reads an absent key as "no requirement".
                 **({"features": features} if features else {}),
@@ -333,7 +324,6 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
                 **({"substrate": substrate} if substrate else {}),
                 # `--no-git`, and sent ONLY when declining: the Head reads an absent key as "yes",
                 # which is what keeps a client that predates this flag behaving as it always did.
-                # There is no `--no-wandb` beside it yet — the W&B off-switch is Dashboard-only.
                 **({} if git else {"git": False})}
         client = auth._client()
         client.token = auth._load_token()
@@ -422,7 +412,7 @@ def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node:
     else:
         tar = _make_tar(root, [])
     if node:
-        return _submit_pinned(tar, "", [], minutes, vram, gpu, node, {}, outputs,
+        return _submit_pinned(tar, "", [], minutes, vram, gpu, node, outputs,
                               features=features, tidepool=True, manifest=manifest,
                               substrate=substrate, name=name)[0]
     meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "outputs": outputs, "tidepool": True,

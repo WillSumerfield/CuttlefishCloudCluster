@@ -226,12 +226,11 @@ def install(write_unit) -> None:
 def prompt_smtp(write_unit) -> None:
     """Ask for SMTP host/port/user/password + from/to, write `config.MONITOR_CONF` (ccc:ccc, 0600).
 
-    Runs after `install()` (needs HEAD_STATE_DIR + the ccc account to exist), unlike the W&B prompt
-    which runs up front — this one simply can't move earlier. Blank host skips entirely: alerting
-    stays unconfigured, the checks still run and log to `journalctl -u ccc-monitor`. On a re-run,
-    every field defaults to what's already stored, so hitting Enter through all of them changes
-    nothing; a blank password specifically means "keep the existing one" (a masked prompt has no
-    visible current value to default to).
+    Runs after `install()` (needs HEAD_STATE_DIR + the ccc account to exist). Blank host skips entirely:
+    alerting stays unconfigured, the checks still run and log to `journalctl -u ccc-monitor`. On a
+    re-run, every field defaults to what's already stored, so hitting Enter through all of them changes
+    nothing; a blank password specifically means "keep the existing one" (a masked prompt has no visible
+    current value to default to).
     """
     existing = _read_existing_conf()
     have = "configured" if existing else "unconfigured"

@@ -236,15 +236,6 @@ class TestTheRunLogKeepsNoSecrets:
         assert ui._redact_argv(argv) == [
             "cuttle", "setup", "--arm", "--token", "<redacted>", "--verbose"]
 
-    def test_a_wandb_key_is_redacted(self):
-        """A positional, not a flag — and the durable one: an enrollment token expires in an hour,
-        a W&B key never does."""
-        assert ui._redact_argv(["cuttle", "wandb", "set", "deadbeef"])[-1] == "<redacted>"
-
-    def test_the_wandb_prompt_form_has_nothing_to_redact(self):
-        assert ui._redact_argv(["cuttle", "wandb", "set"]) == ["cuttle", "wandb", "set"]
-        assert ui._redact_argv(["cuttle", "wandb", "show"]) == ["cuttle", "wandb", "show"]
-
     def test_an_ordinary_command_is_untouched(self):
         argv = ["cuttle", "run", "train.py", "--vram", "24"]
         assert ui._redact_argv(argv) == argv

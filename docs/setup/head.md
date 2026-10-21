@@ -52,13 +52,12 @@ Both are skippable and both can be filled in by re-running setup later.
 
 **It finishes by logging you in.** The Admin account is created during setup with a one-time password
 that is never displayed: setup spends it on a login itself and asks you to choose your own, there and
-then. Nothing to copy down, and nothing left in your scrollback. Then it asks the two account
-questions — your default [W&B](../elements/telemetry.md) project, and whether to mint a
-[GitHub key](../elements/github-keys.md) so your Spawns can reach your private repositories. Both are
-skippable, and both can be done later with `cuttle wandb`/`cuttle github`.
+then. Nothing to copy down, and nothing left in your scrollback. Then it asks whether to mint a
+[GitHub key](../elements/github-keys.md) so your Spawns can reach your private repositories —
+skippable, and can be done later with `cuttle github`.
 
-These are at the end, and that is why setup is not something you can start and walk away from. They
-need the Head API running and a session on it — a GitHub key cannot exist before you have logged in,
+This is at the end, and that is why setup is not something you can start and walk away from. It
+needs the Head API running and a session on it — a GitHub key cannot exist before you have logged in,
 because it is sealed under your password.
 
 Re-running `cuttle setup --head` is safe and is the normal way to change something. The one thing it

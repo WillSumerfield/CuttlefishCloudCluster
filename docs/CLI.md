@@ -119,14 +119,6 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle feature list` | The Features CCC knows how to run. Built in, not configurable. | [Arm Features](elements/arm-features.md) |
 | `cuttle feature show` | What CCC arranges for a Feature, and which Python it needs. | [Arm Features](elements/arm-features.md#writing-against-a-feature) |
 
-## Experiment tracking
-
-| Command | | Explained in |
-|---|---|---|
-| `cuttle wandb set` | Store your W&B key on the Head. Injected into every Spawn you submit. | [Telemetry](elements/telemetry.md) |
-| `cuttle wandb show` | Whether a key is stored, and its last four characters. It cannot be read back in full. | [Telemetry](elements/telemetry.md) |
-| `cuttle wandb clear` | Forget it. Your Spawns go back to running with W&B disabled. | [Telemetry](elements/telemetry.md) |
-
 ## Private repositories
 
 | Command | | Explained in |

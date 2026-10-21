@@ -15,7 +15,7 @@ import { ALLOWANCE, GB, size } from "./format";
  *
  * **Its own component, rather than a third `variant` of app/Composer.** That one is the Spawn/Recipe
  * pair, which ask nearly the same questions; a Workspace asks a different set. There is no script and no
- * arguments (a visit is a shell, not a run), no W&B (nothing is submitted here), the manifest and the
+ * arguments (a visit is a shell, not a run), the manifest and the
  * outputs are both optional the way a Tide Pool's are — and there is one question neither of those has
  * at all, which is how much room to reserve.
  *

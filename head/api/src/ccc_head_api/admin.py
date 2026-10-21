@@ -143,25 +143,22 @@ def _return(node: str) -> int:
 
 
 def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
-            node: str | None, wandb_env: dict[str, str], args: list[str], outputs: list[str],
+            node: str | None, args: list[str], outputs: list[str],
             features: list[str] | None = None, tidepool: bool = False,
             manifest: str | None = None, substrate: str | None = None,
             activation: bool = False, name: str = "") -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
     Authorization is being the operator on the Head; attribution is the account named here. Goes through
-    `spawns.submit_checked`, so the Escrow, the Attribution row and the W&B environment are all produced
-    exactly as they are for a Spawn that arrived over HTTP.
-
-    `wandb_env` is the caller's project/entity hint and only that — never a key.
+    `spawns.submit_checked`, so the Escrow and the Attribution row are both produced exactly as they
+    are for a Spawn that arrived over HTTP.
 
     **No key is injected on this path at all**, and it is worth being plain about why. A Credential is
     sealed under its owner's password (credentials.py) and only a live Session carries the DEK that
     opens it. This command has a User to attribute to but no Session — it is an operator standing on
     the Head, not that User logging in — so there is nothing to decrypt with, and the Spawn runs
-    WANDB_MODE=disabled. Escrowing a copy of the key somewhere the Head could reach unattended would
-    restore it and defeat the entire scheme. Said on stderr below rather than discovered afterwards in
-    a run that logged nothing.
+    without a GitHub key. Escrowing a copy of the key somewhere the Head could reach unattended would
+    restore it and defeat the entire scheme.
 
     `tidepool` lets an Admin pin a Tide Pool the same way they pin any other Spawn — orthogonal to
     node-pinning (the common path is unpinned, over `/submit`).
@@ -179,7 +176,7 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
             return 1
     try:
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
-                                       wandb_env, Path(tar), minutes, vram, outputs, node,
+                                       Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
                                        substrate=substrate, activation=activation, name=name,
                                        dek=None)
@@ -190,14 +187,6 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     note = spawns.environment_note(job_id)
     if note:
         print(note, file=sys.stderr)
-    # Only when there is actually something to lose. The masked status needs no DEK — that is exactly
-    # what `hint` being plaintext is for — so this can tell "you had a key and it wasn't used" apart
-    # from "you never had one", and stay quiet in the second case.
-    with db.connect() as conn:
-        if db.credential_status(conn, user["id"], "wandb")["set"]:
-            print(f"note: {username} has a W&B key stored, but a Spawn pinned from the Head has no "
-                  f"session to unlock it — this one runs with W&B disabled. Submit through "
-                  f"`cuttle run` or the Dashboard to log metrics.", file=sys.stderr)
     print(job_id)
     return 0
 
@@ -272,10 +261,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--substrate", help="optional: file naming the system packages to install into "
                                        "this Spawn's Pod, one per line, relative to the project "
                                        "root.")
-    # The client's project/entity hint, as the JSON dict submit_checked takes — not two --project/
-    # --entity flags, so the CLI and the HTTP route hand over the *same* value and there is one place
-    # that decides what a W&B run is called (cuttle.settings.wandb_env).
-    s.add_argument("--wandb-env", default="{}", help="JSON WANDB_PROJECT/WANDB_ENTITY hint.")
     s.add_argument("args", nargs="*", help="extra arguments for the script.")
 
     args = p.parse_args(argv)
@@ -299,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         return _return(args.node)
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
-                       args.node, json.loads(args.wandb_env), args.args, args.outputs, args.features,
+                       args.node, args.args, args.outputs, args.features,
                        tidepool=args.tidepool, manifest=args.manifest, substrate=args.substrate,
                        activation=args.activation, name=args.name)
     if args.cmd == "feature-activation":

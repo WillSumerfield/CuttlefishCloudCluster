@@ -167,14 +167,14 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
 
     def test_no_script_no_outputs_does_not_raise(self, tmp_path):
         job_id = head_spawns.submit(
-            user_id=1, script=None, gpu=1, args=[], wandb_env={},
+            user_id=1, script=None, gpu=1, args=[],
             tar_path=self._tar_empty(tmp_path), minutes=30, constraint="vram24", outputs=[],
             tidepool=True)
         assert job_id >= 5000
 
     def test_a_tidepools_row_is_written(self, tmp_path):
         job_id = head_spawns.submit(
-            user_id=1, script=None, gpu=1, args=[], wandb_env={},
+            user_id=1, script=None, gpu=1, args=[],
             tar_path=self._tar_empty(tmp_path), minutes=30, constraint="vram24", outputs=[],
             tidepool=True)
         with db.connect() as conn:
@@ -184,7 +184,7 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
 
     def test_the_rendered_script_carries_the_sshd_payload(self, tmp_path):
         job_id = head_spawns.submit(
-            user_id=1, script=None, gpu=1, args=[], wandb_env={},
+            user_id=1, script=None, gpu=1, args=[],
             tar_path=self._tar_empty(tmp_path), minutes=30, constraint="vram24", outputs=[],
             tidepool=True)
         with db.connect() as conn:
@@ -283,27 +283,6 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         assert '$py train.py' in body
         assert 'py=""' in body
 
-    def test_the_shell_is_given_the_submitters_wandb_key(self, tmp_path):
-        """sshd builds a FRESH environment per session and does not pass its own down — confirmed by
-        experiment. So `$wenv` reaching the Pod through apptainer's --env is NOT enough here, the way
-        it is for a Script Spawn that runs `$py` directly: sshd stands in between and drops it.
-
-        Without this, `wandb.init()` at a Tide Pool shell ran unauthenticated, and "a Spawn logs to
-        its submitter's own account" (CONTEXT.md) was untrue of the one Spawn a User sits inside."""
-        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
-        boot = body[body.index("tp_boot.sh"):]
-        assert "WANDB_API_KEY" in boot
-        # Written into the login shell's own profile, not merely handed to the Pod.
-        assert "/etc/profile.d/ccc-tidepool.sh" in boot[boot.index("WANDB_API_KEY"):]
-
-    def test_the_key_is_not_left_world_readable_in_the_pod(self, tmp_path):
-        """It is a User's API key on disk. No new exposure — it is already in PID 1's environment in
-        this same Pod and the overlay dies with the session — but not a thing to leave lying around."""
-        body = head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
-        assert "chmod 600 /etc/profile.d/ccc-tidepool.sh" in body
-
     def test_the_shell_writes_temp_files_to_disk_not_to_the_64mb_ram_tmp(self, tmp_path):
         """`--contain` gives the Pod a /tmp carved from apptainer's session directory — a RAM tmpfs
         capped at 64MB by `sessiondir max size`, and shared with the --writable-tmpfs overlay. A Tide
@@ -332,7 +311,7 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
     def test_missing_outputs_still_required_without_tidepool(self, tmp_path):
         with pytest.raises(ValueError, match="output"):
             head_spawns.submit(
-                user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+                user_id=1, script="train.py", gpu=1, args=[],
                 tar_path=self._tar_empty(tmp_path), minutes=30, constraint="vram24", outputs=[],
                 tidepool=False)
 
@@ -867,17 +846,17 @@ class TestTheShellTheUserGets:
                                    tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x",
                                    workspace=Path("/ws/1/proj") if workspace else None)
 
-    def test_the_profile_is_bridged_into_zsh_or_the_wandb_key_is_silently_lost(self):
+    def test_the_profile_is_bridged_into_zsh_or_it_is_silently_lost(self):
         """The single line without which this whole change is a regression, and a silent one.
 
-        Everything a Tide Pool's shell needs past sshd — the submitter's W&B credentials, CCC_KEPT, the
+        Everything a Tide Pool's shell needs past sshd — the Feature runtime, CCC_KEPT, the
         Environment's PATH, the `cd` into the project — is written to /etc/profile.d/ccc-tidepool.sh,
         because sshd builds a fresh environment per session and drops apptainer's --env. **zsh does not
         read /etc/profile.d.** Debian's /etc/zsh/zprofile sources /etc/profile; Ubuntu's ships as
         comments only, and BASE_IMAGE_DOCKER is Ubuntu.
 
-        So without the bridge the session opens, the prompt renders perfectly, and `wandb.init()` runs
-        unauthenticated — which is exactly the bug already found and fixed once on the bash path.
+        So without the bridge the session opens, the prompt renders perfectly, and none of it is set —
+        which is exactly the bug already found and fixed once on the bash path.
         """
         assert "source /etc/profile" in templates.render_base_def()
         assert "/etc/zsh/zprofile" in templates.render_base_def()

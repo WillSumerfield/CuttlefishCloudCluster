@@ -5,7 +5,6 @@
 
 Monitoring & alerting.
 
-- **W&B injection** — `cuttle` injecting `WANDB_*` into the Pod for per-Spawn logging.
 - **Rogue-actor detection** — a check flagging compute happening outside Slurm (util above a threshold
   while nothing is scheduled). It watches the Head's own co-located Arm, and no donor's machine.
 - **Head-box monitor** (`ccc-monitor`) — a systemd-timer script on the Head checking disk space,

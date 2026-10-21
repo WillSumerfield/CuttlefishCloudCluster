@@ -84,7 +84,7 @@ def test_the_payload_gets_the_features_binds_and_env():
 
 def _env_line(script: str) -> str:
     """The payload's own `--env` line — not one of the comments above it that mention the flag."""
-    return next(ln for ln in script.splitlines() if ln.strip().startswith('--env "$wenv'))
+    return next(ln for ln in script.splitlines() if ln.strip().startswith('--env "LC_ALL='))
 
 
 def _pool(**kw):
@@ -93,11 +93,11 @@ def _pool(**kw):
 
 def test_a_tide_pool_shell_gets_the_features_environment_past_sshd():
     """sshd builds a FRESH environment for every session and does not pass its own down, so everything
-    apptainer hands the Pod through `--env` reaches the boot script and stops there. W&B was the half of
-    that found first; this is the other one. A **Tide Pool** or **Workspace** visit that asked for a
-    profiled Feature had its package bound, its system libraries built and its working directory
-    arranged, and then got a shell where `import vlearn` was a ModuleNotFoundError and `pip list` showed
-    nothing — the one Spawn whose entire point was the Feature."""
+    apptainer hands the Pod through `--env` reaches the boot script and stops there. A **Tide Pool** or
+    **Workspace** visit that asked for a profiled Feature had its package bound, its system libraries
+    built and its working directory arranged, and then got a shell where `import vlearn` was a
+    ModuleNotFoundError and `pip list` showed nothing — the one Spawn whose entire point was the
+    Feature."""
     pool = _pool(features=["vlearn"])
     assert "CCC_FEATURE_VARS=$featnames" in _env_line(pool)
     assert "for v in $CCC_FEATURE_VARS; do" in pool

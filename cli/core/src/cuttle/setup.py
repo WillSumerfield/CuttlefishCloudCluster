@@ -409,17 +409,12 @@ def point_at_self() -> str:
 
 
 def account_setup() -> None:
-    """The **your account** questions, and the reason every one of them is at the END of setup.
+    """The **your account** questions, and the reason they are at the END of setup.
 
-    Both need a live **Session**: a W&B default is written beside the session this box holds, and a
-    GitHub key cannot be minted at all without one, because the Head seals it under the DEK only a
-    login produces. Neither could be asked before the Head API was up and someone had logged into it.
-
-    That inverts what `settings.prompt_wandb` used to buy by running first — "up front, so the rest runs
-    unattended". Once ANY prompt is at the end, the walk-away property is gone, so both live here
-    together rather than being split across a flow nobody can walk away from anyway.
+    They need a live **Session**: a GitHub key cannot be minted at all without one, because the Head
+    seals it under the DEK only a login produces. It could not be asked before the Head API was up and
+    someone had logged into it.
     """
-    settings.prompt_wandb()
     if auth.github_minted():
         ui.say("  [muted]a GitHub key is already minted for this account[/muted]")
         return
@@ -989,7 +984,7 @@ def _head_first_login(temp_pw: str | None) -> None:
 
     `temp_pw is None` is a re-run: the Admin already exists and nothing on this box knows its password,
     so there is nothing to spend. The account questions still get asked if this box happens to hold a
-    Session already — a re-run should be able to finish setting up W&B and a key it skipped last time.
+    Session already — a re-run should be able to mint a key it skipped last time.
     """
     point_at_self()
     with ui.section("Your account", lambda: "ready"):
@@ -998,7 +993,7 @@ def _head_first_login(temp_pw: str | None) -> None:
         elif not auth.have_session():
             ui.say(f"{config.FIRST_ADMIN_USER} already exists on this Head, and this box holds no "
                    f"session for it.")
-            ui.hint("run `cuttle login` here to set your W&B defaults and mint a GitHub key")
+            ui.hint("run `cuttle login` here to mint a GitHub key")
             return
         account_setup()
 
@@ -1014,15 +1009,11 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     """`update` is the **Update** duty: lay this Head down again from what it already recorded. Every
     question below is skipped in favour of the stored answer — see `update_this_box`."""
     make_user_dirs()
-    # The W&B prompt used to be here, "up front, so the rest runs unattended". It is at the END now,
-    # with the GitHub key beside it (`account_setup`) — that one needs a live Session, which needs the
-    # Head API this function is in the middle of installing, and once one prompt has to be last there
-    # is nothing left for an earlier one to protect.
-    #
-    # Arm Features stay up front, and the reason survives: nothing about them needs a running cluster. Nothing is defined here — the catalog is
-    # config.FEATURE_NAMES, built in — so the Head answers exactly the question a donor's box answers:
-    # which of them does THIS box have. Its co-located Arm is an Arm like any other. Asked before
-    # write_slurm_config below, which bakes this box's own Features into its NodeName line.
+    # Arm Features are asked up front: nothing about them needs a running cluster. Nothing is defined
+    # here — the catalog is config.FEATURE_NAMES, built in — so the Head answers exactly the question a
+    # donor's box answers: which of them does THIS box have. Its co-located Arm is an Arm like any
+    # other. Asked before write_slurm_config below, which bakes this box's own Features into its
+    # NodeName line.
     head_features = _head_arm_features()
     head_licence = _head_licence_home()
     if not update:
@@ -1523,8 +1514,8 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     # coordinator lives in tailscaled's root-owned state file.
     t = enroll.decode_token(token) if token else enroll.enrollment_from_state()
     node_name = t["node_name"]
-    # W&B (and now the GitHub key) are asked at the END — see `account_setup`. Both need a Session,
-    # and nothing on this box can reach the Head until the enrollment below has pointed it at one.
+    # The GitHub key is asked at the END — see `account_setup`. It needs a Session, and nothing on
+    # this box can reach the Head until the enrollment below has pointed it at one.
     preflight()
 
     with ui.step("Joining the mesh"):
@@ -1681,7 +1672,7 @@ def _arm_first_login() -> None:
     if auth.have_session():
         return account_setup()
     with ui.section("Your account", lambda: "ready"):
-        ui.say("This box can submit Spawns too — logging in here sets up W&B and your GitHub key.")
+        ui.say("This box can submit Spawns too — logging in here sets up your GitHub key.")
         if not ui.ask_confirm("Log in to the cluster on this box?", True):
             ui.hint("`cuttle login` whenever you want to submit from here")
             return

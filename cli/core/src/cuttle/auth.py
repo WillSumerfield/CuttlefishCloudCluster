@@ -214,48 +214,11 @@ def account(as_json: bool = False) -> None:
     ui.emit(payload, as_json, render)
 
 
-# --- your Credentials (on the Head) -----------------------------------------
-# The CLI-parity counterpart of the Dashboard's Account page: one secret per kind per User, held on the
-# Head under that User's password, injected into every Spawn you submit from either client.
-#
-# **Write-only.** There is no reveal and no route that would serve one — the Head cannot decrypt a
-# Credential without a live session's key, and even with one it will not hand the plaintext back. What
-# you get afterwards is the `hint` (for a W&B key, its last 4 characters), which is enough to tell the
-# key you meant from some other key and is all `--reveal` was ever really used for.
-#
-# Verbs stay per-tool (`cuttle wandb …`) even though the storage and the routes are generic: a
-# scientist reaches for the name of the thing they have a key *for*, not for the abstraction the Head
-# files it under.
-
-def wandb_set(key: str) -> None:
-    _api("POST", "/account/credentials/wandb", token=_load_token(), body={"value": key})
-    # The last 4 only, and only as confirmation you pasted what you meant to. Same masking the
-    # Dashboard shows, for the same reason: a terminal keeps scrollback.
-    ui.ok(f"W&B key stored on the Head (…{key.strip()[-4:]})")
-
-
-def wandb_show() -> None:
-    """Masked, and that is the only view there is — see the section comment."""
-    status = _api("GET", "/account/credentials/wandb", token=_load_token())
-    if not status["set"]:
-        ui.say("no W&B key stored — your Spawns run with W&B disabled")
-        ui.hint("set one with `cuttle wandb set`")
-        return
-    ui.data(f"•••••••••• {status['hint']}")
-    ui.hint("the key itself cannot be read back — replace it with `cuttle wandb set`")
-
-
-def wandb_clear() -> None:
-    _api("DELETE", "/account/credentials/wandb", token=_load_token())
-    ui.ok("W&B key cleared — your Spawns will run with W&B disabled")
-
-
 # --- your GitHub key --------------------------------------------------------
-# The second Credential kind, and the first **minted** one: the Head generates the keypair and you
-# never see the private half. So these verbs are the inverse of `wandb`'s in the one way that matters —
-# `wandb show` masks its secret, and `github show` prints its key in FULL, because what it prints is
-# the PUBLIC half and printing it is the entire point. You cannot use this key without pasting that
-# line into github.com/settings/keys.
+# A **minted** Credential: the Head generates the keypair, holds it under your password and injects it
+# into every Spawn you submit; you never see the private half. `github show` prints its key in FULL,
+# because what it prints is the PUBLIC half and printing it is the entire point. You cannot use this key
+# without pasting that line into github.com/settings/keys.
 
 GITHUB_KEYS_URL = "https://github.com/settings/ssh/new"
 
@@ -276,7 +239,7 @@ def github_mint(force: bool = False) -> dict:
     """Mint (or replace) the keypair. The Head keeps the private half sealed under your password; you
     get the public one.
 
-    Replacing is destructive in a way `wandb set` is not, so it asks first: the old public key stays
+    Replacing is destructive, so it asks first: the old public key stays
     on your GitHub account doing nothing, and every Spawn authenticates with the new one from here —
     which will fail until you have pasted it in.
     """
@@ -295,7 +258,7 @@ def github_mint(force: bool = False) -> dict:
 
 
 def github_show(to_clipboard: bool = False) -> None:
-    """The public key, in full — the deliberate inverse of `wandb show`.
+    """The public key, in full.
 
     `to_clipboard` is the flag rather than a keystroke: this command's stdout is its deliverable
     (`cuttle github show | …`), so it must not stop and wait for anyone. The keystroke belongs to the

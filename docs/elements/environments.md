@@ -41,9 +41,8 @@ and it is the price of the two things you get for it:
   [Recipe](recipes.md) keeps the declaration exactly as you froze it, so re-running one re-resolves the
   same file and nothing else.
 
-Two packages arrive that you did not ask for: **`wandb`**, because that is what makes your Spawn log
-to your own account, and **`pip`**, so `pip install` works if you open a
-[Tide Pool](tide-pool.md) over it. Declare your own version of either and yours is kept.
+One package arrives that you did not ask for: **`pip`**, so `pip install` works if you open a
+[Tide Pool](tide-pool.md) over it. Declare your own version and yours is kept.
 
 ## Typical use
 

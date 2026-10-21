@@ -161,8 +161,7 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
         tf.extractall(dest, filter="data")  # 'data' filter blocks path-traversal entries
     row = db.add_recipe(conn, user_id, name, script, meta.get("args") or [], outputs,
                         max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]), int(meta["minutes"]),
-                        bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                        meta.get("wandb_entity") or "", size, manifest, features, substrate,
+                        size, manifest, features, substrate,
                         # Absent reads as True, the same as it does at /submit — a client that predates
                         # the flag saves a Recipe that behaves as its Recipes always have.
                         bool(meta.get("git", True)))
@@ -217,9 +216,7 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
 
     row = db.update_recipe_meta(conn, user_id, name, script, meta.get("args") or [], outputs,
                                 max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]),
-                                int(meta["minutes"]),
-                                bool(meta.get("wandb", True)), meta.get("wandb_project") or "",
-                                meta.get("wandb_entity") or "", manifest, features, substrate,
+                                int(meta["minutes"]), manifest, features, substrate,
                                 bool(meta.get("git", True)))
     return to_json(row)
 
@@ -259,20 +256,10 @@ def run(conn, user_id: int, name: str, is_admin: bool, dek: bytes | None = None)
     if row is None:
         raise ValueError(f"no recipe named {name!r}")
 
-    # Head owns the key (spawns.compose_wandb_env reads it from storage); only the run's identity is the
-    # Recipe's to carry, the same two fields the composer sends for an ad-hoc Spawn. Omitted rather than
-    # sent empty for the same reason api.ts's submit() omits them — WANDB_ENTITY="" breaks wandb.init()
-    # instead of falling back to the account default.
-    wandb_env: dict[str, str] = {}
-    if row["wandb_project"]:
-        wandb_env["WANDB_PROJECT"] = row["wandb_project"]
-    if row["wandb_entity"]:
-        wandb_env["WANDB_ENTITY"] = row["wandb_entity"]
-
     return spawns.submit_checked(
-        user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]), wandb_env,
+        user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]),
         None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
-        wandb=bool(row["wandb"]), git=bool(row["git"]),
+        git=bool(row["git"]),
         features=json.loads(row["features"]), manifest=row["manifest"],
         substrate=row["substrate"] or None,
         # The Recipe's own name is the Spawn's **Name**, INHERITED rather than asked for again: it was
@@ -328,12 +315,7 @@ def to_json(row, running: bool = False) -> dict:
         "frozen_at": int(frozen.timestamp() * 1000),
         "updating": False,
         "running": running,
-        # Sent back, not just stored: the update form prefills from this, so re-saving never silently
-        # resets W&B config to defaults (CONTEXT.md — a Recipe holds it).
-        "wandb": bool(row["wandb"]),
-        "wandb_project": row["wandb_project"],
-        "wandb_entity": row["wandb_entity"],
-        # Same reason as `wandb` above: the edit form prefills from this, so a Recipe saved with the
+        # Sent back, not just stored: the edit form prefills from this, so a Recipe saved with the
         # GitHub key declined does not silently re-arm it on the next save.
         "git": bool(row["git"]),
         # Frozen structurally only — see `save`'s note on why neither is checked against the fleet here.

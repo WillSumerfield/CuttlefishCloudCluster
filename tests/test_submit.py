@@ -364,7 +364,7 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
         monkeypatch.setattr(head_spawns.siphons, "bind",
                             lambda *a, **kw: (_ for _ in ()).throw(OSError("disk gone")))
         with pytest.raises(OSError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=self._tar(tmp_path), minutes=60, constraint="",
                                outputs=["out"], manifest="requirements.txt")
         assert rig == [9001], "the job sbatch already started must not be left running"
@@ -377,12 +377,12 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
         monkeypatch.setattr(head_spawns.slurm, "cancel",
                             lambda jid: (_ for _ in ()).throw(RuntimeError("scancel missing")))
         with pytest.raises(OSError, match="disk gone"):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=self._tar(tmp_path), minutes=60, constraint="",
                                outputs=["out"], manifest="requirements.txt")
 
     def test_a_clean_submit_cancels_nothing(self, rig, tmp_path):
-        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                     tar_path=self._tar(tmp_path), minutes=60, constraint="",
                                     outputs=["out"], manifest="requirements.txt")
         assert job_id == 9001
@@ -441,7 +441,7 @@ class TestSbatchsRefusalReachesTheOperator:
         rig = _submit_rig(monkeypatch, tmp_path)
         self._only_sbatch_fails(monkeypatch, self._err(stderr="sbatch: error: Invalid user id 60002"))
         with pytest.raises(RuntimeError, match="Invalid user id 60002"):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=rig, minutes=60, constraint="", outputs=["out"],
                                manifest="requirements.txt")
 
@@ -454,7 +454,7 @@ class TestSbatchsRefusalReachesTheOperator:
         monkeypatch.setattr(head_spawns.siphons, "discard", lambda tok: discarded.append(tok))
         self._only_sbatch_fails(monkeypatch, self._err(stderr="nope"))
         with pytest.raises(RuntimeError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=rig, minutes=60, constraint="", outputs=["out"],
                                manifest="requirements.txt")
         assert len(discarded) == 1
@@ -465,7 +465,7 @@ class TestSbatchsRefusalReachesTheOperator:
         rig = _submit_rig(monkeypatch, tmp_path)
         self._only_sbatch_fails(monkeypatch, OSError("disk gone"))
         with pytest.raises(OSError, match="disk gone"):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=rig, minutes=60, constraint="", outputs=["out"],
                                manifest="requirements.txt")
 
@@ -554,12 +554,12 @@ class TestSubmitFromAnAlreadyStagedDirectory:
 
     def test_exactly_one_of_tar_path_source_dir_is_required(self, rig):
         with pytest.raises(AssertionError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                tar_path=None, minutes=60, constraint="", outputs=["out"])
 
     def test_copies_rather_than_moves_the_source(self, rig):
         src = self._source(rig)
-        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                     tar_path=None, minutes=60, constraint="", outputs=["out"],
                                     manifest="requirements.txt", source_dir=src)
         assert job_id == 9001
@@ -567,7 +567,7 @@ class TestSubmitFromAnAlreadyStagedDirectory:
 
     def test_the_staged_copy_is_a_different_directory(self, rig):
         src = self._source(rig)
-        head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+        head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                            tar_path=None, minutes=60, constraint="", outputs=["out"], source_dir=src,
                            manifest="requirements.txt")
         staged = list((rig / "projects").iterdir())
@@ -578,14 +578,14 @@ class TestSubmitFromAnAlreadyStagedDirectory:
     def test_a_missing_script_is_refused_before_anything_is_staged(self, rig):
         src = self._source(rig)
         with pytest.raises(ValueError, match="was not found"):
-            head_spawns.submit(user_id=1, script="nope.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="nope.py", gpu=1, args=[],
                                tar_path=None, minutes=60, constraint="", outputs=["out"],
                                manifest="requirements.txt", source_dir=src)
         assert not (rig / "projects").exists()
 
     def test_the_resulting_spawn_carries_the_recipe_name(self, rig):
         src = self._source(rig)
-        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[], wandb_env={},
+        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
                                     tar_path=None, minutes=60, constraint="", outputs=["out"],
                                     source_dir=src, recipe_name="resnet",
                                     manifest="requirements.txt")
@@ -670,7 +670,7 @@ class TestPodContainment:
         script = self.render() if what == "script" else self.tidepool()
         payload = script[script.index("apptainer exec"):]
         # --contain: no $HOME, no host /tmp, no cwd auto-bind. --pid: its own procfs, which is the one
-        # flag that closes /proc/<pid>/root and another Spawn's /proc/<pid>/environ (their WANDB key).
+        # flag that closes /proc/<pid>/root and another Spawn's /proc/<pid>/environ.
         assert "--contain" in payload
         assert "--pid" in payload
 
@@ -744,7 +744,7 @@ class TestPodContainment:
             assert payload.index("$migenv") < payload.index("$featenv")
 
     def test_the_pod_keeps_the_host_network(self):
-        """--net is deliberately NOT here: the payload needs W&B egress, and the Tide Pool's sshd has to
+        """--net is deliberately NOT here: the payload needs internet egress, and the Tide Pool's sshd has to
         be reachable at its port on the Arm's own address for the Head-side relay to reach it."""
         for script in (self.render(), self.tidepool()):
             assert "--net" not in script[script.index("apptainer exec"):]
@@ -794,7 +794,7 @@ class TestSpawnsRunAsTheirSubmitter:
                 tf.addfile(info, io.BytesIO(b""))
         tar = tmp_path / "up.tar.gz"
         tar.write_bytes(buf.getvalue())
-        return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[], wandb_env={},
+        return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[],
                                   tar_path=tar, minutes=60, constraint="vram24", outputs=["out"],
                                   manifest="requirements.txt")
 
@@ -1154,7 +1154,7 @@ class TestFeatureRequirement:
     def _capture_constraint(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(head_spawns, "submit",
-                            lambda *a, **kw: captured.setdefault("constraint", a[7]) or 4242)
+                            lambda *a, **kw: captured.setdefault("constraint", a[6]) or 4242)
         return captured
 
     def test_absent_features_change_nothing(self, monkeypatch):
@@ -1352,7 +1352,7 @@ class TestSubmitValidatesOutputsAndScript:
         kw.setdefault("outputs", ["out"])
         kw.setdefault("manifest", "requirements.txt")
         kw.setdefault("tar_path", self._tar(tmp_path, "train.py", "requirements.txt"))
-        return head_spawns.submit(user_id=1, gpu=1, args=[], wandb_env={}, minutes=60,
+        return head_spawns.submit(user_id=1, gpu=1, args=[], minutes=60,
                                   constraint="", **kw)
 
     def test_empty_outputs_is_refused(self, monkeypatch, tmp_path):
@@ -1431,7 +1431,7 @@ class TestSubmitValidatesOutputsAndScript:
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
         monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
         with pytest.raises(ValueError):
-            head_spawns.submit(user_id=1, script="missing.py", gpu=1, args=[], wandb_env={},
+            head_spawns.submit(user_id=1, script="missing.py", gpu=1, args=[],
                               tar_path=self._tar(tmp_path, "other.py"), minutes=60, constraint="",
                               outputs=["out"])
         projects = tmp_path / "projects"
@@ -1440,10 +1440,9 @@ class TestSubmitValidatesOutputsAndScript:
 
 class TestOutputsPlumbThroughToTheRenderedScript:
     """End-to-end: what `cuttle run --output` declares is what actually reaches the script sbatch is
-    handed — not just what a mocked `submit` was called with. Same rig as
-    TestItReachesSbatch.sbatch_env in test_wandb_key.py, but capturing the script BODY instead of the
-    env. The body arrives on sbatch's STDIN now — there is no temp file to read off disk any more,
-    because a 0600 file owned by the Mantle is not readable by the **Guise** sbatch runs as."""
+    handed — not just what a mocked `submit` was called with, capturing the script BODY. The body
+    arrives on sbatch's STDIN now — there is no temp file to read off disk any more, because a 0600 file
+    owned by the Mantle is not readable by the **Guise** sbatch runs as."""
 
     @pytest.fixture
     def rendered(self, monkeypatch, tmp_path):
@@ -1489,7 +1488,7 @@ class TestOutputsPlumbThroughToTheRenderedScript:
         tar_path = tmp_path / "upload.tar.gz"
         tar_path.write_bytes(buf.getvalue())
 
-        head_spawns.submit_checked(1, False, "train.py", 1, [], {}, tar_path, 60, 24,
+        head_spawns.submit_checked(1, False, "train.py", 1, [], tar_path, 60, 24,
                                    ["checkpoints", "logs"], manifest="requirements.txt",
                                    name="a spawn")
 

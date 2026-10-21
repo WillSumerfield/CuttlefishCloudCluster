@@ -1,6 +1,5 @@
 """`cuttle` CLI entrypoint."""
 
-import sys
 from pathlib import Path
 
 import typer
@@ -42,9 +41,6 @@ app.add_typer(karma_app, name="karma")
 backup_app = typer.Typer(no_args_is_help=True,
                          help="Backup/restore head.db + arms.json + Headscale's db (run on the Head).")
 app.add_typer(backup_app, name="backup")
-wandb_app = typer.Typer(no_args_is_help=True,
-                        help="Your W&B key, held on the Head and injected into every Spawn.")
-app.add_typer(wandb_app, name="wandb")
 github_app = typer.Typer(no_args_is_help=True,
                          help="Your GitHub SSH key: mint, show, verify, clear.")
 app.add_typer(github_app, name="github")
@@ -540,48 +536,6 @@ def karma_ledger(
     karma_mod.ledger(days=days, as_json=as_json)
 
 
-@wandb_app.command("set")
-def wandb_set(
-    key: str = typer.Argument(None, help="Your W&B API key (prompted for if omitted)."),
-    from_stdin: bool = typer.Option(False, "--stdin", help="Read the key from stdin instead of argv."),
-):
-    """Store your W&B API key on the Head. It is injected into every Spawn you submit, from the CLI
-    or the Dashboard.
-
-    Held under YOUR PASSWORD (see `cuttle passwd`): the Head cannot read it without a live session of
-    yours, no other User can read it, no Admin can, and it never touches this box's disk. You cannot
-    read it back either — afterwards `cuttle wandb show` gives you its last 4 characters and nothing
-    more. An Admin password reset destroys it, and you re-paste.
-
-    `--stdin` is the path for scripts: `cuttle wandb set --stdin < key.txt` keeps the key out of argv,
-    where `ps` and your shell history would both see it.
-    """
-    if from_stdin:
-        key = sys.stdin.read().strip()
-        if not key:
-            raise ui.abort("nothing on stdin")
-    # Visible, not a password prompt: a pasted key has to be verifiable by eye — and now this is the
-    # only moment it is ever visible.
-    key = ui.need(key, "the key", lambda: ui.ask_text("Paste your W&B API key"))
-    auth_mod.wandb_set(key)
-
-
-@wandb_app.command("show")
-def wandb_show():
-    """Show whether a W&B key is stored for you, as its last 4 characters.
-
-    There is no `--reveal`. The Head will not serve the plaintext back — a stored key is write-only,
-    which is what lets it be kept under your password rather than under something the Head can reach
-    on its own."""
-    auth_mod.wandb_show()
-
-
-@wandb_app.command("clear")
-def wandb_clear():
-    """Forget your stored W&B key. Your Spawns go back to running with W&B disabled."""
-    auth_mod.wandb_clear()
-
-
 @github_app.command("mint")
 def github_mint(
     force: bool = typer.Option(False, "--force", "-f", help="Replace an existing key without asking."),
@@ -590,11 +544,11 @@ def github_mint(
 ):
     """Mint a GitHub SSH key for yourself and print its public half.
 
-    **The Head generates it; you never see the private half.** That is the difference between this and
-    `cuttle wandb set` — there is nothing to paste in, and nothing that could leak from this terminal.
-    The private half is sealed under YOUR PASSWORD (see `cuttle passwd`) and injected into every Spawn
-    you submit, from either client, as a live ssh-agent inside the Pod: `git clone`, `pip install
-    git+ssh://` and uv git dependencies all reach your private repos with no key on any disk.
+    **The Head generates it; you never see the private half.** There is nothing to paste in, and nothing
+    that could leak from this terminal. The private half is sealed under YOUR PASSWORD (see `cuttle
+    passwd`) and injected into every Spawn you submit, from either client, as a live ssh-agent inside
+    the Pod: `git clone`, `pip install git+ssh://` and uv git dependencies all reach your private repos
+    with no key on any disk.
 
     You have one job: paste the printed public key into github.com/settings/keys. Until you do, the
     key opens nothing — which is what `--wait` is for, so you find out here rather than inside a Spawn.
@@ -614,9 +568,9 @@ def github_show(
 ):
     """Print your GitHub public key, in full.
 
-    In full, unlike `cuttle wandb show` — this is the half that is meant to be copied, and copying it
-    into github.com/settings/keys is the only way the key becomes useful. The private half cannot be
-    read back by anyone, including you."""
+    In full — this is the half that is meant to be copied, and copying it into
+    github.com/settings/keys is the only way the key becomes useful. The private half cannot be read
+    back by anyone, including you."""
     auth_mod.github_show(to_clipboard=to_clipboard)
 
 
@@ -739,8 +693,6 @@ def recipe_save(
         None, "--substrate", help="Optional. File naming the system packages this Recipe's work "
                                   "needs, frozen with the code — one per line, `#` comments, "
                                   "`apt.txt` by convention."),
-    project: str = typer.Option(None, "--project", help="W&B project, frozen with the code."),
-    entity: str = typer.Option(None, "--entity", help="W&B entity/slug, frozen with the code."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
     directory: Path = typer.Option(
@@ -781,7 +733,7 @@ def recipe_save(
                 else:
                     ui.warn("at least one output folder is required")
     recipes_mod.save(name, script, minutes=time, vram=vram, gpu=gpu, args=ctx.args, outputs=output,
-                     manifest=manifest, substrate=substrate or "", project=project, entity=entity,
+                     manifest=manifest, substrate=substrate or "",
                      no_gitignore=no_gitignore, yes=yes, root=spawns_mod.project_root(directory))
 
 
@@ -802,8 +754,6 @@ def recipe_update(
     substrate: str = typer.Option(
         None, "--substrate", help="Change the system-package file (default: keep). Pass an empty "
                                   "string to drop it."),
-    project: str = typer.Option(None, "--project", help="Change the W&B project (default: keep)."),
-    entity: str = typer.Option(None, "--entity", help="Change the W&B entity (default: keep)."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
     directory: Path = typer.Option(
@@ -822,7 +772,7 @@ def recipe_update(
     name = ui.need(name, "the recipe's name", lambda: ui.ask_text("Which recipe to update?"))
     recipes_mod.update(name, script=script, minutes=time, vram=vram, gpu=gpu,
                        args=ctx.args or None, outputs=list(output) if output else None,
-                       manifest=manifest, substrate=substrate, project=project, entity=entity,
+                       manifest=manifest, substrate=substrate,
                        no_gitignore=no_gitignore, yes=yes,
                        root=spawns_mod.project_root(directory))
 
@@ -1134,9 +1084,6 @@ def run(
                              "as \"sweep3\". A Recipe run or a Workspace visit needs none; it takes "
                              "the name you already gave that Recipe or Workspace."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
-    project: str = typer.Option(None, "--project", help="W&B project for this Spawn (default: config)."),
-    entity: str = typer.Option(
-        None, "--entity", help="W&B entity/slug for this Spawn (default: config, then account default)."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
     directory: Path = typer.Option(
@@ -1275,8 +1222,6 @@ def run(
         manifest = spawns_mod.need_manifest(manifest)
         if wizard:
             gpu = ui.ask_int("How many GPUs? (all on one machine)", default=str(gpu))
-            project = project or (ui.ask_text("W&B project? (blank = config default)") or None)
-            entity = entity or (ui.ask_text("W&B entity? (blank = config default)") or None)
             no_gitignore = not ui.ask_confirm("Honor .gitignore when uploading?", True)
             follow = follow or ui.ask_confirm("Stream output until it ends?", False)
             # Collected here, like every other wizard field — but never pre-filled, and the hard gate
@@ -1328,7 +1273,7 @@ def run(
                           root=root)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
-    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args, project=project, entity=entity,
+    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
                       features=feature, manifest=manifest, substrate=substrate,
                       download=not no_download, dest=dest, root=root, name=name, git=not no_git)

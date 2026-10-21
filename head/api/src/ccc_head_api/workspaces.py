@@ -282,7 +282,7 @@ def visit(conn, user_id: int, name: str, is_admin: bool, overrides: dict | None 
     over = overrides or {}
     try:
         job_id = spawns.submit_checked(
-            user_id, is_admin, None, max(1, int(over.get("gpus") or row["gpus"])), [], {},
+            user_id, is_admin, None, max(1, int(over.get("gpus") or row["gpus"])), [],
             None, int(over.get("minutes") or row["minutes"]),
             int(over.get("vram_mb") or row["vram_mb"]) // 1024,
             list(over.get("outputs") or json.loads(row["outputs"])),

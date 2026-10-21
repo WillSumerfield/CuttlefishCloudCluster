@@ -11,7 +11,7 @@ Monorepo, split by **deployment context**. Each top-level dir is one bounded con
 | [`head/`](head/) | Control plane: Headscale coordinator, `slurmctld`, enroll API + web dashboard, stage-in/out, auth + Karma (SQLite `head.db`). |
 | [`arm/`](arm/) | Compute node: Linux-layer bring-up, `slurmd`, Apptainer, staging. |
 | [`karma/`](karma/) | Karma economy: wallets, pricing (the Tide), congestion, override. Ships inside `head/api` — see `karma/setup/README.md`. |
-| [`telemetry/`](telemetry/) | W&B injection, Head-box rogue-actor detection + email alerting. |
+| [`telemetry/`](telemetry/) | Head-box rogue-actor detection + email alerting. |
 | [`gateway/`](gateway/) | Network fabric (WireGuard mesh) + built-in Head auth (sign-on). Lives in `cli/core` + `head/api` — see `gateway/setup/README.md`. |
 | [`shared/`](shared/) | The CLI↔Head contract as a concept (no dedicated package yet — see `shared/CONTEXT.md`). |
 | [`docs/`](docs/README.md) | User-facing documentation. |

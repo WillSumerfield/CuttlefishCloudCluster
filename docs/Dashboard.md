@@ -52,7 +52,7 @@ files): Settings → Privacy and security → Manage certificates → Authoritie
 | **Recipes** | Your saved projects. |
 | **Karma** | Everyone's standing, and your own ledger. |
 | **Tide** | How badly each Arm has been wanted, hour by hour. |
-| **Account** | Your password, your [W&B key](elements/telemetry.md) and [GitHub key](elements/github-keys.md), where you stand. |
+| **Account** | Your password, your [GitHub key](elements/github-keys.md), where you stand. |
 | **Users** | Admin only. |
 
 Click a Spawn anywhere to open its detail page: state, logs, cost, outputs.
@@ -69,11 +69,10 @@ You then fill in the same three required things the CLI requires — the script,
 the VRAM — plus your output folders. There is a [Tide Pool](elements/tide-pool.md) mode which hides
 the project and upload story entirely and asks only for the resource needs.
 
-Two switches sit beside the resource fields, both on by default and both per-Spawn: whether this run
-logs to [W&B](elements/telemetry.md), and whether it carries your
-[GitHub key](elements/github-keys.md). Each appears only once you have the key it turns off; until
-then the composer links you to the Account page instead. A [Recipe](elements/recipes.md) freezes both
-answers along with everything else.
+A switch sits beside the resource fields, on by default and per-Spawn: whether this run carries your
+[GitHub key](elements/github-keys.md). It appears only once you have the key it turns off; until then
+the composer links you to the Account page instead. A [Recipe](elements/recipes.md) freezes the answer
+along with everything else.
 
 **GPUs** is a dropdown rather than a number, because only some counts are real: it lists what the
 fleet can actually place, and greys out the rest. Memory is the *total* across the cards you pick, so

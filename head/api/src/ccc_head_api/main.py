@@ -665,7 +665,7 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
 
 # --- your account: Credentials (authed) -------------------------------------
 # The Head holds each User's third-party secrets — a W&B key, a GitHub SSH key — and injects them
-# into every Spawn they submit, from either client (see spawns.compose_wandb_env). They
+# into every Spawn they submit, from either client (see spawns.git_key_for). They
 # live here rather than in the CLI's config file because the **Dashboard** is the primary submission
 # surface and a browser has no config file to read: every Spawn from it ran with W&B disabled until
 # these routes existed.
@@ -759,8 +759,7 @@ def credential_verify_github(user: dict = Depends(current_user)) -> dict:
 
 @api.delete("/account/credentials/{kind}", status_code=204)
 def credential_clear(kind: str, user: dict = Depends(current_user)) -> Response:
-    """Forget it — the Head stops injecting it, and (for W&B) your Spawns go back to
-    WANDB_MODE=disabled."""
+    """Forget it — the Head stops injecting it."""
     if kind not in credentials.KINDS:
         raise HTTPException(404, f"no such credential kind {kind!r}")
     with db.connect() as conn:
@@ -847,7 +846,7 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
     authed mutation. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
-    {script, gpu, args, node, wandb_env, outputs, features}. Runs the render/sbatch/Attribution as the
+    {script, gpu, args, node, outputs, features}. Runs the render/sbatch/Attribution as the
     Mantle; returns the Spawn id.
 
     `features` is optional, and empty when absent — a Spawn that requests none is placed exactly as it
@@ -860,17 +859,9 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     named an output for would produce results with nowhere retrievable to land. See
     `spawns.output_plan` for what is and is not a legal path.
 
-    `wandb_env` no longer carries a key — it never could from the browser, which is why the Dashboard
-    logged no metrics at all. The caller's W&B *project/entity* are honoured and everything else in it
-    is discarded; the key is the Head's, per User (see spawns.compose_wandb_env,
-    /account/credentials).
-    Whether to log at all is the separate `wandb` flag, defaulting to true when absent — it rides
-    beside `wandb_env` rather than inside it so a client can still say "not this one" without being
-    handed back the WANDB_MODE the Head just took off it.
-
-    `git` is the same flag for the submitter's **GitHub key**, and defaults to true for the same
-    reason: absent means "the behaviour you had", and a client that never heard of it keeps it. There
-    is no `git_env` beside it — a GitHub key has no client-owned half the way a W&B run has a project.
+    `git` is the per-Spawn off-switch for the submitter's **GitHub key** (see spawns.git_key_for,
+    /account/credentials), defaulting to true when absent: a client that never heard of it keeps the
+    behaviour it had.
 
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
     with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
@@ -941,8 +932,7 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         # `script` that isn't actually in the uploaded tar.
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
-            meta.get("wandb_env", {}), tar_path, minutes, vram_gb, outputs,
-            wandb=bool(meta.get("wandb", True)), git=bool(meta.get("git", True)),
+            tar_path, minutes, vram_gb, outputs, git=bool(meta.get("git", True)),
             features=meta.get("features") or [],
             tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
             name=meta.get("name") or "", dek=user["dek"])

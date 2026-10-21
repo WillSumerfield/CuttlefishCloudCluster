@@ -10,10 +10,9 @@ wrapped twice — under the User's password, and under each live session's raw t
 head.db yields nothing**. The tests below are mostly about the consequences of that: what survives a
 password change, what an Admin reset destroys, and what a Spawn with no Session behind it gets.
 
-*At submit* — the Head COMPOSES the Spawn's W&B environment rather than forwarding the client's. That
-is the precedence rule, and the thing most likely to regress: a client-sent WANDB_API_KEY is
-discarded. It now needs the submitting session's DEK to reach the key at all, and the un-forgeability
-falls out of that: a caller holding the wrong DEK gets `disabled`, not somebody else's key.
+*At submit* — the Head reads the GitHub key itself rather than taking anything from the client. It
+needs the submitting session's DEK to reach the key at all, and the un-forgeability falls out of that: a
+caller holding the wrong DEK gets no key, not somebody else's.
 
 *Write-only* — no route, command, or component returns the plaintext, ever. Several tests here exist
 only to keep that true, because a "just for checking what you pasted" reveal is exactly the sort of
@@ -22,25 +21,22 @@ thing that gets added back.
 
 import base64
 import contextlib
-import io
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
-import tarfile
 import types
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from ccc_head_api import credentials, db, slurm
+from ccc_head_api import credentials, db
 from ccc_head_api import github as head_github
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
 from cuttle import auth, config, system, ui
-from cuttle import settings as cli_settings
 from cuttle import setup as cli_setup
 
 PW = "correct horse 7"
@@ -268,88 +264,6 @@ class TestTheLifecycle:
             assert db.get_user(conn, "alice")["dek_wrapped_pw"] is None
 
 
-class TestComposition:
-    """Who decides what, at submit. The Head owns the key and the mode; the client owns which W&B run
-    its Spawn is (project/entity) and nothing else."""
-
-    def test_no_stored_key_disables_wandb(self, head_db, dek):
-        """Explicitly disabled, not merely absent: an empty env leaves WANDB_MODE unset, which makes
-        wandb.init() fail inside the Pod rather than skip."""
-        assert head_spawns.compose_wandb_env(1, {}, dek=dek) == {"WANDB_MODE": "disabled"}
-
-    def test_a_stored_key_is_injected_online(self, head_db, dek):
-        _store("wandb_deadbeef", dek)
-        env = head_spawns.compose_wandb_env(1, {}, dek=dek)
-        assert env["WANDB_API_KEY"] == "wandb_deadbeef"
-        assert env["WANDB_MODE"] == "online"
-
-    def test_no_dek_means_no_key(self, head_db, dek):
-        """A submission with no Session behind it (`cuttle run --node`). Not an error, and not a
-        fallback that reaches the key some other way — that fallback is exactly what the change
-        removes."""
-        _store("wandb_deadbeef", dek)
-        assert head_spawns.compose_wandb_env(1, {}, dek=None) == {"WANDB_MODE": "disabled"}
-
-    def test_the_wrong_dek_means_no_key(self, head_db, dek):
-        """Un-forgeability by construction: the composer does its own decrypt, so a caller who passed
-        someone else's DEK gets `disabled` rather than a key it should not have."""
-        _store("wandb_deadbeef", dek)
-        assert head_spawns.compose_wandb_env(1, {}, dek=credentials.new_dek()) \
-            == {"WANDB_MODE": "disabled"}
-
-    def test_the_clients_project_and_entity_survive(self, head_db, dek):
-        _store("wandb_deadbeef", dek)
-        env = head_spawns.compose_wandb_env(1, {"WANDB_PROJECT": "vision", "WANDB_ENTITY": "lab"},
-                                            dek=dek)
-        assert env["WANDB_PROJECT"] == "vision"
-        assert env["WANDB_ENTITY"] == "lab"
-
-    def test_the_project_defaults_to_ccc(self, head_db, dek):
-        _store("wandb_deadbeef", dek)
-        assert head_spawns.compose_wandb_env(1, {}, dek=dek)["WANDB_PROJECT"] == "ccc"
-
-    def test_an_absent_entity_stays_absent(self, head_db, dek):
-        """An EMPTY WANDB_ENTITY breaks wandb.init instead of falling back to the account default."""
-        _store("wandb_deadbeef", dek)
-        assert "WANDB_ENTITY" not in head_spawns.compose_wandb_env(1, {}, dek=dek)
-        assert "WANDB_ENTITY" not in head_spawns.compose_wandb_env(1, {"WANDB_ENTITY": ""}, dek=dek)
-
-    def test_a_client_sent_key_is_discarded(self, head_db, dek):
-        """The precedence rule. Honouring this would let a submitter log their Spawn into whatever
-        account they named, the moment any client sends a key."""
-        _store("mine_aaaa", dek)
-        env = head_spawns.compose_wandb_env(1, {"WANDB_API_KEY": "theirs", "WANDB_MODE": "online"},
-                                            dek=dek)
-        assert env["WANDB_API_KEY"] == "mine_aaaa"
-
-    def test_off_disables_wandb_even_with_a_key_stored(self, head_db, dek):
-        """The per-Spawn off-switch. A stored key otherwise logs EVERY Spawn a User submits, so "not
-        this one" has to be sayable — and it is said as intent (a boolean), never as a WANDB_MODE."""
-        _store("wandb_deadbeef", dek)
-        env = head_spawns.compose_wandb_env(1, {}, False, dek)
-        assert env == {"WANDB_MODE": "disabled"}
-        assert "WANDB_API_KEY" not in env  # no reason to hand a Pod a secret it was told not to use
-
-    def test_absent_means_on(self, head_db, dek):
-        """Backward compatibility, and the reason the flag defaults true: every client that predates it
-        sends nothing, and must keep getting the Spawn it always got."""
-        _store("wandb_deadbeef", dek)
-        assert head_spawns.compose_wandb_env(1, {}, dek=dek) \
-            == head_spawns.compose_wandb_env(1, {}, True, dek)
-
-    def test_off_ignores_a_project_and_entity_sent_alongside(self, head_db, dek):
-        """A composer that hides its project/entity fields may still have them filled in from before the
-        switch was flipped. Sending them has to be harmless, not half-on."""
-        _store("wandb_deadbeef", dek)
-        env = head_spawns.compose_wandb_env(1, {"WANDB_PROJECT": "vision", "WANDB_ENTITY": "lab"},
-                                            False, dek)
-        assert env == {"WANDB_MODE": "disabled"}
-
-    def test_a_client_cannot_enable_wandb_without_a_stored_key(self, head_db, dek):
-        """The mirror image: no key stored means disabled, whatever the client claimed."""
-        env = head_spawns.compose_wandb_env(1, {"WANDB_API_KEY": "theirs", "WANDB_MODE": "online"},
-                                            dek=dek)
-        assert env == {"WANDB_MODE": "disabled"}
 
 
 class TestRoutes:
@@ -445,189 +359,10 @@ class TestTheLoginRoute:
                         headers={"Authorization": f"Bearer {later}"}).json()["hint"] == "beef"
 
 
-class TestTheCliCommands:
-    """`cuttle wandb set|show|clear` — the CLI-parity counterpart of the Dashboard's Account page,
-    driven end to end through real commands against a real Head (see tests/conftest.py). The verbs
-    stay per-tool even though the storage underneath is generic: a scientist reaches for the name of
-    the thing they have a key *for*."""
-
-    def test_set_show_clear(self, signed_in):
-        assert signed_in("wandb", "set", "wandb_deadbeef").exit_code == 0
-        masked = signed_in("wandb", "show")
-        assert "beef" in masked.output
-        assert "wandb_deadbeef" not in masked.output   # masked means masked
-        assert signed_in("wandb", "clear").exit_code == 0
-        assert "no W&B key stored" in signed_in("wandb", "show").output
-
-    def test_there_is_no_reveal_flag(self, signed_in):
-        signed_in("wandb", "set", "wandb_deadbeef")
-        result = signed_in("wandb", "show", "--reveal")
-        assert result.exit_code != 0
-        assert "wandb_deadbeef" not in result.output
-
-    def test_stdin_keeps_the_key_out_of_argv(self, signed_in):
-        """The scripted path. A positional is redacted from the CLI's own run log, but `ps` and shell
-        history see it regardless — this is the spelling that avoids all three."""
-        assert signed_in("wandb", "set", "--stdin", input="wandb_deadbeef\n").exit_code == 0
-        assert "beef" in signed_in("wandb", "show").output
-
-    def test_show_with_nothing_stored_says_so(self, signed_in):
-        assert "no W&B key stored" in signed_in("wandb", "show").output
-
-    def test_a_cli_spawn_carries_the_stored_key(self, signed_in, fake_slurm, project, monkeypatch):
-        """The seam, and now the longest thread in the change: the key is opened with the DEK carried
-        by the session this very command is authenticated with, from `current_user` all the way down
-        into the composer."""
-        signed_in("wandb", "set", "wandb_deadbeef")
-        seen: dict[str, str] = {}
-        real = head_spawns.submit
-
-        def spy(user_id, script, gpu, args, wandb_env, *a, **kw):
-            seen.update(wandb_env)
-            return real(user_id, script, gpu, args, wandb_env, *a, **kw)
-
-        monkeypatch.setattr(head_spawns, "submit", spy)
-        r = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                      "--output", "out", "--manifest", "requirements.txt", "--project", "vision")
-        assert r.exit_code == 0, r.output
-        assert seen["WANDB_API_KEY"] == "wandb_deadbeef"
-        assert seen["WANDB_MODE"] == "online"
-        assert seen["WANDB_PROJECT"] == "vision"
 
 
-class TestThePinnedPath:
-    """`cuttle run --node` composes identically to a Spawn that arrived over HTTP — **except for the
-    key**, which it cannot reach.
-
-    It doesn't travel over HTTP at all: pinning is Head-local, reaching `submit_checked` through
-    `ccc_head_api.admin`. That means it has a User to attribute to but no Session, and therefore no
-    DEK. Its Spawns run with W&B disabled, and the command says so on stderr rather than letting it be
-    discovered afterwards in a run that logged nothing. Restoring the key here would mean escrowing a
-    copy somewhere the Head could reach unattended, which is the whole thing this change removes.
-    """
-
-    @pytest.fixture
-    def tar(self, tmp_path):
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            info = tarfile.TarInfo("train.py")
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
-        path = tmp_path / "pinned.tar.gz"
-        path.write_bytes(buf.getvalue())
-        return path
-
-    @pytest.fixture
-    def hint(self, monkeypatch):
-        """The wandb_env and dek the admin tool hands `submit_checked`. Stubbed at that call rather
-        than at sbatch: everything past it is the shared path the tests above already cover, and what
-        is under test here is what survives the argv at all."""
-        captured: dict = {}
-
-        def spy(user_id, is_admin, script, gpu, args, wandb_env, *a, **kw):
-            captured.update(wandb_env)
-            captured["__dek"] = kw.get("dek", "absent")
-            return 4242
-
-        monkeypatch.setattr(head_spawns, "submit_checked", spy)
-        return captured
-
-    def test_project_and_entity_reach_the_head(self, head_db, dek, tar, hint, capsys):
-        from ccc_head_api import admin
-
-        rc = admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py",
-                         "--tar", str(tar), "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                         "--wandb-env", '{"WANDB_PROJECT": "X", "WANDB_ENTITY": "Y"}'])
-        assert rc == 0, capsys.readouterr().err
-        assert hint["WANDB_PROJECT"] == "X"
-        assert hint["WANDB_ENTITY"] == "Y"
-
-    def test_it_passes_no_dek_so_the_key_is_unreachable(self, head_db, dek, tar, hint):
-        from ccc_head_api import admin
-
-        _store("wandb_deadbeef", dek)
-        admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py",
-                    "--tar", str(tar), "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                    "--wandb-env", "{}"])
-        assert hint["__dek"] is None
-        assert head_spawns.compose_wandb_env(1, hint, dek=hint["__dek"]) == {"WANDB_MODE": "disabled"}
-
-    def test_it_says_so_when_there_was_a_key_to_lose(self, head_db, dek, tar, hint, capsys):
-        from ccc_head_api import admin
-
-        _store("wandb_deadbeef", dek)
-        admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py",
-                    "--tar", str(tar), "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                    "--wandb-env", "{}"])
-        err = capsys.readouterr().err
-        assert "W&B disabled" in err
-        assert "wandb_deadbeef" not in err
-
-    def test_it_stays_quiet_when_there_was_not(self, head_db, dek, tar, hint, capsys):
-        """The masked status needs no DEK, which is exactly what lets this tell "you had a key and it
-        wasn't used" apart from "you never had one"."""
-        from ccc_head_api import admin
-
-        admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py",
-                    "--tar", str(tar), "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                    "--wandb-env", "{}"])
-        assert "W&B disabled" not in capsys.readouterr().err
-
-    def test_a_blank_entity_never_reaches_the_head(self, head_db, dek, tar, hint):
-        """`--entity ''` is "no entity", and an empty WANDB_ENTITY breaks wandb.init(). The CLI drops
-        it before the argv is built (settings.wandb_env), and nothing downstream reinstates it."""
-        from ccc_head_api import admin
-
-        admin.main(["submit", "--user", "alice", "--name", "a spawn", "--script", "train.py",
-                    "--tar", str(tar), "--minutes", "60", "--vram", "24", "--node", "gpu-box",
-                    "--wandb-env", '{"WANDB_PROJECT": "X"}'])
-        assert "WANDB_ENTITY" not in hint
-
-    def test_the_cli_builds_the_same_env_for_both_roads(self, ccc_home, monkeypatch):
-        """The symmetry itself, at the seam it broke: whatever `cuttle run` would POST is what a
-        pinned Spawn hands the admin tool. Still true — only the key differs between the two roads."""
-        from cuttle import settings as cli_settings
-        from cuttle import spawns as cli_spawns
-
-        argv: list[str] = []
-        monkeypatch.setattr(cli_spawns.auth, "_api", lambda *a, **kw: {"username": "alice"})
-        monkeypatch.setattr(cli_spawns.auth, "_admin_argv", lambda a, env=None: a)
-        monkeypatch.setattr(cli_spawns.mesh, "tailscale_ip", lambda: "100.99.0.1")
-        monkeypatch.setattr(cli_spawns, "run", lambda a, **kw: argv.extend(a)
-                            or types.SimpleNamespace(returncode=0, stdout="4242\n", stderr=""))
-        cli_spawns._submit_pinned(b"", "train.py", [], 60, 24, 1, "gpu-box",
-                                  cli_settings.wandb_env("X", "Y"), ["out"])
-        assert '{"WANDB_PROJECT": "X", "WANDB_ENTITY": "Y"}' in argv
-        argv.clear()
-        cli_spawns._submit_pinned(b"", "train.py", [], 60, 24, 1, "gpu-box",
-                                  cli_settings.wandb_env("X", ""), ["out"])
-        assert '{"WANDB_PROJECT": "X"}' in argv
 
 
-class TestTheSetupPrompt:
-    """`cuttle setup`'s W&B prompts write config.yaml, and an answer that is read must be an answer
-    that lands. `setdefault` evaluated the prompt and then discarded it whenever a project was already
-    configured, so the default could be typed but never changed."""
-
-    def _prompt(self, answers: list[str]) -> dict:
-        from cuttle import settings as cli_settings
-
-        ui.install_answers(ui.Answers(*answers))
-        try:
-            cli_settings.prompt_wandb()
-        finally:
-            ui.install_answers(None)
-        return cli_settings.load().get("wandb", {})
-
-    def test_a_new_project_replaces_the_configured_one(self, ccc_home):
-        self._prompt(["old-project", ""])
-        assert self._prompt(["new-project", ""])["project"] == "new-project"
-
-    def test_a_blank_entity_clears_a_configured_one(self, ccc_home):
-        """Blank means "the account's own default" — so it must be able to UNSET one, not only fail to
-        set one. An empty stored entity is not an option: WANDB_ENTITY="" breaks wandb.init()."""
-        assert self._prompt(["ccc", "lab"])["entity"] == "lab"
-        assert "entity" not in self._prompt(["ccc", ""])
 
 
 class TestSchemaMigration:
@@ -679,80 +414,6 @@ class TestSchemaMigration:
         assert _stored(dek) == "wandb_deadbeef"
 
 
-class TestItReachesSbatch:
-    """The composed env has to arrive in the environment sbatch is launched with — that is how it
-    reaches the wrapper's `wenv` line and, from there, the Pod. Everything above is theory until this
-    holds."""
-
-    @pytest.fixture
-    def sbatch_env(self, head_db, monkeypatch, tmp_path):
-        """Submit for real (render, unpack, Attribution row, Escrow) against a captured `sbatch`.
-        Returns a dict that fills with the environment the submit handed it."""
-        state = tmp_path / "head-state"
-        for name in ("projects", "spawns", "scratch"):
-            (state / name).mkdir(parents=True)
-        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
-        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
-        monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        monkeypatch.setattr(slurm, "arms", lambda: [{"name": "gpu-box"}])
-        monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: "vram24")
-        monkeypatch.setattr(slurm, "queue", lambda: [])
-        # The submit inherits os.environ, so a developer with W&B configured in their own shell would
-        # otherwise see their key leak into the assertions below.
-        for var in ("WANDB_API_KEY", "WANDB_MODE", "WANDB_PROJECT", "WANDB_ENTITY"):
-            monkeypatch.delenv(var, raising=False)
-        seen: dict[str, str] = {}
-
-        def fake_run(argv, **kw):
-            # `setfacl` (the project lend) comes through here too and carries no env — only the
-            # submission's is what this fixture is about.
-            if "sbatch" in argv:
-                seen.update(kw["env"])
-            return types.SimpleNamespace(stdout="4242\n", stderr="", returncode=0)
-
-        monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
-        return seen
-
-    def _submit(self, tmp_path, client_env, wandb=True, dek=None):
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for name in ("train.py", "requirements.txt"):
-                info = tarfile.TarInfo(name)
-                info.size = 0
-                tf.addfile(info, io.BytesIO(b""))
-        tar_path = tmp_path / "upload.tar.gz"
-        tar_path.write_bytes(buf.getvalue())
-        head_spawns.submit_checked(1, False, "train.py", 1, [], client_env, tar_path, 60, 24, ["out"],
-                                   wandb=wandb, manifest="requirements.txt", name="a spawn", dek=dek)
-
-    def test_the_stored_key_reaches_sbatch(self, sbatch_env, tmp_path, dek):
-        _store("wandb_deadbeef", dek)
-        self._submit(tmp_path, {"WANDB_PROJECT": "vision"}, dek=dek)
-        assert sbatch_env["WANDB_API_KEY"] == "wandb_deadbeef"
-        assert sbatch_env["WANDB_MODE"] == "online"
-        assert sbatch_env["WANDB_PROJECT"] == "vision"
-
-    def test_without_a_key_sbatch_sees_wandb_disabled(self, sbatch_env, tmp_path, dek):
-        self._submit(tmp_path, {}, dek=dek)
-        assert sbatch_env["WANDB_MODE"] == "disabled"
-        assert "WANDB_API_KEY" not in sbatch_env
-
-    def test_without_a_dek_sbatch_sees_wandb_disabled(self, sbatch_env, tmp_path, dek):
-        """The pinned path, all the way to sbatch: a stored key that nothing in this submission can
-        open leaves the Pod with an explicit disabled, not a half-configured W&B."""
-        _store("wandb_deadbeef", dek)
-        self._submit(tmp_path, {"WANDB_PROJECT": "vision"}, dek=None)
-        assert sbatch_env["WANDB_MODE"] == "disabled"
-        assert "WANDB_API_KEY" not in sbatch_env
-
-    def test_a_spawn_submitted_with_wandb_off_carries_no_key(self, sbatch_env, tmp_path, dek):
-        """The off-switch through the whole submit, not just the composer: submit_checked is where the
-        env is composed, so the pinned road gets this for free."""
-        _store("wandb_deadbeef", dek)
-        self._submit(tmp_path, {"WANDB_PROJECT": "vision"}, wandb=False, dek=dek)
-        assert sbatch_env["WANDB_MODE"] == "disabled"
-        assert "WANDB_API_KEY" not in sbatch_env
 
 
 class TestMinting:
@@ -879,11 +540,9 @@ def _store_github(dek, user_id: int = 1) -> str:
 
 
 class TestTheGitHubKeyReachesThePod:
-    """The GitHub key takes a different road into the Pod than the W&B key beside it, and the whole
-    point of these is that the road stays different.
+    """The GitHub key's road into the Pod, and the whole point of these is that it stays this one.
 
-    W&B goes through sbatch's environment, which cost a permanent widening of the sudoers `env_keep`.
-    This one is rendered into the job script's body like the Siphon secret, arrives on the payload's
+    It is rendered into the job script's body like the Siphon secret, arrives on the payload's
     **stdin**, and is loaded into an ssh-agent that dies with the job. So: never in sbatch's
     environment, never in the apptainer `--env` list, never in a file inside the Pod.
     """
@@ -1304,10 +963,8 @@ class TestCopyingTheKeyOut:
 
 
 class TestTheAccountQuestionsAtTheEndOfSetup:
-    """Phase C: W&B defaults and the GitHub key, asked LAST because both need a live Session — a key
-    cannot be minted at all before one exists, since the Head seals it under the DEK only a login
-    produces. That is what moved `prompt_wandb` down off the top of `setup`, where it had been sitting
-    to keep the rest unattended: once one prompt has to be last, there is nothing left to protect."""
+    """Phase C: the GitHub key, asked LAST because it needs a live Session — a key cannot be minted at
+    all before one exists, since the Head seals it under the DEK only a login produces."""
 
     @pytest.fixture
     def offline(self, monkeypatch):
@@ -1323,12 +980,12 @@ class TestTheAccountQuestionsAtTheEndOfSetup:
             ui.install_answers(None)
 
     def test_it_mints_when_accepted(self, signed_in, offline, capsys):
-        self._answer("vision", "lab", "y")
+        self._answer("y")
         assert auth.github_minted() is True
         assert "WillSumerfield" in " ".join(capsys.readouterr())
 
     def test_declining_mints_nothing_and_says_how_to_later(self, signed_in, capsys):
-        self._answer("vision", "lab", "n")
+        self._answer("n")
         assert auth.github_minted() is False
         assert "cuttle github mint" in " ".join(capsys.readouterr())
 
@@ -1337,14 +994,8 @@ class TestTheAccountQuestionsAtTheEndOfSetup:
         into replacing it — the old public half stops authenticating the moment a new one is minted."""
         before = signed_in("github", "mint", "--no-wait").output
         key = [ln for ln in before.splitlines() if ln.startswith("ssh-ed25519 ")][0]
-        self._answer("vision", "lab")     # no third answer: nothing should ask for one
+        self._answer()     # no answer: nothing should ask for one
         assert key in signed_in("github", "show").output
-
-    def test_the_wandb_defaults_are_still_asked(self, signed_in):
-        """Moved, not dropped. The project/entity are per-run defaults for THIS box, and setup is
-        still the moment to set them."""
-        self._answer("vision", "lab", "n")
-        assert cli_settings.load()["wandb"] == {"project": "vision", "entity": "lab"}
 
 
 class TestShowCanCopyToo:

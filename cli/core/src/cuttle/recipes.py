@@ -16,7 +16,7 @@ User already holds, and a client that guessed would refuse saves the Head would 
 
 from pathlib import Path
 
-from . import api, auth, settings, spawns, ui
+from . import api, auth, spawns, ui
 
 
 def _client():
@@ -46,16 +46,12 @@ def _pack(root: Path, no_gitignore: bool) -> tuple[bytes, int, int]:
 
 
 def _meta(name: str, script: str, args: list[str], minutes: int, vram: int, gpu: int,
-          outputs: list[str], project: str | None, entity: str | None, manifest: str,
-          substrate: str = "") -> dict:
+          outputs: list[str], manifest: str, substrate: str = "") -> dict:
     # vram_mb, not the `vram` (GB) a Spawn sends: a Recipe stores the declared need rather than handing
     # it straight to Slurm, and the Head's Recipe schema keeps it in MB.
-    wandb_env = settings.wandb_env(project, entity)
     return {"name": name, "script": script, "args": args, "outputs": outputs, "gpus": gpu,
             "vram_mb": vram * 1024, "minutes": minutes, "manifest": manifest,
             "substrate": substrate,
-            "wandb": True, "wandb_project": wandb_env.get("WANDB_PROJECT", ""),
-            "wandb_entity": wandb_env.get("WANDB_ENTITY", ""),
             # The **GitHub key** rides along, as it does for every Spawn. There is no `--no-git` on a
             # Recipe yet — the Dashboard is where one is declined — but `update` below carries a
             # declined one through rather than letting this default undo it.
@@ -86,7 +82,6 @@ def _validate(root: Path, script: str, outputs: list[str], manifest: str,
 
 def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[str],
          outputs: list[str], manifest: str, substrate: str = "",
-         project: str | None = None, entity: str | None = None,
          no_gitignore: bool = False, yes: bool = False, root: Path | None = None) -> None:
     """Freeze a project dir into a new Recipe."""
     root = root or Path.cwd()
@@ -114,8 +109,7 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
         if not ui.ask_confirm("Save?", True):
             raise ui.abort("not saved")
     saved = _upload("/recipes", tar_bytes,
-                    _meta(name, script, args, minutes, vram, gpu, outputs, project, entity, manifest,
-                          substrate),
+                    _meta(name, script, args, minutes, vram, gpu, outputs, manifest, substrate),
                     f"save recipe {name!r}")
     ui.ok(f"saved recipe {saved['name']} ({_human(saved['size_bytes'])})")
     ui.data(saved["name"])
@@ -124,7 +118,6 @@ def save(name: str, script: str, minutes: int, vram: int, gpu: int, args: list[s
 def update(name: str, script: str | None = None, minutes: int | None = None, vram: int | None = None,
            gpu: int | None = None, args: list[str] | None = None, outputs: list[str] | None = None,
            manifest: str | None = None, substrate: str | None = None,
-           project: str | None = None, entity: str | None = None,
            no_gitignore: bool = False, yes: bool = False, root: Path | None = None) -> None:
     """Re-capture a project dir into an existing Recipe.
 
@@ -147,16 +140,10 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
                  vram if vram is not None else current["vram_mb"] // 1024,
                  gpu if gpu is not None else current["gpus"],
                  list(outputs) if outputs else current["outputs"],
-                 project, entity, manifest, substrate)
-    if not project and not entity:
-        # Keep what the Recipe already froze rather than the local config's answer: an update is about
-        # the code, and silently re-pointing someone's runs at a different W&B project is not.
-        meta.update(wandb=current["wandb"], wandb_project=current["wandb_project"],
-                    wandb_entity=current["wandb_entity"])
-    # Unconditionally, unlike the W&B block above: nothing on this command line can express a GitHub-key
-    # choice, so `_meta`'s default "yes" is not an answer this User gave — it is the absence of one. Left
-    # alone it would re-arm the key on a Recipe that was saved with it declined, which is the same silent
-    # re-pointing that block exists to prevent.
+                 manifest, substrate)
+    # Nothing on this command line can express a GitHub-key choice, so `_meta`'s default "yes" is not
+    # an answer this User gave — it is the absence of one. Left alone it would re-arm the key on a
+    # Recipe that was saved with it declined.
     meta["git"] = current["git"]
     if not yes:
         ui.kv([
