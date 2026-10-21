@@ -357,7 +357,7 @@ def sweep_orphans(conn) -> int:
     Exactly `recipes.sweep_orphans`, for the same reason: the rows CASCADE with the User and nothing in
     SQLite can reach the files, and a Workspace has no TTL that would eventually collect them.
     """
-    live = db.recipe_owner_ids(conn)
+    live = db.live_user_ids(conn)
     swept = 0
     try:
         entries = sorted(_root().iterdir())

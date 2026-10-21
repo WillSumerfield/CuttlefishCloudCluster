@@ -93,33 +93,16 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 
 ## Job/experiment concepts
 
-- **Recipe** — a **User**'s saved, re-runnable snapshot of a piece of work: the project code itself,
-  plus how to run it (entry point, arguments, declared needs). Private to
-  its owner. Because it holds the code, a Recipe can be re-run from any machine with nothing to hand —
-  and it is **frozen**: it keeps running what it captured until its owner deliberately updates it. The
-  freeze is a promise the *cluster* keeps, not one it keeps against the owner — updating a Recipe simply
-  replaces it, releasing what it held before taking the new code, so an update abandoned half-way leaves
-  its owner with neither version.
-  Saving one is its own act, and runs nothing: a User uploads code to a Recipe and gets no **Spawn** for
-  it. So a Recipe is *captured*, never recovered — never reconstructed from a Spawn that has already run,
-  because the Head holds an ad-hoc **Spawn**'s uploaded project only while that Spawn is starting
-  (**Allowance**), and by the time there is a result to admire the code behind it is already gone.
-  A Recipe captures the **Environment**'s *declaration* — which file, which **Substrate**, and which
-  **Arm Feature**s —
-  alongside the code, so re-running one is said once rather than at every run. It does not hold a built
-  Environment: that is made by whichever **Arm** runs the Spawn (**Environment**), so a Recipe freezes
-  what was declared and not a tree resolved from it.
-- **Spawn** — a single traceable execution of a piece of work on the cluster. It may come from a
-  **Recipe** (re-running the snapshot) or be submitted ad-hoc (a project uploaded there and then); a
-  Recipe is a convenience, not a prerequisite. A Spawn runs **once**: if the machine it was placed on
+- **Spawn** — a single traceable execution of a piece of work on the cluster, submitted with a project
+  uploaded there and then. A Spawn runs **once**: if the machine it was placed on
   fails, or its **Arm** is retracted underneath it, the Spawn fails with it rather than quietly starting
   over somewhere else. So "this Spawn" always names one attempt, never a series of them — what it was
   billed for and what it produced both refer to the same single run.
 - **Name** — what a **Spawn** is called wherever a person meets it: the queue, the archive, an alert.
   A human's words, always, and never CCC's — a Spawn that names nothing is refused before it exists,
   on exactly the terms its **Environment** declaration is, because a cluster that invents names fills
-  its own history with rows nobody can tell apart. A **Recipe** and a **Workspace** already carry a name
-  their owner chose, and work started from one inherits it; so what must be named at submit is precisely
+  its own history with rows nobody can tell apart. A **Workspace** already carries a name its owner
+  chose, and a visit to one inherits it; so what must be named at submit is precisely
   the work that arrives with no name of its own — an ad-hoc Spawn, and a **Tide Pool** opened bare.
   A Name is a *label*, never an identifier: nothing is looked up by it, two Spawns may share one, and
   what tells them apart is the id they already have. Distinct from the entry script, which says what
@@ -142,9 +125,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   never a way to keep what it held.
 - **Workspace** — a **User**'s durable interactive place on the cluster: a working directory that
   outlives the session that made it, so opening one resumes where the last visit left off instead of
-  starting bare. Private to its owner. It is the **Recipe**'s opposite in the one respect that matters —
-  a Recipe is *frozen* and re-runs what it captured; a Workspace is *mutable* and is simply whatever its
-  last session left behind. Seeded once from the machine that created it and never uploaded to again:
+  starting bare. Private to its owner. It is *mutable*: simply whatever its last session left behind. Seeded once from the machine that created it and never uploaded to again:
   after that, only a session inside it can change what it holds. It keeps a *declaration* alongside the
   tree (what a visit needs — VRAM, **Feature**s, duration, which dependency file), which its owner may
   change without touching the tree, and which any single visit may depart from without changing.
@@ -200,8 +181,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   before it exists. The requirement is on the *naming*, not on the contents: a file that declares
   nothing is still a complete declaration, and a User whose work needs no package answers by naming
   an empty one rather than by declining. CCC never guesses which file describes the work, because a
-  dependency file in a repo is not always the one that does; a **Recipe** captures the name along with
-  the code, so it is said once rather than at every run. A **Tide Pool** is the one exception, and may decline: it is a
+  dependency file in a repo is not always the one that does. A **Tide Pool** is the one exception, and may decline: it is a
   shell rather than a run, and one opened with no project has no file in it to name.
   The **Head** decides what a declaration *means* — which file, which shape, which commands — and the
   **Arm** the Spawn is placed on builds it, at job start, out of its own bandwidth. A built Environment
@@ -209,7 +189,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   built in a **Pod**, as that User's **Guise** — a declaration is code, and CCC runs no User's code as
   the **Mantle** on any machine.
   An Environment is kept by nobody: it dies with the Spawn that built it and the next run builds it
-  again, so it is never something a User owns or spends **Allowance** on — a **Recipe** included. What
+  again, so it is never something a User owns or spends **Allowance** on. What
   each Arm keeps instead is the *downloads*, cached node-locally, which is what makes rebuilding every
   time affordable.
   Everything decidable without building is still refused at submit, before the Spawn exists: no
@@ -228,8 +208,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Laid down BEFORE the Environment is built, so a package that must compile against a system library
   finds it — which is the whole reason it is declared rather than merely installed once the Spawn is
   already running. A Spawn may still install more for itself afterwards; only what it *declared* is
-  reproduced, and a **Recipe** freezes the declaration with the code like every other. Nothing about
-  either survives the **Pod**.
+  reproduced. Nothing about either survives the **Pod**.
   A name nothing can install is a failed Spawn on the same terms a failed **build** is, since no
   archive can be consulted at submit — but a file that is not there, or one holding something that is
   not a package name, is refused at submit like every other declaration that can be judged without
@@ -265,14 +244,12 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
   held thing has its own, independent of the others: filling one never costs a User any of another. An
   Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
-  and a full Allowance never affects who wins **Contention**. Which is why the two kinds behave
-  differently at the ceiling: a **Recipe** is something a User deliberately saves, so saving past the
-  wall simply fails and they delete one; an output arrives on its own from work already done, so it is
-  always accepted and the oldest are dropped to fit. A **Recovery Window** copy takes the output's rule,
+  and a full Allowance never affects who wins **Contention**. An output arrives on its own from work
+  already done, so it is always accepted and the oldest are dropped to fit. A **Recovery Window** copy takes the output's rule,
   and is the one Allowance its holder is never shown — a ceiling a User is told about is a ceiling they
   would plan around, which that window must never be — so it is named only once it has already taken
-  something. A **Workspace** takes the Recipe's rule — nothing
-  a User deliberately keeps is ever destroyed to make room — but it is the one told *during* the live
+  something. A **Workspace** is the opposite — nothing a User deliberately keeps is ever destroyed to
+  make room, so creating one past the ceiling simply fails — but it is the one told *during* the live
   session that filled it, while its owner is still there to make room. It is also the only Allowance its
   holder **divides up themselves**: each Workspace reserves a **Storage** out of it at creation, so what
   a session runs out of is that one Workspace's Storage and never a pool shared with the rest.

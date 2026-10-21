@@ -2,22 +2,17 @@
 
 ## What it is
 
-Five different things of yours can be sitting on the Head, and they behave differently. This page is
+Four different things of yours can be sitting on the Head, and they behave differently. This page is
 the whole of it:
 
 | Thing | Kept for | Ceiling |
 |---|---|---|
 | An uploaded project | Until the Spawn stages it in | 4 GB per upload |
 | A Spawn's declared results | 7 days from when it ended | 32 GB, all yours together |
-| A [Recipe](recipes.md) | Forever, until you delete it | 32 GB, all yours together |
 | A [Workspace](workspaces.md) | Forever, until you delete it | 32 GB, **divided into a Storage each** |
 | The Recovery Window copy | A day from when the Spawn ended | 16 GB per Spawn |
 
 Each ceiling is its own. Filling one never costs you any of another.
-
-A Recipe holds the code you uploaded and the declaration that goes with it — nothing else. Its
-[Environment](environments.md) is built fresh on whichever machine runs it and belongs to no
-allowance. `cuttle recipe list` shows what each one weighs.
 
 The Workspace allowance is the one you divide up yourself — see [Storage](#workspace-storage) below.
 
@@ -41,12 +36,6 @@ cuttle outputs 412
 cuttle recover 412
 ```
 
-**See what your Recipes are costing you:**
-
-```sh
-cuttle recipe list
-```
-
 ## Commands
 
 | | |
@@ -60,10 +49,6 @@ cuttle recipe list
 
 The working directory you upload with `cuttle run` is kept only while the Spawn is *starting*. It is
 deleted the moment it stages in, it belongs to no allowance, and it cannot be retrieved.
-
-This is why a [Recipe](recipes.md) is *captured* and never *recovered*: by the time there is a result
-worth admiring, the code behind it is already gone. If you want to keep the code, save a Recipe on
-purpose.
 
 ### Results come to you, then expire there
 
@@ -81,9 +66,9 @@ to store the output would be pointless cruelty. If it does not fit, your *other,
 evicted to make room — oldest first, silently. Even a single result larger than the whole 32 GB still
 lands.
 
-**A Recipe save is refused.** Saving past the wall fails and you delete one and try again. The
-difference is that a Recipe is something you deliberately chose to keep, whereas an output arrives on
-its own from work already done. Creating a Workspace is refused for the same reason.
+**Creating a Workspace past the allowance is refused.** You delete one and try again. The difference
+is that a Workspace is something you deliberately chose to keep, whereas an output arrives on its own
+from work already done.
 
 Your 32 GB is yours. Filling it cannot evict anybody else's results.
 
@@ -101,7 +86,7 @@ Reserved, not used — an empty 16 GB Workspace costs you the whole 16 GB. That 
 what a session runs out of is that one Workspace's Storage, and never a pool it shares with everything
 else you keep.
 
-Creating one past the allowance is refused, like a Recipe save. Filling one is not: nothing is
+Creating one past the allowance is refused. Filling one is not: nothing is
 evicted, the Workspace simply stops being saved and says so inside the session. You can resize at any
 time, and never below what the tree already holds.
 

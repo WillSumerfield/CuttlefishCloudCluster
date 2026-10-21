@@ -1,6 +1,6 @@
 # Identical to ../uv-project, but with a uv.lock beside it. Detection prefers the lock, so this is
 # the case where what the Spawn gets is decided by bytes in the repo rather than by a resolve at
-# build time — the only manifest that makes a Recipe's "frozen" promise true of its Environment too.
+# build time.
 [project]
 name = "ccc-env-uv-lock"
 version = "0"

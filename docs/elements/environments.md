@@ -37,9 +37,7 @@ and it is the price of the two things you get for it:
   `requires-python = "==3.11.14"` gets exactly that, fetched for you — not the nearest thing the
   cluster happened to ship.
 - **It is genuinely frozen.** Nothing in your Environment can change because the cluster's image
-  changed underneath it — there is nothing in that image to change: it carries no Python at all. A
-  [Recipe](recipes.md) keeps the declaration exactly as you froze it, so re-running one re-resolves the
-  same file and nothing else.
+  changed underneath it — there is nothing in that image to change: it carries no Python at all.
 
 One package arrives that you did not ask for: **`pip`**, so `pip install` works if you open a
 [Tide Pool](tide-pool.md) over it. Declare your own version and yours is kept.
@@ -116,8 +114,7 @@ Public git dependencies are fine. For a private one, clone it in your script ins
 
 Your Environment dies with the Spawn that built it; the next run builds it again. You do not own one,
 hold one, or spend any allowance on one. Only the *declaration* persists, and only because it is part
-of your code — including in a [Recipe](recipes.md), which freezes what you declared rather than a tree
-built from it.
+of your code.
 
 ### A package an Arm Feature supplies is replaced before the build
 

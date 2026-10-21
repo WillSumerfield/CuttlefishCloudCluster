@@ -37,7 +37,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import (db, karma, projects, recipes, recovery, retention, siphons, slurm, spawns, tidepool,
+from . import (db, karma, projects, recovery, retention, siphons, slurm, spawns, tidepool,
                workspaces)
 
 log = logging.getLogger("ccc.karma")
@@ -232,11 +232,8 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # so `_record_endings` above already established the outputs landed.
         retention.register_new(conn, now)
         retention.reap_expired(conn, now)
-        # Recipes have no TTL and are never evicted — only collecting left is after a deleted account:
-        # the rows CASCADE, but nothing in SQLite can reach the files they name.
-        recipes.sweep_orphans(conn)
-        # Workspaces are the same on both counts, plus one a Recipe does not have: a Workspace may hold
-        # only ONE visit at a time, and the ways a visit ends without the Head seeing it (a crashed Arm,
+        # Workspaces have no TTL and are never evicted — the rows CASCADE with a deleted account, but
+        # nothing in SQLite can reach the files they name. And a Workspace may hold only ONE visit at a time, and the ways a visit ends without the Head seeing it (a crashed Arm,
         # a killed job, a restart mid-session) are exactly the ones that would otherwise strand its
         # claim. Reconciled from the same live-id set `reap_dead` uses, for the same reason.
         workspaces.reconcile(conn, ids)

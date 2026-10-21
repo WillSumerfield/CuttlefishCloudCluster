@@ -97,7 +97,7 @@ class ApiError(Exception):
 
         **501 is the exception among the 5xx.** "Not Implemented" is never a crash — it is a route the
         Head deliberately serves to say a feature is not wired up yet, and its `detail` names which one
-        and what to do meanwhile (`POST /recipes/{name}/run`). Framing that as "try again in a moment"
+        and what to do meanwhile. Framing that as "try again in a moment"
         would be actively wrong: trying again never helps."""
         if self.status == 501:
             return self.detail

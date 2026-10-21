@@ -112,18 +112,3 @@ a Workspace's working directory is not destroyed. It is the thing that was alrea
 
 No TTL, no eviction. A Workspace only goes away when you delete it, which is why the CLI makes you
 type its name back rather than answering y/N. It is refused outright while a visit is live.
-
-## Workspace or Recipe?
-
-They are siblings, and the split is frozen versus mutable:
-
-| | [Recipe](recipes.md) | Workspace |
-|---|---|---|
-| What it holds | A snapshot, frozen | A working directory, live |
-| How you use it | `recipe run` — batch, unattended | `workspace open` — a shell, interactive |
-| Changing it | Re-freeze from your local folder | Work inside it; it saves itself |
-| Runs | Any number at once | One visit at a time |
-| Allowance | 32 GB, one pool | 32 GB, divided into a Storage each |
-
-Reach for a Recipe when the work is settled and you want to run it again from anywhere with nothing
-to hand. Reach for a Workspace when the work is not settled yet.

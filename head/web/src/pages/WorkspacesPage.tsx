@@ -5,7 +5,7 @@ import {
   createWorkspace, deleteWorkspace, getArms, getWorkspaces, openWorkspace, updateWorkspace,
   Unauthorized, errMessage, type Arm, type Workspace,
 } from "../api";
-import { ComposerSlot } from "../recipes/ComposerSlot";
+import { ComposerSlot } from "../workspaces/ComposerSlot";
 import { Storage } from "../workspaces/Storage";
 import { WorkspaceCard } from "../workspaces/WorkspaceCard";
 import { NewWorkspaceTile } from "../workspaces/NewWorkspaceTile";

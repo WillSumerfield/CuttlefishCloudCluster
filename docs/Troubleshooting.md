@@ -47,11 +47,6 @@ Seven days from when the Spawn ended, or your 32 GB filled up and older outputs 
 room. Nothing on the Head is an archive — the automatic download is what makes that safe. See
 [Storage](elements/storage.md).
 
-### `cuttle recipe run` returns 501
-
-Not wired up yet. Submit the project directly with `cuttle run`. Saving, listing, updating and
-deleting all work.
-
 ### My Spawn died at exactly `--time`
 
 That is what `--time` is. It is a kill, not a warning. Over-estimating costs you only queue position

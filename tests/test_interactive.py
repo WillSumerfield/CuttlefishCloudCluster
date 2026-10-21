@@ -196,8 +196,7 @@ class TestTheMenuIsDerived:
         check renders arm/user/karma as leaves and silently loses all their subcommands."""
         root = self._root()
         assert [n for n, c in root.commands.items() if menu._is_group(c)] == \
-            ["arm", "user", "karma", "backup", "munge", "feature", "recipe",
-             "workspace"]
+            ["arm", "user", "karma", "backup", "munge", "feature", "workspace"]
 
     def test_hiding_is_menu_only(self, monkeypatch):
         """The command must stay reachable when typed. A detection bug that removed it outright is
@@ -380,8 +379,8 @@ class TestTheMenuIsGroupedNotFlat:
         root = typer.main.get_command(main.app)
         return menu._entries(root, menu.MenuState(**state), "", root)
 
-    def test_the_head_sees_nine_rows_not_twenty_five(self):
-        assert len(self._top(**self.HEAD)) == 9
+    def test_the_head_sees_eight_rows_not_twenty_five(self):
+        assert len(self._top(**self.HEAD)) == 8
 
     def test_a_folder_is_never_part_of_a_command_line(self):
         """The whole risk of a synthetic level: a path that reads fine in the menu and is not a
@@ -471,7 +470,7 @@ class TestNavigatingAFolderStillProducesACommandLine:
 class TestTheMenuReadsAsOneList:
     """Two rules, so twenty-five rows are one list rather than twenty-five decisions: a folder or a
     group is a noun phrase, a leaf is an imperative, and inside a real group the child drops the
-    group's noun (the box is already titled `cuttle recipe`)."""
+    group's noun (the box is already titled `cuttle workspace`)."""
 
     HEAD = dict(logged_in=True, provisioned=True, pointed=True, on_head=True)
 
@@ -481,7 +480,7 @@ class TestTheMenuReadsAsOneList:
         assert [l for l in labels if l.endswith("?")] == []
 
     def test_no_child_repeats_its_own_groups_noun(self):
-        """"Delete a recipe" inside a box titled `cuttle recipe` says it twice."""
+        """"Delete a workspace" inside a box titled `cuttle workspace` says it twice."""
         st = menu.MenuState(**self.HEAD)
         root = typer.main.get_command(main.app)
         for name, cmd in root.commands.items():
@@ -494,12 +493,12 @@ class TestTheMenuReadsAsOneList:
                     f"{path!r} labelled {label!r} repeats its group's noun"
 
     def test_the_possessive_is_kept_only_where_ownership_is_the_filter(self):
-        """`queue` and `history` are everyone's, like the Dashboard's landing table; recipes and
+        """`queue` and `history` are everyone's, like the Dashboard's landing table;
         workspaces are private to their owner. "My Spawns" would have promised a filter there is no
         code for."""
         labels = dict(_labels(menu.MenuState(**self.HEAD)))
         assert labels[f"{menu.FOLDER}spawns"] == "Spawns"
-        assert labels["recipe"].startswith("My") and labels["workspace"].startswith("My")
+        assert labels["workspace"].startswith("My")
 
     def test_a_group_that_also_runs_is_named_twice(self):
         """`cuttle karma` is both a subject you open and an action. One label for both put "Karma"

@@ -234,17 +234,6 @@ class TestProjectDir:
         assert result.exit_code != 0
         assert "not a directory" in result.output
 
-    def test_a_recipe_freezes_dir_rather_than_the_cwd(self, signed_in, fake_slurm, project,
-                                                      tmp_path, monkeypatch):
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
-        result = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                           "--output", "out", "--manifest", "requirements.txt",
-                           "--dir", str(project), "--yes")
-        assert result.exit_code == 0, result.output
-        assert "saved recipe nightly" in result.output
-
 
 class TestWorkspaces:
     """`cuttle workspace` end to end — the durable form of a Tide Pool.
@@ -608,7 +597,7 @@ class TestHistory:
     def test_the_archive_is_titled_by_the_name_not_the_script(self, signed_in, monkeypatch):
         """The SPAWN column carries the **Name** a person gave it, matching `queue`'s — so one Spawn
         reads identically on the live board and in the archive. It used to show the entry script, which
-        made every run of one Recipe read `train.py` and a Workspace visit read nothing at all."""
+        made a Workspace visit read nothing at all."""
         monkeypatch.setattr(slurm, "spawns", lambda: [])
         # Short enough to survive the SPAWN column's width — the point here is which FIELD
         # the column reads, not how `ui.table` wraps a long one.
@@ -751,119 +740,3 @@ class TestNoAdminWritesOverTheApi:
                                              '"outputs":["out"],"name":"a spawn"}'})
         assert r.status_code == 403
         assert "on the Head" in r.json()["detail"]
-
-
-class TestRecipes:
-    """`cuttle recipe *` — the CLI half of the Dashboard's Recipes page (CONTEXT.md: the two clients are
-    at operation parity). The upload is `cuttle run`'s; the consequence is not, and that is the point."""
-
-    def test_save_freezes_the_directory_and_lists_it_back(self, signed_in, project):
-        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                      "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
-        assert r.exit_code == 0, r.output
-        assert "saved recipe nightly" in r.output
-        listed = signed_in("recipe", "list", "--json")
-        rows = json.loads(listed.output)
-        assert [x["name"] for x in rows] == ["nightly"]
-        assert rows[0]["outputs"] == ["checkpoints"]
-        assert rows[0]["script"] == "train.py"
-
-    def test_saving_runs_nothing(self, signed_in, project):
-        """No Spawn, no Escrow, no queue place — which is what keeps the 24GB wall out of the submit
-        path entirely, so a full shelf can never stop a User working."""
-        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
-        with db.connect() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM spawns").fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM karma_escrow").fetchone()[0] == 0
-
-    def test_a_recipe_with_no_output_is_refused_before_uploading(self, signed_in, project):
-        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                      "--manifest", "requirements.txt", "--yes")
-        assert r.exit_code != 0
-        assert "could never be run" in r.output
-
-    def test_a_recipe_with_no_manifest_is_refused_before_uploading(self, signed_in, project):
-        """A Recipe freezes the **Environment** its work runs in, not just the code — so this is as
-        much a Recipe that could never be run as one with no declared output."""
-        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                      "-o", "checkpoints", "--yes")
-        assert r.exit_code != 0
-        # The opening clause of `spawns.NO_MANIFEST`, not the whole string: the message is wrapped to
-        # the terminal, so anything long enough to be worth asserting is long enough to be split.
-        assert "declares no Environment" in r.output
-
-    def test_a_missing_script_is_refused_before_uploading(self, signed_in, project):
-        r = signed_in("recipe", "save", "nightly", "nope.py", "--time", "60", "--vram", "24",
-                      "-o", "out", "--manifest", "requirements.txt", "--yes")
-        assert r.exit_code != 0
-        assert "was not found" in r.output
-
-    def test_update_keeps_every_setting_it_was_not_given(self, signed_in, project):
-        """A bare update refreshes the CODE and nothing else — re-typing --time/--vram would be a
-        chance to silently change them."""
-        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
-        (project / "train.py").write_text("print('v2')\n")
-        r = signed_in("recipe", "update", "nightly", "--yes")
-        assert r.exit_code == 0, r.output
-        row = json.loads(signed_in("recipe", "list", "--json").output)[0]
-        assert row["minutes"] == 60 and row["vram_mb"] == 24 * 1024
-        assert row["outputs"] == ["checkpoints"]
-
-    def test_delete_frees_the_shelf(self, signed_in, project):
-        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
-        r = signed_in("recipe", "delete", "nightly", "--yes")
-        assert r.exit_code == 0, r.output
-        assert json.loads(signed_in("recipe", "list", "--json").output) == []
-
-    def test_a_name_that_is_not_yours_says_so(self, signed_in, project):
-        r = signed_in("recipe", "delete", "ghost", "--yes")
-        assert r.exit_code != 0
-        assert "no recipe named 'ghost'" in r.output
-
-    def test_run_spawns_a_job_from_the_stored_snapshot(self, signed_in, fake_slurm, project):
-        """The verb that used to be deferred. Runs from the Recipe's OWN directory — never the picked project on the operator's machine, which `project`
-        the fixture deletes nothing of, proving the Head never reached back for it."""
-        signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                  "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
-        r = signed_in("recipe", "run", "nightly")
-        assert r.exit_code == 0, r.output
-        assert "running recipe 'nightly' as spawn" in r.output
-        spawn_id = int(re.search(r"as spawn (\d+)", r.output).group(1))
-        with db.connect() as conn:
-            spawn = db.get_spawn(conn, spawn_id)
-        assert spawn is not None, "no Attribution row was recorded"
-        assert spawn["recipe_name"] == "nightly"
-        # The Recipe survives the Spawn it fed — it can be run again.
-        from ccc_head_api import recipes as head_recipes
-        with db.connect() as conn:
-            alice = db.get_user(conn, "alice")
-        assert (head_recipes._dir(alice["id"], "nightly") / "train.py").exists()
-
-    def test_running_a_recipe_that_does_not_exist_says_so(self, signed_in, fake_slurm, project):
-        r = signed_in("recipe", "run", "ghost")
-        assert r.exit_code != 0
-        assert "no recipe named 'ghost'" in r.output  # `_find`'s client-side check catches it first
-
-    def test_the_wall_refusal_reaches_the_user_intact(self, signed_in, project, monkeypatch):
-        """The Head's 413 is the only message that says how far over you are and that the fix is
-        deleting a Recipe. A client-side rewording would lose exactly that.
-
-        The payload is highly compressible on purpose: it gzips to well under the cap (so the upload is
-        never rejected as merely too large) while the allowance charges its full uncompressed size. That
-        gap is the wall doing its own job rather than the spool limit doing it for it."""
-        from ccc_head_api import recipes as head_recipes
-        (project / "weights.bin").write_bytes(b"x" * 200_000)
-        monkeypatch.setattr(head_recipes, "MAX_USER_BYTES", 50_000)
-        r = signed_in("recipe", "save", "nightly", "train.py", "--time", "60", "--vram", "24",
-                      "-o", "checkpoints", "--manifest", "requirements.txt", "--yes")
-        assert r.exit_code != 0
-        assert "delete a recipe" in r.output
-        assert "recipe allowance is free" in r.output
-
-    def test_recipes_need_a_session(self, cli, project):
-        r = cli("recipe", "list")
-        assert r.exit_code != 0
-        assert "not logged in" in r.output

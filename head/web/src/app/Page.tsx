@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
  * Every page's frame. The `density` prop is the whole point of it.
  *
  *   hero — Karma, Tide. Pages you LOOK AT. Big type, wide air, room for the signature to be loud.
- *   tool — Queue, History, Arms, Recipes, Users, Spawn detail. Pages you WORK IN, daily. Dense but
+ *   tool — Queue, History, Arms, Users, Spawn detail. Pages you WORK IN, daily. Dense but
  *          breathable: they have to hold forty rows without becoming a scroll.
  *
  * This is "everything else stays quiet so the signature can be loud" applied to space rather than to

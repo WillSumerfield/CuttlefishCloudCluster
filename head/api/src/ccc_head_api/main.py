@@ -33,7 +33,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import db, environments, guises, karma, ratelimit, retraction, slurm
 from . import tarstream
 from . import features as features_mod   # `features` is the /features endpoint's own function name
-from . import recipes as recipes_mod
 from . import recovery as recovery_mod
 from . import retention as retention_mod
 from . import spawns as spawns_mod
@@ -811,135 +810,11 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     return {"id": job_id, "environment": spawns_mod.environment_note(job_id)}
 
 
-# --- recipes (authed) -------------------------------------------------------
-# A **Recipe** is a User's frozen, re-runnable snapshot, and these routes are the whole of its lifecycle
-# except one: `run` is deferred (see below). Every route is scoped to the caller — a Recipe is private to
-# its owner, so there is no roster read here and no `user_id` any client can name. See recipes.py for the
-# 32GB wall these hang off, and why it is a wall rather than the eviction `retention.py` does.
-#
-# Uploads here are spooled against the Recipe **Allowance**, not `MAX_UPLOAD_BYTES`: the 4GB cap is a
-# Spawn's, and a Recipe is bounded by the wall it is about to be weighed against instead. Both are the
-# same 413 to a client — this one just says which limit was hit.
-
-@api.get("/recipes")
-def recipes(user: dict = Depends(current_user)) -> list[dict]:
-    """The caller's own shelf. Never anyone else's: there is no admin view of Recipes, because a Recipe
-    holds a User's actual source code rather than a fact about the cluster.
-
-    `running` is best-effort: it asks the live Slurm queue, and a shelf a User can save/update/delete
-    entirely without Slurm must not start 503ing because the scheduler hiccuped answering an ENRICHMENT
-    to it. A Recipe just says `running: false` on a Head that can't be asked right now — the same as
-    before this existed — rather than hiding the whole shelf."""
-    try:
-        live_ids = [j["id"] for j in slurm.queue() if j["id"] is not None]
-    except HTTPException:
-        live_ids = []
-    with db.connect() as conn:
-        rows = db.recipes_for(conn, user["id"])
-        running = db.running_recipe_names(conn, user["id"], live_ids)
-    return [recipes_mod.to_json(r, running=r["name"] in running) for r in rows]
-
-
-@api.post("/recipes", status_code=201)
-async def create_recipe(request: Request, user: dict = Depends(current_user)) -> dict:
-    """Freeze an upload into a new Recipe. Same wire shape as `/submit` — gzip-tar body, `X-CCC-Meta`
-    header — because it is the same upload, persisted instead of run once.
-
-    Runs **nothing**: no Spawn, no Escrow, no queue place. That is deliberate and it is what keeps the
-    wall out of the submit path, so a full shelf can never stop a User working (CONTEXT.md,
-    **Allowance**)."""
-    if user["must_change_password"]:
-        raise HTTPException(403, "change your password before saving a recipe (run `cuttle passwd`)")
-    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
-    tar_path = await _spool_upload(request, limit=recipes_mod.MAX_USER_BYTES)
-    try:
-        with db.connect() as conn:
-            saved = recipes_mod.save(conn, user["id"], meta, tar_path)
-    except recipes_mod.WallExceeded as e:
-        raise HTTPException(413, _wall_message(e))
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-    finally:
-        tar_path.unlink(missing_ok=True)
-    log.info("recipe save %r by %s (%s)", saved["name"], user["username"], _human(saved["size_bytes"]))
-    return saved
-
-
-@api.post("/recipes/{name}/update")
-async def update_recipe(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
-    """Re-capture a Recipe around fresh code — the one moment a frozen thing moves.
-
-    Delete-then-save: the old snapshot's bytes are released before the new ones are weighed, so this is
-    charged what it GROWS BY rather than needing room for both at once. The wall is still weighed before
-    anything is written, so an update this refuses leaves the old version intact and still runnable."""
-    if user["must_change_password"]:
-        raise HTTPException(403, "change your password before updating a recipe (run `cuttle passwd`)")
-    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
-    meta.setdefault("name", name)
-    tar_path = await _spool_upload(request, limit=recipes_mod.MAX_USER_BYTES)
-    try:
-        with db.connect() as conn:
-            saved = recipes_mod.save(conn, user["id"], meta, tar_path, replacing=name)
-    except recipes_mod.WallExceeded as e:
-        raise HTTPException(413, _wall_message(e))
-    except ValueError as e:
-        # "no recipe named X" is the one ValueError here that is a miss rather than a bad request.
-        raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
-    finally:
-        tar_path.unlink(missing_ok=True)
-    log.info("recipe update %r by %s (%s)", name, user["username"], _human(saved["size_bytes"]))
-    return saved
-
-
-@api.patch("/recipes/{name}")
-async def update_recipe_settings(name: str, request: Request, user: dict = Depends(current_user)) -> dict:
-    """Change a Recipe's settings without re-freezing its code — a plain JSON body, not the gzip-tar
-    `X-CCC-Meta` upload `create_recipe`/`update_recipe` share, since nothing here touches the 32GB wall or
-    `bytes`/`frozen_at`. What the Dashboard's "Edit" hits when no folder was dropped alongside it; a
-    dropped folder instead goes to `update_recipe` above, which DOES re-freeze the code."""
-    if user["must_change_password"]:
-        raise HTTPException(403, "change your password before editing a recipe (run `cuttle passwd`)")
-    meta = await request.json()
-    try:
-        with db.connect() as conn:
-            saved = recipes_mod.update_meta(conn, user["id"], name, meta)
-    except ValueError as e:
-        raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
-    log.info("recipe settings edit %r by %s", name, user["username"])
-    return saved
-
-
-@api.post("/recipes/{name}/run")
-def run_recipe(name: str, user: dict = Depends(current_user)) -> dict:
-    """Run the frozen snapshot as a new Spawn — nothing to upload, nothing to hand, from any machine.
-    Every setting is frozen with the Recipe already, so this takes no body at all; see `recipes.run`."""
-    if user["must_change_password"]:
-        raise HTTPException(403, "change your password before running a recipe (run `cuttle passwd`)")
-    try:
-        with db.connect() as conn:
-            job_id = recipes_mod.run(conn, user["id"], name, user["is_admin"])
-    except ValueError as e:
-        raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
-    log.info("recipe run %r by %s -> spawn %s", name, user["username"], job_id)
-    return {"id": job_id}
-
-
-@api.delete("/recipes/{name}", status_code=204)
-def delete_recipe(name: str, user: dict = Depends(current_user)) -> Response:
-    """The only way bytes ever leave a shelf. Nothing on the Head deletes a Recipe on a User's behalf —
-    no TTL, no eviction — so this is what the wall sends them to do."""
-    with db.connect() as conn:
-        if not recipes_mod.delete(conn, user["id"], name):
-            raise HTTPException(404, f"you have no recipe named {name!r}")
-    log.info("recipe delete %r by %s", name, user["username"])
-    return Response(status_code=204)
-
-
 # --- workspaces (authed) ----------------------------------------------------
 # A **Workspace** is a durable working directory — the Tide Pool's persistent form. These routes are its
 # whole lifecycle except the visit itself (`open`, which submits a Tide Pool bound to it). Scoped to the
-# caller like the Recipe routes above and for the same reason: a Workspace holds a User's actual files,
-# so there is no roster read and no `user_id` any client can name.
+# caller: a Workspace holds a User's actual files, so there is no roster read and no `user_id` any
+# client can name.
 #
 # The seed upload is spooled against the Workspace **Allowance** rather than `MAX_UPLOAD_BYTES`: the 4GB
 # cap is a Spawn's, and a Workspace is bounded by the Storage it is about to be weighed against.
@@ -959,7 +834,7 @@ def workspaces(user: dict = Depends(current_user)) -> list[dict]:
 @api.post("/workspaces", status_code=201)
 async def create_workspace(request: Request, user: dict = Depends(current_user)) -> dict:
     """Seed a directory into a new Workspace — the only upload one ever takes. Same wire shape as
-    `/submit` and `/recipes`: gzip-tar body, `X-CCC-Meta` header.
+    `/submit`: gzip-tar body, `X-CCC-Meta` header.
 
     Runs nothing and costs no Karma. Storage never does; the visits do."""
     if user["must_change_password"]:
@@ -1108,14 +983,6 @@ def _pool_message(e: "workspaces_mod.PoolExceeded") -> str:
             f"or ask for a smaller storage")
 
 
-def _wall_message(e: "recipes_mod.WallExceeded") -> str:
-    """Say what was asked for, what is free, and what to do — a wall a User cannot see the far side of
-    is one they cannot act on, and this is the only refusal in CCC whose remedy is entirely theirs."""
-    return (f"this recipe needs {_human(e.incoming)} but only "
-            f"{_human(max(recipes_mod.MAX_USER_BYTES - e.used, 0))} of your "
-            f"{_human(recipes_mod.MAX_USER_BYTES)} recipe allowance is free — delete a recipe and retry")
-
-
 @api.get("/spawns/{job_id}/tidepool")
 def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     """The one authenticated channel a Tide Pool's ephemeral SSH keypair ever travels over — the CLI
@@ -1187,9 +1054,9 @@ async def _spool_upload(request: Request, limit: int | None = None) -> Path:
     and a browser folder-picker makes selecting a folder with a huge `data/` or a venv a single click.
     Streaming to disk means a too-large upload costs disk we then release, not RAM we might not have.
 
-    `limit` exists for Recipes, which are bounded by their own **Allowance** rather than by a Spawn's
-    4GB cap. It is a floor on wasted disk, not the real check: the wall is weighed properly, against
-    what the caller already holds, once the tar can be read (see recipes.save).
+    `limit` exists for Workspaces, which are bounded by their own **Allowance** rather than by a Spawn's
+    4GB cap. It is a floor on wasted disk, not the real check: the pool is weighed properly, against
+    what the caller already holds, once the tar can be read (see workspaces.create).
     """
     cap = MAX_UPLOAD_BYTES if limit is None else limit
     total = 0

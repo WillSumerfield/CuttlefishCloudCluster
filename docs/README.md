@@ -40,7 +40,6 @@ The per-capability docs live in [`elements/`](elements/) and are indexed by
 [Elements.md](Elements.md):
 
 [Spawns](elements/spawns.md) ·
-[Recipes](elements/recipes.md) ·
 [Environments](elements/environments.md) ·
 [Karma](elements/karma.md) ·
 [Arms](elements/arms.md) ·

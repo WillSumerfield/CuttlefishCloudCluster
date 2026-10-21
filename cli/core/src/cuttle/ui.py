@@ -372,7 +372,7 @@ def step(label: str):
 
 
 def human_bytes(n: float) -> str:
-    """Bytes → "4.0 GiB". Same shape as `workspaces._human` / `recipes._human`, deliberately: a size
+    """Bytes → "4.0 GiB". Same shape as `workspaces._human`, deliberately: a size
     inside a progress line and a size in a listing sit next to each other often enough to notice."""
     size = float(n)
     for unit in ("B", "KiB", "MiB", "GiB"):

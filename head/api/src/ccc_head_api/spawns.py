@@ -40,7 +40,6 @@ import os
 import posixpath
 import re
 import shlex
-import shutil
 import subprocess
 import tarfile
 from dataclasses import dataclass
@@ -113,8 +112,8 @@ def output_plan(outputs: list[str]) -> list[OutputPath]:
     """
     plan: list[OutputPath] = []
     for declared in outputs:
-        # Checked here rather than by each caller: this is reached from a Recipe's and a Workspace's
-        # saved metadata as well as from a submit, and all three used to spell their own type check.
+        # Checked here rather than by each caller: this is reached from a Workspace's saved metadata as
+        # well as from a submit, and both used to spell their own type check.
         if not isinstance(declared, str):
             raise ValueError(f"an output must be a path, not {type(declared).__name__}")
         absolute = declared.startswith("/")
@@ -145,7 +144,7 @@ def output_plan(outputs: list[str]) -> list[OutputPath]:
     return plan
 
 # A Spawn's **Name** (CONTEXT.md) — deliberately NOT shaped like the two names above, or like a
-# Recipe's/Workspace's. Those are identifiers: they become path segments and are looked up by, so they
+# Workspace's. Those are identifiers: they become path segments and are looked up by, so they
 # are restricted to an identifier charset. A Name is a *label* — it names nothing the cluster resolves,
 # so "lr sweep, 3e-4" is exactly as valid as "sweep3" and there is no reason to make a person spell
 # their own words in kebab-case.
@@ -1462,28 +1461,24 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
            tar_path: Path | None, minutes: int, constraint: str, outputs: list[str],
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False, manifest: str | None = None, substrate: str | None = None,
-           features: list[str] | None = None, source_dir: Path | None = None,
-           activation: bool = False, recipe_name: str | None = None,
+           features: list[str] | None = None,
+           activation: bool = False,
            workspace: Path | None = None, workspace_storage: int = 0,
            name: str = "") -> int:
-    """Unpack an uploaded project (or copy an already-on-disk one), render + sbatch it **as the
-    submitter's Guise**, and record the Attribution row + the Karma Escrow. Returns the Slurm job id
-    (== the Spawn id). `node` pins the Spawn to one Arm.
+    """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
+    Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
+    Spawn to one Arm.
 
     `hold` is the Escrow quoted by the caller, or **None** for a Spawn nobody is charged for (an
     Admin's — the Admin is outside the economy). It is written in the SAME transaction as the
     Attribution row: a Spawn that existed without its hold, even briefly, would be one its submitter's
     Share had not yet been charged for, which is precisely the window a queue-flooder wants.
 
-    Exactly one of `tar_path`/`source_dir` names where the project comes from. `tar_path` is a spooled
+    `tar_path` (may be None only for a Workspace visit) is a spooled
     file, not bytes: the caller streams the upload to disk so a large project never sits in this
     process's memory (see main._spool_upload). tarfile reads it incrementally. A Tide Pool still
     uploads one (an empty gzip-tar — every client sends the same wire shape) since there is no project
     to run; `script` rides along as None and the tar's member list is never checked against it.
-    `source_dir` is the other way in — a directory ALREADY on this Head's disk, copied rather than
-    unpacked. The one caller today is `recipes.run`: a Recipe's code already sits in its own durable
-    directory, and this Spawn needs its own disposable COPY of it (its staging dir is deleted after
-    stage-in; the Recipe's is not, and must survive to be run again).
 
     `outputs` names paths in the submitter's own project (or, `/`-prefixed, absolute inside the Pod) —
     resolved and checked by `output_plan` here, not just at the HTTP boundary, so the Head-local pinned
@@ -1495,8 +1490,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     can enforce ahead of time (the CLI still warns, see cuttle/tidepool.py).
 
     """
-    assert (tar_path is None) != (source_dir is None) or workspace is not None, \
-        "submit() needs exactly one of tar_path/source_dir (or a workspace)"
+    assert tar_path is not None or workspace is not None, "submit() needs a tar_path (or a workspace)"
     # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
     # Arm, and only discoverable minutes later, on another machine, as a Spawn that "vanished". We
@@ -1519,18 +1513,6 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         # goes into the Attribution row) but names no directory, which is safe: `projects.sweep` is
         # disk-first over PROJECTS_DIR and simply never sees a visit at all.
         pass
-    elif source_dir is not None:
-        # The `source_dir` path in: a Recipe's code, already extracted and sitting in ITS OWN durable
-        # directory. Checked against the disk directly, same reasoning as the tar member check below —
-        # refusing before staging.mkdir() means a bad run leaves nothing behind.
-        if not tidepool and not (source_dir / script).is_file():
-            raise ValueError(f"script {script!r} was not found in the recipe's project — it may have "
-                             f"been captured around a folder that no longer contains it")
-        # 0700 for the same reason the tar path uses it below — see its comment. copytree preserves the
-        # SOURCE tree's own file/dir permissions underneath, which is fine: `_lend_project`'s ACL is what
-        # actually grants the Guise access, not the mode.
-        staging.mkdir(parents=True, mode=0o700)
-        shutil.copytree(source_dir, staging, dirs_exist_ok=True, symlinks=True)
     else:
         # Checked against the tar's own member list, BEFORE anything is written to disk: a script that
         # isn't here would never start (or, worse, silently run some OTHER script if bash's glob ever
@@ -1728,8 +1710,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         siphons.bind(token, job_id)
         with db.connect() as conn:
             db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
-                            vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool,
-                            recipe_name=recipe_name, name=name)
+                            vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool, name=name)
             if tidepool:
                 db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
     except Exception:
@@ -1752,7 +1733,6 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    features: list[str] | None = None, tidepool: bool = False,
                    manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
-                   source_dir: Path | None = None, recipe_name: str | None = None,
                    workspace: Path | None = None, workspace_storage: int = 0,
                    name: str = "") -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
@@ -1785,18 +1765,13 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
     already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
 
-    `source_dir`/`recipe_name` are `recipes.run`'s pair — a pre-staged directory instead of an upload,
-    and the name that links the resulting Spawn back to it (see `submit`, `db.record_spawn`). Every
-    other caller leaves both None.
-
     `name` is the Spawn's **Name**, and it is **validated here** rather than at the route: it is
     required of every Spawn on this cluster, and a gate only `/submit` enforced would be one the
-    Head-local admin path walked straight past. Callers that inherit a Name pass the Recipe's or
+    Head-local admin path walked straight past. A caller that inherits a Name passes the
     Workspace's own; the rest pass what a person typed.
 
-    `workspace`/`workspace_storage` are `workspaces.visit`'s equivalent, and they are NOT a third
-    `source_dir`: that one is COPIED into a disposable staging dir, while this one is served in place
-    and written back to. It always arrives with `tidepool=True` — a visit is a Tide Pool bound to a
+    `workspace`/`workspace_storage` are `workspaces.visit`'s: a durable tree served in place and
+    written back to, never copied. It always arrives with `tidepool=True` — a visit is a Tide Pool bound to a
     durable tree — and it makes a visit cost Karma exactly like any other Spawn, which is the point:
     holding a Workspace is free and visiting one is not.
     """
@@ -1869,7 +1844,6 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                   minutes, constraint, outputs, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
                   activation=activation,
-                  source_dir=source_dir, recipe_name=recipe_name,
                   workspace=workspace, workspace_storage=workspace_storage, name=name)
 
 

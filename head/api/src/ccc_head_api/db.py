@@ -299,6 +299,8 @@ CREATE TABLE output_copies (
 );
 """
 
+# Unused since 2.0 dropped Recipes; kept only until the schema collapse.
+#
 # Recipes: a User's frozen, re-runnable snapshots. This row is *how* to run one, and
 # `recipes/<user_id>/<name>/` on disk is the code itself. `bytes` is what that tree costs against the
 # 32GB per-User **Allowance**, measured UNCOMPRESSED — the composer blocks a doomed save from
@@ -359,6 +361,9 @@ _SCHEMA_V14 = """
 ALTER TABLE spawns ADD COLUMN placed_node TEXT;
 """
 
+# Unused since 2.0 dropped Recipes (`recipes.*` and `spawns.recipe_name` alike); kept only until the
+# schema collapse.
+#
 # `manifest`/`features` — the two declared-need fields `/submit` already carried that a Recipe couldn't
 # freeze until now. Structural only, like `vram_mb`/`gpus` above: stored as declared, never checked
 # against the fleet's current capability at save time — that check happens for real when the Recipe is
@@ -441,6 +446,8 @@ _SCHEMA_V18 = """
 ALTER TABLE spawns ADD COLUMN name TEXT NOT NULL DEFAULT '';
 """
 
+# `recipes.substrate` is unused since 2.0 dropped Recipes; kept only until the schema collapse.
+#
 # The **Substrate** declaration, frozen wherever the other declarations are (`manifest`, `features`).
 # The path a Spawn named, not the packages it resolved to: what a Recipe freezes is the declaration,
 # and the file itself is in the tree the Recipe already holds — storing the resolved list instead would
@@ -730,8 +737,7 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
                  staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
                  node: str | None = None, hold: float | None = None,
-                 tidepool: bool = False, recipe_name: str | None = None,
-                 name: str = "") -> None:
+                 tidepool: bool = False, name: str = "") -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
     ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
     submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
@@ -739,17 +745,13 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
     `hold` is None for a Spawn nobody is charged for: the **Admin** is outside the economy, so their
     Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
 
-    `recipe_name` is set only for a Spawn made by `recipes.run` — it's what `running_recipe_names`
-    reads back to tell a Recipe's card it has a live Spawn on the queue right now. `name` is a
-    different thing entirely and both can be set at once: the **Name** a person reads, which a Spawn
-    from a Recipe *inherits* from that Recipe. One badges a card, the other titles a row.
+    `name` is the **Name** a person reads.
     """
     conn.execute(
         """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
-                              tidepool, recipe_name, name)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool),
-         recipe_name, name),
+                              tidepool, name)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool), name),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -1376,99 +1378,19 @@ def oldest_output(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
            ORDER BY o.created_at LIMIT 1""", (user_id,)).fetchone()
 
 
-# --- recipes ----------------------------------------------------------------
-
-def recipes_for(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
-    """One User's whole shelf, oldest first. There is no all-Users read anywhere in this module: a
-    Recipe is private to its owner, so `GET /recipes` is the only reader and it is always scoped."""
-    return conn.execute("SELECT * FROM recipes WHERE user_id=? ORDER BY frozen_at, id",
-                        (user_id,)).fetchall()
-
-
-def get_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row | None:
-    """Scoped by owner, never by name alone — two Users may hold the same name, and a lookup that
-    forgot the owner would hand one User the other's."""
-    return conn.execute("SELECT * FROM recipes WHERE user_id=? AND name=?",
-                        (user_id, name)).fetchone()
-
-
-def add_recipe(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
-               outputs: list[str], gpus: int, vram_mb: int, minutes: int, size_bytes: int,
-               manifest: str | None, features: list[str], substrate: str = "") -> sqlite3.Row:
-    conn.execute(
-        """INSERT INTO recipes (user_id, name, script, args, outputs, gpus, vram_mb, minutes,
-                                bytes, manifest, features, substrate)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (user_id, name, script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         size_bytes, manifest, json.dumps(features), substrate))
-    conn.commit()
-    return get_recipe(conn, user_id, name)
-
-
-def update_recipe_meta(conn: sqlite3.Connection, user_id: int, name: str, script: str, args: list[str],
-                        outputs: list[str], gpus: int, vram_mb: int, minutes: int,
-                        manifest: str | None,
-                        features: list[str], substrate: str = "") -> sqlite3.Row:
-    """Change what a Recipe runs and how, without touching its code or `bytes`/`frozen_at` — the settings-
-    only sibling of `add_recipe`'s insert. `recipes.update_meta` has already checked `script` against the
-    code already on disk, so this is a plain column write."""
-    conn.execute(
-        """UPDATE recipes SET script=?, args=?, outputs=?, gpus=?, vram_mb=?, minutes=?,
-                              manifest=?, features=?, substrate=?
-           WHERE user_id=? AND name=?""",
-        (script, json.dumps(args), json.dumps(outputs), gpus, vram_mb, minutes,
-         manifest, json.dumps(features), substrate, user_id, name))
-    conn.commit()
-    return get_recipe(conn, user_id, name)
-
-
-def delete_recipe(conn: sqlite3.Connection, user_id: int, name: str) -> bool:
-    cur = conn.execute("DELETE FROM recipes WHERE user_id=? AND name=?", (user_id, name))
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def user_recipe_bytes(conn: sqlite3.Connection, user_id: int) -> int:
-    """What one User's shelf holds, against their 32GB Allowance — the left side of the wall's
-    arithmetic. Independent of `user_output_bytes` in both directions (CONTEXT.md, **Allowance**)."""
-    (total,) = conn.execute("SELECT COALESCE(SUM(bytes), 0) FROM recipes WHERE user_id=?",
-                            (user_id,)).fetchone()
-    return total
-
-
-def running_recipe_names(conn: sqlite3.Connection, user_id: int, live_job_ids: list[int]) -> set[str]:
-    """Which of this User's Recipes has a Spawn among `live_job_ids` (the current Slurm queue) right
-    now — what `GET /recipes` reports back as `running`. `live_job_ids` is handed in rather than read
-    here because the caller already polled Slurm once for the whole page; asking again per-Recipe would
-    be a query per card instead of one for the shelf."""
-    if not live_job_ids:
-        return set()
-    marks = ",".join("?" * len(live_job_ids))
-    rows = conn.execute(
-        f"""SELECT DISTINCT recipe_name FROM spawns
-            WHERE user_id=? AND recipe_name IS NOT NULL AND job_id IN ({marks})""",
-        (user_id, *live_job_ids),
-    ).fetchall()
-    return {r["recipe_name"] for r in rows}
-
-
-def recipe_owner_ids(conn: sqlite3.Connection) -> set[int]:
-    """Every User id that still exists — what `recipes.sweep_orphans` checks the directories against.
-    Read from `users`, not from `recipes`: the CASCADE has already taken the rows of a deleted User by
-    the time the sweep runs, so asking `recipes` would say every directory is legitimate.
-
-    `workspaces.sweep_orphans` asks the same question of its own directories, and reuses this."""
+def live_user_ids(conn: sqlite3.Connection) -> set[int]:
+    """Every User id that still exists — what `workspaces.sweep_orphans` checks its directories
+    against. Read from `users`, not from `workspaces`: the CASCADE has already taken the rows of a
+    deleted User by the time the sweep runs."""
     return {r["id"] for r in conn.execute("SELECT id FROM users").fetchall()}
 
 
 # --- workspaces -------------------------------------------------------------
-# Deliberately shaped like the Recipe accessors above — same owner-scoped lookups, same "the name is
-# the handle" rule — because the two are siblings (CONTEXT.md: a Recipe is frozen and batch, a
-# Workspace mutable and interactive). The claim helpers at the bottom have no Recipe counterpart: a
-# Recipe can be run twice at once and a Workspace cannot.
+# Owner-scoped lookups; the name is the handle. The claim helpers at the bottom stop a Workspace being
+# visited twice at once.
 
 def workspaces_for(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
-    """One User's Workspaces, oldest first. Private to their owner, exactly like a shelf of Recipes."""
+    """One User's Workspaces, oldest first. Private to their owner."""
     return conn.execute("SELECT * FROM workspaces WHERE user_id=? ORDER BY created_at, id",
                         (user_id,)).fetchall()
 

@@ -127,9 +127,7 @@ The working directory you run from, honouring `.gitignore`. `--no-gitignore` upl
 are then all relative to *it*, while results still download to where you are.
 
 The Head keeps that upload only while the Spawn is *starting* — it is deleted the moment it has
-staged in. It is not backed by any allowance, and it is not recoverable. This is why a
-[Recipe](recipes.md) cannot be reconstructed from a Spawn that has already run: by the time there is
-a result to admire, the code behind it is gone.
+staged in. It is not backed by any allowance, and it is not recoverable.
 
 ### What happens when it goes wrong
 

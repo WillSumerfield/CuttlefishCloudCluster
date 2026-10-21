@@ -38,8 +38,7 @@ install, and `UV_PYTHON_INSTALL_DIR` puts the one it downloads INSIDE the shippe
 invariant above already covers them.
 
 That is what makes a `requires-python` pin mean anything: `uv sync` reads it, fetches that exact
-standalone CPython, and builds against it — a version the Pod image neither has nor needs to have. It is
-also what makes a **Recipe**'s freeze true of what its work runs *in*, not merely of what it declared.
+standalone CPython, and builds against it — a version the Pod image neither has nor needs to have.
 Inheriting was the alternative, and it cannot be frozen: `--system-site-packages` is a runtime flag, not
 a set of per-package links, so an inherited torch is whatever the image holds on the day the Spawn runs.
 

@@ -75,7 +75,7 @@ class TestOpening:
         assert f"[proj-{tok}]" in _conf(tok)
 
     def test_two_spawns_of_the_same_project_get_different_siphons(self, state):
-        """A Recipe re-run uploads the same code twice. Sharing a secret between them would make a
+        """A re-run uploads the same code twice. Sharing a secret between them would make a
         finished Spawn's credential a live one for whatever is running now."""
         tok_a, sec_a = siphons.open("uuid-1")
         tok_b, sec_b = siphons.open("uuid-1")

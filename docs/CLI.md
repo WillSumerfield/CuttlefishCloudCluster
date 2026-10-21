@@ -65,16 +65,6 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle recover` | Download what a Spawn wrote *outside* its declared outputs. One-day window. | [Storage](elements/storage.md#the-recovery-window) |
 | `cuttle dashboard` | Open the web Dashboard in a browser. `--print` gives the URL instead. | [Dashboard](Dashboard.md#getting-to-it) |
 
-## Recipes
-
-| Command | | Explained in |
-|---|---|---|
-| `cuttle recipe save` | Freeze this directory — code and how to run it — into a Recipe. | [Recipes](elements/recipes.md) |
-| `cuttle recipe list` | Your Recipes, and what they hold against your allowance. | [Recipes](elements/recipes.md) |
-| `cuttle recipe update` | Re-freeze a Recipe around this directory's current code. | [Recipes](elements/recipes.md#updating-one) |
-| `cuttle recipe run` | Run a Recipe's snapshot as a Spawn. *Not wired up yet.* | [Recipes](elements/recipes.md) |
-| `cuttle recipe delete` | Delete a Recipe and free its bytes. | [Recipes](elements/recipes.md) |
-
 ## Workspaces
 
 | Command | | Explained in |

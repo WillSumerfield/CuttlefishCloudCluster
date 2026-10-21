@@ -182,8 +182,8 @@ const json = <T,>(path: string, init?: RequestInit) =>
   req(path, init).then((r) => r.json() as Promise<T>)
 
 /**
- * The gzip-tar body every upload sends: a Spawn's project, a Recipe's snapshot, a Workspace's seed, a
- * Tide Pool's (often empty) folder. One shape, because the Head has one upload path.
+ * The gzip-tar body every upload sends: a Spawn's project, a Workspace's seed, a Tide Pool's (often
+ * empty) folder. One shape, because the Head has one upload path.
  *
  * **Built on a worker thread, and that is the whole point.** Two separate costs were freezing the tab,
  * and only one of them was obvious. The first was `makeTar` copying the project into one array after
@@ -269,7 +269,7 @@ export const getHistory = () =>
       (r): ArchivedSpawn => ({
         id: r.job_id,
         // The **Name** its submitter gave it — not the script, which is what this used to show and is
-        // why a Recipe run read `train.py` and a Workspace visit read nothing at all.
+        // why a Workspace visit read nothing at all.
         name: r.name,
         state: r.cancelled ? 'cancelled' : 'finished',
         // For a FINISHED Spawn "the arm" means the one it ran on. The declared node is the fallback
@@ -334,135 +334,8 @@ export const retractArm = (name: string) => armPost(name, 'retract')
 /** Owner-only: give a retracted Arm back — it never left the cluster, so no Admin, no new token. */
 export const returnArm = (name: string) => armPost(name, 'return')
 
-// A Recipe: a frozen, re-runnable snapshot of a project — the code plus how to run it. Private to its
-// owner. Runs exactly what it captured until Update code; `frozen_at` is how stale that snapshot is.
-// `size_bytes` counts against the 32 GB allowance. `updating` is true only while a fresh snapshot
-// uploads (the bloom) — at rest a frozen thing does not move.
-export type Recipe = {
-  name: string
-  script: string          // entry point the snapshot runs
-  args: string[]          // declared arguments, frozen with the code
-  outputs: string[]       // declared output folders, frozen too — a Recipe with none could never be run
-  gpus: number
-  vram_mb: number
-  minutes: number         // declared wall-clock — the same ask a Spawn carries
-  size_bytes: number      // disk it holds against the allowance
-  frozen_at: number       // epoch ms the code was last captured; Update code refreshes it
-  updating: boolean       // a new snapshot is uploading right now → the bloom
-  running: boolean        // a Spawn of this Recipe is live on the cluster right now → the passing cloud
-  // The same two declared-need fields a Spawn carries (SubmitOpts below), frozen with the code rather
-  // than asked again on every run. `features` is usually empty; `manifest` never is — a Recipe freezes
-  // the environment its work runs in, not just the code, so naming one is required to save at all.
-  manifest: string
-  substrate: string
-  features: string[]
-}
-
-// Per-User storage allowance: 32 GB, a hard wall — saving past it means deleting a Recipe first, never a
-// warning. Mirrored in recipes/format.ts (meter) and the Head's recipes.py MAX_USER_BYTES, the actual
-// authority; the composer just blocks a doomed save early, from File.size, before spending the upload.
-export const RECIPE_ALLOWANCE_BYTES = 32 * 1024 ** 3
-
-export const getRecipes = () => json<Recipe[]>('/recipes')
-
-// Freeze a project into a new Recipe. Same wire shape as submit() — tar+gzip body, meta in the header —
-// because a Recipe IS the same upload a Spawn carries, just persisted on the Head instead of run once. The
-// Head weighs it against the 32 GB wall and answers 413 if it won't fit (the composer blocks first, from
-// File.size, so the browser never spends the upload on a doomed save). Returns the frozen Recipe.
-export type NewRecipe = {
-  picked: Picked
-  name: string
-  script: string
-  args: string[]
-  outputs: string[]
-  gpus: number
-  vram_mb: number
-  minutes: number
-  // Same as above — asked once, frozen with the code. `manifest` is REQUIRED: a Recipe that named no
-  // dependency file could never be run, so the Head refuses the save rather than freezing a dead one.
-  manifest: string
-  // Which file names this Spawn's **Substrate** — the system packages installed into its Pod before
-  // the environment is built (CONTEXT.md). OPTIONAL, unlike the manifest: most work needs none.
-  substrate: string
-  features: string[]
-}
-
-// The upload both save and update make: tar the picked folder, gzip it, put the settings in the header.
-// Shared because an update IS a save — the Head releases the old snapshot's bytes and charges the new
-// ones (delete-then-save), so the two differ only in which path they POST to.
-async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
-  const body = await projectBody(r.picked)
-  const meta = {
-    name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
-    vram_mb: r.vram_mb, minutes: r.minutes,
-    // `features` is omitted rather than sent empty — absent means "no features required", which is
-    // not the same instruction as any other value. `manifest` is required, so it always travels.
-    ...(r.features.length ? { features: r.features } : {}),
-    manifest: r.manifest.trim(),
-    substrate: r.substrate.trim(),
-  }
-  const res = await req(path, {
-    method: 'POST',
-    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
-    body,
-  })
-  return res.json() as Promise<Recipe>
-}
-
-export const createRecipe = (r: NewRecipe) => recipeUpload(r, '/recipes')
-
-/**
- * Re-capture the project into an existing Recipe — the one moment a frozen thing moves.
- *
- * Carries a body (unlike other actions here): an update IS a fresh upload, since there's no local copy of
- * the old folder to diff against and the Head keeps no Spawn code either. Until it lands, the Recipe keeps
- * running the old snapshot; a save the 32 GB wall refuses leaves that old snapshot untouched.
- */
-export const updateRecipe = (name: string, r: NewRecipe) =>
-  recipeUpload(r, `/recipes/${encodeURIComponent(name)}/update`)
-
-// Everything about a Recipe except its code and name — what "Edit" changes when no folder is dropped
-// alongside it (dropping one goes through updateRecipe above instead, a fresh upload). `script` still
-// names a file, but one already sitting in the Recipe's saved tree rather than a freshly-picked folder's.
-export type RecipeSettings = {
-  script: string
-  args: string[]
-  outputs: string[]
-  gpus: number
-  vram_mb: number
-  minutes: number
-  manifest: string
-  substrate: string
-  features: string[]
-}
-
-/**
- * Change a Recipe's settings in place — no code moves, so this is a plain JSON PATCH rather than the
- * tar+gzip body create/update share. `bytes` and `frozen_at` are untouched on the Head.
- */
-export const updateRecipeSettings = (name: string, r: RecipeSettings) =>
-  req(`/recipes/${encodeURIComponent(name)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(r),
-  }).then((res) => res.json() as Promise<Recipe>)
-
-/**
- * Run the frozen snapshot — one click, from any machine, nothing to hand. Every setting was already
- * answered when the Recipe was saved, so this takes no body. Returns the new Spawn's id; the Dashboard
- * doesn't need it (the card's own `running` flips true on the next refetch), but the CLI's `cuttle
- * recipe run` does, to echo it back the same way `cuttle run` echoes a fresh submit.
- */
-export const runRecipe = (name: string) =>
-  req(`/recipes/${encodeURIComponent(name)}/run`, { method: 'POST' })
-    .then((r) => r.json() as Promise<{ id: number }>)
-    .then((r) => r.id)
-/** Delete a Recipe, freeing its bytes back to the allowance. */
-export const deleteRecipe = (name: string) => req(`/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
-
 // A Workspace: a working directory the Head KEEPS, so opening it again resumes where the last visit
-// stopped. The Tide Pool's durable form, and the sibling of a Recipe — a Recipe is frozen and re-run in
-// batch, a Workspace is mutable and visited interactively.
+// stopped. The Tide Pool's durable form, mutable and visited interactively.
 //
 // `storage_bytes` is its **Storage**: what it may hold, carved out of the 32 GB workspace allowance by its
 // owner when they created it. `used_bytes` is measured off the Head's disk on every read, never cached —
@@ -478,7 +351,7 @@ export type Workspace = {
   gpus: number
   vram_mb: number
   minutes: number         // per-VISIT wall clock; the workspace itself never expires
-  manifest: string        // optional here, unlike a Recipe's — a visit is a shell, not a run
+  manifest: string        // optional — a visit is a shell, not a run
   substrate: string       // optional everywhere — the system packages every visit installs
   outputs: string[]       // optional too — everything in the tree is kept either way
   features: string[]
@@ -496,7 +369,7 @@ export const getWorkspaces = () => json<Workspace[]>('/workspaces')
 
 // Seed a directory into a new Workspace — the ONLY upload one ever takes. Everything after this is
 // written from inside the Workspace's own sessions and mirrored home, which is what makes it durable
-// rather than a Recipe you re-freeze. Same wire shape as createRecipe: tar+gzip body, meta in the header.
+// on the Head. Same wire shape as submit: tar+gzip body, meta in the header.
 export type NewWorkspace = {
   picked: Picked
   name: string
@@ -526,8 +399,8 @@ export async function createWorkspace(w: NewWorkspace): Promise<Workspace> {
 }
 
 // Everything a visit asks for, plus the Storage the tree may fill. There is no code half of this: a
-// Workspace is seeded once and written to from inside its own sessions after that, so unlike a Recipe
-// there is nothing to re-capture and no upload sibling of this call.
+// Workspace is seeded once and written to from inside its own sessions after that, so there is nothing
+// to re-capture and no upload sibling of this call.
 export type WorkspaceSettings = {
   storage_bytes: number
   gpus: number

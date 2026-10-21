@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from . import db
 
 TTL_DAYS = int(os.environ.get("CCC_OUTPUT_TTL_DAYS", 7))
-# Per-User, independent of every other Allowance (e.g. Recipe space).
+# Per-User, independent of every other Allowance (e.g. Workspace storage).
 MAX_USER_BYTES = int(os.environ.get("CCC_OUTPUT_MAX_USER", 32 * 1024**3))
 
 # A `spawns/<id>/` dir with no Attribution row yet — submission raised between sbatch returning and

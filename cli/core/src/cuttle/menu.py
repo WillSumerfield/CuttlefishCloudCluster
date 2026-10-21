@@ -50,8 +50,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
-                  "tide", "account", "logout", "whoami", "passwd", "recipe",
-                  "workspace"}
+                  "tide", "account", "logout", "whoami", "passwd", "workspace"}
 
 
 @dataclass
@@ -86,7 +85,7 @@ GROUPS: dict[str, list[str]] = {
 # * **A folder or a group is a noun phrase; a leaf is an imperative.** The row either names a subject
 #   you are going to look inside, or tells you what picking it does.
 # * **Inside a real group, the child drops the group's noun** — the box is already titled
-#   `cuttle recipe`, so "Delete a recipe" says it twice. Folder children keep theirs, because a folder
+#   `cuttle workspace`, so "Delete a workspace" says it twice. Folder children keep theirs, because a folder
 #   holding one visible row collapses INTO the top level (see `_collapse`), and a collapsed
 #   "Change the settings" out there names nothing.
 LABELS = {
@@ -155,13 +154,7 @@ LABELS = {
     "feature list": "List the Features CCC supports",
     "feature show": "Print a starter environment.yml",
 
-    # My recipes / My workspaces — top-level, and the possessive is right: they are private to you.
-    "recipe": "My recipes",
-    "recipe list": "List",
-    "recipe save": "Freeze this folder into one",
-    "recipe run": "Run",
-    "recipe update": "Re-capture the code",
-    "recipe delete": "Delete",
+    # My workspaces — top-level, and the possessive is right: they are private to you.
     "workspace": "My workspaces",
     "workspace list": "List",
     "workspace new": "Make this folder into one",
@@ -214,7 +207,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
 # inside a real group the declaration order does — both because the sort is stable and everything
 # unlisted ties.
-ORDER = ["run", f"{FOLDER}spawns", "recipe", "workspace", f"{FOLDER}cluster", f"{FOLDER}account",
+ORDER = ["run", f"{FOLDER}spawns", "workspace", f"{FOLDER}cluster", f"{FOLDER}account",
          "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 
@@ -301,7 +294,7 @@ def _menu_children(node, root, prefix: str) -> list[tuple[str, object]]:
     """(path, command) for everything one level under `node`, before any filtering.
 
     Three shapes, because the menu tree is not the command tree. At the **root** the folders stand in
-    for every command they claim, so the top level is nine rows instead of twenty-five. Inside a
+    for every command they claim, so the top level is eight rows instead of twenty-five. Inside a
     **folder** the children are those commands at their REAL paths — a folder is a place to look, not
     a prefix to type, and `cuttle queue` must still come back as `["queue"]`. Inside a **real group**
     it is the ordinary prefixed walk.

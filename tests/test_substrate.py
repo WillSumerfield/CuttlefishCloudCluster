@@ -10,10 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from ccc_head_api import db, environments, recipes, spawns, substrate
+from ccc_head_api import environments, spawns, substrate
 
 from test_cli_e2e import _spawn_id
-from test_recipes import _META, _targz
 
 
 def _project(tmp_path, **files):
@@ -250,70 +249,3 @@ class TestTheDeclarationTravels:
                            "--substrate", "apt.txt")
         assert result.exit_code != 0
         assert "not a package name" in result.output
-
-
-# --- frozen with the code --------------------------------------------------
-
-
-class _RecipeRig:
-    """`recipes.save`/`update_meta` against a throwaway Head state dir, with an `apt.txt` in the
-    upload. Thin on purpose — test_recipes.py owns the shelf's own behaviour; this only asks whether
-    the Substrate rides along with everything else that is frozen."""
-
-    def __init__(self, tmp_path):
-        self.tmp_path = tmp_path
-
-    def _spool(self, body: bytes) -> Path:
-        p = self.tmp_path / "upload.tar.gz"
-        p.write_bytes(body)
-        return p
-
-    def save(self, **over):
-        body = _targz({"train.py": b"print('hi')\n", "requirements.txt": b"",
-                       "apt.txt": b"ffmpeg\n"})
-        with db.connect() as conn:
-            return recipes.save(conn, 1, {**_META, **over}, self._spool(body))
-
-    def update_meta(self, **over):
-        with db.connect() as conn:
-            return recipes.update_meta(conn, 1, _META["name"], {**_META, **over})
-
-
-@pytest.fixture
-def recipe_rig(monkeypatch, tmp_path):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-    db.ensure_schema()
-    monkeypatch.setattr(spawns, "HEAD_STATE_DIR", tmp_path)
-    with db.connect() as conn:
-        db.add_user(conn, "alice")
-    return _RecipeRig(tmp_path)
-
-
-# A **Recipe** freezes the declaration, not the resolved packages: the file itself is in the tree the
-# Recipe already holds, and a stored list would go stale the moment its owner edited what they can see.
-
-class TestARecipeFreezesIt:
-    def test_it_is_kept_and_read_back(self, recipe_rig):
-        saved = recipe_rig.save(substrate="apt.txt")
-        assert saved["substrate"] == "apt.txt"
-
-    def test_declaring_none_is_the_ordinary_case(self, recipe_rig):
-        assert recipe_rig.save()["substrate"] == ""
-
-    def test_naming_a_file_the_upload_has_not_got_is_refused(self, recipe_rig):
-        """The same gate the script and the manifest get, and it matters more here than for a Spawn: a
-        Recipe frozen around a missing file fails every time it is ever run, long after the folder
-        that would have fixed it is gone."""
-        with pytest.raises(ValueError, match="substrate 'nope.txt' was not found"):
-            recipe_rig.save(substrate="nope.txt")
-
-    def test_a_settings_edit_cannot_point_it_at_a_file_that_is_not_there(self, recipe_rig):
-        recipe_rig.save(substrate="apt.txt")
-        with pytest.raises(ValueError, match="substrate 'nope.txt' was not found"):
-            recipe_rig.update_meta(substrate="nope.txt")
-
-    def test_a_settings_edit_can_drop_it(self, recipe_rig):
-        """An empty declaration is how a Recipe stops needing system packages — there is no equivalent
-        for the manifest, which is mandatory."""
-        recipe_rig.save(substrate="apt.txt")
-        assert recipe_rig.update_meta(substrate="")["substrate"] == ""

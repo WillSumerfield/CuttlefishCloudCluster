@@ -133,7 +133,7 @@ def test_every_build_targets_the_one_fixed_mount(tmp_path):
 def test_no_env_inherits_anything_from_the_image(tmp_path):
     """The property the restructure exists for. `--system-site-packages` is a RUNTIME flag, not a set of
     per-package links, so an env that used it held whatever the image happened to hold on the day the
-    Spawn ran — which is not a freeze, and is not what a **Recipe** promises."""
+    Spawn ran — which is not a freeze."""
     for name in ("uv.lock", "requirements.txt", "environment.yml"):
         m = env.detect(_project(tmp_path / name, **{name: ""}), name)
         cmds = env.render_build(m)
@@ -723,22 +723,6 @@ def test_nothing_built_is_in_what_a_remote_arm_stages_in(head, tmp_path, monkeyp
     seen = _rendered(monkeypatch)
     _submit(tmp_path, "requirements.txt")
     assert sorted(seen["files"]) == ["requirements.txt", "train.py"]
-
-
-def test_a_recipe_is_code_and_a_declaration_not_a_built_tree(head, tmp_path, monkeypatch):
-    """A Recipe briefly kept the env the Head built for it. There is no Head-built env now, so a Recipe
-    freezes the declaration and every Spawn from it rebuilds — cheaply, out of the Arm's package cache."""
-    d = tmp_path / "recipe"
-    d.mkdir()
-    (d / "train.py").write_text("print('hi')\n")
-    (d / "requirements.txt").write_text("numpy\n")
-    seen = _rendered(monkeypatch)
-    spawns.submit(user_id=1, gpu=1, args=[], tar_path=None,
-                  source_dir=d, recipe_name="resnet", script="train.py",
-                  manifest="requirements.txt", minutes=60, constraint="", outputs=["out"])
-    assert "--hold" not in _sbatch(head)
-    assert sorted(seen["files"]) == ["requirements.txt", "train.py"]
-    assert "ccc_build_or_die" in seen["body"], "it must still build what the Recipe declared"
 
 
 def test_a_node_without_the_tools_refuses_before_sbatch(head, tmp_path, monkeypatch):

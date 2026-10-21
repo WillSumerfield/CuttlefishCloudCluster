@@ -65,7 +65,6 @@ rejected submission.
 - [ ] Omitting `--manifest` off a terminal is refused before anything uploads, naming the flag; at a
       terminal `cuttle run` asks for it instead.
 - [ ] `--manifest nope.txt` is refused at submit with no Spawn.
-- [ ] A Recipe saved without `--manifest` is refused; one saved with it re-runs against that env.
 
 ### The download survives a reboot
 

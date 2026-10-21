@@ -14,12 +14,6 @@ watching. A Spawn runs *once*: if it fails, or the machine it was on is reclaime
 quietly start again somewhere else. It can hold several cards at a time, but always on one
 machine — never spread across two donors.
 
-### [Recipes](elements/recipes.md)
-
-A Recipe is a Spawn you saved: your code plus how to run it, frozen and re-runnable from any machine
-with nothing to hand. Saving one runs nothing and costs no Karma. It keeps running exactly what it
-captured until you deliberately update it.
-
 ### [Environments](elements/environments.md)
 
 The Python your code runs against. Every Spawn gets the same base; if you need more, you declare it
@@ -50,7 +44,7 @@ all. **admin:** `override`, `bump`.
 ### [Storage](elements/storage.md)
 
 Where your things live and how long they last: uploaded projects (until the Spawn starts), results
-(7 days, 32 GB), Recipes and Workspaces (indefinitely, 32 GB each), and the one-day Recovery Window that catches what you
+(7 days, 32 GB), Workspaces (indefinitely, 32 GB), and the one-day Recovery Window that catches what you
 forgot to declare.
 
 ## Donating a machine

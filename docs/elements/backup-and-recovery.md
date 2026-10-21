@@ -6,7 +6,7 @@
 
 The Head holds three files that are the entire durable state of the cluster:
 
-- **`head.db`** — Users, sessions, Karma, Spawns, Recipes, attributions.
+- **`head.db`** — Users, sessions, Karma, Spawns, attributions.
 - **`arms.json`** — the Arm registry.
 - **Headscale's `db.sqlite`** — the [Mesh](mesh.md): who is a member and at what address.
 

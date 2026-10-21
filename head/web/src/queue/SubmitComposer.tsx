@@ -1,10 +1,7 @@
 import type { Arm } from "../api";
 import { Composer } from "../app/Composer";
 
-/**
- * Submit a Spawn — the "spawn" variant of the shared composer (app/Composer.tsx). See its module
- * docstring for what actually differs between this and the Recipe composer, and why.
- */
+/** Submit a Spawn — a thin wrapper over app/Composer.tsx. */
 export function SubmitComposer({
   arms,
   isAdmin,
@@ -17,5 +14,5 @@ export function SubmitComposer({
   startOpen?: boolean;
   onSubmitted: () => void;
 }) {
-  return <Composer variant="spawn" arms={arms} isAdmin={isAdmin} startOpen={startOpen} onSubmitted={onSubmitted} />;
+  return <Composer arms={arms} isAdmin={isAdmin} startOpen={startOpen} onSubmitted={onSubmitted} />;
 }

@@ -1,12 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
-import { getArms, getRecipes, getStandings, RECIPE_ALLOWANCE_BYTES, Unauthorized } from "../api";
+import { getArms, getStandings, Unauthorized } from "../api";
 import { Link } from "../app/router";
 import { Tip } from "../app/Tip";
 import { FleshCell } from "../account/FleshCell";
 import { PasswordForm } from "../account/PasswordForm";
-import { size } from "../recipes/format";
 
 /**
  * Account — yourself. The identity sits bold on the right with your pigment bloom (you, as the cluster sees
@@ -26,15 +25,11 @@ export function AccountPage() {
   const [balance, setBalance] = useState<number | null>(null);
   const [share, setShare] = useState<number | null>(null);
   const [armCount, setArmCount] = useState<number | null>(null);
-  const [storageUsed, setStorageUsed] = useState<number | null>(null);
 
   useEffect(() => {
     const bounce = (e: unknown) => { if (e instanceof Unauthorized) logout(); };
     getArms()
       .then((arms) => setArmCount(arms.filter((a) => a.owner === me.username).length))
-      .catch(bounce);
-    getRecipes()
-      .then((rs) => setStorageUsed(rs.reduce((n, r) => n + r.size_bytes, 0)))
       .catch(bounce);
     getStandings()
       .then((rows) => {
@@ -51,7 +46,6 @@ export function AccountPage() {
       ? "—"
       : `${balance >= 0 ? "+" : "−"}${Math.abs(Math.round(balance))} karma · ${(share * 100).toFixed(1)}% share`;
   const armsValue = armCount === null ? "—" : armCount === 0 ? "none" : `${armCount} owned`;
-  const usedFrac = storageUsed === null ? 0 : Math.min(1, storageUsed / RECIPE_ALLOWANCE_BYTES);
 
   return (
     <Page title="Account">
@@ -83,27 +77,6 @@ export function AccountPage() {
             <div className="space-y-1">
               <FactRow to="/karma" label="Karma" help="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all." value={standing} />
               <FactRow to="/arms" label="Arms" help="Machines you've donated. Each one earns you Karma whenever somebody else's work runs on it." value={armsValue} />
-              <FactRow
-                to="/recipes"
-                label="Storage"
-                help="Disk your Recipes hold on the Head, against a 32 GB ceiling. It's a hard wall — saving past it fails and you delete something, rather than something older being quietly dropped."
-                value={
-                  <span className="flex items-center gap-3">
-                    <span className="relative h-1.5 w-24 overflow-hidden rounded-full" style={{ filter: "blur(0.6px)" }}>
-                      <span
-                        className="absolute inset-y-0 left-0"
-                        style={{
-                          width: `${usedFrac * 100}%`,
-                          background: `color-mix(in oklab, var(--irid-mid) ${Math.round(usedFrac * 70)}%, var(--irid-dim))`,
-                        }}
-                      />
-                    </span>
-                    <span className="num">
-                      {storageUsed === null ? "—" : `${size(storageUsed)} / ${size(RECIPE_ALLOWANCE_BYTES)}`}
-                    </span>
-                  </span>
-                }
-              />
             </div>
 
             <PasswordForm onUnauthorized={logout} />

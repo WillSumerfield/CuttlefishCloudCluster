@@ -8,7 +8,7 @@ side owning a shared package (see `tests/CONTEXT.md`'s **Seam**). No dedicated c
 no `setup/` (not a deployable role).
 
 - **Protocol** — the CLI↔Head message contract (`cuttle` core ↔ control plane).
-- **Common types** — shared domain types (Recipe, Spawn, roles).
+- **Common types** — shared domain types (Spawn, roles).
 - **Metric schemas** — shared shapes for telemetry/economy data.
 
 Note: distinct from **Shared storage** (the cluster filesystem) — this is code, not storage.

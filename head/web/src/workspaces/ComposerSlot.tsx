@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { COMPOSER_FADE, COMPOSER_RADIUS } from "../app/Composer";
+
+// The composer card's corner radius and alpha edge-fade depth (px), so the growing/shrinking backdrop
+// matches the settled card exactly.
+const COMPOSER_RADIUS = 64;
+const COMPOSER_FADE = 32;
 
 // Everything else in this app transitions in 140-160ms; this is a much bigger move (a ~230px card
 // becoming a ~1000px+ composer), so it gets its own slower pace.
@@ -18,14 +22,13 @@ const CLOSED_CAP = 230;
 const OPEN_CAP = 1800;
 
 // A flat approximation of `.shard`'s own gradient (index.css) — a lit-top-to-body blend, roughly its
-// prevailing tone. `open` is always the recipe Composer, so this one tint covers every call site; the
+// prevailing tone. `open` is always a composer card, so this one tint covers every call site; the
 // real gradient (drawn on `open`'s own ::before) fades in on top of it, so by the time it's visible the
 // colour underneath is already close and the handoff doesn't pop.
 const OPEN_TINT = "color-mix(in oklab, var(--shoal) 20%, var(--body))";
 
 // Same crossed-linear-ramp edge dissolve every surface in this app uses (index.css's `.surface`,
-// NewRecipeTile's own recess fill), at COMPOSER_FADE — the recipe composer's own fade depth (Composer.tsx)
-// — rather than a separate hardcoded number, so the "alpha border" during growing/shrinking matches the
+// NewWorkspaceTile's own recess fill), at COMPOSER_FADE — the composer card's own fade depth — rather than a separate hardcoded number, so the "alpha border" during growing/shrinking matches the
 // settled card exactly instead of just approximating it. Without a mask at all the backdrop would be a
 // hard-edged rectangle, and "no border — dissolve at every edge" (the app's own rule) would stop applying
 // for exactly the two phases where the backdrop is the only thing visible behind the content.
@@ -46,8 +49,8 @@ const BACKDROP_MASK = `${backdropRamp("to right")}, ${backdropRamp("to bottom")}
 type Phase = "closed" | "growing" | "open" | "closing" | "shrinking";
 
 /**
- * The shared "becomes a composer" shell — used both for the New-recipe tile and for a RecipeCard's own
- * Update action. One persistent <li> (the actual grid item) so the box can grow instead of an instant
+ * The shared "becomes a composer" shell — used both for the New-workspace tile and for a WorkspaceCard's
+ * own Edit action. One persistent <li> (the actual grid item) so the box can grow instead of an instant
  * unmount/remount. `open` only mounts once a grow starts, so an idle shelf of many cards never fires the
  * Composer's own fetches (feature catalog) once per card.
  *
@@ -71,8 +74,8 @@ export function ComposerSlot({
   closed: React.ReactNode;
   open: React.ReactNode;
   /** `closed`'s own prevailing colour, so the backdrop can crossfade into it rather than popping in blue
-   * underneath still-opaque content. Defaults to the same shard-ish tone as `open` (fine for a RecipeCard,
-   * which is already a shard) — the New-recipe tile overrides it with its own much darker recess colour. */
+   * underneath still-opaque content. Defaults to the same shard-ish tone as `open` (fine for a card
+   * which is already a shard) — the New-workspace tile overrides it with its own much darker recess colour. */
   closedTint?: string;
 }) {
   const [phase, setPhase] = useState<Phase>(isOpen ? "open" : "closed");
@@ -149,7 +152,7 @@ export function ComposerSlot({
           transition: `background-color ${GROW_MS}ms var(--ease-swim), opacity ${backdropOpacityMs}ms var(--ease-swim)`,
         }}
       />
-      {/* h-full always: `closed` (NewRecipeTile, RecipeCard) fills it with their own h-full, which needs
+      {/* h-full always: `closed` (NewWorkspaceTile, WorkspaceCard) fills it with their own h-full, which needs
           a DEFINITE height to resolve against — without this, at rest (no "absolute inset-0" yet) this
           div would shrink-to-fit its child instead, and the child's own h-full would resolve to nothing,
           collapsing it to its bare minimum instead of matching the row's other cards.
