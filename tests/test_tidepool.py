@@ -320,7 +320,7 @@ class TestSubmitRouteAcceptsTidepool:
     def test_no_script_is_accepted(self, monkeypatch, tmp_path):
         c = _client(monkeypatch, tmp_path)
         monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: 4242)
-        meta = {"minutes": 60, "vram": 24, "tidepool": True, "name": "a pool"}
+        meta = {"minutes": 60, "vram": 24, "tidepool": True}
         r = c.post("/api/submit", json=meta)
         assert r.status_code == 200, r.text
         assert r.json() == {"id": 4242}
@@ -650,7 +650,7 @@ class TestCliTidepoolFlagWiring:
         """A real submission happens (tidepool=1 in the ledger), even though this fake
         cluster can never actually place it (no real Slurm, so attach then fails loudly — that failure
         is expected and not what this test is about)."""
-        signed_in("run", "--tidepool", "--name", "a pool", "--time", "10", "--vram", "4")
+        signed_in("run", "--tidepool", "--time", "10", "--vram", "4")
         with db.connect() as conn:
             row = conn.execute("SELECT tidepool FROM spawns").fetchone()
         assert row is not None

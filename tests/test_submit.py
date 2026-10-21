@@ -620,9 +620,6 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 
 def post(c: TestClient, **meta):
     meta.setdefault("script", "train.py")
-    # The Spawn's **Name** is required of every Spawn (TestSpawnsMustBeNamed owns that gate), defaulted
-    # here so it is not the subject of every other test in the file.
-    meta.setdefault("name", "a spawn")
     return c.post("/api/submit", json=meta)
 
 
@@ -645,61 +642,6 @@ class TestSubmitRequiresDeclarations:
         r = post(client(monkeypatch, is_admin=False), **meta)
         assert r.status_code == 422
         assert missing in r.json()["detail"]
-
-
-class TestSpawnsMustBeNamed:
-    """A Spawn's **Name** (CONTEXT.md): what a person calls it in the queue and the archive, and the
-    one thing about a Spawn CCC will not invent. It joins `--time`/`--vram` as
-    something every Spawn says for itself — a cluster that named work on its submitter's behalf would
-    fill its own history with rows nobody can tell apart.
-
-    A **label**, not an identifier: free text, no charset to spell it in, and two Spawns may share one.
-    What it may not contain is what would corrupt the surfaces it is drawn on."""
-
-    def test_a_nameless_spawn_is_refused(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, name=None)
-        assert r.status_code == 422
-        assert "name" in r.json()["detail"]
-
-    def test_a_blank_name_is_refused_too(self, monkeypatch):
-        """Whitespace is not a name. Sending "   " is a client working around the gate rather than a
-        person answering it."""
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, name="   ")
-        assert r.status_code == 422
-
-    def test_the_refusal_says_ccc_will_not_invent_one(self, monkeypatch):
-        """The reason, not just the rule — a submitter told only "name required" reasonably wonders
-        why the script's own name would not do."""
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, name=None)
-        assert "does not invent" in r.json()["detail"]
-
-    def test_ordinary_prose_is_accepted(self, monkeypatch):
-        """Spaces, punctuation and case — a Name is read, not resolved, so it is spelled how a person
-        would write it rather than how a path component has to be."""
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, name="lr sweep, 3e-4 (v2)")
-        assert r.status_code == 200
-
-    def test_it_is_capped(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24,
-                 name="x" * (head_spawns.MAX_SPAWN_NAME + 1))
-        assert r.status_code == 422
-        assert str(head_spawns.MAX_SPAWN_NAME) in r.json()["detail"]
-
-    def test_exactly_the_cap_is_fine(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24,
-                 name="x" * head_spawns.MAX_SPAWN_NAME)
-        assert r.status_code == 200
-
-    @pytest.mark.parametrize("bad", ["two\nlines", "esc\x1b[31m", "null\x00byte", "tab\there"])
-    def test_control_characters_are_refused(self, monkeypatch, bad):
-        """A Name is printed into an aligned CLI table, where a newline breaks the columns and an ANSI
-        escape repaints the terminal around it."""
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, name=bad)
-        assert r.status_code == 422
-
-    def test_it_is_trimmed_rather_than_refused(self, monkeypatch):
-        """Surrounding whitespace is a typo, not a violation — the stored Name is what was meant."""
-        assert head_spawns.clean_name("  nightly eval  ") == "nightly eval"
 
 
 class TestNodeIsNotAvailableOverTheApi:
@@ -785,7 +727,7 @@ class TestAProfiledFeatureNeedsAnEnvironment:
         monkeypatch.setattr(slurm, "arms_with_features", lambda feats: ["gpu-box"])
         monkeypatch.setattr(slurm, "feature_constraint", lambda feats: "&".join(sorted(feats)))
         return c.post("/api/submit",
-                      json={"minutes": 60, "vram": 24, "tidepool": True, "name": "a pool", **meta})
+                      json={"minutes": 60, "vram": 24, "tidepool": True, **meta})
 
     def test_a_bare_tide_pool_asking_for_a_profiled_feature_is_refused(self, monkeypatch):
         r = self._tidepool(monkeypatch, features=["vlearn"])
@@ -814,8 +756,8 @@ class TestCliRequiresTimeAndVram:
 
     @pytest.mark.parametrize("args", [
         # --name is given in both, so what is missing is the one declaration each case is about.
-        ["train.py", "--name", "n", "--time", "60"],   # no --vram
-        ["train.py", "--name", "n", "--vram", "24"],   # no --time
+        ["train.py", "--time", "60"],   # no --vram
+        ["train.py", "--vram", "24"],   # no --time
     ])
     def test_half_a_declaration_is_refused(self, args):
         """The refusal names the flag that is missing. Since Phase 6 these are promptable, so the

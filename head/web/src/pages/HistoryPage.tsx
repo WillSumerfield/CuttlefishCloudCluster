@@ -70,7 +70,7 @@ export function HistoryPage() {
         if (filter.outcomes.size > 0 && !filter.outcomes.has(r.outcome)) return false;
         if (filter.arm && r.node !== filter.arm) return false;
         if (q) {
-          const hay = `${r.name} #${r.id} ${r.submitted_by ?? ""}`.toLowerCase();
+          const hay = `${r.script} #${r.id} ${r.submitted_by ?? ""}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;

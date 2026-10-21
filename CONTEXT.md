@@ -95,14 +95,6 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   fails, or its **Arm** is retracted underneath it, the Spawn fails with it rather than quietly starting
   over somewhere else. So "this Spawn" always names one attempt, never a series of them — what it was
   billed for and what it produced both refer to the same single run.
-- **Name** — what a **Spawn** is called wherever a person meets it: the queue, the archive, an alert.
-  A human's words, always, and never CCC's — a Spawn that names nothing is refused before it exists,
-  on exactly the terms its **Environment** declaration is, because a cluster that invents names fills
-  its own history with rows nobody can tell apart. So every Spawn and every **Tide Pool** is named at
-  submit.
-  A Name is a *label*, never an identifier: nothing is looked up by it, two Spawns may share one, and
-  what tells them apart is the id they already have. Distinct from the entry script, which says what
-  *ran* rather than what it was *for*, and which a Spawn goes on keeping beside its Name.
 - **Tide Pool** — an interactive/testing session: an allocation that attaches a live shell inside a
   **Pod** on an **eligible** Arm, for debugging against real hardware. Bills Karma for as long as it is
   held. Like a **Spawn**, it declares *needs* and is *placed* — a User cannot name the machine

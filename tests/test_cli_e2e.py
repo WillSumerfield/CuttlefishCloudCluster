@@ -145,7 +145,7 @@ class TestSubmit:
     """`cuttle run` — the operation the whole cluster exists for."""
 
     def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
         assert result.exit_code == 0, result.output
         assert "submitted spawn" in result.output
         # Attribution is the ledger's, not Slurm's — every Spawn runs as the Mantle, so Slurm's own
@@ -159,7 +159,7 @@ class TestSubmit:
     def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm):
         """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
         been charged for — precisely the window a queue-flooder wants."""
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
         with db.connect() as conn:
             escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
         assert _spawn_id(result.output) in escrows
@@ -170,13 +170,13 @@ class TestSubmit:
         can't pass silently. Both are promptable, so the refusal is ours, not click's: no
         terminal to ask on, never a quietly-filled default.
         """
-        no_time = signed_in("run", "train.py", "--name", "n", "--vram", "24")
+        no_time = signed_in("run", "train.py", "--vram", "24")
         assert no_time.exit_code != 0 and "--time" in no_time.output
-        no_vram = signed_in("run", "train.py", "--name", "n", "--time", "60")
+        no_vram = signed_in("run", "train.py", "--time", "60")
         assert no_vram.exit_code != 0 and "--vram" in no_vram.output
 
     def test_submitting_without_a_session_is_refused(self, cli, fake_slurm):
-        result = cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
+        result = cli("run", "train.py", "--time", "60", "--vram", "24")
         assert result.exit_code != 0
         assert "not logged in" in result.output
 
@@ -185,7 +185,7 @@ class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
     def _spawn(self, cli):
-        return _spawn_id(cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24").output)
+        return _spawn_id(cli("run", "train.py", "--time", "60", "--vram", "24").output)
 
     def test_you_may_cancel_your_own(self, signed_in, fake_slurm, monkeypatch):
         killed = []
@@ -352,22 +352,17 @@ class TestQueue:
         assert "queue is empty" in r.output
 
     def test_the_queue_lists_a_spawn_and_who_submitted_it(self, signed_in, monkeypatch):
-        # `name` here is the SLURM job name, which is the constant `ccc-spawn` in production and is
-        # deliberately not what the queue shows — set to something conspicuous so the assertion below
-        # can prove the row is titled from the ledger instead.
         monkeypatch.setattr(slurm, "spawns", lambda: [
             {"id": 4207, "name": "ccc-spawn", "state": "running", "node": "gpu-box",
              "gpus": 1, "user": "ccc", "time_limit": 60, "submit_time": 0, "start_time": 0}])
         with db.connect() as conn:
             alice = db.get_user(conn, "alice")
-            db.record_spawn(conn, 4207, alice["id"], "train.py", 60, 1, 24, None,
-                            name="nightly eval")
+            db.record_spawn(conn, 4207, alice["id"], "train.py", 60, 1, 24, None)
         r = signed_in("queue")
         assert r.exit_code == 0, r.output
-        # Two things are the point, and both come from head.db rather than from Slurm: the **Name** a
-        # person gave the Spawn, and its **Attribution** — `ccc` (Slurm's user) must never be shown.
-        assert "4207" in r.output and "nightly eval" in r.output and "alice" in r.output
-        assert "ccc-spawn" not in r.output
+        # The **Attribution** comes from head.db rather than from Slurm — `ccc` (Slurm's user) must
+        # never be shown.
+        assert "4207" in r.output and "alice" in r.output
 
     def test_queue_json_is_the_raw_rows(self, signed_in, monkeypatch):
         monkeypatch.setattr(slurm, "spawns", lambda: [
@@ -386,10 +381,10 @@ class TestHistory:
     finished rows are seeded straight into head.db (the tick's stamping is covered in test_history.py);
     the live squeue is faked so the exclusion is what's exercised."""
 
-    def _finished(self, job_id, user_id, exit_code, cost=None, owner_id=None, name="nightly eval"):
+    def _finished(self, job_id, user_id, exit_code, cost=None, owner_id=None):
         with db.connect() as conn:
             db.record_spawn(conn, job_id, user_id, "train.py", 60, 1, 24, "gpu-box",
-                            hold=5.0, name=name)
+                            hold=5.0)
             db.mark_finished(conn, job_id, exit_code, "2026-07-26T12:00:00Z")
             if cost is not None:
                 db.record_karma(conn, "settle", cost, user_id, owner_id, job_id=job_id)
@@ -412,16 +407,10 @@ class TestHistory:
         assert "4207" in r.output and "alice" in r.output
         assert "done" in r.output and "3.4" in r.output
 
-    def test_the_archive_is_titled_by_the_name_not_the_script(self, signed_in, monkeypatch):
-        """The SPAWN column carries the **Name** a person gave it, matching `queue`'s — so one Spawn
-        reads identically on the live board and in the archive. It used to show the entry script."""
+    def test_the_archive_shows_the_script(self, signed_in, monkeypatch):
         monkeypatch.setattr(slurm, "spawns", lambda: [])
-        # Short enough to survive the SPAWN column's width — the point here is which FIELD
-        # the column reads, not how `ui.table` wraps a long one.
-        self._finished(4209, self._alice(), exit_code=0, name="sweep3")
-        r = signed_in("history")
-        assert "sweep3" in r.output
-        assert "train.py" not in r.output
+        self._finished(4209, self._alice(), exit_code=0)
+        assert "train.py" in signed_in("history").output
 
     def test_a_nonzero_exit_reads_as_failed(self, signed_in, monkeypatch):
         monkeypatch.setattr(slurm, "spawns", lambda: [])
@@ -553,7 +542,6 @@ class TestNoAdminWritesOverTheApi:
                       headers={"Authorization": f"Bearer {token}"},
                       # Named and otherwise complete, so the 403 below is unambiguously about the pin
                       # rather than about some earlier gate.
-                      json={"script": "t.py", "minutes": 60, "vram": 24, "node": "gpu-box",
-                            "name": "a spawn"})
+                      json={"script": "t.py", "minutes": 60, "vram": 24, "node": "gpu-box"})
         assert r.status_code == 403
         assert "on the Head" in r.json()["detail"]

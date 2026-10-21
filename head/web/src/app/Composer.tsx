@@ -7,19 +7,7 @@ import { Chip } from "./Chip";
 import { Select } from "./Select";
 import { Tip } from "./Tip";
 
-/**
- * The Spawn composer. `queue/SubmitComposer.tsx` is a thin wrapper over this.
- *
- * Name is required: a Spawn's is a label (CONTEXT.md, **Name**) — free text, capped, and two Spawns may
- * share one. It used to be optional here and to fall back to the script's name; it no longer falls
- * back to anything, because CCC names nothing.
- */
-
-// Mirrors the Head's MAX_SPAWN_NAME (ccc_head_api.spawns), and only as a typing limit — the Head is
-// what enforces it. Deliberately NOT paired with a charset check: a Spawn's
-// **Name** is a label rather than a path segment, so there is nothing to escape and nothing to reject
-// beyond the length and the control characters the Head strips out.
-const MAX_SPAWN_NAME = 48;
+/** The Spawn composer. `queue/SubmitComposer.tsx` is a thin wrapper over this. */
 
 // How many whole GB a card counts as — ROUNDED UP, mirroring `ccc_head_api.slurm.card_gb` and
 // `cuttle.config.card_gb`. A card almost never reports the number it is sold as (ECC and
@@ -45,7 +33,6 @@ export function Composer(props: ComposerProps) {
   const CONTAINER_PAD = { x: 50, y: 64 };
 
   const [mode, setMode] = useState<"script" | "tidepool">("script");
-  const [name, setName] = useState("");
   const [script, setScript] = useState("");
   const [gpu, setGpu] = useState(1);
   const [minutes, setMinutes] = useState("");
@@ -105,7 +92,6 @@ export function Composer(props: ComposerProps) {
 
   // Clears the whole form and stays open, ready for another.
   const reset = () => {
-    setName("");
     setScript("");
     setMinutes("");
     setVram("");
@@ -113,8 +99,6 @@ export function Composer(props: ComposerProps) {
     setNode("");
     setFeatures([]);
   };
-
-  const trimmed = name.trim();
 
   // The selected count can go stale without being re-picked: choose 2 cards at 40GB, then raise Memory
   // to 400, and the option that was fine is now one no Arm can host. Greying the row out doesn't undo
@@ -129,9 +113,6 @@ export function Composer(props: ComposerProps) {
   // `ready` is derived FROM this list rather than computed beside it: two expressions of one rule
   // drift, and the half that drifts silently is the explanation, which nothing type-checks.
   const blockers: string[] = [];
-  // Every Spawn carries a **Name** a person chose (CONTEXT.md) — the Head refuses a nameless one, so
-  // this gates exactly as the time and memory fields do. A Tide Pool is no exception.
-  if (!trimmed) blockers.push(tide ? "name this tide pool" : "name this spawn");
   if (!tide && !script.trim()) blockers.push("name the script to run");
   if (!(Number(minutes) > 0)) blockers.push("set a time limit");
   if (!(Number(vram) > 0)) blockers.push("set the GPU memory it needs");
@@ -161,15 +142,11 @@ export function Composer(props: ComposerProps) {
       if (mode === "tidepool") {
         const id = await submitTidepool({
           minutes: Number(minutes), vram: Number(vram), gpu, node: node || null, features,
-          // `trimmed`, never `|| null`: a Name is required now, and `ready` above has already refused
-          // to enable the button without one. Sending null could only ever produce a 422 for a field
-          // the form itself just guaranteed.
-          name: trimmed,
         });
         setTidepoolId(id);
       } else {
         await submit({
-          name: trimmed, script: script.trim(), gpu, minutes: Number(minutes),
+          script: script.trim(), gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
           features,
         });
@@ -186,18 +163,6 @@ export function Composer(props: ComposerProps) {
   const fields = (
     <div className="mt-6 space-y-5">
       <div className="grid gap-3 sm:grid-cols-2">
-        <Labeled label="Name" className="sm:col-span-2" help={"What this run is called in the queue and the archive. Required — CCC won't name it for you, and a queue of jobs all called train.py is one nobody can read. Two runs may share a name."}>
-          <input
-            className="field"
-            // MAX_SPAWN_NAME (ccc_head_api.spawns) for a Spawn. The Head is the one that enforces it;
-            // this only stops you typing past the limit and meeting a 422 for it.
-            maxLength={MAX_SPAWN_NAME}
-            placeholder="lr sweep, 3e-4"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </Labeled>
-
         {mode === "script" && (
           <>
             <Labeled label="Script" className="sm:col-span-2" help="The file the cluster actually runs.">

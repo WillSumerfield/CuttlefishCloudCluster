@@ -44,37 +44,6 @@ from . import zshrc
 
 log = logging.getLogger("ccc.api")
 
-# A Spawn's **Name** (CONTEXT.md) — deliberately NOT shaped like the two names above. Those are
-# identifiers: they become path segments and are looked up by, so they
-# are restricted to an identifier charset. A Name is a *label* — it names nothing the cluster resolves,
-# so "lr sweep, 3e-4" is exactly as valid as "sweep3" and there is no reason to make a person spell
-# their own words in kebab-case.
-#
-# What IS rejected is what would corrupt the surfaces it is drawn on: control characters. A Name is
-# printed into an aligned CLI table (`cuttle.ui.table`), where a newline breaks the columns and an ANSI
-# escape can repaint the terminal around it. The Dashboard needs no such guard — React escapes what it
-# renders — but the Head validates for both clients rather than trusting either.
-#
-# 48 characters, measured after trimming. A queue row is scanned, not read.
-MAX_SPAWN_NAME = 48
-
-
-def clean_name(raw) -> str:
-    """A submitted **Name**, trimmed and checked, or a ValueError naming what is wrong with it.
-
-    Raises rather than falling back, because there is no acceptable fallback: a Name CCC chose would be
-    a Name no person chose, which is the whole thing the rule exists to prevent.
-    """
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("every Spawn needs a name — CCC does not invent one (--name)")
-    name = raw.strip()
-    if len(name) > MAX_SPAWN_NAME:
-        raise ValueError(f"that name is {len(name)} characters; the limit is {MAX_SPAWN_NAME}")
-    if any(ch < " " or ch == "\x7f" for ch in name):
-        raise ValueError("a name cannot contain control characters or line breaks")
-    return name
-
-
 HEAD_STATE_DIR = Path(os.environ.get("CCC_HEAD_STATE", "/var/lib/ccc/head"))
 SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
 SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
@@ -991,8 +960,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False,
            features: list[str] | None = None,
-           activation: bool = False,
-           name: str = "") -> int:
+           activation: bool = False) -> int:
     """Render + sbatch a Spawn **as the submitter's Guise**, and record the Attribution row + the Karma
     Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
 
@@ -1074,7 +1042,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         siphons.bind(token, job_id)
         with db.connect() as conn:
             db.record_spawn(conn, job_id, user_id, script or "", minutes=minutes, gpus=gpu,
-                            vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool, name=name)
+                            vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool)
             if tidepool:
                 db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
     except Exception:
@@ -1095,8 +1063,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
                    minutes: int, vram_gb: int,
                    node: str | None = None,
                    features: list[str] | None = None, tidepool: bool = False,
-                   activation: bool = False,
-                   name: str = "") -> int:
+                   activation: bool = False) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
@@ -1124,18 +1091,10 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
 
     Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
     already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
-
-    `name` is the Spawn's **Name**, and it is **validated here** rather than at the route: it is
-    required of every Spawn on this cluster, and a gate only `/submit` enforced would be one the
-    Head-local admin path walked straight past.
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
     from . import karma, slurm
-
-    # First, before the cap and before placement: a nameless Spawn is refused whatever else is true of
-    # it, and being told the name is missing beats being told the queue is full and then told again.
-    name = clean_name(name)
 
     if not is_admin:
         # "Concurrent" = queued OR running (slurm.queue()'s live set) — a User can't dodge the cap by
@@ -1188,7 +1147,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     return submit(user_id, script, gpu, args,
                   minutes, constraint, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
                   tidepool=tidepool, features=features,
-                  activation=activation, name=name)
+                  activation=activation)
 
 
 # --- reads ---------------------------------------------------------------------

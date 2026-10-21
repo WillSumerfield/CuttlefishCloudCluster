@@ -139,7 +139,7 @@ class TestTheAlternateScreenLetsGoForALiveShell:
     def test_the_flag_driven_exemptions_still_hold(self, monkeypatch):
         assert self._streaming(monkeypatch, "run", "--tidepool")
         assert self._streaming(monkeypatch, "run", "train.py", "--follow")
-        assert not self._streaming(monkeypatch, "run", "train.py", "--name", "x")
+        assert not self._streaming(monkeypatch, "run", "train.py")
 
 
 class TestHeadLocalOutputSurvivesQuietMode:
@@ -194,7 +194,7 @@ class TestRunPrintsTheIdToStdout:
     confirmation."""
 
     def test_stdout_is_just_the_spawn_id(self, signed_in, fake_slurm):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
+        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
         assert result.exit_code == 0, result.output
         assert result.stdout.strip().isdigit()
 

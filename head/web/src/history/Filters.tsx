@@ -7,7 +7,7 @@ import { Chip } from "../app/Chip";
  * hairline selects: facets are quiet pressable chips (a recess that lights when active), the same
  * form-from-light language as the rest of the interface.
  *
- * The search box is the one thing the facets can't express — free text over name / #id / who — so a
+ * The search box is the one thing the facets can't express — free text over script / #id / who — so a
  * specific person is found by typing, while the facets stay coarse (Mine, an outcome, an arm).
  */
 
@@ -59,7 +59,7 @@ export function Filters({
     <aside className="surface [--sink:35%] space-y-6" style={{ padding: "calc(var(--pad) + 50px)" }}>
       <input
         className="field"
-        placeholder="spawn, user, or id"
+        placeholder="script, user, or id"
         value={value.query}
         onChange={(e) => set({ query: e.target.value })}
         aria-label="Search the archive"

@@ -78,7 +78,7 @@ def _noun(spawn_id: int) -> str:
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
         node: str | None, features: list[str], follow: bool,
-        vscode: bool = False, name: str = "") -> None:
+        vscode: bool = False) -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
     Spawn) unless `script_or_id` resolves to an existing one, then attaches either way."""
     if follow:
@@ -91,20 +91,15 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
         if script_or_id:
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
-        spawn_id = _request(minutes, vram, gpu, node, features, name=name)
+        spawn_id = _request(minutes, vram, gpu, node, features)
     _wait_and_attach(spawn_id, vscode=vscode)
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
-            features: list[str], name: str = "") -> int:
+            features: list[str]) -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
     nothing here weakens that gate."""
     minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
     vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
-    # A bare Tide Pool is one of the two Spawns with no name of its own to inherit, so it is asked for
-    # one exactly like the two declarations above. Reattaching to an existing id never reaches here —
-    # that Spawn was named when it was requested.
-    name = ui.need(name, "--name", lambda: ui.ask_text("What should this tide pool be called?"))
-    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, node=node, features=features,
-                                          name=name)
+    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, node=node, features=features)
     ui.ok(f"requested tide pool {spawn_id}")
     return spawn_id
 

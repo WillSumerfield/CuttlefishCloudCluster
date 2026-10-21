@@ -435,21 +435,7 @@ CREATE TABLE workspaces (
 );
 """
 
-# A Spawn's **Name** (CONTEXT.md): what a person calls it in the queue and the archive, and the one
-# thing about a Spawn that CCC never invents. Required at `/submit` exactly as `minutes`/`vram`/the
-# **Environment** declaration are — refused before the Spawn exists rather than filed under something
-# made up for it — so nothing reaching this insert is nameless.
-#
-# NOT the Slurm job name. That string is `.replace()`d into a bash job script (`spawns.JOB_SCRIPT`),
-# where a User's own words would be a shell injection; `--job-name` stays the constant `ccc-spawn` and
-# the Name lives here, served by the same DB join `/spawns` already does for Attribution.
-#
-# `DEFAULT ''` is a migration artifact and nothing else: an empty Name is unreachable through either
-# client, and no row that predates this column survives the teardown that ships it. It exists because
-# SQLite cannot ADD a NOT NULL column without one.
-#
-# A label, never a key — no UNIQUE here, deliberately. Two Spawns may share a Name (running one Recipe
-# twice is the ordinary case, and both visits inherit it); the job_id is what tells them apart.
+# Unused since 2.0 dropped Spawn Names; kept only until the schema collapse.
 _SCHEMA_V18 = """
 ALTER TABLE spawns ADD COLUMN name TEXT NOT NULL DEFAULT '';
 """
@@ -745,21 +731,19 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
                  minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
                  node: str | None = None, hold: float | None = None,
-                 tidepool: bool = False, name: str = "") -> None:
+                 tidepool: bool = False) -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
     ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
     submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
 
     `hold` is None for a Spawn nobody is charged for: the **Admin** is outside the economy, so their
     Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
-
-    `name` is the **Name** a person reads.
     """
     conn.execute(
         """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
-                              tidepool, name)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, "", minutes, gpus, vram_gb, node, int(tidepool), name),
+                              tidepool)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, script, "", minutes, gpus, vram_gb, node, int(tidepool)),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -771,28 +755,19 @@ def get_spawn(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM spawns WHERE job_id=?", (job_id,)).fetchone()
 
 
-def spawn_labels(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, dict]:
-    """Map job_id -> the two things the live `GET /spawns` queue cannot learn from Slurm: who submitted
-    it (**Attribution** — Slurm says `ccc` for every Spawn, so only this ledger knows) and what it is
-    **Name**d.
-
-    The Name is here rather than on the Slurm job because it cannot safely be there: `--job-name` is
-    substituted into a bash job script, so a User's own words in it would be a shell injection. The
-    queue reads it back over the same join Attribution already needed, which is why this answers both
-    at once instead of costing a second query per poll.
-
-    A job id with no row (submitted outside CCC, or already reaped) is simply absent — the caller fills
-    in its own default rather than being handed a fabricated one.
-    """
+def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str | None]:
+    """Map job_id -> who submitted it (**Attribution**) — the one thing the live `GET /spawns` queue
+    cannot learn from Slurm, which says `ccc` for every Spawn. A job id with no row (submitted outside
+    CCC, or already reaped) is simply absent."""
     if not job_ids:
         return {}
     marks = ",".join("?" * len(job_ids))
     rows = conn.execute(
-        f"""SELECT s.job_id, s.name, u.username FROM spawns s
+        f"""SELECT s.job_id, u.username FROM spawns s
             LEFT JOIN users u ON u.id = s.user_id WHERE s.job_id IN ({marks})""",
         job_ids,
     ).fetchall()
-    return {r["job_id"]: {"submitted_by": r["username"], "name": r["name"]} for r in rows}
+    return {r["job_id"]: r["username"] for r in rows}
 
 
 def spawn_owners(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, int]:
@@ -860,7 +835,7 @@ def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, 
 # the list and another on its own page. The settled cost joins in from the ledger's `settle` row (a
 # Spawn that never settled — Admin-owned, or ended before its escrow was metered — has NULL cost,
 # which reads as `—`).
-_SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script, s.name,
+_SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
                        s.gpus, s.vram_gb, s.minutes, s.node, s.placed_node,
                        u.username AS submitted_by,
                        l.amount AS cost

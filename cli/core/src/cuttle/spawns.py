@@ -68,7 +68,7 @@ def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str,
                    features: list[str] | None = None, tidepool: bool = False,
                    activation: bool = False,
-                   user: str | None = None, name: str = "") -> int:
+                   user: str | None = None) -> int:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and the Head API has none — so this does not travel over HTTP at all.
@@ -86,7 +86,7 @@ def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
     r = run(auth._admin_argv([
         "submit", "--user", me, "--script", script,
         "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-        "--node", node, "--name", name,
+        "--node", node,
         # Repeatable, one `--feature NAME` per declared name — placed before the trailing `*args`
         # positional (the admin parser's `nargs="*"`) so argparse never mistakes a script argument
         # for another feature name.
@@ -144,8 +144,7 @@ def _post_submit(meta: dict) -> int:
 
 
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
-           node: str | None = None, features: list[str] | None = None,
-           name: str = "") -> None:
+           node: str | None = None, features: list[str] | None = None) -> None:
     features = features or []
     # The Head turns `vram` into a Slurm constraint: it knows every distinct card in the fleet and we
     # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
@@ -155,10 +154,10 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     # for everyone — so a pinned Spawn takes the Head-local path below instead.
     if node:
         spawn_id = _submit_pinned(script, args, minutes, vram, gpu, node,
-                                  features=features, name=name)
+                                  features=features)
     else:
         spawn_id = _post_submit({
-            "script": script, "gpu": gpu, "args": args, "name": name,
+            "script": script, "gpu": gpu, "args": args,
             "minutes": minutes, "vram": vram,
             # Omitted rather than sent empty — most Spawns declare none, and the Head reads an absent
             # key as "no requirement".
@@ -172,15 +171,15 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
 
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, node: str | None = None,
-                    features: list[str] | None = None, name: str = "") -> int:
+                    features: list[str] | None = None) -> int:
     """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
     tidepool.py, owns the UI from here, since it still has to poll for placement and attach)."""
     features = features or []
     if node:
         return _submit_pinned("", [], minutes, vram, gpu, node,
-                              features=features, tidepool=True, name=name)
+                              features=features, tidepool=True)
     return _post_submit({"minutes": minutes, "vram": vram, "gpu": gpu, "tidepool": True,
-                         "name": name, **({"features": features} if features else {})})
+                         **({"features": features} if features else {})})
 
 
 def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:
@@ -313,8 +312,8 @@ def queue(as_json: bool = False, limit: int = 0) -> None:
             ui.say("the queue is empty")
             return
         ui.table(
-            ["ID", "SPAWN", "STATE", "WHO", "NODE", "GPU", "MIN"],
-            [[r["id"], r["name"], r["state"], r.get("submitted_by") or "-",
+            ["ID", "STATE", "WHO", "NODE", "GPU", "MIN"],
+            [[r["id"], r["state"], r.get("submitted_by") or "-",
               r.get("node") or "-", r.get("gpus"), r.get("time_limit")] for r in rows])
         if limit and len(rows) >= limit:
             ui.hint(f"showing {limit}; use --limit 0 for all")
@@ -354,13 +353,10 @@ def history(days: int = 30, as_json: bool = False, limit: int = 0) -> None:
         if not rows:
             ui.say(f"no Spawns in the last {days} days")
             return
-        # SPAWN, not SCRIPT: the column carries the **Name** its submitter gave it, matching `queue`'s
-        # own SPAWN column so the live board and the archive title one Spawn identically. The script
-        # is what RAN and is still on `cuttle status <id>`; it is not what a person scans a list by.
         ui.table(
-            ["SUBMITTED", "FINISHED", "ID", "SPAWN", "WHO", "GPU", "MIN", "COST", "OUTCOME"],
+            ["SUBMITTED", "FINISHED", "ID", "SCRIPT", "WHO", "GPU", "MIN", "COST", "OUTCOME"],
             [[_short(r["submitted_at"]), _short(r.get("finished_at")), r["job_id"],
-              r.get("name") or "-",
+              r.get("script") or "-",
               r.get("submitted_by") or "-", r.get("gpus"), r.get("minutes"),
               f"{r['cost']:.1f}" if r.get("cost") is not None else "—", _history_outcome(r)]
              for r in rows])

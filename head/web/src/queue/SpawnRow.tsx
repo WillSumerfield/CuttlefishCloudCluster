@@ -94,7 +94,7 @@ export function SpawnRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="num truncate text-[15px] text-ink">{spawn.name || `spawn ${spawn.id}`}</span>
+          <span className="num truncate text-[15px] text-ink">{`spawn ${spawn.id}`}</span>
           <span className="num shrink-0 text-[12px] text-ink-mute">#{spawn.id}</span>
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-ink-mute">

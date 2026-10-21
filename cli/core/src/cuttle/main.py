@@ -700,10 +700,6 @@ def run(
     gpu: int = typer.Option(
         1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. --vram is the total "
                                    "across them. Refused if no Arm has this many."),
-    name: str = typer.Option(
-        None, "--name", help="What to call this Spawn in the queue and the archive. Required — CCC "
-                             "never invents one. Free text (48 chars): \"lr sweep 3e-4\" is as valid "
-                             "as \"sweep3\"."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
     node: str = typer.Option(
         None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
@@ -733,7 +729,7 @@ def run(
     feature = list(feature) if feature else []
     if tidepool:
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node,
-                                features=feature, follow=follow, vscode=vscode, name=name)
+                                features=feature, follow=follow, vscode=vscode)
     if vscode:
         ui.warn("--vscode is ignored without --tidepool — a script Spawn has no shell to open")
     wizard = script is None
@@ -744,10 +740,6 @@ def run(
         # No file picker: you pass the path. Prompting through a directory listing is slower than
         # typing a name you already know, and wrong the moment the script lives in a subdirectory.
         script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
-        # Required exactly as --time and --vram are, and asked the same way: a person types it, or a
-        # scripted run that gave none is refused. CCC has nothing to fall back to — a Name it chose
-        # would be a Name nobody chose, which is the whole point of requiring one.
-        name = ui.need(name, "--name", lambda: ui.ask_text("What should this Spawn be called?"))
         # --time and --vram get no pre-filled default, deliberately: a default --vram of the
         # biggest card would make every untouched field eligible for it alone — queued at the
         # highest Demand for work that may need 2 GB.
@@ -768,7 +760,7 @@ def run(
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args,
-                      node=node, minutes=time, vram=vram, features=feature, name=name)
+                      node=node, minutes=time, vram=vram, features=feature)
 
 
 @app.command()

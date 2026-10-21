@@ -144,7 +144,7 @@ def _return(node: str) -> int:
 def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
             node: str | None, args: list[str],
             features: list[str] | None = None, tidepool: bool = False,
-            activation: bool = False, name: str = "") -> int:
+            activation: bool = False) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
     Authorization is being the operator on the Head; attribution is the account named here. Goes through
@@ -169,7 +169,7 @@ def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        minutes, vram, node,
                                        features=features, tidepool=tidepool,
-                                       activation=activation, name=name)
+                                       activation=activation)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -223,9 +223,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="the project that activates a Feature's licence on an Arm (JSON).")
     fa.add_argument("name")
     s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
-    s.add_argument("--name", required=True,
-                   help="what to call this Spawn in the queue and the archive. Required, like every "
-                        "other Spawn's — CCC never invents one.")
     s.add_argument("--script", default=None, help="omit only for --tidepool.")
     s.add_argument("--minutes", type=int, required=True)
     s.add_argument("--vram", type=int, required=True)
@@ -263,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         return _submit(args.user, args.script, args.minutes, args.vram, args.gpu,
                        args.node, args.args, args.features,
                        tidepool=args.tidepool,
-                       activation=args.activation, name=args.name)
+                       activation=args.activation)
     if args.cmd == "feature-activation":
         return _feature_activation(args.name)
     return 2

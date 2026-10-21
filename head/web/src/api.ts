@@ -36,7 +36,6 @@ export type Arm = {
 // even surface it.
 export type Spawn = {
   id: number
-  name: string
   state: string
   node: string | null
   gpus: number
@@ -57,6 +56,8 @@ export type Outcome = 'done' | 'failed' | 'cancelled' | 'retracted' | 'settling'
 // A finished Spawn, as History serves it. Extends the live Spawn with its verdict and what it settled
 // at. Served by GET /spawns/history — getHistory() above adapts that wire shape into this one.
 export type ArchivedSpawn = Spawn & {
+  // The entry script — what RAN, and what titles the row.
+  script: string
   outcome: Outcome
   // Process exit code. Present on done (0) and failed (non-zero); null on cancelled/retracted, which
   // never ran to an exit.
@@ -85,11 +86,8 @@ export type SpawnDetail = {
   submitted_at?: string
   finished_at?: string | null
   exit_code?: number | null
-  /** What RAN. Kept beside the Name rather than replaced by it — the page has room to say both, and
-   *  "which script was this?" is a real question a queue row has no space to answer. */
+  /** What RAN. */
   script?: string
-  /** What a person CALLED it (CONTEXT.md, **Name**). What titles this page and every list row. */
-  name?: string
   gpus?: number | null
   vram_gb?: number | null
   minutes?: number | null
@@ -168,10 +166,8 @@ type HistoryRow = {
   finished_at: string | null
   exit_code: number | null
   cancelled: boolean
-  // The entry script (what RAN) and the **Name** (what a person called it). Two different facts: the
-  // list is titled by the Name, and the script stays visible on the Spawn's own page.
+  // The entry script (what RAN).
   script: string
-  name: string
   // What the submitter DEMANDED (Admin-only `--node`), which is null for almost every Spawn — never
   // where it ran. `placed_node` is that, recorded by the meter; null when the Spawn ended too fast to
   // be metered at all, or predates the column.
@@ -206,8 +202,7 @@ export const getHistory = () =>
     rows.map(
       (r): ArchivedSpawn => ({
         id: r.job_id,
-        // The **Name** its submitter gave it — not the script, which is what this used to show.
-        name: r.name,
+        script: r.script,
         state: r.cancelled ? 'cancelled' : 'finished',
         // For a FINISHED Spawn "the arm" means the one it ran on. The declared node is the fallback
         // only because when it is set at all, an Admin named it and the Spawn went there.
@@ -327,10 +322,6 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 
 
 export type SubmitOpts = {
-  /** What this run is called in the queue and the archive. REQUIRED — the Head refuses a nameless
-   *  Spawn, and falls back to nothing (CONTEXT.md, **Name**). A label, not a key: two Spawns may
-   *  share one, and the id is what tells them apart. */
-  name: string
   script: string
   gpu: number
   // Wall-clock minutes, and GPU memory in GB. Both required by the Head — a Spawn with no declared
@@ -354,12 +345,12 @@ const postSubmit = async (meta: object): Promise<number> => {
 }
 
 export function submit({
-  name, script, gpu, minutes, vram, node, args, features,
+  script, gpu, minutes, vram, node, args, features,
 }: SubmitOpts): Promise<number> {
   // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
   // absent key the same as an empty list.
   return postSubmit({
-    name, script, gpu, minutes, vram, node, args,
+    script, gpu, minutes, vram, node, args,
     ...(features.length ? { features } : {}),
   })
 }
@@ -373,15 +364,13 @@ export type SubmitTidepoolOpts = {
   gpu: number
   node: string | null
   features: string[]
-  /** Required, exactly as it is for an ordinary Spawn. */
-  name: string
 }
 
 export function submitTidepool({
-  minutes, vram, gpu, node, features, name,
+  minutes, vram, gpu, node, features,
 }: SubmitTidepoolOpts): Promise<number> {
   return postSubmit({
-    minutes, vram, gpu, node, tidepool: true, name,
+    minutes, vram, gpu, node, tidepool: true,
     ...(features.length ? { features } : {}),
   })
 }
