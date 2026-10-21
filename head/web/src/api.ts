@@ -182,8 +182,7 @@ const json = <T,>(path: string, init?: RequestInit) =>
   req(path, init).then((r) => r.json() as Promise<T>)
 
 /**
- * The gzip-tar body every upload sends: a Spawn's project, a Workspace's seed, a Tide Pool's (often
- * empty) folder. One shape, because the Head has one upload path.
+ * The gzip-tar body every upload sends: a Spawn's project, or a Tide Pool's (often empty) folder. One shape, because the Head has one upload path.
  *
  * **Built on a worker thread, and that is the whole point.** Two separate costs were freezing the tab,
  * and only one of them was obvious. The first was `makeTar` copying the project into one array after
@@ -268,8 +267,7 @@ export const getHistory = () =>
     rows.map(
       (r): ArchivedSpawn => ({
         id: r.job_id,
-        // The **Name** its submitter gave it — not the script, which is what this used to show and is
-        // why a Workspace visit read nothing at all.
+        // The **Name** its submitter gave it — not the script, which is what this used to show.
         name: r.name,
         state: r.cancelled ? 'cancelled' : 'finished',
         // For a FINISHED Spawn "the arm" means the one it ran on. The declared node is the fallback
@@ -333,136 +331,6 @@ const armPost = (name: string, verb: string) =>
 export const retractArm = (name: string) => armPost(name, 'retract')
 /** Owner-only: give a retracted Arm back — it never left the cluster, so no Admin, no new token. */
 export const returnArm = (name: string) => armPost(name, 'return')
-
-// A Workspace: a working directory the Head KEEPS, so opening it again resumes where the last visit
-// stopped. The Tide Pool's durable form, mutable and visited interactively.
-//
-// `storage_bytes` is its **Storage**: what it may hold, carved out of the 32 GB workspace allowance by its
-// owner when they created it. `used_bytes` is measured off the Head's disk on every read, never cached —
-// a Workspace's tree changes every 60 seconds from inside a live session, over rsync, with nothing on
-// the Head watching it happen.
-//
-// `live` is the Spawn id of the visit in progress, or null. `starting` covers the moment between the
-// claim and sbatch answering, when a visit is live but has no id to show yet.
-export type Workspace = {
-  name: string
-  storage_bytes: number     // its Storage — what it may hold
-  used_bytes: number      // what it holds right now, off the disk
-  gpus: number
-  vram_mb: number
-  minutes: number         // per-VISIT wall clock; the workspace itself never expires
-  manifest: string        // optional — a visit is a shell, not a run
-  substrate: string       // optional everywhere — the system packages every visit installs
-  outputs: string[]       // optional too — everything in the tree is kept either way
-  features: string[]
-  created_at: number | null
-  last_visited_at: number | null
-  live: number | null     // the Spawn id visiting it right now
-  starting: boolean       // claimed, but sbatch has not answered yet
-}
-
-// Per-User: 32 GB, and the only allowance its holder divides up themselves — each Workspace reserves a
-// Storage out of it at creation. Mirrors the Head's workspaces.py MAX_USER_BYTES, the actual authority.
-export const WORKSPACE_ALLOWANCE_BYTES = 32 * 1024 ** 3
-
-export const getWorkspaces = () => json<Workspace[]>('/workspaces')
-
-// Seed a directory into a new Workspace — the ONLY upload one ever takes. Everything after this is
-// written from inside the Workspace's own sessions and mirrored home, which is what makes it durable
-// on the Head. Same wire shape as submit: tar+gzip body, meta in the header.
-export type NewWorkspace = {
-  picked: Picked
-  name: string
-  storage_bytes: number
-  gpus: number
-  vram_mb: number
-  minutes: number
-  manifest: string
-  substrate: string
-  outputs: string[]
-  features: string[]
-}
-
-export async function createWorkspace(w: NewWorkspace): Promise<Workspace> {
-  const body = await projectBody(w.picked)
-  const meta = {
-    name: w.name, storage_bytes: w.storage_bytes, gpus: w.gpus, vram_mb: w.vram_mb,
-    minutes: w.minutes, manifest: w.manifest.trim(), substrate: w.substrate.trim(),
-    outputs: w.outputs, features: w.features,
-  }
-  const res = await req('/workspaces', {
-    method: 'POST',
-    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
-    body,
-  })
-  return res.json() as Promise<Workspace>
-}
-
-// Everything a visit asks for, plus the Storage the tree may fill. There is no code half of this: a
-// Workspace is seeded once and written to from inside its own sessions after that, so there is nothing
-// to re-capture and no upload sibling of this call.
-export type WorkspaceSettings = {
-  storage_bytes: number
-  gpus: number
-  vram_mb: number
-  minutes: number
-  manifest: string
-  substrate: string
-  outputs: string[]
-  features: string[]
-}
-
-/**
- * Resize a Workspace, and change what its visits ask for. Never the files.
- *
- * The Head refuses a shrink below what the tree already holds (422, with the real number) and a grow
- * past the allowance (413) — a resize is weighed on what it GROWS BY, this Workspace's own reservation
- * coming off the pool first. A resize while a visit is live is accepted and takes effect on the NEXT
- * one: the running session's Storage is a constant baked into its job script.
- */
-export const updateWorkspace = (name: string, w: WorkspaceSettings) =>
-  req(`/workspaces/${encodeURIComponent(name)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(w),
-  }).then((res) => res.json() as Promise<Workspace>)
-
-/**
- * Open a Workspace: start a visit, or attach to the one already running.
- *
- * A visit is a Tide Pool bound to the tree — same queue, same wait for a card, same Karma — so the
- * connection details come back through the ordinary Tide Pool route once it is placed. A Workspace
- * holds ONE visit at a time, so this never queues a second behind a live one: `attached` says which of
- * the two happened.
- */
-export const openWorkspace = (name: string) =>
-  req(`/workspaces/${encodeURIComponent(name)}/open`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  }).then((r) => r.json() as Promise<{ id: number; attached: boolean }>)
-
-/**
- * Whether the live visit's last mirror found the tree over its Storage, and by how much.
- *
- * The Head cannot see what the Arm is holding — only what the session's 60s mirror reports — so this is
- * a marker read, not a measurement. Worth surfacing because nothing fails loudly when a Workspace fills:
- * the session simply stops being saved.
- */
-export const getWorkspaceFull = (name: string) =>
-  json<{ live: number | null; full: boolean; bytes: number; storage_bytes: number }>(
-    `/workspaces/${encodeURIComponent(name)}/full`)
-
-/** Where the browser fetches a Workspace (or one folder inside it) as a tar. A plain link, not a fetch:
- *  a Storage runs to 16 GB and up, and the Head streams it rather than buffering — so the download belongs
- *  to the browser's own download manager, not to this tab's memory. */
-export const workspaceDownloadUrl = (name: string, path?: string) =>
-  `${API}/workspaces/${encodeURIComponent(name)}/download` +
-  (path ? `?path=${encodeURIComponent(path)}` : '')
-
-/** Delete a Workspace, freeing its Storage. Refused (409) while a visit is live. */
-export const deleteWorkspace = (name: string) =>
-  req(`/workspaces/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
 // The Tide, as the Head serves it: Demand per Arm over CLOCK time — how badly each card has been wanted,
 // hour by hour, over the last `days`. This is the ONLY surface the Tide is seen through: not a forecast,
@@ -544,8 +412,7 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 }
 
 /**
- * Where the browser fetches a Spawn's declared outputs as a tar. A plain link, like a Workspace's — not
- * a fetch.
+ * Where the browser fetches a Spawn's declared outputs as a tar. A plain link — not a fetch.
  *
  * This used to `await r.blob()` and hand the result to `URL.createObjectURL`, which put the entire
  * download in the tab before a single byte reached the disk. On a 3GB result that is minutes during

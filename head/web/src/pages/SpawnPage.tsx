@@ -351,8 +351,7 @@ export function SpawnPage({ id }: { id: string }) {
   return (
     <Page
       // Titled by its **Name**, like every list that links here — a Spawn page headed by the entry
-      // script disagreed with the queue row you clicked to reach it, and said nothing at all for a
-      // Workspace visit, which has no script.
+      // script disagreed with the queue row you clicked to reach it.
       title={detail?.name || detail?.script || id}
       actions={
         v ? (

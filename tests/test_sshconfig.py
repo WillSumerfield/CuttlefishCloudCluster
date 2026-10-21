@@ -9,7 +9,6 @@ NOT tested: a real VS Code, a real remote session — same hardware carve-out as
 Pool (see test_tidepool.py).
 """
 
-import inspect
 import shutil
 import stat
 import subprocess
@@ -21,25 +20,14 @@ from cuttle import config, sshconfig
 from cuttle import tidepool as cli_tidepool
 
 
-def _row(spawn_id=58, workspace=None, port=41007, proj="/tmp/ccc-58/proj"):
+def _row(spawn_id=58, port=41007, proj="/tmp/ccc-58/proj"):
     return sshconfig.record(spawn_id, private_key="-----BEGIN OPENSSH PRIVATE KEY-----",
-                            port=port, user="ccc-u60002", host="head", workspace=workspace,
-                            proj=proj)
+                            port=port, user="ccc-u60002", host="head", proj=proj)
 
 
-class TestTheTwoNamespaces:
-    """A **Workspace** may legally be named `58`; so may a Spawn be numbered 58."""
-
+class TestTheAlias:
     def test_a_tide_pool_is_addressed_by_id(self):
-        assert sshconfig.alias(58, None) == "ccc-tp-58"
-
-    def test_a_visit_is_addressed_by_workspace_name(self):
-        """Not by the visiting Spawn's id: that changes every visit, and an alias that changed with
-        it is one nobody could put in a bookmark."""
-        assert sshconfig.alias(4242, "vlearn") == "ccc-ws-vlearn"
-
-    def test_a_workspace_named_like_an_id_does_not_collide(self):
-        assert sshconfig.alias(1, "58") != sshconfig.alias(58, None)
+        assert sshconfig.alias(58) == "ccc-tp-58"
 
 
 class TestTheKeyOutlivesTheCommand:
@@ -170,11 +158,6 @@ class TestSshItselfAgrees:
         assert got["identitiesonly"] == "yes"
         assert str(config.TIDEPOOL_DIR / "58.key") in got["identityfile"]
 
-    def test_a_visits_alias_resolves_too(self, ccc_home):
-        _row(4242, workspace="vlearn", port=41008)
-        sshconfig.refresh(live={4242})
-        assert self._resolved("ccc-ws-vlearn")["port"] == "41008"
-
     def test_nothing_else_matches_it(self, ccc_home):
         """The blocks are `Host <alias>`, not `Host ccc-*` — an unknown name must fall through."""
         _row()
@@ -191,12 +174,6 @@ class TestTheProjectFolder:
     def test_the_heads_own_arm(self):
         assert head_spawns.pod_project_dir(58, head_arm=True) == f"{head_spawns.SCRATCH_DIR}/58/proj"
 
-    def test_a_visit_is_the_tmp_form_on_the_heads_own_arm(self):
-        """The bug this class exists to catch, and the one it missed. A visit takes the remote branch
-        WHEREVER it lands, so `head_arm` on its own is the wrong question — see `pod_project_dir`."""
-        assert head_spawns.pod_project_dir(7, head_arm=True, visit=True) == "/tmp/ccc-7/proj"
-        assert head_spawns.pod_project_dir(7, head_arm=False, visit=True) == "/tmp/ccc-7/proj"
-
     def test_the_two_scratch_forms_agree_with_the_job_script(self):
         """Both forms are written longhand in JOB_SCRIPT, and this helper reads them back. If the
         script's scratch layout moves, this is what says so instead of a VS Code window opening on
@@ -205,16 +182,6 @@ class TestTheProjectFolder:
         assert 'scratch="%%HEAD_SCRATCH%%/$jid"' in script
         assert 'scratch="/tmp/ccc-$jid"' in script
         assert script.count('proj="$scratch/proj"') == 2
-
-    def test_the_gate_is_the_staging_dir_and_a_visit_empties_it(self):
-        """Why the `visit` argument exists at all, asserted against the two things that decide it: the
-        script branches on `[ -d "$staging_dir" ]`, and `_render` leaves that empty for a visit. Either
-        one moving breaks the reading above, and this is what says so."""
-        assert 'if [ -d "$staging_dir" ]; then' in head_spawns.JOB_SCRIPT
-        assert 'staging_dir="%%STAGING_DIR%%"' in head_spawns.JOB_SCRIPT
-        src = inspect.getsource(head_spawns._render)
-        assert '"%%STAGING_DIR%%": "" if workspace else str(staging)' in src
-
 
 class TestTheAttach:
     """`_wait_and_attach` with the network taken out of it."""
@@ -264,11 +231,6 @@ class TestTheAttach:
         cli_tidepool._wait_and_attach(58, vscode=True)
         assert launched == [["/usr/bin/code", "--remote", "ssh-remote+ccc-tp-58", "/tmp/ccc-58/proj"]]
         assert ran == []   # no terminal shell
-
-    def test_a_visit_is_launched_by_its_workspace_alias(self, placed):
-        _, launched = placed
-        cli_tidepool._wait_and_attach(58, workspace="vlearn", vscode=True)
-        assert launched[0][2] == "ssh-remote+ccc-ws-vlearn"
 
     def test_an_older_head_sending_no_folder_still_opens(self, monkeypatch, placed):
         """`proj` is new on the wire. Without it VS Code opens on the host and the User picks."""

@@ -25,8 +25,7 @@ AuthType=auth/munge
 ProctrackType=proctrack/cgroup
 TaskPlugin=task/cgroup
 # How long a Spawn has between the TERM that ends it and the KILL that enforces it — the window its own
-# EXIT trap uses to send work home (ccc_head_api.spawns): a Workspace's final mirror, a Tide Pool's
-# Recovery Window copy. Slurm's default 30s is not enough for the latter, which is a COLD rsync of up to
+# EXIT trap uses to send work home (ccc_head_api.spawns): a Tide Pool's Recovery Window copy. Slurm's default 30s is not enough for the latter, which is a COLD rsync of up to
 # RECOVERY_MAX_BYTES (16 GB) made once, at the end, with no periodic pass behind it — so at 30s the
 # day-long window quietly did not exist for exactly the Spawns with the most to lose.
 #

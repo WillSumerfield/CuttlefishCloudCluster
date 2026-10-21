@@ -8,7 +8,6 @@ import { KarmaPage } from "../karma/KarmaPage";
 import { QueuePage } from "../pages/QueuePage";
 import { HistoryPage } from "../pages/HistoryPage";
 import { ArmsPage } from "../pages/ArmsPage";
-import { WorkspacesPage } from "../pages/WorkspacesPage";
 import { TidePage } from "../pages/TidePage";
 import { AccountPage } from "../pages/AccountPage";
 import { UsersPage } from "../pages/UsersPage";
@@ -34,8 +33,6 @@ function Route() {
       return <HistoryPage />;
     case "/arms":
       return <ArmsPage />;
-    case "/workspaces":
-      return <WorkspacesPage />;
     case "/karma":
       return <KarmaPage />;
     case "/tide":

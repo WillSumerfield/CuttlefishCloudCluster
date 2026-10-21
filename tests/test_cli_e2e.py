@@ -12,11 +12,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ccc_head_api import db, karma, slurm
-from ccc_head_api import spawns as head_spawns
-from ccc_head_api import workspaces as head_workspaces
 from cuttle import auth, config, menu, pickers, ui
 from cuttle import spawns as spawns_mod
-from cuttle import tidepool as tidepool_mod
 
 from conftest import USERS
 
@@ -233,133 +230,6 @@ class TestProjectDir:
                            "--manifest", "requirements.txt", "--dir", str(project / "train.py"))
         assert result.exit_code != 0
         assert "not a directory" in result.output
-
-
-class TestWorkspaces:
-    """`cuttle workspace` end to end — the durable form of a Tide Pool.
-
-    The visit itself needs a real Arm to mirror from, so `submit_checked` is stubbed here: what belongs
-    at this level is that the CLI seeds, lists, resizes, downloads and deletes against the real Head,
-    and that the Head's refusals reach the operator intact.
-    """
-
-    def _new(self, cli, *extra):
-        return cli("workspace", "new", "scratch", "--storage", "4", "--time", "60", "--vram", "24",
-                   "--manifest", "requirements.txt", "--yes", *extra)
-
-    def test_a_workspace_is_seeded_from_this_directory(self, signed_in, fake_slurm, project):
-        r = self._new(signed_in)
-        assert r.exit_code == 0, r.output
-        assert "created workspace scratch" in r.output
-        seeded = head_workspaces.dir_of(1, "scratch")
-        assert (seeded / "train.py").read_text().startswith("print(")
-
-    def test_dir_seeds_a_different_directory(self, signed_in, fake_slurm, project, tmp_path,
-                                             monkeypatch):
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
-        r = self._new(signed_in, "--dir", str(project))
-        assert r.exit_code == 0, r.output
-        assert (head_workspaces.dir_of(1, "scratch") / "train.py").exists()
-
-    def test_list_shows_storage_used_and_idle(self, signed_in, fake_slurm, project):
-        self._new(signed_in)
-        r = signed_in("workspace", "list")
-        assert r.exit_code == 0, r.output
-        assert "scratch" in r.output and "idle" in r.output
-
-    def test_the_empty_shelf_says_how_to_start_one(self, signed_in, fake_slurm):
-        r = signed_in("workspace", "list")
-        assert "no workspaces yet" in r.output
-
-    def test_asking_past_the_allowance_reaches_the_operator_intact(self, signed_in, fake_slurm,
-                                                                   project, monkeypatch):
-        """The Head owns the pool and nothing client-side pre-checks it, so its refusal — with the
-        numbers and the remedy in it — is the only message there is."""
-        monkeypatch.setattr(head_workspaces, "MAX_USER_BYTES", 1024)
-        r = self._new(signed_in)
-        assert r.exit_code != 0
-        assert "delete a workspace" in r.output
-
-    def test_a_storage_can_be_grown(self, signed_in, fake_slurm, project):
-        self._new(signed_in)
-        r = signed_in("workspace", "update", "scratch", "--storage", "8", "--yes")
-        assert r.exit_code == 0, r.output
-        assert "8.0 GiB" in r.output
-
-    def test_shrinking_below_the_tree_is_refused_with_the_real_number(self, signed_in, fake_slurm,
-                                                                      project, monkeypatch):
-        """`--storage` is in whole GB, so the tree has to be reported at GB scale for this to be a shrink
-        at all — measured rather than written, since the point is the refusal and not the disk."""
-        self._new(signed_in)
-        monkeypatch.setattr(head_workspaces, "usage", lambda uid, name: 3 * 1024 ** 3)
-        r = signed_in("workspace", "update", "scratch", "--storage", "1", "--yes")
-        assert r.exit_code != 0
-        assert "already holds" in r.output and "3 GiB" in r.output
-
-    def test_download_streams_the_tree_to_a_file(self, signed_in, fake_slurm, project, tmp_path):
-        """Streamed to disk rather than held in memory — the whole reason the Head streams it."""
-        self._new(signed_in)
-        r = signed_in("workspace", "download", "scratch", "--dest", str(tmp_path / "out"))
-        assert r.exit_code == 0, r.output
-        tar = tmp_path / "out" / "workspace-scratch.tar.gz"
-        assert tar.is_file()
-        import tarfile
-        assert "workspace-scratch/train.py" in tarfile.open(tar).getnames()
-        # The .part is renamed on success, never left beside the finished file.
-        assert not (tmp_path / "out" / "workspace-scratch.tar.gz.part").exists()
-
-    def test_download_takes_a_subpath(self, signed_in, fake_slurm, project, tmp_path):
-        self._new(signed_in)
-        sub = head_workspaces.dir_of(1, "scratch") / "checkpoints"
-        sub.mkdir()
-        (sub / "a.pt").write_bytes(b"weights")
-        r = signed_in("workspace", "download", "scratch", "checkpoints", "--dest", str(tmp_path))
-        assert r.exit_code == 0, r.output
-        assert (tmp_path / "workspace-scratch-checkpoints.tar.gz").is_file()
-
-    def test_downloading_one_that_is_not_there_is_refused_by_name(self, signed_in, fake_slurm):
-        r = signed_in("workspace", "download", "ghost")
-        assert r.exit_code != 0
-        assert "no workspace named" in r.output
-
-    def test_delete_wants_the_name_typed_back(self, signed_in, fake_slurm, project):
-        """The one thing CCC holds with no expiry, no eviction and no second copy."""
-        self._new(signed_in)
-        wrong = signed_in("workspace", "delete", "scratch", input="scratc\n")
-        assert wrong.exit_code != 0
-        assert head_workspaces.dir_of(1, "scratch").exists()
-        right = signed_in("workspace", "delete", "scratch", input="scratch\n")
-        assert right.exit_code == 0, right.output
-        assert not head_workspaces.dir_of(1, "scratch").exists()
-
-    def test_delete_is_refused_while_a_visit_is_live(self, signed_in, fake_slurm, project):
-        self._new(signed_in)
-        with db.connect() as conn:
-            db.claim_workspace(conn, 1, 4242)
-        r = signed_in("workspace", "delete", "scratch", "--yes")
-        assert r.exit_code != 0
-        assert "4242" in r.output
-        assert head_workspaces.dir_of(1, "scratch").exists()
-
-    def test_open_submits_and_a_second_open_attaches(self, signed_in, fake_slurm, project,
-                                                     monkeypatch):
-        self._new(signed_in)
-        monkeypatch.setattr(head_spawns, "submit_checked", lambda *a, **kw: 4242)
-        # The attach itself is the Tide Pool path (a real ssh); stop after the Head has answered.
-        attached: list[tuple] = []
-        monkeypatch.setattr(tidepool_mod, "_wait_and_attach",
-                            lambda *a, **kw: attached.append((a, kw)))
-        first = signed_in("workspace", "open", "scratch")
-        assert first.exit_code == 0, first.output
-        assert "opening workspace 'scratch' as spawn 4242" in first.output
-        # The name goes with it, and that is not decoration: every message the attach prints — what
-        # becomes of the files, how to get back in, how the session ended — is wrong for a visit
-        # without it. A visit carrying no flag saying it was one is exactly how this was missed.
-        assert attached[0][1]["workspace"] == "scratch"
-        second = signed_in("workspace", "open", "scratch")
-        assert "already open" in second.output
 
 
 class TestCancel:
@@ -596,8 +466,7 @@ class TestHistory:
 
     def test_the_archive_is_titled_by_the_name_not_the_script(self, signed_in, monkeypatch):
         """The SPAWN column carries the **Name** a person gave it, matching `queue`'s — so one Spawn
-        reads identically on the live board and in the archive. It used to show the entry script, which
-        made a Workspace visit read nothing at all."""
+        reads identically on the live board and in the archive. It used to show the entry script."""
         monkeypatch.setattr(slurm, "spawns", lambda: [])
         # Short enough to survive the SPAWN column's width — the point here is which FIELD
         # the column reads, not how `ui.table` wraps a long one.

@@ -2,19 +2,16 @@
 
 ## What it is
 
-Four different things of yours can be sitting on the Head, and they behave differently. This page is
+Three different things of yours can be sitting on the Head, and they behave differently. This page is
 the whole of it:
 
 | Thing | Kept for | Ceiling |
 |---|---|---|
 | An uploaded project | Until the Spawn stages it in | 4 GB per upload |
 | A Spawn's declared results | 7 days from when it ended | 32 GB, all yours together |
-| A [Workspace](workspaces.md) | Forever, until you delete it | 32 GB, **divided into a Storage each** |
 | The Recovery Window copy | A day from when the Spawn ended | 16 GB per Spawn |
 
 Each ceiling is its own. Filling one never costs you any of another.
-
-The Workspace allowance is the one you divide up yourself — see [Storage](#workspace-storage) below.
 
 None of this is priced. Storage is never contended for, never costs [Karma](karma.md), and a full
 allowance never affects who wins the queue.
@@ -59,36 +56,14 @@ The Head's copy lives **7 days from when the Spawn ended**, not from when it was
 while your 32 GB has room. Past either, `cuttle outputs <id>` tells you so rather than pretending the
 Spawn never existed.
 
-### The two ceilings behave differently, on purpose
+### A result is always accepted
 
-**A result is always accepted.** The Karma is already spent and the work is already done, so refusing
+The Karma is already spent and the work is already done, so refusing
 to store the output would be pointless cruelty. If it does not fit, your *other, older* outputs are
 evicted to make room — oldest first, silently. Even a single result larger than the whole 32 GB still
 lands.
 
-**Creating a Workspace past the allowance is refused.** You delete one and try again. The difference
-is that a Workspace is something you deliberately chose to keep, whereas an output arrives on its own
-from work already done.
-
 Your 32 GB is yours. Filling it cannot evict anybody else's results.
-
-### Workspace Storage
-
-The Workspace allowance is the only one you divide up yourself. Every other ceiling on this page is a
-single pool your things fill until it is full; a [Workspace](workspaces.md) instead reserves a
-**Storage** out of yours when you create it:
-
-```sh
-cuttle workspace new scratch --storage 16    # 16 GB of your 32, spent the moment it exists
-```
-
-Reserved, not used — an empty 16 GB Workspace costs you the whole 16 GB. That is the point of it:
-what a session runs out of is that one Workspace's Storage, and never a pool it shares with everything
-else you keep.
-
-Creating one past the allowance is refused. Filling one is not: nothing is
-evicted, the Workspace simply stops being saved and says so inside the session. You can resize at any
-time, and never below what the tree already holds.
 
 ### The Recovery Window
 

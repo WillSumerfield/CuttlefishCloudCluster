@@ -188,8 +188,8 @@ class Api:
         """GET a raw body straight to a file, in chunks. Returns the bytes written.
 
         `raw()` above holds a whole body in this process, which is fine for a log and wrong for
-        anything a tree's size decides: a **Workspace**'s **Space** runs to 16GB and up, and the Head
-        streams it for exactly that reason, which buys nothing if the client turns it back into one
+        anything a tree's size decides: a result tree runs to many GB, and the Head streams it for
+        exactly that reason, which buys nothing if the client turns it back into one
         buffer on arrival.
 
         Written to a `.part` beside the target and renamed on success, so an interrupted download never
@@ -198,7 +198,7 @@ class Api:
         `on_progress(done, total)` is called with the UNCOMPRESSED bytes so far and the size the Head
         declared in `X-CCC-Bytes`. The file on disk is the compressed tar, byte for byte as it arrived
         — the decompression here exists only so the bar's numerator and denominator are the same
-        quantity, since a compressed count against an uncompressed total would show a 16GB Workspace
+        quantity, since a compressed count against an uncompressed total would show a 16GB tree
         finishing at 45%. A gzip decompress at level 1 runs an order of magnitude faster than the mesh
         moves, so it costs nothing anybody can see.
 

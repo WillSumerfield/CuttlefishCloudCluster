@@ -15,8 +15,7 @@ waits.
 **It bills for as long as you hold it.** Closing your laptop does not end it.
 
 **It keeps nothing.** When the session ends, the directory you were working in is gone — only the
-day-long [Recovery Window](storage.md#the-recovery-window) stands between you and losing it. If you
-want a shell over a folder that is still there next time, that is a [Workspace](workspaces.md).
+day-long [Recovery Window](storage.md#the-recovery-window) stands between you and losing it.
 
 ## Typical use
 
@@ -82,9 +81,6 @@ sending your work home. Declared outputs come back as any Spawn's do; everything
 [Recovery Window](storage.md#the-recovery-window), so `cuttle recover <id>` gets it for a day
 afterwards.
 
-A [Workspace](workspaces.md) visit has even less to worry about: its tree is mirrored home all session
-and once more at the end, so there is nothing to rescue and no window to miss.
-
 ### You are told which machine you got
 
 Like any Spawn, you declare what you *need* — `--time`, `--vram`, `--feature` — and you are placed.
@@ -97,13 +93,9 @@ you decline. Anything you leave behind in the working directory is still covered
 [Recovery Window](storage.md#the-recovery-window) for a day after the session ends — but if you
 made something you want to keep, declare it.
 
-If you are reaching for the Recovery Window more than once, you want a [Workspace](workspaces.md)
-instead: it keeps the whole directory, permanently, with no window to miss.
-
 ### Editing in VS Code
 
-Every session gets an ssh alias on this machine — `ccc-tp-<id>` for a Tide Pool, `ccc-ws-<name>` for a
-[Workspace](workspaces.md) visit — and it is printed when you attach. Anything that speaks ssh can use
+Every session gets an ssh alias on this machine — `ccc-tp-<id>` — and it is printed when you attach. Anything that speaks ssh can use
 it:
 
 ```sh
@@ -121,8 +113,7 @@ live sessions every time you open one, so a Tide Pool that has ended leaves no a
 behind.
 
 The VS Code server (~150 MB) unpacks inside the Pod, on disk rather than in the small in-memory home,
-and it goes with the Pod when the session ends. Extensions install per session — a long-lived
-[Workspace](workspaces.md) is the better home for a setup you want back.
+and it goes with the Pod when the session ends. Extensions install per session.
 
 ### If it never gets placed
 

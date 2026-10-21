@@ -202,7 +202,7 @@ class TestSubmitSkipsScriptAndOutputsForTidepool:
         Guise's home (`licbind`), and that directory is `2770 ccc-licence:ccc-guises`. sshd's StrictModes
         refuses an authorized_keys under a home that is group-writable and owned by someone else, so
         pubkey auth was skipped and the User met a password prompt for an account with no password —
-        every Tide Pool with a --feature was unreachable, and every Workspace visit declaring one with it.
+        every Tide Pool with a --feature was unreachable.
 
         Turning StrictModes off is the wrong repair and must stay wrong: that directory is the shared
         home of every feature-requesting Pod on the Arm and every Guise is in `ccc-guises`, so an
@@ -453,25 +453,9 @@ class TestTidepoolRoute:
         assert c.get("/api/spawns/77/tidepool").json()["ready"] is True
         assert seen == [True]
 
-    def test_a_visit_on_the_heads_own_arm_reports_the_tmp_project(self, monkeypatch, tmp_path):
-        """The path VS Code opens and `scp` writes into. A **Workspace** visit renders an empty
-        `staging_dir`, so it takes the job script's remote branch even here — reporting the Head-local
-        form sent VS Code to a folder that is never created (spawn 7, 2026-08-21)."""
-        c = _client(monkeypatch, tmp_path)
-        self._seed(tmp_path, port=41007)
-        with db.connect() as conn:
-            ws = db.add_workspace(conn, 1, "TransformerRL", 1 << 30, 1, 24576, 60, "", [], [], "")
-            assert db.claim_workspace(conn, ws["id"], 77)
-        monkeypatch.setattr(head_spawns, "active_state", lambda jid: "RUNNING")
-        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "head-box"}])
-        monkeypatch.setattr(slurm, "arms",
-                            lambda: [{"name": "head-box", "mesh_ip": "100.99.0.1", "head": True}])
-        monkeypatch.setattr(head_tidepool, "ensure_relay", lambda *a, **kw: True)
-        assert c.get("/api/spawns/77/tidepool").json()["proj"] == "/tmp/ccc-77/proj"
-
     def test_a_bare_tidepool_on_the_heads_own_arm_still_reports_head_scratch(
             self, monkeypatch, tmp_path):
-        """The other side of the same branch — no claim, so the Head-local form is right and stays."""
+        """On the Head's own Arm the Head-local scratch form is right."""
         c = _client(monkeypatch, tmp_path)
         self._seed(tmp_path, port=41007)
         monkeypatch.setattr(head_spawns, "active_state", lambda jid: "RUNNING")
@@ -707,7 +691,7 @@ class TestCliTidepoolFlagWiring:
 class TestHowASessionSaysItEnded:
     """`_report_ending` — the three ways out of an attached shell, and what each may truthfully claim.
 
-    The bug pinned here: a Workspace visit thrown out at `--time` announced that it was "still running
+    The bug pinned here: a session thrown out at `--time` announced that it was "still running
     and still billing Karma". Both halves were false. Slurm had already TERM'd the job, so it sat in
     COMPLETING draining its EXIT trap, and the tick only accrues onto RUNNING Spawns — but the CLI read
     the Head's `done`, which stays False through COMPLETING (deliberately: `watch` gates the output
@@ -731,7 +715,7 @@ class TestHowASessionSaysItEnded:
 
     def test_completing_is_neither_running_nor_billing(self, head_says, said):
         head_says({"id": 3, "done": False, "state": "COMPLETING"})
-        cli_tidepool._report_ending(3, None)
+        cli_tidepool._report_ending(3)
         text = "\n".join(said)
         assert "still running" not in text
         assert "still billing" not in text
@@ -741,49 +725,24 @@ class TestHowASessionSaysItEnded:
         """Its scratch is being copied home right now — named, but not waited for: the User was just
         thrown out of a shell and wants their prompt back."""
         head_says({"id": 3, "done": False, "state": "COMPLETING"})
-        cli_tidepool._report_ending(3, None)
+        cli_tidepool._report_ending(3)
         assert "cuttle recover 3" in "\n".join(said)
-
-    def test_a_completing_visit_points_at_the_workspace_not_recovery(self, head_says, said):
-        """A Workspace visit has no Recovery Window and needs none (CONTEXT.md, **Workspace**) — the
-        tree it wrote is the thing that was already being saved."""
-        head_says({"id": 3, "done": False, "state": "COMPLETING"})
-        cli_tidepool._report_ending(3, "TransformerRL")
-        text = "\n".join(said)
-        assert "cuttle recover" not in text
-        assert "cuttle workspace open TransformerRL" in text
 
     def test_a_genuinely_running_spawn_still_gets_the_billing_warning(self, head_says, said):
         """`exit` typed, or the connection dropped. This ending was never wrong and must survive."""
         head_says({"id": 3, "done": False, "state": "RUNNING"})
-        cli_tidepool._report_ending(3, None)
+        cli_tidepool._report_ending(3)
         text = "\n".join(said)
         assert text.startswith("warn:")
         assert "still running and still billing Karma" in text
         assert "cuttle cancel 3" in text
 
-    def test_a_running_visit_is_reattached_by_name(self, head_says, said):
-        """Opening a live Workspace joins the visit that exists, so its name is the way back in — a
-        `--tidepool <id>` here would be a second route its owner never learned."""
-        head_says({"id": 3, "done": False, "state": "RUNNING"})
-        cli_tidepool._report_ending(3, "TransformerRL")
-        text = "\n".join(said)
-        assert "cuttle workspace open TransformerRL" in text
-        assert "--tidepool" not in text
-
     def test_a_settled_spawn_has_simply_ended(self, head_says, said):
         head_says({"id": 3, "done": True, "state": "done", "exit": 0})
-        cli_tidepool._report_ending(3, None)
+        cli_tidepool._report_ending(3)
         text = "\n".join(said)
         assert text.startswith("ok:")
         assert "has ended" in text
-
-    def test_a_settled_visit_says_the_tree_survived_it(self, head_says, said):
-        head_says({"id": 3, "done": True, "state": "done", "exit": 0})
-        cli_tidepool._report_ending(3, "TransformerRL")
-        text = "\n".join(said)
-        assert "everything under this workspace is saved" in text
-        assert "cuttle workspace open TransformerRL" in text
 
     def test_an_unreachable_head_says_the_costly_thing(self, monkeypatch, said):
         """Can't ask -> assume it is still holding a card. The wrong guess here costs Karma; the wrong
@@ -791,7 +750,7 @@ class TestHowASessionSaysItEnded:
         def _boom(*a, **kw):
             raise RuntimeError("no head")
         monkeypatch.setattr(cli_tidepool.auth, "_api", _boom)
-        cli_tidepool._report_ending(3, None)
+        cli_tidepool._report_ending(3)
         assert "still running and still billing Karma" in "\n".join(said)
 
 
@@ -800,51 +759,40 @@ class TestTheTimeWarningSaysWhatBecomesOfTheFiles:
 
     It used to claim Slurm gives an interactive Spawn NO grace period. There is one: TERM, then KILL
     after `KillWait`, and bash runs the job script's EXIT trap on TERM — which is exactly when a
-    Workspace's tree is mirrored home and a Tide Pool's Recovery Window copy is made.
+    Tide Pool's Recovery Window copy is made.
     """
 
     def test_no_warning_claims_there_is_no_grace_period(self):
-        for workspace in (None, "TransformerRL"):
-            text = cli_tidepool._warn_text(3, 300, workspace)
-            assert "NO grace period" not in text
-            assert "no grace period" not in text
-
-    def test_a_visit_is_told_there_is_nothing_to_do(self):
-        """Its tree was mirrored home every 60s all session and once more by the trap. Telling its
-        owner to save would be telling them to save what is already saved."""
-        text = cli_tidepool._warn_text(3, 300, "TransformerRL")
-        assert "already saved" in text
-        assert "Nothing to do" in text
-        assert "save now" not in text
+        text = cli_tidepool._warn_text(3, 300)
+        assert "NO grace period" not in text
+        assert "no grace period" not in text
 
     def test_a_tide_pool_is_told_where_its_scratch_goes(self):
-        text = cli_tidepool._warn_text(3, 300, None)
+        text = cli_tidepool._warn_text(3, 300)
         assert "recoverable for a day" in text
         assert "cuttle recover 3" in text
 
-    def test_both_say_outputs_come_home_as_normal(self):
-        for workspace in (None, "TransformerRL"):
-            assert "outputs come home as normal" in cli_tidepool._warn_text(3, 300, workspace)
+    def test_it_says_outputs_come_home_as_normal(self):
+        assert "outputs come home as normal" in cli_tidepool._warn_text(3, 300)
 
     def test_it_is_framed_for_a_terminal_ssh_holds_in_raw_mode(self):
         """A bare \\n leaves the next line indented by however far the cursor had got."""
-        text = cli_tidepool._warn_text(3, 300, None)
+        text = cli_tidepool._warn_text(3, 300)
         assert text.startswith("\r\n")
         assert text.endswith("\r\n")
 
     def test_the_remaining_time_is_rendered_as_minutes_and_seconds(self):
-        assert "~5m0s" in cli_tidepool._warn_text(3, 300, None)
-        assert "~0m30s" in cli_tidepool._warn_text(3, 30, None)
+        assert "~5m0s" in cli_tidepool._warn_text(3, 300)
+        assert "~0m30s" in cli_tidepool._warn_text(3, 30)
 
 
 class TestTheShellTheUserGets:
     """zsh + powerlevel10k, rendered by the Head (ccc_head_api.zshrc) and written into the Pod's overlay
     at boot. The tree it needs is baked into base.sif; only these two files come from here."""
 
-    def render(self, workspace=None):
+    def render(self):
         return head_spawns._render("/tmp/u", 1, "", [], [], [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x",
-                                   workspace=Path("/ws/1/proj") if workspace else None)
+                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
 
     def test_the_profile_is_bridged_into_zsh_or_it_is_silently_lost(self):
         """The single line without which this whole change is a regression, and a silent one.
@@ -941,11 +889,9 @@ class TestTheShellTheUserGets:
     def test_the_context_segment_says_which_session_kind_this_is(self):
         """p10k's REMOTE class is what renders over SSH, and a Tide Pool is always one. Left alone it
         reads `ccc-u60002@<arm>` — the **Guise**, a uid nobody knows for an identity that is explicitly
-        not an account. Replaced with the one fact worth the space: only a Workspace visit keeps what
-        gets written."""
+        not an account."""
         assert "'tidepool@%m'" in zshrc.render()
-        assert "'proj@%m'" in zshrc.render(workspace="proj")
-        assert "'proj@%m'" in self.render(workspace=True)
+        assert "'tidepool@%m'" in self.render()
 
     def test_an_ordinary_spawn_carries_no_shell_config_at_all(self):
         """PAYLOAD_SCRIPT execs the Environment's python directly and never starts a shell, so 95 KB of

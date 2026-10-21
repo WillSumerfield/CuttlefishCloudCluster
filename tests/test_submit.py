@@ -539,9 +539,9 @@ class TestAnAbandonedUploadIsNotLeftOnDisk:
             if self._boom is not None:
                 raise self._boom
 
-    def _spool(self, monkeypatch, tmp_path, req, **kw):
+    def _spool(self, monkeypatch, tmp_path, req):
         monkeypatch.setattr(head_main.tempfile, "tempdir", str(tmp_path))
-        return asyncio.run(head_main._spool_upload(req, **kw))
+        return asyncio.run(head_main._spool_upload(req))
 
     def test_a_disconnect_mid_stream_leaves_nothing_behind(self, monkeypatch, tmp_path):
         req = self._Req([b"a" * 100, b"b" * 100], boom=ConnectionResetError("client went away"))
@@ -559,8 +559,9 @@ class TestAnAbandonedUploadIsNotLeftOnDisk:
 
     def test_the_over_cap_refusal_still_cleans_up(self, monkeypatch, tmp_path):
         req = self._Req([b"a" * 10_000])
+        monkeypatch.setattr(head_main, "MAX_UPLOAD_BYTES", 100)
         with pytest.raises(head_main.HTTPException) as e:
-            self._spool(monkeypatch, tmp_path, req, limit=100)
+            self._spool(monkeypatch, tmp_path, req)
         assert e.value.status_code == 413
         assert list(tmp_path.iterdir()) == []
 

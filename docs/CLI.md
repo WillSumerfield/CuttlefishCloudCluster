@@ -65,17 +65,6 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 | `cuttle recover` | Download what a Spawn wrote *outside* its declared outputs. One-day window. | [Storage](elements/storage.md#the-recovery-window) |
 | `cuttle dashboard` | Open the web Dashboard in a browser. `--print` gives the URL instead. | [Dashboard](Dashboard.md#getting-to-it) |
 
-## Workspaces
-
-| Command | | Explained in |
-|---|---|---|
-| `cuttle workspace new` | Make a directory into a workspace the cluster keeps between sessions. | [Workspaces](elements/workspaces.md) |
-| `cuttle workspace list` | Yours, how full each is, and which one is open right now. | [Workspaces](elements/workspaces.md) |
-| `cuttle workspace open` | Get a shell in one, resuming where the last visit left off. | [Workspaces](elements/workspaces.md) |
-| `cuttle workspace update` | Change what a visit asks for, or resize its Storage. | [Workspaces](elements/workspaces.md#running-out-of-storage) |
-| `cuttle workspace download` | Pull the tree, or one folder inside it, down as a tar. | [Workspaces](elements/workspaces.md) |
-| `cuttle workspace delete` | Delete a workspace and free its Storage. | [Workspaces](elements/workspaces.md) |
-
 ## Karma
 
 | Command | | Explained in |

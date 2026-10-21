@@ -600,8 +600,7 @@ def history(days: int = 30, as_json: bool = False, limit: int = 0) -> None:
             return
         # SPAWN, not SCRIPT: the column carries the **Name** its submitter gave it, matching `queue`'s
         # own SPAWN column so the live board and the archive title one Spawn identically. The script
-        # is what RAN and is still on `cuttle status <id>`; it is not what a person scans a list by —
-        # and for a Workspace visit there is no script at all.
+        # is what RAN and is still on `cuttle status <id>`; it is not what a person scans a list by.
         ui.table(
             ["SUBMITTED", "FINISHED", "ID", "SPAWN", "WHO", "GPU", "MIN", "COST", "OUTCOME"],
             [[_short(r["submitted_at"]), _short(r.get("finished_at")), r["job_id"],

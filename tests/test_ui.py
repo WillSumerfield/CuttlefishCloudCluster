@@ -129,38 +129,12 @@ class TestTheAlternateScreenLetsGoForALiveShell:
     `ssh` drawing its own remote pty that is not a cosmetic clash: the repaint wins, and the session is
     a blank screen with the shell alive and unreadable underneath it.
 
-    Detected off `sys.argv` because the screen is claimed before any command function is entered — so
-    the detector has to recognise a command by its spelling rather than by a parsed flag.
+    Detected off `sys.argv` because the screen is claimed before any command function is entered.
     """
 
     def _streaming(self, monkeypatch, *argv):
         monkeypatch.setattr(sys, "argv", ["cuttle", *argv])
         return ui._detect_streaming()
-
-    def test_a_workspace_visit_hands_the_terminal_over(self, monkeypatch):
-        """A visit IS a Tide Pool and execs the same `ssh` (`tidepool._wait_and_attach`) — but carries
-        no flag saying so, which is exactly how it was missed."""
-        assert self._streaming(monkeypatch, "workspace", "open", "scratch")
-
-    def test_global_flags_do_not_hide_the_command(self, monkeypatch):
-        """Every global option is a boolean switch (main._root), so none consumes a value and shifts
-        the command name out of position. If one ever takes an argument, this is what breaks."""
-        assert self._streaming(monkeypatch, "--debug", "workspace", "open", "scratch")
-        assert self._streaming(monkeypatch, "-v", "workspace", "open", "scratch", "--time", "30")
-
-    def test_the_name_is_prompted_for_when_absent(self, monkeypatch):
-        assert self._streaming(monkeypatch, "workspace", "open")
-
-    @pytest.mark.parametrize("argv", [
-        ("workspace", "list"),
-        ("workspace", "download", "scratch"),
-        # 'open' as a workspace NAME, not the command — a substring match would call these streaming
-        # and cost them the canvas for nothing.
-        ("workspace", "new", "open"),
-        ("workspace", "delete", "open"),
-    ])
-    def test_the_rest_of_the_workspace_commands_keep_the_canvas(self, monkeypatch, argv):
-        assert not self._streaming(monkeypatch, *argv)
 
     def test_the_flag_driven_exemptions_still_hold(self, monkeypatch):
         assert self._streaming(monkeypatch, "run", "--tidepool")

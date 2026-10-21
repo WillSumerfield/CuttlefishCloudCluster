@@ -95,10 +95,8 @@ DEFAULT_PYTHON = "3.12"
 # (kilobytes — each is an empty wheel of the right name and version), the Arm writes them out before the
 # build, and each is BOUND over whatever the declaration points at.
 #
-# Outside `$proj` on purpose, and that is the whole reason this moved out of the upload. For a
-# **Workspace** visit `$proj` IS the User's durable tree: anything written there is mirrored back over
-# the only copy that exists. A bind is visible to the build and invisible to the tree, so one mechanism
-# now serves a visit and an ordinary Spawn without either having to write where it must not.
+# Outside `$proj` on purpose: a bind is visible to the build and invisible to the tree, so the build
+# never writes into the User's project.
 STUB_ROOT = "stubs"
 
 # uv and micromamba are single static binaries, installed on EVERY node (cuttle.setup.install_env_tools)
@@ -421,9 +419,7 @@ def supplied(project: Path, m: Manifest) -> list[Supplied]:
 def lock_rel(project: Path, m: Manifest) -> str:
     """Where uv keeps this declaration's lock, relative to the project root.
 
-    Beside the manifest, wherever that is — uv's own rule, not CCC's. Named here because a **Workspace**
-    visit has to know whether one existed BEFORE the build, to tell a lock its owner keeps from one the
-    build invented.
+    Beside the manifest, wherever that is — uv's own rule, not CCC's.
     """
     root, _ = _uv_sources(project, m)
     return Path(os.path.relpath(root / "uv.lock", project.resolve())).as_posix()
@@ -472,8 +468,7 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
         # `$proj/<pod_rel>`, and `$proj`'s parent is the Spawn's own node-local scratch: one `..`
         # reaches that scratch, which is what the ordinary `../my-wheels/x.whl` layout needs, and two
         # would name a directory outside the Spawn altogether. Saying it this way makes it mean the
-        # same thing on the Head, on a **Workspace** visit and on the Arm — where the old form named
-        # `projects/` for one and the directory holding a User's OTHER Workspaces for the next.
+        # same thing on the Head and on the Arm.
         if os.path.isabs(s.declared) or s.pod_rel.startswith("../../"):
             raise BuildError(
                 f"{m.path} points '{s.package}' at {s.declared}, which reaches outside the directory "
@@ -514,9 +509,8 @@ def _stub_wheel(package: str, filename: str) -> bytes:
         for name, body in entries:
             # A FIXED timestamp, so the same declaration always produces the same bytes and therefore
             # the same hash. zipfile stamps the current time by default, which would give every rebuild
-            # of an unchanged project a different sha256 and make `_relock` rewrite the lock every time
-            # — and a **Workspace** visit re-bind a lock that had not changed. 1980-01-01 is the zip
-            # epoch.
+            # of an unchanged project a different sha256 and make `_relock` rewrite the lock every time.
+            # 1980-01-01 is the zip epoch.
             z.writestr(zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)), body)
     return buf.getvalue()
 
@@ -529,8 +523,7 @@ def _relock(text: str, package: str, digest: str) -> str:
     from a mismatch. The stub is a different file, so its hash has to be the one in the lock.
 
     Text in, text out, and the User's own file is never the thing edited: the result is bound over the
-    lock for the build alone. A **Workspace**'s lock is its owner's — it describes the wheel they
-    actually hold, and a Head that rewrote it would leave them a hash matching nothing on their machine.
+    lock for the build alone. The lock is its owner's — it describes the wheel they actually hold.
 
     A targeted text edit rather than a TOML round-trip: `uv.lock` is uv's file, written in its own
     style, and rewriting the whole thing to change one string would hand back a file it has to accept
@@ -553,11 +546,8 @@ def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], lis
     """Stand a placeholder in for every Feature-supplied wheel. `(files, binds, log lines)`.
 
     **PURE — nothing is written, and that is the point.** It used to write into the project: a stub over
-    the real wheel, a directory of stubs under a dot-name, an edit to `uv.lock`. All three are fine
-    against a disposable upload and none of them are fine against a **Workspace**, whose `project` is
-    the User's own durable tree — a rewritten wheel would be a real file destroyed, permanently, with
-    the mirror carrying the damage back over the only copy. So the placeholder stopped being something
-    the Head writes and became something the Arm *mounts*, and one mechanism now serves both.
+    the real wheel, a directory of stubs under a dot-name, an edit to `uv.lock`. Now the placeholder is
+    not something the Head writes but something the Arm *mounts*.
 
     Decided HERE, at submit, even so: it is the same class of decision as `detect`, and it is where the
     manifest is understood. The Arm receives bytes and binds and reasons about neither.
@@ -569,7 +559,7 @@ def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], lis
       which resolves into the Spawn's own scratch. Apptainer creates that mountpoint even though its
       parent is not itself bound, which is what makes it work under `--contain`.
     * **A wheel inside it** — bound over as a single FILE. The project's own copy is untouched on the
-      host, so a Workspace mirrors home exactly what its owner left there, and `spawns.submit` need not
+      host, and `spawns.submit` need not
       transfer a licensed wheel to a donor at all (`StubBind.over_project`).
     * **`uv.lock`** — rewritten in memory and bound over, when it records a hash for one of them. uv
       verifies that hash on EVERY sync, so a stub the lock does not know about fails the build outright.

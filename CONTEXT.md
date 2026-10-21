@@ -101,9 +101,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Name** — what a **Spawn** is called wherever a person meets it: the queue, the archive, an alert.
   A human's words, always, and never CCC's — a Spawn that names nothing is refused before it exists,
   on exactly the terms its **Environment** declaration is, because a cluster that invents names fills
-  its own history with rows nobody can tell apart. A **Workspace** already carries a name its owner
-  chose, and a visit to one inherits it; so what must be named at submit is precisely
-  the work that arrives with no name of its own — an ad-hoc Spawn, and a **Tide Pool** opened bare.
+  its own history with rows nobody can tell apart. So every Spawn and every **Tide Pool** is named at
+  submit.
   A Name is a *label*, never an identifier: nothing is looked up by it, two Spawns may share one, and
   what tells them apart is the id they already have. Distinct from the entry script, which says what
   *ran* rather than what it was *for*, and which a Spawn goes on keeping beside its Name.
@@ -111,7 +110,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   **Pod** on an **eligible** Arm, for debugging against real hardware. Bills Karma for as long as it is
   held. Like a **Spawn**, it declares *needs* and is *placed* — a User cannot name the machine
   (see **Eligibility**); it is told which Arm it got. On its own it keeps nothing: what it wrote dies
-  with it. A Tide Pool opened on a **Workspace** is the one that does not.
+  with it.
   The shell it attaches is the **cluster's own**, and the same one for everybody: CCC ships one
   configured shell, and the plain editors a person needs to change a file, into every Pod, and carries
   no User's dotfiles to any of it. A Tide Pool is a place to debug
@@ -123,25 +122,6 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   running on the machine a User is sitting at. Neither is more real than the other — the work happens
   inside the **Pod** either way, and an editor attached from outside is a visitor to the session and
   never a way to keep what it held.
-- **Workspace** — a **User**'s durable interactive place on the cluster: a working directory that
-  outlives the session that made it, so opening one resumes where the last visit left off instead of
-  starting bare. Private to its owner. It is *mutable*: simply whatever its last session left behind. Seeded once from the machine that created it and never uploaded to again:
-  after that, only a session inside it can change what it holds. It keeps a *declaration* alongside the
-  tree (what a visit needs — VRAM, **Feature**s, duration, which dependency file), which its owner may
-  change without touching the tree, and which any single visit may depart from without changing.
-  A Workspace is held by the **Head**, so it is a claim on no **Arm**: a visit is **placed** like any
-  other work and may land anywhere **eligible**, and the **Environment** it builds dies with the visit as
-  every Environment does. What persists is the *files* — never the machine, never the built Environment.
-  Declaring an output is optional here, exactly as it is for a **Tide Pool**, and declaring one keeps
-  nothing extra: an output is an ordinary folder *inside* the tree, which the session's end also sends
-  home so it can be fetched like any **Spawn**'s results instead of only through the Workspace itself.
-  So nothing a session writes is ever held apart from the Workspace, and there is no **Recovery Window**
-  to open — what that window exists to rescue is, here, the thing that was already saved.
-  Holding one costs no **Karma** (holding bytes never does); what it may hold is its **Storage**,
-  reserved out of its owner's **Allowance** when they create it.
-  *Visiting* one costs Karma exactly as a **Tide Pool** does, because a visit is one. Only its owner ever
-  removes it. And it has a single writer by construction: opening a Workspace that is already live joins
-  the session that exists rather than starting a second beside it.
 - **Mantle** — the cluster's *own* identity: who the **Head** is, to itself and to every **Arm**. It
   owns what the cluster owns — the account records, the Head's key, every **User**'s uploaded work and
   every **Spawn**'s results — and it is what the Head acts as when it does work of its own rather than
@@ -227,9 +207,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   held there is kept too — declaring a folder an Output never hides from a Spawn what its submitter
   uploaded into it.
   Every ordinary Spawn declares at least one, and a Spawn with nowhere to put its results is refused
-  before it exists. A **Tide Pool** and a **Workspace** visit may decline, on the same terms they may
-  decline an **Environment** — and a Tide Pool that declines keeps nothing, because there is no other
-  place the cluster offers.
+  before it exists. A **Tide Pool** may decline, on the same terms it may decline an **Environment** —
+  and a Tide Pool that declines keeps nothing, because there is no other place the cluster offers.
   Distinct from a **Recovery Window**: an Output is what its submitter *asked* to keep, held for as long
   as their **Allowance** allows; the window is the brief grace for what they did not.
   An Output is *collected*, and what the **Head** holds is never the copy that matters. Work submitted
@@ -237,8 +216,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   what a folder holds mid-run is a half-written thing nobody asked for — and that collection is what
   makes the two ceilings above safe to enforce: nothing here is an archive, so results that expire or
   are evicted are results already elsewhere. Declaring the Output is the whole of what a submitter does
-  to arrange it, whenever it is declared — at submission, on rejoining a **Tide Pool**, or on a
-  **Workspace** visit — because an Output whose collection depended on *how* it came to be declared
+  to arrange it, whenever it is declared — at submission or on rejoining a **Tide Pool** — because an Output whose collection depended on *how* it came to be declared
   would be one whose results quietly stayed behind. Work submitted from somewhere with nowhere to come
   home to is collected by whoever asks for it instead.
 - **Allowance** — a per-**User** ceiling on how many bytes the **Head** will hold for them. Each kind of
@@ -248,24 +226,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   already done, so it is always accepted and the oldest are dropped to fit. A **Recovery Window** copy takes the output's rule,
   and is the one Allowance its holder is never shown — a ceiling a User is told about is a ceiling they
   would plan around, which that window must never be — so it is named only once it has already taken
-  something. A **Workspace** is the opposite — nothing a User deliberately keeps is ever destroyed to
-  make room, so creating one past the ceiling simply fails — but it is the one told *during* the live
-  session that filled it, while its owner is still there to make room. It is also the only Allowance its
-  holder **divides up themselves**: each Workspace reserves a **Storage** out of it at creation, so what
-  a session runs out of is that one Workspace's Storage and never a pool shared with the rest.
+  something.
   An Allowance is not the only thing that ends a
   held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
   even when there is room to spare. Uploaded projects belong to no Allowance at all — the Head keeps
   them only while a Spawn is starting.
-- **Storage** — how much one **Workspace** may hold, chosen by its owner as they create it and reserved
-  out of their Workspace **Allowance** there and then, so the bytes are spoken for whether or not the tree
-  ever fills them and a User's Workspaces can never together outgrow what they are allowed. It is the
-  ceiling a live session actually meets, which is why it is the User's to set rather than CCC's to
-  apportion: the cluster enforces the division and never guesses it. Changeable afterwards, but never
-  below what the tree already holds — an Allowance destroys nothing to make room, so a Storage smaller
-  than its own contents would be a ceiling nothing could bring the Workspace back under.
-  The word names one Workspace's share and never the cluster's disk in general: what a Head holds
-  altogether has no name here, only the **Allowance**es that divide it.
 - **Recovery Window** — the brief, always-on window in which a finished **Spawn**'s *undeclared*
   writes can still be retrieved. A Spawn's declared outputs are kept for as long as its submitter's
   **Allowance** allows; everything else it wrote — the working directory it ran in — is destroyed when
@@ -278,8 +243,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   so what displaces a User's older copy is only ever their own newer one. Distinct from an output (declared, kept) and
   from **Escrow** — "hold" means Escrow in this cluster, and never this. It is also not a **grace
   period**: that word names the interval a *dying* Spawn gets to send its work home, and this window
-  opens only once that interval is over and the Spawn is already gone. A **Workspace** visit has none
-  and needs none: nothing it wrote was going to be destroyed.
+  opens only once that interval is over and the Spawn is already gone.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the
@@ -323,9 +287,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Arm's is what runs either way.
   A Feature's runtime is arranged in a place of CCC's own and never inside the Spawn's project — the
   working directory its software resolves its data against is CCC's to site, not the project directory
-  it happened to be. So a **Workspace**'s tree is exactly what its owner last left in it: neither the
-  runtime nor the placeholder that stands in for a supplied package writes over what the **User**
-  keeps, and their declared copy is left as they wrote it.
+  it happened to be. Neither the runtime nor the placeholder that stands in for a supplied package
+  writes over what the **User** uploaded, and their declared copy is left as they wrote it.
 - **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm

@@ -419,7 +419,7 @@ def test_an_equipped_head_refuses_nothing(with_tools, tmp_path):
 # Head renders — not a subprocess it launches. Nothing here executes anything.
 
 def _block(kind="uv-requirements", path="requirements.txt", features=(), files=(), binds=(), log=(),
-           drop_lock="", declared=...):
+           declared=...):
     """The %%ENV_BUILD%% text for one declaration.
 
     The three script-wide tokens are substituted here the way `_render`'s own pass does a moment later —
@@ -428,7 +428,7 @@ def _block(kind="uv-requirements", path="requirements.txt", features=(), files=(
     from ccc_head_api import features as _hf
     m = env.Manifest(kind, path) if declared is ... else declared
     text = spawns._render_env_build(m, Path("/tmp/u"), list(features), list(files), list(binds),
-                                    list(log), drop_lock)
+                                    list(log))
     for tok, val in (("%%ENV_MOUNT%%", env.ENV_MOUNT),
                      ("%%FEATLIB_MOUNT%%", _hf.FEATLIB_MOUNT),
                      ("%%ENV_INTERPRETER%%", m.interpreter if m else "")):
@@ -833,14 +833,12 @@ def test_a_path_source_may_not_reach_out_of_the_spawns_own_scratch(tmp_path):
 
 
 def test_the_depth_rule_is_read_off_the_declaration_not_off_the_head(tmp_path):
-    """Stated against what the User wrote, so it means the same thing for a staging dir and for a
-    **Workspace** — where the old resolved-path form said 'no further up than the directory holding
-    your other Workspaces', which is not a property anyone should rely on."""
+    """Stated against what the User wrote, so it means the same thing wherever the tree sits."""
     proj = _sourced(tmp_path, path="../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
     m = env.Manifest(kind="uv-project", path="pyproject.toml")
     assert env.supplied(proj, m)[0].pod_rel == "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
     # The same declaration, read out of a tree at a completely different depth, says the same thing.
-    ws = tmp_path / "workspaces" / "3" / "transformerrl"
+    ws = tmp_path / "elsewhere" / "3" / "transformerrl"
     ws.mkdir(parents=True)
     (ws / "pyproject.toml").write_text((proj / "pyproject.toml").read_text())
     assert env.supplied(ws, m)[0].pod_rel == env.supplied(proj, m)[0].pod_rel
@@ -916,9 +914,7 @@ class TestTheStubIsNotAWorkingPackage:
             assert "Tag: cp311-cp311-linux_x86_64" in z.read("vlearn-0.3.9.dist-info/WHEEL").decode()
 
     def test_nothing_is_written_into_the_project(self, tmp_path):
-        """The whole reason this is bytes and binds rather than files. `project` is the User's own
-        durable tree for a **Workspace** visit, and a Head that wrote there would be editing the only
-        copy of something its owner keeps."""
+        """The whole reason this is bytes and binds rather than files: the project is the User's."""
         proj, *_ = self._built(tmp_path)
         assert [p.name for p in proj.iterdir()] == ["pyproject.toml"]
 
@@ -960,8 +956,7 @@ class TestTheStubIsNotAWorkingPackage:
 
 def test_a_wheel_inside_the_project_is_bound_over_not_overwritten(tmp_path):
     """The project carried a real wheel. It is covered by a FILE bind, and the copy on disk is left
-    exactly as its owner wrote it — for a **Workspace** that copy is the only one there is, and the
-    mirror would carry any edit straight back over it."""
+    exactly as its owner wrote it."""
     proj = _sourced(tmp_path, path="wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
     real = proj / "wheels" / "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
     real.parent.mkdir()

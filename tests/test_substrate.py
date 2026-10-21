@@ -146,7 +146,7 @@ class TestTheEcho:
 def _block(packages, declared=None, features=()):
     """The %%ENV_BUILD%% text for a Spawn declaring `packages`."""
     return spawns._render_env_build(declared, Path("/tmp/u"), list(features), [], [], [],
-                                    "", list(packages))
+                                    list(packages))
 
 
 class TestTheInstallIsRendered:

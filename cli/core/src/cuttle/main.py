@@ -23,7 +23,6 @@ from . import teardown as teardown_mod
 from . import tidepool as tidepool_mod
 from . import ui
 from . import watch as watch_mod
-from . import workspaces as workspaces_mod
 
 # pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
 # --debug); two competing renderers would be unpredictable.
@@ -46,10 +45,6 @@ app.add_typer(munge_app, name="munge")
 feature_app = typer.Typer(no_args_is_help=True,
                           help="Arm Features: heavy/hardware-licence-gated software CCC knows how to run.")
 app.add_typer(feature_app, name="feature")
-workspace_app = typer.Typer(no_args_is_help=True,
-                            help="Workspaces: working directories that survive the session (32GB "
-                                 "allowance, divided into a Storage per workspace).")
-app.add_typer(workspace_app, name="workspace")
 
 
 def _version(value: bool) -> None:
@@ -592,167 +587,6 @@ def feature_show(name: str = typer.Argument(..., help="A Feature from `cuttle fe
     print(feature_profiles.runtime_summary(name), end="")
 
 
-# --- workspaces ---------------------------------------------------------------
-# A **Workspace** is the durable form of a Tide Pool: a working directory the Head keeps, so opening it
-# again resumes where the last visit stopped. See cuttle.workspaces.
-
-@workspace_app.command("list")
-def workspace_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
-    """Your workspaces: what each holds against its space, when you last visited, and which is live."""
-    workspaces_mod.listing(as_json=as_json)
-
-
-@workspace_app.command("new")
-def workspace_new(
-    name: str = typer.Argument(None, help="Name for the workspace — how you open it later. Yours "
-                                          "only, so it need only be unique among your own."),
-    storage: int = typer.Option(None, "--storage", help="How much this workspace may hold, in GB, taken "
-                                                    "out of your 32GB workspace allowance when you "
-                                                    "create it. Required — nobody else can guess it."),
-    time: int = typer.Option(None, "--time", help="Wall-clock limit for a VISIT, in minutes. The "
-                                                  "workspace persists; a session does not."),
-    vram: int = typer.Option(None, "--vram", help="TOTAL GPU memory a visit needs, in GB."),
-    gpu: int = typer.Option(1, "--gpus", "--gpu", help="GPUs a visit holds at once, all on one "
-                                                      "machine."),
-    directory: Path = typer.Option(
-        None, "--dir", help="Directory to seed it with (default: the current one). This is the ONLY "
-                            "upload — after it, the workspace changes from inside its own sessions."),
-    manifest: str = typer.Option(
-        None, "--manifest", help="Dependency file a visit builds its environment from. Optional, like "
-                                 "a tide pool's — a workspace opened to poke at a box declares none."),
-    substrate: str = typer.Option(
-        None, "--substrate", help="Optional. File naming the system packages a visit needs — one per "
-                                  "line, `#` comments, `apt.txt` by convention. Installed fresh into "
-                                  "every visit's Pod; nothing you apt-install by hand survives one."),
-    output: list[str] = typer.Option(
-        None, "--output", "-o", help="Folder in the workspace tree a visit writes results to "
-                                     "(repeatable). Optional — everything in the tree is kept either "
-                                     "way; naming one ALSO sends it home at the end of the session for "
-                                     "`cuttle outputs` to fetch."),
-    feature: list[str] = typer.Option(
-        None, "--feature", help="Require an Arm Feature for visits (repeatable)."),
-    no_gitignore: bool = typer.Option(
-        False, "--no-gitignore", help="Seed with the whole directory (default: honor .gitignore)."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the preview and confirmation."),
-):
-    """Make a directory into a workspace: a working dir the Head keeps between sessions.
-
-    Unlike `cuttle run --tidepool`, nothing here is thrown away when the session ends. The tree is
-    mirrored back to the Head as you work and again when you leave, so `cuttle workspace open` picks up
-    exactly where you stopped — including anything you installed, downloaded or half-finished.
-
-    Creating one costs no Karma; VISITING one does, exactly like any other Spawn. What it costs instead
-    is storage: `--storage` is carved out of your 32GB workspace allowance the moment you create it, and
-    it is yours to divide up. A session that fills its storage stops being saved and says so — nothing
-    is ever evicted to make room.
-    """
-    output = list(output) if output else []
-    feature = list(feature) if feature else []
-    with ui.section("New workspace", lambda: f"{name}  {storage}GB"):
-        name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Name for this workspace?"))
-        # No default, deliberately, and it is the one field only its owner can answer: this Allowance
-        # is the one CCC hands over to be divided up, so a default would be CCC dividing it for them.
-        storage = ui.need(storage, "--storage",
-                          lambda: ui.ask_int("How much storage? (GB, out of your 32GB)"))
-        time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit per visit? (minutes)"))
-        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
-    workspaces_mod.new(name, storage_gb=storage, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
-                       substrate=substrate, outputs=output, features=feature,
-                       root=spawns_mod.project_root(directory), no_gitignore=no_gitignore, yes=yes)
-
-
-@workspace_app.command("open")
-def workspace_open(
-    name: str = typer.Argument(None, help="Workspace to open."),
-    time: int = typer.Option(None, "--time", help="Override the wall-clock limit for THIS visit."),
-    vram: int = typer.Option(None, "--vram", help="Override the VRAM need for THIS visit."),
-    gpu: int = typer.Option(None, "--gpus", "--gpu", help="Override the GPU count for THIS visit."),
-    manifest: str = typer.Option(None, "--manifest", help="Override the dependency file for THIS visit."),
-    substrate: str = typer.Option(None, "--substrate",
-                                  help="Override the system-package file for THIS visit."),
-    output: list[str] = typer.Option(None, "--output", "-o", help="Override the outputs for THIS visit."),
-    feature: list[str] = typer.Option(None, "--feature", help="Override required Features for THIS visit."),
-    vscode: bool = typer.Option(
-        False, "--vscode", help="Open this visit in VS Code instead of a terminal here. Writes an "
-                                "ssh alias this box can reach the Pod by, then launches VS Code "
-                                "straight into your workspace. Without it the alias is printed and "
-                                "VS Code's own 'Connect to Host' picker finds it."),
-):
-    """Open a workspace and drop into its shell, resuming where the last visit left off.
-
-    A visit is a Tide Pool bound to the workspace: same queue, same wait for a card, same Karma. What
-    differs is that everything you leave behind is still there next time.
-
-    A workspace holds ONE visit at a time. Opening one that is already live ATTACHES to that session
-    rather than starting a second — two sessions writing one tree would each overwrite the other.
-
-    Flags here override the workspace's own declaration for this session only; `cuttle workspace
-    update` is what changes it for good.
-    """
-    name = ui.need(name, "the workspace's name",
-                   lambda: ui.ask_text("Which workspace to open?"))
-    workspaces_mod.open_(name, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
-                         substrate=substrate, outputs=list(output) if output else None,
-                         features=list(feature) if feature else None, vscode=vscode)
-
-
-@workspace_app.command("update")
-def workspace_update(
-    name: str = typer.Argument(None, help="Workspace to change."),
-    storage: int = typer.Option(None, "--storage", help="Resize it, in GB. Grows if your allowance has "
-                                                        "room; never shrinks below what the tree holds."),
-    time: int = typer.Option(None, "--time", help="Change the per-visit wall-clock limit."),
-    vram: int = typer.Option(None, "--vram", help="Change the per-visit VRAM need."),
-    gpu: int = typer.Option(None, "--gpus", "--gpu", help="Change how many GPUs a visit holds."),
-    manifest: str = typer.Option(None, "--manifest", help="Change the dependency file visits build "
-                                                          "from (pass '' to declare none)."),
-    substrate: str = typer.Option(None, "--substrate", help="Change the system-package file visits "
-                                                            "install (pass '' to declare none)."),
-    output: list[str] = typer.Option(None, "--output", "-o", help="REPLACE the declared outputs."),
-    feature: list[str] = typer.Option(None, "--feature", help="REPLACE the required Features."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
-):
-    """Change what a visit asks for, and how much the workspace may hold.
-
-    This never touches the files — a workspace is seeded once and written to from inside its own
-    sessions after that. Every setting keeps what it already holds unless you pass a flag.
-    """
-    name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to update?"))
-    workspaces_mod.update(name, storage_gb=storage, vram=vram, minutes=time, gpu=gpu, manifest=manifest,
-                          substrate=substrate, outputs=list(output) if output else None,
-                          features=list(feature) if feature else None, yes=yes)
-
-
-@workspace_app.command("download")
-def workspace_download(
-    name: str = typer.Argument(None, help="Workspace to download."),
-    subpath: str = typer.Argument(None, help="A folder inside it (default: the whole tree)."),
-    dest: Path = typer.Option(None, "--dest", help="Where to write the tar (default: here)."),
-):
-    """Download a workspace, or one folder inside it, as a tar.
-
-    Works while a visit is live — you just get the tree as of the last mirror rather than the instant
-    the session is at.
-    """
-    name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to download?"))
-    workspaces_mod.download(name, subpath, dest=dest)
-
-
-@workspace_app.command("delete")
-def workspace_delete(
-    name: str = typer.Argument(None, help="Workspace to delete."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the typed confirmation."),
-):
-    """Delete a workspace and free its space. The only thing that ever removes one — workspaces never
-    expire and are never evicted.
-
-    You have to type the name back rather than answering y/N: this is the one thing CCC holds that has
-    no expiry, no eviction and no second copy anywhere.
-    """
-    name = ui.need(name, "the workspace's name", lambda: ui.ask_text("Which workspace to delete?"))
-    workspaces_mod.delete(name, yes=yes)
-
-
 @app.command("build-installer")
 def build_installer(
     out: Path = typer.Option(
@@ -874,8 +708,7 @@ def run(
     name: str = typer.Option(
         None, "--name", help="What to call this Spawn in the queue and the archive. Required — CCC "
                              "never invents one. Free text (48 chars): \"lr sweep 3e-4\" is as valid "
-                             "as \"sweep3\". A Workspace visit needs none; it takes the name you "
-                             "already gave that Workspace."),
+                             "as \"sweep3\"."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
     no_gitignore: bool = typer.Option(
         False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),

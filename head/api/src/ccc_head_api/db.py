@@ -13,7 +13,6 @@ Design notes worth keeping:
 """
 
 import hashlib
-import json
 import os
 import secrets
 import sqlite3
@@ -390,6 +389,8 @@ DROP INDEX IF EXISTS idx_spawns_build;
 ALTER TABLE spawns DROP COLUMN build_state;
 """
 
+# Unused since 2.0 dropped Workspaces; kept only until the schema collapse.
+#
 # Workspaces: the Tide Pool's durable form. This row is the DECLARATION (what a visit asks for) and
 # `workspaces/<user_id>/<name>/` on disk is the tree itself — the same split as `recipes`, and the same
 # `<user_id>/<name>` layout so `workspaces.sweep_orphans` can tell whose a directory is without the DB.
@@ -446,7 +447,7 @@ _SCHEMA_V18 = """
 ALTER TABLE spawns ADD COLUMN name TEXT NOT NULL DEFAULT '';
 """
 
-# `recipes.substrate` is unused since 2.0 dropped Recipes; kept only until the schema collapse.
+# Unused since 2.0 dropped Recipes and Workspaces; kept only until the schema collapse.
 #
 # The **Substrate** declaration, frozen wherever the other declarations are (`manifest`, `features`).
 # The path a Spawn named, not the packages it resolved to: what a Recipe freezes is the declaration,
@@ -1376,159 +1377,3 @@ def oldest_output(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
         """SELECT o.job_id, o.bytes FROM output_copies o
            JOIN spawns s ON s.job_id = o.job_id WHERE s.user_id = ?
            ORDER BY o.created_at LIMIT 1""", (user_id,)).fetchone()
-
-
-def live_user_ids(conn: sqlite3.Connection) -> set[int]:
-    """Every User id that still exists — what `workspaces.sweep_orphans` checks its directories
-    against. Read from `users`, not from `workspaces`: the CASCADE has already taken the rows of a
-    deleted User by the time the sweep runs."""
-    return {r["id"] for r in conn.execute("SELECT id FROM users").fetchall()}
-
-
-# --- workspaces -------------------------------------------------------------
-# Owner-scoped lookups; the name is the handle. The claim helpers at the bottom stop a Workspace being
-# visited twice at once.
-
-def workspaces_for(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
-    """One User's Workspaces, oldest first. Private to their owner."""
-    return conn.execute("SELECT * FROM workspaces WHERE user_id=? ORDER BY created_at, id",
-                        (user_id,)).fetchall()
-
-
-def get_workspace(conn: sqlite3.Connection, user_id: int, name: str) -> sqlite3.Row | None:
-    """Scoped by owner, never by name alone — two Users may both keep a "scratch"."""
-    return conn.execute("SELECT * FROM workspaces WHERE user_id=? AND name=?",
-                        (user_id, name)).fetchone()
-
-
-def get_workspace_by_id(conn: sqlite3.Connection, ws_id: int) -> sqlite3.Row | None:
-    """By row id, for the paths that hold one already — the submit path, and the tick reconciling
-    claims. Unscoped on purpose: the caller reached an id by way of an owner check, or is the tick,
-    which is nobody's."""
-    return conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
-
-
-def add_workspace(conn: sqlite3.Connection, user_id: int, name: str, storage_bytes: int, gpus: int,
-                  vram_mb: int, minutes: int, manifest: str, outputs: list[str],
-                  features: list[str], substrate: str = "") -> sqlite3.Row:
-    conn.execute(
-        """INSERT INTO workspaces (user_id, name, storage_bytes, gpus, vram_mb, minutes, manifest,
-                                   outputs, features, substrate)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (user_id, name, storage_bytes, gpus, vram_mb, minutes, manifest,
-         json.dumps(outputs), json.dumps(features), substrate))
-    conn.commit()
-    return get_workspace(conn, user_id, name)
-
-
-def update_workspace_meta(conn: sqlite3.Connection, user_id: int, name: str, storage_bytes: int,
-                          gpus: int, vram_mb: int, minutes: int, manifest: str, outputs: list[str],
-                          features: list[str], substrate: str = "") -> sqlite3.Row:
-    """Change what a visit asks for, and the **Storage** reserved for the tree — never the tree itself.
-    There is no upload sibling of this: a Workspace is seeded once and written to from inside its own
-    sessions thereafter."""
-    conn.execute(
-        """UPDATE workspaces SET storage_bytes=?, gpus=?, vram_mb=?, minutes=?, manifest=?,
-                                 outputs=?, features=?, substrate=?
-           WHERE user_id=? AND name=?""",
-        (storage_bytes, gpus, vram_mb, minutes, manifest, json.dumps(outputs), json.dumps(features),
-         substrate, user_id, name))
-    conn.commit()
-    return get_workspace(conn, user_id, name)
-
-
-def delete_workspace(conn: sqlite3.Connection, user_id: int, name: str) -> bool:
-    cur = conn.execute("DELETE FROM workspaces WHERE user_id=? AND name=?", (user_id, name))
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def user_workspace_storage(conn: sqlite3.Connection, user_id: int, excluding: int | None = None) -> int:
-    """What this User has already RESERVED across their Workspaces — the left side of the pool's
-    arithmetic. Reserved, not used: the Allowance is divided up at creation (CONTEXT.md, **Storage**), so
-    an empty 16 GiB Workspace costs its owner the whole 16 GiB of their pool. `excluding` drops one
-    Workspace's own reservation, which is how a resize is weighed on what it GROWS BY."""
-    (total,) = conn.execute(
-        "SELECT COALESCE(SUM(storage_bytes), 0) FROM workspaces WHERE user_id=? AND id IS NOT ?",
-        (user_id, excluding)).fetchone()
-    return total
-
-
-# The claim a visit holds while its `sbatch` is still in flight. A real job id cannot be the claim
-# value here, because sbatch is what MINTS one — and claiming only after it returned would let two
-# simultaneous opens both submit before either could lose, which is the exact failure the claim exists
-# to prevent (two Arms `--delete`-mirroring one tree). So the claim is taken first with this, and
-# rebound to the real id the moment sbatch answers.
-#
-# `last_visited_at` is stamped in the same statement so the tick can tell a submit in flight from one
-# that died between the claim and sbatch — see `stale_workspace_claims`.
-SUBMITTING = -1
-
-
-def claim_workspace(conn: sqlite3.Connection, ws_id: int, job_id: int = SUBMITTING) -> bool:
-    """Take the visit claim, or say it is already held. One statement, so two simultaneous `open`s
-    cannot both win it and then both `--delete`-mirror the same tree from different Arms — the loser
-    reads the winner's `live_job_id` back and attaches to that session instead."""
-    cur = conn.execute(
-        "UPDATE workspaces SET live_job_id=?, last_visited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
-        "WHERE id=? AND live_job_id IS NULL", (job_id, ws_id))
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def rebind_workspace_claim(conn: sqlite3.Connection, ws_id: int, job_id: int) -> None:
-    """Point a held claim at the Spawn sbatch just returned. Scoped to `SUBMITTING` so this can only
-    ever move a claim out of the in-flight state, never steal a live one."""
-    conn.execute("UPDATE workspaces SET live_job_id=? WHERE id=? AND live_job_id=?",
-                 (job_id, ws_id, SUBMITTING))
-    conn.commit()
-
-
-def release_workspace(conn: sqlite3.Connection, ws_id: int, job_id: int) -> None:
-    """Drop a claim this exact Spawn holds. `job_id` is in the WHERE so a stale release — a submit that
-    failed after the claim, racing a tick that already cleared it and an open that already re-claimed —
-    cannot free somebody else's live visit."""
-    conn.execute("UPDATE workspaces SET live_job_id=NULL WHERE id=? AND live_job_id=?", (ws_id, job_id))
-    conn.commit()
-
-
-def is_visit(conn: sqlite3.Connection, job_id: int) -> bool:
-    """Is this Spawn a **Workspace** visit? There is no column on `spawns` saying so — the claim is the
-    only link — and `spawns.pod_project_dir` needs the answer, because a visit's scratch layout differs
-    from every other Spawn's on the Head's own Arm.
-
-    Safe against `SUBMITTING`: that sentinel is negative and a Slurm job id never is, so an in-flight
-    claim can never be mistaken for a live visit.
-    """
-    return conn.execute("SELECT 1 FROM workspaces WHERE live_job_id=?",
-                        (job_id,)).fetchone() is not None
-
-
-def visited_workspace(conn: sqlite3.Connection, ws_id: int) -> None:
-    conn.execute("UPDATE workspaces SET last_visited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
-                 "WHERE id=?", (ws_id,))
-    conn.commit()
-
-
-def stale_workspace_claims(conn: sqlite3.Connection, live_job_ids: list[int],
-                           grace_minutes: int = 5) -> list[sqlite3.Row]:
-    """Every Workspace whose claimed Spawn is no longer on the queue — what the karma tick clears.
-    Reconciled rather than released by the session itself, because the ways a visit ends that nothing
-    on the Head sees (a crashed Arm, a killed job, a Head restart) are exactly the ones that would
-    otherwise strand a Workspace as permanently live and unopenable.
-
-    A `SUBMITTING` claim is by definition not on the queue yet, so it is spared for `grace_minutes` —
-    otherwise a tick landing between the claim and sbatch would free a Workspace out from under a
-    submission about to succeed. Past the grace it IS collected: that is a submit which died holding
-    the claim, and nothing else will ever release it.
-    """
-    stale = "live_job_id IS NOT NULL"
-    args: tuple = ()
-    if live_job_ids:
-        stale += f" AND live_job_id NOT IN ({','.join('?' * len(live_job_ids))})"
-        args = tuple(live_job_ids)
-    return conn.execute(
-        f"""SELECT * FROM workspaces WHERE {stale}
-            AND (live_job_id <> ? OR last_visited_at IS NULL
-                 OR last_visited_at < strftime('%Y-%m-%dT%H:%M:%SZ','now',?))""",
-        (*args, SUBMITTING, f"-{grace_minutes} minutes")).fetchall()

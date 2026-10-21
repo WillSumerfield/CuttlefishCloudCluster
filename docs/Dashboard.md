@@ -48,7 +48,6 @@ files): Settings → Privacy and security → Manage certificates → Authoritie
 | **Queue** | The live cluster: everything pending or running, and whose it is. Also where you submit. |
 | **History** | Past Spawns, with cost and outcome. |
 | **Arms** | The fleet — who owns what, and its state. Retract and Return your own. |
-| **Workspaces** | Your working directories the cluster keeps. Create, resize, open, download. |
 | **Karma** | Everyone's standing, and your own ledger. |
 | **Tide** | How badly each Arm has been wanted, hour by hour. |
 | **Account** | Your password, and where you stand. |

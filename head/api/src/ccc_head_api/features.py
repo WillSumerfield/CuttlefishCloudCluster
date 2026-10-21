@@ -46,12 +46,8 @@ FEATLIB_MOUNT = "/ccc/featlibs"
 # mounts something inside the Pod writes to.
 #
 # A fourth mount for a fourth owner, and the reason is the same rule that separated the first three: it
-# is CCC's, not the submitter's. It used to be `$proj` itself, which was wrong twice over. On a
-# **Workspace** visit `$proj` is the User's durable tree, mirrored home by `rsync -a --delete` every
-# 60s — so a profile planting four names in it deleted whatever the owner already kept under those
-# names, permanently, and left Arm-local symlinks in stored **Storage** that dangle on the next visit
-# and on `workspace download`. On every other Spawn it put a real cache/ inside what the **Recovery
-# Window** measures. Sited here, a Feature's runtime touches no part of anyone's project.
+# is CCC's, not the submitter's. It used to be `$proj` itself, which put a real cache/ inside what the
+# **Recovery Window** measures. Sited here, a Feature's runtime touches no part of anyone's project.
 VLWD_MOUNT = "/ccc/vlwd"
 
 
@@ -139,10 +135,8 @@ fi
 # vlearn resolves assets/, shaders/, cache/ and TurboActivate.dat against VL_WORKING_DIRECTORY -- so
 # those four names have to exist in whatever that points at. Three come from the Arm's install.
 #
-# A directory of CCC's OWN (VLWD_MOUNT), never `$proj`. It was `$proj` until the four names were found
-# sitting in a live **Workspace** tree next to its owner's real work, mirrored home and charged to their
-# **Storage** -- see VLWD_MOUNT for why that is worse than untidy. Nothing here is the submitter's, so
-# nothing here belongs in the directory that is.
+# A directory of CCC's OWN (VLWD_MOUNT), never `$proj` -- see VLWD_MOUNT. Nothing here is the
+# submitter's, so nothing here belongs in the directory that is.
 #
 # That also settles what "the install always wins" used to have to argue: an upload carrying its own
 # assets/ is no longer replaced, because the two are not in the same directory any more.

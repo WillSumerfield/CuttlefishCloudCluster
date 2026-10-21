@@ -93,8 +93,8 @@ def _pool(**kw):
 
 def test_a_tide_pool_shell_gets_the_features_environment_past_sshd():
     """sshd builds a FRESH environment for every session and does not pass its own down, so everything
-    apptainer hands the Pod through `--env` reaches the boot script and stops there. A **Tide Pool** or
-    **Workspace** visit that asked for a profiled Feature had its package bound, its system libraries
+    apptainer hands the Pod through `--env` reaches the boot script and stops there. A **Tide Pool**
+    that asked for a profiled Feature had its package bound, its system libraries
     built and its working directory arranged, and then got a shell where `import vlearn` was a
     ModuleNotFoundError and `pip list` showed nothing — the one Spawn whose entire point was the
     Feature."""
@@ -166,9 +166,8 @@ def _fake_vlearn_install(root: Path) -> Path:
 
 def test_the_working_directory_is_ccc_s_own_and_never_the_project(tmp_path):
     """The four names vlearn resolves against VL_WORKING_DIRECTORY are CCC's to site, and `$proj` is
-    the one place they must not be sited. On a **Workspace** visit `$proj` is the User's durable tree,
-    mirrored home by `rsync -a --delete` — so planting them there deleted whatever its owner already
-    kept under those names, permanently, and left Arm-local symlinks in stored **Storage**."""
+    the one place they must not be sited — planting them there deleted whatever its owner already kept
+    under those names."""
     body = _script(features=["vlearn"])
     assert f"VL_WORKING_DIRECTORY={hf.VLWD_MOUNT}" in body
     assert f"$vlwd:{hf.VLWD_MOUNT}" in body, "and it is bound, writable — cache/ is written"
@@ -177,9 +176,9 @@ def test_the_working_directory_is_ccc_s_own_and_never_the_project(tmp_path):
 
 
 def test_a_project_that_carried_its_own_vendor_names_is_left_alone(tmp_path):
-    """The case that named the bug. A Workspace holding its own `assets/` — or `cache/`, which is an
-    ordinary enough name for anyone's tree — used to lose it to the profile's `rm -rf` the moment a
-    visit asked for the Feature, with the mirror carrying the deletion home."""
+    """The case that named the bug. A project holding its own `assets/` — or `cache/`, which is an
+    ordinary enough name for anyone's tree — used to lose it to the profile's `rm -rf` the moment it
+    asked for the Feature."""
     install = _fake_vlearn_install(tmp_path / "vlearn")
     scratch = tmp_path / "scratch"
     proj = scratch / "proj"
@@ -211,7 +210,7 @@ def test_the_working_directory_entries_are_symlinks(tmp_path):
 
 
 def test_the_working_directory_is_rebuilt_rather_than_reused(tmp_path):
-    """`$scratch` outlives a Workspace visit's stage-in, and an Arm reuses its scratch root. A stale
+    """An Arm reuses its scratch root. A stale
     entry from a previous release's install must not survive into the next Spawn's working directory —
     the same rule `unpack_packages` follows on the Arm."""
     install = _fake_vlearn_install(tmp_path / "vlearn")

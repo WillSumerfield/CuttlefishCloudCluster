@@ -21,21 +21,17 @@ from pathlib import Path
 
 from . import config, ui
 
-# A prefix per kind, because the two namespaces genuinely collide: a **Workspace** may legally be
-# named `58` (workspaces.NAME_RE admits it) and so may a Spawn id. `ccc-` first so a User's own hosts
-# sort away from these, and so `ssh ccc-<tab>` lists the live sessions and nothing else.
-WS_PREFIX = "ccc-ws-"
+# `ccc-` first so a User's own hosts sort away from these, and so `ssh ccc-<tab>` lists the live
+# sessions and nothing else.
 TP_PREFIX = "ccc-tp-"
 INCLUDE_LINE = "Include ccc.config"
-_HEADER = ("# Written by cuttle. Regenerated in full on every Tide Pool or Workspace open —\n"
+_HEADER = ("# Written by cuttle. Regenerated in full on every Tide Pool open —\n"
            "# anything you add here is lost. Edit ~/.ssh/config instead.\n")
 
 
-def alias(spawn_id: int, workspace: str | None) -> str:
-    """What to type. A visit is addressed by its Workspace's NAME rather than the visiting Spawn's id,
-    for the same reason `cuttle workspace open <name>` is how it is rejoined: the id changes every
-    visit, and an alias that changed with it would be one nobody could put in a bookmark."""
-    return f"{WS_PREFIX}{workspace}" if workspace else f"{TP_PREFIX}{spawn_id}"
+def alias(spawn_id: int) -> str:
+    """What to type."""
+    return f"{TP_PREFIX}{spawn_id}"
 
 
 def _dir() -> Path:
@@ -54,7 +50,7 @@ def _meta_path(spawn_id: int) -> Path:
 
 
 def record(spawn_id: int, *, private_key: str, port: int, user: str, host: str,
-           workspace: str | None, proj: str | None) -> Path:
+           proj: str | None) -> Path:
     """Put this session's key and connection details on disk, and return the key's path.
 
     The key is written 0600 before its bytes go in (`os.open` with the mode, not a chmod afterwards) —
@@ -67,7 +63,7 @@ def record(spawn_id: int, *, private_key: str, port: int, user: str, host: str,
         f.write(private_key if private_key.endswith("\n") else private_key + "\n")
     _meta_path(spawn_id).write_text(json.dumps({
         "id": spawn_id, "port": port, "user": user, "host": host,
-        "workspace": workspace, "proj": proj,
+        "proj": proj,
     }) + "\n")
     return path
 
@@ -93,7 +89,7 @@ def _block(row: dict) -> str:
     known_hosts entry would be a warning every time; `IdentitiesOnly` stops an agent with a dozen keys
     from exhausting `MaxAuthTries` before the one that works is offered."""
     return "\n".join([
-        f"Host {alias(row['id'], row.get('workspace'))}",
+        f"Host {alias(row['id'])}",
         f"  HostName {row['host']}",
         f"  Port {row['port']}",
         f"  User {row['user']}",

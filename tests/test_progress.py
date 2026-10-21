@@ -17,7 +17,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from ccc_head_api import db, tarstream, workspaces
+from ccc_head_api import db, tarstream
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
 from cuttle import api, ui
@@ -58,8 +58,7 @@ class TestWeigh:
         assert tarstream.weigh(d) == 0
 
     def test_a_symlink_counts_as_a_link_and_never_its_target(self, tmp_path):
-        """Matches what the tar carries — a symlink member has size 0 — and what `workspaces.usage`
-        already reports, so the number stays the same one a listing quotes."""
+        """Matches what the tar carries — a symlink member has size 0."""
         big = tmp_path / "elsewhere.bin"
         big.write_bytes(b"z" * 5000)
         d = tmp_path / "outputs"
@@ -100,13 +99,6 @@ def _clear_overrides():
     head_main.app.dependency_overrides.clear()
 
 
-def _workspace(conn, name: str) -> None:
-    """A Workspace row for alice. Everything but the name is scenery here — what is under test is
-    the tree on disk and the number the route reports about it."""
-    db.add_workspace(conn, 1, name, 1 << 30, gpus=1, vram_mb=8192, minutes=60,
-                     manifest="pyproject.toml", outputs=[], features=[])
-
-
 class TestTheRoutesDeclareTheirSize:
     """A streamed body carries no `Content-Length` — that is the point of streaming it — so the size
     has to be declared out of band or the client has nothing to divide by.
@@ -145,31 +137,6 @@ class TestTheRoutesDeclareTheirSize:
         r = c.get("/api/spawns/3/recovery/download")
         assert r.status_code == 200
         assert r.headers["X-CCC-Bytes"] == "900"
-
-    def test_a_workspace_declares_the_subtree_it_was_asked_for(self, monkeypatch, tmp_path):
-        """Not the whole Workspace. `?path=` narrows what is sent, so it must narrow the number
-        too — this is why `workspaces.usage`, which only knows whole trees, could not be reused."""
-        c = _client(monkeypatch, tmp_path)
-        with db.connect() as conn:
-            _workspace(conn, "scratch")
-        root = workspaces.dir_of(1, "scratch")
-        (root / "sub").mkdir(parents=True)
-        (root / "big.bin").write_bytes(b"a" * 5000)
-        (root / "sub" / "small.bin").write_bytes(b"b" * 11)
-        assert c.get("/api/workspaces/scratch/download").headers["X-CCC-Bytes"] == "5011"
-        assert c.get("/api/workspaces/scratch/download",
-                     params={"path": "sub"}).headers["X-CCC-Bytes"] == "11"
-
-    def test_an_empty_workspace_downloads_as_zero_rather_than_404ing(self, monkeypatch, tmp_path):
-        """Unlike an empty outputs dir. A Workspace that holds nothing is a Workspace that exists,
-        and a tar of nothing is the honest answer to asking for it."""
-        c = _client(monkeypatch, tmp_path)
-        with db.connect() as conn:
-            _workspace(conn, "empty")
-        workspaces.dir_of(1, "empty").mkdir(parents=True)
-        r = c.get("/api/workspaces/empty/download")
-        assert r.status_code == 200
-        assert r.headers["X-CCC-Bytes"] == "0"
 
 
 # --- the client ---------------------------------------------------------------
@@ -214,9 +181,9 @@ class TestTheClientReadsTheDeclaredSize:
         assert api._declared_bytes(r) is None
 
 
-class TestTheWorkspaceTarIsCountedUncompressed:
+class TestTheTarIsCountedUncompressed:
     """`download` writes the compressed tar to disk byte for byte, but reports uncompressed progress.
-    A compressed numerator against an uncompressed total would show a 16GB Workspace finishing at
+    A compressed numerator against an uncompressed total would show a 16GB tree finishing at
     45% — the bar would be actively lying rather than merely absent."""
 
     def test_progress_is_reported_in_uncompressed_bytes(self, ccc_home, tmp_path):
@@ -224,7 +191,7 @@ class TestTheWorkspaceTarIsCountedUncompressed:
         body = _tar({"ckpt.pt": payload})
         seen = []
         written = _serving(body, {"X-CCC-Bytes": str(len(payload))}).download(
-            "/workspaces/w/download", tmp_path / "w.tar.gz",
+            "/spawns/1/outputs", tmp_path / "w.tar.gz",
             on_progress=lambda d, t: seen.append((d, t)))
         assert written == len(body)                        # the file on disk is what arrived
         assert (tmp_path / "w.tar.gz").read_bytes() == body
@@ -238,7 +205,7 @@ class TestTheWorkspaceTarIsCountedUncompressed:
         the number every listing already quotes, rather than a wire artifact."""
         seen = []
         _serving(_tar({"a": b"x" * 10}), {"X-CCC-Bytes": "10"}).download(
-            "/workspaces/w/download", tmp_path / "w.tar.gz",
+            "/spawns/1/outputs", tmp_path / "w.tar.gz",
             on_progress=lambda d, t: seen.append(d))
         assert seen[-1] > 10
 
@@ -250,7 +217,7 @@ class TestTheWorkspaceTarIsCountedUncompressed:
         body[len(body) // 2] ^= 0xFF
         dest = tmp_path / "w.tar.gz"
         with pytest.raises(api.ApiError) as caught:
-            _serving(bytes(body)).download("/workspaces/w/download", dest)
+            _serving(bytes(body)).download("/spawns/1/outputs", dest)
         assert "corrupted" in caught.value.detail
         assert not dest.exists()
         assert not dest.with_suffix(".gz.part").exists()
@@ -308,7 +275,7 @@ class TestTheLineLearnsItsTotalLate:
         assert "512.0 KiB/1.0 MiB" in drawn[-1]
 
     def test_the_count_never_renders_past_the_total(self, drawn):
-        """The workspace numerator counts tar padding the Head did not weigh, so a small overshoot
+        """The numerator counts tar padding the Head did not weigh, so a small overshoot
         is normal. "1.1/1.0 GiB" would read as a bug in the transfer rather than in the arithmetic."""
         with ui.progress("downloading") as update:
             update(1100, 1000)

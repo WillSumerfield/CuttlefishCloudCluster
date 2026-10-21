@@ -1,8 +1,7 @@
 """One way to hand a directory to a client: a gzip tar, yielded in chunks, never held whole.
 
-Every tar the Head serves comes from here — a **Spawn**'s declared **Output**s, its **Recovery
-Window** copy, a **Workspace**'s tree. They started as three separate answers to the same question
-and two of them were wrong: built with `io.BytesIO` and returned as one `bytes`, which on a 3GB
+Every tar the Head serves comes from here — a **Spawn**'s declared **Output**s and its **Recovery
+Window** copy. They started as separate answers to the same question and were wrong: built with `io.BytesIO` and returned as one `bytes`, which on a 3GB
 result meant the Head spent ~4 minutes compressing before the client saw byte one, and the client's
 read timeout fired long before that. A timeout on a transfer that was working perfectly reads to a
 User as "cannot reach the Head", which is the wrong thing to go looking for.
@@ -86,14 +85,13 @@ def weigh(target: Path) -> int | None:
     the stale reading a separate metadata route would give (the retention ledger this replaced was
     written by a 30s tick, so a download that beat the tick got no bar at all).
 
-    Counted the way `retention._du` and `workspaces.usage` count — file sizes, symlinks as links and
+    Counted the way `retention._du` counts — file sizes, symlinks as links and
     never followed — so the number a User is shown mid-download is the number they were shown before
     it and after it. Directories and symlinks contribute 0, which is also what they contribute to the
     tar members a client sums on the other end.
 
-    The walk is the cost, and it is paid before the first byte. That was a deliberate no for a
-    **Workspace**, whose tree is the one in CCC allowed to hold a venv; overturned because the walk
-    was already happening here for the 404, and ~100k stats is not a delay next to 16GB of transfer.
+    The walk is the cost, and it is paid before the first byte — already happening here for the 404,
+    and ~100k stats is not a delay next to a multi-GB transfer.
     """
     if not target.is_dir():
         return None

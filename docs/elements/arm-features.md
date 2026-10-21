@@ -93,10 +93,9 @@ or in a directory beside it; anything further up is refused, since CCC only unpa
 **Nothing a Feature arranges lands in your project.** The vendor data its software resolves against —
 vlearn's `assets/`, `shaders/`, `cache/` and `TurboActivate.dat` — lives in a directory of CCC's own,
 not in the folder you uploaded. So your own `assets/` or `cache/` is yours: a Feature never replaces
-or deletes it, and a [Workspace](workspaces.md)'s tree is exactly what you last left in it whether or
-not a visit asked for a Feature.
+or deletes it.
 
-**In a [Tide Pool](tide-pool.md) or Workspace session the Feature's package is on your `PYTHONPATH`**,
+**In a [Tide Pool](tide-pool.md) session the Feature's package is on your `PYTHONPATH`**,
 ahead of your Environment — so `pip list` shows it, and what it shows is the Arm's own build rather
 than anything installed. Installing another copy yourself does not replace it: the Arm's is what
 `import` finds, and it is the one its licence covers.

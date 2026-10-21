@@ -37,8 +37,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import (db, karma, projects, recovery, retention, siphons, slurm, spawns, tidepool,
-               workspaces)
+from . import db, karma, projects, recovery, retention, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -232,12 +231,6 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # so `_record_endings` above already established the outputs landed.
         retention.register_new(conn, now)
         retention.reap_expired(conn, now)
-        # Workspaces have no TTL and are never evicted — the rows CASCADE with a deleted account, but
-        # nothing in SQLite can reach the files they name. And a Workspace may hold only ONE visit at a time, and the ways a visit ends without the Head seeing it (a crashed Arm,
-        # a killed job, a restart mid-session) are exactly the ones that would otherwise strand its
-        # claim. Reconciled from the same live-id set `reap_dead` uses, for the same reason.
-        workspaces.reconcile(conn, ids)
-        workspaces.sweep_orphans(conn)
         # Close the rsync grant of every Spawn whose copy home has landed, or whose window has passed.
         # AFTER register_new deliberately: that call consumes the `recovery.size` marker this one closes
         # on, and closing first would revoke a Siphon still carrying its copy.

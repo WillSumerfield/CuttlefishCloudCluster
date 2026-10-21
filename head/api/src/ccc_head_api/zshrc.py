@@ -81,26 +81,19 @@ USER_ZSHRC_STUB = """\
 P10K_CONFIG = (Path(__file__).parent / "zsh" / "p10k.zsh").read_text()
 
 
-def context_label(workspace: str | None) -> str:
-    """What p10k's context segment says instead of `<guise>@<arm>`.
-
-    The account a User logs into is their **Guise**, so the honest default renders as
-    `ccc-u60002@<arm>` — a uid nobody knows, for an identity CONTEXT.md is explicit is not an account
-    anyone logs into. Replaced with the thing a person actually wants to know at a glance: which of the
-    two session kinds this is, since only one of them keeps what gets written here. The hostname half is
-    left alone — it is the Arm's real name (apptainer is passed no `--uts`, so the Pod shares the host's
-    UTS namespace), and a User is *told* which Arm they got in any case (CONTEXT.md, **Eligibility**).
-    """
-    return workspace if workspace else "tidepool"
+# What p10k's context segment says instead of `<guise>@<arm>`. The account a User logs into is their
+# **Guise**, so the honest default renders as `ccc-u60002@<arm>` — a uid nobody knows, for an identity
+# CONTEXT.md is explicit is not an account anyone logs into. The hostname half is left alone — it is the
+# Arm's real name (apptainer is passed no `--uts`, so the Pod shares the host's UTS namespace).
+CONTEXT_LABEL = "tidepool"
 
 
-def render(workspace: str | None = None) -> str:
-    """`/etc/zsh/zshrc` for one session. `workspace` is the **Workspace**'s name for a visit, None for
-    an ordinary **Tide Pool** — the only thing that differs between the two."""
+def render() -> str:
+    """`/etc/zsh/zshrc` for one **Tide Pool** session."""
     return _ZSHRC_TMPL.format(
         omz=OMZ_DIR, state=POD_ZSH_STATE, p10k=POD_P10K,
         user_rc=POD_USER_ZSHRC,
-        context=context_label(workspace),
+        context=CONTEXT_LABEL,
     )
 
 

@@ -350,15 +350,3 @@ class TestEverySessionArmsItToo:
         tidepool_mod.run("88", minutes=None, vram=None, gpu=0, node=None, outputs=[], features=[],
                          follow=False)
         assert watch.read(88)["state"] == watch.WAITING
-
-    def test_a_workspace_visit_arms_it(self, signed_in, fake_slurm, project, attached, monkeypatch):
-        """A visit's declared Outputs are shipped to the same `[out-…]` module as any Spawn's, "so it
-        can be fetched like any Spawn's results" — and nothing on this side ever fetched them."""
-        from ccc_head_api import spawns as head_spawns_mod
-        made = signed_in("workspace", "new", "scratch", "--storage", "4", "--time", "60", "--vram",
-                         "24", "--manifest", "requirements.txt", "--yes")
-        assert made.exit_code == 0, made.output
-        monkeypatch.setattr(head_spawns_mod, "submit_checked", lambda *a, **kw: 4242)
-        r = signed_in("workspace", "open", "scratch")
-        assert r.exit_code == 0, r.output
-        assert [e["spawn_id"] for e in watch.pending()] == [4242]
