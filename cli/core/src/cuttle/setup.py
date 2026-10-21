@@ -408,25 +408,6 @@ def point_at_self() -> str:
     return url
 
 
-def account_setup() -> None:
-    """The **your account** questions, and the reason they are at the END of setup.
-
-    They need a live **Session**: a GitHub key cannot be minted at all without one, because the Head
-    seals it under the DEK only a login produces. It could not be asked before the Head API was up and
-    someone had logged into it.
-    """
-    if auth.github_minted():
-        ui.say("  [muted]a GitHub key is already minted for this account[/muted]")
-        return
-    ui.say("A GitHub key lets your Spawns reach your private repos — `git clone`, "
-           "`pip install git+ssh://`. The Head mints it and holds the private half; you paste the "
-           "public half into GitHub.")
-    if not ui.ask_confirm("Mint a GitHub SSH key for your account?", True):
-        ui.hint("mint one later with `cuttle github mint`")
-        return
-    auth.github_await(auth.github_mint()["hint"])
-
-
 def ensure_munge_key() -> None:
     """Mint the cluster's munge key if this Head has none. **Head only** — an Arm is *given* this key
     over /enroll (enroll.write_munge_key); a second one would be a second cluster.
@@ -983,8 +964,7 @@ def _head_first_login(temp_pw: str | None) -> None:
     No username prompt. `setup --head` seeds exactly one account and knows its name.
 
     `temp_pw is None` is a re-run: the Admin already exists and nothing on this box knows its password,
-    so there is nothing to spend. The account questions still get asked if this box happens to hold a
-    Session already — a re-run should be able to mint a key it skipped last time.
+    so there is nothing to spend.
     """
     point_at_self()
     with ui.section("Your account", lambda: "ready"):
@@ -993,9 +973,7 @@ def _head_first_login(temp_pw: str | None) -> None:
         elif not auth.have_session():
             ui.say(f"{config.FIRST_ADMIN_USER} already exists on this Head, and this box holds no "
                    f"session for it.")
-            ui.hint("run `cuttle login` here to mint a GitHub key")
-            return
-        account_setup()
+            ui.hint("run `cuttle login` here to submit from this box")
 
 
 def setup_head(address: str | None = None, update: bool = False) -> None:
@@ -1514,8 +1492,6 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     # coordinator lives in tailscaled's root-owned state file.
     t = enroll.decode_token(token) if token else enroll.enrollment_from_state()
     node_name = t["node_name"]
-    # The GitHub key is asked at the END — see `account_setup`. It needs a Session, and nothing on
-    # this box can reach the Head until the enrollment below has pointed it at one.
     preflight()
 
     with ui.step("Joining the mesh"):
@@ -1659,25 +1635,22 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
 
 
 def _arm_first_login() -> None:
-    """Offer the Arm's owner a **Session** on the box they just donated, and then the account questions.
+    """Offer the Arm's owner a **Session** on the box they just donated.
 
     Declinable, because an Arm is not necessarily a box its owner works from — the point of donating one
     is that the cluster can use it while nobody is sitting there. But default **yes**: an Arm's owner is
     a User like any other, and enrolling has just finished doing everything a login needs (this box is
     pointed at the Head by name and has its CA, from `/enroll`), so the one thing standing between them
     and submitting from their own machine is a question nobody was asking.
-
-    Declining skips the account questions with it — they are all things done to a Session.
     """
     if auth.have_session():
-        return account_setup()
+        return
     with ui.section("Your account", lambda: "ready"):
-        ui.say("This box can submit Spawns too — logging in here sets up your GitHub key.")
+        ui.say("This box can submit Spawns too.")
         if not ui.ask_confirm("Log in to the cluster on this box?", True):
             ui.hint("`cuttle login` whenever you want to submit from here")
             return
         auth.login(None)
-        account_setup()
 
 
 def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None) -> None:

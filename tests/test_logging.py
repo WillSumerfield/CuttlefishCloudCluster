@@ -140,8 +140,7 @@ def test_unhandled_route_error_is_logged_and_500(monkeypatch, api_caplog):
     traceback and answers a clean 500 (no stack to the client)."""
     _real_db(monkeypatch)                           # so db.connect() succeeds and `boom` is what raises
     head_main.app.dependency_overrides[head_main.current_user] = lambda: {
-        "id": 1, "username": "alice", "is_admin": False, "must_change_password": False,
-        "dek": None}
+        "id": 1, "username": "alice", "is_admin": False, "must_change_password": False}
 
     def boom(_conn):
         raise RuntimeError("karma exploded")

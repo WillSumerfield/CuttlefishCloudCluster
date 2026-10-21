@@ -50,7 +50,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
-                  "tide", "account", "logout", "whoami", "passwd", "github", "recipe",
+                  "tide", "account", "logout", "whoami", "passwd", "recipe",
                   "workspace"}
 
 
@@ -73,7 +73,7 @@ GROUPS: dict[str, list[str]] = {
     # command's subtree splits across two places exactly once and then nobody can find either half.
     # Both are Head-gated inside it anyway, so a donor's box still never sees them.
     f"{FOLDER}cluster": ["karma", "tide"],
-    f"{FOLDER}account": ["account", "github", "passwd", "whoami", "logout"],
+    f"{FOLDER}account": ["account", "passwd", "whoami", "logout"],
     f"{FOLDER}admin": ["user", "arm", "munge", "backup", "build-installer"],
     f"{FOLDER}box": ["update", "setup", "feature", "teardown"],
 }
@@ -119,13 +119,6 @@ LABELS = {
 
     # My account.
     "account": "Show my standing",
-    # The Head mints this one: nothing is stored by hand, and "Show it" means the PUBLIC half, printed
-    # in full for pasting into GitHub.
-    "github": "My GitHub key",
-    "github mint": "Mint a new one",
-    "github show": "Show the public key",
-    "github verify": "Check it is registered",
-    "github clear": "Forget it",
     "passwd": "Change my password",
     "whoami": "Show who I am logged in as",
     "logout": "Log out",

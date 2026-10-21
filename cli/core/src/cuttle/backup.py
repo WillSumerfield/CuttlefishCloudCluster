@@ -17,12 +17,6 @@ holds (ccc_head_api/atrest.py), and leaving it out is the entire value of encryp
 stays strictly *less* sensitive than the Head itself, which is the one thing at-rest encryption can buy
 on a box that must decrypt unattended. This costs nothing to a restore — a Tide Pool row belongs to a
 Spawn that was in the queue when the snapshot was taken and is long gone by the time anyone restores it.
-
-**Credentials, by contrast, come back.** A User's W&B key is sealed under their own password rather
-than under any keyfile (ccc_head_api/credentials.py), and both halves of that — the salt and the
-wrapped key — are rows in head.db. Restore the database and the next login re-derives the key that
-opens them. This was not true before: a restore used to leave every stored W&B key unreadable, and
-`restore()` had to warn about it.
 """
 
 from pathlib import Path

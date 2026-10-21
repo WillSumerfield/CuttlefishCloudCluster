@@ -153,13 +153,6 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
     `spawns.submit_checked`, so the Escrow and the Attribution row are both produced exactly as they
     are for a Spawn that arrived over HTTP.
 
-    **No key is injected on this path at all**, and it is worth being plain about why. A Credential is
-    sealed under its owner's password (credentials.py) and only a live Session carries the DEK that
-    opens it. This command has a User to attribute to but no Session — it is an operator standing on
-    the Head, not that User logging in — so there is nothing to decrypt with, and the Spawn runs
-    without a GitHub key. Escrowing a copy of the key somewhere the Head could reach unattended would
-    restore it and defeat the entire scheme.
-
     `tidepool` lets an Admin pin a Tide Pool the same way they pin any other Spawn — orthogonal to
     node-pinning (the common path is unpinned, over `/submit`).
 
@@ -178,8 +171,7 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        Path(tar), minutes, vram, outputs, node,
                                        features=features, tidepool=tidepool, manifest=manifest,
-                                       substrate=substrate, activation=activation, name=name,
-                                       dek=None)
+                                       substrate=substrate, activation=activation, name=name)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1

@@ -65,8 +65,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 
 - **User** — a person with an account on the Head (admin-provisioned: username + password, argon2
   hash). A User's identity ties every Spawn they submit to them, marks any Arms they **own** (donate),
-  and anchors their Karma wallet. It also holds their **Credential**s, which is why the password is
-  more than a login: it is what those are kept under.
+  and anchors their Karma wallet.
 - **Admin / Maintainer** — the privileged User (the operator) who provisions accounts, mints
   **enrollment tokens** (naming each Arm's owner), and can **override** Karma. One person today.
   The role's authority has two sources and they are not interchangeable: the **account**, which is what
@@ -83,24 +82,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   of it. So a Session ends when the Head is told to end it, or when its own lifetime runs out — never
   merely because a client discarded its copy, which makes the Session unreachable *from that box* while
   leaving it live everywhere else. Distinct from **Mesh** membership, which authorizes *machines*, not
-  people. It is also what makes a **Credential** usable: outside a Session the Head cannot reach one, so
-  work submitted with no Session behind it carries none.
-- **Credential** — a third-party secret the Head holds for one User — their GitHub key —
-  and injects into every Spawn they submit, from *either* client. Most are **handed over**: the User
-  pastes a secret that already exists elsewhere. One is **minted**: the Head generates the secret itself
-  and the User never sees it, registering only its public half with the third party. So a Spawn reaches
-  the submitter's own accounts elsewhere whichever machine it was launched from, and no secret is
-  typed into code, an environment variable, or a config file.
-  A Credential is **write-only**: once set, all anyone sees is its *hint* — the part that identifies
-  it without revealing it (the last few characters, a fingerprint, a public key), never the value.
-  Nobody reads one back — not the owner, not the **Admin**. Injection is the default and can be
-  declined per **Spawn**, from either client: a stored Credential is otherwise used for every Spawn,
-  and "not this one" has to be sayable.
-  It is kept under the User's **password**, which decides its whole lifecycle. Changing a password
-  keeps every Credential; an Admin **reset** destroys them all, because a reset is precisely the case
-  where the password is gone. A User who has set none, or whose Credentials a reset took, is told their
-  Spawns will run without them rather than discovering it afterwards.
-
+  people.
 ## Domains (bounded contexts that may deploy across roles)
 
 - **Karma** — the token economy. Deploys on the Head. Covers wallets/balances, dynamic
@@ -112,8 +94,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 ## Job/experiment concepts
 
 - **Recipe** — a **User**'s saved, re-runnable snapshot of a piece of work: the project code itself,
-  plus how to run it (entry point, arguments, declared needs, which
-  **Credential**s its runs carry). Private to
+  plus how to run it (entry point, arguments, declared needs). Private to
   its owner. Because it holds the code, a Recipe can be re-run from any machine with nothing to hand —
   and it is **frozen**: it keeps running what it captured until its owner deliberately updates it. The
   freeze is a promise the *cluster* keeps, not one it keeps against the owner — updating a Recipe simply

@@ -161,10 +161,7 @@ def save(conn, user_id: int, meta: dict, tar_path: Path, replacing: str | None =
         tf.extractall(dest, filter="data")  # 'data' filter blocks path-traversal entries
     row = db.add_recipe(conn, user_id, name, script, meta.get("args") or [], outputs,
                         max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]), int(meta["minutes"]),
-                        size, manifest, features, substrate,
-                        # Absent reads as True, the same as it does at /submit — a client that predates
-                        # the flag saves a Recipe that behaves as its Recipes always have.
-                        bool(meta.get("git", True)))
+                        size, manifest, features, substrate)
     return to_json(row)
 
 
@@ -216,8 +213,7 @@ def update_meta(conn, user_id: int, name: str, meta: dict) -> dict:
 
     row = db.update_recipe_meta(conn, user_id, name, script, meta.get("args") or [], outputs,
                                 max(1, int(meta.get("gpus", 1))), int(meta["vram_mb"]),
-                                int(meta["minutes"]), manifest, features, substrate,
-                                bool(meta.get("git", True)))
+                                int(meta["minutes"]), manifest, features, substrate)
     return to_json(row)
 
 
@@ -238,7 +234,7 @@ def delete(conn, user_id: int, name: str) -> bool:
     return True
 
 
-def run(conn, user_id: int, name: str, is_admin: bool, dek: bytes | None = None) -> int:
+def run(conn, user_id: int, name: str, is_admin: bool) -> int:
     """Run the frozen snapshot as a new Spawn. Returns the Spawn id.
 
     Every setting the Spawn needs was already answered when the Recipe was saved (CONTEXT.md — a re-run
@@ -259,14 +255,13 @@ def run(conn, user_id: int, name: str, is_admin: bool, dek: bytes | None = None)
     return spawns.submit_checked(
         user_id, is_admin, row["script"], max(1, row["gpus"]), json.loads(row["args"]),
         None, row["minutes"], row["vram_mb"] // 1024, json.loads(row["outputs"]),
-        git=bool(row["git"]),
         features=json.loads(row["features"]), manifest=row["manifest"],
         substrate=row["substrate"] or None,
         # The Recipe's own name is the Spawn's **Name**, INHERITED rather than asked for again: it was
         # chosen by a person when the Recipe was saved, so the rule that a human names every Spawn is
         # already satisfied and there is nothing left to prompt for. Running one Recipe ten times gives
         # ten rows reading the same thing, which is exactly what re-running one piece of work looks like.
-        source_dir=_dir(user_id, name), recipe_name=name, name=name, dek=dek,
+        source_dir=_dir(user_id, name), recipe_name=name, name=name,
     )
 
 
@@ -315,9 +310,6 @@ def to_json(row, running: bool = False) -> dict:
         "frozen_at": int(frozen.timestamp() * 1000),
         "updating": False,
         "running": running,
-        # Sent back, not just stored: the edit form prefills from this, so a Recipe saved with the
-        # GitHub key declined does not silently re-arm it on the next save.
-        "git": bool(row["git"]),
         # Frozen structurally only — see `save`'s note on why neither is checked against the fleet here.
         "manifest": row["manifest"],
         "substrate": row["substrate"],

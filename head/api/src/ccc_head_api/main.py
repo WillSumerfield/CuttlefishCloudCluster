@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import credentials, db, environments, github, guises, karma, ratelimit, retraction, slurm
+from . import db, environments, guises, karma, ratelimit, retraction, slurm
 from . import tarstream
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import recipes as recipes_mod
@@ -86,8 +86,7 @@ async def access_log(request: Request, call_next):
     """One line per request: who, what, the outcome, and how long. The authenticated username is read
     from `request.state` (stashed by `current_user` during routing) — no extra DB lookup, and `-` for
     the routes that never resolve a user (healthz/readyz, a failed login). Path only, never the query
-    string, headers, or body: `/passwd` and `/login` carry passwords and `/account/credentials/{kind}`
-    carries a Credential, none of which may reach a log. This supersedes uvicorn's own access log (the Head API unit
+    string, headers, or body: `/passwd` and `/login` carry passwords, neither of which may reach a log. This supersedes uvicorn's own access log (the Head API unit
     runs it with `--no-access-log`)."""
     start = time.perf_counter()
     try:
@@ -127,12 +126,6 @@ class PasswdRequest(BaseModel):
     new_password: str
 
 
-class CredentialRequest(BaseModel):
-    # Optional because a *minted* kind takes no body at all: the Head generates that secret, so there
-    # is nothing for the client to send. See `credential_set`.
-    value: str | None = None
-
-
 def password_policy_error(new: str, current: str) -> str | None:
     """The one place a new password is judged, for every caller of `/passwd` (both clients, admin
     rotations, and the forced first-login change). Returns a human reason to refuse, or None to accept.
@@ -163,17 +156,7 @@ def _token_from(request: Request) -> str | None:
 
 def current_user(request: Request) -> dict:
     """Dependency: resolve the session to a user, or 401. Returns a plain dict (row detached from the
-    per-request connection).
-
-    Also unwraps this session's copy of the User's **DEK** and hands it out in that dict, which is
-    what makes a Credential reachable at all (see credentials.py). Done here, eagerly, for two
-    reasons: `lookup_session` already selects the wrapped blob so it costs no extra query, and the
-    unwrap is HKDF + one AES block — microseconds, not a KDF. The alternative, deferring it behind a
-    closure, would mean carrying the **raw token** past authentication, which is strictly more
-    authority than the DEK it would replace.
-
-    The DEK is the ONE thing here that must never be logged, echoed, or returned to a client.
-    """
+    per-request connection)."""
     token = _token_from(request)
     if not token:
         raise HTTPException(401, "not authenticated")
@@ -186,8 +169,7 @@ def current_user(request: Request) -> dict:
     # write is visible to the middleware once the route returns.
     request.state.username = user["username"]
     return {"username": user["username"], "is_admin": bool(user["is_admin"]),
-            "must_change_password": bool(user["must_change_password"]), "id": user["id"],
-            "dek": credentials.unwrap(credentials.token_kek(token), user["dek_wrapped_tok"])}
+            "must_change_password": bool(user["must_change_password"]), "id": user["id"]}
 
 
 # --- health (open) + reads (authed) -----------------------------------------
@@ -604,10 +586,7 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
             # password. WARNING, not ERROR — a fat-fingered password is not an incident.
             log.warning("login FAILED user=%s from %s", req.username, ip)
             raise HTTPException(401, "bad username or password")
-        # The only moment a password and a fresh token coexist, so the only moment the master wrap
-        # can be opened and a working wrap made from it. Mints on first sight — a new User, one
-        # carried across the migration, one whose Admin reset destroyed the old DEK.
-        token = db.create_session(conn, user["id"], db.unlock_dek(conn, user, req.password))
+        token = db.create_session(conn, user["id"])
     ratelimit.clear(f"ip:{ip}", f"user:{req.username}")
     log.info("login OK user=%s", user["username"])
     response.set_cookie(_COOKIE_NAME, token, max_age=_COOKIE_MAX_AGE, httponly=True,
@@ -639,13 +618,6 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
     """Rotate own password (also the forced-first-login path). Verifies the old password, clears the
     must-change flag. Existing sessions stay valid — the client keeps using its token.
 
-    **Credentials survive.** The DEK this session already holds is re-wrapped under the new password
-    rather than replaced, so every stored ciphertext and every other live session keeps working — a
-    password change is not a security event the way an Admin reset is, and should not silently cost
-    someone their keys. What it does not undo: an old copy of head.db plus the old password still
-    yields this same DEK, and so still opens Credentials stored after this call. Rotating the DEK here
-    would fix that at the price of destroying everything already stored, which is the worse trade.
-
     A wrong old password is **403, not 401**: the caller's session is fine, this one act is refused.
     401 is the clients' "your session is dead, log in again" signal (the SPA drops to its login form
     on any 401), so answering it here made a typo'd password report itself as `not logged in`.
@@ -659,113 +631,8 @@ def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
         reason = password_policy_error(req.new_password, req.old_password)
         if reason is not None:
             raise HTTPException(422, reason)
-        db.set_password(conn, user["username"], req.new_password, dek=user["dek"])
+        db.set_password(conn, user["username"], req.new_password)
     return {"ok": True}
-
-
-# --- your account: Credentials (authed) -------------------------------------
-# The Head holds each User's third-party secrets — a W&B key, a GitHub SSH key — and injects them
-# into every Spawn they submit, from either client (see spawns.git_key_for). They
-# live here rather than in the CLI's config file because the **Dashboard** is the primary submission
-# surface and a browser has no config file to read: every Spawn from it ran with W&B disabled until
-# these routes existed.
-#
-# Routes are keyed by `kind` rather than named per secret, so adding one is a `credentials.KINDS` entry
-# and an input widget. POST, not PUT: the API has no PUT routes at all, and POST is already its
-# store-or-replace verb everywhere else. The GitHub key added a second *origin* rather than a second
-# set of routes — the Head mints that one, so POSTing to it carries no body — and one route these do
-# not share: `/github/verify`, because only a minted Credential has a half that lives somewhere else.
-#
-# **There is no reveal.** A Credential is write-only by design and the plaintext never comes back out
-# over HTTP — see credentials.py. The old `/account/wandb/reveal` argued a stolen session could echo
-# the key out of a Spawn anyway, so a re-prompt would guard a door with no wall. That is still true,
-# and it cuts the other way now: reveal bought a User one convenience (checking what they pasted) at
-# the cost of the secret crossing the wire, sitting in scrollback, and being shoulder-surfable. The
-# `hint` buys the same convenience for none of that.
-
-@api.get("/account/credentials")
-def credential_list(user: dict = Depends(current_user)) -> list[dict]:
-    """Every kind the Head knows about, set or not — so both clients render a stable list of rows
-    rather than discovering which secrets exist from whichever ones happen to be stored."""
-    with db.connect() as conn:
-        return db.credential_statuses(conn, user["id"])
-
-
-@api.get("/account/credentials/{kind}")
-def credential_get(kind: str, user: dict = Depends(current_user)) -> dict:
-    """Masked status: whether one is stored and its hint. There is no unmasked counterpart."""
-    if kind not in credentials.KINDS:
-        raise HTTPException(404, f"no such credential kind {kind!r}")
-    with db.connect() as conn:
-        return db.credential_status(conn, user["id"], kind)
-
-
-@api.post("/account/credentials/{kind}")
-def credential_set(kind: str, req: CredentialRequest, user: dict = Depends(current_user)) -> dict:
-    """Store (or replace) one. Sealed under this session's DEK, so it is readable only by a request
-    carrying a live Session of this User's — not by the Head on its own, and not by an Admin.
-
-    **One route, both origins.** A handed-over kind (W&B) carries its value in the body; a minted kind
-    (GitHub) sends no body, and the Head generates the secret itself. The reply is the fresh status,
-    not `{"ok": true}`, because a mint produces something the caller has no other way to learn: the
-    public half, which they must paste into GitHub. It is the same masked status GET answers — a
-    minted Credential's `hint` being the whole public key is exactly what makes that safe.
-    """
-    if kind not in credentials.KINDS:
-        raise HTTPException(404, f"no such credential kind {kind!r}")
-    if user["dek"] is None:
-        # Belt and braces: the invariant is that a live Session always has a DEK. Refusing beats
-        # storing something under a key nobody can reproduce, which would look stored and never work.
-        raise HTTPException(409, "your session cannot store credentials — log in again")
-    value = credentials.mint(kind)
-    if value is None:
-        value = (req.value or "").strip()
-        if not value:
-            raise HTTPException(422, "the value is empty")
-    elif req.value is not None:
-        # Refused rather than ignored: a client sending its own key here means it believes this
-        # Credential can be handed over, and silently minting a different one would leave it holding
-        # a secret the Head has never heard of.
-        raise HTTPException(422, f"the Head mints the {credentials.KINDS[kind]['label']} — send no value")
-    with db.connect() as conn:
-        db.set_credential(conn, user["id"], kind, user["dek"], value)
-        status = db.credential_status(conn, user["id"], kind)
-    # Never the value, and never its length: this line goes to journald, which is not where a secret's
-    # shape belongs. That a User set one is worth knowing; what they set is not.
-    log.info("credential %s set by %s", kind, user["username"])
-    return status
-
-
-@api.post("/account/credentials/github/verify")
-def credential_verify_github(user: dict = Depends(current_user)) -> dict:
-    """Ask GitHub whether this User's minted key is registered — the one question the Head cannot
-    answer from its own database, since registering a public key happens entirely on GitHub.
-
-    Three states, all 200 (see `github.verify`): `ok` with the GitHub username, `unregistered` while
-    the User still has the pubkey on their clipboard, `error` when nobody could tell. A poller needs
-    the middle one to mean "wait" and the last to mean "stop", so failure is a field here rather than
-    a status code — two different 4xx would say the request was wrong, and it wasn't.
-
-    POST, not GET: it opens a connection to a third party, which is not a thing a GET should do.
-    """
-    with db.connect() as conn:
-        key = db.get_credential(conn, user["id"], "github", user["dek"])
-    if key is None:
-        raise HTTPException(409, "no GitHub key is stored — mint one first")
-    result = github.verify(key)
-    log.info("github verify by %s: %s", user["username"], result["status"])
-    return result
-
-
-@api.delete("/account/credentials/{kind}", status_code=204)
-def credential_clear(kind: str, user: dict = Depends(current_user)) -> Response:
-    """Forget it — the Head stops injecting it."""
-    if kind not in credentials.KINDS:
-        raise HTTPException(404, f"no such credential kind {kind!r}")
-    with db.connect() as conn:
-        db.clear_credential(conn, user["id"], kind)
-    log.info("credential %s cleared by %s", kind, user["username"])
-    return Response(status_code=204)
 
 
 # --- Karma (authed; Override is admin-only) ---------------------------------
@@ -859,10 +726,6 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     named an output for would produce results with nowhere retrievable to land. See
     `spawns.output_plan` for what is and is not a legal path.
 
-    `git` is the per-Spawn off-switch for the submitter's **GitHub key** (see spawns.git_key_for,
-    /account/credentials), defaulting to true when absent: a client that never heard of it keeps the
-    behaviour it had.
-
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
     with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
     for, and is OR-expanded here into a Slurm constraint over the fleet's real cards
@@ -932,10 +795,10 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
         # `script` that isn't actually in the uploaded tar.
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
-            tar_path, minutes, vram_gb, outputs, git=bool(meta.get("git", True)),
+            tar_path, minutes, vram_gb, outputs,
             features=meta.get("features") or [],
             tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
-            name=meta.get("name") or "", dek=user["dek"])
+            name=meta.get("name") or "")
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:
@@ -1054,7 +917,7 @@ def run_recipe(name: str, user: dict = Depends(current_user)) -> dict:
         raise HTTPException(403, "change your password before running a recipe (run `cuttle passwd`)")
     try:
         with db.connect() as conn:
-            job_id = recipes_mod.run(conn, user["id"], name, user["is_admin"], dek=user["dek"])
+            job_id = recipes_mod.run(conn, user["id"], name, user["is_admin"])
     except ValueError as e:
         raise HTTPException(404 if str(e).startswith("no recipe named") else 422, str(e))
     log.info("recipe run %r by %s -> spawn %s", name, user["username"], job_id)
@@ -1166,8 +1029,7 @@ async def open_workspace(name: str, request: Request, user: dict = Depends(curre
     try:
         with db.connect() as conn:
             job_id, attached = workspaces_mod.visit(conn, user["id"], name, user["is_admin"],
-                                                    overrides if isinstance(overrides, dict) else {},
-                                                    dek=user["dek"])
+                                                    overrides if isinstance(overrides, dict) else {})
     except ValueError as e:
         raise HTTPException(404 if str(e).startswith("no workspace named") else 422, str(e))
     log.info("workspace open %r by %s -> spawn %s%s", name, user["username"], job_id,

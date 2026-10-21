@@ -350,11 +350,6 @@ export type Recipe = {
   frozen_at: number       // epoch ms the code was last captured; Update code refreshes it
   updating: boolean       // a new snapshot is uploading right now → the bloom
   running: boolean        // a Spawn of this Recipe is live on the cluster right now → the passing cloud
-  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen with the code, and read back
-  // (not just written) so Update code prefills it: a Recipe is durable config, so "run this without my
-  // key" is part of what the Recipe IS, not a decision to re-make every time. Absent on a Recipe saved
-  // before this existed, which reads as true.
-  git: boolean
   // The same two declared-need fields a Spawn carries (SubmitOpts below), frozen with the code rather
   // than asked again on every run. `features` is usually empty; `manifest` never is — a Recipe freezes
   // the environment its work runs in, not just the code, so naming one is required to save at all.
@@ -383,7 +378,6 @@ export type NewRecipe = {
   gpus: number
   vram_mb: number
   minutes: number
-  git: boolean
   // Same as above — asked once, frozen with the code. `manifest` is REQUIRED: a Recipe that named no
   // dependency file could never be run, so the Head refuses the save rather than freezing a dead one.
   manifest: string
@@ -401,7 +395,6 @@ async function recipeUpload(r: NewRecipe, path: string): Promise<Recipe> {
   const meta = {
     name: r.name, script: r.script, args: r.args, outputs: r.outputs, gpus: r.gpus,
     vram_mb: r.vram_mb, minutes: r.minutes,
-    git: r.git,
     // `features` is omitted rather than sent empty — absent means "no features required", which is
     // not the same instruction as any other value. `manifest` is required, so it always travels.
     ...(r.features.length ? { features: r.features } : {}),
@@ -438,7 +431,6 @@ export type RecipeSettings = {
   gpus: number
   vram_mb: number
   minutes: number
-  git: boolean
   manifest: string
   substrate: string
   features: string[]
@@ -599,65 +591,6 @@ export const workspaceDownloadUrl = (name: string, path?: string) =>
 export const deleteWorkspace = (name: string) =>
   req(`/workspaces/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(() => {})
 
-// A **Credential**: a third-party secret the Head holds on your behalf and injects into every Spawn you
-// submit, from either client. Kept under your own password, so the Head cannot read one without a live
-// session of yours — see head/api/.../credentials.py.
-//
-// **Write-only.** There is no route that returns the plaintext and there will not be one; `hint` is the
-// whole of what comes back. Keyed by `kind` so a second secret is a new value here rather than a second
-// set of endpoints.
-//
-// Kinds differ on their **origin**, which is the only axis besides the name:
-//   'wandb'  — HANDED OVER. You paste a key that already exists elsewhere; `hint` is its last 4 chars.
-//   'github' — MINTED. The Head generates the keypair and you never see the private half; `hint` is the
-//              PUBLIC one, in full, because pasting it into github.com/settings/keys is the whole job.
-export type CredentialKind = 'wandb' | 'github'
-export type CredentialStatus = {
-  kind: CredentialKind
-  set: boolean
-  hint: string | null
-  set_at: string | null
-}
-
-/** Masked status — whether one is stored, and its hint. There is no unmasked counterpart. */
-export const getCredential = (kind: CredentialKind) =>
-  json<CredentialStatus>(`/account/credentials/${kind}`)
-/** Every kind the Head knows about, set or not. */
-export const getCredentials = () => json<CredentialStatus[]>('/account/credentials')
-/** Store (or replace) a handed-over one. */
-export const setCredential = (kind: CredentialKind, value: string) =>
-  req(`/account/credentials/${kind}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
-  }).then(() => {})
-/**
- * Mint (or replace) a minted one. Same route, no value — the Head generates the secret. The reply is
- * the fresh status rather than an ack, because a mint produces the one thing the caller has no other
- * way to learn: the public half it has to go and register.
- */
-export const mintCredential = (kind: CredentialKind) =>
-  json<CredentialStatus>(`/account/credentials/${kind}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-  })
-/** Forget one — the Head stops injecting it. */
-export const deleteCredential = (kind: CredentialKind) =>
-  req(`/account/credentials/${kind}`, { method: 'DELETE' }).then(() => {})
-
-/**
- * Ask the Head to authenticate to GitHub with your stored key. Three answers, not two — `unregistered`
- * means you have not pasted the public key in yet, `error` means nobody could tell (no route out, no
- * ssh). Collapsing them would turn a broken Head into "go and paste your key again".
- */
-export type GithubCheck =
-  | { status: 'ok'; username: string }
-  | { status: 'unregistered'; detail: string }
-  | { status: 'error'; detail: string }
-export const verifyGithub = () =>
-  json<GithubCheck>('/account/credentials/github/verify', { method: 'POST' })
-
 // The Tide, as the Head serves it: Demand per Arm over CLOCK time — how badly each card has been wanted,
 // hour by hour, over the last `days`. This is the ONLY surface the Tide is seen through: not a forecast,
 // not a quote. The frontend folds this into the hour-of-day shape itself (tide/fold.ts). A cold or
@@ -773,11 +706,6 @@ export type SubmitOpts = {
   vram: number
   node: string | null // admin-only; the Head 403s it for everyone else
   args: string[]
-  // Carry the submitter's **GitHub key** into this Spawn — an ssh-agent inside the Pod, so `git clone`
-  // and `pip install git+ssh://` reach their private repos. On by default and declinable per Spawn: an
-  // account key reaches everything that account can, and for the life of the Spawn anything running in
-  // the Pod can use it.
-  git: boolean
   // Folders the payload writes results to, each a path in the Spawn's own project (or, `/`-prefixed,
   // absolute inside the Pod) — required, non-empty; the Head 422s a Spawn that declares none.
   outputs: string[]
@@ -803,13 +731,13 @@ export type SubmitResult = { id: number; environment: string | null }
  * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
  */
 export async function submit({
-  picked, name, script, gpu, minutes, vram, node, args, git, outputs, features, manifest, substrate,
+  picked, name, script, gpu, minutes, vram, node, args, outputs, features, manifest, substrate,
 }: SubmitOpts): Promise<SubmitResult> {
   const body = await projectBody(picked)
   // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
   // absent key the same as an empty list.
   const meta = {
-    name, script, gpu, minutes, vram, node, args, git, outputs,
+    name, script, gpu, minutes, vram, node, args, outputs,
     ...(features.length ? { features } : {}),
     // Always sent, unlike the fields above: the Head refuses a Spawn that names no dependency file, and
     // an omitted key would meet that refusal as a confusing "missing" rather than the empty box it is.

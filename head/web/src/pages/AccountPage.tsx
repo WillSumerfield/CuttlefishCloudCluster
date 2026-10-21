@@ -5,14 +5,13 @@ import { getArms, getRecipes, getStandings, RECIPE_ALLOWANCE_BYTES, Unauthorized
 import { Link } from "../app/router";
 import { Tip } from "../app/Tip";
 import { FleshCell } from "../account/FleshCell";
-import { Credential } from "../account/Credential";
 import { PasswordForm } from "../account/PasswordForm";
 import { size } from "../recipes/format";
 
 /**
  * Account — yourself. The identity sits bold on the right with your pigment bloom (you, as the cluster sees
  * you) beneath it; a single surface on the left holds everything you can read or change: your standing and
- * holdings (which link out to where they live), then the two secrets you control, then the way out.
+ * holdings (which link out to where they live), then your password, then the way out.
  *
  * Every figure is live. Standing comes from /karma, which serves everyone's — your Share only exists
  * against the others, so there is no cheaper call that could answer it. An Admin has no row there and
@@ -106,10 +105,6 @@ export function AccountPage() {
                 }
               />
             </div>
-
-            <Credential kind="wandb" onUnauthorized={logout} />
-
-            <Credential kind="github" onUnauthorized={logout} />
 
             <PasswordForm onUnauthorized={logout} />
 

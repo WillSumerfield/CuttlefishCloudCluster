@@ -363,15 +363,12 @@ def render_ubuntu_snapshot_list() -> str:
 # `--nv` still injects the host's driver at exec, and PyPI's torch wheels bundle their own CUDA runtime,
 # so removing the CUDA image costs a GPU Spawn nothing.
 #
-# * `git` — the binary every other git tool shells out to, so it is what makes the submitter's
-#   **GitHub key** worth injecting at all (ccc_head_api.spawns' GIT_BOOT): `git clone`, `pip install
-#   git+ssh://`, and uv's git dependencies all end up here. ~15MB, and without it an authenticated
-#   ssh-agent sits in the Pod with nothing able to use it.
+# * `git` — the binary every other git tool shells out to: `git clone`, `pip install git+https://`,
+#   and uv's git dependencies all end up here. ~15MB.
 # * `openssh-server` — sshd runs INSIDE the Pod, unprivileged, as the Mantle (see
 #   ccc_head_api.spawns.PAYLOAD_TIDEPOOL). It never setuid()s: the "login" is to the SAME uid already
 #   running the Pod, so there is no privilege drop and no per-User account to provision on the Arm.
-#   It pulls in openssh-client, which is where `ssh-keygen -A` comes from — and `ssh`, `ssh-agent`
-#   and `ssh-add`, which is the whole of what a Spawn needs to serve its GitHub key.
+#   It pulls in openssh-client, which is where `ssh-keygen -A` comes from.
 # * `ca-certificates` — an Environment is built in a Pod off THIS image, and uv fetches every package
 #   (and the standalone CPython itself) over TLS. A stock Ubuntu image carries no trust store, so
 #   without this every build fails at the first HTTPS connection. The PyTorch image happened to have

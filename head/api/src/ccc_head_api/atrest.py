@@ -1,18 +1,14 @@
 """Encryption at rest for the one secret head.db still holds in unattended-recoverable form: a Tide
 Pool's private key.
 
-Everything else in head.db is either one-way (argon2id passwords, sha256 session tokens) or sealed
-under its owner's password (Credentials — see credentials.py, which the User's W&B key moved to). A
-Tide Pool key is neither. The Head mints it at submit and must hand it back to whoever attaches, and
-it cannot ride a User's DEK because an Admin-pinned Tide Pool (`cuttle run --node --tidepool`) is
-submitted with no Session behind it — there would be nothing to seal it under. So it keeps the older
-scheme: AES-256-GCM under a 32-byte keyfile beside the database.
+Everything else in head.db is one-way (argon2id passwords, sha256 session tokens). A Tide Pool key
+cannot be: the Head mints it at submit and must hand it back to whoever attaches. So it is
+AES-256-GCM under a 32-byte keyfile beside the database.
 
 **Be clear about what this buys.** The Head decrypts unattended, so the keyfile sits next to head.db
 and anything that can read one can read the other. This protects a head.db that leaks *on its own* — a
 copied database, a backup (`cuttle backup` deliberately excludes the keyfile), a pulled disk — not a
-compromised Head. The exposure is also bounded in time in a way a stored Credential never was: both
-Tide Pool rows are deleted the moment the Spawn leaves the queue, so a leaked database yields keys to
+compromised Head. The exposure is also bounded in time: both Tide Pool rows are deleted the moment the Spawn leaves the queue, so a leaked database yields keys to
 Pods that no longer exist.
 
 Failure degrades to "no key", never to an error: a restored backup (keyfile gone by design) must not

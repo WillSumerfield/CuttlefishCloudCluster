@@ -280,7 +280,7 @@ class TestDeletedUsers(_Base):
 # Same in-process rig test_retention.py uses.
 
 def _client(monkeypatch, tmp_path, user_id=1, is_admin=False) -> TestClient:
-    user = {"id": user_id, "username": "alice", "is_admin": is_admin, "must_change_password": False, "dek": None}
+    user = {"id": user_id, "username": "alice", "is_admin": is_admin, "must_change_password": False}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
     db.ensure_schema()
@@ -455,44 +455,3 @@ def _spool_body(body: bytes):
     with tempfile.NamedTemporaryFile("wb", suffix=".tar.gz", delete=False) as f:
         f.write(body)
         return Path(f.name)
-
-
-class TestTheGitHubKeyIsFrozenToo:
-    """A Recipe remembers whether its runs carry the owner's **GitHub key**.
-
-    Not a per-run question, because a Recipe is durable config: "run this without my key" is part of
-    what the Recipe IS. The flag a Spawn passes once has to survive being saved, or the Composer would
-    offer a choice that silently stopped meaning anything the moment the work was frozen."""
-
-    def test_a_recipe_defaults_to_carrying_it(self, monkeypatch, tmp_path):
-        c = _client(monkeypatch, tmp_path)
-        assert _post(c, "/api/recipes", _project()).json()["git"] is True
-
-    def test_a_recipe_can_decline_it(self, monkeypatch, tmp_path):
-        c = _client(monkeypatch, tmp_path)
-        assert _post(c, "/api/recipes", _project(), git=False).json()["git"] is False
-
-    def test_the_choice_reaches_the_spawn_it_runs(self, monkeypatch, tmp_path):
-        """The whole point of freezing it — a stored `false` that never arrived at `submit_checked`
-        would be a setting the Dashboard shows and the cluster ignores."""
-        c = _client(monkeypatch, tmp_path)
-        _post(c, "/api/recipes", _project(), git=False)
-        calls = []
-        monkeypatch.setattr(head_spawns, "submit", lambda *a, **kw: (calls.append(kw), 1)[1])
-        assert c.post("/api/recipes/resnet/run").status_code == 200
-        assert calls[0]["git_key"] == ""
-
-    def test_a_recipe_frozen_before_this_existed_carries_it(self, monkeypatch, tmp_path):
-        """`DEFAULT 1` on the migration, and an absent `git` in the meta reads the same way — the
-        behaviour those Recipes already had, and the same answer `/submit` gives a client that has
-        never heard of the flag."""
-        c = _client(monkeypatch, tmp_path)
-        _post(c, "/api/recipes", _project())
-        with db.connect() as conn:
-            assert db.get_recipe(conn, 1, "resnet")["git"] == 1
-
-    def test_editing_settings_keeps_a_declined_key_declined(self, monkeypatch, tmp_path):
-        c = _client(monkeypatch, tmp_path)
-        _post(c, "/api/recipes", _project(), git=False)
-        body = {**_META, "git": False, "outputs": ["out"]}
-        assert c.patch("/api/recipes/resnet", json=body).json()["git"] is False

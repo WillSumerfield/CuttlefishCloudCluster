@@ -106,12 +106,11 @@ same walls your script gets a moment later. Your code has no way to become the c
 
 ### A private git dependency does not build
 
-Your [GitHub key](github-keys.md) reaches your Spawn's *payload*, not this build. So a manifest
-pinning a dependency to a private repository — `git+ssh://git@github.com/you/lib` — fails here, before
-your script ever starts, with an authentication error from `git`.
+The build carries no credentials of yours. So a manifest pinning a dependency to a private repository
+— `git+ssh://git@github.com/you/lib` — fails here, before your script ever starts, with an
+authentication error from `git`.
 
-Public git dependencies are fine. For a private one, clone it in your script instead, where the key
-is available.
+Public git dependencies are fine. For a private one, clone it in your script instead.
 
 ### Nobody owns one
 

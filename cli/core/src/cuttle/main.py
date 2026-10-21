@@ -41,9 +41,6 @@ app.add_typer(karma_app, name="karma")
 backup_app = typer.Typer(no_args_is_help=True,
                          help="Backup/restore head.db + arms.json + Headscale's db (run on the Head).")
 app.add_typer(backup_app, name="backup")
-github_app = typer.Typer(no_args_is_help=True,
-                         help="Your GitHub SSH key: mint, show, verify, clear.")
-app.add_typer(github_app, name="github")
 munge_app = typer.Typer(no_args_is_help=True,
                         help="The cluster's shared munge key (rotate on the Head, sync from an Arm).")
 app.add_typer(munge_app, name="munge")
@@ -534,65 +531,6 @@ def karma_ledger(
     """Your own Karma ledger: the real events (Settlements, Overrides) and the Balance they leave you
     at. Yours alone — standings is everyone's so you can rank; a history needs nobody else's rows."""
     karma_mod.ledger(days=days, as_json=as_json)
-
-
-@github_app.command("mint")
-def github_mint(
-    force: bool = typer.Option(False, "--force", "-f", help="Replace an existing key without asking."),
-    wait: bool = typer.Option(True, "--wait/--no-wait",
-                              help="After minting, poll GitHub until it accepts the key."),
-):
-    """Mint a GitHub SSH key for yourself and print its public half.
-
-    **The Head generates it; you never see the private half.** There is nothing to paste in, and nothing
-    that could leak from this terminal. The private half is sealed under YOUR PASSWORD (see `cuttle
-    passwd`) and injected into every Spawn you submit, from either client, as a live ssh-agent inside
-    the Pod: `git clone`, `pip install git+ssh://` and uv git dependencies all reach your private repos
-    with no key on any disk.
-
-    You have one job: paste the printed public key into github.com/settings/keys. Until you do, the
-    key opens nothing — which is what `--wait` is for, so you find out here rather than inside a Spawn.
-
-    An account key reaches EVERYTHING your GitHub account can, read and write, and for the life of a
-    Spawn anything running in that Pod can use it. `cuttle run --no-git` leaves it out of one.
-    """
-    minted = auth_mod.github_mint(force=force)
-    if wait:
-        auth_mod.github_await(minted["hint"])
-
-
-@github_app.command("show")
-def github_show(
-    to_clipboard: bool = typer.Option(False, "--copy", "-c",
-                                      help="Also put it on your clipboard. Works over SSH."),
-):
-    """Print your GitHub public key, in full.
-
-    In full — this is the half that is meant to be copied, and copying it into
-    github.com/settings/keys is the only way the key becomes useful. The private half cannot be read
-    back by anyone, including you."""
-    auth_mod.github_show(to_clipboard=to_clipboard)
-
-
-@github_app.command("verify")
-def github_verify():
-    """Check with GitHub that your key is registered, and say who it authenticates as."""
-    got = auth_mod.github_verify()
-    if got["status"] == "ok":
-        ui.ok(f"GitHub accepts your key — authenticated as {got['username']}")
-        return
-    if got["status"] == "unregistered":
-        ui.warn("GitHub does not know this key yet")
-        ui.hint(f"paste the key from `cuttle github show` at {auth_mod.GITHUB_KEYS_URL}")
-        return
-    raise ui.abort(f"could not check with GitHub — {got['detail']}")
-
-
-@github_app.command("clear")
-def github_clear():
-    """Forget your GitHub key. Your Spawns stop carrying one, and the public half left on your GitHub
-    account opens nothing — remove it there too."""
-    auth_mod.github_clear()
 
 
 @backup_app.command("create")
@@ -1126,12 +1064,6 @@ def run(
                                 "launches VS Code straight into your project directory. Without it "
                                 "the alias is printed and VS Code's own 'Connect to Host' picker "
                                 "finds it."),
-    no_git: bool = typer.Option(
-        False, "--no-git", help="Do NOT put your GitHub key in this Spawn. By default it is injected "
-                                "into every one (`cuttle github mint`), as an ssh-agent inside the "
-                                "Pod — so anything running there can reach everything your GitHub "
-                                "account can, for as long as the Spawn lasts. Pass this for a Spawn "
-                                "running code you did not write."),
     no_download: bool = typer.Option(
         False, "--no-download", help="Do NOT fetch this Spawn's results automatically. By default "
                                      "they are downloaded into ~/ccc/outputs/spawn-<id>-outputs/ as "
@@ -1276,7 +1208,7 @@ def run(
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args,
                       no_gitignore=no_gitignore, node=node, minutes=time, vram=vram, outputs=output,
                       features=feature, manifest=manifest, substrate=substrate,
-                      download=not no_download, dest=dest, root=root, name=name, git=not no_git)
+                      download=not no_download, dest=dest, root=root, name=name)
 
 
 @app.command()

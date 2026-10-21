@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Arm, Recipe } from "../api";
-import { getCredential, getFeatureCatalog, submit, submitTidepool } from "../api";
+import { getFeatureCatalog, submit, submitTidepool } from "../api";
 import { human, type Picked } from "../project";
 import { pickOffThread } from "../pick";
 import { NumberField } from "./NumberField";
 import { Chip } from "./Chip";
 import { Select } from "./Select";
 import { Tip } from "./Tip";
-import { Link } from "./router";
 import { ALLOWANCE, size } from "../recipes/format";
 
 /**
@@ -26,8 +25,6 @@ import { ALLOWANCE, size } from "../recipes/format";
  *     Recipe (CONTEXT.md: it runs from any machine with nothing to hand, so pinning a node contradicts
  *     the point, and there is no "live shell" to freeze).
  *   · The 32GB wall is a Recipe-only hard gate, checked from `File.size` at pick time.
- *   · The GitHub key is gated on whether the User has one minted for a Spawn (it runs NOW); ungated
- *     for a Recipe, which is durable config that outlives today's answer.
  *   · Saving: a Spawn composer performs its own submit (busy/error/reset live here). A Recipe composer
  *     hands a validated payload to `onSave` — the page owns the optimistic card and the wall preview,
  *     because a Recipe's save has to update a shelf of many, not one queue.
@@ -81,9 +78,6 @@ export type RecipePayload = {
   gpus: number;
   vram_mb: number;
   minutes: number;
-  // Whether a run of this Recipe carries the owner's **GitHub key**. Frozen with it: a Recipe is
-  // durable config, so "run this without my key" is part of what it IS.
-  git: boolean;
   manifest: string;
   substrate: string;
   features: string[];
@@ -175,26 +169,12 @@ export function Composer(props: ComposerProps) {
   // What the Head says it will build, echoed after a successful Spawn submit — meaningless for a
   // Recipe, which never runs at save time.
   const [envNote, setEnvNote] = useState<string | null>(null);
-  // The **GitHub key**'s off-switch for this Spawn (or this Recipe's runs). Defaults ON, unlike a
-  // pasted secret: the User did not choose this key's value, only whether it exists, so having minted
-  // one IS the choice to use it. `--no-git` is the CLI's spelling of these chips.
-  const [gitUse, setGitUse] = useState(editing?.git ?? true);
-  // Whether a GitHub key exists for this User at all — Spawn-only (a Recipe asks regardless; see the
-  // module docstring). Null until the Head answers; a failed read shows the chips rather than blocking.
-  const [gitOn, setGitOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tidepoolId, setTidepoolId] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastList = useRef<FileList | null>(null);
-
-  useEffect(() => {
-    if (variant !== "spawn") return;
-    getCredential("github")
-      .then((s) => setGitOn(s.set))
-      .catch(() => setGitOn(true)); // unreadable → assume on; the Head decides for real at submit
-  }, [variant]);
 
   // The catalog is fetched once, independent of what's picked — what the Head knows exists, not what
   // this composer happens to be building right now.
@@ -421,7 +401,7 @@ export function Composer(props: ComposerProps) {
         const res = await submit({
           picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
-          git: gitUse, outputs, features, manifest, substrate,
+          outputs, features, manifest, substrate,
         });
         setEnvNote(res.environment);
       }
@@ -438,7 +418,7 @@ export function Composer(props: ComposerProps) {
     if (!ready || variant !== "recipe") return;
     const settings = {
       script, args: args.split(/\s+/).filter(Boolean), outputs, gpus: gpu,
-      vram_mb: Number(vram) * 1024, minutes: Number(minutes), git: gitUse, manifest: manifest.trim(),
+      vram_mb: Number(vram) * 1024, minutes: Number(minutes), manifest: manifest.trim(),
       substrate: substrate.trim(),
       features,
     };
@@ -598,21 +578,6 @@ export function Composer(props: ComposerProps) {
                 <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>{outputError}</span>
               )}
             </Labeled>
-            {/* The **GitHub key**. Gated on whether the User has one, for a Spawn only — it runs NOW, so
-                the now-state is the right thing to gate it on. A Recipe is durable config that outlives
-                it. The invitation says "mint", because there is nothing to paste: the Head generates
-                this one and the User only registers its public half. */}
-            {variant === "recipe" ? (
-              <Git use={gitUse} setUse={setGitUse} />
-            ) : gitOn === false ? (
-              <p className="text-[13px] text-ink-mute sm:col-span-2 text-center py-1">
-                <Link to="/account" className="text-[var(--gold)] underline-offset-4 hover:underline">
-                  Mint a key for GitHub
-                </Link>
-              </p>
-            ) : gitOn === true ? (
-              <Git use={gitUse} setUse={setGitUse} />
-            ) : null}
           </>
         )}
 
@@ -844,31 +809,6 @@ export function Composer(props: ComposerProps) {
         {open && fields}
       </section>
     </>
-  );
-}
-
-/**
- * The GitHub key's per-Spawn off-switch. One question, because a minted key has no client-owned half
- * to configure: only whether the Pod gets an ssh-agent holding it.
- *
- * Framed as a cost rather than a feature in the Tip. The default is ON, and an account key reaches
- * everything that GitHub account can — so the useful thing to say here is what turning it OFF is for.
- */
-function Git({ use, setUse }: { use: boolean; setUse: (v: boolean) => void }) {
-  return (
-    <div className="sm:col-span-2">
-      <span className="label mb-1.5 block">Use your GitHub key?</span>
-      <Tip
-        className="block"
-        focusable={false}
-        text="Whether this Spawn carries your GitHub key, as an ssh-agent inside the Pod — so `git clone` and `pip install git+ssh://` reach your private repos. On for every Spawn unless you turn it off here. While it is on, anything running in that Pod can reach everything your GitHub account can, so turn it off for code you did not write."
-      >
-        <div className="flex gap-1">
-          <Chip on={use} onClick={() => setUse(true)}>Enabled</Chip>
-          <Chip on={!use} onClick={() => setUse(false)}>Disabled</Chip>
-        </div>
-      </Tip>
-    </div>
   );
 }
 

@@ -632,7 +632,7 @@ class TestOpening(_Base):
 # Same in-process rig test_recipes.py uses.
 
 def _client(monkeypatch, tmp_path, user_id=1) -> TestClient:
-    user = {"id": user_id, "username": "alice", "is_admin": False, "must_change_password": False, "dek": None}
+    user = {"id": user_id, "username": "alice", "is_admin": False, "must_change_password": False}
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
     db.ensure_schema()

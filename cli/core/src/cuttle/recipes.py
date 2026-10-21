@@ -51,11 +51,7 @@ def _meta(name: str, script: str, args: list[str], minutes: int, vram: int, gpu:
     # it straight to Slurm, and the Head's Recipe schema keeps it in MB.
     return {"name": name, "script": script, "args": args, "outputs": outputs, "gpus": gpu,
             "vram_mb": vram * 1024, "minutes": minutes, "manifest": manifest,
-            "substrate": substrate,
-            # The **GitHub key** rides along, as it does for every Spawn. There is no `--no-git` on a
-            # Recipe yet — the Dashboard is where one is declined — but `update` below carries a
-            # declined one through rather than letting this default undo it.
-            "git": True}
+            "substrate": substrate}
 
 
 def _validate(root: Path, script: str, outputs: list[str], manifest: str,
@@ -141,10 +137,6 @@ def update(name: str, script: str | None = None, minutes: int | None = None, vra
                  gpu if gpu is not None else current["gpus"],
                  list(outputs) if outputs else current["outputs"],
                  manifest, substrate)
-    # Nothing on this command line can express a GitHub-key choice, so `_meta`'s default "yes" is not
-    # an answer this User gave — it is the absence of one. Left alone it would re-arm the key on a
-    # Recipe that was saved with it declined.
-    meta["git"] = current["git"]
     if not yes:
         ui.kv([
             ("recipe", name),

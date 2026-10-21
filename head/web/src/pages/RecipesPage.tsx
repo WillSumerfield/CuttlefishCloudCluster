@@ -110,7 +110,6 @@ export function RecipesPage() {
         frozen_at: Date.now(),
         updating: true,
         running: false,
-        git: r.git,
         manifest: r.manifest,
         substrate: r.substrate,
         features: r.features,

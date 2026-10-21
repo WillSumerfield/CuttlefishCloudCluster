@@ -126,7 +126,6 @@ cuttle backup restore <archive>
 
 - [ ] `create` causes no downtime — the dashboard stays up throughout.
 - [ ] `restore` stops and restarts everything, and the changes since are gone.
-- [ ] It warns that stored W&B keys did not come back, and they have not.
 - [ ] The nightly timer has produced archives, pruned to the newest three.
 
 ## 9. The Dashboard

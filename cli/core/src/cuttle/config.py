@@ -817,11 +817,6 @@ LOG_DIR = CCC_HOME / "logs"
 MAX_LOGS = 500
 # CLI session bearer: the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
-#
-# Named `session` rather than `credentials` because **Credential** now means something specific and
-# different (CONTEXT.md): a third-party secret held on the Head under its owner's password. This file
-# has only ever held a session token, and one of the two things it does is unlock those — a file called
-# `credentials` that is not one and instead opens them was the worst of both readings.
 SESSION_FILE = CCC_HOME / "session"
 # Auto-download bookkeeping (cuttle.watch): one `<id>.json` per Spawn whose results this box is still
 # owed, plus its `<id>.log`. The FILE is the durable intent and the sweeper process is only the
