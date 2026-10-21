@@ -271,16 +271,8 @@ class TestTheHeadStageInIsChecked:
         assert '>> "$err"' in fail
         assert 'echo 1 > "$exitf"' in fail
 
-    def test_the_trap_is_fully_armed_before_the_copy_can_fire_it(self):
-        """`cleanup` calls `recover_scratch`; an undefined function there is a no-op that still writes
-        "command not found" to the sbatch sink, and a non-empty sink is kept in /tmp forever (see the
-        `sink=` rule). So the definition must precede the first `exit` that can trigger the trap."""
-        head = self._head_branch(self.render())
-        assert head.index("recover_scratch() {") < head.index("if ! cp -a")
-
-    def test_a_partial_copy_is_not_offered_as_a_recovery_window(self):
-        """$proj is emptied on the way out, so recover_scratch's "nothing to recover" gate fires. A
-        partial copy of the User's own upload is not something to hand back to them."""
+    def test_a_partial_copy_is_emptied_on_the_way_out(self):
+        """A partial copy of the User's own upload is not left behind."""
         head = self._head_branch(self.render())
         fail = head[head.index("if ! cp -a"):head.index(': > "$spawn_dir/staged"')]
         assert 'rm -rf "$proj"' in fail
@@ -840,7 +832,7 @@ class TestDeclaredOutputsBecomeBinds:
 
     def test_an_absolute_output_is_bound_at_that_pod_path_and_kept_without_the_slash(self):
         """For what a profiled Arm Feature writes outside the project (features.VLWD_MOUNT), which no
-        project path could name and the Recovery Window never sees."""
+        project path could name."""
         script = self.render(outputs=["/ccc/vlwd/logs"])
         assert 'outbind="$outbind,$ccc_out/ccc/vlwd/logs:/ccc/vlwd/logs"' in script
 

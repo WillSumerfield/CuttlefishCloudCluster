@@ -50,7 +50,6 @@ from . import db
 from . import environments
 from . import features as features_mod
 from . import guises
-from . import recovery
 from . import siphons
 from . import slurm
 from . import substrate as substrate_mod
@@ -79,8 +78,7 @@ class OutputPath:
     they would have had to teach their code about. A `/`-prefixed path is absolute *inside the Pod*
     instead, which is the only way to keep what a profiled Arm **Feature** writes: its working directory
     is sited at FEATURE_MOUNT-style paths of CCC's own, deliberately outside `$proj` (features.py), so
-    nothing written there is reachable as a project path — or by the **Recovery Window**, which copies
-    `$proj` and nothing else.
+    nothing written there is reachable as a project path.
 
     `dest` is where the Pod sees it; `store` is where the bytes actually live, under the one `$ccc_out`
     root, and is what `cuttle outputs` tars. The two differ only in the leading `/`: the kept tree mirrors
@@ -319,20 +317,13 @@ sink="/tmp/ccc-$jid-%%SINK_TAG%%.slurm"
 # is the fallback for any OTHER way the script ends (e.g. scancel's TERM), so the periodic out/err/
 # outputs pusher (below) never outlives the script as an orphan.
 #
-# recover_scratch, defined per-branch below, runs BEFORE the rm -rf that used to be the only thing here
-# (docs/TODO.md "Recovery Window") — it copies $proj home (Head-local: a same-filesystem `mv`; remote:
-# an rsync) so a User whose --output was wrong or incomplete has a day to get the rest of
-# what the Spawn wrote back, instead of losing it the instant this trap fires. Unset/undefined is a safe
-# no-op in bash (prints to stderr, does not abort the function), so this is harmless even if the script
-# exited before either branch got far enough to define it.
-#
 # `rm -rf "$scratch" 2>/dev/null`: on the Head branch this ALWAYS fails on the directory itself. The
 # prolog hands the Guise the scratch dir but not its ccc-owned parent, so the Guise can empty it and not
 # unlink it; the epilog, which runs as root, is what actually removes it. Left un-silenced, that one
 # "Permission denied" is written into $sink — which makes the sink non-empty, which defeats the "keep
 # only if non-empty" rule below, which leaves a file in /tmp for every Spawn ever run. That litter is
 # what poisoned later job ids (see the `sink=` line above); this is where the litter was made.
-cleanup() { kill "$loop_pid" 2>/dev/null; recover_scratch; rm -rf "$scratch" 2>/dev/null; [ -s "$sink" ] || rm -f "$sink"; }
+cleanup() { kill "$loop_pid" 2>/dev/null; rm -rf "$scratch" 2>/dev/null; [ -s "$sink" ] || rm -f "$sink"; }
 
 if [ -d "$staging_dir" ]; then
     # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
@@ -348,16 +339,6 @@ if [ -d "$staging_dir" ]; then
     # out/err ahead of its own stage-in for the same reason.
     out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"; ccc_out="$spawn_dir/outputs"
     stage_out() { :; }  # already on the Head
-    recover_scratch() {
-        # $proj already lives on the Head's own disk — no network hop, just relocate it under the Spawn
-        # dir before cleanup()'s rm -rf reaches it. Same two gates as the remote branch: nothing to
-        # recover, or over RECOVERY_MAX_BYTES (see ccc_head_api.recovery) — either way skip entirely,
-        # no copy attempted, same as today.
-        [ -n "$(ls -A "$proj" 2>/dev/null)" ] || return 0
-        sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
-        [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
-        mv "$proj" "$spawn_dir/recovery" && echo "$sz" > "$spawn_dir/recovery.size"
-    }
     # --no-preserve=ownership is load-bearing, not tidiness: the upload is ccc:ccc and this now runs as
     # the submitter's **Guise**, so plain `cp -a` would try to chown the copy back to the Mantle, get
     # EPERM, and FAIL the whole copy (-a implies --preserve=all, which cp treats as required). Mode and
@@ -372,16 +353,14 @@ if [ -d "$staging_dir" ]; then
         echo "ccc: could not copy the project into node-local scratch at $proj —" >> "$err"
         echo "ccc: this Spawn never started. Your uploaded project is untouched. Is the Head out of disk?" >> "$err"
         echo 1 > "$exitf"
-        # A partial copy of the User's OWN upload is not worth a Recovery Window — emptying $proj makes
-        # recover_scratch's "nothing to recover" gate fire, so cleanup() reaps the scratch and leaves no
-        # sink behind. (The upload itself survives: no `staged` marker is written below.)
+        # The upload itself survives: no `staged` marker is written below.
         rm -rf "$proj"
         exit 1
     fi
     # Stage-in is done, so the Head's copy of the upload has served its whole purpose (docs/TODO.md
     # "Storage retention"): this marker is what lets ccc_head_api.projects delete it, and it is written
-    # only once the cp above has SUCCEEDED — the same "presence means done" convention `exit` and
-    # `recovery.size` follow. Nothing below ever reads $staging_dir again.
+    # only once the cp above has SUCCEEDED — the same "presence means done" convention `exit`
+    # follows. Nothing below ever reads $staging_dir again.
     : > "$spawn_dir/staged"
 else
     # remote Arm: none of these files are here. Stage the project in from the Head's rsync daemon into
@@ -413,30 +392,6 @@ else
         # already exists: the API pre-created it at submit, for every Spawn.
         rsync -a "$out" "$err" "$ccc_out" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" || return 1
         rsync -a "$exitf" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/"
-    }
-    recover_scratch() {
-        # $proj is the whole working dir the payload ran in, and everything it wrote outside a declared
-        # **Output** is only ever here — cleanup()'s rm -rf destroys it the instant this script exits.
-        # The Outputs themselves are NOT duplicated into this copy: each one is a bind that exists only
-        # inside the Pod's mount namespace, so from out here the declared path is the empty mountpoint
-        # this script mkdir'd, and the bytes are already safe in $ccc_out. rsync it home first, UNLESS it's
-        # over RECOVERY_MAX_BYTES (docs/TODO.md "Recovery Window") — then skip entirely, no copy
-        # attempted, same as today. The size marker (recovery.size) is written and sent home LAST, after
-        # the transfer lands — its presence on the Head is the karma tick's "a copy is ready to
-        # register" signal (ccc_head_api.recovery), since this trap can still be mid-rsync well after
-        # stage_out() has already told the Head the Spawn is done.
-        #
-        # An EMPTY $proj returns before any of that. Every Tide Pool starts as one (it uploads an empty
-        # tar) and a User who picked no project keeps it that way, so without this gate the common case
-        # would register a ~4KB copy of nothing: `cuttle outputs` and the Dashboard would both offer a
-        # Recovery Window whose download is empty. Nothing written means nothing to recover, and every
-        # surface should agree there is no window rather than one holding an empty dir.
-        [ -n "$(ls -A "$proj" 2>/dev/null)" ] || return 0
-        sz=$(du -sb "$proj" 2>/dev/null | cut -f1)
-        [ -n "$sz" ] && [ "$sz" -le %%RECOVERY_MAX_BYTES%% ] || return 0
-        rsync -a "$proj/" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/recovery/" 2>/dev/null || return 0
-        echo "$sz" > "$scratch/recovery.size"
-        rsync -a "$scratch/recovery.size" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null
     }
     # Live streaming (docs/TODO.md's now-closed "Live log streaming for remote Spawns"): a backgrounded
     # loop pushes out/err home every 5s so `cuttle logs -f` tracks a remote run instead of staying blind
@@ -490,8 +445,8 @@ CCC_FILELIST
     fi
     # The project is on this node now, so the Head's copy has served its whole purpose (docs/TODO.md
     # "Storage retention"). Sent home LAST, after the stage-in rsync above returned — its presence on
-    # the Head is ccc_head_api.projects' "safe to delete" signal, the same convention `exit` and
-    # `recovery.size` follow. Best-effort: a marker that never lands only means the project waits for
+    # the Head is ccc_head_api.projects' "safe to delete" signal, the same convention `exit`
+    # follows. Best-effort: a marker that never lands only means the project waits for
     # the Spawn to END before being swept, which is the fallback that path is there for.
     : > "$scratch/staged"
     rsync -a "$scratch/staged" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
@@ -527,9 +482,7 @@ cd "$proj"
 # a script calling tempfile. It dies as ENOSPC, and pip in particular reports that as "This is an issue
 # with network connectivity, not pip" — which sends the User debugging the mesh instead of the disk.
 #
-# Deliberately OUTSIDE $proj: recover_scratch() copies $proj for the Recovery Window and measures it
-# against RECOVERY_MAX_BYTES, so a cache in there would eat a User's recovery for temp files nobody
-# wants back. The EXIT trap's `rm -rf "$scratch"` takes it either way.
+# The EXIT trap's `rm -rf "$scratch"` takes it.
 mkdir -p "$scratch/tmp/pip" "$scratch/tmp/xdg" "$scratch/tmp/vscode"
 # Where every tool that follows the XDG spec keeps its config, data, state and cache — pointed at the
 # bound disk scratch, and NOT left to default to `$HOME/.config` and friends.
@@ -561,8 +514,7 @@ XDG_ENV="$XDG_ENV,XDG_STATE_HOME=/ccc-tmp/xdg/state,XDG_CACHE_HOME=/ccc-tmp/xdg/
 # a system library finds it, which is most of why declaring one is worth doing.
 #
 # Inside `$scratch`, so cleanup()'s `rm -rf` takes it with everything else and no Pod keeps what it
-# held. Deliberately not inside `$proj`: recover_scratch() copies that for the **Recovery Window**, and
-# a 4GB overlay in there would silently disable recovery for every Spawn that installed anything.
+# held.
 if ! apptainer overlay create --size %%POD_OVERLAY_MB%% "$scratch/overlay.img" >> "$err" 2>&1; then
     echo "ccc: could not create this Spawn's writable Pod layer at $scratch/overlay.img." >> "$err"
     echo "ccc: this Spawn never ran. Is this Arm's disk full?" >> "$err"
@@ -573,9 +525,7 @@ overlay="--overlay $scratch/overlay.img"
 # now, out of this box's own bandwidth. The Head decided what to build and rendered the commands into
 # the build block below; running them is all that happens on this side.
 #
-# It is built into $scratch, NOT into $proj, and that is not tidiness: $proj is what recover_scratch()
-# copies for the Recovery Window and measures against RECOVERY_MAX_BYTES, so a multi-GB env in there
-# would silently disable recovery for exactly the Spawns most likely to need it. It also dies with the
+# It is built into $scratch, NOT into $proj. It dies with the
 # Spawn — no box grows an env store — while the package DOWNLOADS survive in the node's shared cache,
 # which is what makes the next build cheap.
 #
@@ -839,7 +789,7 @@ echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" > /etc/profile.d/ccc-tidepool.sh
 #
 # A Tide Pool may decline to declare any (CONTEXT.md), and then this says so plainly. That is a real
 # warning and not a formality: with no Output there is no place in this Pod whose contents outlive it,
-# and everything written falls to the day-long **Recovery Window** or is simply gone.
+# and everything written is gone.
 if [ -n "$CCC_KEPT" ]; then
   echo "echo \\"ccc: kept when this session ends — \\$CCC_KEPT\\"" >> /etc/profile.d/ccc-tidepool.sh
 else
@@ -1176,8 +1126,6 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # is not a credential (`projects/<uuid>` is 0700 and its ACL names one Guise), so it needs no
         # separate nonce; 8 chars is far past enough to never collide inside one /tmp.
         "%%SINK_TAG%%": Path(staging).name[:8],
-        # Recovery Window: the per-Spawn cap `recover_scratch` gates on, both branches.
-        "%%RECOVERY_MAX_BYTES%%": str(recovery.MAX_SPAWN_BYTES),
         # The Pod's writable system layer — see POD_OVERLAY_MB.
         "%%POD_OVERLAY_MB%%": str(POD_OVERLAY_MB),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),

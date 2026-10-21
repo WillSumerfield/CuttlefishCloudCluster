@@ -14,8 +14,8 @@ waits.
 
 **It bills for as long as you hold it.** Closing your laptop does not end it.
 
-**It keeps nothing.** When the session ends, the directory you were working in is gone — only the
-day-long [Recovery Window](storage.md#the-recovery-window) stands between you and losing it.
+**It keeps nothing.** When the session ends, the directory you were working in is gone — only
+declared outputs come home.
 
 ## Typical use
 
@@ -75,11 +75,9 @@ At the limit your shell closes mid-keystroke, with no chance to finish what you 
 interrupts the session with a warning before the cutoff (a quarter of the total, at most 5 minutes and
 at least 30 seconds ahead), so the ending is not a surprise.
 
-**Nothing you wrote is lost, though.** The Tide Pool gets a **grace period** at the limit — ten
-minutes between the signal that ends it and the kill that enforces it — and it spends that window
-sending your work home. Declared outputs come back as any Spawn's do; everything else goes into the
-[Recovery Window](storage.md#the-recovery-window), so `cuttle recover <id>` gets it for a day
-afterwards.
+**Your declared outputs are not lost, though.** The Tide Pool gets a **grace period** at the limit —
+ten minutes between the signal that ends it and the kill that enforces it — and it spends that window
+sending declared outputs home, as any Spawn's do. Everything else is gone.
 
 ### You are told which machine you got
 
@@ -89,9 +87,8 @@ You cannot name the Arm you want. You are told which one you were given.
 ### Declaring outputs is optional here
 
 `--output` is required for an ordinary Spawn and merely offered for a Tide Pool, with a warning if
-you decline. Anything you leave behind in the working directory is still covered by the
-[Recovery Window](storage.md#the-recovery-window) for a day after the session ends — but if you
-made something you want to keep, declare it.
+you decline. Anything you leave behind in the working directory is gone when the session ends — if
+you made something you want to keep, declare it.
 
 ### Editing in VS Code
 

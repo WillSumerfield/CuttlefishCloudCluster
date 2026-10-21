@@ -1,7 +1,7 @@
 """One way to hand a directory to a client: a gzip tar, yielded in chunks, never held whole.
 
-Every tar the Head serves comes from here — a **Spawn**'s declared **Output**s and its **Recovery
-Window** copy. They started as separate answers to the same question and were wrong: built with `io.BytesIO` and returned as one `bytes`, which on a 3GB
+Every tar the Head serves comes from here — a **Spawn**'s declared **Output**s. It started
+built wrong: built with `io.BytesIO` and returned as one `bytes`, which on a 3GB
 result meant the Head spent ~4 minutes compressing before the client saw byte one, and the client's
 read timeout fired long before that. A timeout on a transfer that was working perfectly reads to a
 User as "cannot reach the Head", which is the wrong thing to go looking for.

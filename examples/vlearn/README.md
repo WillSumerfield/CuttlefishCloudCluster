@@ -44,8 +44,7 @@ The wheel, `assets/`, `shaders/`, `cache/` and `TurboActivate.dat`. All five com
   activated — so the copy that runs has to be the copy its owner licensed. `setup --arm` unpacks it
   once; the job script puts it on `PYTHONPATH` ahead of the Environment.
 - **`assets/`** (~970 MB) and **`shaders/`**, symlinked into the working directory CCC arranges — which
-  is its own directory, not this project, so nothing here is replaced or measured against the
-  **Recovery Window**. Symlinks and not copies because a gigabyte copied per Spawn would be a minute of
+  is its own directory, not this project, so nothing here is replaced. Symlinks and not copies because a gigabyte copied per Spawn would be a minute of
   disk for vendor data that has not changed since the Arm's setup.
 - **`cache/`** is the one of the four vlearn writes, so it is copied per Spawn (~1 MB) rather than
   symlinked into a read-only bind.

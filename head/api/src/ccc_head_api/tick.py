@@ -12,9 +12,7 @@ Every 30s, one pass, in this order:
 5. **Reap** any Tide Pool whose Spawn just vanished: kill its relay, forget its port/keypair
    (tidepool.reap_dead) — a live Tide Pool holds a Device like any RUNNING Spawn, so steps 1-4 already
    meter/settle it with no branch of their own.
-6. **Register** any Recovery Window copy that's fully landed since the last pass, and **expire** any
-   whose day is up (recovery.py) — registration is polled here, not pushed by the job script.
-7. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
+6. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
 
 Runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
 privilege — no sudo, no root helper. Its own service, not a task inside the Head API: the economy must
@@ -37,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, projects, recovery, retention, siphons, slurm, spawns, tidepool
+from . import db, karma, projects, retention, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -215,13 +213,6 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # Kill the Head-side relay and drop its port/keypair the moment a Tide Pool's Spawn leaves the
         # queue — the one place a relay ever goes back down.
         tidepool.reap_dead(conn, set(ids))
-        # Recovery Window: pick up any copy that finished landing since the last pass, drop anything
-        # whose day is up, then sweep_orphans deletes what neither will ever touch (a copy that
-        # landed but whose marker never followed). Order here is presentation, not correctness —
-        # sweep_orphans skips everything still inside register_new's window by construction.
-        recovery.register_new(conn, now)
-        recovery.reap_expired(conn, now)
-        recovery.sweep_orphans(conn, now)
         # Storage retention: delete the Head's copy of every staged-in upload and revoke the `[proj-…]`
         # half of its Siphon. BEFORE siphons.sweep, so "revoked at stage-in" stays true even for a Spawn
         # that ended this same tick (close_proj on an already-gone conf is a no-op either way).
@@ -231,9 +222,7 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # so `_record_endings` above already established the outputs landed.
         retention.register_new(conn, now)
         retention.reap_expired(conn, now)
-        # Close the rsync grant of every Spawn whose copy home has landed, or whose window has passed.
-        # AFTER register_new deliberately: that call consumes the `recovery.size` marker this one closes
-        # on, and closing first would revoke a Siphon still carrying its copy.
+        # Close the rsync grant of every Spawn whose grace window has passed.
         siphons.sweep(conn, now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,

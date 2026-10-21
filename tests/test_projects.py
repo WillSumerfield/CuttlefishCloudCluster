@@ -277,7 +277,7 @@ class TestClosingTheProjHalf:
 # --- wiring -------------------------------------------------------------------
 
 class TestTheTickSweeps:
-    """One wiring test, matching test_recovery's. Every condition the sweep decides on is covered
+    """One wiring test. Every condition the sweep decides on is covered
     directly above; this drives the real `tick.once` for the one thing those cannot see — that a pass
     CALLS it. Drop the line from tick.py and all of them still pass, while every project a Head ever
     receives stays on its disk until the box is rebuilt."""

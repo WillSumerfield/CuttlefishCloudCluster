@@ -209,8 +209,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Every ordinary Spawn declares at least one, and a Spawn with nowhere to put its results is refused
   before it exists. A **Tide Pool** may decline, on the same terms it may decline an **Environment** —
   and a Tide Pool that declines keeps nothing, because there is no other place the cluster offers.
-  Distinct from a **Recovery Window**: an Output is what its submitter *asked* to keep, held for as long
-  as their **Allowance** allows; the window is the brief grace for what they did not.
+  An Output is held for as long as its submitter's **Allowance** allows.
   An Output is *collected*, and what the **Head** holds is never the copy that matters. Work submitted
   from a machine comes home to that machine on its own once the Spawn ends — not while it runs, since
   what a folder holds mid-run is a half-written thing nobody asked for — and that collection is what
@@ -223,27 +222,11 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   held thing has its own, independent of the others: filling one never costs a User any of another. An
   Allowance is *not* part of the economy — storage is never priced in **Karma**, never contended for,
   and a full Allowance never affects who wins **Contention**. An output arrives on its own from work
-  already done, so it is always accepted and the oldest are dropped to fit. A **Recovery Window** copy takes the output's rule,
-  and is the one Allowance its holder is never shown — a ceiling a User is told about is a ceiling they
-  would plan around, which that window must never be — so it is named only once it has already taken
-  something.
+  already done, so it is always accepted and the oldest are dropped to fit.
   An Allowance is not the only thing that ends a
   held thing: an output also has a fixed lifetime from the Spawn's end, so results leave on their own
   even when there is room to spare. Uploaded projects belong to no Allowance at all — the Head keeps
   them only while a Spawn is starting.
-- **Recovery Window** — the brief, always-on window in which a finished **Spawn**'s *undeclared*
-  writes can still be retrieved. A Spawn's declared outputs are kept for as long as its submitter's
-  **Allowance** allows; everything else it wrote — the working directory it ran in — is destroyed when
-  it ends, and this is the window between those two facts. Both are finite, and the difference is one
-  of degree rather than kind: a week for what the User asked to keep, a day for what they did not.
-  It exists for a mistake the **User** by definition did not know they were making, so it is
-  never opt-in and never something to plan around: it is capped in size, expires on its own, and a
-  Spawn whose work exceeds the cap simply never gets one. It is capped twice over — once at what a
-  single Spawn may copy at all, and again at an **Allowance** spanning every window that User has open,
-  so what displaces a User's older copy is only ever their own newer one. Distinct from an output (declared, kept) and
-  from **Escrow** — "hold" means Escrow in this cluster, and never this. It is also not a **grace
-  period**: that word names the interval a *dying* Spawn gets to send its work home, and this window
-  opens only once that interval is over and the Spawn is already gone.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the

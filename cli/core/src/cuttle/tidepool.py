@@ -15,8 +15,7 @@ the shell says so with the exact command to stop it.
 
 **Being thrown out at `--time` is a different ending and says a different thing.** There the Spawn is
 already over — the shell died under us, the job is COMPLETING, and nothing is billing — so repeating
-"still running, still billing" would be false twice over. A Tide Pool's scratch gets one copy into the
-day-long Recovery Window.
+"still running, still billing" would be false twice over.
 """
 
 import os
@@ -33,7 +32,7 @@ _PLACEMENT_TIMEOUT_S = 3600     # an hour queued is already a long wait; fail lo
 _RELAY_TIMEOUT_S = 30           # the relay is brought up synchronously by the poll itself — this is slack
 # How long before `--time` expires to interrupt the live session with a warning. Nothing is LOST at the
 # limit: Slurm sends TERM and waits `KillWait` (600s — cli.templates) before KILL, and bash runs the job
-# script's EXIT trap on TERM, which makes the Tide Pool's Recovery Window copy (ccc_head_api.spawns). What the User loses is the *shell* — it closes mid-keystroke
+# script's EXIT trap on TERM, which stages declared outputs home (ccc_head_api.spawns). What the User loses is the *shell* — it closes mid-keystroke
 # with nothing they can do about it — which is the whole of what this warns about, and why the warning
 # says what happens to the files rather than "save now".
 # A quarter of the total, capped at 5 minutes and floored at 30s, is not exact science;
@@ -146,13 +145,9 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
     name = ui.need(name, "--name", lambda: ui.ask_text("What should this tide pool be called?"))
     outputs = list(outputs) if outputs else []
     if not outputs:
-        # Not permanently lost — the day-long recovery window rsyncs the whole scratch dir home
-        # regardless of what was declared. But once that window closes nothing here is retrievable as a
-        # normal output, so still worth a warning, just not "lost forever". Sharper than it used to be:
-        # there is no longer a catch-all directory that is staged home whether or not anything was
-        # declared, so with no --output there is nowhere in this Pod whose contents outlive it.
-        warning = ("no --output declared — nothing this Tide Pool writes is kept as a result. It is "
-                   "recoverable for a day after the session ends (`cuttle recover`), then gone")
+        # With no --output there is nowhere in this Pod whose contents outlive it.
+        warning = ("no --output declared — nothing this Tide Pool writes is kept; it is gone when "
+                   "the session ends")
         if ui.interactive():
             ui.warn(warning)
             if not ui.ask_confirm("Continue with no declared output dir?", False):
@@ -231,11 +226,9 @@ def _deadline(spawn_id: int) -> float | None:
 
 
 def _warn_text(spawn_id: int, left: int) -> str:
-    """The `--time` warning, `\\r\\n`-framed for a terminal `ssh` has in raw mode. A Tide Pool's
-    scratch is copied ONCE, at the limit, into the day-long Recovery Window.
-    """
+    """The `--time` warning, `\\r\\n`-framed for a terminal `ssh` has in raw mode."""
     what = ("the shell closes with no warning. Declared outputs come home as normal; "
-            f"everything else is recoverable for a day with `cuttle recover {spawn_id}`")
+            "everything else is gone")
     return f"\r\n*** ccc: --time runs out in ~{left // 60}m{left % 60}s — {what} ***\r\n"
 
 
@@ -315,8 +308,7 @@ def _wait_and_attach(spawn_id: int, vscode: bool = False) -> None:
     # Said up front, not only at the limit: where the files go is what a User plans the session
     # around, and learning it five minutes before the cutoff is learning it too late to act on.
     ui.hint(f"declared outputs come home as normal (`cuttle outputs {spawn_id}`); everything "
-            f"else is copied when it ends and recoverable for a day "
-            f"(`cuttle recover {spawn_id}`)")
+            f"else is gone when it ends")
     ui.hint("type `exit` to leave the shell — the Tide Pool itself keeps running either way")
     # The alias is live from here on whether or not anyone asked for VS Code — printed rather than
     # acted on, because an editor is not what most people opened a terminal to get.
@@ -375,7 +367,7 @@ def _report_ending(spawn_id: int) -> None:
     noun = _noun(spawn_id)
     if state == "COMPLETING":
         ui.ok(f"{noun} hit its --time limit and has stopped billing — your files are being "
-              f"copied home now, `cuttle recover {spawn_id}` once it settles")
+              f"copied home now, `cuttle outputs {spawn_id}` once it settles")
     elif state is not None:
         ui.warn(f"{noun} is still running and still billing Karma — `{_cancel_hint(spawn_id)}` to end "
                 f"it, or `{_reattach_hint(spawn_id)}` to reattach")

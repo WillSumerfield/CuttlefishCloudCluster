@@ -725,9 +725,7 @@ def run(
                                      "Start it with `/` for a path absolute inside the Pod instead. "
                                      "Required — at least one (optional, with a y/n warning, for "
                                      "--tidepool). Anything your script writes OUTSIDE these folders is "
-                                     "still recoverable for a day after the Spawn ends (`cuttle "
-                                     "recover`) — but declare the right ones here rather than relying "
-                                     "on it."),
+                                     "gone when the Spawn ends."),
     feature: list[str] = typer.Option(
         # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
@@ -778,11 +776,6 @@ def run(
 
     Whatever you uploaded at that path is still there when the run starts — declaring `-o checkpoints`
     never hides a checkpoint you sent along to resume from.
-
-    A wrong or incomplete --output isn't fatal the instant the Spawn ends: the Recovery Window
-    (docs/elements/storage.md) keeps the whole working dir the Spawn ran in — everything outside your declared dirs too —
-    recoverable on the Head for a day afterward (`cuttle recover <id>`), up to 16GB. Past that, or
-    past the window, it's gone — declare `--output` correctly rather than leaning on it.
 
     What you DID declare is downloaded automatically, into ~/ccc/outputs/spawn-<id>-outputs/, as the
     Spawn finishes — you do not have to be running this command, or logged into this terminal, or even
@@ -987,16 +980,6 @@ def outputs(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
     """Download a Spawn's declared outputs into ~/ccc/outputs/spawn-<id>-outputs/."""
     spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Download which Spawn?"))
     spawns_mod.outputs(spawn_id)
-
-
-@app.command()
-def recover(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id.")):
-    """Download a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared outputs,
-    while the day-long window since it ended is still open. Lands unpacked in
-    ~/ccc/outputs/spawn-<id>-recovery/. See `--output`'s help on `cuttle run` for what this is a
-    safety net for; `cuttle outputs` is the separate, permanent outputs download."""
-    spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Recover which Spawn?"))
-    spawns_mod.recover(spawn_id)
 
 
 def main() -> None:

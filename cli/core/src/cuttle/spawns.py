@@ -25,13 +25,11 @@ import subprocess
 import tarfile
 import tempfile
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import api, auth, config, menu, mesh, ui, watch
 from .system import run
 
-_TS = "%Y-%m-%dT%H:%M:%SZ"  # mirrors ccc_head_api.db's timestamp format
 
 # What meets everybody who named no dependency file — the wizard's blank Enter and the scripted run
 # that passed no flag alike, since neither has said anything and both used to get a message about
@@ -371,12 +369,6 @@ def _download_now(spawn_id: int) -> None:
         watch.ensure_sweeper()
         return
     ui.say(f"  [muted]{watch.summary(spawn_id)}[/muted]")
-    if (watch.read(spawn_id) or {}).get("state") == watch.EMPTY:
-        # The moment a User learns `--output` was wrong or incomplete — and the only moment the
-        # Recovery Window is still open. Same reasoning as `outputs()`, and it only reaches a person
-        # on this path: the sweeper has no terminal to say it on, and by the time they read its log
-        # the day is long gone.
-        _hint_recovery(spawn_id)
 
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, outputs: list[str], node: str | None = None,
@@ -657,46 +649,6 @@ def logs(spawn_id: int, follow: bool) -> None:
     ui.data(f"=== stdout ===\n{out}\n\n=== stderr ===\n{err}")
 
 
-def _recovery_status(spawn_id: int) -> dict | None:
-    """The Recovery Window's live state for `spawn_id`, or None if it has none —
-    never made (skipped for size, or the Arm dropped before it landed), evicted, or already expired.
-    A courtesy lookup, not a load-bearing one: any failure here (not just a 404) is swallowed rather
-    than aborting whatever command called it, since the caller has already succeeded or failed on its
-    own terms by the time it asks."""
-    client = auth._client()
-    client.token = auth._load_token()
-    try:
-        return client.json("GET", f"/spawns/{spawn_id}/recovery", missing_ok=True)
-    except api.ApiError:
-        return None
-
-
-def _hours_left(expires_at: str) -> float:
-    expires = datetime.strptime(expires_at, _TS).replace(tzinfo=timezone.utc)
-    return (expires - datetime.now(timezone.utc)).total_seconds() / 3600
-
-
-def _hint_recovery(spawn_id: int) -> None:
-    """Reactive Recovery Window messaging: the moment a User discovers `--output` was
-    wrong or incomplete — right here, at the "no outputs" miss — is exactly when they need to know the
-    rest of the Spawn's working dir might still be recoverable. Silent when it isn't (closed, skipped
-    for size, or none was ever made): there's nothing more honest to say than what `outputs()` already
-    said above.
-
-    Hours, and `<1h` at the end — the Dashboard's `recoveryLabel` shape (web/src/queue/format.ts), so
-    both clients say the same thing about the same window. Never rounded up to "1 day": what makes this
-    hint worth printing is that it is running out."""
-    st = _recovery_status(spawn_id)
-    if st is None:
-        return
-    hours = _hours_left(st["expires_at"])
-    if hours <= 0:
-        return
-    left = "<1h" if hours < 1 else f"{round(hours)}h"
-    ui.hint(f"the Recovery Window is still open ({left} left) — `cuttle recover {spawn_id}` grabs "
-            f"everything else the Spawn wrote, not just its declared outputs")
-
-
 def _fetch(path: str, dest: Path, label: str, member=None) -> None:
     """Stream a tar off the Head straight into `dest`, drawing how far along it is.
 
@@ -748,42 +700,5 @@ def outputs(spawn_id: int) -> None:
                 raise
             raise ui.abort(e.user_message()) from None
         ui.warn(e.user_message())
-        _hint_recovery(spawn_id)
         return
     ui.ok(f"results are in {dest}")
-
-
-def _recovery_member(member, path):
-    """The extraction filter for a recovery tar: the stdlib's `data` rules, then drop the archive's own
-    `recovery/` prefix — `watch._member`'s reasoning exactly, one directory name over. Without it the
-    result is `spawn-41-recovery/recovery/…`, which says the same word twice and buries the tree."""
-    member = tarfile.data_filter(member, path)
-    if member is None or member.name == "recovery":
-        return None
-    if member.name.startswith("recovery/"):
-        member = member.replace(name=member.name[len("recovery/"):], deep=False)
-    return member
-
-
-def recover(spawn_id: int) -> None:
-    """Download and unpack a Spawn's Recovery Window copy — its whole working dir as it stood when
-    the Spawn ended, not just what it wrote to its declared outputs — for as long as the window is open.
-
-    A separate artifact from `outputs()` on purpose: the declared outputs tar is permanent and never
-    changes shape; this one expires, so the two are never merged into one download whose contents would
-    otherwise silently change once the window closes. Which is also why it lands in its own directory
-    rather than beside the declared results: what is in here stops existing on a schedule.
-    """
-    dest = config.OUTPUTS_DIR / f"spawn-{spawn_id}-recovery"
-    try:
-        _fetch(f"/spawns/{spawn_id}/recovery/download", dest,
-               f"recovering spawn {spawn_id}", member=_recovery_member)
-    except api.ApiError as e:
-        if e.status != 404:
-            if ui.DEBUG:
-                raise
-            raise ui.abort(e.user_message()) from None
-        ui.warn(f"spawn {spawn_id} has no open Recovery Window "
-                f"(already closed, over the 16GB cap, or none was made)")
-        return
-    ui.ok(f"recovered working directory is in {dest}")

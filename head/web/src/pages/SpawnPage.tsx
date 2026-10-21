@@ -2,15 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Page } from "../app/Page";
 import {
   outputsDownloadUrl,
-  recoveryDownloadUrl,
   getLogs,
-  getRecovery,
   getRetention,
   getSpawn,
   getStderr,
   Unauthorized,
   errMessage,
-  type RecoveryStatus,
   type RetentionStatus,
   type SpawnDetail,
 } from "../api";
@@ -22,74 +19,10 @@ import { CancelSpawn } from "../queue/CancelSpawn";
 import { duration, armLabel, placedLabel } from "../queue/format";
 
 /**
- * Recovery Window (docs/TODO.md): a 30-min, 16GB-capped safety net for whatever this Spawn wrote OUTSIDE
- * its declared outputs. Self-contained: fetches its own status and owns its own countdown, so it neither
- * waits on nor delays the page's main read. Renders nothing while loading or once there's nothing to show
- * — no "expired" state worth a User's attention after the fact.
- */
-function RecoveryPanel({ id }: { id: string }) {
-  const jobId = Number(id);
-  const [status, setStatus] = useState<RecoveryStatus | null>(null);
-  const [left, setLeft] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!Number.isFinite(jobId)) return;
-    let alive = true;
-    getRecovery(jobId).then((st) => alive && setStatus(st));
-    return () => {
-      alive = false;
-    };
-  }, [jobId]);
-
-  useEffect(() => {
-    if (!status) {
-      setLeft(null);
-      return;
-    }
-    const tick = () =>
-      setLeft(Math.max(0, (new Date(status.expires_at).getTime() - Date.now()) / 3_600_000));
-    tick();
-    const timer = setInterval(tick, 15_000); // coarse — this is a courtesy countdown, not a live clock
-    return () => clearInterval(timer);
-  }, [status]);
-
-  if (!status || left === null || left <= 0) return null;
-  // Hours, and "<1h" for the last one — `recoveryLabel`'s shape (queue/format.ts) and the CLI hint's,
-  // so all three surfaces describe one window identically. Never "1 day": see the Tip below.
-  const remaining = left < 1 ? "<1h" : `${Math.round(left)}h`;
-
-  return (
-    <div className="shard mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <Tip
-          className="block text-[14px] text-ink"
-          text="Everything this run wrote outside the folders it declared, recoverable for a day after it ends and then gone. It exists for a mistake you didn't know you were making, so it's capped in size and not something to plan around."
-        >
-          Recovery Window open — <span className="num">{remaining}</span> left
-        </Tip>
-        <p className="mt-0.5 text-[12px] text-ink-mute">
-          <span className="num">{human(status.bytes)}</span> this Spawn wrote outside its declared
-          outputs, held on the Head as a safety net.
-        </p>
-      </div>
-      {/* A link, not a fetch — the browser's download manager owns the transfer, so a 16 GB copy
-          never sits in this tab. Only rendered when the Head said there is one, so the link cannot
-          land on the route's 404. */}
-      <a className="btn-primary" href={recoveryDownloadUrl(jobId)} download>
-        Download recovery copy
-      </a>
-    </div>
-  );
-}
-
-/**
  * The declared results, and how long the Head keeps them (docs/TODO.md "Storage retention"): 7 days
  * from the Spawn's end, or until the submitter's 32GB Allowance needs the room for newer ones.
  *
- * Deliberately the same panel shape as RecoveryPanel above (countdown, button) — different artifacts,
- * different deadlines, but one learned reading pattern. What differs is tone: this is what the Spawn was
- * submitted to produce, stated plainly rather than as a rescue. Renders nothing when nothing is held, and
- * no "expired" state — that would be the loudest thing on a page about a Spawn that ran fine.
+ * Renders nothing when nothing is held, and no "expired" state — that would be the loudest thing on a page about a Spawn that ran fine.
  */
 function OutputsPanel({ id }: { id: string }) {
   const jobId = Number(id);
@@ -125,7 +58,7 @@ function OutputsPanel({ id }: { id: string }) {
           Fetch them before then — results are not kept forever.
         </p>
       </div>
-      {/* See RecoveryPanel: a link, so a 3 GB result is the download manager's problem and not this
+      {/* A link, not a fetch, so a 3 GB result is the download manager's problem and not this
           tab's memory. This panel only renders when the retention route reported bytes held. */}
       <a className="btn-primary" href={outputsDownloadUrl(jobId)} download>
         Download outputs
@@ -386,7 +319,6 @@ export function SpawnPage({ id }: { id: string }) {
       {error && <p className="mb-6 text-[13px]" style={{ color: "var(--alarm)" }}>{error}</p>}
 
       <OutputsPanel id={id} />
-      <RecoveryPanel id={id} />
 
       {detail && (
         <div className="grid gap-8 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">

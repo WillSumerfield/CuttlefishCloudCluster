@@ -32,7 +32,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, environments, guises, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
-from . import recovery as recovery_mod
 from . import retention as retention_mod
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod
@@ -329,22 +328,19 @@ def _archive_row(r: dict) -> dict:
 
     Shared by `/spawns/history` and `/spawns/{job_id}` so a Spawn cannot read `failed` in the list and
     `cancelled` on its own page, or show two different expiry times for the same copy on disk. The
-    created_at → expires_at conversion lives here rather than in the SQL because the window lengths are
-    this module's constants (recovery_mod.WINDOW_MINUTES, retention_mod.TTL_DAYS), not db.py's business.
+    created_at → expires_at conversion lives here rather than in the SQL because the TTL is
+    retention_mod.TTL_DAYS, not db.py's business.
     """
     # The ledger cannot answer cancelled-vs-failed — it records the absent exit code, not the reason —
     # so the marker is consulted, and only for the rows that lack one.
     r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
                       and spawns_mod.was_cancelled(r["job_id"]))
-    for src, dst, delta in (("recovery_created_at", "recovery_expires_at",
-                             timedelta(minutes=recovery_mod.WINDOW_MINUTES)),
-                            ("output_created_at", "output_expires_at",
-                             timedelta(days=retention_mod.TTL_DAYS))):
-        created = r.pop(src)
-        r[dst] = None
-        if created is not None:
-            expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            r[dst] = (expires + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = r.pop("output_created_at")
+    r["output_expires_at"] = None
+    if created is not None:
+        expires = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        r["output_expires_at"] = (expires + timedelta(days=retention_mod.TTL_DAYS)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
     return r
 
 
@@ -357,8 +353,7 @@ def spawns_history(days: int = 30, limit: int | None = None,
     forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
     history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
     carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
-    finished_at). Also carries a Recovery Window countdown, for the History row that still has one open — `recovery_expires_at` is null for every row that never had a copy, already had
-    it evicted, or whose day is up — and, on the same terms, `output_expires_at`: when the
+    finished_at). Also carries `output_expires_at`: when the
     Spawn's declared results are deleted, 7 days after it ended (null once they are, or before the tick
     has registered them)."""
     live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
@@ -472,50 +467,12 @@ def spawn_retention(job_id: int, user: dict = Depends(current_user)) -> dict:
 
     Named for the policy rather than `/outputs/…` because `/spawns/{id}/outputs` is already the tar
     itself, and one path returning metadata for a GET and bytes for a sibling GET is the kind of shape
-    nobody reads twice. Same permission as that route and `/recovery`: authed, no ownership check."""
+    nobody reads twice. Same permission as that route: authed, no ownership check."""
     with db.connect() as conn:
         st = retention_mod.status(conn, job_id)
     if st is None:
         raise HTTPException(404, f"no outputs held for Spawn {job_id}")
     return st
-
-
-@api.get("/spawns/{job_id}/recovery")
-def spawn_recovery(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """Whether Spawn `job_id` still has an open Recovery Window copy, and if so how much of it and when
-    it closes. 404 means no copy: never made (skipped for the 16GB per-Spawn cap, or the Arm dropped
-    before it landed), evicted to make room for a newer copy of the submitter's own (the per-User
-    Allowance, or the pool backstop behind it), or its day is up — the CLI and Dashboard both read all
-    of them the same way, "nothing left to recover", and the detail stays deliberately generic: the
-    Allowance is the one a User is never quoted a number for (CONTEXT.md, Recovery Window).
-
-    Same permission shape as `/spawns/{id}/outputs` (authed, no ownership check) — this is data about a
-    shared cluster's Spawn, not a secret, unlike the Tide Pool SSH keypair route, which IS ownership-
-    gated for exactly that reason.
-    """
-    with db.connect() as conn:
-        st = recovery_mod.status(conn, job_id)
-    if st is None:
-        raise HTTPException(404, f"no recovery copy for Spawn {job_id}")
-    return st
-
-
-@api.get("/spawns/{job_id}/recovery/download")
-def spawn_recovery_download(job_id: int, user: dict = Depends(current_user)) -> Response:
-    """gzip-tar of Spawn `job_id`'s Recovery Window copy — everything it wrote OUTSIDE its declared
-    its declared outputs, while the window is still open. Distinct download from
-    `/outputs`: the declared tar is permanent, this one is not, and the two are never merged into one
-    artifact whose contents would otherwise silently change once the window closes.
-
-    Streamed, the 404 settled first, and `X-CCC-Bytes` declared, for the same reasons as `/outputs`
-    above — more so here, where the per-Spawn cap admits copies up to 16GB."""
-    weighed = recovery_mod.tar_stream(job_id)
-    if weighed is None:
-        raise HTTPException(404, f"no recovery copy for Spawn {job_id}")
-    stream, total = weighed
-    return StreamingResponse(stream, media_type="application/gzip", headers={
-        "Content-Disposition": f'attachment; filename="spawn-{job_id}-recovery.tar.gz"',
-        "X-CCC-Bytes": str(total)})
 
 
 @api.delete("/spawns/{job_id}", status_code=204)

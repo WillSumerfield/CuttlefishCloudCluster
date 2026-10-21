@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from ccc_head_api import db, recovery, siphons, spawns as head_spawns, tick
+from ccc_head_api import db, siphons, spawns as head_spawns, tick
 from cuttle import config, setup, spawns as cli_spawns, system, templates
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
@@ -165,9 +165,7 @@ class TestClosing:
 
 
 class TestTheSweep:
-    """When a Siphon closes. NOT at Settlement: `recover_scratch` sends its copy home *after*
-    `stage_out` delivered the `exit` file, so the Head has already settled the Spawn and dropped it
-    from the queue while up to MAX_SPAWN_BYTES may still be in flight."""
+    """When a Siphon closes: a grace window after its Spawn finished, not at Settlement."""
 
     @pytest.fixture
     def now(self):
@@ -188,28 +186,14 @@ class TestTheSweep:
         assert siphons.sweep(conn, now) == 0
         assert (siphons.RSYNCD_DIR / "1.conf").exists()
 
-    def test_a_spawn_whose_copy_has_landed_is_closed(self, state, conn, now):
-        """`recovery.size` is written LAST, once the copy has fully landed — so its presence is the
-        Spawn saying it has nothing more to send."""
-        self._spawn(conn, 1, finished=now - timedelta(minutes=1))
-        (state / "spawns" / "1").mkdir()
-        (state / "spawns" / "1" / "recovery.size").write_text("123")
-        assert siphons.sweep(conn, now) == 1
-        assert not (siphons.RSYNCD_DIR / "1.conf").exists()
-
-    def test_a_just_finished_spawn_with_no_marker_keeps_its_siphon(self, state, conn, now):
-        """The window exists precisely because the copy can still be in flight. Closing here would
-        revoke the grant out from under an rsync that is running."""
+    def test_a_just_finished_spawn_keeps_its_siphon(self, state, conn, now):
+        """Inside the grace window the grant stays."""
         self._spawn(conn, 1, finished=now - timedelta(minutes=1))
         assert siphons.sweep(conn, now) == 0
         assert (siphons.RSYNCD_DIR / "1.conf").exists()
 
-    def test_a_spawn_that_never_sends_a_marker_closes_on_the_window(self, state, conn, now):
-        """A Spawn over the per-Spawn size cap never attempts a copy at all, and a dropped Arm never
-        finishes one. Neither will ever produce a marker, so the window is the only thing that can
-        close them — without it their grants would live until the Head was rebuilt."""
-        self._spawn(conn, 1, finished=now - timedelta(
-            minutes=recovery._REGISTRATION_WINDOW_MINUTES + 1))
+    def test_a_finished_spawn_closes_after_the_window(self, state, conn, now):
+        self._spawn(conn, 1, finished=now - timedelta(minutes=siphons._CLOSE_GRACE_MINUTES + 1))
         assert siphons.sweep(conn, now) == 1
         assert not (siphons.RSYNCD_DIR / "1.conf").exists()
 
@@ -298,19 +282,15 @@ class TestTheTickClosesThem:
         db.add_user(conn, "alice")
         uid = db.get_user(conn, "alice")["id"]
         db.record_spawn(conn, 1, uid, "train.py", "uuid-1", minutes=60, gpus=1)
-        db.mark_finished(conn, 1, 0, (now - timedelta(minutes=1)).strftime(_TS))
+        db.mark_finished(conn, 1, 0, (now - timedelta(
+            minutes=siphons._CLOSE_GRACE_MINUTES + 1)).strftime(_TS))
         tok, _ = siphons.open("uuid-1")
         siphons.bind(tok, 1)
-        (state / "spawns" / "1").mkdir()
-        (state / "spawns" / "1" / "recovery.size").write_text("123")
 
         tick.once(now=now)
 
         assert not (siphons.RSYNCD_DIR / "1.conf").exists()
         assert not (siphons.RSYNCD_DIR / "1.secrets").exists()
-        # The copy the marker announced is in the ledger, so the pass closed the Siphon without
-        # stepping on the Recovery Window it shares that marker with.
-        assert recovery.status(conn, 1) is not None
 
 
 class TestTheRenderedScript:

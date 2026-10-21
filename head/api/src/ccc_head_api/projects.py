@@ -6,7 +6,7 @@ deleted THERE, at stage-in, not when the Spawn ends — peak usage becomes rough
 of every running Spawn's upload.
 
 The Head learns stage-in finished via a marker file, `staged`, under `SPAWNS_DIR/<id>/` — same
-presence-means-done convention as `exit` and `recovery.size`. `sweep` polls for it.
+presence-means-done convention as `exit`. `sweep` polls for it.
 
 **`sbatch --no-requeue` is a prerequisite, not a nicety.** Slurm's default requeue behavior re-runs the
 script from the top, re-staging a project this module already deleted — a Spawn runs once (CONTEXT.md).
@@ -14,7 +14,7 @@ script from the top, re-staging a project this module already deleted — a Spaw
 Deleting the directory also revokes the Siphon's `[proj-…]` module in the same breath
 (`siphons.close_proj`); the `[out-…]` half stays open since the Spawn hasn't finished writing.
 
-Disk-first, like `recovery.sweep_orphans`: every directory is exactly one of three states —
+Disk-first: every directory is exactly one of three states —
 **staged** (marker landed, the normal path), **finished, unstaged** (stage-in never landed;
 `--no-requeue` makes that permanent), or **unbound** (no `spawns` row yet — deleted only after
 `_ORPHAN_MINUTES`, so a live submission mid-write is never destroyed).

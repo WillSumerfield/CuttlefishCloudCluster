@@ -46,8 +46,8 @@ FEATLIB_MOUNT = "/ccc/featlibs"
 # mounts something inside the Pod writes to.
 #
 # A fourth mount for a fourth owner, and the reason is the same rule that separated the first three: it
-# is CCC's, not the submitter's. It used to be `$proj` itself, which put a real cache/ inside what the
-# **Recovery Window** measures. Sited here, a Feature's runtime touches no part of anyone's project.
+# is CCC's, not the submitter's. It used to be `$proj` itself, which put a real cache/ inside the
+# User's project. Sited here, a Feature's runtime touches no part of anyone's project.
 VLWD_MOUNT = "/ccc/vlwd"
 
 

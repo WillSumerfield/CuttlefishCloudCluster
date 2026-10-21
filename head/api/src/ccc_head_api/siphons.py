@@ -17,10 +17,8 @@ ROOT, not just a password — and the unguessable token stops a Spawn from namin
 no DB column needed. A conf still named for its token is one whose sbatch never returned; `sweep()` reaps
 it by age.
 
-**Closing is not Settlement.** `recover_scratch` copies home *after* `stage_out` delivers `exit`, so the
-Head may settle Karma and drop the Spawn from the queue while up to `MAX_SPAWN_BYTES` is still in
-flight. A Siphon closes when that copy's `recovery.size` marker lands, or the registration window closes
-without one — whichever comes first.
+**Closing is not Settlement.** A Siphon closes a grace window after its Spawn finished, not at
+Settlement. (The close condition is re-decided with Dives.)
 
 **`rsyncd.d/` is Head-API-writable, a real edge.** A compromised Head API could write its own module
 there (e.g. `uid = root`), but a compromised Head API already owns head.db/head.key/every upload, so
@@ -36,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from . import db, recovery
+from . import db
 
 log = logging.getLogger("ccc.api")
 
@@ -48,6 +46,11 @@ RSYNCD_DIR = Path(os.environ.get("CCC_HEAD_STATE", "/var/lib/ccc/head")) / "rsyn
 # A conf whose sbatch never returned. `bind()` follows `open()` within milliseconds, so anything still
 # named for its token an hour later is debris from a submission that raised between the two.
 _ORPHAN_MINUTES = 60
+
+# How long a finished Spawn's Siphon stays open.
+_CLOSE_GRACE_MINUTES = 10
+
+_TS = "%Y-%m-%dT%H:%M:%SZ"
 
 _JID_RE = re.compile(r"^\d+$")
 
@@ -193,15 +196,12 @@ def sweep(conn, now: datetime | None = None) -> int:
     pass leaves files behind, and the next pass finds them since they're what's iterated. A Spawn still
     running is simply skipped and comes round again.
 
-    Two closing conditions: the copy landed, or the window for it to land has passed. A Spawn over
-    `recovery.MAX_SPAWN_BYTES` never sends a marker and closes on the window — correct, since it has no
-    copy coming."""
+    A finished Spawn's Siphon closes once `_CLOSE_GRACE_MINUTES` have passed since it finished."""
     now = now or _now()
     if not RSYNCD_DIR.is_dir():
         return 0
-    from . import spawns
     closed = 0
-    cutoff = now - timedelta(minutes=recovery._REGISTRATION_WINDOW_MINUTES)
+    cutoff = now - timedelta(minutes=_CLOSE_GRACE_MINUTES)
     for conf in RSYNCD_DIR.glob("*.conf"):
         name = conf.stem
         if not _JID_RE.match(name):
@@ -215,8 +215,7 @@ def sweep(conn, now: datetime | None = None) -> int:
         row = db.get_spawn(conn, job_id)
         if row is None or row["finished_at"] is None:
             continue  # still queued or running — this is the Siphon doing its job
-        if (spawns.SPAWNS_DIR / name / "recovery.size").exists() or recovery._parse(
-                row["finished_at"]) < cutoff:
+        if datetime.strptime(row["finished_at"], _TS).replace(tzinfo=timezone.utc) < cutoff:
             close(job_id)
             closed += 1
     return closed

@@ -49,7 +49,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
-LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "recover", "cancel", "karma",
+LOGIN_REQUIRED = {"run", "queue", "history", "status", "logs", "outputs", "cancel", "karma",
                   "tide", "account", "logout", "whoami", "passwd"}
 
 
@@ -67,7 +67,7 @@ class MenuState:
 # collide with, because these are the only menu paths that never become a command line.
 FOLDER = "\0"
 GROUPS: dict[str, list[str]] = {
-    f"{FOLDER}spawns": ["queue", "history", "status", "logs", "outputs", "recover", "cancel"],
+    f"{FOLDER}spawns": ["queue", "history", "status", "logs", "outputs", "cancel"],
     # `karma` whole, rather than its standings here and `bump`/`override` under the admin folder: one
     # command's subtree splits across two places exactly once and then nobody can find either half.
     # Both are Head-gated inside it anyway, so a donor's box still never sees them.
@@ -106,7 +106,6 @@ LABELS = {
     "status": "Check a Spawn",
     "logs": "Read a Spawn's output",
     "outputs": "Download a Spawn's outputs",
-    "recover": "Recover a Spawn's undeclared files",
     "cancel": "Cancel a Spawn",
 
     # The cluster.

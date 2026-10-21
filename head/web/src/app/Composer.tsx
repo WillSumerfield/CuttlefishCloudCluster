@@ -364,7 +364,7 @@ export function Composer(props: ComposerProps) {
             <Labeled label="Arguments" className="sm:col-span-2" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
               <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
             </Labeled>
-            <Labeled label="Output folders" className="sm:col-span-2" help="Folders in your own project that your results are written into — `runs` means the runs/ your script already writes to, so your code needs no changes. Start with / for a path absolute inside the Pod. Anything written outside them is recoverable for a day after the Spawn ends and then gone, so name the right ones rather than relying on that. What lands in them is kept 7 days.">
+            <Labeled label="Output folders" className="sm:col-span-2" help="Folders in your own project that your results are written into — `runs` means the runs/ your script already writes to, so your code needs no changes. Start with / for a path absolute inside the Pod. Anything written outside them is gone when the Spawn ends. What lands in them is kept 7 days.">
               <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-control)]">
                 {outputs.map((o) => (
                   <span

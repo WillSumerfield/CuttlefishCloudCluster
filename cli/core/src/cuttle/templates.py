@@ -25,14 +25,11 @@ AuthType=auth/munge
 ProctrackType=proctrack/cgroup
 TaskPlugin=task/cgroup
 # How long a Spawn has between the TERM that ends it and the KILL that enforces it — the window its own
-# EXIT trap uses to send work home (ccc_head_api.spawns): a Tide Pool's Recovery Window copy. Slurm's default 30s is not enough for the latter, which is a COLD rsync of up to
-# RECOVERY_MAX_BYTES (16 GB) made once, at the end, with no periodic pass behind it — so at 30s the
-# day-long window quietly did not exist for exactly the Spawns with the most to lose.
+# EXIT trap uses to send work home (ccc_head_api.spawns). 600 was sized for the (since-dropped) Recovery
+# Window's cold rsync; kept until the Dive mirror-back decides its own grace (2.0 phase 4).
 #
 # A CEILING, not a wait: the job leaves COMPLETING the moment its trap returns, which is seconds in the
-# ordinary case. What 600 buys is that a big tree finishes instead of being truncated — and a truncated
-# copy is worth nothing, since `recovery.size` never lands, so `register_new` never registers it and
-# `sweep_orphans` deletes it (ccc_head_api.recovery).
+# ordinary case.
 #
 # It is paid for in queue latency, not Karma: a COMPLETING Spawn still holds its node and card but
 # accrues nothing (the tick only bills RUNNING ones), so a slow copy stalls the next placement. Accepted

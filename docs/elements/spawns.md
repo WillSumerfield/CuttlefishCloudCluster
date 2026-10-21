@@ -59,7 +59,6 @@ and ask before submitting.
 | `cuttle history` | Past Spawns, with their cost and outcome. |
 | `cuttle cancel <id>` | End one of yours early. |
 | `cuttle outputs <id>` | Download its results again. See [Storage](storage.md). |
-| `cuttle recover <id>` | Get back what it wrote *outside* your declared outputs. One day. |
 
 ## Behavior
 
@@ -141,9 +140,8 @@ staged in. It is not backed by any allowance, and it is not recoverable.
 - **The machine it was on is retracted underneath it** — the Spawn dies, and **settles at zero**.
   You pay nothing for work someone else stopped, and the Arm's owner earns nothing for stopping it.
   See [Arms](arms.md#retract-and-return).
-- **You wrote results somewhere you did not declare** — you have a day. `cuttle recover <id>`
-  pulls back the whole working directory the Spawn ran in, up to 16 GB. See
-  [Storage](storage.md#the-recovery-window).
+- **You wrote results somewhere you did not declare** — they are gone. Only declared outputs are
+  kept.
 
 ### Following a Spawn
 

@@ -721,12 +721,12 @@ class TestHowASessionSaysItEnded:
         assert "still billing" not in text
         assert "stopped billing" in text
 
-    def test_a_completing_tide_pool_points_at_the_recovery_window(self, head_says, said):
-        """Its scratch is being copied home right now — named, but not waited for: the User was just
+    def test_a_completing_tide_pool_points_at_its_outputs(self, head_says, said):
+        """Its outputs are being copied home right now — named, but not waited for: the User was just
         thrown out of a shell and wants their prompt back."""
         head_says({"id": 3, "done": False, "state": "COMPLETING"})
         cli_tidepool._report_ending(3)
-        assert "cuttle recover 3" in "\n".join(said)
+        assert "cuttle outputs 3" in "\n".join(said)
 
     def test_a_genuinely_running_spawn_still_gets_the_billing_warning(self, head_says, said):
         """`exit` typed, or the connection dropped. This ending was never wrong and must survive."""
@@ -758,19 +758,14 @@ class TestTheTimeWarningSaysWhatBecomesOfTheFiles:
     """`_warn_text` — what the mid-session `--time` warning may claim.
 
     It used to claim Slurm gives an interactive Spawn NO grace period. There is one: TERM, then KILL
-    after `KillWait`, and bash runs the job script's EXIT trap on TERM — which is exactly when a
-    Tide Pool's Recovery Window copy is made.
+    after `KillWait`, and bash runs the job script's EXIT trap on TERM — which is when declared
+    outputs are staged home.
     """
 
     def test_no_warning_claims_there_is_no_grace_period(self):
         text = cli_tidepool._warn_text(3, 300)
         assert "NO grace period" not in text
         assert "no grace period" not in text
-
-    def test_a_tide_pool_is_told_where_its_scratch_goes(self):
-        text = cli_tidepool._warn_text(3, 300)
-        assert "recoverable for a day" in text
-        assert "cuttle recover 3" in text
 
     def test_it_says_outputs_come_home_as_normal(self):
         assert "outputs come home as normal" in cli_tidepool._warn_text(3, 300)

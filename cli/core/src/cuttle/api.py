@@ -141,21 +141,13 @@ class Api:
     # --- calls ---------------------------------------------------------------
 
     def json(self, method: str, path: str, body: dict | None = None, token: str | None = None,
-             auth: bool = True, timeout: float | None = None, missing_ok: bool = False) -> Any:
+             auth: bool = True, timeout: float | None = None) -> Any:
         """A JSON call. Returns the decoded body ({} when empty, e.g. a 204). `timeout` overrides the
-        default budget — the menu's session probe wants a short one so opening `cuttle` never hangs.
-
-        `missing_ok` mirrors `raw()`'s: a 404 becomes None instead of raising, for a caller like the
-        Recovery Window status route where "nothing to report" is a normal outcome, not a failure."""
+        default budget — the menu's session probe wants a short one so opening `cuttle` never hangs."""
         headers = self._headers(auth, token, {"Content-Type": "application/json"})
         content = json.dumps(body).encode() if body is not None else None
-        try:
-            r = self._send(method, path, content=content, headers=headers,
-                           timeout=timeout if timeout is not None else TIMEOUT_JSON)
-        except ApiError as e:
-            if missing_ok and e.status == 404:
-                return None
-            raise
+        r = self._send(method, path, content=content, headers=headers,
+                       timeout=timeout if timeout is not None else TIMEOUT_JSON)
         return json.loads(r.content or b"{}")
 
     def raw(self, path: str, missing_ok: bool = False) -> bytes | None:

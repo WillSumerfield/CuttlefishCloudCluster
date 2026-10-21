@@ -268,14 +268,14 @@ class TestTheMenuGatesByState:
     def test_every_command_that_needs_a_session_is_declared_as_needing_one(self):
         """`_visible` DEFAULTS to True, so a new submitter command that nobody adds to LOGIN_REQUIRED
         is not merely unsorted — it is offered to a logged-OUT user, whose first act is a 401. That is
-        how `recover` shipped. This is the invariant, rather than a test naming one command: anything
+        how one command shipped. This is the invariant, rather than a test naming one command: anything
         reaching the Head with a session bearer belongs in that set.
 
         Checked at every level, not just the first: filing a command into a folder must not be a way
         to smuggle it past its own gate."""
         logged_out = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
         assert logged_out.isdisjoint({"run", "queue", "history", "status", "logs", "outputs",
-                                      "recover", "cancel", "karma", "tide", "account"})
+                                      "cancel", "karma", "tide", "account"})
 
     def test_the_menu_never_falls_back_to_a_truncated_help_string(self):
         """`_label` falls back to `get_short_help_str(limit=40)` — a command missing from LABELS gets

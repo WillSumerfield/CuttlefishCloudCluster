@@ -285,7 +285,7 @@ class TestStatus(_Base):
 
 
 # --- the API ------------------------------------------------------------------
-# Same in-process rig test_recovery.py uses for its two routes.
+# In-process rig for the retention routes.
 
 def _client(monkeypatch, tmp_path) -> TestClient:
     user = {"id": 1, "username": "alice", "is_admin": False, "must_change_password": False}
@@ -406,7 +406,7 @@ class TestCliOutputs:
 # --- wiring -------------------------------------------------------------------
 
 class TestTheTickRegistersAndReaps:
-    """One wiring test, matching test_projects' and test_recovery's."""
+    """One wiring test, matching test_projects'."""
 
     def test_one_pass_registers_a_finished_spawns_outputs(self, monkeypatch, tmp_path):
         from ccc_head_api import tick

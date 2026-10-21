@@ -755,9 +755,8 @@ def test_the_feature_description_lists_both_majors():
 
 
 def test_the_library_prefix_is_built_outside_the_project():
-    """$proj is what recover_scratch() measures against RECOVERY_MAX_BYTES and rsyncs home. Half a
-    gigabyte of CCC's own libraries built in there would silently disable recovery for every Spawn that
-    asked for a Feature. Built straight into $scratch, so there is nothing to move."""
+    """$proj is the User's project; CCC's own libraries stay out of it. Built straight into
+    $scratch."""
     body = _script(features=["vlearn"])
     assert 'mkdir -p "$scratch/env" "$scratch/tmp" "$scratch/featlibs"' in body
     assert f"$proj/{env.STUB_ROOT}" not in body, "no Feature library ever lands in the project"

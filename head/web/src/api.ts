@@ -72,14 +72,8 @@ export type ArchivedSpawn = Spawn & {
   held: number | null
   // Epoch ms it finished — the sort key. History is one flat stream, newest first.
   finished_at: number
-  // Recovery Window (docs/TODO.md): null/absent once it's closed (or was never made) — everything else
-  // the Spawn wrote outside its declared outputs, held on the Head for a day. bytes rides alongside for
-  // the same reason it does on RecoveryStatus: a size worth showing, not just a countdown.
-  recovery_bytes?: number | null
-  recovery_expires_at?: string | null
   // Output retention (docs/TODO.md "Storage retention"): when this Spawn's DECLARED results are deleted
-  // — 7 days after it ended, or sooner if the submitter's 32GB Allowance needed the room. The more
-  // consequential sibling of the pair above (these are the results the Spawn was submitted to produce).
+  // — 7 days after it ended, or sooner if the submitter's 32GB Allowance needed the room.
   // Null once gone, or before the tick has registered them.
   output_bytes?: number | null
   output_expires_at?: string | null
@@ -116,22 +110,13 @@ export type SpawnDetail = {
   // What it settled at. Null while it still holds an Escrow, and for a Spawn that never settled at all
   // (Admin-owned, or ended before the meter reached it).
   cost?: number | null
-  recovery_bytes?: number | null
-  recovery_expires_at?: string | null
   output_bytes?: number | null
   output_expires_at?: string | null
 }
 
-// Recovery Window (docs/TODO.md): a one-day, 16GB-capped safety net for whatever a Spawn wrote OUTSIDE
-// its declared outputs — separate from (and never merged with) the permanent outputs tar. `expires_at`
-// is an ISO timestamp; callers compute their own remaining-time countdown from it rather than a
-// server-computed "seconds left" that would go stale the moment it's rendered.
-export type RecoveryStatus = { bytes: number; expires_at: string }
-
-// Output retention (docs/TODO.md "Storage retention"): the same two fields on the same terms, for the
-// Spawn's DECLARED results — held 7 days from its end, and only while the submitter's 32GB Allowance has
-// room. Identical shape to RecoveryStatus on purpose: the two panels render the same way, and a User
-// learns one countdown rather than two.
+// Output retention (docs/TODO.md "Storage retention"): the Spawn's DECLARED results — held 7 days from
+// its end, and only while the submitter's 32GB Allowance has room. `expires_at` is an ISO timestamp;
+// callers compute their own countdown from it.
 export type RetentionStatus = { bytes: number; expires_at: string }
 
 export class Unauthorized extends Error {}
@@ -238,8 +223,6 @@ type HistoryRow = {
   minutes: number | null
   submitted_by: string | null
   cost: number | null
-  recovery_bytes: number | null
-  recovery_expires_at: string | null
   output_bytes: number | null
   output_expires_at: string | null
 }
@@ -281,8 +264,6 @@ export const getHistory = () =>
         cost: r.cost,
         held: null, // the Head does not report actual held minutes yet, only the declared limit
         finished_at: r.finished_at ? Date.parse(r.finished_at) : Date.now(),
-        recovery_bytes: r.recovery_bytes,
-        recovery_expires_at: r.recovery_expires_at,
         output_bytes: r.output_bytes,
         output_expires_at: r.output_expires_at,
       }),
@@ -294,19 +275,8 @@ export const getSpawn = (id: number) => json<SpawnDetail>(`/spawns/${id}`)
 export const getStderr = (id: number) => req(`/spawns/${id}/stderr`).then((r) => r.text())
 /** The Environment build's output — empty string for a Spawn that declared none. The Head's work, not
  *  the Spawn's, which is why it is its own stream rather than the head of stdout. */
-// null = no open Recovery Window (never made, over the 16GB per-Spawn cap, evicted to make room for a
-// newer copy of the submitter's own, or its day is up) — a normal outcome for a finished Spawn, not
-// surfaced as an error to the caller.
-export async function getRecovery(id: number): Promise<RecoveryStatus | null> {
-  try {
-    return await json<RecoveryStatus>(`/spawns/${id}/recovery`)
-  } catch (e) {
-    if (e instanceof Unauthorized) throw e
-    return null
-  }
-}
 // null = nothing held (produced nothing, not yet registered by the tick, expired, or evicted for the
-// Allowance) — a normal outcome, not an error, exactly like getRecovery above.
+// Allowance) — a normal outcome, not an error.
 export async function getRetention(id: number): Promise<RetentionStatus | null> {
   try {
     return await json<RetentionStatus>(`/spawns/${id}/retention`)
@@ -425,12 +395,6 @@ export async function changePassword(oldPassword: string, newPassword: string): 
  * `Content-Disposition` and is repeated in the `download` attribute for the same-origin case.
  */
 export const outputsDownloadUrl = (id: number) => `${API}/spawns/${id}/outputs`
-
-/** Where the browser fetches a Spawn's Recovery Window copy — everything it wrote OUTSIDE its declared
- *  outputs, while the window is still open. A plain link for the same reasons as the outputs one above,
- *  and more so: the per-Spawn cap admits copies up to 16GB. A distinct route and filename, never merged
- *  into one artifact whose contents would silently change once the window closes. */
-export const recoveryDownloadUrl = (id: number) => `${API}/spawns/${id}/recovery/download`
 
 export type SubmitOpts = {
   picked: Picked

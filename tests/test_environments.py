@@ -269,9 +269,7 @@ def test_a_spawn_that_declared_nothing_renders_no_build_at_all():
 
 
 def test_the_environment_is_built_outside_the_project():
-    """$proj is what recover_scratch() copies for the Recovery Window and measures against
-    RECOVERY_MAX_BYTES. An 8GB conda env built inside it would silently disable recovery for exactly the
-    Spawns most likely to need it. Built straight into $scratch, so there is nothing to move."""
+    """$proj is the User's project; CCC's own env stays out of it. Built straight into $scratch."""
     body = _declared()
     assert 'mkdir -p "$scratch/env" "$scratch/tmp"' in body
     assert f"$scratch/env:{env.ENV_MOUNT}" in body
@@ -316,9 +314,8 @@ def test_every_spawn_writes_temp_files_to_disk_not_to_the_pods_ram_tmp():
     assert "TMPDIR=/ccc-tmp" in body
 
 
-def test_the_temp_scratch_is_outside_the_recovery_window():
-    """recover_scratch() copies $proj and measures it against RECOVERY_MAX_BYTES. A pip cache inside
-    it would spend a User's recovery allowance on temp files nobody wants back."""
+def test_the_temp_scratch_is_outside_the_project():
+    """Temp files are CCC's, not the User's project's."""
     body = _script()
     assert '"$scratch/tmp' in body and '"$proj/tmp' not in body
 

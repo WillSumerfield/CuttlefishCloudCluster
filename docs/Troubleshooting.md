@@ -38,8 +38,7 @@ They download automatically to `~/ccc/outputs/spawn-<id>-outputs/`. If they are 
 - **The Spawn is still finishing.** The last copy home can arrive after the Spawn is already billed.
 - **You submitted with `--no-download`.** `cuttle outputs <id>`.
 - **This machine was off when it ended.** Run any `cuttle` command; the download resumes.
-- **You wrote them somewhere you did not declare.** `cuttle recover <id>`, within a day of the
-  Spawn ending. See [the Recovery Window](elements/storage.md#the-recovery-window).
+- **You wrote them somewhere you did not declare.** Only declared outputs are kept.
 
 ### `cuttle outputs` says the results are gone
 

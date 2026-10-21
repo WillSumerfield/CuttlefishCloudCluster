@@ -1,7 +1,7 @@
 import type { ArchivedSpawn, Outcome } from "../api";
 import { Tip } from "../app/Tip";
 import { Link } from "../app/router";
-import { duration, placedLabel, recoveryLabel, outputsLabel } from "../queue/format";
+import { duration, placedLabel, outputsLabel } from "../queue/format";
 
 /**
  * One finished Spawn in the archive. NOT a shard: the archive is a single surface and rows are soft pools
@@ -60,13 +60,9 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
   // so the archive sinks into the dark instead of stopping on a line. Newest (depth 0) sits at the surface.
   const band = Math.max(0, 20 * (1 - depth * 0.9));
   const dim = 1 - depth * 0.42;
-  // Recovery Window (docs/TODO.md): a quiet TEXT indicator, never a button — this row's whole docstring
-  // rule ("no per-row buttons") stands; a User who wants the actual download clicks through to the
-  // Spawn's own page (SpawnPage's RecoveryPanel), same as every other action this row doesn't offer.
-  const recovery = recoveryLabel(spawn.recovery_expires_at);
-  // The declared results' own countdown, on the same terms and for the same reason (docs/TODO.md
-  // "Storage retention"). Both can be present at once for a Spawn that just ended — they are different
-  // artifacts with different deadlines, so the row shows both rather than picking one.
+  // The declared results' countdown (docs/TODO.md "Storage retention"): a quiet TEXT indicator, never a
+  // button — this row's whole docstring rule ("no per-row buttons") stands; the download is on the
+  // Spawn's own page.
   const outputs = outputsLabel(spawn.output_expires_at);
   return (
     <li>
@@ -91,12 +87,6 @@ export function HistoryRow({ spawn, depth }: { spawn: ArchivedSpawn; depth: numb
                 <>
                   <span aria-hidden>·</span>
                   <span className="num">{duration(spawn.held)} held</span>
-                </>
-              )}
-              {recovery && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span className="num" style={{ color: "var(--ink-soft)" }}>{recovery}</span>
                 </>
               )}
               {outputs && (

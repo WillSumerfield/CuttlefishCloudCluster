@@ -129,15 +129,6 @@ class TestTheRoutesDeclareTheirSize:
             assert db.get_spawn(conn, 2) is None
         assert c.get("/api/spawns/2/outputs").headers["X-CCC-Bytes"] == "2048"
 
-    def test_recovery_declares_what_is_on_the_disk_now(self, monkeypatch, tmp_path):
-        c = _client(monkeypatch, tmp_path)
-        d = tmp_path / "spawns" / "3" / "recovery"
-        d.mkdir(parents=True)
-        (d / "scratch.bin").write_bytes(b"y" * 900)
-        r = c.get("/api/spawns/3/recovery/download")
-        assert r.status_code == 200
-        assert r.headers["X-CCC-Bytes"] == "900"
-
 
 # --- the client ---------------------------------------------------------------
 

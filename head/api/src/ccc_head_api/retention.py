@@ -151,7 +151,7 @@ def evicted(job_id: int) -> bool:
 def status(conn, job_id: int) -> dict | None:
     """`{bytes, expires_at}` for a Spawn's outputs, or None if it has none held — never produced any,
     evicted for the Allowance, or expired. What both the History countdown and `cuttle outputs`' miss
-    hint read; the same shape `recovery.status` returns, so every surface renders the two identically."""
+    hint read."""
     row = db.get_output(conn, job_id)
     if row is None:
         return None
