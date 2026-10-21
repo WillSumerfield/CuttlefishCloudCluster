@@ -72,16 +72,15 @@ cuttle login --head <head-address>
 
 Your first login forces a password change.
 
-**3. Run something.** From your project folder, `cuttle` → **Submit a Spawn**. It asks how long, how
-much GPU memory, and which dependency file to build from, then shows you the whole submission before it
-sends anything. The same thing, typed:
+**3. Get a GPU shell.** `cuttle` → **Open a Tide Pool**. It asks how long and how much GPU memory,
+then drops you into a shell on a machine that has it. The same thing, typed:
 
 ```sh
-cd my-project
-cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
+cuttle run --time 60 --vram 24
 ```
 
-Those three are required and have no defaults: minutes, GB of GPU memory, and the dependency file.
+Both are required and have no defaults: minutes, and GB of GPU memory. (Batch script Spawns are gone
+in 2.0.)
 
 **4. Watch it.** **Check a Spawn** and **Read a Spawn's output** in the menu,
 or:

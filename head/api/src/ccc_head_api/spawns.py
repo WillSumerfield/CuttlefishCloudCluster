@@ -1,11 +1,14 @@
-"""Server-side Spawn submission + inspection.
+"""Server-side Tide Pool submission + Spawn inspection.
 
-The render + submit machinery for `cuttle run`: the CLI POSTs a Spawn's metadata to the Head API
-(running as the **Mantle**, the `ccc` account), which renders the sbatch script, submits it **as the
+The render + submit machinery for `cuttle run`: the CLI POSTs a Tide Pool request to the Head
+API (running as the **Mantle**, the `ccc` account), which renders the sbatch script, submits it **as the
 submitter's Guise** over the munge socket (munged authenticates whichever local uid calls it, so
 becoming the Guise is enough — no munge.key is ever read), and records an Attribution row.
 Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back over the API —
 the submitter never touches the Head's disk.
+
+Batch (script) Spawns are gone in 2.0; a Tide Pool is the one submittable Spawn left until Dives
+replace it.
 
 Every Spawn runs as its submitter's **Guise** on EVERY node, under one uid pinned cluster-wide (see
 guises.py). That is what makes a remote Arm work at all: slurmd setuid()s to the submitting uid, so
@@ -15,8 +18,8 @@ more, and a Spawn that does is a bug. A Guise is home-less by design, like the M
 nothing here is resolved against a home directory: the Pod image is at one absolute path on every node
 (CCC_SIF) and a remote Arm scratches in /tmp.
 
-A Spawn carries no project: its working dir `$proj` starts empty in node-local scratch. The
-`[ -d "%%SPAWNS%%" ]` branch is "is this the Head?":
+Its working dir `$proj` starts empty in node-local scratch. The `[ -d "%%SPAWNS%%" ]` branch is "is
+this the Head?":
   * Head's co-located Arm — write out/err/exit STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
     streams live).
   * remote Arm — stage out/err/exit BACK through this Spawn's own **Siphon** (siphons.py).
@@ -25,22 +28,19 @@ Paths are fixed (defaults below match cuttle.config; this package never imports 
 Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a remote Arm can rsync home.
 """
 
-import base64
 import logging
 import os
-import posixpath
-import shlex
 import subprocess
 from pathlib import Path
 from uuid import uuid4
 
 from . import db
-from . import environments
 from . import features as features_mod
 from . import guises
 from . import siphons
 from . import slurm
 from . import zshrc
+
 
 log = logging.getLogger("ccc.api")
 
@@ -50,8 +50,8 @@ SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 # The Pod image, at the SAME path on every node (each builds its own at setup). One constant, so the
 # rendered script names the sif identically wherever Slurm places the Spawn.
 CCC_SIF = Path(os.environ.get("CCC_SIF", "/opt/ccc/images/base.sif"))
-# Where the payload's working directory ends up ON THE NODE, which is also where it is bound INTO the
-# Pod (JOB_SCRIPT binds `$proj` by name, at the same path) — so this is the folder a VS Code remote
+# Where the Spawn's working directory ends up ON THE NODE, which is also where it is bound INTO the
+# Pod (the payload binds `$proj` by name, at the same path) — so this is the folder a VS Code remote
 # session opens, and the folder `scp` puts files into. Two forms, because a Spawn's scratch differs
 # between the Head's co-located Arm and a donor's box; both are written out longhand in JOB_SCRIPT, and
 # `test_the_two_scratch_forms_agree` is what keeps this reading of them honest.
@@ -71,9 +71,7 @@ MESH_IP = os.environ.get("CCC_MESH_IP", "")
 # install hits ENOSPC inside its own Pod instead of filling the Arm's disk under every other Spawn
 # running on it.
 #
-# 4GB because it is generous for what this is FOR — editors, a dev header, a CLI tool the Environment
-# could not carry — and far short of a second Environment. A Spawn that needs more than 4GB of system
-# packages is declaring an **Environment** badly, not using this feature. Sparse, so an overlay nobody
+# 4GB because it is generous for what this is FOR — editors, a dev header, a CLI tool. Sparse, so an overlay nobody
 # writes to costs a few hundred KB of the Arm's disk and not 4GB.
 POD_OVERLAY_MB = 4096
 
@@ -97,7 +95,6 @@ JOB_SCRIPT = """\
 #SBATCH --output=/tmp/ccc-%j-%%SINK_TAG%%.slurm
 #SBATCH --error=/tmp/ccc-%j-%%SINK_TAG%%.slurm
 %%CONSTRAINT%%
-%%NODELIST%%
 %%EXCLUDE%%
 # Arm Features (docs/TODO.md): an Arm optionally declares install paths for heavy/hardware-licence-
 # gated software (VSim, IsaacSim, ...) at `cuttle setup --arm`, written locally to
@@ -218,7 +215,7 @@ else
     scratch="/tmp/ccc-$jid"
     proj="$scratch/proj"
     trap cleanup EXIT
-    # $proj is an explicit `--bind` source and `--pwd` target for both payloads, which apptainer treats
+    # $proj is an explicit `--bind` source and `--pwd` target for the payload, which apptainer treats
     # as fatal when it does not exist.
     mkdir -p "$proj"
     # Nothing has run yet, so out/err start empty rather than absent — rsync would skip a missing file
@@ -281,13 +278,8 @@ XDG_ENV="$XDG_ENV,XDG_STATE_HOME=/ccc-tmp/xdg/state,XDG_CACHE_HOME=/ccc-tmp/xdg/
 # A Pod's root is a read-only squashfs. `--writable-tmpfs` used to make it writable for a **Tide Pool**
 # only, out of apptainer's session directory — a RAM tmpfs capped at 64MB, which is enough for the boot
 # script's edits to /etc and nothing else. A sparse ext3 image instead: %%POD_OVERLAY_MB%%MB, on the
-# same node-local disk as the scratch, and carried by EVERY payload rather than just the interactive
-# one. The upper layer is owned by the Guise that created it, so a write to /usr or /var/lib/dpkg
+# same node-local disk as the scratch. The upper layer is owned by the Guise that created it, so a write to /usr or /var/lib/dpkg
 # simply succeeds.
-#
-# It is created before the **Environment** build and handed to that Pod as well, so a declared
-# **Substrate**'s packages are present while the manifest builds — a wheel that has to compile against
-# a system library finds it, which is most of why declaring one is worth doing.
 #
 # Inside `$scratch`, so cleanup()'s `rm -rf` takes it with everything else and no Pod keeps what it
 # held.
@@ -297,40 +289,8 @@ if ! apptainer overlay create --size %%POD_OVERLAY_MB%% "$scratch/overlay.img" >
     echo 1 > "$exitf"; stage_out; exit 1
 fi
 overlay="--overlay $scratch/overlay.img"
-# The Spawn's **Environment** (ccc_head_api.environments), if its submitter declared one — built HERE,
-# now, out of this box's own bandwidth. The Head decided what to build and rendered the commands into
-# the build block below; running them is all that happens on this side.
-#
-# It is built into $scratch, NOT into $proj. It dies with the
-# Spawn — no box grows an env store — while the package DOWNLOADS survive in the node's shared cache,
-# which is what makes the next build cheap.
-#
-# Bound at ONE absolute path, the same one it is built at, because neither shape survives being moved:
-# a venv bakes its prefix into pyvenv.cfg, its own interpreter symlink and every console-script shebang,
-# and a conda prefix bakes it into hundreds of files. Building and running on the same box in the same
-# job makes that invariant trivially true.
-#
-# `envmount` carries the Pod-side path as a VARIABLE, empty when this Spawn declared no Environment,
-# because an Arm **Feature**'s setup block below has to name it (its LD_LIBRARY_PATH includes the
-# Environment's own lib dir) and those blocks arrive already substituted — see _render.
-#
-# `$py` starts EMPTY and there is no fallback, because there is nothing to fall back to: the Pod image
-# carries no interpreter at all (cuttle.templates.BASE_DEF_TMPL). The build block is empty for exactly
-# one kind of Spawn now that declaring is mandatory — a **Tide Pool**, which may decline — and it never uses
-# `$py`: its payload boots a login daemon rather than an interpreter. So what it leaves behind is
-# `$envbind`/`$envmount`, which correctly stay empty. An **Arm Feature**'s probe is the one other reader,
-# and it fails loudly on an empty `$py` rather than silently (features.PREAMBLE).
-#
-# `featbind`/`featenv` are the Arm **Feature** runtime accumulators (ccc_head_api.features), appended to
-# the payload's bind and env lists. Empty for almost every Spawn: only a Feature with a runtime *profile*
-# renders anything into them. The build block seeds `featbind` with the Feature library prefix it built,
-# read-only — nothing writes to it, and each profile's block below puts it on LD_LIBRARY_PATH.
-py=""; envbind=""; envmount=""; featbind=""; featenv=""
-%%ENV_BUILD%%
-%%FEATURE_SETUP%%
-# Under `--contain` (see the payloads below) apptainer auto-mounts NOTHING — not $HOME, not /tmp, not
-# the cwd — so every directory the payload needs is bound by name: $proj (the code, and the working
-# dir).
+# Under `--contain` (see the payload below) apptainer auto-mounts NOTHING — not $HOME, not /tmp, not
+# the cwd — so every directory the payload needs is bound by name: $proj (the working dir).
 %%PAYLOAD%%
 rc=$?
 echo $rc > "$exitf"
@@ -360,72 +320,10 @@ stage_out_retry || echo "ccc: staging results back to rsync://%%HEAD_IP%%/out-%%
 exit $rc
 """
 
-# What fills `%%ENV_BUILD%%` for a Spawn that declared an **Environment**. Empty for the one that may
-# not — a **Tide Pool** with no manifest — and that emptiness is the whole of the no-env case.
-#
-# The build runs in the SAME Pod shape as the payload (`--contain --pid --pwd "$proj"`, base.sif, this
-# job's own Guise). A manifest is code — build backends, sdist `setup.py`, conda post-link scripts all
-# execute — so it gets the same walls the work gets, not a weaker isolation invented for it. There is no
-# `--nv`: a build needs no GPU. The card is already allocated to this job either way, which is the one
-# real cost of building here rather than on the Head, and it is what buys every Spawn the ability to
-# start at all (environments.py's module docstring).
-#
-# Output goes to `$err`, not to a separate log: it IS the answer to "why did my Spawn get that version"
-# on success and to "why did it not run" on failure, and one place to look beats two. `cuttle logs`
-# already streams it, live, on both branches.
-ENV_BUILD = """\
-mkdir -p "$scratch/env" "$scratch/tmp"%%FEATLIB_MKDIR%%
-# THIS Guise's package download cache, under the 0777 parent `cuttle setup` made
-# (cuttle.config.NODE_ENV_CACHE_DIR). One subtree per Guise, created here by the Guise that owns it,
-# because a single shared cache fails twice over: uv builds its tree with the CREATOR's ownership and
-# 0755 umask, so the first uid to build locks every later one out (hardware, 2026-08-08) — and a cache
-# two Users can both write is a route for one to plant a wheel the other's build installs.
-#
-# `id -un` rather than a rendered name: the job already RUNS as the Guise, so this cannot disagree with
-# the uid doing the writing. mkdir is unconditional and -p, so a first build and a warm one are the
-# same line.
-ccc_cache="%%ENV_CACHE_ROOT%%/$(id -un)"
-mkdir -p "$ccc_cache"
-# Emptied WHOLE at the cap rather than evicted per entry: uv and micromamba both hard-link out of it,
-# so evicting one entry needs their own bookkeeping to be safe. Costs re-downloads and nothing else —
-# no Spawn depends on it. Checked BEFORE the build, so this Spawn's own downloads are never the ones
-# thrown away, and only ever this Guise's own subtree, so no User can cost another their cache.
-csz=$(du -sb "$ccc_cache" 2>/dev/null | cut -f1)
-if [ -n "$csz" ] && [ "$csz" -gt %%ENV_CACHE_MAX%% ]; then
-    echo "ccc: your package cache on this node passed %%ENV_CACHE_MAX_GB%%GB — emptying it" >> "$err"
-    rm -rf "$ccc_cache"/* 2>/dev/null
-fi
-%%STUB_FILES%%ccc_build() {
-    apptainer exec --contain --pid --pwd "$proj" $overlay \\
-      --bind "$proj,$scratch/env:%%ENV_MOUNT%%,$ccc_cache:%%POD_CACHE%%,\
-$scratch/tmp:%%POD_TMP%%,%%TOOLS_DIR%%:%%TOOLS_DIR%%:ro%%FEATLIB_BUILD_BIND%%%%STUB_BINDS%%" \\
-      --env "%%BUILD_POD_ENV%%" \\
-      "$sif" "$@" >> "$err" 2>&1
-}
-# A failed build is a failed SPAWN. It was accepted, Escrowed and queued minutes ago and its submitter
-# has already walked away, so it ends the way every other failed Spawn ends — the build's own output in
-# `err`, a non-zero `exit`, and the Escrow settled but NOT refunded. That is the deliberate cost of
-# building here: the Head can no longer refuse a broken manifest for free.
-#
-# `$ccc_building` names what is being built, reset before each group below, so the failure says which of
-# the two failed rather than blaming the manifest for a Feature's conda solve.
-ccc_build_or_die() {
-    echo "ccc: $*" >> "$err"
-    if ! ccc_build "$@"; then
-        echo "ccc: $ccc_building could not be built (see above)." >> "$err"
-        echo "ccc: this Spawn never ran. Fix the declaration and resubmit." >> "$err"
-        echo 1 > "$exitf"
-        kill "$loop_pid" 2>/dev/null
-        stage_out
-        exit 1
-    fi
-}
-%%STUB_LOG%%%%BUILD_CMDS%%
-%%POST%%"""
-
-# The two shapes `%%PAYLOAD%%` can take. Everything around it — staging, the EXIT trap, stage_out, the
-# periodic log pusher — is identical either way, which is the whole point of the slot: a Tide Pool
-# is a normal Spawn that happens to run a live shell instead of a script, not a second pipeline.
+# sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
+# runs with no --net — full host netns, because the Pod still needs internet egress and the mesh to
+# stage its results home) — the Head-side relay (ccc_head_api.tidepool/relay.py) is what makes that
+# reachable from a client that is not a Mesh member.
 #
 # `--contain --pid --pwd "$proj"` is the containment set (apptainer 1.5.3), and it is what makes a Pod a
 # boundary rather than a packaging format. Apptainer's own model is "the user inside is the user
@@ -441,32 +339,16 @@ ccc_build_or_die() {
 #   `/proc/<pid>/root` and `/proc/<pid>/environ` (another Spawn's environment). Apptainer starts its
 #   own `appinit` shim as PID 1, so there is no zombie-reaping problem and no tini to ship.
 # * `--pwd "$proj"` is load-bearing, not cosmetic: `--contain` drops the cwd auto-bind, so $proj must be
-#   bound EXPLICITLY and named as the working dir, or cwd is $HOME and `python <script>` fails outright.
+#   bound EXPLICITLY and named as the working dir, or the shell starts in $HOME.
+#
+# Confirmed end to end against the full boot path below: sshd, pubkey auth, `UsePAM=no` and an
+# interactive pty all work under containment (`--contain`'s minimal /dev still provides devpts), /tmp
+# is private and empty, and the PID namespace holds — `/proc/1/root` is the container root, not the
+# host's.
 #
 # LC_ALL/LANG: the base image never ran locale-gen, so any inherited locale makes the payload's
 # own shell/tooling write a "cannot change locale" warning into the Spawn's `err` before it has done
 # anything. C.UTF-8 ships pre-generated on every Debian/Ubuntu image.
-#
-# `$py` is this Spawn's declared **Environment**'s interpreter, and there is no other kind: the image
-# has none (cuttle.templates.BASE_DEF_TMPL). It is set together with `$envbind`, which mounts it, so the
-# interpreter named here can never be one the bind did not provide.
-PAYLOAD_SCRIPT = """\
-apptainer exec --nv --contain --pid --pwd "$proj" $overlay --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$migbind" \\
-  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip,$XDG_ENV$migenv$featenv" \\
-  "$sif" $py %%SCRIPT%% %%ARGS%% > "$out" 2> "$err\""""
-
-# sshd inside the Pod, reachable at %%TIDEPOOL_PORT%% on the Arm's OWN network address (apptainer here
-# runs with no --net — full host netns, same as the script path, because the Pod still needs internet egress
-# and the mesh to stage its results home) — the Head-side relay (ccc_head_api.tidepool/relay.py) is what
-# makes that reachable from a client that is not a Mesh member.
-#
-# `--contain --pid --pwd "$proj"` applies here for exactly the reasons it applies to PAYLOAD_SCRIPT
-# above — and matters MORE here, since this payload hands a User a live interactive shell rather than
-# running a script they wrote. Confirmed end to end against the full boot path below: sshd, pubkey
-# auth, `UsePAM=no` and an interactive pty all work under containment (`--contain`'s minimal /dev still
-# provides devpts), /tmp is private and empty, and the PID namespace holds — `/proc/1/root` is the
-# container root, not the host's.
 #
 # sshd never setuid()s: the "login" is to the SAME uid already running the Pod (the submitter's
 # **Guise**, homeless-by-design on the host — see the module docstring), so there is no privilege drop
@@ -544,38 +426,15 @@ cat /tmp/ccc_passwd.new > /etc/passwd
 rm -f /tmp/ccc_passwd.new
 # An interactive login shell (sshd starts one as `-zsh`, which reaches this file through the
 # /etc/profile line BASE_DEF_TMPL appends to /etc/zsh/zprofile) lands in the Spawn's working dir
-# (CCC_PROJ, the same $proj a Script Spawn's `cd` already puts on the host side; an
-# explicit `--bind "$proj"` is what makes it visible in here at all, since `--contain` drops the cwd
-# auto-bind this used to lean on — see PAYLOAD_SCRIPT, which binds it the same way to find %%SCRIPT%%).
+# (CCC_PROJ, the same $proj JOB_SCRIPT `cd`s into on the host side; an explicit `--bind "$proj"` is
+# what makes it visible in here at all, since `--contain` drops the cwd auto-bind).
 # An EMPTY dir, never a missing one (both branches mkdir it).
 echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" > /etc/profile.d/ccc-tidepool.sh
-# A Tide Pool gets the SAME **Environment** its Spawn would get, so what you debug is what runs — put it
-# first on PATH rather than making the User type the interpreter's full path. Writable, too (it is this
-# session's own node-local copy, so read-only would buy no safety): `pip install` at the shell works and
-# dies with the session, which is most of what a Tide Pool is for.
-[ -x %%ENV_BINDIR%%/python ] && \\
-  echo "export PATH=\\"%%ENV_BINDIR%%:\\$PATH\\"" >> /etc/profile.d/ccc-tidepool.sh
-# Everything above is in this profile rather than in apptainer's `--env` for one reason, and it is the
+# Everything here is in this profile rather than in apptainer's `--env` for one reason, and it is the
 # same reason the two lines below have to be here too: **sshd builds a FRESH environment for every
 # session and does not pass its own down.** Confirmed by experiment (2026-08-07): a marker variable and
 # a TMPDIR set in sshd's own environment both come back EMPTY inside the session. So everything
 # apptainer hands this Pod through --env reaches THIS script and stops here.
-#
-# The Arm **Feature** runtime is what sshd was silently eating. `$featenv` (ccc_head_api.features) is
-# handed to this Pod through --env and stops at this script, so a **Tide Pool**
-# that asked for a profiled Feature had its package bound, its system libraries built and its working
-# directory arranged, and then got a shell with none of the three variables that make any of that
-# reachable: `import vlearn` was a ModuleNotFoundError and `pip list` showed nothing, on the one Spawn
-# whose entire point was the Feature. LD_LIBRARY_PATH especially cannot be recovered from inside — the
-# loader reads it at `exec`, which is the whole reason a profile exists.
-#
-# The NAMES arrive as one more --env entry (CCC_FEATURE_VARS, derived from `$featenv` below) rather than
-# being listed here: a profile that introduces a variable then needs no edit in this file, and the
-# symptom of forgetting one would be exactly this bug again. Unquoted for the word split, which is what
-# it is for. Values are read back out of this script's own environment and never re-parsed.
-for v in $CCC_FEATURE_VARS; do
-  if [ -n "${!v-}" ]; then echo "export $v='${!v}'" >> /etc/profile.d/ccc-tidepool.sh; fi
-done
 # The Pod's own /tmp is a RAM tmpfs sharing 64MB with the --writable-tmpfs overlay (see the mkdir in
 # JOB_SCRIPT). Point the shell at the bound disk scratch instead, or `pip install` at a Tide Pool —
 # the thing a Tide Pool is most used for — dies on any wheel bigger than what is left of that 64MB,
@@ -586,7 +445,7 @@ chmod 600 /etc/profile.d/ccc-tidepool.sh
 # Where the VS Code server unpacks — ~150MB, into the same 64MB tmpfs home, which fails as ENOSPC
 # partway through and is then reported by Remote-SSH as "Cannot resolve authority" with the real cause
 # (StorageFull, unpacking package.json) buried four screens down its own log. Measured on real hardware
-# (2026-08-18), against `cuttle run --tidepool --vscode`.
+# (2026-08-18), against `cuttle run --vscode`.
 #
 # VSCODE_AGENT_FOLDER in sshd's SetEnv below is NOT enough on its own, and this is why the variable did
 # not save us: it names the legacy server-script location, and Remote-SSH 0.124 bootstraps through the
@@ -599,8 +458,7 @@ ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"
 # The shell's own configuration (ccc_head_api.zshrc), which the Head renders rather than the image
 # bakes — that module's docstring says why. Everything ABOVE this point still lands in /etc/profile.d
 # and is reached through the one line BASE_DEF_TMPL appends to /etc/zsh/zprofile: there is exactly one
-# generator for the Environment PATH and the `cd`, and switching shells did not
-# fork it. zprofile is read before zshrc, so by the time the rc below runs, all of it is already set.
+# generator for the `cd`, and switching shells did not fork it. zprofile is read before zshrc, so by the time the rc below runs, all of it is already set.
 #
 # Both heredocs are QUOTED. The rc is full of `$ZSH_CACHE_DIR` and the p10k config is 95 KB of prompt
 # escapes — every `$` and backtick in either must reach the file exactly as written, and neither is
@@ -670,188 +528,20 @@ XDG_CACHE_HOME=/ccc-tmp/xdg/cache VSCODE_AGENT_FOLDER=/ccc-tmp/vscode \\
 VSCODE_CLI_DATA_DIR=/ccc-tmp/vscode"
 CCC_TP_BOOT
 chmod +x "$scratch/tp_boot.sh"
-# Which variables the boot script above has to re-export past sshd — DERIVED from `$featenv` rather than
-# listed anywhere, since that string is the one authority on what this Spawn's profiles actually set.
-# Empty for every Spawn that asked for no profiled Feature, which makes the loop a no-op rather than a
-# special case. Splitting on commas is exactly as safe as the `--env` list below, which already does.
-featnames=$(printf %s "$featenv" | tr ',' '\\n' | sed -n 's/=.*//p' | tr '\\n' ' ')
-featnames=${featnames% }
 apptainer exec --nv --contain --pid --pwd "$proj" \\
   $overlay --no-mount /etc/passwd,/etc/group \\
-  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$envbind$licbind$featbind$migbind" \\
-  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv,CCC_FEATURE_VARS=$featnames$featenv" \\
+  --bind "$proj,$scratch/tmp:/ccc-tmp,$scratch/tp_boot.sh:/ccc_tp_boot.sh$licbind$migbind" \\
+  --env "LC_ALL=C.UTF-8,LANG=C.UTF-8,CCC_PROJ=$proj,TMPDIR=/ccc-tmp,PIP_CACHE_DIR=/ccc-tmp/pip$migenv" \\
   "$sif" /ccc_tp_boot.sh > "$out" 2> "$err\""""
 
 
-def _stub_files_sh(files: list[environments.StubFile]) -> str:
-    """The shell that puts each placeholder on the Arm's own disk, before the build reads it.
-
-    base64 in a quoted heredoc, so arbitrary zip bytes survive a job script that is otherwise text — and
-    so the whole of a stub travels by the route the declaration already travels, rather than needing a
-    transfer of its own. Each is ~1KB.
-
-    Under `$scratch`, never `$proj`: see `environments.STUB_ROOT`.
-    """
-    root = f"$scratch/{environments.STUB_ROOT}"
-    out = []
-    for f in files:
-        where = posixpath.dirname(f.rel)
-        out.append(f'mkdir -p "{root}/{where}"' if where else f'mkdir -p "{root}"')
-        out.append(f"base64 -d > \"{root}/{f.rel}\" <<'CCC_STUB'")
-        out.append(base64.encodebytes(f.data).decode().rstrip("\n"))
-        out.append("CCC_STUB")
-    return "\n".join(out) + "\n" if out else ""
-
-
-def _render_env_build(declared: environments.Manifest | None, project: Path | None,
-                      feature_names: list[str], stub_files: list[environments.StubFile],
-                      stub_binds: list[environments.StubBind],
-                      stub_log: list[str],
-                      packages: list[str] | None = None) -> str:
-    """Fill ENV_BUILD for this Spawn, or return "" when it has nothing to build at all.
-
-    Everything decided here is decided ONCE, on the Head, at submit: which commands build this manifest
-    (`environments.render_build`), which Feature libraries it needs, which stubs stand in for a Feature's
-    packages. The Arm receives shell and runs it. That split is what keeps "what does this manifest mean"
-    in one tested place while the bytes are fetched where they are cheap.
-
-    The two halves are INDEPENDENT. A Spawn's own **Environment** exists only if it declared a manifest;
-    an **Arm Feature**'s system libraries are CCC's own and are owed to anything that asked for that
-    Feature — including a **Tide Pool**, which may decline to declare and still wants the Feature it
-    asked for to actually load. So either half alone is enough to render this block.
-
-    Tokens shared with the wider script (%%ENV_MOUNT%%, %%ENV_INTERPRETER%%, %%FEATLIB_MOUNT%%) are left
-    for `_render`'s own pass, which runs after this text is spliced in.
-    """
-    specs = features_mod.lib_specs(feature_names)
-    packages = packages or []
-    if declared is None and not specs and not packages:
-        return ""
-    cmds: list[str] = []
-    # The **Substrate** goes FIRST, before anything else this block builds, and that ordering is the
-    # whole reason it is declared rather than installed by the User once their Spawn is already
-    # running: a wheel that has to compile needs its headers present while `uv sync` runs, not after.
-    #
-    # One `apt-get install` for the lot, not one per name — apt resolves the set together, and a
-    # package that pulls another in is then fetched once instead of racing its own dependency. The
-    # shim in /usr/local/bin (cuttle.templates.APT_SHIM) is what makes this an ordinary command
-    # inside a Pod; nothing here knows about namespaces, and it fetches the index on first use.
-    #
-    # `ccc_build_or_die` on the same terms as the Environment: a name the archive does not carry is
-    # a failed Spawn with apt's own "E: Unable to locate package" in `err`, not a refusal. No archive
-    # can be consulted at submit — the answer differs per Arm and per day (ccc_head_api.substrate).
-    if packages:
-        cmds.append(f"ccc_building={shlex.quote('the substrate: ' + ', '.join(packages))}")
-        argv = ["apt-get", "install", "-y", "--no-install-recommends", *packages]
-        cmds.append(f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}")
-    if declared is not None:
-        cmds.append(f"ccc_building={shlex.quote(f'the environment declared in {declared.path}')}")
-        cmds += [f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}"
-                 for argv in environments.render_build(declared, project)]
-    # AFTER the Environment: this prefix is CCC's, not the submitter's, so a Feature's libraries must not
-    # be what a submitter waits through before learning their own declaration was broken.
-    for feat, argv in zip(specs, environments.render_featlib_build(specs)):
-        what = features_mod.lib_prefix_label(feat)
-        cmds.append(f"ccc_building={shlex.quote(what)}")
-        cmds.append(f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}")
-    if specs:
-        # The whole of this prefix's lib/ goes on LD_LIBRARY_PATH (ccc_head_api.features), so every
-        # library conda happened to drag in SHADOWS the image's copy — for every process in the Pod, not
-        # just the Feature's. ncurses is the one that shouts: nothing in any profile's `libs` asks for it
-        # (it arrives under mesalib, via llvm), and the image's own `tput` is built against Ubuntu's
-        # libtinfo, so an interactive shell opened on
-        #     tput: symbol lookup error: undefined symbol: _nc_safe_fopen
-        # five times over — once per `tput` in oh-my-zsh's you-should-use plugin.
-        #
-        # Safe to delete precisely BECAUSE the image ships a libtinfo.so.6 of its own: whatever in here
-        # linked it resolves to Ubuntu's instead, which is the copy every other binary in the Pod was
-        # already using. Deleting a library the image does NOT supply would not be safe, and this is not
-        # a general prune of duplicates — libstdc++ especially must stay, since conda's is routinely
-        # newer than the image's and the Feature's own objects are built against it.
-        #
-        # **The Arm's path, not the Pod's.** These lines run in the job script, on the Arm — only what
-        # goes through `ccc_build` is inside the Pod, where %%FEATLIB_MOUNT%% is a mount that exists.
-        # Written against the mount, this deleted nothing at all on every Spawn for as long as it stood:
-        # `rm -f` on a glob matching nothing is silent and exits 0, so the prefix kept shadowing and the
-        # error it was written to stop went on printing with the fix installed and apparently applied.
-        #
-        # Still WRITABLE here; the payload gets the same directory read-only (the `featbind` below).
-        cmds.append('rm -f "$scratch"/featlibs/*/lib/libtinfo.so* '
-                    '"$scratch"/featlibs/*/lib/libncurses*.so*')
-    post = []
-    if declared is not None:
-        post.append('py="%%ENV_INTERPRETER%%"; envbind=",$scratch/env:%%ENV_MOUNT%%"; '
-                    'envmount="%%ENV_MOUNT%%"')
-    if specs:
-        post.append('featbind=",$scratch/featlibs:%%FEATLIB_MOUNT%%:ro"')
-    body = ENV_BUILD
-    subs = {
-        "%%FEATLIB_MKDIR%%": ' "$scratch/featlibs"' if specs else "",
-        # Bound WRITABLE for the build that fills it, read-only for the payload that reads it — the
-        # same directory, two different jobs to do.
-        "%%FEATLIB_BUILD_BIND%%": ',$scratch/featlibs:%%FEATLIB_MOUNT%%' if specs else "",
-        # What the payload picks up. Only a Spawn that DECLARED a manifest gets an interpreter and an
-        # env mount — which is what keeps `$py` empty for a Tide Pool that asked for a Feature and
-        # nothing else, exactly as it was before any of this was built here.
-        "%%POST%%": "\n".join(post),
-        # Written by the Arm into its own scratch, then mounted where the declaration points. The
-        # DESTINATION is project-relative (environments.substitute_supplied) because only this side
-        # knows where the project landed, and `$proj/../x` is `$scratch/x` on both branches — the Head's
-        # co-located Arm copies into node-local scratch, a remote one rsyncs into /tmp, and `proj` is
-        # `$scratch/proj` either way. Almost always empty — see that function.
-        "%%STUB_FILES%%": _stub_files_sh(stub_files),
-        "%%STUB_BINDS%%": "".join(
-            f",$scratch/{environments.STUB_ROOT}/{b.src}:$proj/{b.dest}" for b in stub_binds),
-        "%%STUB_LOG%%": "".join(f'echo {shlex.quote(line)} >> "$err"\n' for line in stub_log),
-        "%%BUILD_CMDS%%": "\n".join(cmds),
-        "%%ENV_CACHE_ROOT%%": str(environments.CACHE_DIR),
-        "%%ENV_CACHE_MAX%%": str(environments.CACHE_MAX_GB * 1024**3),
-        "%%ENV_CACHE_MAX_GB%%": str(environments.CACHE_MAX_GB),
-        "%%POD_CACHE%%": environments.POD_CACHE,
-        "%%POD_TMP%%": environments.POD_TMP,
-        "%%TOOLS_DIR%%": str(environments.TOOLS_DIR),
-        "%%BUILD_POD_ENV%%": environments.BUILD_POD_ENV,
-    }
-    for k, v in subs.items():
-        body = body.replace(k, v)
-    return body
-
-
-def _render(sink_tag: str, gpu: int, script: str, args: list[str],
-            node: str | None, minutes: int, constraint: str,
-            token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
-            tidepool_pubkey: str | None = None, wants_licence: bool = False,
-            features: list[str] | None = None,
-            declared: environments.Manifest | None = None,
-            stub_files: list[environments.StubFile] | None = None,
-            stub_binds: list[environments.StubBind] | None = None,
-            stub_log: list[str] | None = None,
-            packages: list[str] | None = None) -> str:
-    payload = PAYLOAD_TIDEPOOL if tidepool_port is not None else PAYLOAD_SCRIPT
+def _render(sink_tag: str, gpu: int, minutes: int, constraint: str, token: str, secret: str,
+            tidepool_port: int, tidepool_pubkey: str, exclude: str = "",
+            wants_licence: bool = False) -> str:
     # %%PAYLOAD%% has to be substituted in FIRST — it is the only token whose replacement text can
-    # itself contain other tokens (%%SCRIPT%%/%%ARGS%% or %%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%,
-    # depending which payload this is), and every token below is a plain single-pass `.replace()`.
-    # Doing it here rather than relying on dict order keeps that dependency from being invisible.
-    body = JOB_SCRIPT.replace("%%PAYLOAD%%", payload)
-    # The build block is substituted here for the same reason as %%PAYLOAD%% above and not the one below:
-    # its replacement text DOES contain tokens (%%ENV_MOUNT%%, %%ENV_INTERPRETER%%, %%FEATLIB_MOUNT%%),
-    # deliberately, so that the mount point is written down once for the whole script rather than twice.
-    #
-    # NOTE the token is NEVER named in JOB_SCRIPT's own prose. `.replace()` does not know a comment from
-    # code, so a mention inside the template would take a full copy of this block too — the copy's first
-    # line commented out by the `# ` in front of it and the rest live. That shipped once: the `mkdir` that
-    # creates $scratch/env was the commented line, and every declared Spawn died on a bind whose source
-    # did not exist. `test_the_build_block_appears_exactly_once` is the guard.
-    body = body.replace("%%ENV_BUILD%%",
-                        _render_env_build(declared, None, features or [],
-                                          stub_files or [], stub_binds or [], stub_log or [],
-                                          packages or []))
-    # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
-    # tokens, deliberately. A Feature profile (ccc_head_api.features) is bash the Head splices in
-    # verbatim, so it reads as bash rather than as a second template — everything it needs from this
-    # script, including the Environment's mount point, it takes from a shell variable set above.
-    body = body.replace("%%FEATURE_SETUP%%",
-                        features_mod.setup_snippet(features or []))
+    # itself contain other tokens (%%TIDEPOOL_PORT%%/%%TIDEPOOL_PUBKEY%%), and every token below is a
+    # plain single-pass `.replace()`.
+    body = JOB_SCRIPT.replace("%%PAYLOAD%%", PAYLOAD_TIDEPOOL)
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -859,13 +549,7 @@ def _render(sink_tag: str, gpu: int, script: str, args: list[str],
         "%%MINUTES%%": str(minutes),
         # The OR-expansion of --vram over the fleet's real cards (slurm.vram_constraint).
         "%%CONSTRAINT%%": f"#SBATCH --constraint={constraint}" if constraint else "",
-        # Pin the Spawn to one Arm, or leave scheduling to Slurm. ADMIN-ONLY (checked in main.submit):
-        # Users declare what they NEED, and Slurm picks the fastest free card that qualifies. A blank
-        # line when unset, so the #SBATCH block just ends early.
-        "%%NODELIST%%": f"#SBATCH --nodelist={node}" if node else "",
-        # Steer an unpinned Spawn away from every currently-retracted Arm (see retraction.py). Never set
-        # alongside %%NODELIST%% — submit_checked refuses a pinned Spawn aimed at a retracted Arm
-        # outright rather than silently excluding the one node the operator explicitly named.
+        # Steer the Spawn away from every currently-retracted Arm (see retraction.py).
         "%%EXCLUDE%%": f"#SBATCH --exclude={exclude}" if exclude else "",
         # What makes the sbatch sink's path unique per SUBMISSION rather than per job id — see the
         # `sink=` line in JOB_SCRIPT for why that distinction is the difference between a Spawn running
@@ -875,22 +559,6 @@ def _render(sink_tag: str, gpu: int, script: str, args: list[str],
         # The Pod's writable system layer — see POD_OVERLAY_MB.
         "%%POD_OVERLAY_MB%%": str(POD_OVERLAY_MB),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
-        # The Spawn's **Environment** (environments.py). The mount point is a constant — one path, on
-        # every machine — but the interpreter is NOT: a conda prefix keeps its python at `ENV_MOUNT/bin`,
-        # a uv env one level down in its venv, and only the manifest says which shape it is.
-        #
-        # Both fall back to a path UNDER the mount when nothing was declared, never to something the
-        # image supplies — there is nothing there to supply one (BASE_DEF_TMPL). That leaves the unused
-        # branch inert: the mount does not exist in a Pod that declared nothing, so the Tide Pool's
-        # `[ -x ... ]` test is simply false, where a real directory (/usr/bin) would pass it and put the
-        # image's own bin first on PATH for no reason.
-        "%%ENV_MOUNT%%": environments.ENV_MOUNT,
-        "%%ENV_INTERPRETER%%": (declared.interpreter if declared
-                                else f"{environments.ENV_MOUNT}/bin/python"),
-        "%%ENV_BINDIR%%": declared.bin_dir if declared else f"{environments.ENV_MOUNT}/bin",
-        # Where the Arm **Feature** library prefix is mounted, named by %%ENV_BUILD%% (which both builds
-        # and binds it) and by each profile's own setup block.
-        "%%FEATLIB_MOUNT%%": features_mod.FEATLIB_MOUNT,
         "%%CCC_SIF%%": str(CCC_SIF),
         "%%SPAWNS%%": str(SPAWNS_DIR),
         "%%HEAD_IP%%": MESH_IP,
@@ -899,12 +567,8 @@ def _render(sink_tag: str, gpu: int, script: str, args: list[str],
         # exist before sbatch can return one.
         "%%TOKEN%%": token,
         "%%RSYNC_SECRET%%": secret,
-        "%%SCRIPT%%": script,
-        "%%ARGS%%": " ".join(args),
-        # Only ever non-empty when `payload` is PAYLOAD_TIDEPOOL, which is the only place either token
-        # appears — an ordinary Spawn's rendered script never even contains the literal string.
-        "%%TIDEPOOL_PORT%%": str(tidepool_port) if tidepool_port is not None else "",
-        "%%TIDEPOOL_PUBKEY%%": tidepool_pubkey or "",
+        "%%TIDEPOOL_PORT%%": str(tidepool_port),
+        "%%TIDEPOOL_PUBKEY%%": tidepool_pubkey,
         # Whether this Spawn asked for any Arm **Feature**, and so may see the Arm's **Licence**. A
         # bare flag, not the path: the path is Arm-local (every Arm's owner chose their own) and the
         # Arm supplies it from /etc/ccc/features.env at run time, exactly as it does a Feature's path.
@@ -912,37 +576,24 @@ def _render(sink_tag: str, gpu: int, script: str, args: list[str],
     }
     for k, v in subs.items():
         body = body.replace(k, v)
-    # The shell config, spliced AFTER the loop above rather than inside it — the third substitution
-    # order in this function, and the opposite case from %%PAYLOAD%% and %%ENV_BUILD%%. Those go FIRST
-    # because their text contains tokens that still have to be resolved. These go LAST because their text
-    # must never be SCANNED for one: the p10k config is 95 KB of prompt escapes maintained by
-    # `p10k configure` rather than by anyone reading this file, and the rc beside it is edited whenever
-    # somebody changes the prompt. Neither has any business being able to introduce a `%%…%%` that the
-    # loop would then rewrite, and a substitution that only misfires once somebody adds a segment is not
-    # a hazard worth leaving in place to save two lines.
-    #
-    # The stub rc is spliced here for the same reason, being a file a User is invited to edit. The two
-    # paths beside it need no such care and are only kept here to sit with what they configure.
-    #
-    # All of them no-op for every Spawn that is not a Tide Pool: the tokens exist only inside
-    # PAYLOAD_TIDEPOOL, so an ordinary Spawn's rendered script never contains any of these strings.
-    if tidepool_port is not None:
-        body = body.replace("%%ZSHRC%%", zshrc.render())
-        body = body.replace("%%P10K_CONFIG%%", zshrc.P10K_CONFIG)
-        body = body.replace("%%USER_ZSHRC_STUB%%", zshrc.USER_ZSHRC_STUB.rstrip("\n"))
-        body = body.replace("%%USER_ZSHRC%%", zshrc.POD_USER_ZSHRC)
-        body = body.replace("%%ZDOTDIR%%", zshrc.POD_ZDOTDIR)
+    # The shell config, spliced AFTER the loop above rather than inside it, because its text must never
+    # be SCANNED for a token: the p10k config is 95 KB of prompt escapes maintained by `p10k configure`
+    # rather than by anyone reading this file, and the rc beside it is edited whenever somebody changes
+    # the prompt. Neither has any business being able to introduce a `%%…%%` that the loop would then
+    # rewrite. The stub rc is spliced here for the same reason, being a file a User is invited to edit.
+    body = body.replace("%%ZSHRC%%", zshrc.render())
+    body = body.replace("%%P10K_CONFIG%%", zshrc.P10K_CONFIG)
+    body = body.replace("%%USER_ZSHRC_STUB%%", zshrc.USER_ZSHRC_STUB.rstrip("\n"))
+    body = body.replace("%%USER_ZSHRC%%", zshrc.POD_USER_ZSHRC)
+    body = body.replace("%%ZDOTDIR%%", zshrc.POD_ZDOTDIR)
     return body
 
 
 def _said(e: subprocess.CalledProcessError) -> str:
     """What a failed command actually printed, flattened to ONE line.
 
-    One line because of where this ends up. A pinned submit runs the admin tool under sudo in a
-    subprocess (cuttle.spawns._submit_pinned) and reports back the LAST line of its stderr and nothing
-    else — so a three-line sbatch error crossing that boundary arrives as its third line, which is
-    rarely the one naming the fault. Joined rather than truncated: sbatch says "error: Batch job
-    submission failed: ..." across two lines about as often as one.
+    Joined rather than truncated: sbatch says "error: Batch job submission failed: ..." across two
+    lines about as often as one, and the caller reports this as one sentence.
 
     stdout is the fallback because a command that failed while writing its diagnosis to the wrong
     stream is still telling us why, and an empty message here would send the operator back to a bare
@@ -955,13 +606,11 @@ def _said(e: subprocess.CalledProcessError) -> str:
     return f"it printed nothing at all, and exited {e.returncode}"
 
 
-def submit(user_id: int, script: str | None, gpu: int, args: list[str],
-           minutes: int, constraint: str,
-           node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
-           tidepool: bool = False,
+def submit(user_id: int, gpu: int, minutes: int, constraint: str, vram_gb: int = 0,
+           hold: float | None = None, exclude: str = "",
            features: list[str] | None = None) -> int:
-    """Render + sbatch a Spawn **as the submitter's Guise**, and record the Attribution row + the Karma
-    Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
+    """Render + sbatch a Tide Pool **as the submitter's Guise**, and record the Attribution row + the
+    Karma Escrow. Returns the Slurm job id (== the Spawn id).
 
     `hold` is the Escrow quoted by the caller, or **None** for a Spawn nobody is charged for (an
     Admin's — the Admin is outside the economy). It is written in the SAME transaction as the
@@ -980,22 +629,18 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     with db.connect() as conn:
         guise = guises.name(db.allocate_guise(conn, user_id))
 
-    # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
-    # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
-    # Spawn it belongs to are decided in one place. See ccc_head_api.tidepool's module docstring for why
-    # the port has to be reserved ahead of a job_id that does not exist yet.
-    tp_port = tp_pubkey = tp_privkey = None
-    if tidepool:
-        from . import tidepool as tidepool_mod
-        with db.connect() as conn:
-            tp_port, tp_pubkey, tp_privkey = tidepool_mod.grant(conn)
+    # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — so a port
+    # claim and the Spawn it belongs to are decided in one place. See ccc_head_api.tidepool's module
+    # docstring for why the port has to be reserved ahead of a job_id that does not exist yet.
+    from . import tidepool as tidepool_mod
+    with db.connect() as conn:
+        tp_port, tp_pubkey, tp_privkey = tidepool_mod.grant(conn)
 
     # Minted before the render that bakes it in, and before sbatch — a module named for the id could
     # not exist in time. See ccc_head_api.siphons.
     token, secret = siphons.open()
-    body = _render(uuid4().hex, gpu, script or "", args, node, minutes, constraint,
-                   token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
-                   wants_licence=bool(features), features=features)
+    body = _render(uuid4().hex, gpu, minutes, constraint, token, secret, tp_port, tp_pubkey,
+                   exclude=exclude, wants_licence=bool(features))
     # The script goes in on STDIN, not as a path: a temp file would need to be readable by the Guise
     # sbatch runs as, and feeding it here is strictly better anyway — no delete-after-return dance needed.
     try:
@@ -1004,13 +649,9 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         # top. It also makes explicit what retraction already assumed: a Spawn whose
         # node failed is a failed Spawn, not one that quietly restarts somewhere else hours later,
         # having been re-billed for and re-queued behind everyone who was waiting.
-        #
-        # No `--hold` any more, and nothing to release. The hold existed to keep Slurm from placing a
-        # Spawn before the Head had finished building its Environment; the Arm builds it now, inside its
-        # own allocation, so there is nothing for the Head to wait on and every Spawn is runnable the
-        # moment sbatch returns.
+
         argv = ["sbatch", "--parsable", "--no-requeue"]
-        # cwd="/" for the same reason the build sets it: Slurm takes the job's WorkDir from the
+        # cwd="/": Slurm takes the job's WorkDir from the
         # SUBMITTING process's cwd, and a Head-local submit inherits whatever directory the operator
         # ran `cuttle` from — which the Guise that will run the job cannot necessarily enter. "/" is
         # traversable by everyone and the job script uses absolute paths throughout.
@@ -1040,10 +681,9 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         # to close.
         siphons.bind(token, job_id)
         with db.connect() as conn:
-            db.record_spawn(conn, job_id, user_id, script or "", minutes=minutes, gpus=gpu,
-                            vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool)
-            if tidepool:
-                db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
+            db.record_spawn(conn, job_id, user_id, "", minutes=minutes, gpus=gpu,
+                            vram_gb=vram_gb, hold=hold, tidepool=True)
+            db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
     except Exception:
         # Best-effort both: the raise is what the caller must see, and a cancel that fails leaves the
         # same orphan we already had. A SIGKILL of this process still slips through — closing THAT
@@ -1058,16 +698,10 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     return job_id
 
 
-def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
-                   minutes: int, vram_gb: int,
-                   node: str | None = None,
-                   features: list[str] | None = None, tidepool: bool = False) -> int:
-    """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
-
-    Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
-    priced and recorded **exactly** like any other. The alternative — letting the Head-local path shell
-    out to `sbatch` itself — would produce a Spawn with no Escrow and no Attribution row: one that
-    consumes a donated card while nobody pays for it, and that no ledger can explain.
+def submit_checked(user_id: int, is_admin: bool, gpu: int, minutes: int, vram_gb: int,
+                   features: list[str] | None = None) -> int:
+    """Validate placement, quote the Escrow, and submit a Tide Pool — everything `/submit` does past
+    auth.
 
     `features` is optional and empty by default — most Spawns need none.
     When given, every name must be carried by at least one currently-admitted Arm or the Spawn is
@@ -1079,11 +713,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     turns into the per-card need; the two are checked as one question, so a Spawn nothing can host is
     refused here rather than left to pend forever.
 
-    `tidepool` rides straight through to `submit()` — placement, pricing and Attribution are
-    unaffected, because a Tide Pool holds a Device exactly like any other Spawn.
-
-    Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
-    already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
+    Raises ValueError for an unsatisfiable feature request, or a User already at the concurrent-Spawn
+    cap; the caller translates (HTTP 422).
     """
     # Imported here rather than at module scope: `karma` and `slurm` both reach for this module's
     # siblings, and a top-level import turns that into a cycle.
@@ -1101,18 +732,10 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
             raise ValueError(f"you already have {active} queued/running Spawns (max "
                              f"{MAX_CONCURRENT_SPAWNS}) — wait for one to finish or cancel one")
 
+
     arms = slurm.arms()
-    if node and node not in [a["name"] for a in arms]:
-        raise ValueError(f"unknown Arm '{node}' — known Arms: "
-                         f"{', '.join(a['name'] for a in arms) or '(none)'}")
     with db.connect() as conn:
-        retracted = db.retracted_nodes(conn)
-    if node and node in retracted:
-        raise ValueError(f"Arm '{node}' is retracted — its owner has paused it, so it takes no new "
-                         f"Spawns until they return it")
-    # Unpinned only: a pinned Spawn already named the one node it may run on above, and excluding a
-    # retracted node it wasn't headed for anyway would be a no-op.
-    exclude = ",".join(sorted(retracted)) if not node else ""
+        exclude = ",".join(sorted(db.retracted_nodes(conn)))
     if gpu < 1:
         raise ValueError("a Spawn holds at least one GPU — --gpus must be 1 or more")
     constraint = slurm.vram_constraint(vram_gb, gpu)
@@ -1124,22 +747,21 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
             raise ValueError(f"no Arm has every requested feature ({', '.join(wanted)}) — Arm "
                              f"Features currently in the cluster: {known}")
         # A **Feature** carrying a runtime profile attaches its software to a Spawn's **Environment**
-        # (features.PREAMBLE), and a Spawn no longer builds one — so it could only fail on the Arm
-        # after holding a Device to find out. Refused here instead.
+        # (features.PREAMBLE), and a Tide Pool builds none — so it could only fail on the Arm after
+        # holding a Device to find out. Refused here instead.
         needs_env = features_mod.profiled(wanted)
         if needs_env:
-            raise ValueError(f"{', '.join(needs_env)} needs an environment to attach to, and a Spawn "
+            raise ValueError(f"{', '.join(needs_env)} needs an environment to attach to, and a Tide Pool "
                              f"has none to offer")
         # AND onto the vram OR-expansion — parenthesized so `(vram24|vram48)&vsim` reads unambiguously
         # rather than relying on Slurm's own operator precedence.
         constraint = f"({constraint})&{slurm.feature_constraint(wanted)}" if constraint \
             else slurm.feature_constraint(wanted)
-    need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
+    need = {"node": None, "vram_gb": vram_gb, "gpus": gpu}
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
-    return submit(user_id, script, gpu, args,
-                  minutes, constraint, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool, features=features)
+    return submit(user_id, gpu, minutes, constraint, vram_gb=vram_gb, hold=hold, exclude=exclude,
+                  features=features)
 
 
 # --- reads ---------------------------------------------------------------------
@@ -1177,12 +799,7 @@ def _make_spawn_dir(job_id: int) -> Path:
 
 
 def active_state(job_id: int) -> str | None:
-    """Slurm state if the job is still known to squeue, else None. Slurm's answer, unedited.
-
-    It used to need an override: a Spawn `--hold`ed while the Head built its Environment reported as
-    PENDING, and only the Head knew better. The Arm builds inside its own allocation now, so a Spawn
-    installing its dependencies is RUNNING and squeue says so.
-    """
+    """Slurm state if the job is still known to squeue, else None. Slurm's answer, unedited."""
     r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%T"],
                        capture_output=True, text=True)
     return r.stdout.strip() or None

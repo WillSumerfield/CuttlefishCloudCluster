@@ -132,9 +132,9 @@ class TestTidepoolCrud:
         assert row["tidepool"] == 1
 
 
-# --- submit()/submit_checked() relax script for a Tide Pool -------
+# --- submit() renders and records a Tide Pool ----------------------------
 
-class TestSubmitSkipsScriptForTidepool:
+class TestSubmitRecordsATidepool:
     @pytest.fixture(autouse=True)
     def _rig(self, monkeypatch, tmp_path):
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
@@ -152,33 +152,23 @@ class TestSubmitSkipsScriptForTidepool:
             lambda *a, **kw: type("R", (), {"stdout": f"{next(counter)}\n", "stderr": "",
                                             "returncode": 0})())
 
-    def test_no_script_does_not_raise(self, tmp_path):
-        job_id = head_spawns.submit(
-            user_id=1, script=None, gpu=1, args=[],
-            minutes=30, constraint="vram24",
-            tidepool=True)
+    def test_it_submits(self, tmp_path):
+        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=30, constraint="vram24")
         assert job_id >= 5000
 
     def test_a_tidepools_row_is_written(self, tmp_path):
-        job_id = head_spawns.submit(
-            user_id=1, script=None, gpu=1, args=[],
-            minutes=30, constraint="vram24",
-            tidepool=True)
+        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=30, constraint="vram24")
         with db.connect() as conn:
             tp = db.get_tidepool(conn, job_id)
         assert tp is not None
         assert head_tidepool.PORT_BASE <= tp["port"] < head_tidepool.PORT_BASE + head_tidepool.PORT_RANGE
 
     def test_the_rendered_script_carries_the_sshd_payload(self, tmp_path):
-        job_id = head_spawns.submit(
-            user_id=1, script=None, gpu=1, args=[],
-            minutes=30, constraint="vram24",
-            tidepool=True)
+        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=30, constraint="vram24")
         with db.connect() as conn:
             tp = db.get_tidepool(conn, job_id)
-        body = head_spawns._render(
-            "deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s3cr3t",
-            tidepool_port=tp["port"], tidepool_pubkey=tp["pubkey"])
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s3cr3t",
+                                   tp["port"], tp["pubkey"])
         assert f"sshd -D -e -p {tp['port']}" in body
         assert tp["pubkey"].strip() in body
         assert "%%TIDEPOOL_PORT%%" not in body
@@ -195,8 +185,8 @@ class TestSubmitSkipsScriptForTidepool:
         home of every feature-requesting Pod on the Arm and every Guise is in `ccc-guises`, so an
         honoured authorized_keys there lets one User write their key into another User's Tide Pool.
         """
-        body = head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
+                                   "ssh-ed25519 AAAA x")
         boot = body[body.index("tp_boot.sh"):]
         code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
         assert "AuthorizedKeysFile=/ccc_authorized_keys" in code
@@ -212,8 +202,8 @@ class TestSubmitSkipsScriptForTidepool:
         running and billing Karma the whole time.
 
         Ordering is the test: repaired before `exec sshd`, or the first login is the broken one."""
-        body = head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
+                                   "ssh-ed25519 AAAA x")
         # The backreference is spelled `\\1` in the Python source for a reason: `"\1"` in a non-raw
         # literal is chr(1), which renders a sed expression that silently replaces the whole line.
         assert r"\1:/usr/bin/zsh|" in body
@@ -229,8 +219,8 @@ class TestSubmitSkipsScriptForTidepool:
         whose base.sif predates zsh is meant to fail loudly instead, which is the bargain every
         image-level change in this project already makes (`cuttle teardown --all` + `setup`).
         """
-        body = head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
+                                   "ssh-ed25519 AAAA x")
         boot = body[body.index("tp_boot.sh"):]
         code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
         assert "/bin/bash" not in code          # not as a fallback, not as a second branch
@@ -242,8 +232,8 @@ class TestSubmitSkipsScriptForTidepool:
         overlay refuses with "Device or resource busy" (found on hardware with the tty-group
         workaround). Both repairs must redirect to /tmp and truncate the target instead — a `sed -i`
         creeping into either one fails at runtime, inside the Pod, where nobody is reading stderr."""
-        body = head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
+                                   "ssh-ed25519 AAAA x")
         boot = body[body.index("tp_boot.sh"):]
         # Comments are where the constraint is explained, so they mention `sed -i` on purpose.
         code = "\n".join(l for l in boot.splitlines() if not l.lstrip().startswith("#"))
@@ -251,32 +241,13 @@ class TestSubmitSkipsScriptForTidepool:
         for f in ("/etc/passwd", "/etc/group"):
             assert f"> {f}\n" in code          # truncated in place, never renamed over
 
-    def test_an_ordinary_spawn_is_unaffected(self, tmp_path):
-        """No token leakage the other direction: a normal render runs no Tide Pool machinery.
-
-        Comments are stripped first, the same way `test_neither_repair_uses_sed_i` above strips them:
-        JOB_SCRIPT is shared by both payloads, so a note in it explaining what the OTHER one does with
-        a variable is exactly the kind of comment that should be there. What must not appear is a line
-        that runs."""
-        body = head_spawns._render("deadbeef", 1, "train.py", [], None, 30, "vram24",
-                                   "a3f9", "s3cr3t")
-        code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
-        assert "sshd" not in code
-        assert "PAYLOAD_TIDEPOOL" not in code
-        # `$py`, not a literal `python`: the interpreter is chosen by the script at run time from the
-        # env dir's presence, not baked in here (ccc_head_api.environments). This render was given no
-        # manifest, so the token starts EMPTY — the image supplies no interpreter to fall back to, and
-        # a state only a Tide Pool can reach now anyway.
-        assert '$py train.py' in body
-        assert 'py=""' in body
-
     def test_the_shell_writes_temp_files_to_disk_not_to_the_64mb_ram_tmp(self, tmp_path):
         """`--contain` gives the Pod a /tmp carved from apptainer's session directory — a RAM tmpfs
         capped at 64MB by `sessiondir max size`, and shared with the --writable-tmpfs overlay. A Tide
         Pool is where `pip install` is most used, and any wheel bigger than what is left of that dies
         with an ENOSPC pip reports as "an issue with network connectivity, not pip"."""
-        body = head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
+                                   "ssh-ed25519 AAAA x")
         assert "$scratch/tmp:/ccc-tmp" in body            # the disk-backed bind
         assert 'export TMPDIR=/ccc-tmp' in body           # ...and the login shell told to use it
 
@@ -286,8 +257,8 @@ class TestSubmitSkipsScriptForTidepool:
         its own log. The symlink is the load-bearing half — the two variables name the legacy server
         script's folder and the Rust CLI's data dir respectively, and which one a given client reads
         is not ours to know."""
-        body = head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        body = head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000,
+                                   "ssh-ed25519 AAAA x")
         assert 'ln -sfn /ccc-tmp/vscode "$HOME/.vscode-server"' in body
         assert "VSCODE_AGENT_FOLDER=/ccc-tmp/vscode" in body
         assert "VSCODE_CLI_DATA_DIR=/ccc-tmp/vscode" in body
@@ -332,11 +303,12 @@ class TestSubmitRouteAcceptsTidepool:
         assert r.status_code == 422
         assert "minutes" in r.json()["detail"]
 
-    def test_an_ordinary_submit_still_needs_a_script(self, monkeypatch, tmp_path):
+    def test_a_request_without_tidepool_is_refused(self, monkeypatch, tmp_path):
+        """Batch Spawns are gone: no `tidepool` flag is a refusal, not a script Spawn."""
         c = _client(monkeypatch, tmp_path)
         r = c.post("/api/submit", json={"minutes": 60, "vram": 24})
         assert r.status_code == 422
-        assert "script" in r.json()["detail"]
+        assert "Tide Pool" in r.json()["detail"]
 
 
 # The first uid the allocator hands out. These tests seed `users` with raw SQL, so nobody has a Guise
@@ -625,7 +597,7 @@ class TestReap:
             assert db.get_tidepool(conn, 2) is not None
 
 
-# --- CLI: flag wiring, id-vs-fresh-request resolution -------
+# --- CLI: wiring, id-vs-fresh-request resolution -------
 
 class TestExistingIdResolution:
     def test_a_digit_string_resolves_to_an_id(self):
@@ -635,14 +607,14 @@ class TestExistingIdResolution:
         assert cli_tidepool._existing_id(None) is None
 
     def test_a_non_numeric_string_is_a_fresh_request(self):
-        """`cuttle run --tidepool train.py` — a stray script path, not a Spawn id. run() warns and
+        """`cuttle run train.py` — a stray argument, not a Spawn id. run() warns and
         ignores it rather than treating it as one."""
         assert cli_tidepool._existing_id("train.py") is None
 
 
-class TestCliTidepoolFlagWiring:
+class TestCliRunWiring:
     def test_tidepool_needs_time_and_vram_like_any_spawn(self, signed_in):
-        r = signed_in("run", "--tidepool")
+        r = signed_in("run")
         assert r.exit_code != 0
         assert "--time" in r.output or "--vram" in r.output
 
@@ -650,7 +622,7 @@ class TestCliTidepoolFlagWiring:
         """A real submission happens (tidepool=1 in the ledger), even though this fake
         cluster can never actually place it (no real Slurm, so attach then fails loudly — that failure
         is expected and not what this test is about)."""
-        signed_in("run", "--tidepool", "--time", "10", "--vram", "4")
+        signed_in("run", "--time", "10", "--vram", "4")
         with db.connect() as conn:
             row = conn.execute("SELECT tidepool FROM spawns").fetchone()
         assert row is not None
@@ -746,8 +718,7 @@ class TestTheShellTheUserGets:
     at boot. The tree it needs is baked into base.sif; only these two files come from here."""
 
     def render(self):
-        return head_spawns._render("deadbeef", 1, "", [], None, 30, "vram24", "a3f9", "s",
-                                   tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
+        return head_spawns._render("deadbeef", 1, 30, "vram24", "a3f9", "s", 41000, "ssh-ed25519 AAAA x")
 
     def test_the_profile_is_bridged_into_zsh_or_it_is_silently_lost(self):
         """The single line without which this whole change is a regression, and a silent one.
@@ -847,14 +818,6 @@ class TestTheShellTheUserGets:
         not an account."""
         assert "'tidepool@%m'" in zshrc.render()
         assert "'tidepool@%m'" in self.render()
-
-    def test_an_ordinary_spawn_carries_no_shell_config_at_all(self):
-        """PAYLOAD_SCRIPT execs the Environment's python directly and never starts a shell, so 95 KB of
-        prompt configuration has no business in its job script."""
-        body = head_spawns._render("deadbeef", 1, "train.py", [], None, 30, "vram24",
-                                   "a3f9", "s3cr3t")
-        assert "POWERLEVEL9K" not in body
-        assert "/etc/zsh/zshrc" not in body
 
     def test_no_substitution_token_survives_into_the_rendered_script(self):
         """The rc and the p10k config are spliced in AFTER the token loop, precisely so their contents

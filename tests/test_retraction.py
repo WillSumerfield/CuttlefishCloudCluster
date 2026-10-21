@@ -75,15 +75,15 @@ class TestRetract:
 
 
 class TestExclude:
-    """The submission side: an unpinned Spawn is steered off a retracted node with a plain
+    """The submission side: a Spawn is steered off a retracted node with a plain
     --exclude=, never a real Slurm DRAIN."""
 
     def test_render_adds_an_exclude_line(self):
-        body = spawns._render("deadbeef", 1, "train.py", [], None, 60, "",
-                              "a3f9", "s3cr3t", exclude="gpu-box,gpu-box2")
+        body = spawns._render("deadbeef", 1, 60, "", "a3f9", "s3cr3t", 31000, "ssh-ed25519 AAAA",
+                              exclude="gpu-box,gpu-box2")
         assert "#SBATCH --exclude=gpu-box,gpu-box2" in body
 
     def test_no_exclude_line_when_nothing_is_retracted(self):
-        body = spawns._render("deadbeef", 1, "train.py", [], None, 60, "",
-                              "a3f9", "s3cr3t", exclude="")
+        body = spawns._render("deadbeef", 1, 60, "", "a3f9", "s3cr3t", 31000, "ssh-ed25519 AAAA",
+                              exclude="")
         assert "--exclude" not in body

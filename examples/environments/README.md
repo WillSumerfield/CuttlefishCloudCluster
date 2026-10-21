@@ -12,35 +12,18 @@ torch: <version>        # the base image's, and no Environment inherits it
 
 ## Running one
 
-Each directory is its own project root — the manifest you name is resolved inside it. So `cd` in first:
+Nothing runs them on the 2.0 branch. They were submitted as batch Spawns with
+`--manifest <file>`, and batch Spawns are gone; they come back as a Dive's dependency file. The
+table below is what each one is expected to print once something builds it again.
 
-```sh
-cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8 --manifest requirements.txt
-```
-
-Each directory is named for the manifest it declares — `uv-project/` is `--manifest pyproject.toml`,
-`conda/` is `--manifest environment.yml`, and so on. `default/` has none, which is the point of it.
-
-`cuttle run` prints the Environment it will build before it returns. Once the Spawn ends, the answer
-is in its log:
-
-```sh
-cuttle logs <id>
-```
-
-Add `-f` to watch it happen instead of waiting — the build runs first, on the machine the Spawn was
-placed on, and its output arrives on the `[err]` stream ahead of anything the script prints.
-
-The Spawn is `running` throughout (`cuttle queue`): the build happens inside the allocation, so the
-card is held — and billed — while packages download. A cold build of a large declaration is minutes;
-after that the machine has the packages cached and a repeat run is fast.
+Each directory is named for the manifest it declares — `uv-project/` is `pyproject.toml`, `conda/` is
+`environment.yml`, and so on. `default/` has none, which is the point of it.
 
 ## What each one should give you
 
-| directory | echo at submit | interpreter | python | pyfiglet | torch |
+| directory | manifest | interpreter | python | pyfiglet | torch |
 |---|---|---|---|---|---|
-| `default/` | *refused* — nothing declared | — | — | — | — |
+| `default/` | *none* | — | — | — | — |
 | `uv-requirements/` | `requirements.txt` (uv) | `/opt/ccc/env/venv/bin/python` | 3.12.x | 1.0.4 | **MISSING** |
 | `uv-project/` | `pyproject.toml` (uv) | `/opt/ccc/env/venv/bin/python` | **3.11.14** | 1.0.4 | **MISSING** |
 | `uv-lock/` | `uv.lock` (uv) | `/opt/ccc/env/venv/bin/python` | 3.11.x | 1.0.4 | **MISSING** |
@@ -66,42 +49,10 @@ while a uv env keeps its venv one level down and the interpreter it downloaded b
 same `pyfiglet==1.0.4`, which PyPI and conda-forge both ship, so the rows differ only in the path
 taken and never in what was asked for.
 
-`default/` has no dependency file at all, and no `--manifest` you could pass would name one. It is
-kept as the worked example of the refusal: every Spawn declares an Environment, so a project with
-nothing to declare cannot be submitted.
+`default/` has no dependency file at all, so nothing is built for it. `fails/` names a package that
+does not exist, so its build fails.
 
-### The failure case
-
-```sh
-cd examples/environments/fails
-cuttle run check_env.py --time 10 --vram 8 --manifest requirements.txt   # id; does NOT error
-cuttle logs <id>                                       # the resolver's complaint
-cuttle status <id>                                     # done, exit 1
-```
-
-The point of this one is that a broken manifest is a **failed Spawn**, not a rejected submission:
-it appears in your history explaining itself, and settles for nothing because it never held a card.
-
-## Two more things to try, with no new directories
-
-```sh
-cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8
-```
-
-Refused before anything runs, naming the flag — there is no default and nothing is detected,
-even with a `requirements.txt` sitting right there. At a terminal `cuttle run` asks you for it
-instead.
-
-```sh
-cuttle run check_env.py --time 10 --vram 8 --manifest nope.txt
-```
-
-Refused at submit, with a 422 and no Spawn — a manifest you *named* and that is not there is bad
-input, decided before anything is Escrowed. (Contrast `fails/`, where the manifest exists and it is
-the *build* that fails.)
-
-## If every Spawn is refused with "this Head cannot build Environments"
+## If every build is refused with "this Head cannot build Environments"
 
 The Head has no `uv`/`micromamba` in `/opt/ccc/tools`. Only the operator can fix it —
 `cuttle setup --head` installs them.

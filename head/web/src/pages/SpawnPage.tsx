@@ -140,7 +140,7 @@ function LogPane({
         </Tip>
         {note && <span className="text-[12px] text-ink-mute">{note}</span>}
       </div>
-      {/* `field` — the same recess the composer's inputs sit in, feathering at every edge so a long log
+      {/* `field` — the same recess form inputs sit in, feathering at every edge so a long log
           dissolves instead of ending on a hard rim. Vars set INLINE so they beat `.field`'s own
           `&:hover { --fill: … }` and hold the colour still: a log is not a control, so lighting up under
           the pointer would promise an interaction that doesn't exist. */}
@@ -267,8 +267,8 @@ export function SpawnPage({ id }: { id: string }) {
       {detail && (
         <div className="grid gap-8 lg:grid-cols-[minmax(260px,320px)_1fr] lg:items-start">
           {/* What it was, and what it cost — the column of facts, sticky beside the logs you scroll. */}
-          {/* Same plate as the submit composer it visually rhymes with: --sink 35%, and a fade sized to
-              the card rather than the 50px default, which on a narrow column is most of the column. */}
+          {/* --sink 35%, and a fade sized to the card rather than the 50px default, which on a narrow
+              column is most of the column. */}
           <section
             className="surface [--sink:35%] [--fade-x:18px] [--fade-y:18px] lg:sticky lg:top-6"
             style={{ padding: "calc(var(--pad) + 18px)" }}

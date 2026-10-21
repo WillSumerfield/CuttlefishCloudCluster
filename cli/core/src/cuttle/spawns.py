@@ -1,9 +1,9 @@
-"""Spawn submission + inspection: `cuttle run` / `status` / `logs`.
+"""Spawn inspection + the Tide Pool request: `status` / `logs` / `queue` / `history` / `cancel`.
 
 A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif ...`. The Slurm job id IS the spawn
-id. `cuttle run` is not Head-local: it POSTs the Spawn's metadata to the Head API (authenticated),
-which renders and submits it as the `ccc` service account, recording who submitted it. So this module
-is a thin API client — the render machinery lives server-side in `ccc_head_api.spawns`.
+id. A Tide Pool request is not Head-local: it POSTs to the Head API (authenticated), which renders and
+submits it as the submitter's Guise, recording who submitted it. So this module is a thin API client —
+the render machinery lives server-side in `ccc_head_api.spawns`.
 
   * results   — out/err/exit live on the Head under ccc; read them back over the API
                 (`status`/`logs`), never off local disk.
@@ -13,10 +13,9 @@ Auth: every call carries the bearer token from `~/.ccc/session`; the Head URL co
 pinned on this machine (see tls.py).
 """
 
-import re
 import time
 
-from . import api, auth, config, menu, mesh, ui
+from . import api, auth, config, menu, ui
 from .system import run
 
 
@@ -35,68 +34,6 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
         raise ui.abort(e.user_message()) from None
 
 
-def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
-                   gpu: int, node: str,
-                   features: list[str] | None = None, tidepool: bool = False) -> int:
-    """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
-
-    Pinning is an admin write, and the Head API has none — so this does not travel over HTTP at all.
-    Authorization is *being the operator on this box*; attribution is whoever is logged in here. It
-    shells into the API venv rather than reimplementing submission, so the Escrow and the Attribution
-    row are written by the same code that serves `/submit` (see spawns.submit_checked).
-
-    `tidepool` lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
-    node-pinning, threaded through for completeness (the common Tide Pool path is unpinned).
-    """
-    me = auth._api("GET", "/me")["username"]
-    r = run(auth._admin_argv([
-        "submit", "--user", me, "--script", script,
-        "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-        "--node", node,
-        # Repeatable, one `--feature NAME` per declared name — placed before the trailing `*args`
-        # positional (the admin parser's `nargs="*"`) so argparse never mistakes a script argument
-        # for another feature name.
-        *[f for name in (features or []) for f in ("--feature", name)],
-        *(["--tidepool"] if tidepool else []),
-        *args],
-        # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a
-        # fresh subprocess and inherits nothing from it. Without it every pinned Spawn renders
-        # `rsync://<tok>@/out-<tok>/` with no host and a remote Arm could never send its results home,
-        # so `spawns.submit_checked` refuses outright rather than let one out (which is the
-        # "CCC_MESH_IP is empty in the ccc-head-api unit" error, reported against the unit that
-        # was in fact set correctly all along).
-        env={"CCC_MESH_IP": mesh.tailscale_ip()},
-    ), sudo=True, capture_output=True, text=True, check=False)
-    if r.returncode != 0:
-        # A pinned submit failing is runtime state (the Arm is gone, down, or not yours), not a usage
-        # error — so ui.abort, not typer.BadParameter's "Try --help" box. Surface the admin tool's
-        # last line as the cause and name the check that resolves it.
-        why = (r.stderr or "").strip()
-        detail = why.splitlines()[-1] if why else "the pinned submit failed"
-        # That last line is the last line of a Python traceback, so it arrives class-first —
-        # "RuntimeError: sbatch refused this Spawn: ...". The class name is the one part of it that
-        # tells an operator nothing; strip it and keep the sentence it was prefixing.
-        detail = re.sub(r"^[A-Za-z_][\w.]*(Error|Exception): ", "", detail)
-        raise ui.abort(f"couldn't submit to Arm {node!r}: {detail} "
-                       f"(is it admitted? see `cuttle arm list`)")
-    return int(r.stdout.strip().splitlines()[-1])
-
-
-def preview(script: str, minutes: int, vram: int, gpu: int,
-            features: list[str] | None = None) -> None:
-    """Show what is about to be submitted, before it is.
-
-    No Karma estimate: pricing a Spawn needs a Tide quote from the Head, and a number shown here that
-    disagreed with what is actually escrowed would be worse than showing nothing.
-    """
-    ui.kv([
-        ("script", script),
-        ("limit", f"{minutes} min"),
-        ("needs", f"{vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"
-                  + (f", features: {', '.join(features)}" if features else "")),
-    ], title="About to submit")
-
-
 def _post_submit(meta: dict) -> int:
     client = auth._client()
     client.token = auth._load_token()
@@ -108,42 +45,11 @@ def _post_submit(meta: dict) -> int:
         raise ui.abort(e.user_message()) from None
 
 
-def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
-           node: str | None = None, features: list[str] | None = None) -> None:
-    features = features or []
-    # The Head turns `vram` into a Slurm constraint: it knows every distinct card in the fleet and we
-    # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
-    # works if someone OR-expands it (`--constraint=vram24|vram48`). That someone is the Head.
-    #
-    # `node` pins the Spawn to one Arm. It does not travel over HTTP at all — the Head API refuses it
-    # for everyone — so a pinned Spawn takes the Head-local path below instead.
-    if node:
-        spawn_id = _submit_pinned(script, args, minutes, vram, gpu, node,
-                                  features=features)
-    else:
-        spawn_id = _post_submit({
-            "script": script, "gpu": gpu, "args": args,
-            "minutes": minutes, "vram": vram,
-            # Omitted rather than sent empty — most Spawns declare none, and the Head reads an absent
-            # key as "no requirement".
-            **({"features": features} if features else {})})
-    # The id goes to stdout and the confirmation to stderr, so `id=$(cuttle run ...)` captures
-    # exactly the id while a human still sees what happened.
-    ui.ok(f"submitted spawn {spawn_id}")
-    ui.data(str(spawn_id))
-    if follow:
-        _follow(spawn_id)
-
-
-def submit_tidepool(minutes: int, vram: int, gpu: int, node: str | None = None,
-                    features: list[str] | None = None) -> int:
-    """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
+def submit_tidepool(minutes: int, vram: int, gpu: int, features: list[str] | None = None) -> int:
+    """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run`'s own flow, in
     tidepool.py, owns the UI from here, since it still has to poll for placement and attach)."""
-    features = features or []
-    if node:
-        return _submit_pinned("", [], minutes, vram, gpu, node,
-                              features=features, tidepool=True)
     return _post_submit({"minutes": minutes, "vram": vram, "gpu": gpu, "tidepool": True,
+                         # Omitted rather than sent empty — the Head reads an absent key as "none".
                          **({"features": features} if features else {})})
 
 

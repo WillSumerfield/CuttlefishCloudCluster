@@ -10,11 +10,6 @@ You asked for something the fleet can never satisfy — more VRAM than the bigge
 [Feature](elements/arm-features.md) no enrolled Arm carries. Refusing is deliberate: the alternative
 is queuing forever for a machine that may never exist.
 
-### My Spawn got an id, then failed immediately
-
-Usually the [Environment](elements/environments.md) build. `cuttle logs <id>` has the resolver's
-complaint. A failed build costs nothing — the Spawn never reached a machine.
-
 ### My Spawn died at exactly `--time`
 
 That is what `--time` is. It is a kill, not a warning. Over-estimating costs you only queue position
@@ -25,19 +20,6 @@ That is what `--time` is. It is a kill, not a warning. Over-estimating costs you
 Check `cuttle karma` — someone with better standing wins contention. Karma never *gates*, so it will
 run; it is behind, not blocked. If the cluster is idle and it is still not running, look at
 eligibility: an unusual `--vram` or `--feature` may leave only one machine able to take it.
-
-### torch disappeared inside my Spawn
-
-You declared an Environment, and an Environment inherits nothing from the base image — whichever file
-you declared it in. Add torch to it. That is also what lets you pin the version you actually want
-rather than living with the cluster's. See [Environments](elements/environments.md).
-
-### "this Head cannot build Environments"
-
-The Head has no `uv`/`micromamba` under `/opt/ccc/tools`. Only the operator can fix it —
-`cuttle setup --head` installs them. It used to fall back to the base image instead of refusing;
-it no longer does, because falling back means running your work against something you did not ask
-for.
 
 ## Donating a machine
 

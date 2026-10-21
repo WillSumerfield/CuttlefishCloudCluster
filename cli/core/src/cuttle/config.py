@@ -340,7 +340,7 @@ CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only wri
 # sweep it (remove_arm_state on an Arm, remove_enroll_api on the Head).
 #
 # **A PARENT, not the cache.** Each **Guise** gets its own subtree, created by the job script as that
-# Guise (ccc_head_api.spawns.ENV_BUILD). Only this directory is 0777, and that is all it is for: a
+# Guise, by the job script's Environment build (uncalled since 2.0). Only this directory is 0777, and that is all it is for: a
 # mkdir point. Two reasons it is not one shared tree:
 #
 #   * Permissions do not work. uv creates its whole subtree with the CREATOR's ownership and umask

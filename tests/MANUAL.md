@@ -45,34 +45,20 @@ cuttle setup --arm --token <token>
 - [ ] A declared Feature with a wrong path is re-asked at the prompt, not accepted.
 - [ ] A second use of the same token is refused.
 
-## 3. A Spawn runs end to end
+## 3. A Tide Pool runs end to end
 
 ```sh
-cd examples/environments/uv-requirements
-cuttle run check_env.py --time 10 --vram 8 --manifest requirements.txt
+cuttle run --time 10 --vram 8
 ```
 
-- [ ] The submit echo names the manifest you declared.
-- [ ] `cuttle queue` shows `building`, then pending, then running.
-- [ ] `cuttle logs <id>` matches the table in [`../examples/environments/README.md`](../examples/environments/README.md).
-
-Walk the other example projects, naming each one's manifest. `torch` should come back MISSING from
-every one that builds — an Environment inherits nothing. `uv-project/` should report python
-**3.11.14**, a version the image does not ship. `fails/` should produce a **failed Spawn**, not a
-rejected submission.
-
-- [ ] Omitting `--manifest` off a terminal is refused at submit, naming the flag; at a
-      terminal `cuttle run` asks for it instead.
-- [ ] `--manifest nope.txt` is refused at submit with no Spawn.
-
-### The download survives a reboot
-
-- [ ] Submit with a long `--time`, kill the terminal, reboot the client, run any `cuttle` command.
-      The results still arrive.
+- [ ] `cuttle queue` shows it pending, then running.
+- [ ] It attaches without asking for a key or a port.
+- [ ] Leaving the shell says it is still running and names `cuttle cancel <id>`.
+- [ ] `cuttle run <id>` reattaches; `cuttle cancel <id>` ends it.
 
 ## 4. Isolation actually isolates
 
-From inside a Tide Pool (`cuttle run --tidepool --time 10 --vram 8`):
+From inside a Tide Pool (`cuttle run --time 10 --vram 8`):
 
 - [ ] `ls /` is the Pod, not the host.
 - [ ] Another User's spawn directory is unreachable.
@@ -106,12 +92,11 @@ cuttle arm retract test-arm
 Typed, and looked at. This is the part the suite explicitly does not cover.
 
 - [ ] Bare `cuttle` opens the menu on a terminal; `cuttle | cat` prints help instead of hanging.
-- [ ] `cuttle run` with no flags walks the wizard and previews before submitting.
+- [ ] `cuttle run` with no flags asks for `--time` and `--vram` rather than refusing.
 - [ ] Ctrl-C at every prompt leaves the terminal usable — no `reset` needed.
 - [ ] `cuttle setup` off-terminal refuses rather than guessing a role.
 - [ ] A destructive command (`teardown`, `arm remove`, `backup restore`) demands the typed name and
       cannot be answered by a confirmation reflex.
-- [ ] `id=$(cuttle run …)` captures only the id — nothing else reaches stdout.
 
 ## 8. Backup and restore
 

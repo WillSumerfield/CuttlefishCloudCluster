@@ -1,6 +1,10 @@
 """Per-Spawn Python **Environment**s — declared by the User, built by the Arm that runs them, kept by
 nobody.
 
+**Uncalled since 2.0.** Batch Spawns were the only thing that declared one, and the job-script block
+that ran these commands went with them; Dives bring an optional Environment back. Kept, and tested, as
+the meaning of a manifest.
+
 A project declares its dependencies in the file its own tooling already writes. This module decides what
 that declaration MEANS — which file, which shape, which commands build it — and the Arm runs those
 commands at job start.
@@ -13,7 +17,7 @@ declaration travels and the download does not.
 
 **Decided here, executed there.** `detect`, `require_tool`, `check_supplied` and `render_build` all still
 run on the Head, at submit, and every refusal they can raise is still a 4xx with no Spawn in existence.
-Only the *running* moved: `render_build` returns argv, `spawns._render` splices it into the job script,
+Only the *running* moved: `render_build` returns argv, the job script splices it in,
 and the Arm executes it inside the Pod. One tested place still says what a manifest means.
 
 **What that costs, stated plainly.** A build failure is now a failed **Spawn** rather than a refused
@@ -130,7 +134,7 @@ POD_TMP = "/ccc-tmp"
 POD_CACHE = "/ccc-cache"
 
 # The build Pod's environment, identical on every node because the Pod's own paths are. Rendered into
-# the job script by `spawns._render`; nothing here reads it at build time any more.
+# the job script; nothing here reads it at build time any more.
 #
 #   UV_PROJECT_ENVIRONMENT  points `uv sync` at VENV_DIR instead of the `.venv` it would otherwise create
 #                           beside the manifest, inside a project directory the Guise cannot write.
@@ -563,7 +567,7 @@ def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], lis
       verifies that hash on EVERY sync, so a stub the lock does not know about fails the build outright.
 
     Each bind's `dest` is project-relative; only the Arm knows where the project landed, and
-    `spawns._render_env_build` prefixes `$proj`.
+    the job script prefixes `$proj`.
     """
     root, _ = _uv_sources(project, m)
     files: list[StubFile] = []

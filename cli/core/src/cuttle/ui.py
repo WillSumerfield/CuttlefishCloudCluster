@@ -1351,7 +1351,7 @@ class _Frame:
         self.title = title
         self.rows: list[tuple[object, int]] = []
         # Normally the frame is painted onto the shared canvas (absolute redraw, no per-frame Live).
-        # Without a canvas — a streaming command like `run --follow`, where `fullscreen` is a no-op,
+        # Without a canvas — a streaming command like `logs --follow`, where `fullscreen` is a no-op,
         # or a section opened in a test — fall back to a private transient `Live`, an in-place box
         # that erases itself on close.
         # redirect_stdout/stderr=False: Live otherwise swaps `sys.stdout` for a proxy and restores it

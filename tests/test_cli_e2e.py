@@ -6,7 +6,6 @@ and the operations work. See `conftest.py` for the rig.
 """
 
 import json
-import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -18,9 +17,14 @@ from cuttle import spawns as spawns_mod
 from conftest import USERS
 
 
-def _spawn_id(output: str) -> int:
-    """The id `cuttle run` reports back."""
-    return int(re.search(r"submitted spawn (\d+)", output).group(1))
+def _submit(head) -> int:
+    """A Tide Pool requested over the API as whoever is logged in. `cuttle run` goes on to wait for
+    placement and ssh in (test_tidepool covers that half); the request itself is this POST."""
+    token = config.SESSION_FILE.read_text().strip()
+    r = head.post("/submit", headers={"Authorization": f"Bearer {token}"},
+                  json={"tidepool": True, "minutes": 60, "vram": 24})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
 
 
 class TestSession:
@@ -142,27 +146,33 @@ class TestPasswordPolicy:
 
 
 class TestSubmit:
-    """`cuttle run` — the operation the whole cluster exists for."""
+    """A Tide Pool request — the one submission left until Dives."""
 
-    def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm):
-        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
-        assert result.exit_code == 0, result.output
-        assert "submitted spawn" in result.output
-        # Attribution is the ledger's, not Slurm's — every Spawn runs as the Mantle, so Slurm's own
-        # user field says `ccc` for all of them. If this row is missing the Spawn is unowned.
+    def test_a_spawn_is_submitted_and_attributed(self, head, signed_in, fake_slurm):
+        spawn_id = _submit(head)
+        # Attribution is the ledger's, not Slurm's. If this row is missing the Spawn is unowned.
         with db.connect() as conn:
             alice = db.get_user(conn, "alice")
-            spawn = db.get_spawn(conn, _spawn_id(result.output))
+            spawn = db.get_spawn(conn, spawn_id)
         assert spawn is not None, "no Attribution row was recorded"
         assert spawn["user_id"] == alice["id"]
+        assert spawn["tidepool"]
 
-    def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm):
+    def test_the_escrow_is_held_at_submit(self, head, signed_in, fake_slurm):
         """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
         been charged for — precisely the window a queue-flooder wants."""
-        result = signed_in("run", "train.py", "--time", "60", "--vram", "24")
+        spawn_id = _submit(head)
         with db.connect() as conn:
             escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
-        assert _spawn_id(result.output) in escrows
+        assert spawn_id in escrows
+
+    def test_a_batch_request_is_refused(self, head, signed_in, fake_slurm):
+        """Batch Spawns are gone. A request without `tidepool` is refused, never read as one."""
+        token = config.SESSION_FILE.read_text().strip()
+        r = head.post("/submit", headers={"Authorization": f"Bearer {token}"},
+                      json={"script": "t.py", "minutes": 60, "vram": 24})
+        assert r.status_code == 422
+        assert "Tide Pool" in r.json()["detail"]
 
     def test_time_and_vram_are_required(self, signed_in, fake_slurm):
         """Nothing can price a Spawn whose length nobody declared, nor place one whose needs
@@ -170,13 +180,13 @@ class TestSubmit:
         can't pass silently. Both are promptable, so the refusal is ours, not click's: no
         terminal to ask on, never a quietly-filled default.
         """
-        no_time = signed_in("run", "train.py", "--vram", "24")
+        no_time = signed_in("run", "--vram", "24")
         assert no_time.exit_code != 0 and "--time" in no_time.output
-        no_vram = signed_in("run", "train.py", "--time", "60")
+        no_vram = signed_in("run", "--time", "60")
         assert no_vram.exit_code != 0 and "--vram" in no_vram.output
 
     def test_submitting_without_a_session_is_refused(self, cli, fake_slurm):
-        result = cli("run", "train.py", "--time", "60", "--vram", "24")
+        result = cli("run", "--time", "60", "--vram", "24")
         assert result.exit_code != 0
         assert "not logged in" in result.output
 
@@ -184,40 +194,38 @@ class TestSubmit:
 class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
-    def _spawn(self, cli):
-        return _spawn_id(cli("run", "train.py", "--time", "60", "--vram", "24").output)
 
-    def test_you_may_cancel_your_own(self, signed_in, fake_slurm, monkeypatch):
+    def test_you_may_cancel_your_own(self, head, signed_in, fake_slurm, monkeypatch):
         killed = []
         monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
-        spawn = self._spawn(signed_in)
+        spawn = _submit(head)
         result = signed_in("cancel", spawn, "--yes")
         assert result.exit_code == 0, result.output
         assert killed == [spawn]
 
-    def test_the_confirmation_can_be_declined(self, signed_in, fake_slurm, monkeypatch):
+    def test_the_confirmation_can_be_declined(self, head, signed_in, fake_slurm, monkeypatch):
         """The Dashboard asks before cancelling; so does this. Declining must not scancel."""
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
-        spawn = self._spawn(signed_in)
+        spawn = _submit(head)
         assert signed_in("cancel", spawn, input="n\n").exit_code != 0
 
-    def test_you_may_not_cancel_someone_elses(self, cli, fake_slurm, monkeypatch):
+    def test_you_may_not_cancel_someone_elses(self, head, cli, fake_slurm, monkeypatch):
         """alice submits; root tries to stop it over the API and is refused — an Admin has no
         branch on that route. Off the Head there is no second road either, so this is the end of it."""
         monkeypatch.setattr(menu, "is_head", lambda: False)
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
-        spawn = self._spawn(cli)
+        spawn = _submit(head)
         config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         result = cli("cancel", spawn, "--yes")
         assert result.exit_code != 0
         assert "your own Spawns" in result.output
 
-    def _as_root_on_the_head(self, cli, monkeypatch):
+    def _as_root_on_the_head(self, head, cli, monkeypatch):
         """Someone else's live Spawn, and an operator standing on the Head looking at it."""
         cli("login", input=f"alice\n{USERS['alice']}\n")
-        spawn = self._spawn(cli)
+        spawn = _submit(head)
         config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         monkeypatch.setattr(menu, "is_head", lambda: True)
@@ -225,12 +233,12 @@ class TestCancel:
         monkeypatch.setattr(spawns_mod, "run", lambda cmd, **kw: ran.append(cmd))
         return spawn, ran
 
-    def test_on_the_head_someone_elses_takes_the_operator_road(self, cli, fake_slurm,
+    def test_on_the_head_someone_elses_takes_the_operator_road(self, head, cli, fake_slurm,
                                                                monkeypatch):
         """The refusal is the ownership test, not the end. On the Head it selects `sudo scancel` —
         with no flag, because the menu can only ever run this command bare."""
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("the API route must not run"))
-        spawn, ran = self._as_root_on_the_head(cli, monkeypatch)
+        spawn, ran = self._as_root_on_the_head(head, cli, monkeypatch)
         result = cli("cancel", spawn, "--yes")
         assert result.exit_code == 0, result.output
         assert ran[0] == ["scancel", str(spawn)]
@@ -533,15 +541,3 @@ class TestNoAdminWritesOverTheApi:
             alice = db.get_user(conn, "alice")
             # Absent from `balances` == 0, which is where everyone starts.
             assert karma.balances(conn).get(alice["id"], 0.0) == 0.0
-
-    def test_the_endpoint_itself_refuses_a_pin(self, head, signed_in, fake_slurm):
-        """Driven at the API, not the CLI: a client that simply stopped sending `node` would make a
-        client-side test pass while the endpoint stayed wide open."""
-        token = config.SESSION_FILE.read_text().strip()
-        r = head.post("/submit",
-                      headers={"Authorization": f"Bearer {token}"},
-                      # Named and otherwise complete, so the 403 below is unambiguously about the pin
-                      # rather than about some earlier gate.
-                      json={"script": "t.py", "minutes": 60, "vram": 24, "node": "gpu-box"})
-        assert r.status_code == 403
-        assert "on the Head" in r.json()["detail"]

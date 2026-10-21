@@ -95,7 +95,7 @@ LABELS = {
     f"{FOLDER}admin": "Run the cluster",
     f"{FOLDER}box": "This box",
 
-    "run": "Submit a Spawn",
+    "run": "Open a Tide Pool",
     "dashboard": "Open the dashboard",
     "login": "Log in",
 

@@ -53,9 +53,8 @@ on the Head*, because CCC's Head API exposes no administrative writes at all —
 
 | Command | | Explained in |
 |---|---|---|
-| `cuttle run` | Submit a Spawn: run a script on the cluster. | [Spawns](elements/spawns.md) |
-| `cuttle run --tidepool` | Ask for a live interactive shell instead of running a script. | [Tide Pool](elements/tide-pool.md) |
-| `cuttle run --tidepool --vscode` | The same session, opened in VS Code rather than this terminal. | [Tide Pool](elements/tide-pool.md#editing-in-vs-code) |
+| `cuttle run` | Ask for a Tide Pool: a live interactive shell on a GPU. | [Tide Pool](elements/tide-pool.md) |
+| `cuttle run --vscode` | The same session, opened in VS Code rather than this terminal. | [Tide Pool](elements/tide-pool.md#editing-in-vs-code) |
 | `cuttle status` | Is it queued, running, or finished — and with what exit code. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle logs` | Print or follow a Spawn's stdout and stderr. | [Spawns](elements/spawns.md#following-a-spawn) |
 | `cuttle queue` | Everything pending or running on the cluster, and whose it is. | [Spawns](elements/spawns.md#following-a-spawn) |

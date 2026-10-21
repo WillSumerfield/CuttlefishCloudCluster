@@ -372,7 +372,7 @@ def render_ubuntu_snapshot_list() -> str:
 #   that forced it: the first `torch.compile`d kernel makes Inductor instantiate Triton's CUDA driver,
 #   which builds a `cuda_utils` C shim by shelling out to `$CC`, else to whatever `gcc`/`clang` is on
 #   PATH. No wheel on PyPI ships a compiler, so an **Environment** cannot supply one however it is
-#   declared, and `--contain` (spawns.PAYLOAD_SCRIPT) hides the host's — a box with gcc in /usr/bin and
+#   declared, and `--contain` (the Pod's payload) hides the host's — a box with gcc in /usr/bin and
 #   none in its Pods was the observed failure. Without it every Spawn that reaches torch.compile dies
 #   at the WORST moment: the card is already held and the Environment already built, so it is a
 #   full-price failed Spawn rather than a refusal at submit.
@@ -391,14 +391,13 @@ def render_ubuntu_snapshot_list() -> str:
 # * `zsh` plus the vendored oh-my-zsh tree and gitstatusd (config.ZSH_DATA_DIR) — the shell a **Tide
 #   Pool** hands its User. Only the *tree* is here; the two files that configure it are rendered by the
 #   Head at every session (ccc_head_api.zshrc), because a prompt is the part anybody actually iterates on
-#   and this image can only be changed by a fleet-wide teardown. Nothing else in CCC has a shell in it:
-#   PAYLOAD_SCRIPT execs the Environment's python directly and never starts one.
+#   and this image can only be changed by a fleet-wide teardown.
 # * `/etc/zsh/zprofile` gets one appended line, and it is the load-bearing half of the whole change.
-#   PAYLOAD_TIDEPOOL puts the Feature runtime, the Environment's PATH and the `cd` into the
-#   project in `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
+#   PAYLOAD_TIDEPOOL puts the `cd` into the project and the scratch TMPDIR in
+#   `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
 #   drops apptainer's `--env`. **zsh does not read /etc/profile.d.** Debian's zprofile sources
 #   /etc/profile and Ubuntu's ships as comments only, so without this line every one of those is silently
-#   lost — the session opens, the prompt looks right, and `import` finds nothing. That exact
+#   lost — the session opens, the prompt looks right, and the shell is in the wrong place. That exact
 #   bug was already found and fixed once on the bash path (spawns.py, 2026-08-07); this is the line that
 #   keeps switching shells from re-introducing it.
 # * `ncurses-term` — sshd forwards the connecting client's TERM, and `ncurses-base` carries 61 entries
@@ -463,8 +462,7 @@ def render_ubuntu_snapshot_list() -> str:
 # a broken name rather than a missing index.
 #
 # `DEBIAN_FRONTEND=noninteractive` because there is no one to answer. A package that stops to ask
-# (tzdata is the usual one) would hang the Spawn holding it until its wall clock ran out, and a
-# **Substrate** installed from the job script has no terminal attached at all.
+# (tzdata is the usual one) would hang the Spawn holding it until its wall clock ran out.
 #
 # Three lines are dropped from stderr, and only three — each measured on hardware, each printed on
 # every single invocation, none of them meaning anything failed. `setpriv: setresuid failed` is

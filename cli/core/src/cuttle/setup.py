@@ -1178,7 +1178,7 @@ def setup_client(update: bool = False) -> None:
     who: dict[str, str] = {}
     with ui.section("Log in", lambda: who.get("as", "")):
         who["as"] = auth.login(None)
-    ui.ok("Client ready. `cuttle run <script> --time <min> --vram <GB>` to submit.")
+    ui.ok("Client ready. `cuttle run --time <min> --vram <GB>` opens a Tide Pool.")
 
 
 def _update_client() -> None:

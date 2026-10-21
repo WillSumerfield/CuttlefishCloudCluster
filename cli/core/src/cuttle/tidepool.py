@@ -1,5 +1,5 @@
-"""`cuttle run --tidepool`: request-or-attach to a Tide Pool — an interactive Spawn that drops the
-User into a live shell instead of running a script.
+"""`cuttle run`: request-or-attach to a Tide Pool — an interactive Spawn that drops the
+User into a live shell.
 
 A Tide Pool is a normal Spawn end to end (same queue, Eligibility, Escrow/Karma billing — see
 ccc_head_api.spawns.submit_checked); this module is the CLI-only half nothing else needed: submit (or
@@ -9,7 +9,7 @@ client that is not a Mesh member, but nothing on this end knows or cares that a 
 like any other `ssh -p <port> <host>`.
 
 **Disconnecting never ends the Spawn.** A clean `exit`, a dropped connection, Ctrl-C — none of them
-cancel it, exactly like Ctrl-C on `cuttle run --follow`'s log stream does not cancel the Spawn it is
+cancel it, exactly like Ctrl-C on `cuttle logs -f`'s log stream does not cancel the Spawn it is
 following. It keeps billing Karma until `--time` runs out or `cuttle cancel <id>`, which is why leaving
 the shell says so with the exact command to stop it.
 
@@ -69,37 +69,33 @@ def _cancel_hint(spawn_id: int) -> str:
 
 def _reattach_hint(spawn_id: int) -> str:
     """How to get back into this session."""
-    return f"cuttle run --tidepool {spawn_id}"
+    return f"cuttle run {spawn_id}"
 
 
 def _noun(spawn_id: int) -> str:
     return f"tide pool {spawn_id}"
 
 
-def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
-        node: str | None, features: list[str], follow: bool,
-        vscode: bool = False) -> None:
-    """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
-    Spawn) unless `script_or_id` resolves to an existing one, then attaches either way."""
-    if follow:
-        ui.warn("--follow is ignored with --tidepool — it attaches an interactive shell instead of "
-                "streaming output")
-    existing = _existing_id(script_or_id)
+def run(id_arg: str | None, minutes: int | None, vram: int | None, gpu: int,
+        features: list[str], vscode: bool = False) -> None:
+    """Entry point from `cuttle run`. Requests a new Tide Pool (needing --time/--vram like any
+    Spawn) unless `id_arg` resolves to an existing one, then attaches either way."""
+    existing = _existing_id(id_arg)
     if existing is not None:
         spawn_id = existing
     else:
-        if script_or_id:
-            ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
-                    f"(pass a Spawn id instead to reattach to one)")
-        spawn_id = _request(minutes, vram, gpu, node, features)
+        if id_arg:
+            ui.warn(f"ignoring {id_arg!r} — not a Spawn id (pass one to reattach to a Tide Pool)")
+        spawn_id = _request(minutes, vram, gpu, features)
     _wait_and_attach(spawn_id, vscode=vscode)
-def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
-            features: list[str]) -> int:
+
+
+def _request(minutes: int | None, vram: int | None, gpu: int, features: list[str]) -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
     nothing here weakens that gate."""
     minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
     vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
-    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, node=node, features=features)
+    spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, features=features)
     ui.ok(f"requested tide pool {spawn_id}")
     return spawn_id
 
@@ -116,7 +112,7 @@ def _wait_for_running(spawn_id: int) -> None:
                                f"({spawns_mod._outcome(st)})")
             if time.monotonic() > deadline:
                 raise ui.abort(f"tide pool {spawn_id} is still queued after an hour — it is not gone, "
-                               f"just not placed yet; `cuttle run --tidepool {spawn_id}` to keep waiting")
+                               f"just not placed yet; `cuttle run {spawn_id}` to keep waiting")
             time.sleep(_POLL_S)
 
 
@@ -138,7 +134,7 @@ def _wait_for_relay(spawn_id: int) -> tuple[int, str, str, str | None]:
                         info.get("user") or config.HEAD_API_USER, info.get("proj"))
             if time.monotonic() > deadline:
                 raise ui.abort(f"tide pool {spawn_id} is running but never came up for SSH — "
-                               f"`cuttle run --tidepool {spawn_id}` to retry")
+                               f"`cuttle run {spawn_id}` to retry")
             time.sleep(_POLL_S)
 
 

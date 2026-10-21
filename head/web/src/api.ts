@@ -151,10 +151,6 @@ const json = <T,>(path: string, init?: RequestInit) =>
   req(path, init).then((r) => r.json() as Promise<T>)
 
 export const getArms = () => json<Arm[]>('/arms')
-// The Arm Features CCC supports — what the submit composer offers to require. Built into CCC, not
-// curated, so there is nothing to mutate from anywhere: it reports what this HEAD's version knows.
-// What the cluster can currently PLACE is narrower (an Arm has to carry it); that is checked at submit.
-export const getFeatureCatalog = () => json<string[]>('/features')
 export const getSpawns = () => json<Spawn[]>('/spawns')
 
 // The wire shape GET /spawns/history actually answers with (see ccc_head_api.main.spawns_history) —
@@ -317,60 +313,5 @@ export async function changePassword(oldPassword: string, newPassword: string): 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
-  })
-}
-
-
-export type SubmitOpts = {
-  script: string
-  gpu: number
-  // Wall-clock minutes, and GPU memory in GB. Both required by the Head — a Spawn with no declared
-  // length can't be priced, and one with no declared need can't be placed.
-  minutes: number
-  vram: number
-  node: string | null // admin-only; the Head 403s it for everyone else
-  args: string[]
-  // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
-  // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
-  features: string[]
-}
-
-const postSubmit = async (meta: object): Promise<number> => {
-  const r = await req('/submit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(meta),
-  })
-  return (await r.json()).id
-}
-
-export function submit({
-  script, gpu, minutes, vram, node, args, features,
-}: SubmitOpts): Promise<number> {
-  // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
-  // absent key the same as an empty list.
-  return postSubmit({
-    script, gpu, minutes, vram, node, args,
-    ...(features.length ? { features } : {}),
-  })
-}
-
-// A Tide Pool (docs/TODO.md): request one from the Dashboard, same queue/Eligibility/Escrow as any Spawn
-// — but no script to name, so deliberately NOT `submit` with fields blanked out. Shell access is
-// CLI-only; Dashboard's part ends once the Spawn appears in the queue.
-export type SubmitTidepoolOpts = {
-  minutes: number
-  vram: number
-  gpu: number
-  node: string | null
-  features: string[]
-}
-
-export function submitTidepool({
-  minutes, vram, gpu, node, features,
-}: SubmitTidepoolOpts): Promise<number> {
-  return postSubmit({
-    minutes, vram, gpu, node, tidepool: true,
-    ...(features.length ? { features } : {}),
   })
 }

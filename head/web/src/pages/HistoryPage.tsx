@@ -96,8 +96,7 @@ export function HistoryPage() {
         ) : null
       }
     >
-      {/* Filters left, archive right — the same two-column shape as the Queue (composer left, list right),
-          so the format reads as one family. Below lg they stack, filters first; filters stick on scroll. */}
+      {/* Filters left, archive right. Below lg they stack, filters first; filters stick on scroll. */}
       <div className="grid gap-8 lg:grid-cols-[minmax(300px,380px)_1fr] lg:items-start">
         <div className="lg:sticky lg:top-6">
           <Filters value={filter} onChange={setFilter} arms={arms} />

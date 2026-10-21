@@ -7,17 +7,15 @@ only while sitting on the Head.
 
 ### [Spawns](elements/spawns.md)
 
-A Spawn is one run of your code on the cluster. You name a script, say how long it needs and how
-much GPU memory; CCC finds a machine and runs it in a sandbox. A Spawn runs *once*: if it fails, or the machine it was on is reclaimed, it does not
-quietly start again somewhere else. It can hold several cards at a time, but always on one
-machine — never spread across two donors.
+A Spawn is one job on the cluster: a GPU held on some machine, for a declared time. Batch (script)
+Spawns are gone in 2.0; the one kind left is the Tide Pool. A Spawn runs *once*: if the machine it
+was on is reclaimed, it does not quietly start again somewhere else. It can hold several cards at a
+time, but always on one machine — never spread across two donors.
 
 ### [Environments](elements/environments.md)
 
-The Python your code runs against. Every Spawn gets the same base; if you need more, you declare it
-the way you already do — `uv.lock`, `pyproject.toml`, `requirements.txt`, `environment.yml` — and CCC
-finds the file and builds it *before* your Spawn is placed, so no GPU is held while packages download
-and the build costs you nothing.
+The Python your code runs against, built from a dependency file you name. Nothing declares one in 2.0
+until Dives bring them back.
 
 ### [Tide Pool](elements/tide-pool.md)
 

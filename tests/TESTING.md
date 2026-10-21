@@ -18,7 +18,7 @@ Real consequences look like:
 - a Spawn priced wrongly, a balance that does not sum to zero, an economy that silently stops gating
 - a `slurm.conf`, unit file, or job script that renders wrong and only fails on a donor's box
 - data destroyed without confirmation — a user, a ledger, a cluster
-- stdout corrupted, so `id=$(cuttle run …)` breaks
+- stdout corrupted, so a script capturing `cuttle … --json` breaks
 - a secret that exists exactly once being lost (the one-time admin password)
 - the terminal left in a state the user has to `reset` out of
 

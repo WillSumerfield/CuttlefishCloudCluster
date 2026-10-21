@@ -2,56 +2,21 @@
 
 ## What it is
 
-A **Spawn** is one run of your code on the cluster.
+A **Spawn** is one job on the cluster: a GPU held on some machine, for a declared time.
 
-You point `cuttle run` at a script. CCC finds a machine with a free GPU big enough, runs your script
-inside a sandbox, and keeps its logs and exit code on the Head.
+Batch (script) Spawns are gone in 2.0. The one kind left is the [Tide Pool](tide-pool.md) — a live
+shell in a sandbox — requested with `cuttle run`. CCC finds a machine with a free GPU big enough,
+starts it there, and keeps its logs and exit code on the Head.
 
-The thing worth internalising: a Spawn runs **once**. If your script crashes, or the machine it
-landed on is taken back by its owner mid-run, that Spawn is over. Nothing silently retries somewhere
-else. So "Spawn 412" always names one attempt — what it cost and what it produced both refer to the
-same single run.
-
-## Typical use
-
-**Run a training script for an hour on a 24 GB card:**
-
-```sh
-cuttle run train.py --time 60 --vram 24
-```
-
-**Pass arguments through to your own script** — everything after `--` is yours:
-
-```sh
-cuttle run train.py --time 60 --vram 24 -- --epochs 5 --lr 3e-4
-```
-
-**Watch it happen** rather than walking away:
-
-```sh
-cuttle run train.py --time 60 --vram 24 --follow
-```
-
-**Ask for a machine that has particular software on it** (see [Arm Features](arm-features.md)):
-
-```sh
-cuttle run sim.py --time 30 --vram 16 --feature isaaclab
-```
-
-**Leave the flags off entirely** and let it ask you:
-
-```sh
-cuttle run
-```
-
-Same submission either way — the prompts fill in exactly the arguments above, show you a preview,
-and ask before submitting.
+The thing worth internalising: a Spawn runs **once**. If the machine it landed on is taken back by
+its owner mid-run, that Spawn is over. Nothing silently retries somewhere else. So "Spawn 412" always
+names one attempt — what it cost and what it produced both refer to the same single run.
 
 ## Commands
 
 | | |
 |---|---|
-| `cuttle run <script>` | Submit a Spawn. |
+| `cuttle run` | Request a Tide Pool. See [Tide Pool](tide-pool.md). |
 | `cuttle status <id>` | Queued, running, or done — and with what exit code. |
 | `cuttle logs <id>` | Print its stdout and stderr. `--follow` to stream. |
 | `cuttle queue` | Everything pending or running on the cluster, and whose it is. |
@@ -83,23 +48,16 @@ of 64 GB or better, not two of 128.
 
 You are billed for each card separately, for as long as you hold it, whether or not your code uses
 it. Asking for a second card you never touch doubles your bill and buys nothing: nothing in CCC
-splits work across cards for you. That is your script's job (`torchrun`, DDP, or your own device
+splits work across cards for you. That is your code's job (`torchrun`, DDP, or your own device
 placement), and `--gpus` only makes the cards visible to it.
 
 A count no single Arm in the fleet has is refused at submit, naming what would fit — never queued
-against a machine that does not exist. In the [Dashboard](../Dashboard.md) the same counts are simply
-greyed out in the dropdown.
-
-```sh
-cuttle run train.py --time 60 --gpus 2 --vram 128
-```
+against a machine that does not exist.
 
 ### What happens when it goes wrong
 
-- **Your script exits non-zero** — the Spawn is *settled, not requeued*. You pay for the seconds it
-  actually consumed and it does not quietly run again.
-- **Your dependency file will not build** — the Spawn never reaches a machine at all. It fails
-  having held nothing, and is billed nothing. See [Environments](environments.md).
+- **It ends non-zero** — the Spawn is *settled, not requeued*. You pay for the seconds it actually
+  consumed and it does not quietly run again.
 - **You asked for something the fleet can never do** — 80 GB of VRAM when the biggest card is 24, or
   a [Feature](arm-features.md) no enrolled Arm carries — it is *refused at submit*, not queued
   forever.
@@ -123,9 +81,6 @@ An Arm's owner has no way to kill one particular Spawn running on their machine.
 [Retract](arms.md#retract-and-return), which takes the whole machine back.
 
 ## Admin — on the Head
-
-`cuttle run --node <name>` pins a Spawn to one named Arm. It is the single exception to "declare
-needs, never machines", and it is admin-only for exactly that reason.
 
 `cuttle cancel <id>` ends a Spawn belonging to someone else, when you run it **on the Head**. No flag:
 the Head API is asked first, and its "not yours" is the ownership test rather than the end of the

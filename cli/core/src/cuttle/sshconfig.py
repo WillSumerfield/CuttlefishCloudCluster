@@ -2,7 +2,7 @@
 — VS Code's Remote-SSH, `scp`, a plain `ssh ccc-tp-58` — can reach a Pod without anyone ever handling
 a key or a port.
 
-Nothing here is a second way to connect. `cuttle run --tidepool` still execs `ssh` with the flags
+Nothing here is a second way to connect. `cuttle run` still execs `ssh` with the flags
 spelled out, because that path must work on a box whose `~/.ssh` is unwritable or hand-tuned. This
 file exists for the tools that cannot be handed flags: VS Code takes a *host alias* and nothing else.
 

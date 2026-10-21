@@ -1,8 +1,8 @@
 """Arm **Feature** runtimes (temp/FEATURES_BUILTIN.md) — the profile that turns `--feature vlearn`
 from a placement constraint into a working Spawn.
 
-Two halves, split the way the code is: what the Head renders into a job script
-(`ccc_head_api.features`), and what an Arm has to have on disk before it may declare the Feature at all
+Two halves, split the way the code is: the bash the Head splices into a job script
+(`ccc_head_api.features`, uncalled until Dives), and what an Arm has to have on disk before it may declare the Feature at all
 (`cuttle.features`). They never talk to each other directly — the whole channel between them is
 `/etc/ccc/features.env` — so what is worth pinning here is that both ends name the same variables.
 
@@ -18,20 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from ccc_head_api import environments as env
 from ccc_head_api import features as hf
-from ccc_head_api import spawns
 from cuttle import config
 from cuttle import enroll as cuttle_enroll
 from cuttle import features as af
 
 
-def _script(**kw):
-    kw.setdefault("minutes", 60)
-    kw.setdefault("constraint", "")
-    kw.setdefault("node", None)
-    return spawns._render(sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-                          token="a3f9", secret="s3cr3t", **kw)
+def _script(features: list[str]) -> str:
+    """The bash a Spawn asking for `features` gets — dormant until Dives splice it into a job again."""
+    return hf.setup_snippet(features)
 
 
 # --- what a Feature without a profile costs --------------------------------
@@ -44,18 +39,6 @@ def test_a_feature_with_no_profile_renders_nothing():
     assert _script(features=["isaaclab"]) == _script(features=[])
 
 
-def test_an_ordinary_spawn_never_mentions_features():
-    """The overwhelming majority of Spawns. Nothing here is conditional at run time — the Head decides
-    at render, so an ordinary Spawn's script does not contain the probe, the failure helper, or any
-    Feature's name."""
-    body = _script(features=[])
-    assert "feature_probe" not in body
-    assert "feature_fail" not in body
-    assert "VLEARN_PATH" not in body
-    # The accumulators are still declared, because the payload names them unconditionally.
-    assert 'featbind=""; featenv=""' in body
-
-
 # --- the rendered profile ---------------------------------------------------
 
 def test_the_rendered_script_is_valid_bash():
@@ -64,64 +47,6 @@ def test_the_rendered_script_is_valid_bash():
         body = _script(features=feats)
         r = subprocess.run(["bash", "-n"], input=body, text=True, capture_output=True)
         assert r.returncode == 0, f"{feats}: {r.stderr}"
-
-
-def test_the_payload_gets_the_features_binds_and_env():
-    """The two accumulators are what a profile actually contributes, and they are only worth anything
-    if the payload appends them. Both payload shapes: a Tide Pool on a vlearn Arm is how someone
-    debugs a vlearn Spawn, and it is useless if the runtime is not the same one."""
-    script = _script(features=["vlearn"])
-    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$migbind"' in script
-    # `$featenv` stays LAST in the --env list, whatever else is added before it — it accumulates
-    # `,NAME=value` fragments, so anything appended after it would land inside the last value.
-    assert _env_line(script).endswith('$featenv" \\')
-    pool = _script(features=["vlearn"], tidepool_port=2222, tidepool_pubkey="ssh-ed25519 AAAA")
-    assert "$envbind$licbind$featbind" in pool
-    assert _env_line(pool).endswith('$featenv" \\')
-    assert "CCC_PROJ=$proj" in _env_line(pool)
-
-
-def _env_line(script: str) -> str:
-    """The payload's own `--env` line — not one of the comments above it that mention the flag."""
-    return next(ln for ln in script.splitlines() if ln.strip().startswith('--env "LC_ALL='))
-
-
-def _pool(**kw):
-    return _script(tidepool_port=2222, tidepool_pubkey="ssh-ed25519 AAAA", **kw)
-
-
-def test_a_tide_pool_shell_gets_the_features_environment_past_sshd():
-    """sshd builds a FRESH environment for every session and does not pass its own down, so everything
-    apptainer hands the Pod through `--env` reaches the boot script and stops there. A **Tide Pool**
-    that asked for a profiled Feature had its package bound, its system libraries
-    built and its working directory arranged, and then got a shell where `import vlearn` was a
-    ModuleNotFoundError and `pip list` showed nothing — the one Spawn whose entire point was the
-    Feature."""
-    pool = _pool(features=["vlearn"])
-    assert "CCC_FEATURE_VARS=$featnames" in _env_line(pool)
-    assert "for v in $CCC_FEATURE_VARS; do" in pool
-    # A Script Spawn runs `$py` directly under apptainer with no sshd in between, so it has no
-    # profile.d to write and nothing to re-export.
-    assert "CCC_FEATURE_VARS" not in _script(features=["vlearn"])
-
-
-def test_the_re_exported_names_are_derived_from_what_the_profile_set():
-    """Derived from `$featenv`, never listed: a profile that introduces a variable then needs no edit
-    in spawns.py, and the symptom of forgetting one would be exactly the bug above. Run for real,
-    because the derivation is the part that could be quietly wrong."""
-    lines = [ln for ln in _pool(features=["vlearn"]).splitlines() if ln.startswith("featnames=")]
-    assert len(lines) == 2, "the derivation and its trailing-space strip"
-
-    def names(featenv: str) -> str:
-        r = subprocess.run(["bash", "-c", "\n".join([f"featenv={featenv!r}", *lines,
-                                                     'printf %s "$featnames"'])],
-                           capture_output=True, text=True, check=True)
-        return r.stdout
-
-    assert names(",PYTHONPATH=/ccc/feature/vlearn,VL_WORKING_DIRECTORY=/ccc/vlwd,"
-                 "LD_LIBRARY_PATH=/a:/b") == "PYTHONPATH VL_WORKING_DIRECTORY LD_LIBRARY_PATH"
-    # No profiled Feature: an empty list, so the loop is a no-op rather than a case anyone branches on.
-    assert names("") == ""
 
 
 def test_the_arm_package_wins_over_anything_the_submitter_installed():
@@ -229,17 +154,6 @@ def test_the_licence_key_is_never_bound_into_an_ordinary_spawn():
     assert "License.key" not in body
     for sub in ("assets", "shaders", "TurboActivate.dat"):
         assert f"$VLEARN_PATH/{sub}:$VLEARN_PATH/{sub}:ro" in body
-
-
-def test_the_environments_lib_dir_is_only_used_when_there_is_an_environment():
-    """LD_LIBRARY_PATH is built from `$envmount`, which the Environment branch sets and the base branch
-    leaves empty — so a Spawn with no Environment does not get a trailing `/lib` pointing at a mount
-    that was never made."""
-    body = _script(features=["vlearn"],
-                   declared=env.Manifest(kind="uv-requirements", path="requirements.txt"))
-    assert 'envbind=""; envmount=""' in body
-    assert f'envmount="{env.ENV_MOUNT}"' in body
-    assert '[ -n "$envbind" ] && vl_ld="$vl_ld:$envmount/lib"' in body
 
 
 def test_a_feature_failure_ends_the_spawn_the_way_every_other_failure_does():
@@ -682,14 +596,6 @@ def test_the_interpreter_is_asked_where_its_site_packages_is():
 
 # --- the Feature's system libraries reach the Arm ---------------------------
 
-def test_the_feature_library_prefix_is_mounted_for_the_payload():
-    """Seeded into `$featbind`, which is already on both payloads' --bind — so a Tide Pool on a vlearn
-    Arm gets exactly the runtime a Script Spawn would, which is the whole point of debugging in one."""
-    body = _script(features=["vlearn"])
-    assert f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"' in body
-    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" in body, "and on LD_LIBRARY_PATH"
-
-
 def test_both_cuda_majors_are_on_the_library_path():
     """The CUDA major belongs to the ARM's vlearn build, but the pin lives on the Head and applies to
     every Arm. A wheel built against CUDA 12 died on `OSError: libcudart.so.12` with only the 13
@@ -722,55 +628,6 @@ def test_the_feature_description_lists_both_majors():
     alternate prefix that only appeared in the job script would be half a gigabyte nothing explains."""
     text = hf.runtime_summary("vlearn")
     assert "cuda-cudart=13" in text and "cuda-cudart=12" in text
-
-
-def test_the_library_prefix_is_built_outside_the_project():
-    """$proj is the User's project; CCC's own libraries stay out of it. Built straight into
-    $scratch."""
-    body = _script(features=["vlearn"])
-    assert 'mkdir -p "$scratch/env" "$scratch/tmp" "$scratch/featlibs"' in body
-    assert f"$proj/{env.STUB_ROOT}" not in body, "no Feature library ever lands in the project"
-
-
-def test_the_prefix_does_not_shadow_the_images_own_terminal_library():
-    """The whole of this prefix's lib/ goes on LD_LIBRARY_PATH, so anything conda dragged in shadows the
-    image's copy for EVERY process in the Pod, not just the Feature's. ncurses is the one that shouts:
-    no profile's `libs` asks for it (it rides in under mesalib, via llvm), and the image's `tput` is
-    built against Ubuntu's libtinfo — so a Tide Pool opened on five `symbol lookup error: undefined
-    symbol: _nc_safe_fopen` lines, one per tput in oh-my-zsh's you-should-use plugin.
-
-    Deletable only because the image supplies a libtinfo.so.6 of its own for whatever in here linked it.
-    This is NOT a general prune of duplicates — libstdc++ must stay, conda's being routinely newer than
-    the image's and the Feature's own objects built against it.
-
-    **The path is the test.** This line runs in the job script, ON THE ARM — only what goes through
-    `ccc_build` is inside the Pod, where FEATLIB_MOUNT is a mount that exists. Written against the mount
-    it matched nothing, and `rm -f` on a glob matching nothing is silent and exits 0: the prune ran on
-    every Spawn, deleted nothing every time, and the error went on printing with the fix installed and
-    seemingly applied. An earlier version of this test asserted the literal line and so passed
-    throughout, which is why it now asserts where the line points instead.
-    """
-    body = _script(features=["vlearn"])
-    prefix = '"$scratch"/featlibs'
-    prune = f"rm -f {prefix}/*/lib/libtinfo.so* {prefix}/*/lib/libncurses*.so*"
-    assert prune in body
-    # The same directory the script creates and later binds — not the Pod-side name for it, which
-    # nothing outside the Pod can resolve.
-    assert 'mkdir -p "$scratch/env" "$scratch/tmp" "$scratch/featlibs"' in body
-    assert hf.FEATLIB_MOUNT not in prune
-    # After the build that creates them, and before the bind that turns the prefix read-only.
-    assert body.index("micromamba create") < body.index(prune) < body.index(
-        f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"')
-    assert "libstdc++" not in body, "only the terminal library goes, never the C++ runtime"
-
-
-def test_the_prune_is_not_handed_to_the_pod_to_run():
-    """`ccc_build` is the only thing here that crosses into the Pod (`apptainer exec … "$@"`), and it
-    gets no shell — so a glob handed to it would arrive at `rm` as a literal `*` and match nothing.
-    Both ways of getting this wrong end identically: a silent no-op that looks like a fix."""
-    body = _script(features=["vlearn"])
-    prune_line = next(ln for ln in body.splitlines() if ln.strip().startswith("rm -f"))
-    assert "ccc_build" not in prune_line
 
 
 def test_a_spawn_that_asked_for_no_feature_never_mounts_one():

@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from ccc_head_api import db, siphons, spawns as head_spawns, tick
-from cuttle import config, setup, spawns as cli_spawns, system, templates
+from cuttle import config, setup, system, templates
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -210,39 +210,6 @@ class TestTheSweep:
         assert siphons.sweep(conn, now) == 0
 
 
-class TestThePinnedRoadKnowsTheHeadsAddress:
-    """`cuttle run --node` does not travel over HTTP — it shells into the API venv (spawns.py's
-    `_submit_pinned`). That subprocess inherits nothing from the ccc-head-api systemd unit, so the
-    Head's own mesh address has to be handed to it explicitly: it is the one unit variable with no
-    usable default, being dynamic.
-
-    Without it `%%HEAD_IP%%` renders empty and every pinned Spawn's stage-out becomes
-    `rsync://<tok>@/out-<tok>/` — a URL with no host, which fails on a remote Arm minutes later and
-    on another machine. `submit_checked` refuses outright rather than let one out, so the visible
-    symptom is a pinned submit that cannot work at all while an unpinned one (served by the running
-    service, which has the variable) works fine."""
-
-    def _argv(self, monkeypatch) -> list[str]:
-        argv: list[str] = []
-        monkeypatch.setattr(cli_spawns.auth, "_api", lambda *a, **kw: {"username": "alice"})
-        monkeypatch.setattr(cli_spawns.mesh, "tailscale_ip", lambda: "100.99.0.1")
-        monkeypatch.setattr(cli_spawns, "run", lambda a, **kw: argv.extend(a)
-                            or type("R", (), {"returncode": 0, "stdout": "4242\n", "stderr": ""})())
-        cli_spawns._submit_pinned("train.py", [], 60, 24, 1, "willpersonal")
-        return argv
-
-    def test_it_carries_the_heads_mesh_ip_into_the_admin_tool(self, monkeypatch):
-        assert "CCC_MESH_IP=100.99.0.1" in self._argv(monkeypatch)
-
-    def test_the_db_path_is_still_there_too(self, monkeypatch):
-        """The extra env is inserted beside CCC_HEAD_DB, ahead of the interpreter — `env` stops
-        reading assignments at the first non-assignment word, so an entry that landed after the
-        python path would silently become one of the admin tool's arguments instead."""
-        argv = self._argv(monkeypatch)
-        assert f"CCC_HEAD_DB={config.HEAD_DB}" in argv
-        assert argv.index("CCC_MESH_IP=100.99.0.1") < argv.index("-m")
-
-
 class TestTheTickClosesThem:
     """One wiring test, not a pattern. Every condition `sweep` decides on is covered above against the
     function directly; this drives the real `tick.once` end to end for the one thing those cannot see —
@@ -275,9 +242,8 @@ class TestTheRenderedScript:
     def render(self, **kw):
         kw.setdefault("minutes", 60)
         kw.setdefault("constraint", "vram24")
-        kw.setdefault("node", None)
-        return head_spawns._render(sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-                                   token="a3f9", secret="s3cr3t", **kw)
+        return head_spawns._render(sink_tag="deadbeef", gpu=1, token="a3f9", secret="s3cr3t",
+                                   tidepool_port=31000, tidepool_pubkey="ssh-ed25519 AAAA", **kw)
 
     def test_it_names_no_shared_module(self):
         """The shared modules this phase deletes. A script still naming either would work today (the
@@ -325,8 +291,7 @@ class TestSubmitOpensAndBindsOne:
         monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
 
         def go():
-            jid = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                                     minutes=60, constraint="vram24")
+            jid = head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="vram24")
             return jid, bodies["script"]
         return go
 
@@ -357,8 +322,7 @@ class TestSubmitOpensAndBindsOne:
             return type("R", (), {"stdout": "4812\n", "stderr": "", "returncode": 0})()
 
         monkeypatch.setattr(head_spawns.subprocess, "run", fake_run)
-        head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                           minutes=60, constraint="vram24")
+        head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="vram24")
         assert len(seen["secrets"]) == 1
 
     def test_an_sbatch_that_fails_leaves_no_siphon_behind(self, state, conn, monkeypatch, tmp_path):
@@ -378,8 +342,7 @@ class TestSubmitOpensAndBindsOne:
         # Siphon re-raises sbatch's refusal carrying what it said (head_spawns._said). The type is
         # incidental here — what this test is about is the module not surviving the failure.
         with pytest.raises(RuntimeError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               minutes=60, constraint="vram24")
+            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="vram24")
         assert list(siphons.RSYNCD_DIR.iterdir()) == []
 
 

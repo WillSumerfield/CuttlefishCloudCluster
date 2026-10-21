@@ -657,18 +657,10 @@ def teardown(
         teardown_mod.teardown_client()
 
 
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@app.command()
 def run(
-    ctx: typer.Context,
-    script: str = typer.Argument(
-        None, help="Python script to run inside the Pod. With --tidepool: a Spawn id to attach/reattach "
-                   "to instead of requesting a new one (unused otherwise)."),
-    tidepool: bool = typer.Option(
-        False, "--tidepool", help="A live interactive shell instead of a script — see "
-                                  "docs/elements/tide-pool.md. Requests one (or attaches to an existing id given as "
-                                  "the positional arg), waits for placement, and drops you into it. "
-                                  "Disconnecting does NOT end it — `cuttle cancel <id>` does, or "
-                                  "--time running out."),
+    spawn_id: str = typer.Argument(
+        None, help="A Tide Pool's Spawn id to attach/reattach to instead of requesting a new one."),
     time: int = typer.Option(
         None, "--time", help="Wall-clock limit, in MINUTES. Required. The Spawn is killed at this "
                             "limit, and Karma is escrowed against it — over-estimating costs you "
@@ -680,67 +672,28 @@ def run(
     gpu: int = typer.Option(
         1, "--gpus", "--gpu", help="GPUs to hold at once, all on one machine. --vram is the total "
                                    "across them. Refused if no Arm has this many."),
-    follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
-    node: str = typer.Option(
-        None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
-                             "need (--vram), never which machine they want."),
     feature: list[str] = typer.Option(
-        # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
                                 "none; unsatisfiable requests are refused, not queued."),
     vscode: bool = typer.Option(
-        False, "--vscode", help="With --tidepool only. Open the shell in VS Code instead of this "
-                                "terminal. Writes an ssh alias this box can reach the Pod by, then "
-                                "launches VS Code straight into the Pod's working directory. Without it "
-                                "the alias is printed and VS Code's own 'Connect to Host' picker "
-                                "finds it."),
+        False, "--vscode", help="Open the shell in VS Code instead of this terminal. Writes an ssh "
+                                "alias this box can reach the Pod by, then launches VS Code straight "
+                                "into the Pod's working directory. Without it the alias is printed and "
+                                "VS Code's own 'Connect to Host' picker finds it."),
 ):
-    """Submit a Spawn: the Head runs your script inside a Pod. Requires `cuttle login`. Extra args
-    after the script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -- --epochs 5`).
+    """Request (or reattach to) a Tide Pool: a live shell in a Pod. Requires `cuttle login`.
+
+    Requests one (or attaches to an existing id given as the positional arg), waits for placement, and
+    drops you into it — see docs/elements/tide-pool.md. Disconnecting does NOT end it: `cuttle cancel
+    <id>` does, or --time running out.
 
     --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody
     declared, and a --vram that defaulted to the fleet's biggest card would make every untouched
     field eligible for that one GPU alone — queued behind everything, at the highest Demand, for work
     that may need 2 GB.
-
-    --tidepool replaces the script with a live shell — see
-    cuttle.tidepool for that flow; everything below this point is the ordinary script path.
     """
-    feature = list(feature) if feature else []
-    if tidepool:
-        return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node,
-                                features=feature, follow=follow, vscode=vscode)
-    if vscode:
-        ui.warn("--vscode is ignored without --tidepool — a script Spawn has no shell to open")
-    wizard = script is None
-    # The card count shows only past one: at a single Device it is what every Spawn does, and `24G`
-    # already IS the per-card figure, so printing it would add a word and say nothing.
-    with ui.section("Submit a Spawn",
-                    lambda: f"{script}  {time}min  {vram}G" + (f"  {gpu} GPUs" if gpu > 1 else "")):
-        # No file picker: you pass the path. Prompting through a directory listing is slower than
-        # typing a name you already know, and wrong the moment the script lives in a subdirectory.
-        script = ui.need(script, "the script", lambda: ui.ask_text("Which script? (path)"))
-        # --time and --vram get no pre-filled default, deliberately: a default --vram of the
-        # biggest card would make every untouched field eligible for it alone — queued at the
-        # highest Demand for work that may need 2 GB.
-        time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
-        vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
-        if wizard:
-            gpu = ui.ask_int("How many GPUs? (all on one machine)", default=str(gpu))
-            follow = follow or ui.ask_confirm("Stream output until it ends?", False)
-            # Optional, never gates submission. Offered from the built-in catalog
-            # (config.FEATURE_NAMES) — a constant, so no Head call and no failure mode here. Whether
-            # an Arm actually carries a Feature is checked at submit, not here.
-            if not feature and ui.ask_confirm("Require any Arm Features?", False):
-                for feat in config.FEATURE_NAMES:
-                    if ui.ask_confirm(f"Require {feat!r}?", False):
-                        feature.append(feat)
-    if wizard:
-        spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, features=feature)
-        if not ui.ask_confirm("Submit?", True):
-            raise ui.abort("not submitted")
-    spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args,
-                      node=node, minutes=time, vram=vram, features=feature)
+    tidepool_mod.run(spawn_id, minutes=time, vram=vram, gpu=gpu,
+                     features=list(feature) if feature else [], vscode=vscode)
 
 
 @app.command()

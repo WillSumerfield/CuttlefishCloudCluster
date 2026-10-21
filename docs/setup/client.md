@@ -66,15 +66,13 @@ Your first login **forces you to change the temporary password**. You cannot ski
 
 ## 3. Run something
 
-From your project folder, open the menu and pick **Submit a Spawn**:
+Open the menu and pick **Open a Tide Pool** — a live shell on a GPU machine:
 
 ```sh
-cd my-project
 cuttle
 ```
 
-It asks for the things a Spawn cannot be submitted without, then shows you the whole thing and
-asks before it sends anything:
+It asks for the things a Spawn cannot be requested without:
 
 - `--time` — wall-clock minutes. Your job is killed at it.
 - `--vram` — GPU memory in GB, totalled across the cards you asked for. Every card holding its share
@@ -86,7 +84,7 @@ asks before it sends anything:
 None have defaults. If you already know them, skip the prompting entirely:
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml
+cuttle run --time 60 --vram 24
 ```
 
 Every command works this way — give it what you have, and it asks for the rest. Then:

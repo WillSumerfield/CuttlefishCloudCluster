@@ -134,7 +134,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   real, and they enclose the **whole** Spawn — the payload and the wrapper that stages its results
   out, not just the payload: a Spawn cannot see the host's filesystem, the machine's other processes, or
   any concurrent Spawn's working files, including their scratch. A Pod is the *walls*, never the
-  contents. What is installed within one is that Spawn's **Environment**, its **Substrate**, and
+  contents. What is installed within one is that Spawn's **Environment** and
   whatever else the Spawn goes on to install for itself — every Pod's own system is writable, and no
   Pod keeps what it holds. That system is the Spawn's alone, unreachable by every other Spawn on the
   machine, and discarded with the Pod. And a Pod is not only an
@@ -142,14 +142,10 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 - **Environment** — the Python a **Spawn**'s code actually runs against inside its **Pod**. It is
   **self-contained**: it carries its own interpreter and inherits nothing from the machine or from the
   Pod's image, so the same declaration runs the same way everywhere and nothing the cluster changes
-  underneath can alter what a Spawn already runs. A **User** declares one in their project, in the
-  dependency file their own tooling already writes, and **every Spawn names the file it declares** —
-  the cluster supplies no default and infers nothing, so a Spawn that names no declaration is refused
-  before it exists. The requirement is on the *naming*, not on the contents: a file that declares
-  nothing is still a complete declaration, and a User whose work needs no package answers by naming
-  an empty one rather than by declining. CCC never guesses which file describes the work, because a
-  dependency file in a repo is not always the one that does. A **Tide Pool** is the one exception, and may decline: it is a
-  shell rather than a run, and one opened with no project has no file in it to name.
+  underneath can alter what a Spawn already runs. A **User** declares one in the dependency file their
+  own tooling already writes, and names that file — CCC never guesses which file describes the work,
+  because a dependency file in a repo is not always the one that does. Nothing declares one at
+  present: the batch Spawns that did are gone, and a **Tide Pool** runs with none.
   The **Head** decides what a declaration *means* — which file, which shape, which commands — and the
   **Arm** the Spawn is placed on builds it, at job start, out of its own bandwidth. A built Environment
   is several GB and the mesh is not a LAN, so the declaration travels and the packages do not. It is
@@ -159,27 +155,9 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   again, so it is never something a User owns. What
   each Arm keeps instead is the *downloads*, cached node-locally, which is what makes rebuilding every
   time affordable.
-  Everything decidable without building is still refused at submit, before the Spawn exists: no
-  declaration, a named file that is not there, one nothing can classify, a node without the build tools.
-  A **build** that fails is a failed Spawn — it holds a **Device** while it builds, so its **Karma** is
+  Everything decidable without building is refused before the Spawn exists: a named file that is not
+  there, one nothing can classify, a node without the build tools. A **build** that fails is a failed Spawn — it holds a **Device** while it builds, so its **Karma** is
   spent rather than returned.
-- **Substrate** — the system packages a **Spawn** declares, installed into its **Pod** beneath its
-  **Environment**. What the Environment is to Python, the Substrate is to everything under it: the
-  libraries and tools a build compiles against and a script shells out to, which no dependency file can
-  name because they are not Python at all. Declared in a file in the Spawn's **own project**, named at
-  submit exactly as an Environment's is — the cluster supplies no default and infers nothing here
-  either — and *optional*, unlike an Environment, because most work needs none.
-  It is **not** an **Arm Feature**, and the two are never confused: a Feature is heavy or licence-gated
-  software that lives on particular **Arm**s and therefore decides which of them are **eligible**; a
-  Substrate constrains placement not at all, because it is fetched wherever the Spawn lands.
-  Laid down BEFORE the Environment is built, so a package that must compile against a system library
-  finds it — which is the whole reason it is declared rather than merely installed once the Spawn is
-  already running. A Spawn may still install more for itself afterwards; only what it *declared* is
-  reproduced. Nothing about either survives the **Pod**.
-  A name nothing can install is a failed Spawn on the same terms a failed **build** is, since no
-  archive can be consulted at submit — but a file that is not there, or one holding something that is
-  not a package name, is refused at submit like every other declaration that can be judged without
-  building.
 - **Attribution** — the Head's binding of each Spawn to the **User** who submitted it. It is what
   answers "whose Spawn is this?" for the queue, the Dashboard, and Karma billing — and it is the
   *authoritative* answer: a node knows whose work it runs (that is the Spawn's **Guise**), but only the
@@ -244,8 +222,8 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   in a **Pod**, with the Licence directory bound at that Guise's home — so the state lands there by
   construction, and nobody has to find or copy anything. Submitted as the Arm is admitted, beside the
   Power benchmark, and for the same reason: **an Arm joins with its declarations true or it does not
-  join**. It is the one Spawn permitted to see the Arm's product *key*, and the flag that says so
-  exists only on the Head-local admin path — `/submit` has no equivalent and never should.
+  join**. It is the one Spawn permitted to see the Arm's product *key*, and nothing a User can submit
+  asks for that — `/submit` has no equivalent and never should.
 
 ## Economy concepts
 

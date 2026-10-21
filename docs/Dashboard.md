@@ -45,7 +45,7 @@ files): Settings → Privacy and security → Manage certificates → Authoritie
 
 | | |
 |---|---|
-| **Queue** | The live cluster: everything pending or running, and whose it is. Also where you submit. |
+| **Queue** | The live cluster: everything pending or running, and whose it is. |
 | **History** | Past Spawns, with cost and outcome. |
 | **Arms** | The fleet — who owns what, and its state. Retract and Return your own. |
 | **Karma** | Everyone's standing, and your own ledger. |
@@ -54,16 +54,6 @@ files): Settings → Privacy and security → Manage certificates → Authoritie
 | **Users** | Admin only. |
 
 Click a Spawn anywhere to open its detail page: state, logs, cost.
-
-## Submitting from the browser
-
-Fill in the same three required things the CLI requires — the script, the wall-clock limit, the VRAM.
-There is a [Tide Pool](elements/tide-pool.md) mode which hides the script and asks only for the
-resource needs.
-
-**GPUs** is a dropdown rather than a number, because only some counts are real: it lists what the
-fleet can actually place, and greys out the rest. Memory is the *total* across the cards you pick, so
-choosing 2 shows you what each one will have to hold.
 
 ## What the CLI does that this cannot
 

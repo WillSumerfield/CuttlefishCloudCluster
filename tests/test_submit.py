@@ -1,7 +1,7 @@
-"""What a Spawn must declare, and what only an Admin may.
+"""What a Tide Pool request must declare, and the job script the Head renders for it.
 
 `--time` and `--vram` are required (nothing can price a Spawn whose length nobody declared, or place one
-whose needs nobody declared). `--node` is refused over the API for everyone — pinning is Head-local only.
+whose needs nobody declared).
 """
 
 import os
@@ -12,7 +12,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import typer
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -20,21 +19,23 @@ from ccc_head_api import db
 from ccc_head_api import main as head_main
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
-from cuttle import spawns as cli_spawns
 from cuttle import teardown
 from cuttle.main import app as cli_app
+
+
+def _render(**kw):
+    """A Tide Pool's job script — the only kind there is. Defaults for everything a test isn't about."""
+    kw = {"sink_tag": "deadbeef", "gpu": 1, "minutes": 60, "constraint": "vram24|vram80",
+          "token": "a3f9", "secret": "s3cr3t", "tidepool_port": 41000,
+          "tidepool_pubkey": "ssh-ed25519 AAAA x", **kw}
+    return head_spawns._render(**kw)
 
 
 class TestRenderedSbatch:
     """The #SBATCH header the Head writes for a Spawn."""
 
     def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24|vram80")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-            token="a3f9", secret="s3cr3t", **kw)
+        return _render(**kw)
 
     def test_time_limit_is_declared(self):
         """A bare integer is minutes to Slurm. Required of every Spawn: the partition is
@@ -47,11 +48,6 @@ class TestRenderedSbatch:
     def test_no_constraint_line_when_empty(self):
         """An empty `#SBATCH --constraint=` would match no node at all, rather than any node."""
         assert "--constraint" not in self.render(constraint="")
-
-    def test_nodelist_only_when_pinned(self):
-        assert "#SBATCH --nodelist=box" in self.render(node="box")
-        assert "--nodelist" not in self.render(node=None)
-
 
 class TestTheSbatchSinkOutlivesItsJobId:
     """`cuttle teardown` drops Slurm's state dir, so the next cluster issues job ids from 1 again while
@@ -66,9 +62,7 @@ class TestTheSbatchSinkOutlivesItsJobId:
     """
 
     def render(self, sink_tag="deadbeef12345678"):
-        return head_spawns._render(
-            sink_tag=sink_tag, gpu=1, script="train.py", args=[],
-            node=None, minutes=60, constraint="", token="a3f9", secret="s3cr3t")
+        return _render(sink_tag=sink_tag, constraint="")
 
     def test_the_header_and_the_shell_name_the_same_file(self):
         """Two places name this path — the #SBATCH header slurmd opens, and the `sink=` the wrapper's
@@ -149,12 +143,7 @@ class TestRemoteLiveStreaming:
     already (`stage_out() { :; }`) and must stay untouched — these tests pin that boundary too."""
 
     def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24|vram80")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-            token="a3f9", secret="s3cr3t", **kw)
+        return _render(**kw)
 
     def _remote_branch(self, script: str) -> str:
         """The `else` (remote Arm) block of JOB_SCRIPT, isolated from the Head branch above it."""
@@ -219,12 +208,7 @@ class TestStageOutIsRetried:
     nothing but this script's own tail."""
 
     def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24|vram80")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-            token="a3f9", secret="s3cr3t", **kw)
+        return _render(**kw)
 
     def test_the_final_stage_out_retries(self):
         script = self.render()
@@ -273,8 +257,7 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
         monkeypatch.setattr(head_spawns.siphons, "bind",
                             lambda *a, **kw: (_ for _ in ()).throw(OSError("disk gone")))
         with pytest.raises(OSError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               minutes=60, constraint="")
+            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="")
         assert rig == [9001], "the job sbatch already started must not be left running"
 
     def test_a_cancel_that_itself_fails_does_not_mask_the_real_error(self, rig, monkeypatch, tmp_path):
@@ -285,12 +268,10 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
         monkeypatch.setattr(head_spawns.slurm, "cancel",
                             lambda jid: (_ for _ in ()).throw(RuntimeError("scancel missing")))
         with pytest.raises(OSError, match="disk gone"):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               minutes=60, constraint="")
+            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="")
 
     def test_a_clean_submit_cancels_nothing(self, rig, tmp_path):
-        job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                                    minutes=60, constraint="")
+        job_id = head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="")
         assert job_id == 9001
         assert rig == []
 
@@ -318,9 +299,8 @@ class TestSbatchsRefusalReachesTheOperator:
         assert said == "sbatch: error: Invalid account"
 
     def test_a_multi_line_refusal_arrives_whole(self):
-        """Flattened, not truncated. `cuttle.spawns._submit_pinned` reports the LAST line of the admin
-        tool's stderr and nothing else, so a refusal split over two lines would cross that boundary as
-        its second — and sbatch habitually puts the verb on one line and the reason on the next."""
+        """Flattened, not truncated: sbatch habitually puts the verb on one line and the reason on the
+        next, and the caller reports this as one sentence."""
         said = head_spawns._said(self._err(
             stderr="sbatch: error: Batch job submission failed:\nRequested node configuration is not "
                    "available\n"))
@@ -346,8 +326,7 @@ class TestSbatchsRefusalReachesTheOperator:
         _submit_rig(monkeypatch, tmp_path)
         self._only_sbatch_fails(monkeypatch, self._err(stderr="sbatch: error: Invalid user id 60002"))
         with pytest.raises(RuntimeError, match="Invalid user id 60002"):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               minutes=60, constraint="")
+            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="")
 
     def test_the_siphon_is_still_closed_on_the_way_out(self, monkeypatch, tmp_path):
         """The translation sits inside the handler that discards the Siphon. No job id will ever
@@ -358,8 +337,7 @@ class TestSbatchsRefusalReachesTheOperator:
         monkeypatch.setattr(head_spawns.siphons, "discard", lambda tok: discarded.append(tok))
         self._only_sbatch_fails(monkeypatch, self._err(stderr="nope"))
         with pytest.raises(RuntimeError):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               minutes=60, constraint="")
+            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="")
         assert len(discarded) == 1
 
     def test_a_failure_that_is_not_sbatch_is_left_alone(self, monkeypatch, tmp_path):
@@ -368,39 +346,7 @@ class TestSbatchsRefusalReachesTheOperator:
         _submit_rig(monkeypatch, tmp_path)
         self._only_sbatch_fails(monkeypatch, OSError("disk gone"))
         with pytest.raises(OSError, match="disk gone"):
-            head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               minutes=60, constraint="")
-
-    def _pinned_failure(self, monkeypatch, stderr: str) -> str:
-        """What `cuttle run --node` puts in front of the operator when the admin tool dies."""
-        said = []
-        monkeypatch.setattr(cli_spawns.auth, "_api", lambda *a, **kw: {"username": "alice"})
-        monkeypatch.setattr(cli_spawns.mesh, "tailscale_ip", lambda: "100.99.0.1")
-        monkeypatch.setattr(cli_spawns.ui, "abort",
-                            lambda msg, **kw: said.append(msg) or typer.Exit(1))
-        monkeypatch.setattr(cli_spawns, "run", lambda a, **kw: type("R", (), {
-            "returncode": 1, "stdout": "", "stderr": stderr})())
-        with pytest.raises(typer.Exit):
-            cli_spawns._submit_pinned("train.py", [], 60, 24, 1, "gpu-box")
-        return said[0]
-
-    def test_the_cli_drops_the_exception_class_from_the_line_it_prints(self, monkeypatch):
-        """`_submit_pinned` reads the last line of a Python traceback, so the message arrives
-        class-first — "RuntimeError: sbatch refused...". The class name is the only part of that line
-        which tells an operator nothing."""
-        msg = self._pinned_failure(monkeypatch,
-                                   "Traceback (most recent call last):\n  File \"x\", line 1\n"
-                                   "RuntimeError: sbatch refused this Spawn: sbatch: error: "
-                                   "Invalid account\n")
-        assert "sbatch refused this Spawn: sbatch: error: Invalid account" in msg
-        assert "RuntimeError" not in msg
-
-    def test_a_line_that_is_not_an_exception_is_printed_as_it_stands(self, monkeypatch):
-        """The strip is anchored to a leading class name so it cannot eat a real message. sudo's own
-        refusals arrive here too, and they are not tracebacks."""
-        msg = self._pinned_failure(monkeypatch, "sudo: a password is required\n")
-        assert "sudo: a password is required" in msg
-
+            head_spawns.submit(user_id=1, gpu=1, minutes=60, constraint="")
 
 def _submit_rig(monkeypatch, tmp_path) -> None:
     """A Head with just enough around it for `submit` to reach sbatch."""
@@ -421,62 +367,43 @@ class TestPodContainment:
     `/proc/<pid>/root` of any ccc-owned host process, and reads every concurrent Spawn's scratch through
     the auto-mounted /tmp.
 
-    Both payloads are pinned here — the script path and the Tide Pool path — because the Tide Pool is
-    the one that hands a User a live shell rather than running code they wrote.
+    The Tide Pool hands a User a live shell, which is why its payload is the one pinned here.
     """
 
     def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-            token="a3f9", secret="s3cr3t", **kw)
+        return _render(**kw)
 
-    def tidepool(self):
-        return self.render(tidepool_port=41000, tidepool_pubkey="ssh-ed25519 AAAA x")
-
-    @pytest.mark.parametrize("what", ["script", "tidepool"])
-    def test_both_payloads_are_contained(self, what):
-        script = self.render() if what == "script" else self.tidepool()
+    def test_both_payloads_are_contained(self):
+        script = self.render()
         payload = script[script.index("apptainer exec"):]
         # --contain: no $HOME, no host /tmp, no cwd auto-bind. --pid: its own procfs, which is the one
         # flag that closes /proc/<pid>/root and another Spawn's /proc/<pid>/environ.
         assert "--contain" in payload
         assert "--pid" in payload
 
-    @pytest.mark.parametrize("what", ["script", "tidepool"])
-    def test_the_project_is_bound_and_is_the_working_dir(self, what):
-        """`--contain` drops the cwd auto-bind both payloads used to rely on, so $proj has to be named
-        twice over: once as a bind source (or the code is not in the Pod at all) and once as --pwd (or
-        cwd is $HOME and `python train.py` fails on a file that is right there)."""
-        script = self.render() if what == "script" else self.tidepool()
+    def test_the_project_is_bound_and_is_the_working_dir(self):
+        """`--contain` drops the cwd auto-bind, so $proj has to be named twice over: once as a bind
+        source (or it is not in the Pod at all) and once as --pwd (or the shell starts in $HOME)."""
+        script = self.render()
         payload = script[script.index("apptainer exec"):]
         assert '--pwd "$proj"' in payload
         assert '$proj' in payload[payload.index("--bind"):payload.index("--env")]
 
-    @pytest.mark.parametrize("what", ["script", "tidepool"])
-    def test_the_locale_is_forced(self, what):
+    def test_the_locale_is_forced(self):
         """The base PyTorch image never ran locale-gen, so an inherited locale makes the payload's own
         shell write a "cannot change locale" warning into the Spawn's `err` before it has done
         anything. C.UTF-8 ships pre-generated on every Debian/Ubuntu image."""
-        script = self.render() if what == "script" else self.tidepool()
+        script = self.render()
         payload = script[script.index("apptainer exec"):]
         assert "LC_ALL=C.UTF-8" in payload and "LANG=C.UTF-8" in payload
 
-    def test_the_script_path_also_refuses_the_host_passwd(self):
-        """`--contain` blocks this by itself now (measured: host 55 lines -> image 21), but the script
-        path never got the Tide Pool's explicit flag and the intent is worth stating in both."""
-        assert "--no-mount /etc/passwd,/etc/group" in self.render()
-
     def test_the_remote_branch_creates_the_project_dir_itself(self):
         """$proj is a bind source and a --pwd target, and apptainer treats a missing one as fatal."""
-        script = self.tidepool()
+        script = self.render()
         remote = script[script.index("\nelse"):script.index("\nfi\n")]
         assert 'mkdir -p "$proj"' in remote
 
-    @pytest.mark.parametrize("what", ["script", "tidepool"])
-    def test_a_mig_card_reaches_the_pod_as_a_uuid(self, what):
+    def test_a_mig_card_reaches_the_pod_as_a_uuid(self):
         """CUDA cannot name a MIG device by index — only a `MIG-<uuid>` reaches one. A card in MIG mode
         with Slurm's own CUDA_VISIBLE_DEVICES left on it presents the Pod with NO GPU at all: not a
         slower one, none. That is what dex's benchmark died of, and it is what every Spawn on that box
@@ -489,7 +416,7 @@ class TestPodContainment:
 
         Decided on the NODE: whether an Arm carves its cards is a fact about the Arm, and
         the Head renders one script for a fleet it does not survey."""
-        script = self.render() if what == "script" else self.tidepool()
+        script = self.render()
         assert '[ -n "$ccc_uuid" ] && migbind=",/dev/nvidia-caps" && ' \
                'migenv=",CUDA_VISIBLE_DEVICES=$ccc_uuid"' in script
         payload = script[script.index("apptainer exec"):]
@@ -504,19 +431,11 @@ class TestPodContainment:
         assert "/dev/nvidia-caps" not in payload   # only in the guarded assignment above
         assert '"$migbind"' not in payload and '"$migenv"' not in payload
 
-    def test_the_feature_env_stays_last(self):
-        """`$featenv` accumulates `,NAME=value` fragments and must stay at the end of the --env list,
-        so $migenv goes BEFORE it rather than after — the invariant is the Feature profile's, and MIG
-        does not get to weaken it just because it arrived later."""
-        for script in (self.render(), self.tidepool()):
-            payload = script[script.index("apptainer exec"):]
-            assert payload.index("$migenv") < payload.index("$featenv")
-
     def test_the_pod_keeps_the_host_network(self):
-        """--net is deliberately NOT here: the payload needs internet egress, and the Tide Pool's sshd has to
+        """--net is deliberately NOT here: the Pod needs internet egress, and the Tide Pool's sshd has to
         be reachable at its port on the Arm's own address for the Head-side relay to reach it."""
-        for script in (self.render(), self.tidepool()):
-            assert "--net" not in script[script.index("apptainer exec"):]
+        script = self.render()
+        assert "--net" not in script[script.index("apptainer exec"):]
 
 
 class TestSpawnsRunAsTheirSubmitter:
@@ -554,8 +473,7 @@ class TestSpawnsRunAsTheirSubmitter:
         return calls
 
     def _submit(self, tmp_path, user_id=1):
-        return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[],
-                                  minutes=60, constraint="vram24")
+        return head_spawns.submit(user_id=user_id, gpu=1, minutes=60, constraint="vram24")
 
     def _sbatch(self, calls):
         return next(argv for argv, _ in calls if "sbatch" in argv)
@@ -619,7 +537,7 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 
 
 def post(c: TestClient, **meta):
-    meta.setdefault("script", "train.py")
+    meta.setdefault("tidepool", True)
     return c.post("/api/submit", json=meta)
 
 
@@ -644,36 +562,6 @@ class TestSubmitRequiresDeclarations:
         assert missing in r.json()["detail"]
 
 
-class TestNodeIsNotAvailableOverTheApi:
-    """Pinning a Spawn to a named Arm was admin-only over this route until Phase 6 settled that the
-    Head API exposes **no admin writes at all**. It is now `cuttle run --node`, on the Head.
-
-    A User declares what they NEED and lets Slurm choose. Naming a machine sidesteps Eligibility — and
-    with it, the Demand the Spawn should have added to every card that could have run it.
-    """
-
-    def test_non_admin_may_not_pin(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, node="gpu-box")
-        assert r.status_code == 403
-
-    def test_an_admin_may_not_pin_either(self, monkeypatch):
-        """The point of the phase. An Admin has no branch here, so a stolen admin Session buys
-        nothing a stolen User Session does not."""
-        r = post(client(monkeypatch, is_admin=True), minutes=60, vram=24, node="gpu-box")
-        assert r.status_code == 403
-        assert "on the Head" in r.json()["detail"]  # and it says where the capability went
-
-    def test_a_pin_is_refused_not_ignored(self, monkeypatch):
-        """Silently dropping `node` would submit a Spawn that ran somewhere the caller did not ask
-        for, and report success — worse than refusing."""
-        r = post(client(monkeypatch, is_admin=True), minutes=60, vram=24, node="typo")
-        assert r.status_code == 403
-
-    def test_submitting_without_a_pin_still_works(self, monkeypatch):
-        """The [U] needs-based path is untouched — only the admin branch was removed."""
-        assert post(client(monkeypatch, is_admin=False), minutes=60, vram=24).status_code == 200
-
-
 class TestFeatureRequirement:
     """Arm Features (docs/TODO.md): a Spawn may optionally require named capabilities (VSim,
     IsaacSim, ...) an Arm declared having at enroll. Most Spawns need none, and declaring some must
@@ -683,7 +571,7 @@ class TestFeatureRequirement:
     def _capture_constraint(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(head_spawns, "submit",
-                            lambda *a, **kw: captured.setdefault("constraint", a[5]) or 4242)
+                            lambda *a, **kw: captured.setdefault("constraint", a[3]) or 4242)
         return captured
 
     def test_absent_features_change_nothing(self, monkeypatch):
@@ -716,8 +604,8 @@ class TestFeatureRequirement:
 
 class TestAProfiledFeatureNeedsAnEnvironment:
     """A **Feature** carrying a runtime profile attaches its software to an **Environment** — it probes
-    the interpreter for its ABI, its nvidia lib dirs and its site-packages. A Spawn builds none, so it
-    has nothing to attach to.
+    the interpreter for its ABI, its nvidia lib dirs and its site-packages. A Tide Pool builds none, so
+    it has nothing to attach to.
 
     Decidable without building, so refused at submit (CONTEXT.md), not found on the Arm after a Device
     was already held."""
@@ -752,12 +640,11 @@ class TestCliRequiresTimeAndVram:
         return CliRunner().invoke(cli_app, ["run", *args])
 
     def test_bare_run_is_refused(self):
-        assert self.run("train.py").exit_code != 0
+        assert self.run().exit_code != 0
 
     @pytest.mark.parametrize("args", [
-        # --name is given in both, so what is missing is the one declaration each case is about.
-        ["train.py", "--time", "60"],   # no --vram
-        ["train.py", "--vram", "24"],   # no --time
+        ["--time", "60"],   # no --vram
+        ["--vram", "24"],   # no --time
     ])
     def test_half_a_declaration_is_refused(self, args):
         """The refusal names the flag that is missing. Since Phase 6 these are promptable, so the
@@ -911,12 +798,7 @@ class TestLicenceBind:
     """
 
     def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-            token="a3f9", secret="s3cr3t", **kw)
+        return _render(**kw)
 
     def test_a_spawn_with_no_feature_can_never_reach_the_licence(self):
         """The saved licence key is plaintext and world-readable, so the bind is gated on having asked
@@ -944,14 +826,12 @@ class TestLicenceBind:
         body = self.render(wants_licence=True)
         assert '[ -d "${CCC_LICENCE_HOME:-}" ]' in body
 
-    @pytest.mark.parametrize("tp", [None, 41000])
-    def test_both_payloads_carry_the_bind(self, tp):
-        """A Tide Pool is a Spawn that happens to run a shell — a User debugging why their licensed
-        software will not start is exactly who needs the licence present."""
-        kw = {"tidepool_port": tp, "tidepool_pubkey": "ssh-ed25519 AAAA x"} if tp else {}
-        body = self.render(wants_licence=True, **kw)
+    def test_the_payload_carries_the_bind(self):
+        """A User debugging why their licensed software will not start is exactly who needs the
+        licence present."""
+        body = self.render(wants_licence=True)
         payload = body[body.index("apptainer exec"):]
-        assert "$envbind$licbind" in payload
+        assert "$licbind" in payload[payload.index("--bind"):payload.index("--env")]
 
 
 class TestWhatASubmissionLandsAs:
@@ -1008,6 +888,6 @@ class TestNoRequeue:
         with db.connect() as conn:
             db.add_user(conn, "alice")
             uid = db.get_user(conn, "alice")["id"]
-        head_spawns.submit(uid, "train.py", 1, [], 60, "")
+        head_spawns.submit(uid, 1, 60, "")
         sbatch = next(c for c in calls if "sbatch" in c)
         assert "--no-requeue" in sbatch

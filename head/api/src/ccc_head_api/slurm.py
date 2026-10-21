@@ -227,7 +227,7 @@ def vram_constraint(vram_gb: int, gpus: int = 1) -> str:
 
 
 def feature_catalog() -> list[str]:
-    """The Arm Features CCC supports, for the Dashboard's submit composer (`GET /features`).
+    """The Arm Features CCC supports (`GET /features`).
 
     What the cluster can actually PLACE is narrower — see `all_feature_names`, which reports only what
     an admitted Arm carries. This is the vocabulary; that is the availability."""

@@ -354,57 +354,6 @@
   }
 }
 
-/*
- * Number fields carry our OWN stepper (app/NumberField.tsx), so the native spinner — an un-styleable OS
- * widget with a hard square edge, the same problem a native <select> is — is hidden everywhere a `field`
- * is a number input. Firefox: `appearance: textfield`; WebKit: kill the inner/outer spin pseudo-elements.
- */
-input[type="number"].field {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-input[type="number"].field::-webkit-outer-spin-button,
-input[type="number"].field::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-/* Themed stepper: two stacked chevrons pinned at the field's right, thin ink warming gold on hover. Input
- * gets extra right padding to clear them. Arrows sit above the field's feathered fill so they stay crisp
- * at the rim where the pool has dissolved. */
-.stepper {
-  position: relative;
-}
-.stepper > .field {
-  padding-right: 40px;
-}
-.stepper-arrows {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 18px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 1px;
-}
-.stepper-arrow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 12px;
-  color: var(--ink-mute);
-  transition: color 140ms var(--ease-swim);
-}
-.stepper-arrow:hover {
-  color: var(--gold);
-}
-.stepper-arrow svg {
-  width: 11px;
-  height: 11px;
-}
-
 /* Open menu of the custom `Select` (never native <select>'s OS popup, unstyleable). Raised by LUMINANCE not
  * a drop shadow; edges feather to transparent like a field, no border. Item padding insets text past the
  * feather. */

@@ -1,7 +1,2 @@
-# The failure case. No such package exists on PyPI, so the resolve fails, the build fails, and the
-# Spawn fails WITH IT — accepted, Escrowed, held, then ended with the build log as its `err` and a
-# non-zero exit. It is billed nothing: it never held a Device for a second of this.
-#
-# The thing to check is that it is a failed Spawn in your history and not a rejected submission —
-# `cuttle run` returns an id here, it does not error.
+# The failure case. No such package exists on PyPI, so the resolve fails and the build fails with it.
 ccc-no-such-package-9f3a==9.9.9

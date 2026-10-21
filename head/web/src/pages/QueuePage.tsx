@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
-import { session } from "../app/session";
 import { getArms, getSpawns, Unauthorized, type Arm, type Spawn } from "../api";
-import { SubmitComposer } from "../queue/SubmitComposer";
 import { LiveQueue } from "../queue/LiveQueue";
 
-/** The landing page: submit work, and see what the cluster is doing right now. Live only. */
+/** The landing page: what the cluster is doing right now. Live only. */
 export function QueuePage() {
   const { logout } = useAuth();
   const [spawns, setSpawns] = useState<Spawn[]>([]);
@@ -59,19 +57,7 @@ export function QueuePage() {
         ) : null
       }
     >
-      {/* Composer left, live queue right. Below lg they stack, composer first. The composer sticks as
-          the queue scrolls, so "run something" is always in reach. */}
-      <div className="grid gap-8 lg:grid-cols-[minmax(380px,500px)_1fr] lg:items-start">
-        <div className="lg:sticky lg:top-6">
-          <SubmitComposer
-            arms={arms}
-            isAdmin={session.isAdmin}
-            onSubmitted={refresh}
-          />
-        </div>
-
-        <LiveQueue spawns={spawns} onCancelled={onCancelled} />
-      </div>
+      <LiveQueue spawns={spawns} onCancelled={onCancelled} />
     </Page>
   );
 }

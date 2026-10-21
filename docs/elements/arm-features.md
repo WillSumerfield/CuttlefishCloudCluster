@@ -13,7 +13,7 @@ installed, and for some, the whole runtime environment a Spawn needs to load it.
 You ask for a Feature the same way you ask for VRAM: as a **need**, not a machine name.
 
 ```sh
-cuttle run sim.py --time 30 --vram 16 --manifest pyproject.toml --feature isaaclab
+cuttle run --time 30 --vram 16 --feature isaaclab
 ```
 
 That widens or narrows which Arms your Spawn can land on, and nothing else. You still never choose
@@ -32,19 +32,17 @@ Runs anywhere, needs no login — the catalog is a constant.
 **Require one:**
 
 ```sh
-cuttle run train.py --time 60 --vram 24 --manifest pyproject.toml --feature vlearn
+cuttle run --time 60 --vram 24 --feature isaaclab
 ```
 
 Repeatable, if you need more than one.
 
-**See what CCC arranges** for a Feature — the system libraries it builds for you, and which Python
-your own Environment has to be:
+**See what CCC arranges** for a Feature — the system libraries it builds, and which Python an
+Environment has to be:
 
 ```sh
 cuttle feature show vlearn
 ```
-
-You declare none of it. See [`examples/vlearn/`](../../examples/vlearn/) for a worked project.
 
 ## Commands
 
@@ -65,43 +63,18 @@ submitter runs directly.
 **`vlearn` is the second shape**: software whose licence is bound to the *machine*, so the copy that
 runs has to be the Arm's own. It also carries a **runtime profile** — CCC arranges the package,
 the bind mounts, the working directory, the caches and the environment variables your Spawn needs,
-so your script contains none of it.
+so your code contains none of it.
 
 That last part has to be CCC's job rather than yours. `LD_LIBRARY_PATH` is read by the dynamic loader
 once, at `exec` — nothing running inside your Spawn can set it for itself. Whatever arranges it has
 to run outside your process.
 
-### Writing against a Feature
+### Profiled Features are refused for now
 
-**You declare your own dependencies and nothing else.** A Feature's system libraries — the shared
-objects its software links at load time — are CCC's to provide: it builds them into a small conda
-prefix per Spawn and puts them on `LD_LIBRARY_PATH`. They are not Python packages, so no manifest of
-yours could install them anyway. `cuttle feature show` lists them so you can see what you are getting;
-it is fetched from the Head, so there is exactly one copy of that list and it is the one CCC builds.
-
-**What you do have to declare is the Python version**, when a Feature ships binary packages. vlearn
-has cp310/cp311 wheels only, so `requires-python = "==3.11.*"` (or `- python=3.11`, or a
-`.python-version`) is a real requirement — an Environment carries its own interpreter, so any manifest
-can ask for any version.
-
-**A Feature's own package is never yours to install.** You may still declare it — pointing at a local
-wheel is often what makes a project resolve on your own machine — and CCC will accept it, replace it
-with an empty placeholder before building, and delete that again on the Arm. What you import is the
-Arm's build, which is the one its licence covers. A path source may name a file inside your project
-or in a directory beside it; anything further up is refused, since CCC only unpacks your project.
-
-**Nothing a Feature arranges lands in your project.** The vendor data its software resolves against —
-vlearn's `assets/`, `shaders/`, `cache/` and `TurboActivate.dat` — lives in a directory of CCC's own,
-not in your project. So your own `assets/` or `cache/` is yours: a Feature never replaces
-or deletes it.
-
-**In a [Tide Pool](tide-pool.md) session the Feature's package is on your `PYTHONPATH`**,
-ahead of your Environment — so `pip list` shows it, and what it shows is the Arm's own build rather
-than anything installed. Installing another copy yourself does not replace it: the Arm's is what
-`import` finds, and it is the one its licence covers.
-
-Not every Feature has a profile — a Feature can be nothing but placement plus an install path, which
-needs no runtime arranged at all.
+A runtime profile attaches the Feature's software to an [Environment](environments.md) — it probes
+the interpreter for its ABI and site-packages — and nothing builds one in 2.0 until Dives. So a
+request for a profiled Feature (`vlearn`) is refused at submit, before any GPU is held. A Feature with
+no profile (`isaaclab`) is placement plus an install path and still works.
 
 ### Licences
 
@@ -141,6 +114,6 @@ Features that have a product key ask for its path too. The key is mirrored into 
 at `0640` and **never leaves the Arm** — the Head never sees it, and no ordinary Spawn ever does.
 
 A Feature with a product key also needs a **Licence directory**: a path CCC creates, where the
-activation CCC runs as the Arm joins writes the machine's licence, and which every Spawn asking for
-that Feature reads. Setup will not finish without one, and an activation on an Arm that has none fails
-rather than activating into a Spawn's throwaway home.
+machine's activated licence lives, and which every Spawn asking for that Feature reads. Setup will not
+finish without one. Nothing activates a licence on Arm admit right now — activation is being rebuilt
+as a Head-local job — so a licensed Feature cannot activate meanwhile.

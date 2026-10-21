@@ -1,26 +1,17 @@
-"""Per-Spawn **Environment** declaration, build rendering, and the held-Spawn lifecycle around
-them (docs/elements/environments.md).
+"""Per-Spawn **Environment** declaration and build-command rendering (docs/elements/environments.md).
 
-Mostly pure functions with remote consequences (CONTRIBUTING.md): nothing in the first half
-needs apptainer, a Guise, or a network, but each decides what runs on a donor's box. Three things
-worth pinning: naming a manifest is mandatory and nothing is ever detected, an env inherits
-nothing and carries its own interpreter, and the rendered build keeps the property the whole
-design rests on — built at the SAME absolute path it's later run at.
-
-The second half isn't pure: a Spawn is `sbatch --hold`ed, built behind the request, then
-released or failed. Worth pinning: every exit from a build reaches ONE of those two ends — a
-Spawn left held keeps its submitter's Escrow forever, with no thread left to come back for it.
+Uncalled since 2.0 (nothing declares an Environment until Dives), but still the one tested place that
+says what a manifest means. Pure functions with remote consequences (CONTRIBUTING.md): nothing here
+needs apptainer, a Guise, or a network, but each decides what would run on a donor's box. Worth
+pinning: naming a manifest is mandatory and nothing is ever detected, an env inherits nothing and
+carries its own interpreter, and every build targets the SAME absolute path it's later run at.
 """
 
-import base64
 import io
-import shlex
-from pathlib import Path
 
 import pytest
 
 from ccc_head_api import environments as env
-from ccc_head_api import spawns
 
 
 def _project(tmp_path, **files):
@@ -210,141 +201,6 @@ def test_the_two_shapes_do_not_share_a_path():
     assert env.Manifest("conda", "m").interpreter != env.Manifest("uv-project", "m").interpreter
 
 
-# --- what the rendered job script does with it -----------------------------
-# The remote consequence: this text runs on a donor's box, and a wrong bind is silent here and fatal
-# there. See CONTRIBUTING.md on why these assert on structure rather than substrings where it matters.
-
-def _script(**kw):
-    kw.setdefault("minutes", 60)
-    kw.setdefault("constraint", "")
-    kw.setdefault("node", None)
-    return spawns._render(sink_tag="deadbeef", gpu=1, script="train.py", args=[],
-                          token="a3f9", secret="s3cr3t", **kw)
-
-
-def _declared(**kw):
-    kw.setdefault("declared", env.Manifest("uv-requirements", "requirements.txt"))
-    return _script(**kw)
-
-
-def test_the_build_block_appears_exactly_once():
-    """Substitution is a plain `.replace()`, which does not know a comment from code. Naming the build
-    block's token in JOB_SCRIPT's own PROSE therefore splices a whole extra copy in wherever it is
-    mentioned — with that copy's first line commented out by the `# ` in front of it and every later
-    line live.
-
-    That shipped. The commented-out line was the `mkdir` that creates `$scratch/env`, so every declared
-    Spawn reached `apptainer --bind` with a source that did not exist and died on
-    `mount source ... doesn't exist`. Found on hardware 2026-08-08 (Spawn 2, the vlearn activation)."""
-    body = _declared()
-    assert body.count('mkdir -p "$scratch/env"') == 1
-    assert body.count("ccc_build() {") == 1
-    # And the mkdir is LIVE, not commented — the exact shape of the bug.
-    assert any(ln.startswith('mkdir -p "$scratch/env"') for ln in body.splitlines())
-
-
-def test_no_substitution_token_survives_rendering():
-    """A token left in the script is a literal `%%NAME%%` reaching bash. The build block is the risky
-    one — it is spliced in before the main pass, so anything it introduces must be substituted by a
-    later key rather than left behind."""
-    import re
-    for body in (_script(), _declared(),
-                 _script(tidepool_port=22001, tidepool_pubkey="k",
-                         declared=env.Manifest("conda", "environment.yml"))):
-        assert re.findall(r"%%[A-Z_]+%%", body) == []
-
-
-def test_a_spawn_that_declared_nothing_renders_no_build_at_all():
-    """The Head knows at submit whether there is anything to build, so the no-env case is ABSENT rather
-    than an inert run-time branch. `$py` stays empty and there is nothing to degrade to — the image has
-    no interpreter (cuttle.templates.BASE_DEF_TMPL)."""
-    body = _script()
-    assert 'py=""; envbind=""; envmount=""' in body
-    assert "ccc_build_or_die" not in body
-    assert 'py="python"' not in body, "the image's python came back — nothing supplies one now"
-
-
-def test_the_environment_is_built_outside_the_project():
-    """$proj is the User's project; CCC's own env stays out of it. Built straight into $scratch."""
-    body = _declared()
-    assert 'mkdir -p "$scratch/env" "$scratch/tmp"' in body
-    assert f"$scratch/env:{env.ENV_MOUNT}" in body
-
-
-def test_environment_is_bound_at_the_path_it_was_built_at():
-    """The one property the design rests on — see test_every_build_targets_the_one_fixed_mount. Built
-    and run on the same box in the same job now, so the two binds are the same string."""
-    body = _declared()
-    assert f'envbind=",$scratch/env:{env.ENV_MOUNT}"' in body
-    assert f'--bind "$proj,$scratch/env:{env.ENV_MOUNT},' in body, "the build binds it at the same path"
-
-
-def test_payload_runs_the_environments_interpreter_and_binds_it_together():
-    """`$py` and `$envbind` are set in the same branch, so the interpreter named can never be one the
-    bind did not provide — a Pod that mounted no env but ran /opt/ccc/env/bin/python fails with a
-    file-not-found the User cannot act on."""
-    body = _script()
-    assert '"$sif" $py train.py' in body
-    assert '--bind "$proj,$scratch/tmp:/ccc-tmp$envbind$licbind$featbind$migbind"' in body
-
-
-@pytest.mark.parametrize("kind,expect", [
-    ("uv-project", f"{env.VENV_DIR}/bin/python"),
-    ("conda", f"{env.ENV_MOUNT}/bin/python"),
-])
-def test_the_script_names_the_interpreter_the_build_actually_produced(kind, expect):
-    """`$py` is per-Spawn substitution data, not a constant: only the manifest says which of the two
-    shapes was built, and naming the wrong one is a `stat` failure on a donor's box after the Spawn has
-    already staged in and taken a card."""
-    assert f'py="{expect}"' in _script(declared=env.Manifest(kind, "m"))
-
-
-def test_every_spawn_writes_temp_files_to_disk_not_to_the_pods_ram_tmp():
-    """Not only a Tide Pool. `--contain` gives EVERY Pod a /tmp carved from apptainer's session
-    directory — 64MB of RAM by default, shared with the --writable-tmpfs overlay — and a training
-    script extracting a dataset or building a wheel hits it exactly as pip does. `environments.py`
-    already makes this fix for the BUILD Pod; this is the same fix for the Pod that runs the work."""
-    body = _script()
-    assert 'mkdir -p "$scratch/tmp/pip"' in body
-    assert "$scratch/tmp:/ccc-tmp" in body
-    assert "TMPDIR=/ccc-tmp" in body
-
-
-def test_the_temp_scratch_is_outside_the_project():
-    """Temp files are CCC's, not the User's project's."""
-    body = _script()
-    assert '"$scratch/tmp' in body and '"$proj/tmp' not in body
-
-
-def test_tidepool_binds_the_environment_too():
-    """A Tide Pool debugs against the env its Spawn would get, or it is not debugging what failed."""
-    body = _script(tidepool_port=22001, tidepool_pubkey="ssh-ed25519 AAAA",
-                   declared=env.Manifest("uv-project", "pyproject.toml"))
-    assert "$envbind" in body
-    assert f"{env.VENV_DIR}/bin" in body  # on PATH for the interactive shell
-
-
-def test_the_tide_pool_path_follows_the_shape_that_was_built():
-    """The bin dir is not one path any more. A Tide Pool that prepended ENV_MOUNT/bin for a uv Spawn
-    would put an empty directory on PATH and hand the User the image's `python` — the one interpreter
-    that is certainly not what their Spawn runs."""
-    conda = _script(tidepool_port=22001, tidepool_pubkey="k",
-                    declared=env.Manifest("conda", "environment.yml"))
-    # The PATH line only, not the whole script: the build Pod's own env names VENV_DIR unconditionally
-    # (it is inert on the conda path), and what must not be wrong is what the shell puts on PATH.
-    path_line = next(ln for ln in conda.splitlines() if "export PATH" in ln)
-    assert f"{env.ENV_MOUNT}/bin" in path_line
-    assert env.VENV_DIR not in path_line
-
-
-def test_a_spawn_with_no_environment_names_a_path_that_cannot_exist():
-    """The `$py` branch is dead in that Spawn, but the Tide Pool's PATH test still RUNS — so what it
-    tests for has to be absent. ENV_MOUNT is never bound when nothing was declared; /usr/bin would
-    have passed and put the image's own bin first on PATH for no reason."""
-    body = _script(tidepool_port=22001, tidepool_pubkey="k")
-    assert f'[ -x {env.ENV_MOUNT}/bin/python ]' in body
-
-
 # --- a Head that cannot build ----------------------------------------------
 # TOOLS_DIR is populated by `cuttle setup --head`. A Head with an empty one now REFUSES rather than
 # degrading: the degradation existed so Spawns that worked before Environments existed kept working,
@@ -395,194 +251,6 @@ def test_conda_asks_for_micromamba_not_uv(no_tools, tmp_path):
 def test_an_equipped_head_refuses_nothing(with_tools, tmp_path):
     m = env.detect(_project(tmp_path, **{"requirements.txt": ""}), "requirements.txt")
     assert env.require_tool(m) is None
-
-
-# --- the build Pod, as rendered into the job script -------------------------
-# The build runs on the ARM now, inside the Spawn's own job, so what there is to check is the shell the
-# Head renders — not a subprocess it launches. Nothing here executes anything.
-
-def _block(kind="uv-requirements", path="requirements.txt", features=(), files=(), binds=(), log=(),
-           declared=...):
-    """The %%ENV_BUILD%% text for one declaration.
-
-    The three script-wide tokens are substituted here the way `_render`'s own pass does a moment later —
-    they are written once for the whole job script, and a test reading `%%ENV_MOUNT%%` back would be
-    pinning the seam rather than the behaviour."""
-    from ccc_head_api import features as _hf
-    m = env.Manifest(kind, path) if declared is ... else declared
-    text = spawns._render_env_build(m, Path("/tmp/u"), list(features), list(files), list(binds),
-                                    list(log))
-    for tok, val in (("%%ENV_MOUNT%%", env.ENV_MOUNT),
-                     ("%%FEATLIB_MOUNT%%", _hf.FEATLIB_MOUNT),
-                     ("%%ENV_INTERPRETER%%", m.interpreter if m else "")):
-        text = text.replace(tok, val)
-    return text
-
-
-def _pod_binds(block):
-    """The --bind argument of the build Pod, as one string."""
-    line = next(ln for ln in block.splitlines() if ln.strip().startswith("--bind"))
-    return line.strip()
-
-
-def test_the_build_can_reach_its_tools_inside_the_pod(with_tools):
-    """--contain gives the build nothing of the node's filesystem but what is bound. uv and micromamba
-    are installed beside base.sif, not inside it, so without this bind the argv names a binary that does
-    not exist in the Pod — and every declared Environment fails on a node provisioned correctly."""
-    assert f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in _pod_binds(_block())
-
-
-def test_the_tools_are_bound_read_only(with_tools):
-    """A build runs the submitter's own code as their **Guise**. It may not rewrite the binaries the
-    next Spawn's build will run."""
-    assert f"{env.TOOLS_DIR}:{env.TOOLS_DIR}:ro" in _pod_binds(_block())
-
-
-def test_the_build_gets_the_same_walls_the_payload_gets(with_tools):
-    """A manifest is code — build backends, sdist setup.py, conda post-link scripts all execute — so it
-    is contained exactly as the work is, not by a weaker isolation invented for it. No --nv: a build
-    needs no GPU, even though this job already holds one."""
-    block = _block()
-    assert 'apptainer exec --contain --pid --pwd "$proj"' in block
-    assert "--nv" not in block
-
-
-class TestTheBuildScratchIsOnDisk:
-    """`--contain` gives the Pod a /tmp carved from Apptainer's session directory — a RAM tmpfs
-    capped by `sessiondir max size` (64 MB on this fleet). pip, run by an environment.yml's
-    `pip:` section, downloads into TMPDIR; a wheel bigger than what's left of that 64 MB dies
-    with ENOSPC (nvidia-cudnn-cu13 alone is 366 MB).
-
-    Worth pinning precisely because the symptom lies: pip reports the ENOSPC as "Download failed
-    after 6 attempts ... not pip", reading as flaky networking that retries can never fix."""
-
-    def test_tmpdir_is_moved_off_the_session_tmpfs(self, with_tools):
-        assert f"TMPDIR={env.POD_TMP}" in _block("conda", "environment.yml")
-
-    def test_the_scratch_is_actually_bound(self, with_tools):
-        """TMPDIR naming a path that is not bound would be worse than leaving it alone — the tools
-        would fail on a missing directory instead of a full one."""
-        assert f"$scratch/tmp:{env.POD_TMP}" in _pod_binds(_block("conda", "environment.yml"))
-
-    def test_pips_download_cache_is_a_cache_not_scratch(self, with_tools):
-        """Under the node's shared cache, which persists between Spawns — not under the per-Spawn
-        scratch, which dies with the job. Otherwise pip re-downloads every wheel every time."""
-        assert f"PIP_CACHE_DIR={env.POD_CACHE}/pip" in _block("conda", "environment.yml")
-
-    def test_the_scratch_dies_with_the_spawn(self, with_tools):
-        """Per-Spawn, inside $scratch, which the job script's EXIT trap already rm -rf's. A build that
-        times out or fails leaves the biggest partial download behind, and nothing looks here again."""
-        assert "$scratch/tmp" in _block()
-
-    def test_the_scratch_is_not_inside_the_cache(self, with_tools):
-        """The prune empties the WHOLE cache subtree at the cap. With this Spawn's scratch inside it, a
-        later build of the same User's would delete a half-downloaded wheel out from under it."""
-        assert not str(env.CACHE_DIR).startswith("$scratch")
-        assert f"$scratch/tmp:{env.POD_TMP}" in _pod_binds(_block())
-        assert f"$ccc_cache:{env.POD_CACHE}" in _pod_binds(_block())
-
-
-class TestTheNodeCacheIsWhatMakesThisAffordable:
-    """Every Spawn rebuilds. That is only tolerable because the DOWNLOADS are kept: uv and micromamba
-    hard-link out of this tree, so the second Spawn to want a given torch fetches nothing."""
-
-    def test_the_cache_is_bound_into_every_build(self, with_tools):
-        assert f"$ccc_cache:{env.POD_CACHE}" in _pod_binds(_block())
-
-    def test_every_tool_is_pointed_at_it(self, with_tools):
-        block = _block()
-        for var in (f"UV_CACHE_DIR={env.POD_CACHE}/uv",
-                    f"MAMBA_ROOT_PREFIX={env.POD_CACHE}/mamba",
-                    f"PIP_CACHE_DIR={env.POD_CACHE}/pip"):
-            assert var in block
-
-    def test_it_is_pruned_before_the_build_not_after(self, with_tools):
-        """After would throw away exactly what this Spawn just downloaded, on the Spawn that paid for
-        it. Whole-subtree rather than per-entry: both tools hard-link out, so evicting one entry safely
-        would need their own bookkeeping."""
-        block = _block()
-        prune = block.index('rm -rf "$ccc_cache"/*')
-        assert prune < block.index("ccc_build_or_die")
-        assert str(env.CACHE_MAX_GB * 1024**3) in block
-
-    def test_each_guise_gets_its_own_subtree(self, with_tools):
-        """One shared cache fails twice. uv builds its tree with the CREATOR's ownership and a 0755
-        umask, so the first uid to build locks every later one out — that shipped, and every declared
-        Spawn on the box died with "failed to open file `/ccc-cache/uv/sdists-v9/.git`: Permission
-        denied" (hardware, 2026-08-08). And a cache two Users can both write is a route for one to
-        plant a wheel the other's build hard-links into their Environment.
-
-        `id -un`, not a name rendered by the Head: the job already RUNS as the Guise, so the directory
-        cannot disagree with the uid writing into it."""
-        block = _block()
-        assert f'ccc_cache="{env.CACHE_DIR}/$(id -un)"' in block
-        assert 'mkdir -p "$ccc_cache"' in block
-        # The bare parent is never handed to a build — only the per-Guise subtree under it.
-        assert f"{env.CACHE_DIR}:{env.POD_CACHE}" not in block
-
-    def test_the_prune_only_ever_touches_this_guises_own_cache(self, with_tools):
-        """A prune reaching the shared parent would let one User empty everyone else's cache on that
-        box — costing them nothing and every other User a cold rebuild."""
-        block = _block()
-        assert f'rm -rf "{env.CACHE_DIR}"' not in block
-        assert f'rm -rf "{env.CACHE_DIR}/' not in block
-
-
-def test_uv_sync_is_pointed_at_the_mount_by_variable_not_by_active(with_tools):
-    """`--active` only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it — so uv falls
-    back to the `.venv` it makes beside the manifest, inside the Mantle-owned project a Guise may
-    only read, and every pyproject.toml/uv.lock Spawn dies on "Permission denied".
-    UV_PROJECT_ENVIRONMENT names the path outright, as --python already did on the uv-pip branch."""
-    cmds = env.render_build(env.Manifest("uv-project", "pyproject.toml"))
-    assert not any("--active" in part for cmd in cmds for part in cmd)
-    assert f"UV_PROJECT_ENVIRONMENT={env.VENV_DIR}" in _block("uv-project", "pyproject.toml")
-
-
-class TestTheEnvCarriesItsOwnInterpreter:
-    """The mechanism the whole restructure rests on. Both settings are on the build Pod rather than in
-    the argv because all three build paths need them, including the one that runs no uv command at all
-    until `uv sync` decides for itself which CPython to fetch."""
-
-    def test_uv_may_not_adopt_an_interpreter_it_did_not_install(self, with_tools):
-        """Without only-managed, uv happily picks up a system python of the right version — one that
-        exists on this box and not inside the Pod, so the venv points at nothing runnable. Confirmed
-        against uv 0.12.1: `uv venv --python 3.12` took the host's 3.12.3 until this was set."""
-        assert "UV_PYTHON_PREFERENCE=only-managed" in _block("uv-project", "pyproject.toml")
-
-    def test_the_downloaded_interpreter_lands_inside_the_shipped_tree(self, with_tools):
-        """Otherwise it goes to $HOME — which a **Guise** has not got — or to the Pod's 64MB session
-        tmpfs, and either way the env has no interpreter to run."""
-        assert f"UV_PYTHON_INSTALL_DIR={env.PY_INSTALL_DIR}" in _block("uv-project", "pyproject.toml")
-        assert env.PY_INSTALL_DIR.startswith(env.ENV_MOUNT + "/")
-
-
-class TestAFailedBuildIsAFailedSpawn:
-    """The deliberate cost of building on the Arm. The Head used to refuse a broken manifest before the
-    Spawn existed; now it is accepted, Escrowed, queued and placed, and the failure happens there."""
-
-    def test_it_ends_the_spawn_the_way_every_other_early_exit_does(self, with_tools):
-        """The same four things a failed stage-in does: say why in `err`, record a non-zero `exit`,
-        stop the periodic pusher, and stage out. Anything less is a Spawn the Head reports as lost."""
-        block = _block()
-        fail = block[block.index("ccc_build_or_die() {"):]
-        for line in ('>> "$err"', 'echo 1 > "$exitf"', 'kill "$loop_pid" 2>/dev/null',
-                     "stage_out", "exit 1"):
-            assert line in fail
-
-    def test_the_failure_names_which_of_the_two_builds_failed(self, with_tools):
-        """A Feature's conda solve and the submitter's own manifest fail in the same function, and
-        blaming the manifest for CCC's own prefix would send a User editing a file that is fine."""
-        block = _block(features=["vlearn"])
-        assert "ccc_building='the environment declared in requirements.txt'" in block
-        feat = next(ln for ln in block.splitlines()
-                    if ln.startswith("ccc_building=") and "requirements" not in ln)
-        assert shlex.split(feat.split("=", 1)[1])[0] == "the 'vlearn' Arm Feature's system libraries"
-
-    def test_the_build_output_is_the_spawns_own_stderr(self, with_tools):
-        """No separate build log to fetch. It is the answer to "why did my Spawn get that version" on
-        success and to "why did it not run" on failure, and one place to look beats two — `cuttle logs`
-        and the Spawn page both already show it, live."""
-        assert '"$sif" "$@" >> "$err" 2>&1' in _block()
 
 
 def test_a_spawn_installing_its_dependencies_is_simply_running(monkeypatch):
@@ -750,34 +418,6 @@ class TestTheStubIsNotAWorkingPackage:
         assert [(b.src, b.dest, b.over_project) for b in binds] == [("src0", "../wheels", False)]
         assert wheel.rel == "src0/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
 
-    def test_the_bind_is_rendered_against_the_arms_own_project(self, tmp_path):
-        """`$proj` is the only name for it that is true on both branches — the Head's co-located Arm
-        copies into node-local scratch, a remote one rsyncs into /tmp. `proj` is `$scratch/proj` in
-        both, so `$proj/../wheels` is this Spawn's scratch and nothing else's."""
-        _, files, binds, _, _ = self._built(tmp_path)
-        block = _block("uv-project", "pyproject.toml", files=files, binds=binds)
-        assert f"$scratch/{env.STUB_ROOT}/src0:$proj/../wheels" in block
-
-    def test_the_arm_writes_it_out_before_the_build_reads_it(self, tmp_path):
-        """The bytes travel in the job script itself — there is no transfer of a stub any more, because
-        there is no file on the Head to transfer."""
-        _, files, binds, _, wheel = self._built(tmp_path)
-        block = _block("uv-project", "pyproject.toml", files=files, binds=binds)
-        assert f'base64 -d > "$scratch/{env.STUB_ROOT}/{wheel.rel}"' in block
-        assert base64.b64encode(wheel.data)[:32].decode() in block.replace("\n", "")
-        assert block.index("base64 -d") < block.index("ccc_build_or_die /")
-
-    def test_the_substitution_is_said_out_loud_where_the_user_will_see_it(self, tmp_path):
-        """A User who declared a wheel and got someone else's build has to be able to find out why. It
-        is decided on the Head and SAID on the Arm, in the Spawn's own `err`, beside the build it
-        changed — there is no separate build log to go looking in."""
-        _, _, _, log, _ = self._built(tmp_path)
-        assert any("vlearn" in ln and "Arm Feature" in ln for ln in log)
-        block = _block("uv-project", "pyproject.toml", log=log)
-        assert all(shlex.quote(ln) in block for ln in log)
-        assert block.index(shlex.quote(log[0])) < block.index("ccc_build_or_die /")
-
-
 def test_a_wheel_inside_the_project_is_bound_over_not_overwritten(tmp_path):
     """The project carried a real wheel. It is covered by a FILE bind, and the copy on disk is left
     exactly as its owner wrote it."""
@@ -860,30 +500,6 @@ def test_a_feature_with_no_libraries_asks_for_nothing_extra(with_tools):
     assert hf.lib_specs(["isaaclab"]) == {}
     assert hf.lib_specs([])  == {}
     assert "cuda-cudart=13" in hf.lib_specs(["vlearn"])["vlearn"]
-
-
-def test_the_library_prefix_is_built_at_the_path_it_is_later_bound_at(with_tools):
-    """A conda prefix bakes its own path into hundreds of files and does not survive being moved — the
-    same invariant the Environment rests on, for the same reason. Built and bound in the same job on the
-    same box, so the two cannot disagree."""
-    from ccc_head_api import features as hf
-
-    (argv,) = env.render_featlib_build({"vlearn": ["sdl2"]})
-    assert "--prefix" in argv and f"{hf.FEATLIB_MOUNT}/vlearn" in argv
-    block = _block(features=["vlearn"])
-    assert f"$scratch/featlibs:{hf.FEATLIB_MOUNT}" in _pod_binds(block), "writable for the build"
-    assert f'featbind=",$scratch/featlibs:{hf.FEATLIB_MOUNT}:ro"' in block, "read-only for the payload"
-
-
-def test_the_feature_libraries_are_owed_even_to_a_spawn_that_declared_nothing(with_tools):
-    """They are CCC's, not the submitter's. A **Tide Pool** may decline to declare a manifest and still
-    asked for the Feature — and a Feature whose shared objects cannot dlopen their dependencies is a
-    Feature that does not work. Previously this needed a manifest, because the libraries were built by
-    the same Head-side call that built the env."""
-    from ccc_head_api import features as hf
-    block = _block(features=["vlearn"], declared=None)
-    assert f"{hf.FEATLIB_MOUNT}/vlearn" in block
-    assert 'py="' not in block, "but it still gets no interpreter — it declared none"
 
 
 def test_the_library_prefix_installs_no_interpreter(with_tools):

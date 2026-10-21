@@ -3,7 +3,7 @@ import { Select } from "../app/Select";
 import { Chip } from "../app/Chip";
 
 /**
- * The archive's filter panel — sidebar, sticky, mirroring the Queue composer's slot. No borders, no
+ * The archive's filter panel — sidebar, sticky. No borders, no
  * hairline selects: facets are quiet pressable chips (a recess that lights when active), the same
  * form-from-light language as the rest of the interface.
  *

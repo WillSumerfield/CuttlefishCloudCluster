@@ -231,8 +231,8 @@ def _arm_owner(name: str) -> str | None:
 
 @api.get("/features")
 def features(user: dict = Depends(current_user)) -> list[str]:
-    """The Arm Features THIS HEAD'S VERSION supports (`cuttle.config.FEATURE_NAMES`) — what the submit
-    composer offers to require.
+    """The Arm Features THIS HEAD'S VERSION supports (`cuttle.config.FEATURE_NAMES`) — what a Spawn
+    may require.
 
     A constant, not state: there is nothing to mutate and no endpoint that could. It is still served
     rather than compiled into the Dashboard because a browser talking to an older Head should offer
@@ -588,61 +588,42 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 
 @api.post("/submit")
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
-    """Launch a Spawn attributed to the caller. The only authed mutation. Body = JSON
-    {script, gpu, args, node, features, tidepool, minutes, vram}. Runs the render/sbatch/
-    Attribution as the Mantle; returns the Spawn id.
+    """Request a Tide Pool attributed to the caller. The only authed mutation. Body = JSON
+    {tidepool, gpus, features, minutes, vram}. Runs the render/sbatch/Attribution as the Mantle;
+    returns the Spawn id.
 
-    `features` is optional, and empty when absent — a Spawn that requests none is placed exactly as it
-    always was. Each name is checked against every currently admitted Arm's declared features
-    (`slurm.arms_with_features`); a request no Arm can satisfy is refused with 422 before ever reaching
-    sbatch, same hard-validation stance as `vram`.
+    `tidepool` must be true: batch (script) Spawns are gone in 2.0, and a request without it is refused
+    rather than read as one.
+
+    `features` is optional, and empty when absent. Each name is checked against every currently
+    admitted Arm's declared features (`slurm.arms_with_features`); a request no Arm can satisfy is
+    refused with 422 before ever reaching sbatch, same hard-validation stance as `vram`.
 
     `minutes` and `vram` are **required** — a Spawn with no declared length cannot be priced, and one
     with no declared need cannot be placed. `vram` is the **total** across the `gpus` Devices asked
     for, and is OR-expanded here into a Slurm constraint over the fleet's real cards
     (slurm.vram_constraint); the client can't do it, because only the Head knows what hardware exists.
-
-    Pinning a Spawn to a named Arm is **not possible over this route**: the Head API exposes no admin
-    writes at all, so a `node` in the metadata is refused outright rather than honoured for an Admin —
-    a field that is silently ignored is worse than one that says no. It lives on as `cuttle run --node`,
-    run on the Head. Users declare what they need (`--vram`) and let Slurm choose — naming a machine
-    sidesteps eligibility, and with it the Demand the Spawn would have added to every card that could
-    have run it.
-
-    `tidepool` is the one flag that changes what the other fields mean: a live shell instead of a
-    script, so `script` may be omitted. Time/vram/gpu/features/pricing/placement/Attribution are all
-    identical to any other Spawn.
     """
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
     meta = await request.json()
-    tidepool = bool(meta.get("tidepool"))
-    if not meta.get("script") and not tidepool:
-        raise HTTPException(422, "missing 'script' — the entrypoint script is required")
+    if not meta.get("tidepool"):
+        raise HTTPException(422, "only Tide Pools can be requested — batch Spawns are gone")
     for field in ("minutes", "vram"):
         if not meta.get(field):
             raise HTTPException(422, f"missing '{field}' — --time and --vram are required")
-    if meta.get("node"):
-        raise HTTPException(403, "pinning a Spawn to an Arm is not available over the API — it is "
-                                 "`cuttle run --node`, on the Head.")
     # `gpus` is the current name; `gpu` is what older clients send. Either is accepted — see
     # spawns.submit_checked, which is where a count no Arm can host is refused.
     minutes, vram_gb = int(meta["minutes"]), int(meta["vram"])
     gpus = int(meta.get("gpus", meta.get("gpu", 1)))
     try:
-        # Placement, pricing and the Attribution row all live in submit_checked, shared with the
-        # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
-        # ValueError covers both the unknown-Arm case (Head-local only in practice — `node` can never
-        # reach here, see above) and the per-User concurrent-Spawn cap.
-        job_id = spawns_mod.submit_checked(
-            user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
-            minutes, vram_gb,
-            features=meta.get("features") or [],
-            tidepool=tidepool)
+        # ValueError covers the per-User concurrent-Spawn cap and an unsatisfiable request.
+        job_id = spawns_mod.submit_checked(user["id"], user["is_admin"], gpus, minutes, vram_gb,
+                                           features=meta.get("features") or [])
     except ValueError as e:
         raise HTTPException(422, str(e))
-    log.info("submit id=%s by %s (gpu=%d vram=%d min=%d tidepool=%s)", job_id, user["username"], gpus,
-             vram_gb, minutes, tidepool)
+    log.info("submit tidepool id=%s by %s (gpu=%d vram=%d min=%d)", job_id, user["username"], gpus,
+             vram_gb, minutes)
     return {"id": job_id}
 
 
@@ -659,7 +640,7 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
     Pool outright — see `ensure_relay`); `ready` there means the Pod's own sshd has finished booting.
 
     The SAME port + private key are returned every time, for the Spawn's whole life: a dropped
-    connection or a Dashboard-requested Tide Pool both reattach with `cuttle run --tidepool <id>`, and
+    connection or a reattach both go through `cuttle run <id>`, and
     both need the identical credential back, not a fresh one.
 
     `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md). It

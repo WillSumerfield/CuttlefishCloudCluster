@@ -27,7 +27,7 @@ const LOUD: Record<Outcome, boolean> = {
 
 // What each ending actually means for what you were charged — the part the word alone never says.
 const WHY: Record<Outcome, string> = {
-  done: "The run reached the end of your script and exited cleanly.",
+  done: "It ran to the end and exited cleanly.",
   cancelled:
     "Somebody ended this run early. It still settles for the seconds it actually held — choosing to stop doesn't make it free.",
   failed:

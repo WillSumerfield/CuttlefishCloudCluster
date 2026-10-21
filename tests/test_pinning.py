@@ -172,7 +172,7 @@ class TestTheImageCarriesNoRuntime:
 
 
 class TestAptWorksInsideAPod:
-    """`apt install` inside a Pod, which a **Substrate** needs and a **Tide Pool**'s User expects.
+    """`apt install` inside a Pod, which a **Tide Pool**'s User expects.
 
     The image ships shims in /usr/local/bin (ahead of /usr/bin on PATH) rather than teaching every
     caller an incantation. What they must do was settled on hardware (2026-08-18) and each of these
@@ -206,8 +206,8 @@ class TestAptWorksInsideAPod:
         assert "APT::Sandbox::User=root" in templates.render_base_def()
 
     def test_nothing_stops_to_ask_a_question(self):
-        """A Substrate is installed from the job script with no terminal attached; a package that
-        prompts would hang the Spawn holding a Device until its wall clock ran out."""
+        """A package that prompts would hang the Spawn holding a Device until its wall clock ran
+        out."""
         assert "DEBIAN_FRONTEND=noninteractive" in templates.render_base_def()
 
     def test_the_index_is_fetched_once_per_pod(self):
@@ -227,7 +227,7 @@ class TestAptWorksInsideAPod:
 
     def test_apts_own_exit_status_survives_the_filter(self):
         """A pipe would report grep's status instead, so `apt-get install nonesuch` would look like a
-        success and a **Substrate** naming a bad package would install nothing and pass."""
+        success and a script installing a bad package would install nothing and pass."""
         d = templates.render_base_def()
         assert "return $ccc_rc" in d
         assert "| grep" not in d

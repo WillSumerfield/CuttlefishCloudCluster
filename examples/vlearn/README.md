@@ -1,16 +1,20 @@
 # vlearn on CCC — the Arm Feature hardware test
 
-Ant PPO on VSim, submitted as an ordinary Spawn. Exercises the whole `vlearn` **Feature** path end to
-end: Eligibility narrowing to the one licensed Arm, an Environment built on the Head, the Arm's own
-vlearn package and assets arranged by CCC, and its **Licence** bound at the Spawn's Guise home.
+Ant PPO on VSim. Exercises the whole `vlearn` **Feature** path end to end: Eligibility narrowing to
+the one licensed Arm, an Environment built on the Arm, the Arm's own vlearn package and assets
+arranged by CCC, and its **Licence** bound at the Spawn's Guise home.
+
+**Not runnable on the 2.0 branch.** It was submitted as a batch Spawn, which is gone, and a profiled
+Feature like `vlearn` is refused until Dives bring Environments back. Kept as the hardware test
+project for then.
 
 ## Prerequisites
 
 Somebody's box has to *have* vlearn, and say so at `cuttle setup --arm` (or `--head`, for the Head's
 own co-located Arm). Setup asks three things: whether this box has it, where the checkout is, and
-where the product key is. It then unpacks the checkout's Linux wheels, creates the **Licence**
-directory, and — as the Arm is admitted — runs an activation Spawn on it. An Arm whose activation
-fails is not admitted, so a Feature that appears in `cuttle arm list` is one that works.
+where the product key is. It then unpacks the checkout's Linux wheels and creates the **Licence**
+directory. Nothing activates the licence at admit right now — activation is being rebuilt as a
+Head-local job — so the directory has to already hold an activated licence.
 
 Nothing to sync, copy or hand-place. The licence directory is created as the home of the `ccc-licence`
 account, which is what keeps it out of a real human's home — the whole directory is mounted into every
@@ -18,18 +22,9 @@ Spawn that asks for a Feature.
 
 ## Running it
 
-```bash
-./prepare.sh                  # copies train/ out of a vlearn checkout — that is the whole project
-cuttle run run.py --feature vlearn --manifest pyproject.toml \
-  --vram 16 --gpu 1 --time 30 --follow
-```
-
-`--feature vlearn` is the entire request. It restricts placement to an Arm that holds the licence, and
-it is what tells CCC to arrange the runtime. Without it the Spawn lands anywhere and fails at
-`import vlearn`.
-
-The first submission builds the Environment on the Head and takes a while; the download cache is
-shared, so later ones are much faster.
+`./prepare.sh` copies `train/` out of a vlearn checkout — that is the whole project. What submits it
+is decided with Dives. `--feature vlearn` is the entire Feature request: it restricts placement to an
+Arm that holds the licence, and tells CCC to arrange the runtime.
 
 ## What the project does *not* contain
 
@@ -44,7 +39,7 @@ The wheel, `assets/`, `shaders/`, `cache/` and `TurboActivate.dat`. All five com
 - **`cache/`** is the one of the four vlearn writes, so it is copied per Spawn (~1 MB) rather than
   symlinked into a read-only bind.
 
-So `prepare.sh` copies `train/` and nothing else, and a submission is a few hundred KB.
+So `prepare.sh` copies `train/` and nothing else.
 
 ## Why the pieces are shaped this way
 
@@ -73,8 +68,8 @@ and TensorBoard event files. Not kept once the Spawn ends; the training log is w
 
 - `this Spawn's Environment is Python cp312, and this Arm's vlearn is built for: cp310 cp311` — the
   `requires-python` pin is missing from `pyproject.toml`, or the Spawn declared no Environment at all.
-- `License validation failed` — the Arm's licence directory is empty or unreadable by the Guise. It
-  should have been filled by the activation Spawn at admit; check `/etc/ccc/features.env` on the Arm.
+- `License validation failed` — the Arm's licence directory is empty or unreadable by the Guise;
+  check `/etc/ccc/features.env` on the Arm.
 - `libassimp.so.5: cannot open shared object file` — conda-forge resolved assimp 6. The `assimp=5` pin
   in the Feature's own library list (`ccc_head_api.features`) is load-bearing.
 - `declares 'vlearn', which comes from the 'vlearn' Arm Feature, but this Spawn did not request it` —

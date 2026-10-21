@@ -1,5 +1,4 @@
-"""Local admin for the Head: users, Karma Overrides, pinned Spawns, and Arm Retract/Return on someone
-else's behalf.
+"""Local admin for the Head: users, Karma Overrides, and Arm Retract/Return on someone else's behalf.
 
 Runs *on the Head as the `ccc` service account* (`python -m ccc_head_api.admin ...`), writing head.db
 directly — being the operator on the Head is the authorization, no HTTP/session. `cuttle user
@@ -140,36 +139,6 @@ def _return(node: str) -> int:
     return 0
 
 
-def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
-            node: str | None, args: list[str],
-            features: list[str] | None = None, tidepool: bool = False) -> int:
-    """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
-
-    Authorization is being the operator on the Head; attribution is the account named here. Goes through
-    `spawns.submit_checked`, so the Escrow and the Attribution row are both produced exactly as they
-    are for a Spawn that arrived over HTTP.
-
-    `tidepool` lets an Admin pin a Tide Pool the same way they pin any other Spawn — orthogonal to
-    node-pinning (the common path is unpinned, over `/submit`).
-    """
-    from . import spawns
-    with db.connect() as conn:
-        db.init_schema(conn)
-        user = db.get_user(conn, username)
-        if user is None:
-            print(f"no such user {username!r}", file=sys.stderr)
-            return 1
-    try:
-        job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
-                                       minutes, vram, node,
-                                       features=features, tidepool=tidepool)
-    except ValueError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-    print(job_id)
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="ccc_head_api.admin", description="Head auth user admin.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -193,18 +162,6 @@ def main(argv: list[str] | None = None) -> int:
     rt.add_argument("node")
     rn = sub.add_parser("return", help="return an Arm on its owner's behalf (--any escape hatch).")
     rn.add_argument("node")
-    s = sub.add_parser("submit", help="submit a Spawn pinned to an Arm (prints the Spawn id).")
-    s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
-    s.add_argument("--script", default=None, help="omit only for --tidepool.")
-    s.add_argument("--minutes", type=int, required=True)
-    s.add_argument("--vram", type=int, required=True)
-    s.add_argument("--gpu", type=int, default=1)
-    s.add_argument("--node")
-    s.add_argument("--feature", action="append", default=[], dest="features",
-                   help="required Arm Feature (repeatable; optional — default none).")
-    s.add_argument("--tidepool", action="store_true",
-                   help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
-    s.add_argument("args", nargs="*", help="extra arguments for the script.")
 
     args = p.parse_args(argv)
     if args.cmd == "add":
@@ -225,10 +182,6 @@ def main(argv: list[str] | None = None) -> int:
         return _retract(args.node)
     if args.cmd == "return":
         return _return(args.node)
-    if args.cmd == "submit":
-        return _submit(args.user, args.script, args.minutes, args.vram, args.gpu,
-                       args.node, args.args, args.features,
-                       tidepool=args.tidepool)
     return 2
 
 

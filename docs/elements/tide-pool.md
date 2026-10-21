@@ -4,13 +4,11 @@
 
 A **Tide Pool** is a live shell on real cluster hardware.
 
-It is for the times when you do not want to run a script — you want to poke at something. Check
-whether the GPU is what you think it is, run a REPL, try three variations of a command, debug a
-crash that only happens on the actual card.
+Check whether the GPU is what you think it is, run a REPL, try three variations of a command, debug
+a crash that only happens on the actual card.
 
-Underneath it is an ordinary [Spawn](spawns.md): same queue, same eligibility rules, same Karma. The
-difference is that instead of running your script, it drops you into a shell inside the sandbox and
-waits.
+Underneath it is an ordinary [Spawn](spawns.md): same queue, same eligibility rules, same Karma. It
+drops you into a shell inside the sandbox and waits.
 
 **It bills for as long as you hold it.** Closing your laptop does not end it.
 
@@ -21,7 +19,7 @@ waits.
 **Get a shell on a machine with a 24 GB card, for half an hour:**
 
 ```sh
-cuttle run --tidepool --time 30 --vram 24
+cuttle run --time 30 --vram 24
 ```
 
 You wait for placement, and then you are in.
@@ -29,7 +27,7 @@ You wait for placement, and then you are in.
 **Open it in VS Code instead of a terminal:**
 
 ```sh
-cuttle run --tidepool --time 30 --vram 24 --vscode
+cuttle run --time 30 --vram 24 --vscode
 ```
 
 See [Editing in VS Code](#editing-in-vs-code) below.
@@ -37,7 +35,7 @@ See [Editing in VS Code](#editing-in-vs-code) below.
 **Come back to one you left:**
 
 ```sh
-cuttle run --tidepool <id>
+cuttle run <id>
 ```
 
 **Stop paying for it:**
@@ -51,7 +49,7 @@ cuttle cancel <id>
 ### Disconnecting does not end it
 
 A clean `exit`, a dropped Wi-Fi connection, Ctrl-C — none of them cancel the Tide Pool. It is exactly
-like Ctrl-C on `cuttle run --follow`, which stops the log stream and not the Spawn.
+like Ctrl-C on `cuttle logs --follow`, which stops the log stream and not the Spawn.
 
 It keeps billing Karma until either `--time` runs out or you run `cuttle cancel <id>`. Every way out
 of the session prints that command on the way past.

@@ -1,7 +1,6 @@
 /**
  * A quiet toggle chip — lit = raised, ink; unlit = flush, muted. Colour is never spent on a control.
- * Shared by the archive filters and the composer's toggles; all want "pick one of a few" rather than
- * a checkbox.
+ * Used by the archive filters, which want "pick one of a few" rather than a checkbox.
  */
 export function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
   return (

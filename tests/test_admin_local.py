@@ -1,6 +1,6 @@
 """The Head-local admin commands, where the admin writes went.
 
-`cuttle karma override` and `cuttle run --node` shell into `ccc_head_api.admin` as the `ccc`
+`cuttle karma override` and `cuttle user ...` shell into `ccc_head_api.admin` as the `ccc`
 account, on the Head, rather than travelling over HTTP. The `sudo` wrapper is untestable here,
 but the module underneath is a plain Python entry point — the half that actually mutates
 head.db, so the half worth testing.
@@ -12,7 +12,7 @@ untested subprocess: the security invariant would hold and the feature would sil
 
 import pytest
 
-from ccc_head_api import admin, db, karma, spawns
+from ccc_head_api import admin, db, karma
 
 
 @pytest.fixture
@@ -106,50 +106,3 @@ class TestRetractAny:
         assert admin.main(["retract", "not-a-real-arm"]) == 1
         assert "no such Arm" in capsys.readouterr().err
 
-
-class TestPinnedSubmit:
-    """`cuttle run --node`, minus the sudo. The point of routing it through `submit_checked` rather
-    than shelling out to sbatch directly is that the ledger still gets written — so that is what
-    these check."""
-
-    @pytest.fixture
-    def rig(self, head_db, fake_slurm):
-        pass
-
-    def test_a_pinned_spawn_is_recorded_and_attributed(self, rig, capsys):
-        rc = admin.main(["submit", "--user", "alice", "--script", "train.py",
-                         "--minutes", "60", "--vram", "24", "--node", "gpu-box"])
-        assert rc == 0
-        job_id = int(capsys.readouterr().out.strip())
-        with db.connect() as conn:
-            alice = db.get_user(conn, "alice")
-            spawn = db.get_spawn(conn, job_id)
-        assert spawn is not None, "a pinned Spawn must still record its Attribution row"
-        assert spawn["user_id"] == alice["id"]
-        assert spawn["node"] == "gpu-box"
-
-    def test_a_pinned_spawn_still_holds_escrow(self, rig, capsys):
-        """The whole reason this path reuses submit_checked. A Spawn submitted around the pricing
-        code would occupy a donated card that nobody is charged for."""
-        admin.main(["submit", "--user", "alice", "--script", "train.py",
-                    "--minutes", "60", "--vram", "24", "--node", "gpu-box"])
-        job_id = int(capsys.readouterr().out.strip())
-        with db.connect() as conn:
-            assert job_id in {e["job_id"] for e in db.live_escrows(conn)}
-
-    def test_an_unknown_arm_is_refused(self, rig, capsys):
-        assert admin.main(["submit", "--user", "alice", "--script", "train.py",
-                           "--minutes", "60", "--vram", "24", "--node", "typo"]) == 1
-        assert "unknown Arm" in capsys.readouterr().err
-
-    def test_an_unknown_user_is_refused(self, rig, capsys):
-        assert admin.main(["submit", "--user", "nobody", "--script", "train.py",
-                           "--minutes", "60", "--vram", "24", "--node", "gpu-box"]) == 1
-        assert "no such user" in capsys.readouterr().err
-
-    def test_a_pinned_submit_to_a_retracted_arm_is_refused(self, rig, capsys):
-        with db.connect() as conn:
-            db.mark_arm_retracted(conn, "gpu-box")
-        assert admin.main(["submit", "--user", "alice", "--script", "train.py",
-                           "--minutes", "60", "--vram", "24", "--node", "gpu-box"]) == 1
-        assert "retracted" in capsys.readouterr().err
