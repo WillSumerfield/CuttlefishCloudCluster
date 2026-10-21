@@ -6,7 +6,6 @@ steers NEW placement away from a node, plus signals whatever is RUNNING right no
 submit_checked refuses/excludes.
 """
 
-from pathlib import Path
 
 import pytest
 
@@ -80,11 +79,11 @@ class TestExclude:
     --exclude=, never a real Slurm DRAIN."""
 
     def test_render_adds_an_exclude_line(self):
-        body = spawns._render(Path("/tmp/x"), 1, "train.py", [], [], None, 60, "",
+        body = spawns._render("deadbeef", 1, "train.py", [], None, 60, "",
                               "a3f9", "s3cr3t", exclude="gpu-box,gpu-box2")
         assert "#SBATCH --exclude=gpu-box,gpu-box2" in body
 
     def test_no_exclude_line_when_nothing_is_retracted(self):
-        body = spawns._render(Path("/tmp/x"), 1, "train.py", [], [], None, 60, "",
+        body = spawns._render("deadbeef", 1, "train.py", [], None, 60, "",
                               "a3f9", "s3cr3t", exclude="")
         assert "--exclude" not in body

@@ -7,10 +7,6 @@
 // Every route but /healthz is behind that session, so ANY call can come back 401, not just at login.
 // `Unauthorized` is how the app notices and drops back to the login screen.
 
-import type { TarRequest } from './tar.worker'
-import { once } from './worker'
-import { type Picked } from './project'
-
 // `owner` is the User who donated the machine — named by the Admin when they authorized it, never
 // declared by the donor. Karma will pay its passive income here.
 export type Arm = {
@@ -155,34 +151,6 @@ export const errMessage = (e: unknown): string => (e instanceof Error ? e.messag
 // just made). Absent for every read, which is nearly all of them.
 const json = <T,>(path: string, init?: RequestInit) =>
   req(path, init).then((r) => r.json() as Promise<T>)
-
-/**
- * The gzip-tar body every upload sends: a Spawn's project, or a Tide Pool's (often empty) folder. One shape, because the Head has one upload path.
- *
- * **Built on a worker thread, and that is the whole point.** Two separate costs were freezing the tab,
- * and only one of them was obvious. The first was `makeTar` copying the project into one array after
- * every call site had already read each file with `await f.arrayBuffer()`; that is gone — the tar is
- * described from `File.size` and the Files go in by reference. The second is `gzip`, and it survived
- * that fix untouched: `CompressionStream` deflates on the thread that created it, so the whole project
- * was still pulled through the main thread before `fetch` saw a byte. A few hundred MB of
- * incompressible data is tens of seconds of it, during which every animated surface in the app — all
- * `requestAnimationFrame` on that same thread — stops dead.
- *
- * Paths come off the `Picked` rather than being re-derived: `webkitRelativePath` is not part of a
- * File's structured clone, so by the time these Files reach a worker they no longer know where in the
- * tree they came from. The picker read them once, on its own thread.
- */
-function projectBody(picked: Pick<Picked, 'files' | 'paths'>): Promise<Blob> {
-  return once<Blob>(
-    new Worker(new URL('./tar.worker.ts', import.meta.url), { type: 'module' }),
-    { paths: picked.paths, files: picked.files } satisfies TarRequest,
-  )
-}
-
-/** The body for an upload that may have no folder behind it — a Tide Pool opened over nothing. An
- *  empty tar, not an empty body: the Head opens every upload as an archive. */
-const EMPTY_PICK = { files: [], paths: [] }
-
 
 export const getArms = () => json<Arm[]>('/arms')
 // The Arm Features CCC supports — what the submit composer offers to require. Built into CCC, not
@@ -359,7 +327,6 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 
 
 export type SubmitOpts = {
-  picked: Picked
   /** What this run is called in the queue and the archive. REQUIRED — the Head refuses a nameless
    *  Spawn, and falls back to nothing (CONTEXT.md, **Name**). A label, not a key: two Spawns may
    *  share one, and the id is what tells them apart. */
@@ -375,91 +342,46 @@ export type SubmitOpts = {
   // Arm Features (docs/TODO.md) this Spawn requires, picked from the Head's catalog — optional, and
   // most Spawns declare none. An unsatisfiable request (no Arm has all of them) is a 422, not a queue.
   features: string[]
-  // Which dependency file builds this Spawn's Python environment (docs/elements/environments.md),
-  // relative to the project root. REQUIRED — nothing is detected and there is no default, because an
-  // Environment carries its own Python and inherits nothing, so which file it comes from decides
-  // everything the work runs against.
-  manifest: string
-  // Which file names this Spawn's **Substrate** — the system packages installed into its Pod before
-  // the environment is built (CONTEXT.md). OPTIONAL, unlike the manifest: most work needs none.
-  substrate: string
 }
 
-/** What the Head decided this Spawn's environment is, echoed back at submit. */
-export type SubmitResult = { id: number; environment: string | null }
-
-/**
- * Tar + gzip the picked files and POST them. This is the ONLY point at which file contents are read —
- * the preview the user confirmed was built from File.size alone, which costs no I/O. Same wire format
- * as the CLI (gzip-tar body + X-CCC-Meta header), so the server has exactly one upload path.
- */
-export async function submit({
-  picked, name, script, gpu, minutes, vram, node, args, features, manifest, substrate,
-}: SubmitOpts): Promise<SubmitResult> {
-  const body = await projectBody(picked)
-  // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
-  // absent key the same as an empty list.
-  const meta = {
-    name, script, gpu, minutes, vram, node, args,
-    ...(features.length ? { features } : {}),
-    // Always sent, unlike the fields above: the Head refuses a Spawn that names no dependency file, and
-    // an omitted key would meet that refusal as a confusing "missing" rather than the empty box it is.
-    manifest: manifest.trim(),
-    // Omitted rather than sent empty, like `features` above — absent means "no system package needed",
-    // which is the ordinary case and not the same instruction as a blank file name.
-    ...(substrate.trim() ? { substrate: substrate.trim() } : {}),
-  }
+const postSubmit = async (meta: object): Promise<number> => {
   const r = await req('/submit', {
     method: 'POST',
-    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
-    body,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(meta),
   })
-  const body_ = await r.json()
-  return { id: body_.id, environment: body_.environment ?? null }
+  return (await r.json()).id
+}
+
+export function submit({
+  name, script, gpu, minutes, vram, node, args, features,
+}: SubmitOpts): Promise<number> {
+  // `features` is omitted rather than sent empty — most Spawns require none, and the Head reads an
+  // absent key the same as an empty list.
+  return postSubmit({
+    name, script, gpu, minutes, vram, node, args,
+    ...(features.length ? { features } : {}),
+  })
 }
 
 // A Tide Pool (docs/TODO.md): request one from the Dashboard, same queue/Eligibility/Escrow as any Spawn
-// — but no script to name, so deliberately NOT `submit` with fields blanked out. Project folder is
-// optional (unlike Script mode): picking one just lands it at $proj on the Arm for the live shell, nothing
-// runs automatically. Shell access is CLI-only; Dashboard's part ends once the Spawn appears in the queue.
+// — but no script to name, so deliberately NOT `submit` with fields blanked out. Shell access is
+// CLI-only; Dashboard's part ends once the Spawn appears in the queue.
 export type SubmitTidepoolOpts = {
   minutes: number
   vram: number
   gpu: number
   node: string | null
   features: string[]
-  picked: Picked | null
-  /** Required, exactly as it is for an ordinary Spawn: a Tide Pool may decline to declare an
-   *  Environment, and may not decline to be named. */
+  /** Required, exactly as it is for an ordinary Spawn. */
   name: string
-  /** OPTIONAL here and only here — a Tide Pool may decline to declare an Environment. Blank gives a
-   *  bare shell; a name builds that env into it, and needs `picked` to resolve against. */
-  manifest?: string
-  /** Optional everywhere. Like `manifest`, naming one requires the picked folder — the file it names
-   *  has to be in the project the Head reads it out of. */
-  substrate?: string
 }
 
-export async function submitTidepool({
-  minutes, vram, gpu, node, features, picked, name, manifest, substrate,
+export function submitTidepool({
+  minutes, vram, gpu, node, features, name,
 }: SubmitTidepoolOpts): Promise<number> {
-  // A genuinely empty gzip-tar when no project was picked, not an empty body — the Head always opens the
-  // upload as a tar archive (ccc_head_api.spawns.submit). `makeTar([])` writes the two all-zero
-  // end-of-archive blocks tar readers expect, same as Python's tarfile for no members.
-  const body = await projectBody(picked ?? EMPTY_PICK)
-  const meta = {
+  return postSubmit({
     minutes, vram, gpu, node, tidepool: true, name,
     ...(features.length ? { features } : {}),
-    // Omitted rather than sent empty, unlike submit()'s above: a Tide Pool is the one Spawn the Head
-    // lets decline to declare an Environment, so absent here means "a bare shell" rather than an
-    // error. Naming one requires the picked folder — it is built from the upload.
-    ...(manifest?.trim() ? { manifest: manifest.trim() } : {}),
-    ...(substrate?.trim() ? { substrate: substrate.trim() } : {}),
-  }
-  const r = await req('/submit', {
-    method: 'POST',
-    headers: { 'X-CCC-Meta': JSON.stringify(meta), 'Content-Type': 'application/gzip' },
-    body,
   })
-  return (await r.json()).id
 }

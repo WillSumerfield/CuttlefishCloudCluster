@@ -4,11 +4,10 @@
 whose needs nobody declared). `--node` is refused over the API for everyone — pinning is Head-local only.
 """
 
-import asyncio
-import io
-import json
+import os
+import pathlib
+import stat
 import subprocess
-import tarfile
 import tempfile
 from pathlib import Path
 
@@ -34,7 +33,7 @@ class TestRenderedSbatch:
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
         return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
             token="a3f9", secret="s3cr3t", **kw)
 
     def test_time_limit_is_declared(self):
@@ -66,9 +65,9 @@ class TestTheSbatchSinkOutlivesItsJobId:
     the sink name is keyed on job id alone — it must be unique per SUBMISSION instead.
     """
 
-    def render(self, staging="/var/lib/ccc/head/projects/deadbeef-1234-5678"):
+    def render(self, sink_tag="deadbeef12345678"):
         return head_spawns._render(
-            staging=staging, gpu=1, script="train.py", args=[], files=[],
+            sink_tag=sink_tag, gpu=1, script="train.py", args=[],
             node=None, minutes=60, constraint="", token="a3f9", secret="s3cr3t")
 
     def test_the_header_and_the_shell_name_the_same_file(self):
@@ -80,8 +79,8 @@ class TestTheSbatchSinkOutlivesItsJobId:
         assert 'sink="/tmp/ccc-$jid-deadbeef.slurm"' in body
 
     def test_two_submissions_never_share_a_sink(self):
-        a = self.render(staging="/var/lib/ccc/head/projects/aaaaaaaa-0000")
-        b = self.render(staging="/var/lib/ccc/head/projects/bbbbbbbb-0000")
+        a = self.render(sink_tag="aaaaaaaa0000")
+        b = self.render(sink_tag="bbbbbbbb0000")
         assert "/tmp/ccc-%j-aaaaaaaa.slurm" in a
         assert "/tmp/ccc-%j-bbbbbbbb.slurm" in b
 
@@ -154,7 +153,7 @@ class TestRemoteLiveStreaming:
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
         return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
             token="a3f9", secret="s3cr3t", **kw)
 
     def _remote_branch(self, script: str) -> str:
@@ -164,7 +163,7 @@ class TestRemoteLiveStreaming:
         return script[start:end]
 
     def _head_branch(self, script: str) -> str:
-        start = script.index('if [ -d "$staging_dir" ]')
+        start = script.index('\nif [ -d "')
         end = script.index("\nelse")
         return script[start:end]
 
@@ -184,14 +183,10 @@ class TestRemoteLiveStreaming:
         assert script.count("trap cleanup EXIT") == 2   # once per branch, same as before
         assert 'cleanup() { kill "$loop_pid"' in script
 
-    def test_loop_is_killed_before_both_stage_out_call_sites(self):
+    def test_loop_is_killed_before_the_final_stage_out(self):
         """Design: 'kill the loop before the final stage_out() call ... so the last full sync isn't
-        racing a partial periodic one.' Applies to the early stage-in-failure exit too, same race."""
+        racing a partial periodic one.'"""
         script = self.render()
-        early_kill = script.index('kill "$loop_pid" 2>/dev/null  # stop the periodic pusher first')
-        early_stage_out = script.index("\n        stage_out\n        exit 1")
-        assert early_kill < early_stage_out
-
         final_kill = script.rindex('kill "$loop_pid" 2>/dev/null')
         final_stage_out = script.index('stage_out_retry || echo "ccc: staging results back')
         assert final_kill < final_stage_out
@@ -216,57 +211,6 @@ class TestRemoteLiveStreaming:
         assert head.count('stage_out() { :; }') == 1
 
 
-class TestTheHeadStageInIsChecked:
-    """The Head branch's `cp` is what stands between a User's uploaded project and its deletion.
-
-    `: > "$spawn_dir/staged"` is the marker `ccc_head_api.projects.sweep` reads as "the Head's copy has
-    served its purpose, delete the upload". There is no `set -e` in this script, so an unchecked `cp`
-    writes that marker after a copy that failed — and the Head then deletes the original while the
-    working copy is truncated, running the Spawn against incomplete code with nothing to restore from.
-    """
-
-    def render(self, **kw):
-        kw.setdefault("minutes", 60)
-        kw.setdefault("constraint", "vram24|vram80")
-        kw.setdefault("node", None)
-        return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
-            token="a3f9", secret="s3cr3t", **kw)
-
-    def _head_branch(self, script: str) -> str:
-        start = script.index('if [ -d "$staging_dir" ]')
-        return script[start:script.index("\nelse")]
-
-    def test_the_copy_is_checked(self):
-        head = self._head_branch(self.render())
-        assert "if ! cp -a --no-preserve=ownership" in head
-
-    def test_the_staged_marker_is_only_reachable_after_a_successful_copy(self):
-        """Structural, because the marker's whole meaning is its position: it must sit after the guard
-        closes, so the failure path's `exit 1` is taken before anything can write it."""
-        head = self._head_branch(self.render())
-        guard = head.index("if ! cp -a")
-        marker = head.index(': > "$spawn_dir/staged"')
-        assert guard < marker
-        failure_exit = head.index("exit 1", guard)
-        assert failure_exit < marker, "the failure branch must exit before the marker is reached"
-
-    def test_the_failure_branch_can_report_itself(self):
-        """out/err/exit have to be NAMED before the copy, or the failure branch has nowhere to write and
-        the User meets a Spawn that failed for no stated reason."""
-        head = self._head_branch(self.render())
-        assert head.index('err="$spawn_dir/err"') < head.index("if ! cp -a")
-        fail = head[head.index("if ! cp -a"):head.index(': > "$spawn_dir/staged"')]
-        assert '>> "$err"' in fail
-        assert 'echo 1 > "$exitf"' in fail
-
-    def test_a_partial_copy_is_emptied_on_the_way_out(self):
-        """A partial copy of the User's own upload is not left behind."""
-        head = self._head_branch(self.render())
-        fail = head[head.index("if ! cp -a"):head.index(': > "$spawn_dir/staged"')]
-        assert 'rm -rf "$proj"' in fail
-
-
 class TestStageOutIsRetried:
     """A completed Spawn whose stage-out hits a network drop is reported as *killed*: no `exit` marker
     lands, `_record_endings` stamps NULL, and an hour later retention deletes its results as debris.
@@ -279,7 +223,7 @@ class TestStageOutIsRetried:
         kw.setdefault("constraint", "vram24|vram80")
         kw.setdefault("node", None)
         return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
             token="a3f9", secret="s3cr3t", **kw)
 
     def test_the_final_stage_out_retries(self):
@@ -298,7 +242,7 @@ class TestStageOutIsRetried:
         """`stage_out() { :; }` on the Head means the loop returns immediately — the retry must not put
         a delay into the co-located path, which has no network hop at all."""
         script = self.render()
-        head = script[script.index('if [ -d "$staging_dir" ]'):script.index("\nelse")]
+        head = script[script.index('\nif [ -d "'):script.index("\nelse")]
         assert "stage_out() { :; }" in head
 
 
@@ -308,24 +252,9 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
     a Device — with the User told
     none of it. If we cannot finish recording it, we do not leave it running."""
 
-    def _tar(self, tmp_path: Path) -> Path:
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            # The manifest rides along in every project tar here: a Spawn that declares no
-            # **Environment** is refused before sbatch, which is not the failure these tests are about.
-            for name in ("train.py", "requirements.txt"):
-                data = b"print('hi')\n"
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
-        path = tmp_path / "project.tar.gz"
-        path.write_bytes(buf.getvalue())
-        return path
-
     @pytest.fixture
     def rig(self, monkeypatch, tmp_path):
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
         db.ensure_schema()
@@ -345,7 +274,7 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
                             lambda *a, **kw: (_ for _ in ()).throw(OSError("disk gone")))
         with pytest.raises(OSError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=self._tar(tmp_path), minutes=60, constraint="", manifest="requirements.txt")
+                               minutes=60, constraint="")
         assert rig == [9001], "the job sbatch already started must not be left running"
 
     def test_a_cancel_that_itself_fails_does_not_mask_the_real_error(self, rig, monkeypatch, tmp_path):
@@ -357,11 +286,11 @@ class TestAnUnrecordedSpawnIsNeverLeftRunning:
                             lambda jid: (_ for _ in ()).throw(RuntimeError("scancel missing")))
         with pytest.raises(OSError, match="disk gone"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=self._tar(tmp_path), minutes=60, constraint="", manifest="requirements.txt")
+                               minutes=60, constraint="")
 
     def test_a_clean_submit_cancels_nothing(self, rig, tmp_path):
         job_id = head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                                    tar_path=self._tar(tmp_path), minutes=60, constraint="", manifest="requirements.txt")
+                                    minutes=60, constraint="")
         assert job_id == 9001
         assert rig == []
 
@@ -377,8 +306,7 @@ class TestSbatchsRefusalReachesTheOperator:
         return subprocess.CalledProcessError(code, ["sbatch"], output=stdout, stderr=stderr)
 
     def _only_sbatch_fails(self, monkeypatch, exc: Exception) -> None:
-        """Fail the sbatch call and nothing else. `submit` shells out before it too — `_lend_project`
-        runs setfacl — and a blanket patch would break at the earlier one, testing nothing."""
+        """Fail the sbatch call and nothing else."""
         def fake(argv, *a, **kw):
             if "sbatch" in argv:
                 raise exc
@@ -415,36 +343,33 @@ class TestSbatchsRefusalReachesTheOperator:
     def test_the_submission_path_raises_it(self, monkeypatch, tmp_path):
         """End to end: the refusal has to survive `submit`'s cleanup handler, which used to re-raise
         the CalledProcessError untouched."""
-        rig = _submit_rig(monkeypatch, tmp_path)
+        _submit_rig(monkeypatch, tmp_path)
         self._only_sbatch_fails(monkeypatch, self._err(stderr="sbatch: error: Invalid user id 60002"))
         with pytest.raises(RuntimeError, match="Invalid user id 60002"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=rig, minutes=60, constraint="",
-                               manifest="requirements.txt")
+                               minutes=60, constraint="")
 
     def test_the_siphon_is_still_closed_on_the_way_out(self, monkeypatch, tmp_path):
         """The translation sits inside the handler that discards the Siphon. No job id will ever
         exist for this submission, so nothing else would ever close it — a nicer error message is not
         worth leaking an rsync module for."""
-        rig = _submit_rig(monkeypatch, tmp_path)
+        _submit_rig(monkeypatch, tmp_path)
         discarded = []
         monkeypatch.setattr(head_spawns.siphons, "discard", lambda tok: discarded.append(tok))
         self._only_sbatch_fails(monkeypatch, self._err(stderr="nope"))
         with pytest.raises(RuntimeError):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=rig, minutes=60, constraint="",
-                               manifest="requirements.txt")
+                               minutes=60, constraint="")
         assert len(discarded) == 1
 
     def test_a_failure_that_is_not_sbatch_is_left_alone(self, monkeypatch, tmp_path):
         """Only a failed *command* has stderr to surface. Everything else keeps its own type, so the
         callers that catch specific exceptions still see them."""
-        rig = _submit_rig(monkeypatch, tmp_path)
+        _submit_rig(monkeypatch, tmp_path)
         self._only_sbatch_fails(monkeypatch, OSError("disk gone"))
         with pytest.raises(OSError, match="disk gone"):
             head_spawns.submit(user_id=1, script="train.py", gpu=1, args=[],
-                               tar_path=rig, minutes=60, constraint="",
-                               manifest="requirements.txt")
+                               minutes=60, constraint="")
 
     def _pinned_failure(self, monkeypatch, stderr: str) -> str:
         """What `cuttle run --node` puts in front of the operator when the admin tool dies."""
@@ -456,7 +381,7 @@ class TestSbatchsRefusalReachesTheOperator:
         monkeypatch.setattr(cli_spawns, "run", lambda a, **kw: type("R", (), {
             "returncode": 1, "stdout": "", "stderr": stderr})())
         with pytest.raises(typer.Exit):
-            cli_spawns._submit_pinned(b"", "train.py", [], 60, 24, 1, "gpu-box", {}, ["out"])
+            cli_spawns._submit_pinned("train.py", [], 60, 24, 1, "gpu-box")
         return said[0]
 
     def test_the_cli_drops_the_exception_class_from_the_line_it_prints(self, monkeypatch):
@@ -477,10 +402,9 @@ class TestSbatchsRefusalReachesTheOperator:
         assert "sudo: a password is required" in msg
 
 
-def _submit_rig(monkeypatch, tmp_path) -> Path:
-    """A Head with just enough around it for `submit` to reach sbatch, returning the project tar."""
+def _submit_rig(monkeypatch, tmp_path) -> None:
+    """A Head with just enough around it for `submit` to reach sbatch."""
     monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-    monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
     db.ensure_schema()
@@ -488,70 +412,11 @@ def _submit_rig(monkeypatch, tmp_path) -> Path:
         conn.execute("INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
                      "VALUES (1,'alice',0,'x',0)")
         conn.commit()
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name in ("train.py", "requirements.txt"):
-            data = b"print('hi')\n"
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
-    path = tmp_path / "project.tar.gz"
-    path.write_bytes(buf.getvalue())
-    return path
-
-
-class TestAnAbandonedUploadIsNotLeftOnDisk:
-    """`_spool_upload` streams to `NamedTemporaryFile(delete=False)`, so nothing but this function ever
-    reaps that file. It lands in the SYSTEM temp dir — outside every path CCC tracks, with no reaper of
-    its own — so any exit that is not a `return` has to unlink. A client that Ctrl-Cs a multi-GB folder
-    upload raises out of `request.stream()`, which is the ordinary way that happens."""
-
-    class _Req:
-        def __init__(self, chunks, boom=None):
-            self._chunks, self._boom = chunks, boom
-
-        async def stream(self):
-            for c in self._chunks:
-                yield c
-            if self._boom is not None:
-                raise self._boom
-
-    def _spool(self, monkeypatch, tmp_path, req):
-        monkeypatch.setattr(head_main.tempfile, "tempdir", str(tmp_path))
-        return asyncio.run(head_main._spool_upload(req))
-
-    def test_a_disconnect_mid_stream_leaves_nothing_behind(self, monkeypatch, tmp_path):
-        req = self._Req([b"a" * 100, b"b" * 100], boom=ConnectionResetError("client went away"))
-        with pytest.raises(ConnectionResetError):
-            self._spool(monkeypatch, tmp_path, req)
-        assert list(tmp_path.iterdir()) == []
-
-    def test_a_cancelled_upload_leaves_nothing_behind(self, monkeypatch, tmp_path):
-        """asyncio.CancelledError inherits BaseException, not Exception — a plain `except Exception`
-        would let the most likely shutdown path strand the file."""
-        req = self._Req([b"a" * 100], boom=asyncio.CancelledError())
-        with pytest.raises(asyncio.CancelledError):
-            self._spool(monkeypatch, tmp_path, req)
-        assert list(tmp_path.iterdir()) == []
-
-    def test_the_over_cap_refusal_still_cleans_up(self, monkeypatch, tmp_path):
-        req = self._Req([b"a" * 10_000])
-        monkeypatch.setattr(head_main, "MAX_UPLOAD_BYTES", 100)
-        with pytest.raises(head_main.HTTPException) as e:
-            self._spool(monkeypatch, tmp_path, req)
-        assert e.value.status_code == 413
-        assert list(tmp_path.iterdir()) == []
-
-    def test_a_complete_upload_is_kept(self, monkeypatch, tmp_path):
-        """The unlink must not be so eager it takes the successful path's file with it."""
-        path = self._spool(monkeypatch, tmp_path, self._Req([b"hello", b"world"]))
-        assert path.exists()
-        assert path.read_bytes() == b"helloworld"
 
 
 class TestPodContainment:
     """Spawn Isolation phase 1 (temp/spawn-isolation.md). Apptainer's own model is "the user inside is
-    the user outside" — and outside is the Mantle, which owns head.db, head.key and every User's upload.
+    the user outside" — and outside is the Mantle, which owns head.db, head.key and every User's results.
     Verified on hardware 2026-07-31: without these flags a payload reads all of it through
     `/proc/<pid>/root` of any ccc-owned host process, and reads every concurrent Spawn's scratch through
     the auto-mounted /tmp.
@@ -565,7 +430,7 @@ class TestPodContainment:
         kw.setdefault("constraint", "vram24")
         kw.setdefault("node", None)
         return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
             token="a3f9", secret="s3cr3t", **kw)
 
     def tidepool(self):
@@ -605,9 +470,7 @@ class TestPodContainment:
         assert "--no-mount /etc/passwd,/etc/group" in self.render()
 
     def test_the_remote_branch_creates_the_project_dir_itself(self):
-        """rsync makes <uuid>/ only as a side effect of copying files INTO it, so a Spawn with an empty
-        project — which every Tide Pool is, it uploads an empty tar — would leave it absent. $proj is
-        now a bind source and a --pwd target, and apptainer treats a missing one as fatal."""
+        """$proj is a bind source and a --pwd target, and apptainer treats a missing one as fatal."""
         script = self.tidepool()
         remote = script[script.index("\nelse"):script.index("\nfi\n")]
         assert 'mkdir -p "$proj"' in remote
@@ -660,17 +523,16 @@ class TestSpawnsRunAsTheirSubmitter:
     """Spawn Isolation phase 3 (temp/spawn-isolation.md): a Spawn is its submitter's **Guise**, never
     the Mantle. Phase 1's flags lock the door; this is what moves the valuables out of the room, and
     every failure here silently puts them back — a Spawn owned by `ccc` again reaches head.db,
-    head.key, and every other User's upload, and nothing about it looks wrong.
+    head.key, and every other User's results, and nothing about it looks wrong.
     """
 
     @pytest.fixture
     def submitted(self, monkeypatch, tmp_path):
-        """One real submit (render, unpack, Attribution row, Escrow) against a captured sbatch.
+        """One real submit (render, Attribution row, Escrow) against a captured sbatch.
         Returns every shell-out it made, so the argv AND the account can be asserted on."""
         state = tmp_path / "head-state"
-        for name in ("projects", "spawns", "scratch"):
+        for name in ("spawns", "scratch"):
             (state / name).mkdir(parents=True)
-        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
         monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
         monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
         monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
@@ -692,35 +554,11 @@ class TestSpawnsRunAsTheirSubmitter:
         return calls
 
     def _submit(self, tmp_path, user_id=1):
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for name in ("train.py", "requirements.txt"):
-                info = tarfile.TarInfo(name)
-                info.size = 0
-                tf.addfile(info, io.BytesIO(b""))
-        tar = tmp_path / "up.tar.gz"
-        tar.write_bytes(buf.getvalue())
         return head_spawns.submit(user_id=user_id, script="train.py", gpu=1, args=[],
-                                  tar_path=tar, minutes=60, constraint="vram24",
-                                  manifest="requirements.txt")
+                                  minutes=60, constraint="vram24")
 
     def _sbatch(self, calls):
         return next(argv for argv, _ in calls if "sbatch" in argv)
-
-    def test_the_upload_lands_owner_only(self, submitted, tmp_path, monkeypatch):
-        """An uploaded project is the User's own tree and may itself carry a secret — a stray .env —
-        so what it lands as must not depend on whichever umask the Head was provisioned under. The
-        Guise reaches it through `_lend_project`'s ACL, never through the mode."""
-        import os
-        import stat
-        old = os.umask(0o022)
-        try:
-            self._submit(tmp_path)
-        finally:
-            os.umask(old)
-        staged = [d for d in head_spawns.PROJECTS_DIR.iterdir() if d.is_dir()]
-        assert staged, "nothing was staged"
-        assert stat.S_IMODE(staged[0].stat().st_mode) == 0o700
 
     def test_sbatch_runs_as_the_submitters_guise(self, submitted, tmp_path):
         self._submit(tmp_path)
@@ -741,48 +579,12 @@ class TestSpawnsRunAsTheirSubmitter:
 
     def test_the_script_goes_in_on_stdin_not_as_a_path(self, submitted, tmp_path):
         """It used to be a 0600 NamedTemporaryFile owned by the Mantle — which the Guise sbatch now
-        runs as cannot read. Feeding it here is strictly better anyway: nothing on disk holds the
-        project's full file list, and the delete-after-return dance goes away with it."""
+        runs as cannot read. Feeding it here is strictly better anyway: the delete-after-return dance
+        goes away with it."""
         self._submit(tmp_path)
         argv, kw = next((a, k) for a, k in submitted if "sbatch" in a)
         assert argv[-1].startswith("--")         # flags only — no path argument follows
         assert kw["input"].startswith("#!/bin/bash")
-
-    def test_the_project_is_lent_to_that_guise_before_sbatch(self, submitted, tmp_path):
-        """The Head-local branch copies the project out of `projects/<uuid>` AS the Guise. The ACL is
-        set before the job exists at all — a prolog-side chown could not be, because the prolog would
-        have to be told the uuid, and the only channel for that needs a job id sbatch has not returned
-        yet.
-
-        `rwX`: the Environment build also runs in this tree as the Guise, and a dependency resolve
-        writes into the project as a matter of course — `uv sync`'s `uv.lock`, micromamba's pip
-        requirements file, a build backend's egg-info. Read-only turned each into "Permission denied"
-        and failed the Spawn (hardware, 2026-08-02, Spawn 15)."""
-        self._submit(tmp_path)
-        facl = next((argv, i) for i, (argv, _) in enumerate(submitted) if "setfacl" in argv)
-        assert "u:ccc-u60002:rwX" in facl[0]
-        assert "-R" in facl[0]
-        sbatch_at = next(i for i, (argv, _) in enumerate(submitted) if "sbatch" in argv)
-        assert facl[1] < sbatch_at
-
-    def test_a_head_without_setfacl_still_submits(self, submitted, monkeypatch, tmp_path):
-        """Refusing here would take the whole cluster down over a Head-local optimisation — every
-        REMOTE Spawn stages in over rsync and never touches this tree."""
-        def flaky(argv, **kw):
-            if "setfacl" in argv:
-                return type("R", (), {"stdout": "", "stderr": "no such tool", "returncode": 1})()
-            submitted.append((list(argv), kw))
-            return type("R", (), {"stdout": "9001\n", "stderr": "", "returncode": 0})()
-        monkeypatch.setattr(head_spawns.subprocess, "run", flaky)
-        assert self._submit(tmp_path) == 9001
-
-    def test_the_head_branch_does_not_try_to_restore_ownership(self):
-        """`cp -a` implies --preserve=all: the upload is ccc:ccc, so a Guise copying it would try to
-        chown back to the Mantle, get EPERM, and fail the WHOLE copy. Mode and timestamps still cross;
-        ownership is the one attribute a Guise has no business restoring."""
-        script = head_spawns.JOB_SCRIPT
-        assert 'cp -a --no-preserve=ownership "$staging_dir/." "$proj/"' in script
-
 
 class FakeUser(dict):
     pass
@@ -818,13 +620,10 @@ def client(monkeypatch, is_admin: bool) -> TestClient:
 
 def post(c: TestClient, **meta):
     meta.setdefault("script", "train.py")
-    # Every Spawn declares its **Environment** — see TestManifestIsRequired below for the gate itself.
-    # Defaulted here so the tests about everything ELSE aren't all about this one field.
-    meta.setdefault("manifest", "requirements.txt")
-    # Same reasoning for the Spawn's **Name**: required of every Spawn (TestSpawnsMustBeNamed owns that
-    # gate), defaulted here so it is not the subject of every other test in the file.
+    # The Spawn's **Name** is required of every Spawn (TestSpawnsMustBeNamed owns that gate), defaulted
+    # here so it is not the subject of every other test in the file.
     meta.setdefault("name", "a spawn")
-    return c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(meta)})
+    return c.post("/api/submit", json=meta)
 
 
 @pytest.fixture(autouse=True)
@@ -837,10 +636,7 @@ class TestSubmitRequiresDeclarations:
     def test_happy_path(self, monkeypatch):
         r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24)
         assert r.status_code == 200
-        # `environment` is the submit-time echo (docs/elements/environments.md). None here because
-        # this route is stubbed at submit_checked, so no Spawn dir — and a client must treat it as
-        # optional anyway, since a Spawn submitted before the feature existed has no note to give back.
-        assert r.json() == {"id": 4242, "environment": None}
+        assert r.json() == {"id": 4242}
 
     @pytest.mark.parametrize("missing", ["minutes", "vram"])
     def test_missing_declaration_is_refused(self, monkeypatch, missing):
@@ -853,7 +649,7 @@ class TestSubmitRequiresDeclarations:
 
 class TestSpawnsMustBeNamed:
     """A Spawn's **Name** (CONTEXT.md): what a person calls it in the queue and the archive, and the
-    one thing about a Spawn CCC will not invent. It joins `--time`/`--vram`/`--output`/`--manifest` as
+    one thing about a Spawn CCC will not invent. It joins `--time`/`--vram` as
     something every Spawn says for itself — a cluster that named work on its submitter's behalf would
     fill its own history with rows nobody can tell apart.
 
@@ -906,33 +702,6 @@ class TestSpawnsMustBeNamed:
         assert head_spawns.clean_name("  nightly eval  ") == "nightly eval"
 
 
-class TestTheEnvironmentMustBeDeclared:
-    """`--manifest` joins `--time`/`--vram`/`--output` as something every Spawn says for itself. There
-    is no default and no auto-detection: an **Environment** carries its own interpreter and inherits
-    nothing, so which file it is built from decides what all the work runs against — too much to infer
-    from a `pyproject.toml` that might belong to something the User is only vendoring."""
-
-    def test_a_spawn_naming_no_manifest_is_refused(self, monkeypatch):
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, manifest=None)
-        assert r.status_code == 422
-        assert "manifest" in r.json()["detail"]
-
-    def test_the_refusal_names_the_flag_that_fixes_it(self, monkeypatch):
-        """A message that only says "required" leaves the User with nowhere to go. Refused BEFORE the
-        upload is spooled, too — there is no reason to carry a gigabyte of project across the wire to
-        find out a field is blank."""
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, manifest="")
-        assert "--manifest" in r.json()["detail"]
-        assert "pyproject.toml" in r.json()["detail"]
-
-    def test_a_tide_pool_may_decline(self, monkeypatch):
-        """The one Spawn exempt: it is a shell, not a run, and a bare one uploads an empty tar with no
-        file in it to name."""
-        r = post(client(monkeypatch, is_admin=False), minutes=60, vram=24, tidepool=True,
-                 script=None, manifest=None)
-        assert r.status_code == 200
-
-
 class TestNodeIsNotAvailableOverTheApi:
     """Pinning a Spawn to a named Arm was admin-only over this route until Phase 6 settled that the
     Head API exposes **no admin writes at all**. It is now `cuttle run --node`, on the Head.
@@ -972,7 +741,7 @@ class TestFeatureRequirement:
     def _capture_constraint(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(head_spawns, "submit",
-                            lambda *a, **kw: captured.setdefault("constraint", a[6]) or 4242)
+                            lambda *a, **kw: captured.setdefault("constraint", a[5]) or 4242)
         return captured
 
     def test_absent_features_change_nothing(self, monkeypatch):
@@ -1004,42 +773,28 @@ class TestFeatureRequirement:
 
 
 class TestAProfiledFeatureNeedsAnEnvironment:
-    """A **Feature** carrying a runtime profile attaches its software to the Spawn's **Environment** —
-    it probes the interpreter for its ABI, its nvidia lib dirs and its site-packages. A Spawn that
-    declared none has nothing to attach to.
+    """A **Feature** carrying a runtime profile attaches its software to an **Environment** — it probes
+    the interpreter for its ABI, its nvidia lib dirs and its site-packages. A Spawn builds none, so it
+    has nothing to attach to.
 
-    Decidable without building, so refused at submit (CONTEXT.md). It used to be found on the Arm,
-    after a Device was already held, and reported as `FATAL: "-c": executable file not found in $PATH`
-    — apptainer's complaint about the flag that followed the empty `$py`.
-
-    Only a **Tide Pool** can reach this gate: every other Spawn is already refused for naming no
-    manifest at all."""
+    Decidable without building, so refused at submit (CONTEXT.md), not found on the Arm after a Device
+    was already held."""
 
     def _tidepool(self, monkeypatch, **meta):
         c = client(monkeypatch, is_admin=False)
         monkeypatch.setattr(slurm, "arms_with_features", lambda feats: ["gpu-box"])
         monkeypatch.setattr(slurm, "feature_constraint", lambda feats: "&".join(sorted(feats)))
-        return c.post("/api/submit", content=b"", headers={"X-CCC-Meta": json.dumps(
-            {"minutes": 60, "vram": 24, "tidepool": True, "name": "a pool", **meta})})
+        return c.post("/api/submit",
+                      json={"minutes": 60, "vram": 24, "tidepool": True, "name": "a pool", **meta})
 
     def test_a_bare_tide_pool_asking_for_a_profiled_feature_is_refused(self, monkeypatch):
         r = self._tidepool(monkeypatch, features=["vlearn"])
         assert r.status_code == 422
         assert "vlearn" in r.json()["detail"]
 
-    def test_the_refusal_names_the_flag_that_fixes_it(self, monkeypatch):
-        """The remedy is to declare an Environment, not to drop the Feature — the User asked for that
-        Feature on purpose."""
-        r = self._tidepool(monkeypatch, features=["vlearn"])
-        assert "--manifest" in r.json()["detail"]
-
-    def test_declaring_one_makes_it_fine(self, monkeypatch):
-        assert self._tidepool(monkeypatch, features=["vlearn"],
-                              manifest="requirements.txt").status_code == 200
-
     def test_an_unprofiled_feature_still_needs_nothing(self, monkeypatch):
         """`isaaclab` is placement plus `$ISAACLAB_PATH` — no interpreter is involved, so a Tide Pool
-        opened to poke at a box may still ask for it with no project in hand."""
+        may still ask for it."""
         assert self._tidepool(monkeypatch, features=["isaaclab"]).status_code == 200
 
     def test_a_bare_tide_pool_with_no_features_is_untouched(self, monkeypatch):
@@ -1085,8 +840,7 @@ class TestConcurrentSpawnCap:
                 "INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
                 "VALUES (?,?,?,?,0)", (user_id, f"u{user_id}", 0, "x"))
             for jid in job_ids:
-                db.record_spawn(conn, job_id=jid, user_id=user_id, script="train.py",
-                                staging_uuid=f"u{jid}")
+                db.record_spawn(conn, job_id=jid, user_id=user_id, script="train.py")
             conn.commit()
 
     def test_at_the_cap_is_refused(self, monkeypatch):
@@ -1120,50 +874,6 @@ class TestConcurrentSpawnCap:
         assert post(c, minutes=60, vram=24).status_code == 200
 
 
-class TestSubmitValidatesScript:
-    """The real `spawns.submit()` (not the mocked route above) — the script actually being present in
-    the tar is checked here, before anything is
-    written to disk or handed to sbatch. This is what the Head-local pinned path (`cuttle run --node`,
-    which never travels over HTTP) gets for free by sharing this function."""
-
-    def _tar(self, tmp_path: Path, *names: str) -> Path:
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for n in names:
-                data = b"print('hi')\n"
-                info = tarfile.TarInfo(n)
-                info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
-        path = tmp_path / "project.tar.gz"
-        path.write_bytes(buf.getvalue())
-        return path
-
-    def _submit(self, monkeypatch, tmp_path, **kw):
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
-        kw.setdefault("script", "train.py")
-        kw.setdefault("manifest", "requirements.txt")
-        kw.setdefault("tar_path", self._tar(tmp_path, "train.py", "requirements.txt"))
-        return head_spawns.submit(user_id=1, gpu=1, args=[], minutes=60,
-                                  constraint="", **kw)
-
-    def test_a_script_missing_from_the_tar_is_refused(self, monkeypatch, tmp_path):
-        with pytest.raises(ValueError, match="was not found in the uploaded project"):
-            self._submit(monkeypatch, tmp_path, script="missing.py",
-                         tar_path=self._tar(tmp_path, "other.py"))
-
-    def test_nothing_is_staged_when_the_script_is_missing(self, monkeypatch, tmp_path):
-        """The refusal is checked against the tar's own member list, BEFORE `staging.mkdir()` — a bad
-        submission leaves no half-written project dir behind."""
-        monkeypatch.setattr(head_spawns, "MESH_IP", "100.99.0.1")
-        monkeypatch.setattr(head_spawns, "PROJECTS_DIR", tmp_path / "projects")
-        with pytest.raises(ValueError):
-            head_spawns.submit(user_id=1, script="missing.py", gpu=1, args=[],
-                              tar_path=self._tar(tmp_path, "other.py"), minutes=60, constraint="")
-        projects = tmp_path / "projects"
-        assert not projects.exists() or not any(projects.iterdir())
-
-
 class TestCancel:
     """DELETE /spawns/{id} — the escape that CCC never had. You may end **your own**, and only your
     own; cancel-anyone moved to the Head in Phase 6. Attribution is the ledger's (every Spawn runs as
@@ -1176,7 +886,7 @@ class TestCancel:
             conn.execute(
                 "INSERT INTO users (id, username, is_admin, pw_hash, must_change_password) "
                 "VALUES (?,?,?,?,0)", (owner_id, f"u{owner_id}", 0, "x"))
-            db.record_spawn(conn, job_id=77, user_id=owner_id, script="train.py", staging_uuid="u")
+            db.record_spawn(conn, job_id=77, user_id=owner_id, script="train.py")
             conn.commit()
 
     def test_owner_may_cancel(self, monkeypatch):
@@ -1263,7 +973,7 @@ class TestLicenceBind:
         kw.setdefault("constraint", "vram24")
         kw.setdefault("node", None)
         return head_spawns._render(
-            staging="/tmp/u", gpu=1, script="train.py", args=[], files=[],
+            sink_tag="deadbeef", gpu=1, script="train.py", args=[],
             token="a3f9", secret="s3cr3t", **kw)
 
     def test_a_spawn_with_no_feature_can_never_reach_the_licence(self):
@@ -1300,3 +1010,62 @@ class TestLicenceBind:
         body = self.render(wants_licence=True, **kw)
         payload = body[body.index("apptainer exec"):]
         assert "$envbind$licbind" in payload
+
+
+class TestWhatASubmissionLandsAs:
+    """Modes, not contents. A Spawn dir holds a User's own results on a box other Users have accounts
+    on, and must not inherit whatever umask the Head operator happened to provision under."""
+
+    @pytest.fixture(autouse=True)
+    def _spawns_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
+
+    def test_a_spawn_dir_is_not_world_readable(self):
+        """The prolog sets 0770 on a Spawn dir it lends to a Guise — but only on the Head's own
+        co-located Arm (`if [ -d "$head_spawns" ]` is false on a donor box). So for a REMOTE Spawn
+        nothing else ever sets this, and a Spawn dir is named by a SEQUENTIAL job id while the 0711
+        parent grants exactly the traversal a guessed name needs."""
+        old = os.umask(0o022)
+        try:
+            d = head_spawns._make_spawn_dir(4321)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(d.stat().st_mode) == head_spawns.SPAWN_DIR_MODE
+        assert not stat.S_IMODE(d.stat().st_mode) & 0o007, "other has nothing"
+
+    def test_a_lent_directory_is_left_alone(self, monkeypatch):
+        """Once the prolog hands a Spawn dir to the Guise, the Mantle no longer owns it and cannot
+        chmod it — and `mark_cancelled` runs at exactly that moment. Cancelling a RUNNING Spawn must
+        not fail over a mode the prolog already set."""
+        d = head_spawns._make_spawn_dir(9911)
+        real = pathlib.Path.chmod
+
+        def lent(self, *a, **kw):
+            if self == d:
+                raise PermissionError(1, "Operation not permitted")
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(pathlib.Path, "chmod", lent)
+        assert head_spawns._make_spawn_dir(9911) == d
+
+
+class TestNoRequeue:
+    def test_sbatch_is_told_a_spawn_runs_once(self, fake_slurm, monkeypatch, tmp_path):
+        """Slurm's default JobRequeue is 1 and the conf template never overrides it, so without this a
+        node failure re-runs the script from the top."""
+        calls = []
+        real = subprocess.run
+
+        def spy(argv, *a, **kw):
+            calls.append(argv)
+            return real(argv, *a, **kw)
+
+        monkeypatch.setattr(head_spawns.subprocess, "run", spy)
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
+        db.ensure_schema()
+        with db.connect() as conn:
+            db.add_user(conn, "alice")
+            uid = db.get_user(conn, "alice")["id"]
+        head_spawns.submit(uid, "train.py", 1, [], 60, "")
+        sbatch = next(c for c in calls if "sbatch" in c)
+        assert "--no-requeue" in sbatch

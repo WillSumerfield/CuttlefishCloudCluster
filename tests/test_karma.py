@@ -239,7 +239,7 @@ class TestTheTick:
                                       "start_time": None, **j} for j in jobs])
 
     def test_a_spawn_is_niced_by_its_submitters_standing(self, conn, cluster, monkeypatch):
-        db.record_spawn(conn, 101, uid(conn, "alice"), "train.py", "uuid-a")
+        db.record_spawn(conn, 101, uid(conn, "alice"), "train.py")
         karma.override(conn, "alice", -50_000.0)  # deep in debt: should sink
         self.queue(monkeypatch, [{"id": 101, "nice": 0}])
         tick.once()
@@ -253,7 +253,7 @@ class TestTheTick:
 
         Without this, the very next tick would overwrite the admin's bump with the submitter's ordinary
         standing — and the bump would appear to work, for up to 30 seconds."""
-        db.record_spawn(conn, 102, uid(conn, "alice"), "train.py", "uuid-a")
+        db.record_spawn(conn, 102, uid(conn, "alice"), "train.py")
         karma.override(conn, "alice", -50_000.0)
         self.queue(monkeypatch, [{"id": 102, "nice": -cli_config.BUMP_STEP}])
         tick.once()
@@ -277,7 +277,7 @@ class TestTheTick:
         therefore outranks every User's, for free. Doing research from the admin account would exempt
         that work from the economy entirely."""
         db.add_user(conn, "root", is_admin=True)
-        db.record_spawn(conn, 105, uid(conn, "root"), "train.py", "uuid-r")
+        db.record_spawn(conn, 105, uid(conn, "root"), "train.py")
         self.queue(monkeypatch, [{"id": 105, "nice": 0}])
         assert tick.once() == (0, 0)
         assert cluster == {}
@@ -286,7 +286,7 @@ class TestTheTick:
         """The tick runs every 30s forever. Pushing a value Slurm already holds would hammer slurmctld
         with writes that change nothing, for every queued Spawn in the cluster, for as long as it is
         queued."""
-        db.record_spawn(conn, 104, uid(conn, "bob"), "train.py", "uuid-b")
+        db.record_spawn(conn, 104, uid(conn, "bob"), "train.py")
         settled = karma.nice_by_user(conn)[uid(conn, "bob")]
         self.queue(monkeypatch, [{"id": 104, "nice": settled}])
         assert tick.once() == (0, 0)
@@ -514,7 +514,7 @@ class TestTheMeter:
         return state
 
     def spawn(self, conn, jid, user, hold=100.0, **kw):
-        db.record_spawn(conn, jid, uid(conn, user), "train.py", f"u{jid}",
+        db.record_spawn(conn, jid, uid(conn, user), "train.py",
                         minutes=60, gpus=1, vram_gb=8, hold=hold, **kw)
 
     def test_the_hold_suppresses_share_the_moment_a_spawn_queues(self, conn):
@@ -718,7 +718,7 @@ class TestRetraction:
         return state, signalled
 
     def _spawn(self, conn, jid, user="alice", hold=100.0):
-        db.record_spawn(conn, jid, uid(conn, user), "train.py", f"u{jid}",
+        db.record_spawn(conn, jid, uid(conn, user), "train.py",
                         minutes=60, gpus=1, vram_gb=8, hold=hold)
 
     def test_a_caught_job_past_its_deadline_is_force_killed(self, conn, cluster):

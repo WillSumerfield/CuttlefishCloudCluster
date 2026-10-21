@@ -20,7 +20,7 @@ Spawn that asks for a Feature.
 
 ```bash
 ./prepare.sh                  # copies train/ out of a vlearn checkout — that is the whole project
-cuttle run run.py --feature vlearn --manifest pyproject.toml --no-gitignore \
+cuttle run run.py --feature vlearn --manifest pyproject.toml \
   --vram 16 --gpu 1 --time 30 --follow
 ```
 
@@ -28,14 +28,10 @@ cuttle run run.py --feature vlearn --manifest pyproject.toml --no-gitignore \
 it is what tells CCC to arrange the runtime. Without it the Spawn lands anywhere and fails at
 `import vlearn`.
 
-`--no-gitignore` is this directory's own quirk, not a vlearn one: `train/` is copied third-party
-material and is listed in `.gitignore`, so the ordinary gitignore-aware upload leaves the trainer
-behind and `run.py` dies on a missing file.
-
 The first submission builds the Environment on the Head and takes a while; the download cache is
 shared, so later ones are much faster.
 
-## What the upload does *not* contain
+## What the project does *not* contain
 
 The wheel, `assets/`, `shaders/`, `cache/` and `TurboActivate.dat`. All five come from the Arm:
 
@@ -81,8 +77,6 @@ and TensorBoard event files. Not kept once the Spawn ends; the training log is w
   should have been filled by the activation Spawn at admit; check `/etc/ccc/features.env` on the Arm.
 - `libassimp.so.5: cannot open shared object file` — conda-forge resolved assimp 6. The `assimp=5` pin
   in the Feature's own library list (`ccc_head_api.features`) is load-bearing.
-- `FileNotFoundError: .../proj/train/rl_games_train.py` — `--no-gitignore` was left off, so `train/`
-  was filtered out of the upload.
 - `declares 'vlearn', which comes from the 'vlearn' Arm Feature, but this Spawn did not request it` —
   add `--feature vlearn`. A declared vlearn is replaced by a placeholder for the build, and only the
   Feature puts the Arm's real one back.

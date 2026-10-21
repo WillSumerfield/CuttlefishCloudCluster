@@ -12,8 +12,7 @@ torch: <version>        # the base image's, and no Environment inherits it
 
 ## Running one
 
-Each directory is its own project root — `cuttle run` uploads the working directory, and the manifest
-you name is resolved inside it. So `cd` in first:
+Each directory is its own project root — the manifest you name is resolved inside it. So `cd` in first:
 
 ```sh
 cd examples/environments/uv-requirements
@@ -90,7 +89,7 @@ cd examples/environments/uv-requirements
 cuttle run check_env.py --time 10 --vram 8
 ```
 
-Refused before anything is uploaded, naming the flag — there is no default and nothing is detected,
+Refused before anything runs, naming the flag — there is no default and nothing is detected,
 even with a `requirements.txt` sitting right there. At a terminal `cuttle run` asks you for it
 instead.
 

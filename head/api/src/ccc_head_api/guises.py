@@ -1,7 +1,7 @@
 """**Guises** — who a Spawn is on the machine that runs it.
 
-Every Spawn runs as a Guise, not the **Mantle** (`ccc`, which owns head.db, head.key, every User's
-upload, every Spawn's output) — Apptainer's "user inside is user outside" means containment flags alone
+Every Spawn runs as a Guise, not the **Mantle** (`ccc`, which owns head.db, head.key, every Spawn's
+output) — Apptainer's "user inside is user outside" means containment flags alone
 can't keep a Spawn from touching those. One Guise per User, the same one wherever the cluster places
 their work.
 

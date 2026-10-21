@@ -7,10 +7,8 @@ only while sitting on the Head.
 
 ### [Spawns](elements/spawns.md)
 
-A Spawn is one run of your code on the cluster. You upload a directory, say how long it needs and
-how much GPU memory, and name the folders your results land in; CCC finds a machine, runs it in a
-sandbox, and pulls the results back down to you when it finishes — whether or not you were still
-watching. A Spawn runs *once*: if it fails, or the machine it was on is reclaimed, it does not
+A Spawn is one run of your code on the cluster. You name a script, say how long it needs and how
+much GPU memory; CCC finds a machine and runs it in a sandbox. A Spawn runs *once*: if it fails, or the machine it was on is reclaimed, it does not
 quietly start again somewhere else. It can hold several cards at a time, but always on one
 machine — never spread across two donors.
 

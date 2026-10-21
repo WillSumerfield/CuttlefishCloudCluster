@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { Arm } from "../api";
 import { getFeatureCatalog, submit, submitTidepool } from "../api";
-import { human, type Picked } from "../project";
-import { pickOffThread } from "../pick";
 import { NumberField } from "./NumberField";
 import { Chip } from "./Chip";
 import { Select } from "./Select";
@@ -16,8 +14,6 @@ import { Tip } from "./Tip";
  * share one. It used to be optional here and to fall back to the script's name; it no longer falls
  * back to anything, because CCC names nothing.
  */
-
-const GB = 1024 ** 3;
 
 // Mirrors the Head's MAX_SPAWN_NAME (ccc_head_api.spawns), and only as a typing limit — the Head is
 // what enforces it. Deliberately NOT paired with a charset check: a Spawn's
@@ -35,8 +31,6 @@ const cardGb = (vramMb: number) => Math.ceil(vramMb / 1024);
 type SpawnProps = {
   arms: Arm[];
   isAdmin: boolean;
-  /** Open on load when the queue is empty — an empty screen is an invitation to act. */
-  startOpen?: boolean;
   onSubmitted: () => void;
 };
 
@@ -45,19 +39,12 @@ export type ComposerProps = SpawnProps;
 export function Composer(props: ComposerProps) {
   const spawn = props;
 
-  // The folder-dropper's own knobs — corner radius, blur feather (a blur feathers the true perimeter;
-  // see either twin's prior history for why that beat the surfaces' crossed-linear-ramp mask), and its
-  // own padding.
-  const DROP_FADE = { radius: 16, feather: 8, padX: 24, padY: 32 };
-
   // The container's own edge inset — space between ITS border and everything inside it (heading, strip,
   // every field), uniformly, not space between the container and whatever holds it (that's `mb-10`),
   // on top of the `var(--pad)` page-density base.
   const CONTAINER_PAD = { x: 50, y: 64 };
 
   const [mode, setMode] = useState<"script" | "tidepool">("script");
-  const [picked, setPicked] = useState<Picked | null>(null);
-  const [honor, setHonor] = useState(true);
   const [name, setName] = useState("");
   const [script, setScript] = useState("");
   const [gpu, setGpu] = useState(1);
@@ -67,21 +54,11 @@ export function Composer(props: ComposerProps) {
   const [args, setArgs] = useState("");
   const [featureCatalog, setFeatureCatalog] = useState<string[]>([]);
   const [features, setFeatures] = useState<string[]>([]);
-  const [manifest, setManifest] = useState("");
-  // Optional in every mode, so nothing gates on it — unlike `named` below. A **Substrate** names system
-  // packages, and most work needs none.
-  const [substrate, setSubstrate] = useState("");
-  // What the Head says it will build, echoed after a successful Spawn submit.
-  const [envNote, setEnvNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tidepoolId, setTidepoolId] = useState<number | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const lastList = useRef<FileList | null>(null);
 
-  // The catalog is fetched once, independent of what's picked — what the Head knows exists, not what
-  // this composer happens to be building right now.
+  // The catalog is fetched once — what the Head knows exists.
   useEffect(() => {
     getFeatureCatalog()
       .then(setFeatureCatalog)
@@ -126,54 +103,8 @@ export function Composer(props: ComposerProps) {
     };
   });
 
-  const setPick = useCallback((p: Picked | null) => setPicked(p), []);
-
-  // The script picker's choices: every .py in the picked tree, so "script must exist" is true by
-  // construction. Sorted so a re-pick doesn't reshuffle the list.
-  const scriptOptions = useMemo(
-    () => (picked ? picked.paths.filter((p) => p.endsWith(".py")).sort() : []),
-    [picked],
-  );
-
-  // A repick can drop the previously-selected script from the tree. Cleared here rather than letting
-  // the dropdown silently fall back to its first option while `script` state still holds the stale
-  // path.
-  useEffect(() => {
-    if (script && !scriptOptions.includes(script)) setScript("");
-  }, [scriptOptions, script]);
-
-  const rescan = useCallback(
-    async (list: FileList | null, honorGitignore: boolean) => {
-      if (!list || list.length === 0) return;
-      setPick(await pickOffThread(list, honorGitignore));
-    },
-    [setPick],
-  );
-
-  const onPickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    lastList.current = e.target.files;
-    setError(null);
-    await rescan(e.target.files, honor);
-  };
-
-  const onDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    if (e.dataTransfer.files?.length) {
-      lastList.current = e.dataTransfer.files;
-      setError(null);
-      await rescan(e.dataTransfer.files, honor);
-    }
-  };
-
-  const toggleHonor = async (v: boolean) => {
-    setHonor(v);
-    await rescan(lastList.current, v);
-  };
-
   // Clears the whole form and stays open, ready for another.
   const reset = () => {
-    setPicked(null);
     setName("");
     setScript("");
     setMinutes("");
@@ -181,26 +112,16 @@ export function Composer(props: ComposerProps) {
     setArgs("");
     setNode("");
     setFeatures([]);
-    setManifest("");
-    if (fileRef.current) fileRef.current.value = "";
   };
 
   const trimmed = name.trim();
 
-  // `manifest` gates every branch but the Tide Pool's: naming the dependency file is required, because
-  // an Environment carries its own Python and inherits nothing, so the Head refuses a Spawn that named
-  // none. A Tide Pool is the one Spawn that may decline — it is a shell, not a run.
-  const named = !!manifest.trim();
-  // A **Substrate** is optional everywhere, so it gates nothing on its own — but it is read out of the
-  // upload exactly as a manifest is, so naming one still needs the folder that holds it.
-  const substrated = !!substrate.trim();
   // The selected count can go stale without being re-picked: choose 2 cards at 40GB, then raise Memory
   // to 400, and the option that was fine is now one no Arm can host. Greying the row out doesn't undo
   // a choice already made, so readiness re-asks the same question of what is currently selected.
   // A count past the end of the list is unplaceable too, not merely unlisted.
   const placeable = !known || !!gpuOptions[gpu - 1] && !gpuOptions[gpu - 1].disabled;
-  // A Tide Pool asks for a shell, not a run: no script, and an upload only if it declared
-  // something to build out of one.
+  // A Tide Pool asks for a shell, not a run: no script.
   const tide = mode === "tidepool";
 
   // EVERY reason the primary button is dead, in the order the form asks for them — the Tip on that
@@ -208,17 +129,10 @@ export function Composer(props: ComposerProps) {
   // `ready` is derived FROM this list rather than computed beside it: two expressions of one rule
   // drift, and the half that drifts silently is the explanation, which nothing type-checks.
   const blockers: string[] = [];
-  // A named manifest or substrate needs the folder that holds it — the Head builds from the upload,
-  // and there is nothing to resolve the name against otherwise. That is the ONLY thing that makes a
-  // Tide Pool need one.
-  if (!picked && (!tide || named || substrated))
-    blockers.push(tide ? "pick the folder holding the file you named" : "pick a project folder");
   // Every Spawn carries a **Name** a person chose (CONTEXT.md) — the Head refuses a nameless one, so
-  // this gates exactly as the time and memory fields do. A Tide Pool is no exception: it may decline to
-  // declare an Environment, and it may not decline to be named.
+  // this gates exactly as the time and memory fields do. A Tide Pool is no exception.
   if (!trimmed) blockers.push(tide ? "name this tide pool" : "name this spawn");
   if (!tide && !script.trim()) blockers.push("name the script to run");
-  if (!tide && !named) blockers.push("name the dependency file its environment is built from");
   if (!(Number(minutes) > 0)) blockers.push("set a time limit");
   if (!(Number(vram) > 0)) blockers.push("set the GPU memory it needs");
   // Already drawn elsewhere on the form (the greyed card rows). Said again here anyway: this list
@@ -243,24 +157,22 @@ export function Composer(props: ComposerProps) {
     if (!ready) return;
     setBusy(true);
     setError(null);
-    setEnvNote(null);
     try {
       if (mode === "tidepool") {
         const id = await submitTidepool({
-          minutes: Number(minutes), vram: Number(vram), gpu, node: node || null, features, picked,
+          minutes: Number(minutes), vram: Number(vram), gpu, node: node || null, features,
           // `trimmed`, never `|| null`: a Name is required now, and `ready` above has already refused
           // to enable the button without one. Sending null could only ever produce a 422 for a field
           // the form itself just guaranteed.
-          name: trimmed, manifest: manifest.trim(), substrate: substrate.trim(),
+          name: trimmed,
         });
         setTidepoolId(id);
       } else {
-        const res = await submit({
-          picked: picked as Picked, name: trimmed, script, gpu, minutes: Number(minutes),
+        await submit({
+          name: trimmed, script: script.trim(), gpu, minutes: Number(minutes),
           vram: Number(vram), node: node || null, args: args.split(/\s+/).filter(Boolean),
-          features, manifest, substrate,
+          features,
         });
-        setEnvNote(res.environment);
       }
       reset();
       spawn.onSubmitted();
@@ -271,31 +183,8 @@ export function Composer(props: ComposerProps) {
     }
   };
 
-  const open = spawn.startOpen || picked !== null || mode === "tidepool";
-
   const fields = (
     <div className="mt-6 space-y-5">
-      {/* The preview gate. Everything the pick told us, and the promise that nothing has moved. A
-          Spawn's upload is a one-off, so all-files-vs-gitignore is a live toggle. */}
-      {picked && (
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-1 text-[13px]">
-          <span className="text-ink-soft">
-            <span className="num text-ink">{picked.files.length}</span>/
-            <span className="num">{picked.scanned}</span> files,{" "}
-            <span className="num text-ink">{human(picked.bytes)}</span>
-          </span>
-          <div className="ml-auto flex gap-1">
-            <Chip on={!honor} onClick={() => toggleHonor(false)}>All files</Chip>
-            <Chip on={honor} onClick={() => toggleHonor(true)}>Follow .gitignore</Chip>
-          </div>
-        </div>
-      )}
-      {picked && picked.bytes > GB && (
-        <p className="rounded-[10px] px-3 py-2 text-[13px]" style={{ background: "color-mix(in oklab, var(--alarm) 12%, transparent)", color: "var(--ink-soft)" }}>
-          That's over a gigabyte. Check your .gitignore excludes data and checkpoints — the upload
-          caps at 4&nbsp;GB.
-        </p>
-      )}
       <div className="grid gap-3 sm:grid-cols-2">
         <Labeled label="Name" className="sm:col-span-2" help={"What this run is called in the queue and the archive. Required — CCC won't name it for you, and a queue of jobs all called train.py is one nobody can read. Two runs may share a name."}>
           <input
@@ -311,72 +200,14 @@ export function Composer(props: ComposerProps) {
 
         {mode === "script" && (
           <>
-            <Labeled label="Script" className="sm:col-span-2" help="The file the cluster actually runs, relative to the folder you picked.">
-              {scriptOptions.length > 0 ? (
-                <Select
-                  ariaLabel="Entry-point script"
-                  value={script}
-                  onChange={setScript}
-                  options={[
-                    { value: "", label: "Choose a script…" },
-                    ...scriptOptions.map((p) => ({ value: p, label: p })),
-                  ]}
-                />
-              ) : (
-                <p className="field flex items-center text-[13px] text-ink-mute">
-                  no .py files in the picked folder
-                </p>
-              )}
+            <Labeled label="Script" className="sm:col-span-2" help="The file the cluster actually runs.">
+              <input className="field" placeholder="train.py" value={script} onChange={(e) => setScript(e.target.value)} />
             </Labeled>
             <Labeled label="Arguments" className="sm:col-span-2" help="Passed to your script exactly as typed, the same as if you had run it yourself.">
               <input className="field" placeholder="optional" value={args} onChange={(e) => setArgs(e.target.value)} />
             </Labeled>
           </>
         )}
-
-        {/* Free text, and deliberately not a list of the dependency files we can see in the picked
-            folder: offering one would be CCC deciding which file is the instruction, and a suggestion
-            is an inference the moment anyone accepts it.
-
-            Shown for a Tide Pool too, where it is the one OPTIONAL field of its kind — a Tide Pool may
-            decline to declare, and one opened to poke at a box has no project behind it to name a file
-            in. Naming one there builds that env into the shell, so what you debug in is what your
-            Spawn would have run in. Required everywhere else — see `named`. */}
-        <Labeled label="Dependencies" className="sm:col-span-2" help={mode === "tidepool"
-          ? "Optional here, and only here. Name a dependency file and this shell gets the environment your Spawn would have run in — pick a folder above too, since it cannot be built from a file that was not sent. Leave it blank for a bare shell."
-          : "Which file builds your Python environment, relative to your project root. Required: the Pod carries no Python of its own, so a Spawn that declares nothing has no interpreter to run your script with at all. CCC does not guess which file is the instruction — a dependency file in a repo is not always the one describing this work, and the environment carries its own Python and inherits nothing from the cluster. If yours needs no packages, an empty requirements.txt is a complete declaration: it builds Python 3.12, or whatever a .python-version beside it names."}>
-          <input
-            className="field"
-            placeholder={mode === "tidepool"
-              ? "optional — pyproject.toml, requirements.txt…"
-              : "pyproject.toml, uv.lock, requirements.txt, environment.yml…"}
-            value={manifest}
-            onChange={(e) => setManifest(e.target.value)}
-          />
-          {mode === "tidepool" && named && !picked && (
-            <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>
-              Pick a folder above — the environment is built from what you upload.
-            </span>
-          )}
-        </Labeled>
-
-        {/* Free text for the same reason the field above is: naming the file is the declaration, and
-            offering a list of the .txt files we can see would make CCC decide which one meant this.
-            Optional in every mode, which is why nothing gates on it — but it still needs the folder,
-            because the Head reads the file out of the upload. */}
-        <Labeled label="System packages" className="sm:col-span-2" help="Optional. Name a file listing the apt packages this work needs — one per line — and they are installed into the Pod before your environment is built, so anything that has to compile finds its headers. Nothing survives the Spawn; declaring them is what makes them come back next time.">
-          <input
-            className="field"
-            placeholder="optional — apt.txt"
-            value={substrate}
-            onChange={(e) => setSubstrate(e.target.value)}
-          />
-          {substrated && !picked && (
-            <span className="mt-1 block text-[12px]" style={{ color: "var(--alarm)" }}>
-              Pick a folder above — the package list is read from what you upload.
-            </span>
-          )}
-        </Labeled>
 
         {featureCatalog.length > 0 && (
           <Labeled label="Required features" className="sm:col-span-2" help="Heavy or licence-gated software that isn't installed everywhere. Most runs need none. If no Arm in the fleet has what you ask for, the Head refuses the Spawn rather than queueing it forever.">
@@ -424,7 +255,6 @@ export function Composer(props: ComposerProps) {
       </div>
 
       {error && <p className="text-[13px] text-[var(--alarm)]">{error}</p>}
-      {envNote && <p className="text-[13px] text-[var(--muted)]">{envNote}</p>}
 
       {/* Primary sits dead-centre; the secondary hangs off its right without shifting it. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
@@ -437,64 +267,11 @@ export function Composer(props: ComposerProps) {
               : mode === "tidepool" ? "Request tide pool" : "Submit spawn"}
           </button>
         )}
-        {picked ? (
-          <button className="btn-ghost justify-self-start" onClick={reset} disabled={busy}>
-            Clear
-          </button>
-        ) : (
-          <span aria-hidden />
-        )}
+        <button className="btn-ghost justify-self-start" onClick={reset} disabled={busy}>
+          Clear
+        </button>
       </div>
     </div>
-  );
-
-  const strip = (
-    <label
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={onDrop}
-      className="relative flex cursor-pointer items-center justify-center text-center"
-      style={{
-        borderRadius: DROP_FADE.radius,
-        minHeight: DROP_FADE.radius * 2,
-        // padX is MARGIN, not the strip's own padding: padding would only push its contents inward
-        // without changing its own box, but the ask is for the box itself to narrow, leaving a real gap
-        // to the card's edges. padY stays internal — only the width is meant to respond here.
-        marginInline: DROP_FADE.padX,
-        padding: `${DROP_FADE.padY}px 0`,
-      }}
-    >
-      <span
-        aria-hidden
-        className="absolute inset-0 transition-[background] duration-200"
-        style={{
-          borderRadius: DROP_FADE.radius,
-          background: dragging
-            ? "color-mix(in oklab, var(--irid-low) 14%, var(--well))"
-            : "color-mix(in oklab, var(--well) 70%, black)",
-          filter: `blur(${DROP_FADE.feather}px)`,
-        }}
-      />
-      <input
-        ref={fileRef}
-        type="file"
-        onChange={onPickFiles}
-        className="sr-only"
-        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-      />
-      <span className={`relative text-[15px] ${picked ? "text-ink-soft" : "text-ink-mute"}`}>
-        {picked ? (
-          <span className="num text-ink">{picked.root}</span>
-        ) : mode === "tidepool" ? (
-          <>Drop/choose a folder — optional</>
-        ) : (
-          <>Drop/choose a folder</>
-        )}
-      </span>
-    </label>
   );
 
   return (
@@ -512,8 +289,7 @@ export function Composer(props: ComposerProps) {
             <Chip on={mode === "tidepool"} onClick={() => setMode("tidepool")}>Tide Pool</Chip>
           </Tip>
         </div>
-        {strip}
-        {open && fields}
+        {fields}
       </section>
     </>
   );

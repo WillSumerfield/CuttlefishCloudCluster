@@ -30,7 +30,7 @@ def _script(**kw):
     kw.setdefault("minutes", 60)
     kw.setdefault("constraint", "")
     kw.setdefault("node", None)
-    return spawns._render(staging=Path("/tmp/u"), gpu=1, script="train.py", args=[], files=[],
+    return spawns._render(sink_tag="deadbeef", gpu=1, script="train.py", args=[],
                           token="a3f9", secret="s3cr3t", **kw)
 
 
@@ -619,17 +619,6 @@ def test_the_activation_project_declares_only_the_interpreter_vlearn_needs():
     assert 'dependencies = []' in project["pyproject.toml"]
 
 
-def test_the_activation_manifest_is_the_one_the_activation_spawn_submits():
-    """A manifest CCC generates but does not name would leave the Spawn declaring nothing, which is
-    refused outright now that declaring is mandatory."""
-    import inspect
-
-    from cuttle import enroll
-    src = inspect.getsource(enroll._activate_one)
-    named = src.split("manifest=", 1)[1].split(",")[0].strip().strip('"')
-    assert named in hf.activation_project("vlearn"), named
-
-
 def test_a_feature_with_no_activation_is_admitted_without_one():
     assert hf.needs_activation(["isaaclab"]) == []
     assert hf.needs_activation(["vlearn", "isaaclab"]) == ["vlearn"]
@@ -637,17 +626,10 @@ def test_a_feature_with_no_activation_is_admitted_without_one():
         hf.activation_project("isaaclab")
 
 
-def test_the_activation_project_tars_to_exactly_two_files():
-    """CCC's own Spawn has no directory to upload — the project is generated in memory."""
-    import io
-    import tarfile
-
-    from cuttle import spawns as spawn_client
-    tar = spawn_client.tar_from_files(hf.activation_project("vlearn"))
-    with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
-        assert sorted(tf.getnames()) == ["activate.py", "pyproject.toml"]
-        body = tf.extractfile("activate.py").read().decode()
-    assert "import vlearn" in body
+def test_the_activation_project_is_exactly_two_files():
+    project = hf.activation_project("vlearn")
+    assert sorted(project) == ["activate.py", "pyproject.toml"]
+    assert "import vlearn" in project["activate.py"]
 
 
 def test_un_declaring_a_feature_erases_its_mirror(tmp_path, monkeypatch):

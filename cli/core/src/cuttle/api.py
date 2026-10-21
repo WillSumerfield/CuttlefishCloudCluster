@@ -1,7 +1,7 @@
 """The one HTTP layer between `cuttle` and the Head API.
 
-Everything that talks to the Head funnels through here: the CLI's JSON calls, the log raw
-reads, the `run` upload. One layer, so the `/api` prefix, the bearer, the pinned-cert verification
+Everything that talks to the Head funnels through here: the CLI's JSON calls and the log raw
+reads. One layer, so the `/api` prefix, the bearer, the pinned-cert verification
 and the error shapes are decided in exactly one place.
 
 **Why it is an object and not a module of functions.** The CLI is this project's end-to-end test
@@ -28,10 +28,9 @@ import typer
 
 from . import config, settings, tls
 
-# Timeouts by call shape. An upload is slow (a project tar over a LAN), a log read is not.
+# Timeouts by call shape.
 TIMEOUT_JSON = 15
 TIMEOUT_RAW = 30
-TIMEOUT_UPLOAD = 120
 
 # A call whose answer nothing waits on must never delay what the user actually asked for. Two callers
 # have that shape: the menu's session probe (bare `cuttle` opens a menu, and a menu must not hang) and
@@ -153,13 +152,6 @@ class Api:
                 return None
             raise
         return r.content
-
-    def upload(self, path: str, data: bytes, meta: dict) -> Any:
-        """POST a gzip body with its metadata in a header — the `cuttle run` project upload."""
-        headers = self._headers(True, None, {
-            "Content-Type": "application/gzip", "X-CCC-Meta": json.dumps(meta)})
-        r = self._send("POST", path, content=data, headers=headers, timeout=TIMEOUT_UPLOAD)
-        return json.loads(r.content or b"{}")
 
     # --- transport -----------------------------------------------------------
 

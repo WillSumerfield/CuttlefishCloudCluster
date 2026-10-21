@@ -14,11 +14,9 @@ that's the deferred item #8). The CLI pins that cert on first use; browsers show
 warning once. The session cookie is therefore Secure.
 """
 
-import json
 import logging
 import os
 import sys
-import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -30,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, environments, guises, karma, ratelimit, retraction, slurm
+from . import db, guises, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import spawns as spawns_mod
 from . import tidepool as tidepool_mod
@@ -43,11 +41,6 @@ WEB_DIR = Path(os.environ.get("CCC_WEB_DIR", "/opt/ccc/head-api/web"))
 # the only account that can read it, which is exactly the asymmetry that makes serving this one safe.
 # Mirrors cuttle.config.HEAD_CA_CERT.
 CA_CERT = Path(os.environ.get("CCC_CA_CERT", "/opt/ccc/tls/ccc-ca.crt"))
-
-# Cap the upload instead of trusting whatever arrives. The body is streamed to disk (never buffered in
-# this process): the Head is the one box that must stay up, and a browser folder-picker makes a huge
-# accidental selection a single click. Mirrors cuttle.config.MAX_UPLOAD_BYTES.
-MAX_UPLOAD_BYTES = int(os.environ.get("CCC_MAX_UPLOAD", 4 * 1024**3))
 
 # Session cookie: HttpOnly + SameSite=Lax + Secure (the Head is HTTPS now — see module docstring).
 _COOKIE_NAME = "ccc_session"
@@ -600,10 +593,9 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 
 @api.post("/submit")
 async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
-    """Accept an uploaded project + metadata and launch a Spawn attributed to the caller. The only
-    authed mutation. Body = gzip-tar of the project; `X-CCC-Meta` header = JSON
-    {script, gpu, args, node, features}. Runs the render/sbatch/Attribution as the
-    Mantle; returns the Spawn id.
+    """Launch a Spawn attributed to the caller. The only authed mutation. Body = JSON
+    {script, gpu, args, node, features, tidepool, minutes, vram, name}. Runs the render/sbatch/
+    Attribution as the Mantle; returns the Spawn id.
 
     `features` is optional, and empty when absent — a Spawn that requests none is placed exactly as it
     always was. Each name is checked against every currently admitted Arm's declared features
@@ -622,24 +614,21 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     sidesteps eligibility, and with it the Demand the Spawn would have added to every card that could
     have run it.
 
-    `tidepool` is the one flag that changes what the other fields mean: a
-    live shell instead of a script. It relaxes exactly two of the checks below — `script` and `manifest`
-    — and nothing else; time/vram/gpu/features/pricing/placement/Attribution are all identical to any
-    other Spawn. The Dashboard's Tide Pool mode sends an EMPTY body (no project — there is nothing to
-    upload) and omits `script`; the CLI does the same for `cuttle run --tidepool`.
+    `tidepool` is the one flag that changes what the other fields mean: a live shell instead of a
+    script, so `script` may be omitted. Time/vram/gpu/features/pricing/placement/Attribution are all
+    identical to any other Spawn.
     """
     if user["must_change_password"]:
         raise HTTPException(403, "change your password before submitting (run `cuttle passwd`)")
-    meta = json.loads(request.headers.get("x-ccc-meta") or "{}")
+    meta = await request.json()
     tidepool = bool(meta.get("tidepool"))
     if not meta.get("script") and not tidepool:
-        raise HTTPException(422, "missing 'script' in X-CCC-Meta — the entrypoint script is required")
+        raise HTTPException(422, "missing 'script' — the entrypoint script is required")
     for field in ("minutes", "vram"):
         if not meta.get(field):
-            raise HTTPException(422, f"missing '{field}' in X-CCC-Meta — --time and --vram are required")
+            raise HTTPException(422, f"missing '{field}' — --time and --vram are required")
     # The Spawn's **Name** (CONTEXT.md). Gated here as well as in `submit_checked` — which is the real
-    # authority, and covers the Head-local admin path this route cannot — so a nameless submit is
-    # refused BEFORE its project is spooled to disk rather than after. `clean_name` owns what makes a
+    # authority, and covers the Head-local admin path this route cannot. `clean_name` owns what makes a
     # Name acceptable; this only relays its reason.
     try:
         spawns_mod.clean_name(meta.get("name"))
@@ -648,40 +637,25 @@ async def submit(request: Request, user: dict = Depends(current_user)) -> dict:
     if meta.get("node"):
         raise HTTPException(403, "pinning a Spawn to an Arm is not available over the API — it is "
                                  "`cuttle run --node`, on the Head.")
-    # The **Environment** every Spawn declares (ccc_head_api.environments). Gated here: refused before the upload is spooled to disk rather than
-    # after. `spawns.submit` re-checks it against the extracted project — this is only the "did the
-    # client send one" half. Skipped for a Tide Pool alone, the one Spawn that may decline to declare.
-    if not (meta.get("manifest") or "").strip() and not tidepool:
-        # environments' own words, not a second set: this gate and the one inside submit refuse the
-        # same thing, and a client that met the terser of the two would be the one told least.
-        raise HTTPException(422, environments.NOTHING_DECLARED)
     # `gpus` is the current name; `gpu` is what older clients send. Either is accepted — see
     # spawns.submit_checked, which is where a count no Arm can host is refused.
     minutes, vram_gb = int(meta["minutes"]), int(meta["vram"])
     gpus = int(meta.get("gpus", meta.get("gpu", 1)))
-    tar_path = await _spool_upload(request)
     try:
         # Placement, pricing and the Attribution row all live in submit_checked, shared with the
         # Head-local pinned path — so a Spawn is quoted and recorded identically however it arrived.
         # ValueError covers both the unknown-Arm case (Head-local only in practice — `node` can never
-        # reach here, see above), the per-User concurrent-Spawn cap, and a
-        # `script` that isn't actually in the uploaded tar.
+        # reach here, see above) and the per-User concurrent-Spawn cap.
         job_id = spawns_mod.submit_checked(
             user["id"], user["is_admin"], meta.get("script"), gpus, meta.get("args", []),
-            tar_path, minutes, vram_gb,
+            minutes, vram_gb,
             features=meta.get("features") or [],
-            tidepool=tidepool, manifest=meta.get("manifest"), substrate=meta.get("substrate"),
-            name=meta.get("name") or "")
+            tidepool=tidepool, name=meta.get("name") or "")
     except ValueError as e:
         raise HTTPException(422, str(e))
-    finally:
-        tar_path.unlink(missing_ok=True)
     log.info("submit id=%s by %s (gpu=%d vram=%d min=%d tidepool=%s)", job_id, user["username"], gpus,
              vram_gb, minutes, tidepool)
-    # `environment` rides back on the submit response so both clients can echo it in the same breath as
-    # the id — the point of the echo is that a User sees which dependency file was picked up (or that
-    # none was) BEFORE they walk away, not when they come back to a Spawn that ran against the wrong one.
-    return {"id": job_id, "environment": spawns_mod.environment_note(job_id)}
+    return {"id": job_id}
 
 
 @api.get("/spawns/{job_id}/tidepool")
@@ -734,44 +708,6 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
         key = db.tidepool_private_key(conn, job_id)
     return {"ready": up and key is not None, "port": tp["port"], "private_key": key, "user": guise,
             "proj": spawns_mod.pod_project_dir(job_id, head_arm)}
-
-
-def _human(n: int) -> str:
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if n < 1024 or unit == "GiB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}".replace(".0 ", " ")
-        n /= 1024
-    return f"{n} B"  # unreachable
-
-
-async def _spool_upload(request: Request) -> Path:
-    """Stream the request body to a temp file, aborting past MAX_UPLOAD_BYTES.
-
-    Never `await request.body()`: that holds the entire project in this process's memory (and
-    `tarfile` then holds a decompressed copy on top). The Head is the one machine that must stay up,
-    and a browser folder-picker makes selecting a folder with a huge `data/` or a venv a single click.
-    Streaming to disk means a too-large upload costs disk we then release, not RAM we might not have.
-    """
-    cap = MAX_UPLOAD_BYTES
-    total = 0
-    with tempfile.NamedTemporaryFile("wb", suffix=".tar.gz", delete=False) as f:
-        path = Path(f.name)
-        # `delete=False` means NOTHING here reaps this file but us. It is spooled to the system temp
-        # dir, which is outside every path CCC tracks and has no reaper of its own, so any way out of
-        # this loop that is not `return` has to unlink — not just the over-cap branch. A client that
-        # Ctrl-Cs a multi-GB folder upload mid-stream raises out of `request.stream()`, and without
-        # this it strands the partial .tar.gz until the OS cleans /tmp, if it ever does.
-        try:
-            async for chunk in request.stream():
-                total += len(chunk)
-                if total > cap:
-                    raise HTTPException(413, f"upload exceeds {_human(cap)} — "
-                                             "exclude data/checkpoints (honor .gitignore) and retry")
-                f.write(chunk)
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-    return path
 
 
 app.include_router(api)

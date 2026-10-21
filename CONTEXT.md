@@ -91,8 +91,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
 
 ## Job/experiment concepts
 
-- **Spawn** — a single traceable execution of a piece of work on the cluster, submitted with a project
-  uploaded there and then. A Spawn runs **once**: if the machine it was placed on
+- **Spawn** — a single traceable execution of a piece of work on the cluster. A Spawn runs **once**: if the machine it was placed on
   fails, or its **Arm** is retracted underneath it, the Spawn fails with it rather than quietly starting
   over somewhere else. So "this Spawn" always names one attempt, never a series of them — what it was
   billed for and what it produced both refer to the same single run.
@@ -121,8 +120,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   inside the **Pod** either way, and an editor attached from outside is a visitor to the session and
   never a way to keep what it held.
 - **Mantle** — the cluster's *own* identity: who the **Head** is, to itself and to every **Arm**. It
-  owns what the cluster owns — the account records, the Head's key, every **User**'s uploaded work and
-  every **Spawn**'s results — and it is what the Head acts as when it does work of its own rather than
+  owns what the cluster owns — the account records, the Head's key and every **Spawn**'s results — and it is what the Head acts as when it does work of its own rather than
   a User's. It is nobody's: no User is ever the Mantle, and nothing a User submits runs as it.
 - **Guise** — the identity a **Spawn** runs as on the machine that runs it. One per **User**, the same
   one wherever the cluster places their work, and taken on by a machine the first time that User's work
@@ -134,15 +132,14 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   It is not confined to any one machine: anything the cluster does on a User's behalf that involves
   *their* code — including building their **Environment**, on the **Arm** that will run it — is done as
   their Guise, never as the **Mantle**. A User's code has no way to be the cluster, on any machine.
-- **Siphon** — the one channel through which a **Spawn** draws its project in and sends its results
-  home. Opened when the Spawn is submitted and closed once its transfers have finished, it reaches
-  exactly that Spawn's own uploaded work and its own results, and nothing else the **Head** holds — so
-  work running on a donated machine cannot read another **User**'s project or write into another
+- **Siphon** — the one channel through which a **Spawn** sends its results home. Opened when the Spawn
+  is submitted and closed once its transfers have finished, it reaches exactly that Spawn's own results,
+  and nothing else the **Head** holds — so work running on a donated machine cannot write into another
   Spawn's results, even though every **Arm** shares one **Mesh**. Being on the Mesh admits a *machine*;
   a Siphon authorizes one *Spawn*. Its closing is tied to that Spawn's last transfer and not to
   **Settlement**: a Spawn's final copy home can still be arriving well after it has been billed.
 - **Pod** — the isolated *place* a job runs inside, on whichever machine is running it. Its walls are
-  real, and they enclose the **whole** Spawn — the payload and the wrapper that stages its files in and
+  real, and they enclose the **whole** Spawn — the payload and the wrapper that stages its results
   out, not just the payload: a Spawn cannot see the host's filesystem, the machine's other processes, or
   any concurrent Spawn's working files, including their scratch. A Pod is the *walls*, never the
   contents. What is installed within one is that Spawn's **Environment**, its **Substrate**, and
@@ -235,7 +232,7 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   A Feature's runtime is arranged in a place of CCC's own and never inside the Spawn's project — the
   working directory its software resolves its data against is CCC's to site, not the project directory
   it happened to be. Neither the runtime nor the placeholder that stands in for a supplied package
-  writes over what the **User** uploaded, and their declared copy is left as they wrote it.
+  writes over the **User**'s own files, and their declared copy is left as they wrote it.
 - **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Spawn placed there runs under the Arm

@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, projects, siphons, slurm, spawns, tidepool
+from . import db, karma, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -213,10 +213,6 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # Kill the Head-side relay and drop its port/keypair the moment a Tide Pool's Spawn leaves the
         # queue — the one place a relay ever goes back down.
         tidepool.reap_dead(conn, set(ids))
-        # Delete the Head's copy of every staged-in upload and revoke the `[proj-…]`
-        # half of its Siphon. BEFORE siphons.sweep, so "revoked at stage-in" stays true even for a Spawn
-        # that ended this same tick (close_proj on an already-gone conf is a no-op either way).
-        projects.sweep(conn, now)
         # Close the rsync grant of every Spawn whose grace window has passed.
         siphons.sweep(conn, now)
 

@@ -1,9 +1,9 @@
 """Server-side Spawn submission + inspection.
 
-The render + stage machinery for `cuttle run`: the CLI tars its working dir and POSTs it, and the Head
-API (running as the **Mantle**, the `ccc` account) unpacks it, renders the sbatch script, submits it
-**as the submitter's Guise** over the munge socket (munged authenticates whichever local uid calls it,
-so becoming the Guise is enough — no munge.key is ever read), and records an Attribution row.
+The render + submit machinery for `cuttle run`: the CLI POSTs a Spawn's metadata to the Head API
+(running as the **Mantle**, the `ccc` account), which renders the sbatch script, submits it **as the
+submitter's Guise** over the munge socket (munged authenticates whichever local uid calls it, so
+becoming the Guise is enough — no munge.key is ever read), and records an Attribution row.
 Everything a Spawn produces lands under HEAD_STATE_DIR/spawns/<id>/ and is read back over the API —
 the submitter never touches the Head's disk.
 
@@ -15,15 +15,11 @@ more, and a Spawn that does is a bug. A Guise is home-less by design, like the M
 nothing here is resolved against a home directory: the Pod image is at one absolute path on every node
 (CCC_SIF) and a remote Arm scratches in /tmp.
 
-Isolation: a job NEVER runs in the tree the rsync daemon serves — that would
-mutate the copy it serves and leave a dirty tree for the next run. The `[ -d "$staging_dir" ]`
-branch is "are the files already on this node?":
-  * Head's co-located Arm — the <uuid> upload is on this FS. COPY it into node-local scratch, run
-    there, and write out/err/exit STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
+A Spawn carries no project: its working dir `$proj` starts empty in node-local scratch. The
+`[ -d "%%SPAWNS%%" ]` branch is "is this the Head?":
+  * Head's co-located Arm — write out/err/exit STRAIGHT to the Spawn dir (same FS → `cuttle logs -f`
     streams live).
-  * remote Arm — the upload isn't here. rsync-stage the project in over this Spawn's own **Siphon**
-    (siphons.py) into ephemeral /tmp scratch, run, then stage out/err/exit BACK through it.
-Either way: fresh copy in, logs out, source untouched.
+  * remote Arm — stage out/err/exit BACK through this Spawn's own **Siphon** (siphons.py).
 
 Paths are fixed (defaults below match cuttle.config; this package never imports the CLI). Only the
 Head's mesh IP is dynamic — the systemd unit injects it as CCC_MESH_IP so a remote Arm can rsync home.
@@ -35,7 +31,6 @@ import os
 import posixpath
 import shlex
 import subprocess
-import tarfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -45,7 +40,6 @@ from . import features as features_mod
 from . import guises
 from . import siphons
 from . import slurm
-from . import substrate as substrate_mod
 from . import zshrc
 
 log = logging.getLogger("ccc.api")
@@ -82,7 +76,6 @@ def clean_name(raw) -> str:
 
 
 HEAD_STATE_DIR = Path(os.environ.get("CCC_HEAD_STATE", "/var/lib/ccc/head"))
-PROJECTS_DIR = HEAD_STATE_DIR / "projects"
 SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
 SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 # The Pod image, at the SAME path on every node (each builds its own at setup). One constant, so the
@@ -125,7 +118,7 @@ MAX_CONCURRENT_SPAWNS = 10
 # we then stage/keep. --chdir=/tmp: the run dir doesn't exist until we make it.
 #
 # The sif is the SAME path on every node, so it's named once, outside the branch. What actually differs
-# between the Head and a remote Arm is only "are the project files already on this filesystem?".
+# between the Head and a remote Arm is only "is the Spawn dir on this filesystem?".
 JOB_SCRIPT = """\
 #!/bin/bash
 #SBATCH --job-name=ccc-spawn
@@ -167,7 +160,6 @@ licbind=""
 # shell is a User's, and it has no business holding the credential the wrapper stages out with.
 export RSYNC_PASSWORD=%%RSYNC_SECRET%%
 jid=$SLURM_JOB_ID
-staging_dir="%%STAGING_DIR%%"
 sif="%%CCC_SIF%%"
 # This Spawn's card, when that card is in MIG mode. Resolved on the NODE: the Head renders one job
 # script for a mixed fleet and has no business knowing which of its Arms carve.
@@ -212,7 +204,7 @@ IFS=, read -ra ccc_held <<< "${CUDA_VISIBLE_DEVICES:-}"
 # about into out/err, so this stays EMPTY unless the shell itself failed before those existed — which
 # is the one case worth keeping. Anything else would leave a 0-byte file per Spawn in /tmp forever.
 #
-# %%SINK_TAG%% (the staging uuid's first 8 chars) is what keeps this path unique, and it is load-bearing:
+# %%SINK_TAG%% (a per-submission nonce) is what keeps this path unique, and it is load-bearing:
 # a job id ALONE is not unique over time. `cuttle teardown` drops Slurm's state dir, so the next cluster
 # starts issuing ids from 1 again while every previous cluster's sink survives in /tmp — and slurmd,
 # running as this Spawn's **Guise**, cannot open a file a previous cluster's account owns. It does not
@@ -235,46 +227,19 @@ sink="/tmp/ccc-$jid-%%SINK_TAG%%.slurm"
 # what poisoned later job ids (see the `sink=` line above); this is where the litter was made.
 cleanup() { kill "$loop_pid" 2>/dev/null; rm -rf "$scratch" 2>/dev/null; [ -s "$sink" ] || rm -f "$sink"; }
 
-if [ -d "$staging_dir" ]; then
-    # Head node: the upload is already on this FS. Never run in the served [project] tree — COPY it
-    # into node-local scratch, run there, and write results STRAIGHT to the Head Spawn dir (same FS,
-    # so `cuttle logs -f` streams live). The Spawn dir was pre-created by the API at submit.
+if [ -d "%%SPAWNS%%" ]; then
+    # Head node: write results STRAIGHT to the Head Spawn dir (same FS, so `cuttle logs -f` streams
+    # live). The Spawn dir was pre-created by the API at submit. Only the Head has %%SPAWNS%% — the
+    # prolog tells the two apart the same way.
     scratch="%%HEAD_SCRATCH%%/$jid"
     proj="$scratch/proj"
     trap cleanup EXIT
     mkdir -p "$proj"
     spawn_dir="%%SPAWNS%%/$jid"
-    # Named BEFORE the copy, and so are the two functions below — all of it so the copy's failure branch
-    # has somewhere to report and a trap that is fully armed when it fires. The remote branch names its
-    # out/err ahead of its own stage-in for the same reason.
     out="$spawn_dir/out"; err="$spawn_dir/err"; exitf="$spawn_dir/exit"
     stage_out() { :; }  # already on the Head
-    # --no-preserve=ownership is load-bearing, not tidiness: the upload is ccc:ccc and this now runs as
-    # the submitter's **Guise**, so plain `cp -a` would try to chown the copy back to the Mantle, get
-    # EPERM, and FAIL the whole copy (-a implies --preserve=all, which cp treats as required). Mode and
-    # timestamps still come across; ownership is the one attribute a Guise has no business restoring.
-    #
-    # CHECKED, and the check is the whole point of the ordering above. There is no `set -e` in this
-    # script, so an unchecked cp falls straight through to the `staged` marker below — and that marker
-    # is what authorises ccc_head_api.projects to delete the User's uploaded project. On ENOSPC that
-    # deletes the original against a truncated copy, and the Spawn then runs incomplete code with no way
-    # back. Same shape as the remote branch's stage-in check.
-    if ! cp -a --no-preserve=ownership "$staging_dir/." "$proj/"; then
-        echo "ccc: could not copy the project into node-local scratch at $proj —" >> "$err"
-        echo "ccc: this Spawn never started. Your uploaded project is untouched. Is the Head out of disk?" >> "$err"
-        echo 1 > "$exitf"
-        # The upload itself survives: no `staged` marker is written below.
-        rm -rf "$proj"
-        exit 1
-    fi
-    # Stage-in is done, so the Head's copy of the upload has served its whole purpose (docs/TODO.md
-    # "Storage retention"): this marker is what lets ccc_head_api.projects delete it, and it is written
-    # only once the cp above has SUCCEEDED — the same "presence means done" convention `exit`
-    # follows. Nothing below ever reads $staging_dir again.
-    : > "$spawn_dir/staged"
 else
-    # remote Arm: none of these files are here. Stage the project in from the Head's rsync daemon into
-    # ephemeral scratch, run, and stage out/err/exit back at the end.
+    # remote Arm: run in ephemeral scratch and stage out/err/exit back at the end.
     #
     # Scratch is /tmp, NOT the Guise's home: a Guise is home-less by design (one pinned uid per User,
     # cluster-wide, owning no per-node state — the account itself is `useradd -M`), so a donor box is
@@ -284,15 +249,11 @@ else
     scratch="/tmp/ccc-$jid"
     proj="$scratch/proj"
     trap cleanup EXIT
-    # $proj is created HERE, not left to the stage-in. rsync makes <uuid>/ as a side effect of copying
-    # files into it, so a Spawn with an EMPTY project (every Tide Pool: it uploads an empty tar) would
-    # otherwise leave the directory absent — and $proj is now an explicit `--bind` source and `--pwd`
-    # target for both payloads, which apptainer treats as fatal when it does not exist. The Head branch
-    # has always mkdir'd it; this makes the two branches agree.
+    # $proj is an explicit `--bind` source and `--pwd` target for both payloads, which apptainer treats
+    # as fatal when it does not exist.
     mkdir -p "$proj"
-    # Named BEFORE the stage-in, so a stage-in that fails still has somewhere to say so and a way to
-    # send it home. Nothing has run yet, so out/err start empty rather than absent — rsync would skip
-    # a missing file and the Head would show no reason at all.
+    # Nothing has run yet, so out/err start empty rather than absent — rsync would skip a missing file
+    # and the Head would show no reason at all.
     out="$scratch/out"; err="$scratch/err"; exitf="$scratch/exit"
     : > "$out"; : > "$err"
     stage_out() {
@@ -317,39 +278,6 @@ else
     }
     push_periodic &
     loop_pid=$!
-    # files-from paths are module-root-relative (<uuid>/...) and pulled from the MODULE ROOT — NOT a
-    # subpath source, which makes rsyncd (use chroot = no) report every file "vanished". rsync
-    # recreates <uuid>/... under $scratch, so $proj resolves.
-    cat > "$scratch/filelist" <<'CCC_FILELIST'
-%%FILELIST%%
-CCC_FILELIST
-    # Stop here if the project never arrived. Without this the script walks on into `cd "$proj"` — a
-    # directory rsync never created — and runs the payload against whatever /tmp happens to hold,
-    # which surfaces as a confusing python error instead of "the files could not be fetched".
-    #
-    # -r is EXPLICIT and load-bearing. --files-from implies --dirs but NOT --recursive, and rsync(1)
-    # says so outright: "The --archive (-a) option's behavior does not imply --recursive (-r), so
-    # specify it explicitly, if you want it." Every ordinary entry in the list is a file, so this went
-    # unnoticed — but the Environment is named as a bare DIRECTORY (`.ccc-env`, see submit), because it
-    # does not exist yet when the list is written. Without -r it arrived as an empty directory, got
-    # bound over %%ENV_MOUNT%%, and the Spawn died on `stat /opt/ccc/env/bin/python` after a build that
-    # had succeeded. Found on hardware 2026-08-02 (Spawn 16); Head-local Spawns never saw it, that
-    # branch is a `cp -a`.
-    if ! rsync -a -r --files-from="$scratch/filelist" "rsync://%%TOKEN%%@%%HEAD_IP%%/proj-%%TOKEN%%/" "$proj/" 2>>"$err"; then
-        echo "ccc: could not stage the project in from rsync://%%HEAD_IP%%/proj-%%TOKEN%%/ —" >> "$err"
-        echo "ccc: this Spawn never started. Is the Head's rsync daemon up, and is this Arm on the mesh?" >> "$err"
-        echo 1 > "$exitf"
-        kill "$loop_pid" 2>/dev/null  # stop the periodic pusher first — it can't race the sync below
-        stage_out
-        exit 1
-    fi
-    # The project is on this node now, so the Head's copy has served its whole purpose (docs/TODO.md
-    # "Storage retention"). Sent home LAST, after the stage-in rsync above returned — its presence on
-    # the Head is ccc_head_api.projects' "safe to delete" signal, the same convention `exit`
-    # follows. Best-effort: a marker that never lands only means the project waits for
-    # the Spawn to END before being swept, which is the fallback that path is there for.
-    : > "$scratch/staged"
-    rsync -a "$scratch/staged" "rsync://%%TOKEN%%@%%HEAD_IP%%/out-%%TOKEN%%/" 2>/dev/null || true
 fi
 
 cd "$proj"
@@ -646,12 +574,11 @@ sed "s|^\\($(id -un):.*\\):[^:]*$|\\1:/usr/bin/zsh|" /etc/passwd > /tmp/ccc_pass
 cat /tmp/ccc_passwd.new > /etc/passwd
 rm -f /tmp/ccc_passwd.new
 # An interactive login shell (sshd starts one as `-zsh`, which reaches this file through the
-# /etc/profile line BASE_DEF_TMPL appends to /etc/zsh/zprofile) lands in the optional project a User
-# picked (CCC_PROJ, the same $proj a Script Spawn's `cd` already puts on the host side; an
+# /etc/profile line BASE_DEF_TMPL appends to /etc/zsh/zprofile) lands in the Spawn's working dir
+# (CCC_PROJ, the same $proj a Script Spawn's `cd` already puts on the host side; an
 # explicit `--bind "$proj"` is what makes it visible in here at all, since `--contain` drops the cwd
 # auto-bind this used to lean on — see PAYLOAD_SCRIPT, which binds it the same way to find %%SCRIPT%%).
-# An EMPTY dir when no project was picked, never a missing one (both branches mkdir it) — `cd` into an
-# empty dir is a harmless no-op.
+# An EMPTY dir, never a missing one (both branches mkdir it).
 echo "cd \\"$CCC_PROJ\\" 2>/dev/null || true" > /etc/profile.d/ccc-tidepool.sh
 # A Tide Pool gets the SAME **Environment** its Spawn would get, so what you debug is what runs — put it
 # first on PATH rather than making the User type the interpreter's full path. Writable, too (it is this
@@ -807,7 +734,7 @@ def _stub_files_sh(files: list[environments.StubFile]) -> str:
     return "\n".join(out) + "\n" if out else ""
 
 
-def _render_env_build(declared: environments.Manifest | None, staging: Path,
+def _render_env_build(declared: environments.Manifest | None, project: Path | None,
                       feature_names: list[str], stub_files: list[environments.StubFile],
                       stub_binds: list[environments.StubBind],
                       stub_log: list[str],
@@ -851,7 +778,7 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
     if declared is not None:
         cmds.append(f"ccc_building={shlex.quote(f'the environment declared in {declared.path}')}")
         cmds += [f"ccc_build_or_die {' '.join(shlex.quote(a) for a in argv)}"
-                 for argv in environments.render_build(declared, staging)]
+                 for argv in environments.render_build(declared, project)]
     # AFTER the Environment: this prefix is CCC's, not the submitter's, so a Feature's libraries must not
     # be what a submitter waits through before learning their own declaration was broken.
     for feat, argv in zip(specs, environments.render_featlib_build(specs)):
@@ -921,8 +848,8 @@ def _render_env_build(declared: environments.Manifest | None, staging: Path,
     return body
 
 
-def _render(staging: Path, gpu: int, script: str, args: list[str],
-            files: list[str], node: str | None, minutes: int, constraint: str,
+def _render(sink_tag: str, gpu: int, script: str, args: list[str],
+            node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
             features: list[str] | None = None, activation: bool = False,
@@ -947,7 +874,7 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     # creates $scratch/env was the commented line, and every declared Spawn died on a bind whose source
     # did not exist. `test_the_build_block_appears_exactly_once` is the guard.
     body = body.replace("%%ENV_BUILD%%",
-                        _render_env_build(declared, staging, features or [],
+                        _render_env_build(declared, None, features or [],
                                           stub_files or [], stub_binds or [], stub_log or [],
                                           packages or []))
     # %%FEATURE_SETUP%% is the other one, for the opposite reason: its replacement text contains NO
@@ -971,13 +898,11 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # alongside %%NODELIST%% — submit_checked refuses a pinned Spawn aimed at a retracted Arm
         # outright rather than silently excluding the one node the operator explicitly named.
         "%%EXCLUDE%%": f"#SBATCH --exclude={exclude}" if exclude else "",
-        "%%STAGING_DIR%%": str(staging),
         # What makes the sbatch sink's path unique per SUBMISSION rather than per job id — see the
         # `sink=` line in JOB_SCRIPT for why that distinction is the difference between a Spawn running
-        # and a Spawn dying before its first line. The staging uuid is already unique per submission and
-        # is not a credential (`projects/<uuid>` is 0700 and its ACL names one Guise), so it needs no
-        # separate nonce; 8 chars is far past enough to never collide inside one /tmp.
-        "%%SINK_TAG%%": Path(staging).name[:8],
+        # and a Spawn dying before its first line. 8 chars is far past enough to never collide inside
+        # one /tmp.
+        "%%SINK_TAG%%": sink_tag[:8],
         # The Pod's writable system layer — see POD_OVERLAY_MB.
         "%%POD_OVERLAY_MB%%": str(POD_OVERLAY_MB),
         "%%HEAD_SCRATCH%%": str(SCRATCH_DIR),
@@ -1005,7 +930,6 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
         # exist before sbatch can return one.
         "%%TOKEN%%": token,
         "%%RSYNC_SECRET%%": secret,
-        "%%FILELIST%%": "\n".join(files),
         "%%SCRIPT%%": script,
         "%%ARGS%%": " ".join(args),
         # Only ever non-empty when `payload` is PAYLOAD_TIDEPOOL, which is the only place either token
@@ -1042,43 +966,6 @@ def _render(staging: Path, gpu: int, script: str, args: list[str],
     return body
 
 
-def _lend_project(staging: Path, guise: str) -> None:
-    """Let one **Guise** use one uploaded project, and nothing else.
-
-    The Head's co-located Arm copies the project out of `projects/<uuid>` as the Guise (JOB_SCRIPT's
-    Head branch), and the **Environment** build runs in it as the Guise too. That directory is
-    `ccc:ccc 0700` and stays that way — this adds a POSIX ACL naming exactly one account, which the
-    Mantle can do with **no privilege at all**, because it already owns the directory. The 0711 on
-    `projects/` above it is what lets the Guise reach this dir by name without being able to list its
-    siblings.
-
-    `rwX`, not `rX`, and the w is the build's: a dependency resolve WRITES INTO THE PROJECT as a matter
-    of course, and read-only made that a failure with no useful message. `uv sync` writes `uv.lock`
-    beside the manifest (always — there is no flag that resolves without recording it, and --frozen
-    needs a lock that a `pyproject.toml`-only project has not got); micromamba writes the pip
-    requirements it hands to `pip` beside `environment.yml`; a src-layout build backend writes its
-    egg-info. Each of those came back as "Permission denied (os error 13)" and took the Spawn with it.
-    Nothing is given away by allowing it: the writer is the submitter
-    of this upload, acting on their own files, one uuid that no other User can name — and what a build
-    leaves behind (a lock naming exactly what got installed) is worth carrying to the Arm, which it is,
-    since stage-in copies the project after the build.
-
-    Done here rather than in the prolog, and that is not a style choice: the prolog would have to be
-    TOLD the uuid, and the only channel for that (a file under `spawns/<jid>/`) cannot exist until
-    sbatch has returned the job id — by which time the prolog may already have run. This happens before
-    the job exists at all, so there is no race to lose.
-
-    Best-effort: a Head whose filesystem has no ACL support, or no `setfacl`, still runs every REMOTE
-    Spawn correctly (they stage in over rsync and never touch this tree). Refusing the submission
-    outright would take the whole cluster down over a Head-local optimisation.
-    """
-    r = subprocess.run(["setfacl", "-R", "-m", f"u:{guise}:rwX", str(staging)],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        log.warning("could not lend %s to %s (%s) — a Spawn placed on the Head's own Arm will not be "
-                    "able to read its project", staging, guise, (r.stderr or "").strip())
-
-
 def _said(e: subprocess.CalledProcessError) -> str:
     """What a failed command actually printed, flattened to ONE line.
 
@@ -1100,116 +987,31 @@ def _said(e: subprocess.CalledProcessError) -> str:
 
 
 def submit(user_id: int, script: str | None, gpu: int, args: list[str],
-           tar_path: Path | None, minutes: int, constraint: str,
+           minutes: int, constraint: str,
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
-           tidepool: bool = False, manifest: str | None = None, substrate: str | None = None,
+           tidepool: bool = False,
            features: list[str] | None = None,
            activation: bool = False,
            name: str = "") -> int:
-    """Unpack an uploaded project, render + sbatch it **as the submitter's Guise**, and record the
-    Attribution row + the Karma Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the
-    Spawn to one Arm.
+    """Render + sbatch a Spawn **as the submitter's Guise**, and record the Attribution row + the Karma
+    Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
 
     `hold` is the Escrow quoted by the caller, or **None** for a Spawn nobody is charged for (an
     Admin's — the Admin is outside the economy). It is written in the SAME transaction as the
     Attribution row: a Spawn that existed without its hold, even briefly, would be one its submitter's
     Share had not yet been charged for, which is precisely the window a queue-flooder wants.
-
-    `tar_path` is a spooled
-    file, not bytes: the caller streams the upload to disk so a large project never sits in this
-    process's memory (see main._spool_upload). tarfile reads it incrementally. A Tide Pool still
-    uploads one (an empty gzip-tar — every client sends the same wire shape) since there is no project
-    to run; `script` rides along as None and the tar's member list is never checked against it.
-
-    The script-present-in-the-project check below is hard validation for an ORDINARY Spawn: one that
-    failed it would never start at all. `tidepool=True` skips it — a live shell has no script to find.
-
     """
-    # Refuse rather than render `rsync://tok@/proj-tok/`. An empty mesh IP is a Head that does not know its
+    # Refuse rather than render `rsync://tok@/out-tok/`. An empty mesh IP is a Head that does not know its
     # own address — harmless for a Head-local Spawn, fatal for one Slurm happens to place on a remote
     # Arm, and only discoverable minutes later, on another machine, as a Spawn that "vanished". We
     # cannot know where it will land, so no Spawn goes out at all.
     if not MESH_IP:
         raise ValueError("the Head does not know its own mesh address (CCC_MESH_IP is empty in the "
-                         "ccc-head-api unit) — a remote Arm would have nowhere to fetch this Spawn's "
-                         "files from. Re-run `cuttle setup --head` on the Head to rewrite the unit")
+                         "ccc-head-api unit) — a remote Arm would have nowhere to send this Spawn's "
+                         "results. Re-run `cuttle setup --head` on the Head to rewrite the unit")
 
-    uuid = uuid4().hex
-    staging = PROJECTS_DIR / uuid
-    # Checked against the tar's own member list, BEFORE anything is written to disk: a script that
-    # isn't here would never start (or, worse, silently run some OTHER script if bash's glob ever
-    # changed underneath us), and refusing before staging.mkdir() means a bad submission leaves
-    # nothing behind. Skipped for a Tide Pool — `script` is None, and its (empty) tar names nothing
-    # to find.
-    with tarfile.open(tar_path, mode="r:gz") as tf:
-        if not tidepool and script not in tf.getnames():
-            raise ValueError(f"script {script!r} was not found in the uploaded project — check the "
-                             f"path matches exactly (and isn't excluded by .gitignore)")
-        # 0700, not the service's ambient umask: an uploaded project is the User's own tree and may
-        # itself carry a secret (a stray .env), so what it lands as must not depend on whoever
-        # provisioned this Head. The Guise reaches it through `_lend_project`'s ACL, not through the
-        # mode — a named-user ACL entry is what grants access here, so tightening this changes
-        # nothing for the Spawn that owns it.
-        staging.mkdir(parents=True, mode=0o700)
-        tf.extractall(staging, filter="data")  # 'data' filter blocks path-traversal entries
-    # The Guise is allocated HERE rather than just before sbatch, because the **Environment** build
-    # below runs as it — a manifest is code, and CCC runs no User's code as the Mantle (CONTEXT.md,
-    # **Guise**). `_lend_project` comes with it: the build enters a Pod with the project bound and this
-    # ACL is what lets the Guise read it.
     with db.connect() as conn:
         guise = guises.name(db.allocate_guise(conn, user_id))
-    _lend_project(staging, guise)
-
-    # What the declaration MEANS is decided here, synchronously; the build itself happens on the Arm.
-    # Detection is a couple of stat calls, and everything it and `require_tool` can raise is a REJECTION
-    # — nothing declared, a manifest that does not exist, one nothing can classify, a node without the
-    # tools — so it stays here, where a BuildError is still a plain 4xx and no Spawn has been brought
-    # into existence to Escrow or queue. Past this point a bad declaration costs a failed Spawn.
-    #
-    # A **Tide Pool** is the one Spawn that may decline: it is a shell, not a run, and a bare one uploads
-    # an empty tar with no file in it to name. Declaring is still allowed there and still builds — the
-    # exemption is from the requirement, not from the feature.
-    declared = None
-    stub_files: list[environments.StubFile] = []
-    stub_binds: list[environments.StubBind] = []
-    stub_log: list[str] = []
-    project = staging
-    # The **Substrate**, read on the same terms and in the same breath. Optional for EVERY Spawn, not
-    # just a Tide Pool, so there is no `or not tidepool` here: most work needs no system package, and
-    # unlike an Environment there is nothing load-bearing to refuse the absence of.
-    packages = substrate_mod.read(project, substrate)
-    if manifest or not tidepool:
-        declared = environments.detect(project, manifest)
-        environments.require_tool(declared, features or [])
-        # Anything the project declares that an **Arm Feature** supplies instead. A rejection for the
-        # same reason as the two above — asking for a Feature's package without asking for the Feature
-        # is decided here, in stat calls, and would otherwise be an ImportError after a GPU was held.
-        environments.check_supplied(project, declared, features or [])
-        # Each Feature-supplied wheel gets an empty placeholder of the same name and version, mounted
-        # over what the declaration points at. Nothing is written into the project
-        # (`environments.substitute_supplied`).
-        stub_files, stub_binds, stub_log = environments.substitute_supplied(project, declared)
-
-    # Module-root-relative list for a remote Arm's --files-from. This Spawn's Siphon is rooted at its
-    # OWN projects/<uuid>, not at the shared parent, so the paths are relative to the upload itself —
-    # that re-rooting IS the isolation, and it is why the list no longer carries a <uuid>/ prefix. The
-    # upload was already gitignore-filtered client-side, so every file here is meant to transfer.
-    #
-    # Symlinks are listed too: a project can legitimately contain one, and rsync -a copies a symlink AS a
-    # symlink. Nothing built appears here any more — the Environment, the Feature library prefix and now
-    # the stub wheels are all made on the Arm, in node-local scratch, and never cross the mesh in either
-    # direction.
-    #
-    # What a stub bind COVERS is left out, which is the one thing this walk decides rather than reports.
-    # A Feature's package is licensed to the machine that runs it, so a submitter's real wheel has no
-    # business on a donor's disk — it used to be overwritten before the walk ever saw it, and leaving it
-    # in the transfer now that nothing is overwritten would ship the licensed build the placeholder
-    # exists to avoid. The bind hides it on every node either way, so nothing needs it there.
-    covered = {b.dest for b in stub_binds if b.over_project}
-    files = [
-        rel.as_posix() for rel in (p.relative_to(staging) for p in staging.rglob("*"))
-        if (staging / rel).is_symlink() or (staging / rel).is_file()
-        if rel.as_posix() not in covered]
 
     # Minted BEFORE the script is rendered — both are baked into it (see PAYLOAD_TIDEPOOL) — and
     # reserved in the SAME connection the caller's Escrow quote already opened, so a port claim and the
@@ -1221,23 +1023,18 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         with db.connect() as conn:
             tp_port, tp_pubkey, tp_privkey = tidepool_mod.grant(conn)
 
-    # Opened BEFORE the render that bakes it in, and before sbatch — the Spawn stages in within
-    # milliseconds of starting, and sbatch returning the id is the same instant it becomes runnable, so
-    # a module named for the id could not exist in time. See ccc_head_api.siphons.
-    token, secret = siphons.open(uuid)
-    body = _render(staging, gpu, script or "", args, files, node, minutes, constraint,
+    # Minted before the render that bakes it in, and before sbatch — a module named for the id could
+    # not exist in time. See ccc_head_api.siphons.
+    token, secret = siphons.open()
+    body = _render(uuid4().hex, gpu, script or "", args, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
-                   wants_licence=bool(features), features=features, activation=activation,
-                   declared=declared, stub_files=stub_files, stub_binds=stub_binds,
-                   stub_log=stub_log, packages=packages)
+                   wants_licence=bool(features), features=features, activation=activation)
     # The script goes in on STDIN, not as a path: a temp file would need to be readable by the Guise
-    # sbatch runs as, and feeding it here is strictly better anyway — there is no temp file to leak the
-    # project's full file list, and no delete-after-return dance needed.
+    # sbatch runs as, and feeding it here is strictly better anyway — no delete-after-return dance needed.
     try:
         # --no-requeue: a Spawn runs ONCE (CONTEXT.md). `JobRequeue` is unset in the conf template so
         # Slurm's default (1) would otherwise apply, and a requeued job re-runs this script from the
-        # top — re-staging a project stage-in has already deleted (see ccc_head_api.projects). It also
-        # makes explicit what retraction already assumed: a Spawn whose
+        # top. It also makes explicit what retraction already assumed: a Spawn whose
         # node failed is a failed Spawn, not one that quietly restarts somewhere else hours later,
         # having been re-billed for and re-queued behind everyone who was waiting.
         #
@@ -1272,25 +1069,11 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
         # into its Siphon's [out-…] module, which is rooted HERE, and rsync will not invent the directory
         # a module points at. Safe after sbatch — the job cannot start before sbatch returned its id.
         _make_spawn_dir(job_id)
-        # The Environment echo, written where both clients can read it back rather than returned, so no
-        # caller's signature changes and the Spawn page can still say months later what this Spawn ran
-        # against. Said at submit because the worst case — a manifest one directory too deep — is not a
-        # build failure at all: nothing else would ever mention it, and the User would meet it as an
-        # ImportError after paying for a GPU.
-        #
-        # The **Substrate** rides on the same line rather than a second one, so every reader of this
-        # file — the CLI's echo, the Dashboard's composer, `cuttle admin` — shows it without knowing
-        # it exists. Only when one was declared: most Spawns have none, and saying so on every submit
-        # would be noise around the fact that actually matters.
-        note = environments.describe(declared)
-        if packages:
-            note += " · " + substrate_mod.describe(packages)
-        (SPAWNS_DIR / str(job_id) / "environment").write_text(note + "\n")
-        # Only now can the out module name a path. The proj half has been live since before sbatch; this
-        # adds the other and renames the pair to the job id, which is how the tick finds it to close.
+        # Only now can the out module name a path; renamed to the job id, which is how the tick finds it
+        # to close.
         siphons.bind(token, job_id)
         with db.connect() as conn:
-            db.record_spawn(conn, job_id, user_id, script or "", uuid, minutes=minutes, gpus=gpu,
+            db.record_spawn(conn, job_id, user_id, script or "", minutes=minutes, gpus=gpu,
                             vram_gb=vram_gb, node=node, hold=hold, tidepool=tidepool, name=name)
             if tidepool:
                 db.create_tidepool(conn, job_id, tp_port, tp_pubkey, tp_privkey)
@@ -1309,10 +1092,9 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
 
 
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
-                   tar_path: Path | None, minutes: int, vram_gb: int,
+                   minutes: int, vram_gb: int,
                    node: str | None = None,
                    features: list[str] | None = None, tidepool: bool = False,
-                   manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
                    name: str = "") -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
@@ -1332,10 +1114,8 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     turns into the per-card need; the two are checked as one question, so a Spawn nothing can host is
     refused here rather than left to pend forever.
 
-    `tidepool` rides straight through to `submit()`, which is the one place the script-in-tar check is
-    actually skipped — placement, pricing and
-    Attribution are otherwise completely unaffected, because a Tide Pool holds a Device exactly like any
-    other Spawn.
+    `tidepool` rides straight through to `submit()` — placement, pricing and Attribution are
+    unaffected, because a Tide Pool holds a Device exactly like any other Spawn.
 
     `activation` is CCC activating a Feature's licence on a newly-admitted Arm (cuttle.enroll), and it
     is the one thing here that no HTTP client can ask for: `/submit` does not accept it and never
@@ -1391,22 +1171,13 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
             known = ", ".join(slurm.all_feature_names()) or "(none)"
             raise ValueError(f"no Arm has every requested feature ({', '.join(wanted)}) — Arm "
                              f"Features currently in the cluster: {known}")
-        # A **Feature** carrying a runtime profile attaches its software to this Spawn's
-        # **Environment** — it probes the interpreter for its ABI, its nvidia lib dirs and its
-        # site-packages (features.PREAMBLE). With no Environment declared there is nothing to attach
-        # to, and the Spawn could only fail on the Arm after holding a Device to find out.
-        #
-        # Decidable here, so refused here: CONTEXT.md's rule is that everything knowable without
-        # building is settled before the Spawn exists. Only a **Tide Pool** can reach this — every
-        # other Spawn is already refused for naming no manifest — which is why the remedy names
-        # --manifest rather than suggesting the Feature be dropped.
-        if not (manifest or "").strip():
-            needs_env = features_mod.profiled(wanted)
-            if needs_env:
-                raise ValueError(
-                    f"{', '.join(needs_env)} needs an environment to attach to, and this Spawn "
-                    f"declared none — pass --manifest naming the dependency file to build. (A Tide "
-                    f"Pool may skip --manifest only when it asks for no such Feature.)")
+        # A **Feature** carrying a runtime profile attaches its software to a Spawn's **Environment**
+        # (features.PREAMBLE), and a Spawn no longer builds one — so it could only fail on the Arm
+        # after holding a Device to find out. Refused here instead.
+        needs_env = features_mod.profiled(wanted)
+        if needs_env:
+            raise ValueError(f"{', '.join(needs_env)} needs an environment to attach to, and a Spawn "
+                             f"has none to offer")
         # AND onto the vram OR-expansion — parenthesized so `(vram24|vram48)&vsim` reads unambiguously
         # rather than relying on Slurm's own operator precedence.
         constraint = f"({constraint})&{slurm.feature_constraint(wanted)}" if constraint \
@@ -1414,9 +1185,9 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
     need = {"node": node, "vram_gb": vram_gb, "gpus": gpu}
     with db.connect() as conn:
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
-    return submit(user_id, script, gpu, args, tar_path,
+    return submit(user_id, script, gpu, args,
                   minutes, constraint, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool, manifest=manifest, substrate=substrate, features=features,
+                  tidepool=tidepool, features=features,
                   activation=activation, name=name)
 
 
@@ -1437,8 +1208,7 @@ def _make_spawn_dir(job_id: int) -> Path:
 
     Explicit because the prolog only covers the Head's own co-located Arm — `if [ -d "$head_spawns" ]`
     is false on a donor box — so for a REMOTE Spawn nothing else ever sets this mode, and the directory
-    keeps whatever umask the API service happened to run with, for good. That matters more here than
-    for an upload: `projects/<uuid>` is named by an unguessable uuid, but a Spawn dir is named by a
+    keeps whatever umask the API service happened to run with, for good. A Spawn dir is named by a
     sequential job id, and the 0711 parent grants exactly the traversal that makes a guessed name
     enough to read someone else's `out` and `err`.
     """
@@ -1471,13 +1241,6 @@ def exit_code(job_id: int) -> int | None:
     """The recorded exit code once the Spawn is done, else None. Its presence == 'done'."""
     f = _spawn_dir(job_id) / "exit"
     return int(f.read_text().strip()) if f.exists() else None
-
-
-def environment_note(job_id: int) -> str | None:
-    """What this Spawn's **Environment** was decided to be, written at submit. None for Spawns that
-    predate the feature."""
-    f = _spawn_dir(job_id) / "environment"
-    return f.read_text().strip() if f.exists() else None
 
 
 def mark_cancelled(job_id: int) -> None:

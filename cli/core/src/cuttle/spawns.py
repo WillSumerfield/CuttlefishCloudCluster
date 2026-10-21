@@ -1,14 +1,10 @@
 """Spawn submission + inspection: `cuttle run` / `status` / `logs`.
 
-A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif <its own env's python> <script>`. The
-image supplies no interpreter — every Spawn declares an **Environment** and brings one. The Slurm job id
-IS the spawn id. `cuttle run` is not Head-local: it tars the working dir and POSTs it to the Head
-API (authenticated), which unpacks, renders, and submits it as the `ccc` service account, recording
-who submitted it. So this module is a thin API client — the render + stage machinery lives
-server-side in `ccc_head_api.spawns`.
+A Spawn = one sbatch job wrapping `apptainer exec --nv base.sif ...`. The Slurm job id IS the spawn
+id. `cuttle run` is not Head-local: it POSTs the Spawn's metadata to the Head API (authenticated),
+which renders and submits it as the `ccc` service account, recording who submitted it. So this module
+is a thin API client — the render machinery lives server-side in `ccc_head_api.spawns`.
 
-  * upload    — a gzip-tar of the working dir. Gitignore-aware by default (skip .git, venvs, data,
-                checkpoints); `--no-gitignore` uploads the whole tree.
   * results   — out/err/exit live on the Head under ccc; read them back over the API
                 (`status`/`logs`), never off local disk.
 
@@ -17,99 +13,11 @@ Auth: every call carries the bearer token from `~/.ccc/session`; the Head URL co
 pinned on this machine (see tls.py).
 """
 
-import io
 import re
-import subprocess
-import tarfile
-import tempfile
 import time
-from pathlib import Path
 
 from . import api, auth, config, menu, mesh, ui
 from .system import run
-
-
-# What meets everybody who named no dependency file — the wizard's blank Enter and the scripted run
-# that passed no flag alike, since neither has said anything and both used to get a message about
-# something else (`ui.need`'s "no terminal to prompt on", or a path error about a manifest named `''`).
-#
-# Long, and deliberately so: "required" is the one thing the person already knows by the time they are
-# reading this. It says WHY nothing can be inferred, what the consequence of no declaration would be,
-# and — the part that unblocks someone whose work genuinely needs nothing — that a file declaring
-# nothing is still a complete declaration. Kept in step with the Head's own refusal
-# (ccc_head_api.environments.NOTHING_DECLARED) and the Dashboard's field help; three surfaces, one
-# explanation, because whichever one a person meets is the only one they will read.
-NO_MANIFEST = ("this Spawn declares no Environment — name the dependency file it is built from: "
-               "--manifest pyproject.toml (also uv.lock, requirements.txt, environment.yml)")
-NO_MANIFEST_WHY = (
-    "The Pod carries no Python of its own, so a Spawn that declares nothing has no interpreter to run "
-    "your script with at all. CCC does not guess which file is the instruction — a dependency file in "
-    "a repo is not always the one describing this work. If yours needs no packages, an empty "
-    "requirements.txt is a complete declaration: it builds Python 3.12, or whatever a .python-version "
-    "beside it names.")
-
-
-def need_manifest(manifest: str | None) -> str:
-    """The declared **Environment**, or the one refusal that explains itself.
-
-    Replaces `ui.need` for this field alone, because the blank answer arrives by two routes and only
-    one of them was ever handled: a scripted run passes no flag (ui.need's generic message), and the
-    wizard's `ask_text` returns "" on a bare Enter (no re-ask loop, unlike ask_int) — which used to
-    reach the caller's path check and come back as `manifest '' was not found`, a typo's error for
-    someone who typed nothing.
-
-    A file that IS named and missing keeps that path error: it is the right message for a typo, and
-    this one would bury it.
-    """
-    if manifest is None and ui.interactive():
-        manifest = ui.ask_text(
-            "Which dependency file? (pyproject.toml, uv.lock, requirements.txt, environment.yml)")
-    if not (manifest or "").strip():
-        raise ui.abort(NO_MANIFEST, next_step=NO_MANIFEST_WHY)
-    return manifest.strip()
-
-
-def project_root(path: str | Path | None) -> Path:
-    """Which directory gets uploaded: `--dir`, or the cwd when nobody said.
-
-    Resolved once per command so the script/manifest paths it validates are resolved against the same
-    directory that is actually tarred. It says where the project IS, not where you are — anything a
-    command WRITES (downloaded results) still lands relative to the real cwd.
-    """
-    if path is None:
-        return Path.cwd()
-    root = Path(path).expanduser().resolve()
-    if not root.is_dir():
-        raise ui.abort(f"--dir {str(path)!r} is not a directory")
-    return root
-
-
-def _project_files(root: Path) -> list[str]:
-    """The gitignore-aware transfer set, computed where the repo lives. git itself is the only thing
-    that gets gitignore semantics exactly right — tracked plus untracked-but-not-ignored. A non-git
-    dir falls back to every file under it."""
-    git = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
-        capture_output=True, text=True)
-    if git.returncode == 0:
-        return [ln for ln in git.stdout.splitlines() if ln]
-    return [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()]
-
-
-def _make_tar(root: Path, files: list[str] | None) -> bytes:
-    """gzip-tar the project. `files` = the gitignore-aware list; None = the whole tree (--no-gitignore)."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        if files is None:
-            for p in sorted(root.rglob("*")):
-                if p.is_file():
-                    tf.add(p, arcname=p.relative_to(root).as_posix())
-        else:
-            for f in files:
-                p = root / f
-                if p.is_file():
-                    tf.add(p, arcname=f)
-    return buf.getvalue()
 
 
 def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
@@ -125,24 +33,6 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
         if ui.DEBUG:
             raise
         raise ui.abort(e.user_message()) from None
-
-
-def tar_from_files(files: dict[str, str]) -> bytes:
-    """A project built in memory from `{name: contents}`, for a Spawn CCC submits on its own behalf.
-
-    There is no directory to upload for one of those (see cuttle.enroll.activate_arm — the whole
-    project is two generated files), and writing them to a temp tree first would only add a place for
-    them to be left behind.
-    """
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, body in sorted(files.items()):
-            data = body.encode()
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            info.mode = 0o644
-            tf.addfile(info, io.BytesIO(data))
-    return buf.getvalue()
 
 
 def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
@@ -174,12 +64,11 @@ def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
     return None, (err.stdout or "") + f"\nccc: the Spawn did not finish within {timeout_s}s"
 
 
-def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int, vram: int,
+def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str,
                    features: list[str] | None = None, tidepool: bool = False,
-                   manifest: str | None = None, substrate: str | None = None,
                    activation: bool = False,
-                   user: str | None = None, name: str = "") -> tuple[int, str | None]:
+                   user: str | None = None, name: str = "") -> int:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and the Head API has none — so this does not travel over HTTP at all.
@@ -194,36 +83,25 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
     # `setup --head` — before any account has logged in, so there is no `/me` to ask. Every human path
     # leaves it None and is attributed to whoever is logged in on this box.
     me = user or auth._api("GET", "/me")["username"]
-    # The tar has to be readable by the `ccc` account the admin module runs as, so it goes to a
-    # world-readable temp file rather than anywhere under the operator's 0700 home.
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as f:
-        f.write(tar_bytes)
-        tar_path = f.name
-    Path(tar_path).chmod(0o644)
-    try:
-        r = run(auth._admin_argv([
-            "submit", "--user", me, "--script", script, "--tar", tar_path,
-            "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
-            "--node", node, "--name", name,
-            # Repeatable, one `--feature NAME` per declared name — placed before the trailing `*args`
-            # positional (the admin parser's `nargs="*"`) so argparse never mistakes a script argument
-            # for another feature name.
-            *[f for name in (features or []) for f in ("--feature", name)],
-            *(["--activation"] if activation else []),
-            *(["--tidepool"] if tidepool else []),
-            *(["--manifest", manifest] if manifest else []),
-            *(["--substrate", substrate] if substrate else []),
-            *args],
-            # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a
-            # fresh subprocess and inherits nothing from it. Without it every pinned Spawn renders
-            # `rsync://<tok>@/proj-<tok>/` with no host and dies at stage-in on the far side of the
-            # mesh, so `spawns.submit_checked` refuses outright rather than let one out (which is the
-            # "CCC_MESH_IP is empty in the ccc-head-api unit" error, reported against the unit that
-            # was in fact set correctly all along).
-            env={"CCC_MESH_IP": mesh.tailscale_ip()},
-        ), sudo=True, capture_output=True, text=True, check=False)
-    finally:
-        Path(tar_path).unlink(missing_ok=True)
+    r = run(auth._admin_argv([
+        "submit", "--user", me, "--script", script,
+        "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
+        "--node", node, "--name", name,
+        # Repeatable, one `--feature NAME` per declared name — placed before the trailing `*args`
+        # positional (the admin parser's `nargs="*"`) so argparse never mistakes a script argument
+        # for another feature name.
+        *[f for name in (features or []) for f in ("--feature", name)],
+        *(["--activation"] if activation else []),
+        *(["--tidepool"] if tidepool else []),
+        *args],
+        # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a
+        # fresh subprocess and inherits nothing from it. Without it every pinned Spawn renders
+        # `rsync://<tok>@/out-<tok>/` with no host and a remote Arm could never send its results home,
+        # so `spawns.submit_checked` refuses outright rather than let one out (which is the
+        # "CCC_MESH_IP is empty in the ccc-head-api unit" error, reported against the unit that
+        # was in fact set correctly all along).
+        env={"CCC_MESH_IP": mesh.tailscale_ip()},
+    ), sudo=True, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         # A pinned submit failing is runtime state (the Arm is gone, down, or not yours), not a usage
         # error — so ui.abort, not typer.BadParameter's "Try --help" box. Surface the admin tool's
@@ -236,57 +114,38 @@ def _submit_pinned(tar_bytes: bytes, script: str, args: list[str], minutes: int,
         detail = re.sub(r"^[A-Za-z_][\w.]*(Error|Exception): ", "", detail)
         raise ui.abort(f"couldn't submit to Arm {node!r}: {detail} "
                        f"(is it admitted? see `cuttle arm list`)")
-    # The Environment echo rides back on stderr (see ccc_head_api.admin._submit) — stdout is the id and
-    # nothing else. Picked out by prefix rather than position: stderr on this path may also carry sudo's
-    # own noise, and there is no line number that survives that.
-    note = next((ln for ln in (r.stderr or "").splitlines() if ln.startswith("environment:")), None)
-    return int(r.stdout.strip().splitlines()[-1]), note
+    return int(r.stdout.strip().splitlines()[-1])
 
 
-def preview(script: str, minutes: int, vram: int, gpu: int, no_gitignore: bool,
-           features: list[str] | None = None, manifest: str | None = None,
-           substrate: str | None = None,
-           root: Path | None = None) -> None:
-    """Show what is about to be uploaded, before it is.
-
-    The Dashboard gates submission behind a preview; the CLI has never had one, so `cuttle run` in
-    the wrong directory silently ships whatever is there. The file count and size are the point — a
-    2 GB upload from a directory full of checkpoints is obvious here and invisible otherwise.
+def preview(script: str, minutes: int, vram: int, gpu: int,
+            features: list[str] | None = None) -> None:
+    """Show what is about to be submitted, before it is.
 
     No Karma estimate: pricing a Spawn needs a Tide quote from the Head, and a number shown here that
     disagreed with what is actually escrowed would be worse than showing nothing.
     """
-    root = root or Path.cwd()
-    files = _project_files(root) if not no_gitignore else None
-    paths = [root / f for f in files] if files is not None else [p for p in root.rglob("*") if p.is_file()]
-    total = sum(p.stat().st_size for p in paths if p.exists())
     ui.kv([
         ("script", script),
-        # Named for the same reason as the manifest: the preview's whole job is "is this the directory
-        # you meant", and with --dir that is no longer answerable from the shell prompt.
-        ("directory", str(root)),
-        # Named here because the preview's whole job is "is this the directory you meant" — and the
-        # manifest is the one line that says what the work will run against, not merely what ships.
-        ("environment", manifest or "—"),
-        # Only when one was declared. Most Spawns have none, and a permanent "substrate: —" would add
-        # a line to every preview to say nothing.
-        *([("substrate", substrate)] if substrate else []),
-        ("upload", f"{len(paths)} files, {total / 1_048_576:.1f} MB"
-                   f"{'' if no_gitignore else '  (.gitignore honored)'}"),
         ("limit", f"{minutes} min"),
         ("needs", f"{vram} GB VRAM, {gpu} GPU{'s' if gpu != 1 else ''}"
                   + (f", features: {', '.join(features)}" if features else "")),
     ], title="About to submit")
 
 
+def _post_submit(meta: dict) -> int:
+    client = auth._client()
+    client.token = auth._load_token()
+    try:
+        return client.json("POST", "/submit", body=meta)["id"]
+    except api.ApiError as e:
+        if ui.DEBUG:
+            raise
+        raise ui.abort(e.user_message()) from None
+
+
 def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, vram: int,
-           no_gitignore: bool = False, node: str | None = None,
-           features: list[str] | None = None, manifest: str | None = None,
-           substrate: str | None = None, root: Path | None = None,
+           node: str | None = None, features: list[str] | None = None,
            name: str = "") -> None:
-    root = root or Path.cwd()
-    files = None if no_gitignore else _project_files(root)
-    tar_bytes = _make_tar(root, files)
     features = features or []
     # The Head turns `vram` into a Slurm constraint: it knows every distinct card in the fleet and we
     # don't, and Slurm's constraints are set-membership with no ">=" — so an arbitrary integer only
@@ -294,93 +153,34 @@ def submit(script: str, gpu: int, follow: bool, args: list[str], minutes: int, v
     #
     # `node` pins the Spawn to one Arm. It does not travel over HTTP at all — the Head API refuses it
     # for everyone — so a pinned Spawn takes the Head-local path below instead.
-    env_note = None
     if node:
-        spawn_id, env_note = _submit_pinned(tar_bytes, script, args, minutes, vram, gpu, node,
-                                            features=features, manifest=manifest,
-                                            substrate=substrate, name=name)
+        spawn_id = _submit_pinned(script, args, minutes, vram, gpu, node,
+                                  features=features, name=name)
     else:
-        meta = {"script": script, "gpu": gpu, "args": args, "name": name,
-                "minutes": minutes, "vram": vram,
-                # Omitted rather than sent empty, matching the rest of this dict's optional fields —
-                # most Spawns declare none, and the Head reads an absent key as "no requirement".
-                **({"features": features} if features else {}),
-                # Required, unlike everything above it — the Head refuses a Spawn that names no
-                # dependency file (ccc_head_api.environments). Sent unconditionally so a caller that
-                # somehow got here without one meets the Head's message rather than a missing key.
-                "manifest": manifest or "",
-                # Optional for every Spawn, so omitted rather than sent empty — the Head reads an
-                # absent key as "no system package needed", which is the ordinary case.
-                **({"substrate": substrate} if substrate else {})}
-        client = auth._client()
-        client.token = auth._load_token()
-        try:
-            resp = client.upload("/submit", tar_bytes, meta)
-        except api.ApiError as e:
-            if ui.DEBUG:
-                raise
-            raise ui.abort(e.user_message()) from None
-        spawn_id, env_note = resp["id"], resp.get("environment")
+        spawn_id = _post_submit({
+            "script": script, "gpu": gpu, "args": args, "name": name,
+            "minutes": minutes, "vram": vram,
+            # Omitted rather than sent empty — most Spawns declare none, and the Head reads an absent
+            # key as "no requirement".
+            **({"features": features} if features else {})})
     # The id goes to stdout and the confirmation to stderr, so `id=$(cuttle run ...)` captures
     # exactly the id while a human still sees what happened.
     ui.ok(f"submitted spawn {spawn_id}")
-    # Which dependency file the Head picked up, or that it found none. Said HERE, while the User is
-    # still watching, because the failure this catches is not an error anywhere: a manifest one
-    # directory too deep builds nothing, and is otherwise only discoverable as an ImportError after the
-    # Spawn has queued, been placed, and held a card.
-    if env_note:
-        ui.say(f"  [muted]{env_note}[/muted]")
     ui.data(str(spawn_id))
     if follow:
         _follow(spawn_id)
 
 
 def submit_tidepool(minutes: int, vram: int, gpu: int, node: str | None = None,
-                    features: list[str] | None = None, manifest: str | None = None,
-                    substrate: str | None = None,
-                    no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
+                    features: list[str] | None = None, name: str = "") -> int:
     """Request a Tide Pool. Returns the Spawn id (no printing — `cuttle run --tidepool`'s own flow, in
-    tidepool.py, owns the UI from here, since it still has to poll for placement and attach).
-
-    A Tide Pool is the one Spawn that may decline to declare an **Environment**
-    (ccc_head_api.environments): it is a shell rather than a run, and one opened to poke at a box has
-    no project behind it at all. `manifest` is how you opt back IN — and naming one necessarily
-    UPLOADS THE WORKING DIRECTORY, because an env cannot be built from a file that was not sent. That
-    is also what you want: a Tide Pool opened over your project, holding the env your Spawn would get,
-    is the only way to debug the thing that actually failed.
-
-    Without it the body is a genuinely empty gzip-tar (`_make_tar` with an empty file list), not raw
-    empty bytes — the Head unconditionally opens it as a tar archive (spawns.submit), and every client
-    sends the same wire shape whether or not there is a project behind it.
-    """
+    tidepool.py, owns the UI from here, since it still has to poll for placement and attach)."""
     features = features or []
-    root = root or Path.cwd()
-    # A declared **Substrate** uploads the directory for the same reason a manifest does: the file
-    # naming the packages has to be in the project the Head reads it out of, and a bare Tide Pool sends
-    # an empty tar with nothing in it to name.
-    if manifest or substrate:
-        tar = _make_tar(root, None if no_gitignore else _project_files(root))
-    else:
-        tar = _make_tar(root, [])
     if node:
-        return _submit_pinned(tar, "", [], minutes, vram, gpu, node,
-                              features=features, tidepool=True, manifest=manifest,
-                              substrate=substrate, name=name)[0]
-    meta = {"minutes": minutes, "vram": vram, "gpu": gpu, "tidepool": True,
-           "name": name,
-           **({"features": features} if features else {}),
-           # Absent means "no Environment", which for a Tide Pool alone is legal — so unlike an
-           # ordinary Spawn this is omitted rather than sent empty.
-           **({"manifest": manifest} if manifest else {}),
-           **({"substrate": substrate} if substrate else {})}
-    client = auth._client()
-    client.token = auth._load_token()
-    try:
-        return client.upload("/submit", tar, meta)["id"]
-    except api.ApiError as e:
-        if ui.DEBUG:
-            raise
-        raise ui.abort(e.user_message()) from None
+        return _submit_pinned("", [], minutes, vram, gpu, node,
+                              features=features, tidepool=True, name=name)
+    return _post_submit({"minutes": minutes, "vram": vram, "gpu": gpu, "tidepool": True,
+                         "name": name, **({"features": features} if features else {})})
 
 
 def cancel(spawn_id: int, any_owner: bool = False, yes: bool = False) -> None:

@@ -144,9 +144,8 @@ class TestPasswordPolicy:
 class TestSubmit:
     """`cuttle run` — the operation the whole cluster exists for."""
 
-    def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                          "--manifest", "requirements.txt")
+    def test_a_spawn_is_submitted_and_attributed(self, signed_in, fake_slurm):
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
         assert result.exit_code == 0, result.output
         assert "submitted spawn" in result.output
         # Attribution is the ledger's, not Slurm's — every Spawn runs as the Mantle, so Slurm's own
@@ -157,23 +156,15 @@ class TestSubmit:
         assert spawn is not None, "no Attribution row was recorded"
         assert spawn["user_id"] == alice["id"]
 
-    def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm, project):
+    def test_the_escrow_is_held_at_submit(self, signed_in, fake_slurm):
         """A Spawn that existed without its hold, even briefly, is one its submitter's Share has not
         been charged for — precisely the window a queue-flooder wants."""
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                          "--manifest", "requirements.txt")
+        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
         with db.connect() as conn:
             escrows = {e["job_id"]: e for e in db.live_escrows(conn)}
         assert _spawn_id(result.output) in escrows
 
-    def test_the_uploaded_project_reaches_the_head(self, signed_in, fake_slurm, project):
-        signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                          "--manifest", "requirements.txt")
-        staged = list((fake_slurm / "projects").glob("*/train.py"))
-        assert staged, "the project tree was not unpacked on the Head"
-        assert "hello from a Spawn" in staged[0].read_text()
-
-    def test_time_and_vram_are_required(self, signed_in, fake_slurm, project):
+    def test_time_and_vram_are_required(self, signed_in, fake_slurm):
         """Nothing can price a Spawn whose length nobody declared, nor place one whose needs
         nobody did — asserted via the missing flag, not just `exit_code != 0`, so a broken rig
         can't pass silently. Both are promptable, so the refusal is ours, not click's: no
@@ -184,62 +175,19 @@ class TestSubmit:
         no_vram = signed_in("run", "train.py", "--name", "n", "--time", "60")
         assert no_vram.exit_code != 0 and "--vram" in no_vram.output
 
-    def test_submitting_without_a_session_is_refused(self, cli, fake_slurm, project):
-        result = cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                          "--manifest", "requirements.txt")
+    def test_submitting_without_a_session_is_refused(self, cli, fake_slurm):
+        result = cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24")
         assert result.exit_code != 0
         assert "not logged in" in result.output
-
-
-class TestProjectDir:
-    """`--dir` — which directory is uploaded, when it is not the one you are standing in.
-
-    Every path a command validates (the script, `--manifest`) has to resolve against the SAME directory
-    that is tarred, or a submission passes its client-side gates and fails on the Head.
-    """
-
-    def test_dir_uploads_that_tree_from_an_unrelated_cwd(self, signed_in, fake_slurm, project,
-                                                         tmp_path, monkeypatch):
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                           "--manifest", "requirements.txt", "--dir", str(project))
-        assert result.exit_code == 0, result.output
-        staged = list((fake_slurm / "projects").glob("*/train.py"))
-        assert staged, "the project tree was not unpacked on the Head"
-        assert "hello from a Spawn" in staged[0].read_text()
-
-    def test_the_script_is_looked_for_in_dir_not_the_cwd(self, signed_in, fake_slurm, project,
-                                                         tmp_path, monkeypatch):
-        """The cwd holds a `train.py`; `--dir` does not. Resolving against the wrong one would upload a
-        tree with no entry point and only fail once the Head had it."""
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        (elsewhere / "requirements.txt").write_text("")
-        monkeypatch.chdir(project)
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                           "--manifest", "requirements.txt", "--dir", str(elsewhere))
-        assert result.exit_code != 0
-        # Not the full path: ui wraps it across lines at the terminal width.
-        assert "script 'train.py' was not found" in result.output
-        assert "relative to the project" in result.output
-
-    def test_a_dir_that_is_not_a_directory_is_refused(self, signed_in, fake_slurm, project):
-        result = signed_in("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                           "--manifest", "requirements.txt", "--dir", str(project / "train.py"))
-        assert result.exit_code != 0
-        assert "not a directory" in result.output
 
 
 class TestCancel:
     """`cuttle cancel` — your own over the API, anyone's only on the Head."""
 
     def _spawn(self, cli):
-        return _spawn_id(cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24",
-                          "--manifest", "requirements.txt").output)
+        return _spawn_id(cli("run", "train.py", "--name", "a spawn", "--time", "60", "--vram", "24").output)
 
-    def test_you_may_cancel_your_own(self, signed_in, fake_slurm, project, monkeypatch):
+    def test_you_may_cancel_your_own(self, signed_in, fake_slurm, monkeypatch):
         killed = []
         monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
         spawn = self._spawn(signed_in)
@@ -247,13 +195,13 @@ class TestCancel:
         assert result.exit_code == 0, result.output
         assert killed == [spawn]
 
-    def test_the_confirmation_can_be_declined(self, signed_in, fake_slurm, project, monkeypatch):
+    def test_the_confirmation_can_be_declined(self, signed_in, fake_slurm, monkeypatch):
         """The Dashboard asks before cancelling; so does this. Declining must not scancel."""
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         spawn = self._spawn(signed_in)
         assert signed_in("cancel", spawn, input="n\n").exit_code != 0
 
-    def test_you_may_not_cancel_someone_elses(self, cli, fake_slurm, project, monkeypatch):
+    def test_you_may_not_cancel_someone_elses(self, cli, fake_slurm, monkeypatch):
         """alice submits; root tries to stop it over the API and is refused — an Admin has no
         branch on that route. Off the Head there is no second road either, so this is the end of it."""
         monkeypatch.setattr(menu, "is_head", lambda: False)
@@ -277,7 +225,7 @@ class TestCancel:
         monkeypatch.setattr(spawns_mod, "run", lambda cmd, **kw: ran.append(cmd))
         return spawn, ran
 
-    def test_on_the_head_someone_elses_takes_the_operator_road(self, cli, fake_slurm, project,
+    def test_on_the_head_someone_elses_takes_the_operator_road(self, cli, fake_slurm,
                                                                monkeypatch):
         """The refusal is the ownership test, not the end. On the Head it selects `sudo scancel` —
         with no flag, because the menu can only ever run this command bare."""
@@ -412,7 +360,7 @@ class TestQueue:
              "gpus": 1, "user": "ccc", "time_limit": 60, "submit_time": 0, "start_time": 0}])
         with db.connect() as conn:
             alice = db.get_user(conn, "alice")
-            db.record_spawn(conn, 4207, alice["id"], "train.py", "stage-uuid", 60, 1, 24, None,
+            db.record_spawn(conn, 4207, alice["id"], "train.py", 60, 1, 24, None,
                             name="nightly eval")
         r = signed_in("queue")
         assert r.exit_code == 0, r.output
@@ -440,7 +388,7 @@ class TestHistory:
 
     def _finished(self, job_id, user_id, exit_code, cost=None, owner_id=None, name="nightly eval"):
         with db.connect() as conn:
-            db.record_spawn(conn, job_id, user_id, "train.py", f"uuid-{job_id}", 60, 1, 24, "gpu-box",
+            db.record_spawn(conn, job_id, user_id, "train.py", 60, 1, 24, "gpu-box",
                             hold=5.0, name=name)
             db.mark_finished(conn, job_id, exit_code, "2026-07-26T12:00:00Z")
             if cost is not None:
@@ -483,7 +431,7 @@ class TestHistory:
     def test_history_excludes_the_currently_queued(self, signed_in, monkeypatch):
         """A Spawn still in squeue belongs to `queue`, not `history` — the two views are disjoint."""
         with db.connect() as conn:
-            db.record_spawn(conn, 4207, self._alice(), "train.py", "uuid", 60, 1, 24, "gpu-box",
+            db.record_spawn(conn, 4207, self._alice(), "train.py", 60, 1, 24, "gpu-box",
                             hold=5.0)
         monkeypatch.setattr(slurm, "spawns", lambda: [
             {"id": 4207, "name": "train.py", "state": "running", "node": "gpu-box",
@@ -597,15 +545,15 @@ class TestNoAdminWritesOverTheApi:
             # Absent from `balances` == 0, which is where everyone starts.
             assert karma.balances(conn).get(alice["id"], 0.0) == 0.0
 
-    def test_the_endpoint_itself_refuses_a_pin(self, head, signed_in, fake_slurm, project):
+    def test_the_endpoint_itself_refuses_a_pin(self, head, signed_in, fake_slurm):
         """Driven at the API, not the CLI: a client that simply stopped sending `node` would make a
         client-side test pass while the endpoint stayed wide open."""
         token = config.SESSION_FILE.read_text().strip()
-        r = head.post("/submit", content=b"",
-                      headers={"Authorization": f"Bearer {token}",
-                               # Named and otherwise complete, so the 403 below is unambiguously about
-                               # the pin rather than about some earlier gate.
-                               "X-CCC-Meta": '{"script":"t.py","minutes":60,"vram":24,"node":"gpu-box",'
-                                             '"name":"a spawn"}'})
+        r = head.post("/submit",
+                      headers={"Authorization": f"Bearer {token}"},
+                      # Named and otherwise complete, so the 403 below is unambiguously about the pin
+                      # rather than about some earlier gate.
+                      json={"script": "t.py", "minutes": 60, "vram": 24, "node": "gpu-box",
+                            "name": "a spawn"})
         assert r.status_code == 403
         assert "on the Head" in r.json()["detail"]

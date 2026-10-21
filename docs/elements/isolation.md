@@ -54,12 +54,11 @@ no route to becoming the cluster, on any machine, including the Head.
 
 ### Siphons — what it can reach
 
-A **Siphon** is the one channel through which a Spawn draws its project in and sends its results home.
+A **Siphon** is the one channel through which a Spawn sends its results home.
 It opens when the Spawn is submitted and closes once its transfers have finished.
 
-It reaches exactly that Spawn's own uploaded work and its own results, and **nothing else the Head
-holds**. So work running on a donated machine cannot read another User's project or write into
-another Spawn's results — even though every Arm shares one [Mesh](mesh.md).
+It reaches exactly that Spawn's own results, and **nothing else the Head holds**. So work running on a
+donated machine cannot write into another Spawn's results — even though every Arm shares one [Mesh](mesh.md).
 
 The distinction that matters: being on the Mesh admits a *machine*. A Siphon authorizes one *Spawn*.
 
@@ -69,6 +68,6 @@ home can still be arriving well after it has been settled.
 ### The Mantle — who the cluster is
 
 The cluster has its own identity, called the **Mantle**. It owns what the cluster owns: the account
-records, the Head's key, every User's uploaded work, every Spawn's results.
+records, the Head's key, every Spawn's results.
 
 It is nobody's. No User is ever the Mantle, and nothing a User submits ever runs as it.

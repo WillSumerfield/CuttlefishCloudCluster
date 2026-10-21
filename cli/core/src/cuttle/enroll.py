@@ -883,11 +883,9 @@ def _mark_activated(name: str, f: dict) -> None:
 def _activate_one(name: str, feat: str, project: dict[str, str], spawn_client) -> None:
     with ui.step(f"Building {feat}'s environment and activating it on {name} "
                  f"(first run on this box — a few minutes)"):
-        tar = spawn_client.tar_from_files(project)
-        spawn_id, _ = spawn_client._submit_pinned(
-            tar, "activate.py", [], minutes=ACTIVATION_MINUTES, vram=0, gpu=1, node=name,
-            features=[feat],
-            manifest="pyproject.toml", activation=True,
+        spawn_id = spawn_client._submit_pinned(
+            "activate.py", [], minutes=ACTIVATION_MINUTES, vram=0, gpu=1, node=name,
+            features=[feat], activation=True,
             name=config.ACTIVATION_SPAWN_NAME % feat,
             # The first admin, who owns the Head's own Arm. Not "whoever is logged in": this Spawn is
             # CCC's, it runs during `setup --head` when nobody is, and an Admin is outside the Karma

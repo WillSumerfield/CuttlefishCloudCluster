@@ -22,7 +22,6 @@ import os
 import subprocess
 import threading
 import time
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import auth, config, settings, spawns as spawns_mod, sshconfig, ui
@@ -79,15 +78,9 @@ def _noun(spawn_id: int) -> str:
 
 def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: int,
         node: str | None, features: list[str], follow: bool,
-        manifest: str | None = None, substrate: str | None = None,
-        no_gitignore: bool = False, vscode: bool = False,
-        root: Path | None = None, name: str = "") -> None:
+        vscode: bool = False, name: str = "") -> None:
     """Entry point from `cuttle run --tidepool`. Requests a new Tide Pool (needing --time/--vram like any
-    Spawn) unless `script_or_id` resolves to an existing one, then attaches either way.
-
-    `manifest` is optional here and only here — see `spawns.submit_tidepool`. Passing one uploads the
-    working directory and builds that **Environment** into the shell, so what you debug in is what your
-    Spawn would have run in."""
+    Spawn) unless `script_or_id` resolves to an existing one, then attaches either way."""
     if follow:
         ui.warn("--follow is ignored with --tidepool — it attaches an interactive shell instead of "
                 "streaming output")
@@ -98,16 +91,12 @@ def run(script_or_id: str | None, minutes: int | None, vram: int | None, gpu: in
         if script_or_id:
             ui.warn(f"ignoring {script_or_id!r} — a Tide Pool has no entry script "
                     f"(pass a Spawn id instead to reattach to one)")
-        spawn_id = _request(minutes, vram, gpu, node, features, manifest=manifest,
-                            substrate=substrate, no_gitignore=no_gitignore, root=root, name=name)
+        spawn_id = _request(minutes, vram, gpu, node, features, name=name)
     _wait_and_attach(spawn_id, vscode=vscode)
 def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
-            features: list[str], manifest: str | None = None,
-            substrate: str | None = None,
-            no_gitignore: bool = False, root: Path | None = None, name: str = "") -> int:
+            features: list[str], name: str = "") -> int:
     """Submit a fresh Tide Pool. `--time`/`--vram` are exactly as required as they are for any Spawn —
-    nothing here weakens that gate; `--manifest` alone is optional, simply absent when nobody asked
-    for one."""
+    nothing here weakens that gate."""
     minutes = ui.need(minutes, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
     vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
     # A bare Tide Pool is one of the two Spawns with no name of its own to inherit, so it is asked for
@@ -115,8 +104,7 @@ def _request(minutes: int | None, vram: int | None, gpu: int, node: str | None,
     # that Spawn was named when it was requested.
     name = ui.need(name, "--name", lambda: ui.ask_text("What should this tide pool be called?"))
     spawn_id = spawns_mod.submit_tidepool(minutes, vram, gpu, node=node, features=features,
-                                          manifest=manifest, substrate=substrate,
-                                          no_gitignore=no_gitignore, root=root, name=name)
+                                          name=name)
     ui.ok(f"requested tide pool {spawn_id}")
     return spawn_id
 

@@ -144,7 +144,7 @@ Feature. That includes a [Tide Pool](tide-pool.md) that declared no manifest at 
 - **You named a `--manifest` that is not there** — refused at submit, with no Spawn and nothing
   escrowed. A file you named and that does not exist is bad input, decided immediately. (Contrast the
   case above, where the file exists and it is the *build* that fails.)
-- **You declared nothing** — refused before anything is uploaded, naming the flag that fixes it.
+- **You declared nothing** — refused at submit, naming the flag that fixes it.
   `cuttle run` asks you for it rather than refusing, if you are at a terminal.
 - **Every Spawn is refused with "this Head cannot build Environments"** — there is no
   `uv`/`micromamba` under `/opt/ccc/tools`, which only the operator can fix (`cuttle setup`). Every

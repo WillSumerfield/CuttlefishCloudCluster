@@ -63,6 +63,9 @@ CREATE INDEX idx_sessions_user ON sessions(user_id);
 # user_id is ON DELETE SET NULL so removing a user keeps the historical attribution row (shown as
 # "unknown" rather than vanishing). This is the single source of truth for who submitted what — no
 # sbatch --comment stamp to drift against.
+#
+# `staging_uuid` is unused since 2.0 dropped project upload; written '' (it is NOT NULL) until the schema
+# collapse.
 _SCHEMA_V2 = """
 CREATE TABLE spawns (
   job_id       INTEGER PRIMARY KEY,
@@ -740,7 +743,7 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 # --- spawn ledger -------------------------------------------------------------
 
 def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
-                 staging_uuid: str, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
+                 minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
                  node: str | None = None, hold: float | None = None,
                  tidepool: bool = False, name: str = "") -> None:
     """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
@@ -756,7 +759,7 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
         """INSERT INTO spawns (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node,
                               tidepool, name)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, staging_uuid, minutes, gpus, vram_gb, node, int(tidepool), name),
+        (job_id, user_id, script, "", minutes, gpus, vram_gb, node, int(tidepool), name),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -766,21 +769,6 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
 
 def get_spawn(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM spawns WHERE job_id=?", (job_id,)).fetchone()
-
-
-def spawns_by_staging_uuid(conn: sqlite3.Connection, uuids: list[str]) -> dict[str, sqlite3.Row]:
-    """Map staging uuid -> its Spawn's `(job_id, finished_at)`, for the uuids currently on disk.
-
-    `projects.sweep`'s one query per pass. Takes the disk's list rather than returning the whole table
-    because that list is bounded by what has not been swept yet — a handful — while the `spawns` ledger
-    grows forever. A uuid absent from the result is one no Spawn (yet) claims; see that function."""
-    if not uuids:
-        return {}
-    marks = ",".join("?" * len(uuids))
-    rows = conn.execute(
-        f"SELECT staging_uuid, job_id, finished_at FROM spawns WHERE staging_uuid IN ({marks})", uuids,
-    ).fetchall()
-    return {r["staging_uuid"]: r for r in rows}
 
 
 def spawn_labels(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, dict]:

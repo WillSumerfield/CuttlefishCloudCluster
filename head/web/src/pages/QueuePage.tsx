@@ -66,7 +66,6 @@ export function QueuePage() {
           <SubmitComposer
             arms={arms}
             isAdmin={session.isAdmin}
-            startOpen
             onSubmitted={refresh}
           />
         </div>

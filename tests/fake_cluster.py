@@ -95,7 +95,7 @@ class FakeCluster:
         self._next_id += 1
         need = {"node": node, "vram_gb": vram_gb, "gpus": gpus}
         hold = karma.quote_hold(self.conn, self.arms(), need, minutes, gpus, user["is_admin"], now=self.now)
-        db.record_spawn(self.conn, jid, user["id"], "sim.py", f"u{jid}",
+        db.record_spawn(self.conn, jid, user["id"], "sim.py",
                         minutes=minutes, gpus=gpus, vram_gb=vram_gb, node=node, hold=hold)
         self.jobs[jid] = {"id": jid, "user": user, "need": need, "minutes": minutes, "gpus": gpus,
                           "nice": 0, "state": "PENDING", "node": None, "start_time": None,

@@ -14,7 +14,7 @@ designed but not built, see [TODO](TODO.md).
         │                HEAD                  │
         │  slurmctld · Head API · Karma tick    │
         │  coordinator · auth · head.db        │
-        │  stage-in/out · dashboard · SPA      │
+        │  stage-out · dashboard · SPA         │
         │  + its own co-located Arm            │
         └──────────────────────────────────────┘
                           |
@@ -124,9 +124,8 @@ OS. Its walls enclose the whole Spawn, including the wrapper that stages files i
 
 There is **no NFS, no CephFS, no live mount**. Every Arm stages.
 
-A Spawn's project — gitignore-aware — is staged in over an rsync daemon bound to the Head's mesh
-address, into node-local scratch. At the end, its logs and exit code stage back. Fresh copy per
-Spawn; there is no persistent cache yet.
+A Spawn runs in node-local scratch. Its logs and exit code stage back over an rsync daemon bound to
+the Head's mesh address.
 
 ## Environments
 

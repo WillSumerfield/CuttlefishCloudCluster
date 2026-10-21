@@ -102,7 +102,7 @@ def install_enroll_sudoers(write_unit) -> None:
 # free to the job's owner) need the Head to act as that Guise to touch its own cluster's queue.
 #
 # `(%ccc-guises)`, never `(root)`: lets `ccc` act as an account owning nothing but one Spawn's working
-# files — it can't read head.db, head.key, or another User's upload, same as any Guise. Root would
+# files — it can't read head.db, head.key, or another User's results, same as any Guise. Root would
 # undo that isolation. This is the only unattended sudo grant here; `cuttle user add`'s useradd runs
 # under the operator's own sudo at a tty.
 _SUDOERS_CCC_SLURM = f"""\

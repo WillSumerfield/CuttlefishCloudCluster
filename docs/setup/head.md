@@ -42,7 +42,7 @@ cuttle setup --head --address=<address-Arms-will-reach-this-box-at>
 
 This does a great deal, in order: joins its own mesh, installs Slurm/munge/Apptainer/Node, configures
 the scheduler, provisions the cluster's own identity and the auth store, provisions Guises, installs
-stage-in/out, builds the dashboard, issues a TLS certificate, starts the Head API and the Karma tick,
+stage-out, builds the dashboard, issues a TLS certificate, starts the Head API and the Karma tick,
 installs the nightly backup timer and the health monitor, builds the Pod image, installs the
 Environment build tools, and builds the benchmark environment every Arm is priced against.
 

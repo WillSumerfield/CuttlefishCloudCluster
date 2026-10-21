@@ -705,11 +705,6 @@ def run(
                              "never invents one. Free text (48 chars): \"lr sweep 3e-4\" is as valid "
                              "as \"sweep3\"."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Stream output until the Spawn ends."),
-    no_gitignore: bool = typer.Option(
-        False, "--no-gitignore", help="Upload the whole working dir (default: honor .gitignore)."),
-    directory: Path = typer.Option(
-        None, "--dir", help="Project directory to upload (default: the current one). The script "
-                            "and --manifest paths are relative to it."),
     node: str = typer.Option(
         None, "--node", help="ADMIN ONLY: pin the Spawn to one Arm by name. Users declare what they "
                              "need (--vram), never which machine they want."),
@@ -717,56 +712,28 @@ def run(
         # No short alias: `-f` is already `--follow` on this command.
         None, "--feature", help="Require an Arm Feature (repeatable). Optional — most Spawns need "
                                 "none; unsatisfiable requests are refused, not queued."),
-    manifest: str = typer.Option(
-        None, "--manifest", help="REQUIRED (optional with --tidepool). Dependency file to build this "
-                                 "Spawn's Python environment from, relative to the project root — "
-                                 "pyproject.toml, uv.lock, requirements.txt, environment.yml, or one "
-                                 "you keep under another name (envs/cuda12.yml). There is no default "
-                                 "and nothing is detected: the environment carries its own Python and "
-                                 "inherits nothing, so it is yours to name. With --tidepool it is "
-                                 "optional, and passing one uploads this directory too."),
-    substrate: str = typer.Option(
-        None, "--substrate", help="Optional. File naming the system packages this Spawn needs — one "
-                                  "per line, `#` comments — installed into its Pod before the "
-                                  "environment is built, so a wheel that has to compile finds its "
-                                  "headers. Relative to the project root; `apt.txt` by convention. "
-                                  "Package names only: no versions, no URLs, no apt options."),
     vscode: bool = typer.Option(
         False, "--vscode", help="With --tidepool only. Open the shell in VS Code instead of this "
                                 "terminal. Writes an ssh alias this box can reach the Pod by, then "
-                                "launches VS Code straight into your project directory. Without it "
+                                "launches VS Code straight into the Pod's working directory. Without it "
                                 "the alias is printed and VS Code's own 'Connect to Host' picker "
                                 "finds it."),
 ):
-    """Submit a Spawn: uploads the working dir to the Head, which builds the environment you
-    declared and runs your script against it inside a Pod. Requires `cuttle login`. Extra args after the
-    script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -- --epochs 5`).
+    """Submit a Spawn: the Head runs your script inside a Pod. Requires `cuttle login`. Extra args
+    after the script are passed through (e.g. `cuttle run train.py --time 60 --vram 24 -- --epochs 5`).
 
     --time and --vram have no defaults on purpose. Nothing can price a Spawn whose length nobody
     declared, and a --vram that defaulted to the fleet's biggest card would make every untouched
     field eligible for that one GPU alone — queued behind everything, at the highest Demand, for work
     that may need 2 GB.
 
-    --tidepool replaces the whole script/upload story above with a live shell — see
+    --tidepool replaces the script with a live shell — see
     cuttle.tidepool for that flow; everything below this point is the ordinary script path.
     """
     feature = list(feature) if feature else []
-    # Resolved once, before anything is validated or packed, so every path below means the same thing.
-    root = spawns_mod.project_root(directory)
     if tidepool:
-        # --manifest is OPTIONAL here and nowhere else, so it is passed through rather than prompted
-        # for: a Tide Pool opened to poke at a box has no project behind it to name a file in. Naming
-        # one uploads the project directory and builds that Environment into the shell.
-        if manifest and not (root / manifest).is_file():
-            raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the "
-                           f"project directory, {root})")
-        if substrate and not (root / substrate).is_file():
-            raise ui.abort(f"substrate {substrate!r} was not found (looked for it relative to the "
-                           f"project directory, {root})")
         return tidepool_mod.run(script, minutes=time, vram=vram, gpu=gpu, node=node,
-                                features=feature, follow=follow,
-                                manifest=manifest, substrate=substrate, no_gitignore=no_gitignore,
-                                vscode=vscode, root=root, name=name)
+                                features=feature, follow=follow, vscode=vscode, name=name)
     if vscode:
         ui.warn("--vscode is ignored without --tidepool — a script Spawn has no shell to open")
     wizard = script is None
@@ -786,16 +753,8 @@ def run(
         # highest Demand for work that may need 2 GB.
         time = ui.need(time, "--time", lambda: ui.ask_int("Wall-clock limit? (minutes)"))
         vram = ui.need(vram, "--vram", lambda: ui.ask_int("GPU memory needed? (GB, total across cards)"))
-        # Asked outright, never suggested. Offering what happens to be lying in the directory would be
-        # CCC inferring which file is the instruction — and a suggestion is an inference, accepted by
-        # whoever presses Enter. The Environment carries its own Python and inherits nothing, so which
-        # file it is built from decides everything the work runs against; that is the User's to say.
-        # Not `ui.need`: naming nothing has its own explanation, and reaches it from both the prompt
-        # and a flagless scripted run (spawns.need_manifest).
-        manifest = spawns_mod.need_manifest(manifest)
         if wizard:
             gpu = ui.ask_int("How many GPUs? (all on one machine)", default=str(gpu))
-            no_gitignore = not ui.ask_confirm("Honor .gitignore when uploading?", True)
             follow = follow or ui.ask_confirm("Stream output until it ends?", False)
             # Optional, never gates submission. Offered from the built-in catalog
             # (config.FEATURE_NAMES) — a constant, so no Head call and no failure mode here. Whether
@@ -804,33 +763,12 @@ def run(
                 for feat in config.FEATURE_NAMES:
                     if ui.ask_confirm(f"Require {feat!r}?", False):
                         feature.append(feat)
-    # Hard validation, unconditional — NOT gated on `wizard`. A flag-driven `cuttle run` never passes
-    # through the wizard block above, so this is the only gate a direct invocation ever sees. No y/n
-    # override: a script that isn't there is refused, not warned about.
-    if not (root / script).is_file():
-        raise ui.abort(f"script {script!r} was not found (looked for it relative to the project "
-                       f"directory, {root})")
-    # Same shape as the script check, and for the same reason: caught here rather than as a 422 after
-    # the whole project directory has been uploaded. The Head re-checks it against what actually
-    # arrived, which is the check that counts — .gitignore can drop a file that is right here.
-    if not (root / manifest).is_file():
-        raise ui.abort(f"manifest {manifest!r} was not found (looked for it relative to the project "
-                       f"directory, {root})")
-    # Never prompted for, unlike --manifest: a Spawn needing no system package is the ordinary one, so
-    # asking everybody would be a question most people answer with an empty line.
-    if substrate and not (root / substrate).is_file():
-        raise ui.abort(f"substrate {substrate!r} was not found (looked for it relative to the project "
-                       f"directory, {root})")
     if wizard:
-        spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, no_gitignore=no_gitignore,
-                          features=feature, manifest=manifest, substrate=substrate,
-                          root=root)
+        spawns_mod.preview(script, minutes=time, vram=vram, gpu=gpu, features=feature)
         if not ui.ask_confirm("Submit?", True):
             raise ui.abort("not submitted")
     spawns_mod.submit(script, gpu=gpu, follow=follow, args=ctx.args,
-                      no_gitignore=no_gitignore, node=node, minutes=time, vram=vram,
-                      features=feature, manifest=manifest, substrate=substrate,
-                      root=root, name=name)
+                      node=node, minutes=time, vram=vram, features=feature, name=name)
 
 
 @app.command()

@@ -139,11 +139,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     `record_installed` once apptainer is in too — teardown purges from that manifest, and apptainer
     plus its deps must be in it.
 
-    `head` adds `acl`, which only the Head can use: it is what lets the Mantle hand ONE Guise read
-    access to ONE uploaded project (see temp/spawn-isolation.md), and the uploads only ever exist
-    here. A donor's box gains nothing it cannot use.
-
-    `head` also adds Node, and for the same reason: `build_spa` runs `npm` some twenty minutes later,
+    `head` adds Node: `build_spa` runs `npm` some twenty minutes later,
     and a Head with no Node used to get that far and then fail on `No such file or directory: 'npm'`
     with the Dashboard — the primary surface — never built.
 
@@ -159,7 +155,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     before = system.installed_packages()
     _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
                   config.UIDMAP_PKG,
-                  *([config.ACL_PKG, config.NODE_PKG] if head else [])])
+                  *([config.NODE_PKG] if head else [])])
     return before
 
 
@@ -366,17 +362,15 @@ def provision_mantle() -> None:
 
 def provision_head_auth() -> None:
     """Head-side identity spine: the Mantle's Head state + auth store (head.db). On the Head the Mantle
-    also runs the Head API and owns head.db plus the submission dirs (uploaded projects, Spawn results,
-    scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
+    also runs the Head API and owns head.db plus the submission dirs (Spawn results, scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
     API unit and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
     provision_mantle()
     # 0711 — traverse, never list (see temp/spawn-isolation.md). A **Guise** has to reach its own
-    # `spawns/<jid>`, `scratch/<jid>` and `projects/<uuid>`, and a 0700 parent stops it at the door. It
+    # `spawns/<jid>` and `scratch/<jid>`, and a 0700 parent stops it at the door. It
     # is `--x` on purpose: reaching a directory whose exact name you already have is all a Spawn needs,
     # and it is the whole difference from `r-x`, which would let any Spawn enumerate every other User's
-    # uploads and results. head.db stays 0600 ccc, so what these parents contain is still unreadable.
-    for d in (config.HEAD_STATE_DIR, config.HEAD_PROJECTS_DIR, config.HEAD_SPAWNS_DIR,
-              config.HEAD_SCRATCH_DIR):
+    # results. head.db stays 0600 ccc, so what these parents contain is still unreadable.
+    for d in (config.HEAD_STATE_DIR, config.HEAD_SPAWNS_DIR, config.HEAD_SCRATCH_DIR):
         run(["install", "-d", "-m", "0711", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
              str(d)], sudo=True)
     # Returned, not printed — see `auth.seed_admin`. The caller spends it at the end of setup, on the
@@ -475,7 +469,7 @@ def install_rsyncd(mesh_ip: str) -> None:
     The conf itself defines no per-Spawn module — it `&include`s RSYNCD_DIR, which the Head API mints
     **Siphon**s into as `ccc`. That directory is 0700 ccc: rsyncd reads it as root, and
     nothing else on the box has any business seeing one Spawn's stage-out credential. The module roots
-    a Siphon points at (projects, spawns) are created ccc-owned by provision_head_auth, which must run
+    a Siphon points at (spawns) are created ccc-owned by provision_head_auth, which must run
     first."""
     run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
          str(config.RSYNCD_DIR)], sudo=True)

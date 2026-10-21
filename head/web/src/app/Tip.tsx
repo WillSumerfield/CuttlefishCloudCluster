@@ -16,7 +16,7 @@ import { createPortal } from "react-dom";
  * Leaving the trigger always closes it, even if the pointer lands on the panel itself — a tip is a quick
  * gloss on the control it's attached to, not a second thing to go read. Keyboard focus opens it too;
  * Escape/blur close it. Touch gets nothing — a stated gap, not an oversight: this is a LAN tool for
- * staging project folders, nobody does that from a phone.
+ * submitting GPU work, nobody does that from a phone.
  */
 
 /** The knobs worth tuning on a tooltip. Edit, save, watch. */

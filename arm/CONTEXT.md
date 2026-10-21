@@ -13,6 +13,6 @@ A compute node donating resources. One role, no kinds; runs on native Ubuntu 24.
   Arm must therefore carry the Mantle identity itself: it is the same identity cluster-wide, so a
   Spawn scheduled here is the same Spawn it would have been on any other node.
 - **Retract** — owner's instant reclaim (root term), on any Arm: drain, signal, release.
-- **Staging** — stage-in/stage-out of Spawn data for remote Arms (no live mount).
+- **Staging** — stage-out of a Spawn's logs for remote Arms (no live mount).
 
 Provisioned via `setup/` (dispatched by `cuttle setup`).

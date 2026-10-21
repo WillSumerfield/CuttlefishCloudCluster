@@ -13,7 +13,7 @@ The cluster control plane. One logical role, Linux-only. Owns:
   in advance. A machine on the Mesh that no Admin named gets nothing.
 - **Head API** — the LAN+mesh service that backs both the web **Dashboard** and the **CLI** (one API,
   two clients). Serves the Dashboard SPA, exposes cluster state, and carries authenticated job
-  submission (login, project upload, submit). A separate service from the **Enroll API** — the Enroll
+  submission (login, submit). A separate service from the **Enroll API** — the Enroll
   API is mesh-only and holds the munge key (a durable boundary), while the Head API must reach the LAN.
 - **Dashboard** — the web app (SPA) over the Head API: the **primary** surface for viewing cluster +
   Spawn state and for submitting/managing jobs. Reachable on the CCC mesh **and** the LAN.

@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from ccc_head_api import db
-from ccc_head_api import environments
 from ccc_head_api import main as head_main
 from ccc_head_api import ratelimit
 from ccc_head_api import siphons
@@ -147,48 +146,22 @@ def _head_state(monkeypatch, tmp_path_factory):
     collides with a real one could read or delete that real Spawn's files (the Fake Cluster counts
     ids from 1, so this is not hypothetical).
 
-    `fake_slurm` sets the same four attributes to its own tmp dir; a test using it simply overrides
+    `fake_slurm` sets the same three attributes to its own tmp dir; a test using it simply overrides
     this, and both are undone at teardown."""
     state = tmp_path_factory.mktemp("head-state")
-    for name in ("projects", "spawns", "scratch"):
+    for name in ("spawns", "scratch"):
         (state / name).mkdir()
     monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
-    monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
     monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
-
-
-@pytest.fixture(autouse=True)
-def _env_tools_exist(monkeypatch, tmp_path_factory):
-    """Every Spawn declares an **Environment** now, so every test that submits one walks this path.
-
-    One thing stands in: a TOOLS_DIR that exists, because `environments.require_tool` REFUSES a Spawn on
-    a node with no uv/micromamba — without this, a suite running on a box that never ran `cuttle setup`
-    would fail every submission test with a message about provisioning.
-
-    Nothing needs to stand in for the BUILD itself any more. It runs on the Arm, inside the rendered job
-    script, so a test that submits renders shell and executes none of it — there is no thread to race and
-    no apptainer to require.
-
-    Autouse and unconditional, for the same reason as `_head_state` above — a Spawn is submitted by
-    tests that are about Karma, Siphons and the CLI, none of which mention Environments.
-    Autouse fixtures are set up before requested ones, so `tests/test_environments.py`'s own
-    `no_tools`/`with_tools` still override this and stay in charge of the path they are about.
-    """
-    tools = tmp_path_factory.mktemp("ccc-tools")
-    for name in ("uv", "micromamba"):
-        (tools / name).write_text("#!/bin/sh\n")
-    monkeypatch.setattr(environments, "TOOLS_DIR", tools)
-    monkeypatch.setattr(environments, "UV_BIN", tools / "uv")
-    monkeypatch.setattr(environments, "MICROMAMBA_BIN", tools / "micromamba")
 
 
 @pytest.fixture
 def fake_slurm(monkeypatch, tmp_path):
     """Stand in for Slurm with two throwaway executables on PATH.
 
-    Faking the *binaries* rather than `head_spawns.submit` keeps the interesting half real: the upload
-    is genuinely unpacked, the job script genuinely rendered, and — the part that matters — the
+    Faking the *binaries* rather than `head_spawns.submit` keeps the interesting half real: the job
+    script is genuinely rendered, and — the part that matters — the
     Attribution row and the Karma **Escrow** are genuinely written, in their real transaction. Stubbing
     `submit()` wholesale would skip all of that and leave the ledger empty, which is exactly the state
     these tests exist to check is *not* reachable.
@@ -196,10 +169,9 @@ def fake_slurm(monkeypatch, tmp_path):
     state = tmp_path / "head-state"
     # `scripts` is not a real Head directory: it is where the sbatch stub below keeps the job script
     # it was fed on stdin, so a test can read back what the Arm would actually have run.
-    for name in ("projects", "spawns", "scratch", "scripts"):
+    for name in ("spawns", "scratch", "scripts"):
         (state / name).mkdir(parents=True)
     monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
-    monkeypatch.setattr(head_spawns, "PROJECTS_DIR", state / "projects")
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
     monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
     # A real Head always knows its mesh address (the unit injects it) and refuses to submit without
@@ -232,9 +204,6 @@ def fake_slurm(monkeypatch, tmp_path):
     (bin_dir / "sudo").write_text(
         f'#!/bin/sh\nwhile [ "$1" = "-n" ]; do shift; done\n'
         f'if [ "$1" = "-u" ]; then echo "$2" >> {tmp_path / "sudo-users"}; shift 2; fi\nexec "$@"\n')
-    # The project lend (spawns._lend_project). Stubbed rather than left to the real tool so the suite
-    # does not depend on `acl` being installed, or on tmp_path's filesystem carrying ACLs.
-    (bin_dir / "setfacl").write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "setfacl-calls"}\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
@@ -244,21 +213,6 @@ def fake_slurm(monkeypatch, tmp_path):
                                                  "powers": [60.0], "gpu": 1, "gpus": 1}])
     monkeypatch.setattr(slurm, "vram_constraint", lambda gb, gpus=1: f"vram{gb}")
     return state
-
-
-@pytest.fixture
-def project(tmp_path, monkeypatch):
-    """A minimal project tree for `cuttle run` to upload, and a cwd to run it from.
-
-    Carries a `requirements.txt` because every Spawn declares its **Environment** and both the CLI and
-    the Head check the named file is really there — a project without one could not be submitted at
-    all, which is not the state any test using this fixture is about."""
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / "train.py").write_text("print('hello from a Spawn')\n")
-    (root / "requirements.txt").write_text("")
-    monkeypatch.chdir(root)
-    return root
 
 
 @pytest.fixture

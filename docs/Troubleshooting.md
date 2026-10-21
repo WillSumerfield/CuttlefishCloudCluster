@@ -10,10 +10,6 @@ You asked for something the fleet can never satisfy — more VRAM than the bigge
 [Feature](elements/arm-features.md) no enrolled Arm carries. Refusing is deliberate: the alternative
 is queuing forever for a machine that may never exist.
 
-Also refused, before anything is uploaded: **no `--manifest`** (every Spawn names the dependency file
-its [Environment](elements/environments.md) is built from — there is no default), or a `--manifest`
-naming a file that is not in your project.
-
 ### My Spawn got an id, then failed immediately
 
 Usually the [Environment](elements/environments.md) build. `cuttle logs <id>` has the resolver's

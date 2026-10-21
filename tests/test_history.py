@@ -32,7 +32,7 @@ def _user(conn, name, admin=False):
 
 
 def _spawn(conn, job_id, user_id, hold=5.0, node="gpu-box"):
-    db.record_spawn(conn, job_id, user_id, "train.py", f"uuid-{job_id}", 60, 1, 24, node, hold=hold)
+    db.record_spawn(conn, job_id, user_id, "train.py", 60, 1, 24, node, hold=hold)
 
 
 class TestTheTickStampsOutcome:

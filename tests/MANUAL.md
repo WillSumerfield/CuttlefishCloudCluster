@@ -61,7 +61,7 @@ every one that builds — an Environment inherits nothing. `uv-project/` should 
 **3.11.14**, a version the image does not ship. `fails/` should produce a **failed Spawn**, not a
 rejected submission.
 
-- [ ] Omitting `--manifest` off a terminal is refused before anything uploads, naming the flag; at a
+- [ ] Omitting `--manifest` off a terminal is refused at submit, naming the flag; at a
       terminal `cuttle run` asks for it instead.
 - [ ] `--manifest nope.txt` is refused at submit with no Spawn.
 
@@ -128,7 +128,6 @@ cuttle backup restore <archive>
 ## 9. The Dashboard
 
 - [ ] Every rail destination loads and shows the same data as its CLI counterpart.
-- [ ] A folder drop previews without uploading; bytes move only on Submit.
 - [ ] Retract/Return work from the Arms page.
 - [ ] The Users page is visible to an Admin and read-only.
 - [ ] Logging out of one client does not log out the other.

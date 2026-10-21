@@ -13,7 +13,6 @@ first login. Nothing here ever prints or stores a reusable password.
 import argparse
 import json
 import sys
-from pathlib import Path
 
 from . import db, guises
 
@@ -142,10 +141,9 @@ def _return(node: str) -> int:
     return 0
 
 
-def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: int,
+def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
             node: str | None, args: list[str],
             features: list[str] | None = None, tidepool: bool = False,
-            manifest: str | None = None, substrate: str | None = None,
             activation: bool = False, name: str = "") -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
@@ -169,16 +167,12 @@ def _submit(username: str, script: str, tar: str, minutes: int, vram: int, gpu: 
             return 1
     try:
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
-                                       Path(tar), minutes, vram, node,
-                                       features=features, tidepool=tidepool, manifest=manifest,
-                                       substrate=substrate, activation=activation, name=name)
+                                       minutes, vram, node,
+                                       features=features, tidepool=tidepool,
+                                       activation=activation, name=name)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
-    # STDERR, deliberately: stdout is a contract, the caller reads the Spawn id off its last line.
-    note = spawns.environment_note(job_id)
-    if note:
-        print(note, file=sys.stderr)
     print(job_id)
     return 0
 
@@ -233,7 +227,6 @@ def main(argv: list[str] | None = None) -> int:
                    help="what to call this Spawn in the queue and the archive. Required, like every "
                         "other Spawn's — CCC never invents one.")
     s.add_argument("--script", default=None, help="omit only for --tidepool.")
-    s.add_argument("--tar", required=True, help="gzip-tar of the project tree (empty for --tidepool).")
     s.add_argument("--minutes", type=int, required=True)
     s.add_argument("--vram", type=int, required=True)
     s.add_argument("--gpu", type=int, default=1)
@@ -245,12 +238,6 @@ def main(argv: list[str] | None = None) -> int:
                         "Arm's licence key into the Pod — Head-local only, never over HTTP.")
     s.add_argument("--tidepool", action="store_true",
                    help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
-    s.add_argument("--manifest", help="REQUIRED (except --tidepool): dependency file to build this "
-                                      "Spawn's environment from, relative to the project root. "
-                                      "Nothing is detected and there is no default.")
-    s.add_argument("--substrate", help="optional: file naming the system packages to install into "
-                                       "this Spawn's Pod, one per line, relative to the project "
-                                       "root.")
     s.add_argument("args", nargs="*", help="extra arguments for the script.")
 
     args = p.parse_args(argv)
@@ -273,9 +260,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "return":
         return _return(args.node)
     if args.cmd == "submit":
-        return _submit(args.user, args.script, args.tar, args.minutes, args.vram, args.gpu,
+        return _submit(args.user, args.script, args.minutes, args.vram, args.gpu,
                        args.node, args.args, args.features,
-                       tidepool=args.tidepool, manifest=args.manifest, substrate=args.substrate,
+                       tidepool=args.tidepool,
                        activation=args.activation, name=args.name)
     if args.cmd == "feature-activation":
         return _feature_activation(args.name)

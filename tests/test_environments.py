@@ -15,12 +15,10 @@ Spawn left held keeps its submitter's Escrow forever, with no thread left to com
 import base64
 import io
 import shlex
-import tarfile
 from pathlib import Path
 
 import pytest
 
-from ccc_head_api import db
 from ccc_head_api import environments as env
 from ccc_head_api import spawns
 
@@ -220,7 +218,7 @@ def _script(**kw):
     kw.setdefault("minutes", 60)
     kw.setdefault("constraint", "")
     kw.setdefault("node", None)
-    return spawns._render(staging=Path("/tmp/u"), gpu=1, script="train.py", args=[], files=[],
+    return spawns._render(sink_tag="deadbeef", gpu=1, script="train.py", args=[],
                           token="a3f9", secret="s3cr3t", **kw)
 
 
@@ -316,16 +314,6 @@ def test_the_temp_scratch_is_outside_the_project():
     """Temp files are CCC's, not the User's project's."""
     body = _script()
     assert '"$scratch/tmp' in body and '"$proj/tmp' not in body
-
-
-def test_the_remote_stage_in_recurses():
-    """`--files-from` implies `--dirs` but NOT `--recursive` (rsync(1): `-a` doesn't imply `-r` here),
-    so any bare directory name in the list would arrive EMPTY. Nothing built is named that way any more,
-    but a project of the User's own can still contain a directory, and losing its contents silently is
-    the same bug. Remote Arms only; the Head-local branch (`cp -a`) is unaffected."""
-    stage_in = next(ln for ln in _script().splitlines()
-                    if '--files-from="$scratch/filelist"' in ln)
-    assert " -r " in stage_in
 
 
 def test_tidepool_binds_the_environment_too():
@@ -597,172 +585,13 @@ class TestAFailedBuildIsAFailedSpawn:
         assert '"$sif" "$@" >> "$err" 2>&1' in _block()
 
 
-# --- submit: what the Head decides, and what it hands the Arm ----------------
-# There is no hold and no build thread any more. What `submit` still owes is every REFUSAL that can be
-# decided from the declaration, made before the Spawn exists — and a job script that carries the build
-# the Arm will run.
-
-@pytest.fixture
-def head(monkeypatch, tmp_path, with_tools):
-    """A Head with a real DB and a captured shell. Returns the list of argv it ran."""
-    state = tmp_path / "state"
-    for name in ("projects", "spawns", "scratch"):
-        (state / name).mkdir(parents=True)
-    monkeypatch.setattr(spawns, "PROJECTS_DIR", state / "projects")
-    monkeypatch.setattr(spawns, "SPAWNS_DIR", state / "spawns")
-    monkeypatch.setattr(spawns, "SCRATCH_DIR", state / "scratch")
-    monkeypatch.setattr(spawns, "MESH_IP", "100.99.0.1")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "head.db")
-    db.ensure_schema()
-    with db.connect() as conn:
-        db.add_user(conn, "alice")
-    calls = []
-
-    def fake_run(argv, **kw):
-        calls.append(list(argv))
-        return type("R", (), {"stdout": "4242\n", "stderr": "", "returncode": 0})()
-
-    monkeypatch.setattr(spawns.subprocess, "run", fake_run)
-    return calls
-
-
-def _tar(tmp_path, *names):
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for n in names:
-            info = tarfile.TarInfo(n)
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
-    p = tmp_path / "up.tar.gz"
-    p.write_bytes(buf.getvalue())
-    return p
-
-
-def _submit(tmp_path, *names, **kw):
-    kw.setdefault("script", "train.py")
-    kw.setdefault("manifest", names[0] if names else None)
-    return spawns.submit(user_id=1, gpu=1, args=[],
-                         tar_path=_tar(tmp_path, "train.py", *names), minutes=60,
-                         constraint="", **kw)
-
-
-def _sbatch(calls):
-    return next(c for c in calls if "sbatch" in c)
-
-
-def _body(calls):
-    """The job script `submit` fed sbatch on stdin — captured through _render, since the fake shell
-    never sees the input."""
-    return calls  # placeholder; see _rendered below
-
-
-def test_a_spawn_that_declares_nothing_never_reaches_sbatch(head, tmp_path):
-    """Refused, not degraded — and refused before sbatch, so there is no Spawn to Escrow, nothing in
-    the queue, and nothing for a reaper to come back for. This is the one class of build problem that
-    is still caught for free, and it is why detection stayed on the Head."""
-    with pytest.raises(env.BuildError, match="declares no Environment"):
-        _submit(tmp_path)
-    assert not [c for c in head if "sbatch" in c]
-
-
-def test_no_spawn_is_ever_held(head, tmp_path):
-    """The hold existed to keep Slurm from placing a Spawn before the Head had finished building its
-    env. The Arm builds inside its own allocation now, so a held Spawn would be pure latency — and one
-    with nothing alive to release it."""
-    _submit(tmp_path, "requirements.txt")
-    assert "--hold" not in _sbatch(head)
-
-
-def test_a_tide_pool_may_decline(head, tmp_path):
-    """The one exemption. A bare Tide Pool uploads an empty tar — there is no file in it to name — and
-    it is a shell rather than a run."""
-    jid = _submit(tmp_path, tidepool=True, script=None)
-    assert "--hold" not in _sbatch(head)
-    assert "none declared" in spawns.environment_note(jid)
-
-
-def test_a_tide_pool_that_declares_one_gets_it_built(head, tmp_path):
-    """The exemption is from the REQUIREMENT, not from the feature. A Tide Pool opened over a project
-    is how you debug the thing that failed, and that is only true if the shell holds the env the Spawn
-    would have run in — so naming a manifest here builds exactly like any other Spawn."""
-    jid = _submit(tmp_path, "requirements.txt", tidepool=True, script=None)
-    assert "requirements.txt" in spawns.environment_note(jid)
-
-
-def _rendered(monkeypatch):
-    """Capture what `submit` passed to `_render`, and what came back."""
-    seen = {}
-    real = spawns._render
-
-    def watch(*a, **kw):
-        seen["files"] = a[4]          # the 5th positional arg — see spawns.submit's call
-        seen["body"] = real(*a, **kw)
-        return seen["body"]
-
-    monkeypatch.setattr(spawns, "_render", watch)
-    return seen
-
-
-def test_the_job_script_carries_the_build(head, tmp_path, monkeypatch):
-    """The whole handover. The Head resolved the manifest into commands; the Arm runs them."""
-    seen = _rendered(monkeypatch)
-    _submit(tmp_path, "requirements.txt")
-    assert "ccc_build_or_die" in seen["body"]
-    assert "requirements.txt" in seen["body"]
-
-
-def test_nothing_built_is_in_what_a_remote_arm_stages_in(head, tmp_path, monkeypatch):
-    """The Environment used to ride the project transfer as a bare directory entry — several GB across
-    the mesh on every Spawn, which is the whole reason the build moved. Nothing built is named here now;
-    the Arm makes it in its own node-local scratch."""
-    seen = _rendered(monkeypatch)
-    _submit(tmp_path, "requirements.txt")
-    assert sorted(seen["files"]) == ["requirements.txt", "train.py"]
-
-
-def test_a_node_without_the_tools_refuses_before_sbatch(head, tmp_path, monkeypatch):
-    """It used to submit anyway and run on the base image. That fallback was for Spawns written before
-    Environments existed; none are left, so falling back now means running the User's work against
-    something they never asked for. Refused where nothing is Escrowed and no Spawn exists.
-
-    Un-installs uv after `head` (which provides one) rather than using the `no_tools` fixture:
-    fixture order would otherwise put the tools back."""
-    monkeypatch.setattr(env, "UV_BIN", tmp_path / "nowhere" / "uv")
-    with pytest.raises(env.BuildError, match="cannot build Environments"):
-        _submit(tmp_path, "pyproject.toml")
-    assert not [c for c in head if "sbatch" in c]
-
-
-def test_the_echo_is_written_for_every_spawn(head, tmp_path):
-    jid = _submit(tmp_path, "requirements.txt")
-    assert "requirements.txt" in spawns.environment_note(jid)
-
-
-def test_sbatch_does_not_inherit_the_operators_directory(head, tmp_path, monkeypatch):
-    """It runs as a **Guise**, with no business in the directory `cuttle` was invoked from — on the
-    Head-local path, the operator's own project, unreadable to a Guise. Slurm takes the job's WorkDir
-    from the submitting process, so inheriting it strands the Spawn one step later."""
-    seen = {}
-    real = spawns.subprocess.run
-
-    def watch(argv, **kw):
-        if "sbatch" in argv:
-            seen["sbatch"] = kw.get("cwd")
-        return real(argv, **kw)
-
-    monkeypatch.setattr(spawns.subprocess, "run", watch)
-    _submit(tmp_path, "requirements.txt")
-    assert seen == {"sbatch": "/"}, f"inherited the caller's cwd: {seen}"
-
-
-def test_a_spawn_installing_its_dependencies_is_simply_running(head, tmp_path, monkeypatch):
+def test_a_spawn_installing_its_dependencies_is_simply_running(monkeypatch):
     """squeue is the whole truth again. A Spawn used to be held while the Head built for it, reported
     as PENDING, and CCC had to keep a `build_state` to tell that apart from waiting for a card. The
     build happens inside the allocation now, so Slurm can see it and there is nothing left to override."""
     from ccc_head_api import slurm
-    jid = _submit(tmp_path, "requirements.txt")
     monkeypatch.setattr(slurm, "_slurm_json", lambda *a, **kw: {"jobs": [
-        {"job_id": jid, "partition": slurm.PARTITION, "job_state": ["RUNNING"], "name": "t",
+        {"job_id": 4242, "partition": slurm.PARTITION, "job_state": ["RUNNING"], "name": "t",
          "nodes": "arm1", "user_name": "ccc-u60002", "time_limit": 60},
     ]})
     assert slurm.spawns()[0]["state"] == "running"

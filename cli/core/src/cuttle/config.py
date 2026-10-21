@@ -16,10 +16,6 @@ MUNGE_PKG = "munge"  # auth; distro version fine
 # namespace. Present on most desktops (podman and rootless docker pull it in), absent often enough on
 # a fresh server that assuming it is how a Head gets all the way to the Pod image and then dies.
 UIDMAP_PKG = "uidmap"
-# HEAD ONLY. `setfacl` is how the Mantle lends ONE **Guise** read access to ONE uploaded project
-# without any privilege at all (it already owns the directory) — see ccc_head_api.spawns.submit. Distro
-# version: the ACL syscalls are kernel/ext4, and this package is just the CLI over them.
-ACL_PKG = "acl"
 
 # The archive publishes ONE version of a package per pocket, so the day Ubuntu supersedes a pin above
 # it stops being installable and every future setup dies at `apt-get install`. snapshot.ubuntu.com
@@ -552,22 +548,15 @@ FIREFOX_POLICIES = Path("/etc/firefox/policies/policies.json")
 # `Certificates.Install` rather than `ImportEnterpriseRoots`: the latter is a Windows/macOS policy —
 # on Linux it parses, applies, and trusts nothing, which looks exactly like success.
 FIREFOX_CA = Path("/etc/firefox/ccc-head.crt")
-# Cap an upload rather than buffering whatever arrives: the Head API streams the body to disk, and the
-# Head is the one box that must stay up. A browser folder-picker makes a huge accidental selection easy.
-MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB
 # Auth store: the User + Session tables behind login. Its own ccc-owned subdir (0700) —
 # NOT loose in the munge-owned CCC_LIB, since SQLite writes WAL/journal sidecars beside the db and
 # `ccc` can't create files in a munge-owned dir. 0600 db, seeded at `setup --head`.
 HEAD_STATE_DIR = CCC_LIB / "head"
 HEAD_DB = HEAD_STATE_DIR / "head.db"
 # Submission state (all ccc-owned, 0700, under HEAD_STATE_DIR so `ccc` can create/traverse them):
-#   projects/<uuid>/  — an uploaded project tree, unpacked by the Head API from a `cuttle run` tar.
-#                       Also the rsync [project] module root (a remote Arm pulls <uuid>/... from here).
 #   spawns/<id>/      — a Spawn's out/err/exit (the rsync [spawns] stage-out target). The CLI
 #                       reads these back over the API, never off local disk (jobs run as ccc now).
-#   scratch/<id>/     — the co-located Arm's per-Spawn run dir. A job NEVER runs in the served
-#                       projects tree (that would mutate the rsync source); it's copied here first.
-HEAD_PROJECTS_DIR = HEAD_STATE_DIR / "projects"
+#   scratch/<id>/     — the co-located Arm's per-Spawn run dir.
 HEAD_SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
 HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
 # base.sif, at the SAME path on every node (Head and every Arm) — Spawns run as the home-less Mantle,
@@ -753,10 +742,9 @@ BACKUP_TIMER_UNIT = Path("/etc/systemd/system/ccc-backup.timer")
 # user via uid=/gid=.
 #
 # Mesh membership is NOT the authz: nothing about a uid or a namespace closes a network service, so a
-# shared module reachable by every Arm would let any payload name it and read another User's code or
-# overwrite any Spawn's `exit` marker. What the daemon serves is one pair of modules per Spawn, rooted
-# at that Spawn's own upload and its own results dir, minted at submit and revoked when its transfers
-# end — a **Siphon** (ccc_head_api.siphons).
+# shared module reachable by every Arm would let any payload name it and overwrite any Spawn's `exit`
+# marker. What the daemon serves is one module per Spawn, rooted at that Spawn's own results dir,
+# minted at submit and revoked when its transfers end — a **Siphon** (ccc_head_api.siphons).
 # Those live in RSYNCD_DIR, which the Head API writes and rsyncd `&include`s; this file's job is the
 # globals they inherit (mesh-only `hosts allow`, the drop to `ccc`) plus [bench], below.
 RSYNCD_CONF = Path("/etc/ccc-rsyncd.conf")

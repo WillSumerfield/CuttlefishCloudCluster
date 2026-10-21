@@ -57,15 +57,9 @@ Click a Spawn anywhere to open its detail page: state, logs, cost.
 
 ## Submitting from the browser
 
-Drop a folder onto the composer, or click to choose one. Picking it expands the composer and shows
-you what you picked — name, file count, total size — as a preview.
-
-**Nothing uploads until you press Submit.** Bytes move on one click and never on the pick, so you can
-repick, toggle `.gitignore` handling, and change your mind for free.
-
-You then fill in the same three required things the CLI requires — the script, the wall-clock limit,
-the VRAM. There is a [Tide Pool](elements/tide-pool.md) mode which hides
-the project and upload story entirely and asks only for the resource needs.
+Fill in the same three required things the CLI requires — the script, the wall-clock limit, the VRAM.
+There is a [Tide Pool](elements/tide-pool.md) mode which hides the script and asks only for the
+resource needs.
 
 **GPUs** is a dropdown rather than a number, because only some counts are real: it lists what the
 fleet can actually place, and greys out the rest. Memory is the *total* across the cards you pick, so

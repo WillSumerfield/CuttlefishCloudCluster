@@ -5,14 +5,11 @@ import { Composer } from "../app/Composer";
 export function SubmitComposer({
   arms,
   isAdmin,
-  startOpen,
   onSubmitted,
 }: {
   arms: Arm[];
   isAdmin: boolean;
-  /** Open on load when the queue is empty — an empty screen is an invitation to act. */
-  startOpen?: boolean;
   onSubmitted: () => void;
 }) {
-  return <Composer arms={arms} isAdmin={isAdmin} startOpen={startOpen} onSubmitted={onSubmitted} />;
+  return <Composer arms={arms} isAdmin={isAdmin} onSubmitted={onSubmitted} />;
 }

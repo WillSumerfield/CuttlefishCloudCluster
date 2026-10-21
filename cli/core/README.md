@@ -16,7 +16,7 @@ uv run cuttle --help
 ### Setup / teardown
 - `cuttle setup --head [--address <host>]` — provision **this** box as the Head: self-hosted Headscale
   coordinator + isolated `tailscaled-ccc` mesh, `slurmctld` + munge, the mesh-only enroll API, the
-  LAN+mesh Head API + dashboard, rsync stage-in/out, the auth store, and a co-located Arm. Seeds the
+  LAN+mesh Head API + dashboard, rsync stage-out, the auth store, and a co-located Arm. Seeds the
   first admin account. `--address` = the coordinator's advertised host (default: primary IP; use a host
   remote Arms can actually reach). `--local` is an alias for the single-box case. Idempotent.
 - `cuttle setup --arm --token <blob> [--re-enroll]` — enroll **this** box as a remote Arm, redeeming
@@ -60,11 +60,8 @@ over the munge key. A machine on the mesh that no Admin named gets nothing.
 All of these go through the Head API and need `cuttle login` — the CLI is a network client, so you can
 submit from any box, whether or not it ever ran `setup`.
 
-- `cuttle run <script> --time MIN --vram GB [--gpu N] [-f]
-  [--no-gitignore] [-- ARGS]` — submit a **Spawn**: uploads the working dir (honoring `.gitignore`
-  unless `--no-gitignore`) to the Head, which resolves the declared **Environment** into build commands
-  and queues the job. The **Arm** it lands on builds that env, then runs
-  `apptainer exec --nv base.sif <that env's python> <script>` as the **Mantle**. `-f` streams stdout. Job id = spawn id.
+- `cuttle run <script> --time MIN --vram GB [--gpu N] [-f] [-- ARGS]` — submit a **Spawn**: the Head
+  queues the job and the **Arm** it lands on runs `<script>` inside a Pod. `-f` streams stdout. Job id = spawn id.
   - `--time` (wall-clock minutes) and `--vram` (GB) are **required, with no defaults**. Nothing can
     price a Spawn whose length nobody declared, and a `--vram` that defaulted to the fleet's biggest
     card would make every untouched field eligible for that one GPU alone — queued behind everything,
@@ -85,13 +82,9 @@ submit from any box, whether or not it ever ran `setup`.
 
 ## Dashboard
 `cuttle setup --head` serves the web Dashboard (Vite/React) at `https://<head>/`, reachable over
-the LAN and the CCC mesh. It is the **primary** surface: log in, drop a project folder, and submit a
+the LAN and the CCC mesh. It is the **primary** surface: log in and submit a
 Spawn; then watch the queue and tail a Spawn's log. Enrollment stays on a
 separate **mesh-only** API (`:8081`) so the munge-key handout never touches the LAN.
-
-Uploading a folder reads nothing and sends nothing until you press Submit — you first see the file
-count and total size (with `.gitignore` honored by default), so a stray `data/` or venv is something
-you *see* rather than something you discover afterwards. Uploads are capped at 4 GiB.
 
 ## TLS — expect a browser warning, once
 The Head carries passwords, so it speaks HTTPS. No certificate authority will sign a cert for a box
