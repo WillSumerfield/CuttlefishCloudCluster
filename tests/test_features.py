@@ -552,7 +552,7 @@ def test_the_licence_key_is_bound_only_for_an_activation_spawn():
     assert "VLEARN_LICENCE_KEY" not in ordinary
     assert "VL_LICENSE_KEY_PATH" not in ordinary
 
-    activating = _script(features=["vlearn"], activation=True)
+    activating = hf.setup_snippet(["vlearn"], activation=True)
     assert "$VLEARN_LICENCE_KEY:$VLEARN_LICENCE_KEY:ro" in activating
     assert "VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY" in activating
     # Everything the ordinary Spawn got, it still gets — activation is an addition, not a variant.
@@ -564,7 +564,7 @@ def test_the_licence_key_is_bound_only_for_an_activation_spawn():
 def test_an_activation_with_no_licence_directory_fails_instead_of_burning_one():
     """No Licence directory bound = `$HOME` is a tmpfs: TurboActivate would activate into it, exit 0, and
     the Arm would be marked activated with nothing kept. The guard must precede the activation itself."""
-    activating = _script(features=["vlearn"], activation=True)
+    activating = hf.setup_snippet(["vlearn"], activation=True)
     guard = activating.index('[ -n "$licbind" ] || feature_fail')
     assert guard < activating.index('ln -sf "$VLEARN_LICENCE_KEY"')
     assert '[ -n "$licbind" ]' not in _script(features=["vlearn"])
@@ -589,21 +589,10 @@ def test_a_licensed_feature_never_gets_past_setup_without_a_licence_directory(mo
     assert not any("Does this box hold" in m for m in a.asked)
 
 
-def test_an_activation_spawn_is_still_valid_bash():
-    r = subprocess.run(["bash", "-n"], input=_script(features=["vlearn"], activation=True),
+def test_the_activation_snippet_is_valid_bash():
+    r = subprocess.run(["bash", "-n"], input=hf.setup_snippet(["vlearn"], activation=True),
                        text=True, capture_output=True)
     assert r.returncode == 0, r.stderr
-
-
-def test_the_activation_flag_cannot_arrive_over_http():
-    """`--activation` binds an Arm owner's licence key into a Pod. It exists on the Head-local admin
-    path, where authorization is standing on the Head, and nowhere a browser or a `cuttle run` can
-    reach — a User able to set it could read every donor's key."""
-    import inspect
-
-    from ccc_head_api import main as head_main
-    src = inspect.getsource(head_main)
-    assert "activation" not in src.split("def submit", 1)[-1][:4000]
 
 
 def test_the_activation_project_declares_only_the_interpreter_vlearn_needs():

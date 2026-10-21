@@ -11,7 +11,6 @@ first login. Nothing here ever prints or stores a reusable password.
 """
 
 import argparse
-import json
 import sys
 
 from . import db, guises
@@ -143,8 +142,7 @@ def _return(node: str) -> int:
 
 def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
             node: str | None, args: list[str],
-            features: list[str] | None = None, tidepool: bool = False,
-            activation: bool = False) -> int:
+            features: list[str] | None = None, tidepool: bool = False) -> int:
     """Submit a Spawn pinned to a named Arm, attributed to `username` (`cuttle run --node`).
 
     Authorization is being the operator on the Head; attribution is the account named here. Goes through
@@ -153,10 +151,6 @@ def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
 
     `tidepool` lets an Admin pin a Tide Pool the same way they pin any other Spawn — orthogonal to
     node-pinning (the common path is unpinned, over `/submit`).
-
-    `activation` is CCC activating a Feature's licence on an Arm being admitted (cuttle.enroll). It
-    exists on THIS path and not on `/submit` because it binds the Arm owner's licence key into the Pod,
-    so only an operator standing on the Head can ask for it.
     """
     from . import spawns
     with db.connect() as conn:
@@ -168,30 +162,11 @@ def _submit(username: str, script: str, minutes: int, vram: int, gpu: int,
     try:
         job_id = spawns.submit_checked(user["id"], bool(user["is_admin"]), script or None, gpu, args,
                                        minutes, vram, node,
-                                       features=features, tidepool=tidepool,
-                                       activation=activation)
+                                       features=features, tidepool=tidepool)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
     print(job_id)
-    return 0
-
-
-def _feature_activation(name: str) -> int:
-    """Print the project CCC submits to activate `name`'s licence on an Arm, as JSON `{file: body}`.
-
-    Head-local rather than an HTTP route, and that is the authorization: `cuttle arm admit` runs on the
-    Head, as the operator. Generated here rather than in the CLI so the library list an activation builds
-    against is the same one `cuttle feature show` hands a submitter — two copies would drift.
-
-    Exit 1 for a Feature that needs no activation, which is how the caller knows to skip the step.
-    """
-    from . import features as features_mod
-    try:
-        print(json.dumps(features_mod.activation_project(name)))
-    except KeyError:
-        print(f"{name!r} needs no activation", file=sys.stderr)
-        return 1
     return 0
 
 
@@ -219,9 +194,6 @@ def main(argv: list[str] | None = None) -> int:
     rn = sub.add_parser("return", help="return an Arm on its owner's behalf (--any escape hatch).")
     rn.add_argument("node")
     s = sub.add_parser("submit", help="submit a Spawn pinned to an Arm (prints the Spawn id).")
-    fa = sub.add_parser("feature-activation",
-                        help="the project that activates a Feature's licence on an Arm (JSON).")
-    fa.add_argument("name")
     s.add_argument("--user", required=True, help="the account to attribute the Spawn to.")
     s.add_argument("--script", default=None, help="omit only for --tidepool.")
     s.add_argument("--minutes", type=int, required=True)
@@ -230,9 +202,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--node")
     s.add_argument("--feature", action="append", default=[], dest="features",
                    help="required Arm Feature (repeatable; optional — default none).")
-    s.add_argument("--activation", action="store_true",
-                   help="CCC activating a Feature's licence on an Arm being admitted. Binds that "
-                        "Arm's licence key into the Pod — Head-local only, never over HTTP.")
     s.add_argument("--tidepool", action="store_true",
                    help="a live shell instead of a script (docs/TODO.md, Tide Pool).")
     s.add_argument("args", nargs="*", help="extra arguments for the script.")
@@ -259,10 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "submit":
         return _submit(args.user, args.script, args.minutes, args.vram, args.gpu,
                        args.node, args.args, args.features,
-                       tidepool=args.tidepool,
-                       activation=args.activation)
-    if args.cmd == "feature-activation":
-        return _feature_activation(args.name)
+                       tidepool=args.tidepool)
     return 2
 
 

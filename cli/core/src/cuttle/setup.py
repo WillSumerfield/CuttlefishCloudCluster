@@ -326,9 +326,8 @@ def provision_licence_home(path: str) -> None:
     run(["usermod", "--home", path, config.LICENCE_USER], sudo=True, check=False)
     run(["install", "-d", "-m", "2770", "-o", config.LICENCE_USER, "-g", config.GUISE_GROUP, path],
         sudo=True)
-    # Empty is normal here: CCC fills this directory itself via an activation Spawn run as this Arm
-    # is admitted (cuttle.enroll.activate_arm, minutes away at this point in setup) — a **Guise**
-    # does the activating, inside a Pod, with this bound at its home.
+    # Empty is normal here: CCC fills this directory itself via an activation job (dropped in 2.0,
+    # rebuilt in phase 2) — a **Guise** does the activating, inside a Pod, with this bound at its home.
 
 
 def provision_mantle() -> None:
@@ -1074,15 +1073,12 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         provision_env_cache()                    # what every build on this box downloads into
     with ui.step("Building the benchmark environment"):
         build_bench_env()                        # the torch base.sif no longer carries; needs both above
-    # The Head's own Arm is an Arm like any other, so it is priced like one — and its declared Arm
-    # Features are proved like any other's. Last, because both are real Spawns: they need slurmd up,
-    # the Pod image built, and rsyncd listening.
+    # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because it is a real
+    # job: it needs slurmd up, the Pod image built, and rsyncd listening.
     #
-    # Both are skipped outright by an Update, and skipped by `setup` too when the registry row already
-    # carries the answer: an activation burns one of a finite number of vendor activations, and a
-    # benchmark costs ten minutes and a card. Neither is something a re-run should silently spend.
+    # Skipped outright by an Update, and skipped by `setup` too when the registry row already carries
+    # the answer: a benchmark costs ten minutes and a card, not something a re-run should spend.
     enroll.ensure_priced(system.hostname())
-    enroll.activate_arm(system.hostname(), head_features)
     verify()
     if not update:
         _head_first_login(temp_pw)
@@ -1242,10 +1238,8 @@ def update_this_box() -> None:
     this box something else, which is the one thing it does not do. A box that has never been set up
     has nothing to lay down again, and says so.
 
-    Benchmarking and activation are not special-cased here: both already skip when the registry says
-    they are done (`enroll.ensure_priced`, `enroll.activate_arm`), so an Update spends neither — and
-    an Update of a box whose Feature was never proved still proves it, which is the state you would
-    want fixed rather than carried forward.
+    Benchmarking is not special-cased here: it already skips when the registry says it is done
+    (`enroll.ensure_priced`), so an Update does not spend it.
     """
     # Wrapped, not merely trusted: every prompt in the two flows below is guarded by `update`, and
     # `ui.no_prompting` is what turns "we guarded them all" from a claim into a fact — including for

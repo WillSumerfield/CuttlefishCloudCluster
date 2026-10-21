@@ -821,7 +821,7 @@ def _render(sink_tag: str, gpu: int, script: str, args: list[str],
             node: str | None, minutes: int, constraint: str,
             token: str, secret: str, exclude: str = "", tidepool_port: int | None = None,
             tidepool_pubkey: str | None = None, wants_licence: bool = False,
-            features: list[str] | None = None, activation: bool = False,
+            features: list[str] | None = None,
             declared: environments.Manifest | None = None,
             stub_files: list[environments.StubFile] | None = None,
             stub_binds: list[environments.StubBind] | None = None,
@@ -851,7 +851,7 @@ def _render(sink_tag: str, gpu: int, script: str, args: list[str],
     # verbatim, so it reads as bash rather than as a second template — everything it needs from this
     # script, including the Environment's mount point, it takes from a shell variable set above.
     body = body.replace("%%FEATURE_SETUP%%",
-                        features_mod.setup_snippet(features or [], activation=activation))
+                        features_mod.setup_snippet(features or []))
     subs = {
         "%%GPU%%": str(gpu),
         # A bare integer is minutes to Slurm. Required of every Spawn: nothing can price a job whose
@@ -959,8 +959,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
            minutes: int, constraint: str,
            node: str | None = None, vram_gb: int = 0, hold: float | None = None, exclude: str = "",
            tidepool: bool = False,
-           features: list[str] | None = None,
-           activation: bool = False) -> int:
+           features: list[str] | None = None) -> int:
     """Render + sbatch a Spawn **as the submitter's Guise**, and record the Attribution row + the Karma
     Escrow. Returns the Slurm job id (== the Spawn id). `node` pins the Spawn to one Arm.
 
@@ -996,7 +995,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
     token, secret = siphons.open()
     body = _render(uuid4().hex, gpu, script or "", args, node, minutes, constraint,
                    token, secret, exclude, tidepool_port=tp_port, tidepool_pubkey=tp_pubkey,
-                   wants_licence=bool(features), features=features, activation=activation)
+                   wants_licence=bool(features), features=features)
     # The script goes in on STDIN, not as a path: a temp file would need to be readable by the Guise
     # sbatch runs as, and feeding it here is strictly better anyway — no delete-after-return dance needed.
     try:
@@ -1062,8 +1061,7 @@ def submit(user_id: int, script: str | None, gpu: int, args: list[str],
 def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, args: list[str],
                    minutes: int, vram_gb: int,
                    node: str | None = None,
-                   features: list[str] | None = None, tidepool: bool = False,
-                   activation: bool = False) -> int:
+                   features: list[str] | None = None, tidepool: bool = False) -> int:
     """Validate placement, quote the Escrow, and submit — everything `/submit` does past auth.
 
     Shared by both callers so a pinned Spawn (`node`, Head-local only — never reachable over HTTP) is
@@ -1083,11 +1081,6 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
 
     `tidepool` rides straight through to `submit()` — placement, pricing and Attribution are
     unaffected, because a Tide Pool holds a Device exactly like any other Spawn.
-
-    `activation` is CCC activating a Feature's licence on a newly-admitted Arm (cuttle.enroll), and it
-    is the one thing here that no HTTP client can ask for: `/submit` does not accept it and never
-    should, because it is what binds an Arm owner's licence key into a Pod. It arrives only from the
-    Head-local admin path, where authorization is being the operator on the Head.
 
     Raises ValueError for an unknown Arm, a retracted one, an unsatisfiable feature request, or a User
     already at the concurrent-Spawn cap; the callers translate (HTTP 422 / a CLI error).
@@ -1146,8 +1139,7 @@ def submit_checked(user_id: int, is_admin: bool, script: str | None, gpu: int, a
         hold = karma.quote_hold(conn, arms, need, minutes, gpu, is_admin)
     return submit(user_id, script, gpu, args,
                   minutes, constraint, node, vram_gb=vram_gb, hold=hold, exclude=exclude,
-                  tidepool=tidepool, features=features,
-                  activation=activation)
+                  tidepool=tidepool, features=features)
 
 
 # --- reads ---------------------------------------------------------------------

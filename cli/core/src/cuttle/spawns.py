@@ -35,40 +35,9 @@ def _get_bytes(path: str, missing_ok: bool = False) -> bytes | None:
         raise ui.abort(e.user_message()) from None
 
 
-def wait_for_exit(spawn_id: int, timeout_s: int) -> tuple[int | None, str]:
-    """Block until `spawn_id` ends, then return `(exit code, stderr)`.
-
-    For a Spawn CCC submitted itself and must judge — not for a User's, who gets `cuttle logs -f`. The
-    exit code is None for a Spawn that ended without recording one (cancelled, or its Arm dropped),
-    which is a failure here like any other; the caller reports it with whatever stderr survived.
-
-    A timeout returns the same shape rather than raising, so one caller handles "it failed" and "it
-    never finished" identically — from the operator's seat those are the same outcome.
-
-    Read off the Head's own disk with sudo, not over HTTP, for the same reason `_submit_pinned` shells
-    out instead of calling the API: the caller stands on the Head, and one of them (`setup --head`)
-    runs before any account exists to log in as. The spawn dir is 0700 `ccc`, so `sudo cat` is what
-    reaches it — the same way `_benchmark_arm` reads a Power file.
-    """
-    d = config.HEAD_SPAWNS_DIR / str(spawn_id)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        # `exit` is written by the job script only after the payload returns, and its presence is this
-        # pipeline's "done" convention everywhere else (see ccc_head_api.spawns.JOB_SCRIPT).
-        r = run(["cat", str(d / "exit")], sudo=True, capture_output=True, text=True, check=False)
-        if r.returncode == 0 and r.stdout.strip():
-            err = run(["cat", str(d / "err")], sudo=True, capture_output=True, text=True, check=False)
-            return int(r.stdout.strip()), err.stdout or ""
-        time.sleep(5)
-    err = run(["cat", str(d / "err")], sudo=True, capture_output=True, text=True, check=False)
-    return None, (err.stdout or "") + f"\nccc: the Spawn did not finish within {timeout_s}s"
-
-
 def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
                    gpu: int, node: str,
-                   features: list[str] | None = None, tidepool: bool = False,
-                   activation: bool = False,
-                   user: str | None = None) -> int:
+                   features: list[str] | None = None, tidepool: bool = False) -> int:
     """Submit a Spawn pinned to a named Arm, on the Head, as the Mantle.
 
     Pinning is an admin write, and the Head API has none — so this does not travel over HTTP at all.
@@ -79,10 +48,7 @@ def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
     `tidepool` lets an Admin pin a Tide Pool exactly like any other Spawn — orthogonal to
     node-pinning, threaded through for completeness (the common Tide Pool path is unpinned).
     """
-    # Named explicitly only by CCC's own Spawns (cuttle.enroll.activate_arm), which run during
-    # `setup --head` — before any account has logged in, so there is no `/me` to ask. Every human path
-    # leaves it None and is attributed to whoever is logged in on this box.
-    me = user or auth._api("GET", "/me")["username"]
+    me = auth._api("GET", "/me")["username"]
     r = run(auth._admin_argv([
         "submit", "--user", me, "--script", script,
         "--minutes", str(minutes), "--vram", str(vram), "--gpu", str(gpu),
@@ -91,7 +57,6 @@ def _submit_pinned(script: str, args: list[str], minutes: int, vram: int,
         # positional (the admin parser's `nargs="*"`) so argparse never mistakes a script argument
         # for another feature name.
         *[f for name in (features or []) for f in ("--feature", name)],
-        *(["--activation"] if activation else []),
         *(["--tidepool"] if tidepool else []),
         *args],
         # The Head's own mesh address, which the SERVICE gets from its systemd unit — this is a

@@ -86,9 +86,10 @@ class Profile:
     alt_libs: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     supplies: tuple[str, ...] = ()
     setup: str = ""
-    # Bash appended to `setup` for an ACTIVATION Spawn only (`spawns.submit(activation=True)`), and the
-    # payload that Spawn runs. This is the one Spawn allowed to see the Arm's licence *key*, as opposed
-    # to the activation state the key produces — see cuttle.enroll.activate_arm.
+    # Bash appended to `setup` for an ACTIVATION job only (`setup_snippet(activation=True)`), and the
+    # payload that job runs. This is the one job allowed to see the Arm's licence *key*, as opposed to
+    # the activation state the key produces. Uncalled since 2.0 dropped the activation call; rebuilt as
+    # a Head-local job in phase 2.
     activation: str = ""
     activation_script: str = ""
     notes: tuple[str, ...] = ()
@@ -216,7 +217,7 @@ featenv="$featenv,VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY"
 # library activates itself the first time a gym is created. Headless, because an Arm has no display and
 # because rendering is not what is being licensed.
 VLEARN_ACTIVATE_PY = """\
-# Run by CCC on an Arm as it is admitted (cuttle.enroll.activate_arm). The vendor's
+# Run by CCC on an Arm as it is admitted (the activation job). The vendor's
 # activate_vlearn.sh is this line; creating a gym is what makes TurboActivate write this machine's
 # activation into the Licence directory, which is bound at this Spawn's home.
 import vlearn
@@ -353,10 +354,9 @@ def setup_snippet(features: list[str], activation: bool = False) -> str:
     Ordered rather than caller-order, so the same request renders the same script regardless of how
     the User typed it.
 
-    `activation` appends each profile's activation block, where the Arm's licence *key* is bound. Set
-    by exactly one caller (`cuttle.enroll.activate_arm`, via the Head-local pinned submit), never by
-    anything a submitted Spawn could request — a User able to set this flag could read every Arm
-    owner's key.
+    `activation` appends each profile's activation block, where the Arm's licence *key* is bound. No
+    caller since 2.0 dropped the activation call (rebuilt in phase 2), and never anything a submitted
+    Spawn could request — a User able to set this flag could read every Arm owner's key.
     """
     blocks = [PROFILES[n].setup + (PROFILES[n].activation if activation else "")
               for n in sorted(set(features)) if n in PROFILES]

@@ -15,7 +15,6 @@ directory, since a Pod runs as a **Guise** with no relationship to the donor and
 0750 home. See `mirror_install`.
 """
 
-import json
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -283,30 +282,6 @@ def runtime_summary(name: str) -> str:
         if ui.DEBUG:
             raise
         raise ui.abort(e.user_message()) from None
-
-
-def activation_project(name: str) -> dict[str, str]:
-    """The project CCC submits to activate `name` on an Arm, `{file: body}`.
-
-    Read out of the Head's own API venv rather than over HTTP: both callers stand on the Head
-    (`cuttle arm admit`, `cuttle setup --head` for its co-located Arm), and the second runs before any
-    account has logged in — no session to authenticate with, being the operator is the stronger claim.
-
-    Raises LookupError for a Feature that needs no activation (most don't — see cuttle.enroll.activate_arm).
-    """
-    from . import auth
-    r = run(auth._admin_argv(["feature-activation", name]), sudo=True,
-            capture_output=True, text=True, check=False)
-    # 1 is the admin tool's "this Feature needs no activation". Anything else is a broken invocation —
-    # a missing venv, a sudo refusal — and must not be mistaken for it: silently skipping activation
-    # would admit an Arm whose Licence was never created, which is the exact failure this whole path
-    # exists to prevent.
-    if r.returncode == 1:
-        raise LookupError(name)
-    if r.returncode != 0:
-        raise ui.abort(f"could not ask the Head what activating {name!r} takes: "
-                       f"{(r.stderr or '').strip().splitlines()[-1:] or ['no output']}")
-    return json.loads(r.stdout)
 
 
 def report(name: str, path: str) -> None:

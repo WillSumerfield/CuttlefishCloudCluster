@@ -795,115 +795,6 @@ def _admit(name: str, reg: dict, write_root_file) -> None:
     # optional follow-up an operator might forget. Once, though: re-admitting an Arm that is already
     # priced is a repair, not new hardware.
     ensure_priced(name)
-    # Same stance, for the same reason: a declared **Feature** that has never been proved to work is a
-    # Slurm constraint that sends Spawns somewhere they will fail. An Arm joins with its declarations
-    # true, or it does not join.
-    activate_arm(name, reg[name].get("features") or [])
-
-
-# The activation Spawn's shape. One card — activation is a licence handshake, not a benchmark, but
-# creating a gym needs a real device — and a short wall clock, which is plenty for a gym and a network
-# round trip.
-ACTIVATION_MINUTES = 20
-
-# How long CCC waits, which is a DIFFERENT budget: Slurm's clock starts when the Spawn is placed, and
-# everything before that is ours to wait through — the Environment build (a cold conda solve of the
-# profile's libraries, the first time this box ever sees them) and then the queue. Conflating the two
-# made a slow first build look exactly like a hung activation.
-ACTIVATION_WAIT_S = 45 * 60
-
-
-def activation_mark(f: dict) -> dict:
-    """What an `activated` marker records for one **Feature**: the three facts that, if any of them
-    changed, mean the activation on file no longer describes this box.
-
-    `key` is the **Licence** key path, and it is deliberately part of the identity: a renewed licence
-    is a new key file at a path the operator just named, and it is the one case where re-activating is
-    exactly what they meant. It is only ever populated for the Head's own Arm — a donor's key path is
-    Arm-local by design and never reaches the registry — so a donor Arm re-activates via
-    `cuttle arm activate`, not by a marker the Head cannot see change.
-    """
-    return {"name": f["name"], "path": f.get("path", ""), "key": f.get("key", "")}
-
-
-def activate_arm(name: str, features: list[dict], force: bool = False) -> None:
-    """Activate every declared **Feature** on `name` that needs it, as part of admitting the Arm.
-
-    Skips a Feature whose `activated` marker in the registry still matches (see `activation_mark`) —
-    each activation is a real Spawn that burns one of a finite number of vendor activations, so
-    re-running `setup` on a box that is already activated must cost nothing. `force` is what
-    `cuttle arm activate` passes: the deliberate re-do, for an activation that expired or failed.
-
-    **CCC drives this, not the Arm's owner, and not by hand.** The software is licensed to the machine
-    through a vendor library, and the only supported way to activate it is to import the library and
-    create a gym — which needs the exact runtime a Spawn gets: the Arm's own wheel, a Python it has a
-    build for, the system libraries, and `libcuda.so.1`. CCC already assembles all of that for a Spawn.
-    So the activation IS a Spawn, pinned to the Arm being admitted.
-
-    **The Environment comes from the Feature's own profile** (`GET /features/<name>/environment.yml`),
-    which is the same file a submitter is handed by `cuttle feature show`. It carries no vlearn: the
-    package comes from the Arm's unpacked wheel on PYTHONPATH, which is the build the licence covers.
-
-    **The key never leaves the Arm.** `--activation` is a Head-local flag with no HTTP equivalent; all
-    it does is bind the path the Arm recorded in its own `/etc/ccc/features.env`. No ordinary Spawn
-    ever sees it, and nothing here reads it.
-
-    Aborts the admit if an activation fails, which is deliberate — see `_admit`.
-    """
-    from . import features as feature_profiles
-    from . import spawns as spawn_client
-
-    done = [] if force else ((load_registry().get(name) or {}).get("activated") or [])
-    for f in features:
-        feat = f["name"]
-        try:
-            project = feature_profiles.activation_project(feat)
-        except LookupError:
-            continue    # placement-only Feature: nothing to activate, nothing to prove
-        if activation_mark(f) in done:
-            ui.result(feat, f"already activated on {name}")
-            continue
-        with ui.section(f"Activating {feat} on {name}", lambda: "activated"):
-            _activate_one(name, feat, project, spawn_client)
-        _mark_activated(name, f)
-
-
-def _mark_activated(name: str, f: dict) -> None:
-    """Record that `f` is proved on `name`. Re-read rather than held: `_activate_one` blocked for
-    minutes on an Environment build and a queue, and the registry is shared with the Head API."""
-    reg = load_registry()
-    if name not in reg:
-        return
-    mark = activation_mark(f)
-    reg[name]["activated"] = [a for a in (reg[name].get("activated") or [])
-                              if a.get("name") != f["name"]] + [mark]
-    save_registry(reg)
-
-
-def _activate_one(name: str, feat: str, project: dict[str, str], spawn_client) -> None:
-    with ui.step(f"Building {feat}'s environment and activating it on {name} "
-                 f"(first run on this box — a few minutes)"):
-        spawn_id = spawn_client._submit_pinned(
-            "activate.py", [], minutes=ACTIVATION_MINUTES, vram=0, gpu=1, node=name,
-            features=[feat], activation=True,
-            # The first admin, who owns the Head's own Arm. Not "whoever is logged in": this Spawn is
-            # CCC's, it runs during `setup --head` when nobody is, and an Admin is outside the Karma
-            # economy — so activating a donated box charges no one for the card it briefly holds.
-            user=config.FIRST_ADMIN_USER)
-        rc, err = spawn_client.wait_for_exit(spawn_id, timeout_s=ACTIVATION_WAIT_S)
-    if rc == 0:
-        ui.result(feat, f"activated on {name} (Spawn {spawn_id})")
-        return
-    # The vendor's own message is the useful part and is almost always self-explanatory ("no more
-    # activations left on this key", "could not reach the activation server"). Surfaced verbatim rather
-    # than summarised, because CCC cannot improve on it and paraphrasing it would only hide it.
-    detail = (err or "").strip().splitlines()
-    raise ui.abort(
-        f"{name} declared the {feat!r} Feature but CCC could not activate it"
-        + (f":\n  " + "\n  ".join(detail[-8:]) if detail else " (the Spawn produced no output)"),
-        next_step=f"fix it on {name} (its owner's `cuttle setup --arm` recorded the install and the "
-                  f"licence key), then re-run `cuttle arm admit {name}`. See `cuttle logs {spawn_id}` "
-                  f"for the whole run.")
 
 
 def chown_arm(name: str, owner: str) -> None:
@@ -937,9 +828,8 @@ def register_head_arm(mesh_ip: str, features: list[dict] | None = None) -> None:
     # Features are what setup.write_slurm_config re-reads to keep its Feature= line across reconfigures.
     # MERGED over whatever is already there, not written fresh. This runs on every `setup --head`,
     # and the row is also where the Head's own Arm keeps what only a real Spawn could learn: `powers`
-    # and `gpu` from the benchmark, `activated` from the licence handshake. Replacing the row wholesale
-    # reset all three to unmeasured on every re-setup — so the box was re-benchmarked and re-activated
-    # each time, and a burnt vendor activation does not come back.
+    # and `gpu` from the benchmark. Replacing the row wholesale reset both to unmeasured on every
+    # re-setup — so the box was re-benchmarked each time.
     prior = reg.get(name) or {}
     reg[name] = {**prior,
                  "owner": config.FIRST_ADMIN_USER, "gpu_devices": system.gpu_devices(),

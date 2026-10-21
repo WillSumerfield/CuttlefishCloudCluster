@@ -17,7 +17,7 @@ import json
 import pytest
 import typer
 
-from cuttle import config, enroll, features, mesh, menu, settings, tls, ui
+from cuttle import config, enroll, mesh, menu, settings, tls, ui
 from cuttle import setup as setup_mod
 
 
@@ -181,12 +181,6 @@ class TestTheHeadsRegistryRowSurvivesBeingRewritten:
         row = enroll.load_registry()["headbox"]
         assert row["powers"] == [61.4] and row["gpu"] == "RTX 4090"
 
-    def test_a_proved_activation_is_carried_forward(self, registry):
-        mark = {"name": "vlearn", "path": "/opt/vlearn", "key": "/opt/keys/vlearn.dat"}
-        registry({"headbox": {"activated": [mark]}})
-        enroll.register_head_arm("100.99.0.1", [{"name": "vlearn", "path": "/opt/vlearn"}])
-        assert enroll.load_registry()["headbox"]["activated"] == [mark]
-
     def test_a_first_setup_still_starts_unmeasured(self, registry):
         """The merge must not invent a Power for a box that has never had one — `ensure_priced` reads
         exactly this field to decide whether the benchmark is owed."""
@@ -227,67 +221,6 @@ class TestNothingIsMeasuredOrLicensedTwice:
         monkeypatch.setattr(enroll, "benchmark_arm", lambda name: ran.append(name))
         enroll.ensure_priced("willpc")
         assert ran == ["willpc"]
-
-
-class TestAnActivationIsNeverSpentTwice:
-    """Each one draws down a finite count on the vendor's key, and the message when they run out
-    ("no more activations left on this key") arrives on a box that cannot then be admitted."""
-
-    FEATURE = {"name": "vlearn", "path": "/opt/vlearn", "key": "/opt/keys/vlearn.dat"}
-
-    @pytest.fixture(autouse=True)
-    def never_really_activates(self, monkeypatch):
-        self.spent = []
-        monkeypatch.setattr(features, "activation_project", lambda name: {"activate.py": ""})
-        monkeypatch.setattr(enroll, "_activate_one",
-                            lambda name, feat, project, client: self.spent.append(feat))
-
-    def test_an_already_proved_feature_is_skipped(self, registry):
-        registry({"willpc": {"activated": [enroll.activation_mark(self.FEATURE)]}})
-        enroll.activate_arm("willpc", [self.FEATURE])
-        assert self.spent == []
-
-    def test_a_feature_never_proved_is_activated(self, registry):
-        registry({"willpc": {"activated": []}})
-        enroll.activate_arm("willpc", [self.FEATURE])
-        assert self.spent == ["vlearn"]
-
-    def test_success_is_what_records_the_marker(self, registry):
-        """Recorded after the Spawn comes back clean, never before — a marker written ahead of the
-        handshake would make one failed activation look permanently done."""
-        registry({"willpc": {}})
-        enroll.activate_arm("willpc", [self.FEATURE])
-        assert enroll.load_registry()["willpc"]["activated"] == [
-            enroll.activation_mark(self.FEATURE)]
-
-    def test_a_renewed_licence_key_re_activates(self, registry):
-        """The case the key path is part of the marker for: a new key file at a path the operator
-        just named is exactly when re-activating is what they meant."""
-        registry({"willpc": {"activated": [enroll.activation_mark(self.FEATURE)]}})
-        enroll.activate_arm("willpc", [{**self.FEATURE, "key": "/opt/keys/vlearn-2027.dat"}])
-        assert self.spent == ["vlearn"]
-
-    def test_a_moved_install_re_activates(self, registry):
-        registry({"willpc": {"activated": [enroll.activation_mark(self.FEATURE)]}})
-        enroll.activate_arm("willpc", [{**self.FEATURE, "path": "/srv/vlearn"}])
-        assert self.spent == ["vlearn"]
-
-    def test_force_ignores_the_marker_entirely(self, registry):
-        """`cuttle arm activate` — the operator saying the record stopped being true, for a licence
-        that expired or an activation that failed and was fixed on the Arm since. Nothing calls it
-        automatically, because each run costs one."""
-        registry({"willpc": {"activated": [enroll.activation_mark(self.FEATURE)]}})
-        enroll.activate_arm("willpc", [self.FEATURE], force=True)
-        assert self.spent == ["vlearn"]
-
-    def test_only_the_feature_that_changed_is_re_activated(self, registry):
-        """Markers are per-Feature. Re-proving a whole Arm because one of its Features moved would
-        spend activations on keys nothing happened to."""
-        other = {"name": "othersim", "path": "/opt/other", "key": "/opt/keys/other.dat"}
-        registry({"willpc": {"activated": [enroll.activation_mark(self.FEATURE),
-                                           enroll.activation_mark(other)]}})
-        enroll.activate_arm("willpc", [{**self.FEATURE, "key": "/new.dat"}, other])
-        assert self.spent == ["vlearn"]
 
 
 class TestAClientUpdateOnlyRepairsItsTrust:
