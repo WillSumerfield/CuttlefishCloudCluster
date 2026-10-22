@@ -528,15 +528,15 @@ class TestTheShellTheUserGets:
 
         Everything a Tide Pool's shell needs past sshd — the Feature runtime, the
         Environment's PATH, the `cd` into the project — is written to /etc/profile.d/ccc-tidepool.sh,
-        because sshd builds a fresh environment per session and drops apptainer's --env. **zsh does not
+        because sshd builds a fresh environment per session. **zsh does not
         read /etc/profile.d.** Debian's /etc/zsh/zprofile sources /etc/profile; Ubuntu's ships as
         comments only, and BASE_IMAGE_DOCKER is Ubuntu.
 
         So without the bridge the session opens, the prompt renders perfectly, and none of it is set —
         which is exactly the bug already found and fixed once on the bash path.
         """
-        assert "source /etc/profile" in templates.render_base_def()
-        assert "/etc/zsh/zprofile" in templates.render_base_def()
+        assert "source /etc/profile" in templates.render_base_containerfile()
+        assert "/etc/zsh/zprofile" in templates.render_base_containerfile()
 
     def test_nothing_zsh_writes_lands_in_the_home_or_the_64mb_overlay(self):
         """Two different hazards, one answer. The overlay and the Pod's /tmp share 64 MB of RAM; and for

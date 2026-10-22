@@ -1,11 +1,10 @@
 """Reproducible package pinning — the three places a "pinned" version could silently stop being one.
 
 Every failure here is invisible on the box that works and only surfaces on the *next* one: a donor
-enrolled six months later gets a different apptainer, a rebuilt Pod image gets a different torch, or
+enrolled six months later gets a different base image, a rebuilt image gets a different torch, or
 `setup` dies at apt with an error that names neither the pin nor the file holding it.
 """
 
-import hashlib
 import json
 import re
 import subprocess
@@ -17,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from ccc_head_api import enroll as enroll_api
 from ccc_head_api import slurm
-from cuttle import config, enroll, headapi, mesh, setup, templates
+from cuttle import config, headapi, mesh, podman, setup, templates
 
 
 class TestUbuntuSnapshot:
@@ -60,21 +59,21 @@ class TestUbuntuSnapshot:
         for touched in ("/etc/apt/sources.list ", "ubuntu.sources"):
             assert not any(touched in c for c in ran)
 
-    def test_only_the_head_gains_the_apptainer_ppa(self, monkeypatch):
-        """A donor's box gets no third-party repo: it installs the Head's .deb by path instead."""
-        ran = []
-        monkeypatch.setattr(setup, "_write_root_file", lambda *a, **kw: None)
-        monkeypatch.setattr(setup, "run", lambda cmd, **kw: ran.append(" ".join(cmd)))
-        monkeypatch.setattr(setup, "sh", lambda script, **kw: None)
-
-        setup.add_repos()
-        assert not any(config.APPTAINER_PPA in c for c in ran)
-        setup.add_repos(head=True)
-        assert any(config.APPTAINER_PPA in c for c in ran)
+    def test_podman_everywhere_htpasswd_on_the_head_only(self, monkeypatch):
+        """Every node runs containers; only the Head mints registry credentials."""
+        installed = []
+        monkeypatch.setattr(setup, "run", lambda cmd, **kw: None)
+        monkeypatch.setattr(setup, "_apt_install", lambda pkgs: installed.append(list(pkgs)))
+        monkeypatch.setattr(setup.system, "installed_packages", lambda: set())
+        setup.install_packages(config.SLURMD_PKG)
+        setup.install_packages(head=True)
+        arm, head = installed
+        assert config.PODMAN_PKG in arm and config.PODMAN_PKG in head
+        assert config.HTPASSWD_PKG not in arm and config.HTPASSWD_PKG in head
 
     def test_only_the_head_gains_node(self, monkeypatch):
-        """Node builds the Dashboard, which only the Head does — so NodeSource, like the apptainer
-        PPA, never reaches a donor's box. The install list follows the repo: pinning Node into an
+        """Node builds the Dashboard, which only the Head does — so NodeSource never reaches a
+        donor's box. The install list follows the repo: pinning Node into an
         Arm's apt run would add a repo an Arm has no source for."""
         written, ran = [], []
         monkeypatch.setattr(setup, "_write_root_file", lambda path, content, mode="644":
@@ -105,164 +104,70 @@ class TestUbuntuSnapshot:
 
 
 class TestBaseImageDigest:
-    """`ubuntu:24.04` is a MUTABLE tag — Canonical re-pushes it monthly — so two nodes building
-    base.sif months apart would get different builds of "the same" image, and nothing would say so."""
+    """`ubuntu:24.04` is a MUTABLE tag — Canonical re-pushes it monthly — so a rebuilt base would
+    silently differ. The registry image is pinned the same way."""
 
-    def test_def_pins_a_digest_not_a_tag(self):
-        image = [line for line in templates.render_base_def().splitlines()
-                 if line.startswith("From:")][0]
+    def test_containerfile_pins_a_digest_not_a_tag(self):
+        image = [line for line in templates.render_base_containerfile().splitlines()
+                 if line.startswith("FROM ")][0]
         assert "@sha256:" in image
         assert ":24.04" not in image, "a mutable tag came back"
 
-    def test_digest_is_a_full_sha256(self):
-        digest = config.BASE_IMAGE_DOCKER.split("@sha256:")[1]
+    @pytest.mark.parametrize("ref", [config.BASE_IMAGE_DOCKER, config.REGISTRY_IMAGE])
+    def test_digest_is_a_full_sha256(self, ref):
+        digest = ref.split("@sha256:")[1]
         assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
 
     def test_one_ubuntu_release_fleet_wide(self):
-        """The Pod image and the apt snapshot every node pins against are the same release, so a
-        version pinned for the host is a version the image could install too."""
         assert config.UBUNTU_CODENAME == "noble"  # 24.04
-        assert config.BASE_IMAGE_DOCKER.startswith("ubuntu@")
+        assert config.BASE_IMAGE_DOCKER.startswith("docker.io/library/ubuntu@")
 
 
-class TestTheImageCarriesNoRuntime:
-    """base.sif is Ubuntu plus what a Pod cannot bring with it, and nothing else. Every **Environment**
-    now carries its own interpreter and its own torch, so anything here would only be shadowed — and
-    paid for in durable disk on every donated box regardless."""
+class TestTheBaseImage:
+    """The base is frozen per release and every User's system starts from it: tools yes, Python
+    packages no (every library comes from a Dive's dependency file)."""
 
-    def test_no_python_and_no_torch(self):
-        d = templates.render_base_def()
-        for word in ("python", "torch", "pip", "conda", "cuda"):
-            assert word not in d.lower(), f"{word} came back into the image"
+    def test_no_python_packages(self):
+        d = templates.render_base_containerfile()
+        assert "torch" not in d and "pip install" not in d and "uv pip" not in d
 
-    def test_sshd_stays(self):
-        """A **Tide Pool** runs sshd INSIDE the Pod, so this one cannot come from an Environment."""
-        assert "openssh-server" in templates.render_base_def()
+    @pytest.mark.parametrize("pkg", ["openssh-server", "ca-certificates", "build-essential", "sudo",
+                                     "python3.12-dev", "zsh", "rsync", "git", "tmux", "locales"])
+    def test_the_apt_list(self, pkg):
+        assert pkg in templates.BASE_APT_PKGS.split()
 
-    def test_ca_certificates_stay(self):
-        """An Environment is BUILT in a Pod off this image and uv fetches every package over TLS. A
-        stock Ubuntu image has no trust store, so without this every build dies at the first
-        connection — and the PyTorch image's happening to have one is why nothing noticed before."""
-        assert "ca-certificates" in templates.render_base_def()
+    def test_uv_and_nvcc_only(self):
+        d = templates.render_base_containerfile()
+        assert "COPY uv /usr/local/bin/uv" in d
+        assert "cuda-nvcc-12-8" in d and config.CUDA_REPO_KEYRING in d
+        assert "cuda-libraries" not in d    # runtime libs come in wheels
 
-    def test_a_toolchain_stays(self):
-        """Triton compiles a `cuda_utils` shim at runtime, on the first torch.compile'd kernel, by
-        shelling out to gcc/clang. No PyPI wheel ships a compiler, so an Environment cannot bring one,
-        and `--contain` hides the host's — without this every torch.compile Spawn dies mid-run, after
-        the card is held and the Environment built."""
-        assert "build-essential" in templates.render_base_def()
+    def test_the_profile_is_bridged_into_zsh(self):
+        assert "source /etc/profile" in templates.render_base_containerfile()
 
-    def test_it_is_the_metapackage_and_not_a_hand_picked_closure(self):
-        """Two fleet-wide teardowns were spent learning what a toolchain is: `gcc` alone has no
-        libc6-dev (a RECOMMENDS, dropped by --no-install-recommends, and the owner of stdio.h and the
-        crt objects), and gcc+libc6-dev still has no C++ compiler for Inductor's CPU kernels or
-        cpp_extension. Naming the parts again would re-enter that loop, so this asserts the
-        metapackage — and that --no-install-recommends is still what makes hand-picking dangerous."""
-        d = templates.render_base_def()
-        assert "build-essential" in d
-        assert "--no-install-recommends" in d
-        for part in ("gcc ", "g++", "libc6-dev", "make "):
-            assert part not in d, f"{part!r} named by hand — build-essential already carries it"
-
-    def test_the_mantle_account_is_baked_in(self):
-        """Unprivileged sshd needs the connecting uid to resolve via getpwuid or it cannot find a home
-        for authorized_keys. Nothing in an Environment can supply an /etc/passwd entry."""
-        d = templates.render_base_def()
-        assert f"mantle:x:{config.CCC_UID}:{config.CCC_GID}" in d
+    def test_the_benchmark_image_adds_only_torch_and_the_script(self):
+        d = templates.render_bench_containerfile()
+        assert d.count("FROM ") == 1 and f"/ccc/base:{config.IMAGE_TAG}" in d
+        assert config.BENCH_TORCH_PKG in d and config.BENCH_PY_PATH in d
 
 
-class TestAptWorksInsideAPod:
-    """`apt install` inside a Pod, which a **Tide Pool**'s User expects.
-
-    The image ships shims in /usr/local/bin (ahead of /usr/bin on PATH) rather than teaching every
-    caller an incantation. What they must do was settled on hardware (2026-08-18) and each of these
-    guards one finding, because every one of them looks removable and none is."""
-
-    def test_it_is_a_nested_namespace(self):
-        """apptainer's userns leaves uid 0 unmapped, so a chown answers EINVAL and dpkg-deb dies in
-        its tar subprocess. `unshare -r` maps a real uid 0 one level down, so the chown is permitted
-        rather than faked."""
-        d = templates.render_base_def()
-        assert "unshare -r" in d
-
-    def test_a_chown_to_an_unmapped_group_does_not_kill_the_install(self):
-        """`unshare -r` maps ONE id pair, so a package shipping a file owned by any group but root —
-        utmp (tmux), crontab, ssl-cert — makes dpkg chown to a gid that is not in the namespace. The
-        kernel answers EINVAL, not EPERM, and dpkg treats it as fatal.
-
-        fakeroot alone does NOT fix it: libfakeroot issues the real chown underneath and swallows only
-        EPERM. FAKEROOTDONTTRYCHOWN stops it attempting the real call, and is the entire fix —
-        measured 2026-08-18, `unshare -r fakeroot chown 0:43` fails and the same with the variable
-        set succeeds. Both halves are asserted because either alone is inert."""
-        d = templates.render_base_def()
-        assert "fakeroot" in d
-        assert "FAKEROOTDONTTRYCHOWN=1" in d
-        # ...and it has to BE in the image, or the shim is a "command not found" on every install.
-        assert "neovim curl fakeroot" in d
-
-    def test_apt_does_not_drop_to_a_uid_that_does_not_exist(self):
-        """apt fetches as `_apt`, and a namespace holding one mapped uid has no such account — every
-        download dies on "setgroups: Operation not permitted" long before dpkg is reached."""
-        assert "APT::Sandbox::User=root" in templates.render_base_def()
-
-    def test_nothing_stops_to_ask_a_question(self):
-        """A package that prompts would hang the Spawn holding a Device until its wall clock ran
-        out."""
-        assert "DEBIAN_FRONTEND=noninteractive" in templates.render_base_def()
-
-    def test_the_index_is_fetched_once_per_pod(self):
-        """The image ships no package list (`rm -rf /var/lib/apt/lists/*`), so a first install would
-        otherwise fail with "unable to locate package" — which reads as a broken name, not a missing
-        index. The marker sits on the bound disk scratch, so it dies with the Pod."""
-        d = templates.render_base_def()
-        assert "/ccc-tmp/.apt-updated" in d
-
-    def test_only_the_known_noise_is_filtered(self):
-        """Three lines print on every invocation in a one-uid namespace and none means anything
-        failed. Filtering more would hide real failures, which arrive on the same stream."""
-        d = templates.render_base_def()
-        noise = [line for line in d.splitlines() if line.startswith("ccc_noise=")]
-        assert len(noise) == 1
-        assert noise[0].count("|") == 2
-
-    def test_apts_own_exit_status_survives_the_filter(self):
-        """A pipe would report grep's status instead, so `apt-get install nonesuch` would look like a
-        success and a script installing a bad package would install nothing and pass."""
-        d = templates.render_base_def()
-        assert "return $ccc_rc" in d
-        assert "| grep" not in d
-
-    def test_sudo_grants_nothing_and_still_works(self):
-        """People type it reflexively. Inside a Pod there is nothing left to grant, so it execs its
-        arguments — refusing would only send them looking for a privilege that does not exist here."""
-        d = templates.render_base_def()
-        assert "/usr/local/bin/sudo" in d
-        assert 'exec "$@"' in d
-
-    def test_editors_ship_with_the_image(self):
-        """A Tide Pool is a shell on a donated box: nothing can be edited without one, and no
-        **Environment** can supply a system editor."""
-        d = templates.render_base_def()
-        assert "nano" in d and "neovim" in d
-
-
-DEB_BYTES = b"!<arch>\ndebian-binary   pretend apptainer .deb\n"
 DONOR_IP = "100.99.0.2"  # where the fake "donor-box" node in `head_pin` is registered
+
+
+IMAGES = {"base": "ccc.glados:5000/ccc/base@sha256:" + "b" * 64,
+          "bench": "ccc.glados:5000/ccc/bench@sha256:" + "c" * 64}
 
 
 @pytest.fixture
 def head_pin(monkeypatch, tmp_path):
-    """A Head that has pinned an apptainer .deb, with its Enroll API pointed at it."""
-    debs, registry = tmp_path / "debs", tmp_path / "arms.json"
-    debs.mkdir()
-    (debs / "apptainer_1.5.3-1~noble_amd64.deb").write_bytes(DEB_BYTES)
-    record = {"version": "1.5.3-1~noble", "filename": "apptainer_1.5.3-1~noble_amd64.deb",
-              "sha256": hashlib.sha256(DEB_BYTES).hexdigest()}
-    (tmp_path / "apptainer.json").write_text(json.dumps(record))
+    """A Head that has built its images and minted donor-box a pull credential."""
+    registry = tmp_path / "arms.json"
+    (tmp_path / "images.json").write_text(json.dumps(IMAGES))
+    (tmp_path / "creds.json").write_text(json.dumps({"donor-box": "s3cret"}))
     registry.write_text(json.dumps({"donor-box": {"owner": "alice", "admitted": True}}))
 
-    monkeypatch.setattr(enroll_api, "DEBS_DIR", debs)
-    monkeypatch.setattr(enroll_api, "APPTAINER_RECORD", tmp_path / "apptainer.json")
+    monkeypatch.setattr(enroll_api, "IMAGES_RECORD", tmp_path / "images.json")
+    monkeypatch.setattr(enroll_api, "REGISTRY_CREDS", tmp_path / "creds.json")
     monkeypatch.setattr(enroll_api, "REGISTRY", registry)
     monkeypatch.setattr(enroll_api, "MUNGE_KEY", tmp_path / "munge.key")
     (tmp_path / "munge.key").write_bytes(b"x" * 32)
@@ -275,43 +180,30 @@ def head_pin(monkeypatch, tmp_path):
     payload = [{"given_name": "donor-box", "ip_addresses": [DONOR_IP]}]
     monkeypatch.setattr(enroll_api.subprocess, "run",
                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload)))
-    return record
+    return IMAGES
 
 
-class TestHeadServesApptainer:
-    """The PPA keeps only its newest build, so the reproducibility available is fleet-internal: the
-    Head downloads the .deb ONCE and every Arm — today's and next year's — installs those same bytes."""
+def _enroll(client_ip=DONOR_IP):
+    return TestClient(enroll_api.app, client=(client_ip, 9)).post(
+        "/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],
+                         "mesh_ip": "9.9.9.9", "vram_mb": 24564})
 
-    def test_enroll_tells_the_arm_what_to_expect(self, head_pin):
-        # Dialed FROM DONOR_IP: /enroll checks the connecting peer against Headscale's node list
-        # (mocked in `head_pin`), not the request body's claimed mesh_ip.
-        client = TestClient(enroll_api.app, client=(DONOR_IP, 9))
-        body = client.post("/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],
-                                            "mesh_ip": "9.9.9.9", "vram_mb": 24564}).json()
-        assert body["apptainer"] == head_pin
 
-    def test_the_deb_served_is_the_deb_recorded(self, head_pin):
-        """The round trip that matters: the sha256 in /enroll must describe the bytes /apptainer.deb
-        actually hands over, or every Arm refuses a file that is perfectly fine."""
-        served = TestClient(enroll_api.app).get("/apptainer.deb").content
-        assert hashlib.sha256(served).hexdigest() == head_pin["sha256"]
+class TestEnrollHandsOverImages:
+    """Every Arm pulls the Head's exact base by digest, with its own revocable pull credential."""
 
-    def test_a_head_with_no_pin_refuses_to_enroll(self, head_pin, monkeypatch, tmp_path):
-        """No fallback to the PPA — falling back is precisely the divergence this prevents."""
-        monkeypatch.setattr(enroll_api, "APPTAINER_RECORD", tmp_path / "gone.json")
-        r = TestClient(enroll_api.app).post(
-            "/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],
-                             "mesh_ip": "100.99.0.2", "vram_mb": 24564})
-        assert r.status_code == 503
+    def test_enroll_hands_over_digests_and_this_arms_credential(self, head_pin):
+        body = _enroll().json()
+        assert body["images"] == head_pin
+        assert body["registry"] == {"user": "arm-donor-box", "password": "s3cret"}
 
-    def test_a_re_run_keeps_the_pinned_deb(self, monkeypatch, tmp_path, head_pin):
-        """`setup --head` is routinely re-run. Re-fetching would hand every Arm enrolled after it a
-        build the rest of the fleet is not running — so the recorded .deb wins over a newer PPA."""
-        monkeypatch.setattr(config, "APPTAINER_RECORD", tmp_path / "apptainer.json")
-        monkeypatch.setattr(config, "HEAD_DEBS_DIR", tmp_path / "debs")
-        monkeypatch.setattr(setup, "run", lambda *a, **kw: pytest.fail("re-fetched a pinned .deb"))
+    def test_a_head_with_no_images_refuses_to_enroll(self, head_pin, monkeypatch, tmp_path):
+        monkeypatch.setattr(enroll_api, "IMAGES_RECORD", tmp_path / "gone.json")
+        assert _enroll().status_code == 503
 
-        assert setup.pin_apptainer_deb().name == head_pin["filename"]
+    def test_an_arm_with_no_credential_is_refused(self, head_pin, tmp_path):
+        (tmp_path / "creds.json").write_text("{}")
+        assert _enroll().status_code == 503
 
 
 class TestArmFeatureDeclaration:
@@ -367,22 +259,23 @@ class TestArmFeatureDeclaration:
         assert self._post([]).status_code == 200
 
 
-class TestArmVerifiesTheDeb:
-    def test_matching_checksum_installs(self, monkeypatch, tmp_path, head_pin):
-        monkeypatch.setattr(enroll.tempfile, "gettempdir", lambda: str(tmp_path))
-        monkeypatch.setattr(enroll.urllib.request, "urlretrieve",
-                            lambda url, dest: dest.write_bytes(DEB_BYTES))
-        assert enroll.fetch_apptainer_deb("100.99.0.1", head_pin).read_bytes() == DEB_BYTES
-
-    def test_a_mismatch_refuses_to_install(self, monkeypatch, tmp_path, head_pin):
-        """This file becomes root-installed software. A truncated download is the ordinary cause and
-        would otherwise reach `apt-get install` as an unreadable archive, mid-setup."""
-        monkeypatch.setattr(enroll.tempfile, "gettempdir", lambda: str(tmp_path))
-        monkeypatch.setattr(enroll.urllib.request, "urlretrieve",
-                            lambda url, dest: dest.write_bytes(DEB_BYTES[:10]))
+class TestArmPullsByDigest:
+    def test_a_digest_mismatch_refuses(self, monkeypatch):
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="sha256:" + "f" * 64 + "\n")
+        monkeypatch.setattr(podman, "run", fake)
         with pytest.raises(typer.Exit):
-            enroll.fetch_apptainer_deb("100.99.0.1", head_pin)
-        assert not (tmp_path / head_pin["filename"]).exists()  # never left for apt to find
+            podman.pull_images({"base": IMAGES["base"]})
+
+    def test_a_match_passes(self, monkeypatch):
+        ran = []
+
+        def fake(cmd, **kw):
+            ran.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="sha256:" + "b" * 64 + "\n")
+        monkeypatch.setattr(podman, "run", fake)
+        podman.pull_images({"base": IMAGES["base"]})
+        assert ["podman", "pull", "--authfile", str(config.REGISTRY_AUTH), IMAGES["base"]] in ran
 
 
 class TestOneVersionPerFact:

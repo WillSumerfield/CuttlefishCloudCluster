@@ -12,10 +12,10 @@ SLURM_PKG = f"slurm-wlm={SLURM_VERSION}"
 SLURMD_PKG = f"slurmd={SLURM_VERSION}"
 NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.20.0-1"  # NVIDIA's repo retains old versions — safe
 MUNGE_PKG = "munge"  # auth; distro version fine
-# EVERY node: `apptainer build` runs unprivileged and needs newuidmap/newgidmap to map its fakeroot
-# namespace. Present on most desktops (podman and rootless docker pull it in), absent often enough on
-# a fresh server that assuming it is how a Head gets all the way to the Pod image and then dies.
-UIDMAP_PKG = "uidmap"
+# Every node: rootful Podman runs every container (cluster jobs, Dives, Tidepools) — see podman.py.
+PODMAN_PKG = "podman"
+# HEAD only: `htpasswd -B` writes the registry's bcrypt credentials (podman.install_registry).
+HTPASSWD_PKG = "apache2-utils"
 
 # The archive publishes ONE version of a package per pocket, so the day Ubuntu supersedes a pin above
 # it stops being installable and every future setup dies at `apt-get install`. snapshot.ubuntu.com
@@ -30,15 +30,6 @@ UBUNTU_CODENAME = "noble"
 UBUNTU_ARCHIVE_KEYRING = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 UBUNTU_SNAPSHOT_LIST = Path("/etc/apt/sources.list.d/ccc-ubuntu-snapshot.list")
 
-# apptainer is NOT a version pin, because there is nothing durable to pin to: it comes from a Launchpad
-# PPA, which keeps only its newest build (e.g. 1.5.3-1~noble, and nothing else). So the
-# reproducibility on offer is fleet-internal — the HEAD downloads the .deb once and serves that exact
-# file to every Arm forever (setup.pin_apptainer_deb). We cannot resurrect a build Launchpad pruned;
-# we can guarantee every node in the cluster runs the same one. The Arm side gains a second win: a
-# donor's box never has a third-party repo added to it.
-APPTAINER_PKG = "apptainer"
-APPTAINER_PPA = "ppa:apptainer/ppa"  # added on the HEAD only
-
 # HEAD ONLY. Node exists on a Head for exactly one reason — `vite` builds the Dashboard SPA
 # (setup.build_spa) — and a donor Arm, which never builds it, never gets Node or this repo. Noble's
 # own nodejs is 18.19 and Tailwind v4 wants >=20, so it comes from NodeSource. Pinned like the rest:
@@ -51,27 +42,29 @@ NODESOURCE_KEY_URL = "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"
 NODESOURCE_KEYRING = "/usr/share/keyrings/ccc-nodesource-keyring.gpg"
 NODESOURCE_LIST = Path("/etc/apt/sources.list.d/ccc-nodesource.list")
 
-# --- pinned base Pod image (built from a def: plain Ubuntu + sshd + CA certs) ---
-# Ubuntu, NOT a PyTorch image, and that is the whole point: every **Environment** now carries its own
-# interpreter and its own torch (ccc_head_api.environments), so an image supplying either would only ever
-# be shadowed by what the Spawn brought. Removing them takes base.sif from 2.9 GB to ~150 MB — a number
-# every Arm pays in durable disk, and every donated box is somebody's own machine.
-#
-# What is left is exactly what a Pod cannot bring with it: sshd (a **Tide Pool** runs one INSIDE the Pod),
-# CA certificates (the build Pod's uv fetches from PyPI over TLS), and the baked `mantle` account.
-#
-# By DIGEST, not by tag: `ubuntu:24.04` is mutable and Canonical re-pushes it monthly, so a tag would
-# silently hand two nodes different builds of "the same" image. This is the multi-arch index digest, so
-# apptainer still selects the platform. 24.04 to match UBUNTU_CODENAME — one Ubuntu release fleet-wide.
-BASE_IMAGE_DOCKER = ("ubuntu@sha256:"
+# --- container images (podman.py) ---
+# The base image's FROM. By DIGEST, not tag: `ubuntu:24.04` is re-pushed monthly. 24.04 to match
+# UBUNTU_CODENAME — one Ubuntu release fleet-wide.
+BASE_IMAGE_DOCKER = ("docker.io/library/ubuntu@sha256:"
                      "561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea")
+# The base + benchmark images' tag. **Frozen per release**: a Dive's User layer is only valid on the base
+# it was committed from, so the base never changes inside a release (upgrade = clean install).
+IMAGE_TAG = "2.0"
+# CUDA compiler + headers for building extensions; the runtime libs come in wheels, the driver via CDI.
+CUDA_REPO_KEYRING = ("https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/"
+                     "cuda-keyring_1.1-1_all.deb")
+CUDA_PKGS = ("cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 cuda-nvrtc-dev-12-8 cuda-nvtx-12-8 "
+             "cuda-profiler-api-12-8")
+CUDA_HOME = "/usr/local/cuda-12.8"
+# The registry itself, pinned by index digest (registry:2 = 2.8.3).
+REGISTRY_IMAGE = ("docker.io/library/registry:2.8.3@sha256:"
+                  "a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373")
 
 # --- pinned Environment build tools (every node) ---
 # uv and micromamba build a Spawn's declared Environment (ccc_head_api.environments). Pinned by
 # version AND sha256, checked here rather than against the sidecar .sha256 each project publishes: a
 # sidecar fetched from the same host as the file it vouches for proves only that the download wasn't
-# truncated. These hashes are in the repo, so bumping a tool is a reviewed commit — which matters more
-# for these two than for apptainer, because a uv release can change what `uv sync` resolves and every
+# truncated. These hashes are in the repo, so bumping a tool is a reviewed commit — a uv release can change what `uv sync` resolves and every
 # Spawn's dependencies would move underneath their Users with nothing to point at.
 #
 # Installed on EVERY node, Head and Arm alike, because every node builds: an Environment is built by
@@ -147,8 +140,8 @@ PRIORITY_MAX_AGE = "1-0"       # 1 day — the ramp over which waiting earns bac
 # (the tick skips any job with nice < 0 — only an operator could have set it).
 BUMP_STEP = 2**17
 
-# **Power**: measured throughput, in fp32 TFLOP/s, of one device — benchmarked once, at enroll, by a
-# Head-submitted Spawn running inside the Pod (templates.BENCH_PY). Intrinsic to the card; the other
+# **Power**: measured throughput, in fp32 TFLOP/s, of one device — benchmarked once, at enroll, by the
+# Head-submitted **Benchmark** job, in the benchmark image via ccc-launch (templates.BENCH_PY). Intrinsic to the card; the other
 # half of a device-second's price is Demand, which is live and extrinsic.
 BENCH_MATRIX_N = 4096
 BENCH_WARMUP = 5
@@ -157,34 +150,11 @@ BENCH_TIME_MINUTES = 10
 BENCH_DIR_NAME = "bench"  # HEAD_SPAWNS_DIR/bench/<node>/power — where a benchmark stages its result
 BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may still be booting slurmd)
 
-# The benchmark's own **Environment**, because base.sif no longer has a torch to borrow. Built by EACH
-# NODE at `cuttle setup` (setup.build_bench_env), from PyPI, and kept — the same one-time, per-node,
-# uncapped cost as that node's own base.sif build, and paid at the same moment.
-#
-# Built at setup rather than inside the benchmark job because the job has a 10-minute wall
-# (BENCH_TIME_MINUTES) and a cold torch install does not reliably fit in it. Setup is already long and
-# has no wall, and a box that cannot build this is a box that cannot run a Spawn either — better learned
-# before it enrolls than as an unexplained enrollment failure.
-#
-# **Version-pinned, and that pin is load-bearing.** Power is the divisor in every Settlement, so two
-# cards measured by two different torches would put a difference in the *fleet's prices* that is not a
-# difference in the *cards*. One Head-built tree used to guarantee that; per-node resolution makes the
-# pin the only thing that does. It holds the version fixed, not the CUDA wheel variant — a node on a
-# different driver can still resolve a different build, so Power is comparable, not identical.
-# `torch==2.13.0` is the version the old PyTorch base image carried, so numbers measured before and
-# after this change mean the same thing.
+# Pinned: Power is the divisor in every Settlement, so every card must be measured by the same torch.
+# Baked into the benchmark image (podman.build_images), which every Arm pulls by digest.
 BENCH_TORCH_PKG = "torch==2.13.0"
-# Where that env LIVES on every node. In /opt beside base.sif, not under HEAD_SPAWNS_DIR: it is now a
-# per-node artifact like the image, it must be readable by the home-less Guise the benchmark runs as,
-# and an Arm has no HEAD_SPAWNS_DIR at all.
-BENCH_ENV_DIR = Path("/opt/ccc/benchenv")   # under CCC_OPT, which is defined further down
-# Where that env is BUILT and where it is RUN, which must be one path: a venv bakes its own prefix into
-# pyvenv.cfg, its interpreter symlink and every console-script shebang, so it does not survive being
-# moved. BENCH_ENV_DIR above is only the host directory underneath, which is free to differ per node.
-# Must equal `ccc_head_api.environments.ENV_MOUNT` — the same duplication ENV_TOOLS_DIR already carries
-# across the two packages, which do not import each other.
-BENCH_ENV_MOUNT = "/opt/ccc/env"
-BENCH_ENV_PYTHON = "3.12"    # a benchmark declares no requires-python, so one is named here
+BENCH_VENV = "/opt/ccc/bench-venv"   # inside the benchmark image
+BENCH_PY_PATH = "/opt/ccc/bench.py"  # inside the benchmark image
 
 # Slurm schedules the LOWEST-weight eligible node first, so Weight must run inverse to Power: the
 # fastest free card that fits wins. It is a preference among *free* nodes, not a reservation — Slurm
@@ -394,13 +364,11 @@ ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
 # can never collide over it. The Spawn job script binds it at the Guise's home inside the Pod
 # (the only place a licence manager looks), and only for a Spawn that requested a Feature.
 LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
-# The apptainer .deb the Head serves to every Arm, and the record that pins it:
-# {version, filename, sha256}. Under CCC_LIB rather than HEAD_STATE_DIR because the Enroll API is what
-# serves the file, and it runs as `munge` — HEAD_STATE_DIR is 0700 ccc and it could not even traverse
-# it. Both are root-owned and world-readable; the Enroll API only ever READS them, so it needs no
-# write access here (unlike arms.json).
-HEAD_DEBS_DIR = CCC_LIB / "debs"
-APPTAINER_RECORD = CCC_LIB / "apptainer.json"
+# The base + benchmark images' digest refs, written by `setup --head` (podman.build_images) and handed
+# to every Arm at /enroll. In /opt, kept by a plain teardown with the images it names.
+IMAGES_RECORD = Path("/opt/ccc/images.json")
+# Per-Arm registry pull passwords {arm: password}, 0600 munge — /enroll hands each Arm its own.
+REGISTRY_CREDS = CCC_LIB / "registry-creds.json"
 
 # An Arm's GPU device node, one /dev/nvidiaN per card. Re-validated root-side before it ever reaches
 # gres.conf.
@@ -491,7 +459,7 @@ HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
 # Identity still comes from PINNING (cuttle/tls.py): cuttle verifies the Head against this CA alone,
 # never the public bundle. A client that has no CA yet gets it on first contact, SSH-known_hosts style.
 #
-# Lives in /opt (not CCC_LIB) so a plain teardown preserves it, like base.sif — a NEW CA is the one
+# Lives in /opt (not CCC_LIB) so a plain teardown preserves it, like the images — a NEW CA is the one
 # thing that would still invalidate every client, so it is minted once and kept (`--all` clears it).
 CCC_TLS_DIR = Path("/opt/ccc/tls")
 HEAD_CA_CERT = CCC_TLS_DIR / "ccc-ca.crt"  # 0644, the trust anchor every box installs and cuttle pins
@@ -521,16 +489,6 @@ GUEST_CA_NAME = "ccc-ca.crt"           # the CA, dropped where the host OS can i
 # as "Linux files", so it is the one drop point that cannot be missing.
 CHROMEOS_DOWNLOADS = Path("/mnt/chromeos/MyFiles/Downloads")
 
-# --- subordinate ids: what lets an unprivileged `apptainer build` map a fakeroot namespace ---
-# `adduser` writes a range here for a LOCAL account and for nothing else, so a directory-managed
-# operator (LDAP/AD) has none — apptainer then says "User not listed in /etc/subuid", falls back to a
-# root-mapped namespace, and dies on setgroups. setup.ensure_subid_range fills the gap.
-SUBUID_FILE = Path("/etc/subuid")
-SUBGID_FILE = Path("/etc/subgid")
-# Well clear of real uids: a directory hands out uids in the millions (1809654 on the box that forced
-# this), and shadow's own 100000 default would sit underneath them. The count is the conventional one.
-SUBID_BASE = 100_000_000
-SUBID_COUNT = 65_536
 # Firefox ignores both stores above and reads an enterprise policy file instead. Cuttle merges its
 # keys into an existing file rather than clobbering whatever else is configured there.
 FIREFOX_POLICIES = Path("/etc/firefox/policies/policies.json")
@@ -553,22 +511,37 @@ HEAD_DB = HEAD_STATE_DIR / "head.db"
 #   scratch/<id>/     — the co-located Arm's per-Spawn run dir.
 HEAD_SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
 HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
-# base.sif, at the SAME path on every node (Head and every Arm) — Spawns run as the home-less Mantle,
-# which can't read an operator's 0750 home, so the image lives in a world-readable /opt tree (same
-# /opt/ccc as the venv + SPA) instead. One constant path cluster-wide means the rendered job script
-# names the sif identically wherever Slurm places it. Each node BUILDS its own (apptainer build at
-# setup); nothing ships a multi-GB image over the mesh.
 CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; teardown rmdirs it last
-CCC_IMAGES_DIR = Path("/opt/ccc/images")
-CCC_SIF = CCC_IMAGES_DIR / "base.sif"
+
+# --- Podman (podman.py) ---
+REGISTRY_PORT = 5000
+REGISTRY = f"ccc.glados:{REGISTRY_PORT}"   # DOMAIN:port — Head → 127.0.0.1 (push), Arm → mesh (pull)
+REGISTRY_SERVICE = "ccc-registry"         # Quadlets ccc-registry-push / ccc-registry-pull
+REGISTRY_ETC = Path("/etc/ccc/registry")  # configs + htpasswd files, 0700 root
+REGISTRY_PUSH_HTPASSWD = REGISTRY_ETC / "push.htpasswd"
+REGISTRY_PULL_HTPASSWD = REGISTRY_ETC / "pull.htpasswd"
+REGISTRY_PUSH_USER = "ccc-push"
+REGISTRY_DATA = CCC_OPT / "registry"      # the store; kept unless --all, like the images
+# This node's registry credential (push on the Head, its own pull user on an Arm). Must equal
+# ccc_launch.AUTH_FILE.
+REGISTRY_AUTH = Path("/etc/ccc/registry-auth.json")
+QUADLET_DIR = Path("/etc/containers/systemd")
+# NVIDIA's own nvidia-cdi-refresh.service writes CDI_SPEC; ccc-cdi-patch makes Podman 4.9 read it.
+CDI_SPEC = Path("/var/run/cdi/nvidia.yaml")
+CDI_PATCH_BIN = Path("/usr/local/sbin/ccc-cdi-patch")
+CDI_PATCH_SERVICE = "ccc-cdi-patch"
+CDI_PATCH_SERVICE_UNIT = Path("/etc/systemd/system/ccc-cdi-patch.service")
+CDI_PATCH_PATH_UNIT = Path("/etc/systemd/system/ccc-cdi-patch.path")
+# The root launcher (ccc_launch.py) and the one sudoers rule letting a Guise run it. JOBS_DIR and
+# JOB_CONTAINER_PREFIX must equal ccc_launch's.
+CCC_LAUNCH_BIN = Path("/usr/local/sbin/ccc-launch")
+SUDOERS_CCC_LAUNCH = Path("/etc/sudoers.d/ccc-launch")
+JOBS_DIR = Path("/var/lib/ccc/jobs")
+JOB_CONTAINER_PREFIX = "ccc-job-"
 
 # --- the interactive shell a Tide Pool hands its User ---
-# The oh-my-zsh tree, powerlevel10k and its plugins, vendored INTO this package so `%files` has an
-# absolute source path on whichever node is building (templates.BASE_DEF_TMPL). Every node builds its
-# own image, so the alternative — cloning upstream during `%post` — would hand two Arms enrolled a
-# month apart different oh-my-zsh, which is the drift BASE_IMAGE_DOCKER's digest pin and the
-# uv/micromamba sha256 pins above all exist to prevent. Vendored also means the build needs no egress
-# beyond the base image itself, on somebody else's donated box.
+# The oh-my-zsh tree, powerlevel10k and its plugins, vendored INTO this package and COPYed into the
+# base image (podman.build_images) — no upstream clone at build time, so no drift.
 #
 # The tree carries powerlevel10k's gitstatusd at `custom/themes/powerlevel10k/gitstatus/usrbin/`, which
 # is upstream's own slot for a prebuilt daemon and is where its installer looks first. That binary is
@@ -624,9 +597,8 @@ NODE_NAME_SAFE_RE = r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$"
 # --- mesh (self-hosted Headscale coordinator + Tailscale client) ---
 # Headscale isn't in apt, so it comes from a GitHub release .deb — PINNED, like every other version
 # here. Tracking "latest" meant two Heads built weeks apart ran different coordinators with nothing
-# recording how, and the coordinator owns the database mapping every node to its mesh IP. Not the
-# fetch-record-serve dance `setup.pin_apptainer_deb` does: that exists because the Head serves that
-# deb to every Arm forever, and Headscale is Head-only. Upgrading is editing this line.
+# recording how, and the coordinator owns the database mapping every node to its mesh IP. Upgrading is
+# editing this line.
 HEADSCALE_VERSION = "v0.29.3"
 # Deterministic asset URL for a known tag — no API call, so no unauthenticated rate limit.
 HEADSCALE_DEB = ("https://github.com/juanfont/headscale/releases/download/"
@@ -805,10 +777,6 @@ TIDEPOOL_DIR = CCC_HOME / "tidepool"
 SSH_DIR = Path(os.environ.get("CCC_SSH_DIR") or Path.home() / ".ssh")
 SSH_CONFIG = SSH_DIR / "config"
 SSH_CCC_CONFIG = SSH_DIR / "ccc.config"
-# Where `apptainer build` caches the layers it pulls (APPTAINER_CACHEDIR, set by setup.build_base_sif).
-# Under ~/.ccc rather than apptainer's own ~/.apptainer/cache so that teardown reclaims it: the build
-# runs unprivileged, and a multi-GB cache in the operator's home is outside every tree CCC removes.
-APPTAINER_CACHE_DIR = CCC_HOME / "cache"
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
 

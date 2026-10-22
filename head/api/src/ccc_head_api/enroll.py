@@ -41,7 +41,6 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # stdlib logging -> stdout -> journald, same shape as the Head API and the Karma tick. Targeted event
@@ -56,11 +55,11 @@ if not log.handlers:
 
 MUNGE_KEY = Path("/etc/munge/munge.key")
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
-# The one apptainer build this cluster runs: `cuttle setup --head` downloaded the .deb once and
-# recorded {version, filename, sha256}, and this service hands that same file to every Arm forever.
-# Both live under /var/lib/ccc because this service runs as `munge` and that is the tree it can read.
-DEBS_DIR = Path(os.environ.get("CCC_DEBS_DIR", "/var/lib/ccc/debs"))
-APPTAINER_RECORD = Path(os.environ.get("CCC_APPTAINER_RECORD", "/var/lib/ccc/apptainer.json"))
+# The base + benchmark images' digest refs (`cuttle setup --head` built and pushed them), and each Arm's
+# own registry pull password (minted at `cuttle arm authorize`, 0600 munge). Mirror cuttle.config's
+# IMAGES_RECORD and REGISTRY_CREDS.
+IMAGES_RECORD = Path(os.environ.get("CCC_IMAGES_RECORD", "/opt/ccc/images.json"))
+REGISTRY_CREDS = Path(os.environ.get("CCC_REGISTRY_CREDS", "/var/lib/ccc/registry-creds.json"))
 # This cluster's CA (public half), handed to an Arm as part of enrolling. Mirrors
 # cuttle.config.HEAD_CA_CERT and ccc_head_api.main.CA_CERT.
 CA_CERT = Path(os.environ.get("CCC_CA_CERT", "/opt/ccc/tls/ccc-ca.crt"))
@@ -171,23 +170,21 @@ def _node_named_at(peer: str) -> str | None:
     return None
 
 
-def _apptainer_pin() -> dict:
-    """What the Head pinned. Absent means `setup --head` predates the pin (or never finished), and an
-    Arm cannot install apptainer at all — so it is a loud 503 rather than a fallback to the PPA, which
-    is the exact divergence this mechanism exists to prevent."""
-    if not APPTAINER_RECORD.exists():
-        raise HTTPException(503, "this Head has not pinned an apptainer .deb — its operator must "
-                                 "re-run `cuttle setup --head`")
-    return json.loads(APPTAINER_RECORD.read_text())
+def _images() -> dict:
+    """What every Arm pulls. Absent means `setup --head` never finished building them — a loud 503,
+    since an Arm without the base image can run nothing."""
+    if not IMAGES_RECORD.exists():
+        raise HTTPException(503, "this Head has not built its images — its operator must re-run "
+                                 "`cuttle setup --head`")
+    return json.loads(IMAGES_RECORD.read_text())
 
 
-@app.get("/apptainer.deb")
-def apptainer_deb() -> FileResponse:
-    """Serve the pinned .deb. Unauthenticated like the rest of this app (being on the mesh is the
-    authorization) and, unlike the munge key, it is no secret — it is a public Launchpad artifact.
-    What matters is that it is always the SAME one."""
-    return FileResponse(DEBS_DIR / _apptainer_pin()["filename"],
-                        media_type="application/vnd.debian.binary-package")
+def _pull_password(node_name: str) -> str:
+    creds = json.loads(REGISTRY_CREDS.read_text()) if REGISTRY_CREDS.exists() else {}
+    if node_name not in creds:
+        raise HTTPException(503, f"no registry credential for {node_name!r} — the Head's operator "
+                                 f"must re-run `cuttle arm authorize`")
+    return creds[node_name]
 
 
 @app.get("/arms/{name}")
@@ -220,9 +217,9 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     this endpoint is the one thing a donor's machine gets to write, and it does not get to say who owns
     it.
 
-    The response also carries the apptainer pin, so the Arm knows what `/apptainer.deb` should hand it
-    before it downloads it, and this cluster's CA, so the Arm trusts the Head without a fingerprint
-    ceremony it has already earned the right to skip.
+    The response also carries the image digest refs and this Arm's own registry pull credential, and
+    this cluster's CA, so the Arm trusts the Head (and its registry) without a fingerprint ceremony it
+    has already earned the right to skip.
     """
     if not NODE_NAME_RE.match(req.node_name):
         raise HTTPException(422, f"invalid Arm name {req.node_name!r} — must be 1-32 characters, "
@@ -250,9 +247,9 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
             if not f.path.strip():
                 raise HTTPException(422, f"feature {f.name!r} needs a non-empty install path")
 
-    # Read before the row is touched: a Head with no pinned .deb cannot enroll anyone (the Arm would
-    # have no apptainer to install), so it fails here rather than after the munge key has left.
-    pin = _apptainer_pin()
+    # Read before the row is touched: a Head with no images cannot enroll anyone, so it fails here
+    # rather than after the munge key has left.
+    images = _images()
 
     reg = _load()
     if req.node_name not in reg:
@@ -299,7 +296,8 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         "cluster": os.environ["CCC_CLUSTER"],
         "partition": os.environ["CCC_PARTITION"],
         "admitted": entry["admitted"],
-        "apptainer": pin,  # {version, filename, sha256} — what GET /apptainer.deb will hand over
+        "images": images,  # {base, bench}: digest refs on the Head registry
+        "registry": {"user": f"arm-{req.node_name}", "password": _pull_password(req.node_name)},
         # The cluster's CA, so the Arm's owner never sees a fingerprint prompt: this response already
         # crossed a channel authenticated by the join token and checked against Headscale's own view of
         # the caller, which is a far stronger thing than the trust-on-first-use ceremony a client with

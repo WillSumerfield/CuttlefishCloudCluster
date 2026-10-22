@@ -199,6 +199,7 @@ class TestAnAbandonedBenchmarkIsCancelled:
         monkeypatch.setattr(enroll.mesh, "tailscale_ip", lambda: "100.99.0.1")
         monkeypatch.setattr(enroll, "load_registry", lambda: {"arm1": {"gpu_devices": [0, 1]}})
         monkeypatch.setattr(enroll, "_bench_secret", lambda: "s3cr3t")
+        monkeypatch.setattr(enroll.podman, "load_images", lambda: {"bench": "img"})
         monkeypatch.setattr(enroll.templates, "render_bench_sbatch",
                             lambda *a, **kw: "#!/bin/bash\ntrue\n")
         monkeypatch.setattr(config, "HEAD_SPAWNS_DIR", tmp_path / "spawns")

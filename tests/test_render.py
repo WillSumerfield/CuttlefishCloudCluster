@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from cuttle import config, enroll, headapi, system, templates
+from cuttle import ccc_launch, config, enroll, headapi, system, templates
 
 
 @pytest.fixture
@@ -687,126 +687,86 @@ class TestSlurmdDropin:
         assert "Feature=vram24," not in enroll.slurmd_dropin("donor-box", "h:1", 24564, 1)
 
 
-def bench_body(job: str) -> str:
-    """The Python the benchmark job heredocs into the Pod, lifted back out of the shell script."""
-    return job.split("<<'CCC_BENCH_PY'\n")[1].split("\nCCC_BENCH_PY")[0]
+BENCH_IMG = "ccc.glados:5000/ccc/bench@sha256:" + "c" * 64
+
+
+def bench(node="donor-box", gpus=1):
+    return templates.render_bench_sbatch(node, "100.99.0.1", "b3nch", BENCH_IMG, gpus)
 
 
 class TestBenchmarkSbatch:
-    """The Power benchmark: a real Spawn, submitted by the Head, pinned to the node being priced."""
+    """The Benchmark: submitted by the Head as the cluster Guise, pinned to the node being priced,
+    run in the benchmark image through ccc-launch."""
 
     def test_pinned_to_the_node_under_test(self):
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
+        job = bench()
         assert "#SBATCH --nodelist=donor-box" in job
         assert "#SBATCH --gres=gpu:1" in job
 
-    def test_runs_inside_the_pod(self):
-        """Measured in the Pod, not on the host and not from a spec sheet — so the number reflects the
-        machine as Spawns really meet it (a throttling laptop card, a stale driver). None of that is on a spec sheet, and all of it is what an hour on the card is worth."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert "apptainer exec --nv" in job
-        assert str(config.CCC_SIF) in job
-
-    def test_it_brings_its_own_interpreter(self):
-        """base.sif has no Python and no torch, so a bare `python` here would be an Arm that enrolls
-        and then prices at nothing — discovered as a missing Power file, on someone else's machine."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert f"{config.BENCH_ENV_MOUNT}/venv/bin/python" in job
-        assert " python " not in job, "the image's own python came back"
-
-    def test_the_env_is_already_on_the_node(self):
-        """Nothing multi-GB crosses the mesh inside this job. The env is built by `cuttle setup` on the
-        node itself (setup.build_bench_env); pulling it from the Head measured 29 minutes against this
-        job's 10-minute wall, so a remote Arm could never finish one."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert str(config.BENCH_ENV_DIR) in job
-        # The one rsync left in the job is the Power file going home.
-        assert [ln for ln in job.splitlines() if ln.startswith("rsync ")] == \
-               [f'rsync -a "$out/power" "rsync://{config.RSYNC_BENCH_USER}@100.99.0.1/'
-                f'{config.RSYNC_MODULE_BENCH}/donor-box/"']
-
-    def test_the_env_is_bound_at_the_path_it_was_built_at(self):
-        """A venv bakes its own prefix into pyvenv.cfg, `bin/python` and every console-script shebang.
-        Bound anywhere else, its interpreter does not resolve and the benchmark cannot start."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert f'--bind "{config.BENCH_ENV_DIR}:{config.BENCH_ENV_MOUNT}"' in job
-
-    def test_result_comes_home_by_rsync(self):
-        """One code path for a donor's box and for the Head's own Arm (which rsyncs to itself over the
-        mesh). rsync will not invent the destination directory — the Head pre-creates it."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert (f"rsync://{config.RSYNC_BENCH_USER}@100.99.0.1/{config.RSYNC_MODULE_BENCH}/"
-                f"donor-box/") in job
-
-    def test_it_authenticates_to_the_bench_module(self):
-        """A benchmark cannot be handed a **Siphon** — it never goes through the Head API — so it is
-        the one job carrying the cluster-lifetime credential instead. Without the password in its
-        environment the module's `auth users` refuses it and the Power file never arrives, which
-        surfaces as an Arm that enrolled and then priced at nothing."""
-        job = templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch")
-        assert "export RSYNC_PASSWORD=b3nch" in job
-        # The bench tree, not the Spawns tree: a benchmark must not be able to reach a Spawn's results.
-        assert str(config.HEAD_SPAWNS_DIR) not in job
-
-    def test_embedded_python_is_intact(self):
-        """The benchmark body is str.format()-ed into a heredoc, and it contains a dict literal — so
-        every brace of that literal has to be doubled. Get it wrong and the render either raises, or
-        (worse) quietly emits Python that doesn't parse, on a node nobody is watching."""
-        body = bench_body(templates.render_bench_sbatch("donor-box", "100.99.0.1", "b3nch"))
-        compile(body, "bench.py", "exec")  # the real check: it is valid Python
-        assert re.search(r"\{\w+\}", body) is None, "an unrendered {placeholder} survived"
-        assert f"range({config.BENCH_ITERS})" in body  # ...and the substitutions really happened
-
-    def test_warmup_is_not_timed(self):
-        """The first matmul pays cuBLAS init. Timing it would under-report Power on every card, and by
-        an amount that depends on how fast the card is — a systematic bias, not noise."""
-        body = bench_body(templates.render_bench_sbatch("n", "ip", "b3nch"))
-        warmup, timed = body.index(f"range({config.BENCH_WARMUP})"), body.index("perf_counter()")
-        assert warmup < timed
-
     def test_one_job_holds_every_card(self):
-        """Power is per **Device**, so a four-card box needs four numbers — but from ONE Spawn. Four
-        separate jobs would queue behind each other and could each land while a sibling card was held
-        by somebody else's work, measuring a box under contention rather than the card itself."""
-        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
+        """Power is per Device, from ONE job: separate jobs could land while a sibling card is busy."""
+        job = bench("big-box", 4)
         assert "#SBATCH --gres=gpu:4" in job
         assert len([ln for ln in job.splitlines() if ln.startswith("#SBATCH --gres")]) == 1
 
-    def test_it_measures_each_visible_device(self):
-        """Identical models still differ in practice — an x4 slot, the card that throttles under the
-        other — so every card is timed, not one and multiplied.
+    def test_it_runs_through_ccc_launch_with_its_spec(self):
+        job = bench()
+        assert f'sudo -n {config.CCC_LAUNCH_BIN} "$SLURM_JOB_ID"' in job
+        spec = ccc_launch.validate_spec(ccc_launch.read_spec(job))
+        assert spec["image"] == BENCH_IMG
+        assert spec["argv"] == [f"{config.BENCH_VENV}/bin/python", config.BENCH_PY_PATH, "all"]
 
-        The loop is in the SHELL, not in the Python: a MIG instance is the only device its process can
-        address, so a single interpreter could never reach a second card on a MIG-mode Arm. One
-        `apptainer exec` per Device, one measurement each, merged at the end.
-        """
-        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
-        assert 'for g in "${held[@]}"; do' in job
-        assert job.count("bench.py") == 3      # the heredoc that writes it, then measure, then merge
-        assert 'bench.py" measure' in job and 'bench.py" merge' in job
-        body = bench_body(job)
-        assert '"power": round(' in body       # one Power per process...
-        assert '"powers": [p["power"] for p in parts]' in body   # ...folded in gres.conf order
+    def test_launcher_constants_agree(self):
+        """ccc_launch.py runs under the system python and imports nothing of CCC's."""
+        assert str(config.JOBS_DIR) == str(ccc_launch.JOBS_DIR)
+        assert str(config.REGISTRY_AUTH) == ccc_launch.AUTH_FILE
+        assert config.REGISTRY == ccc_launch.REGISTRY
+        assert config.JOB_CONTAINER_PREFIX == ccc_launch.CONTAINER_PREFIX
+        assert config.GUISE_UID_MAX == ccc_launch.UID_CEIL and config.CCC_UID == ccc_launch.UID_FLOOR
 
-    def test_a_mig_card_is_named_by_uuid_and_a_whole_card_is_not(self):
-        """CUDA_VISIBLE_DEVICES cannot name a MIG device by index — only a MIG-<uuid> reaches one. But
-        a whole-card Arm must keep Slurm's own value untouched, because that is what made torch's
-        device i mean GRES index i, which is what Settlement bills against.
-        """
-        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
-        assert 'if [ -n "$uuid" ]; then cvd="$uuid"; tdev=0; ' \
-               'else cvd="$CUDA_VISIBLE_DEVICES"; tdev="$g"; fi' in job
+    def test_result_comes_home_by_rsync(self):
+        """The power file lands in the job dir (handed back to the Guise by ccc-launch) and goes home
+        over the [bench] module — the same path on a donor's box and on the Head's own Arm."""
+        job = bench()
+        assert [ln for ln in job.splitlines() if ln.startswith("rsync ")] == \
+               [f'rsync -a "{config.JOBS_DIR}/$SLURM_JOB_ID/power" "rsync://'
+                f'{config.RSYNC_BENCH_USER}@100.99.0.1/{config.RSYNC_MODULE_BENCH}/donor-box/"']
 
-    def test_the_card_is_resolved_by_device_minor_not_by_enumeration_order(self):
-        """gres.conf is written from /dev/nvidiaN in numeric order; nvidia-smi enumerates by PCI bus.
-        Where they disagree, pairing a card with the wrong Power is invisible on a box whose cards are
-        identical — every Spawn still runs, and Settlement quietly bills one card at the other's rate.
-        So the minor resolves through /proc, which carries the minor and the GPU UUID in one file.
-        """
-        job = templates.render_bench_sbatch("big-box", "100.99.0.1", "b3nch", 4)
-        assert "/proc/driver/nvidia/gpus/*/information" in job
-        assert "/^Device Minor:/" in job and "/^GPU UUID:/" in job
-        assert "sort -V" in job    # nvidia10 after nvidia2, matching system.gpu_devices()
+    def test_it_authenticates_to_the_bench_module(self):
+        job = bench()
+        assert "export RSYNC_PASSWORD=b3nch" in job
+        assert str(config.HEAD_SPAWNS_DIR) not in job   # the bench tree only
+
+
+class TestBenchPy:
+    def test_embedded_python_is_intact(self):
+        """str.format()-ed with a dict literal inside — every brace doubled, or it won't parse."""
+        body = templates.render_bench_py()
+        compile(body, "bench.py", "exec")
+        assert re.search(r"\{\w+\}", body) is None, "an unrendered {placeholder} survived"
+        assert f"range({config.BENCH_ITERS})" in body
+
+    def test_warmup_is_not_timed(self):
+        body = templates.render_bench_py()
+        assert body.index(f"range({config.BENCH_WARMUP})") < body.index("perf_counter()")
+
+    def test_one_process_per_device_in_gres_order(self, tmp_path, monkeypatch):
+        """`all` runs one `measure` per CCC_GPUS entry with CUDA_VISIBLE_DEVICES narrowed to it (a MIG
+        instance is the only device its process can address), then merges in GRES order."""
+        calls = []
+
+        def fake_run(argv, check, env):
+            calls.append((argv[-1], env["CUDA_VISIBLE_DEVICES"]))
+            (tmp_path / f"power.{argv[-1]}").write_text(
+                '{"power": %s, "vram_mb": 1, "gpu": "g"}' % (10 + int(argv[-1])))
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setenv("CCC_GPUS", "GPU-a,MIG-b")
+        monkeypatch.setenv("CCC_BENCH_OUT", str(tmp_path))
+        monkeypatch.setattr("sys.argv", ["bench.py", "all"])
+        with pytest.raises(SystemExit):
+            exec(compile(templates.render_bench_py(), "bench.py", "exec"), {"__file__": "bench.py"})
+        assert calls == [("0", "GPU-a"), ("1", "MIG-b")]
+        assert json.loads((tmp_path / "power").read_text())["powers"] == [10, 11]
 
 
 class TestFeaturesEnv:

@@ -9,11 +9,8 @@ mesh, and registers as a *dynamic* Slurm node (`slurmd -Z`) fetching its config 
 Drives apt+sudo directly. Intended path only — no fallbacks (test box; failures decided live).
 """
 
-import getpass
 import hashlib
 import ipaddress
-import json
-import os
 import platform
 import re
 import secrets
@@ -24,8 +21,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import (api, auth, backup, config, enroll, guest, headapi, menu, mesh, monitor, settings,
-               system, templates, tls, ui)
+from . import (api, auth, backup, config, enroll, guest, headapi, menu, mesh, monitor, podman,
+               settings, system, templates, tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -68,14 +65,10 @@ def add_repos(head: bool = False) -> None:
     """Add the apt sources CCC's pins need. Every one of them is an EXTRA file under
     sources.list.d — this box's own sources are never rewritten (see the snapshot template).
 
-    The apptainer PPA and NodeSource are added on the **Head only**. An Arm installs the Head's pinned
-    .deb by path (install_apptainer) and never builds the Dashboard, so a donor's machine gains no
-    third-party repo at all — which is both the hygiene win and the reason two Arms set up months
-    apart now run the same apptainer.
+    NodeSource is added on the **Head only** (an Arm never builds the Dashboard). Podman is Ubuntu's.
     """
     _write_root_file(config.UBUNTU_SNAPSHOT_LIST, templates.render_ubuntu_snapshot_list())
     if head:
-        run(["add-apt-repository", "-y", config.APPTAINER_PPA], sudo=True)
         # Written ourselves rather than by piping NodeSource's setup script to a root shell: the
         # script also apt-get updates, installs, and rewrites sources of its own choosing. Two lines
         # is the whole repo. --yes: clobber on re-run instead of prompting, as above.
@@ -131,43 +124,21 @@ def _apt_install(pkgs: list[str]) -> None:
 
 
 def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> set[str]:
-    """Install the pinned system stack, EXCEPT apptainer — that arrives as the Head's pinned .deb
-    (install_apptainer), which on the Head does not exist yet when this runs.
+    """Install the pinned system stack. `slurm_pkg` is the full suite on a Head, just the node daemon on
+    an Arm. Returns the set of packages installed *before* this ran, for `record_installed` — teardown
+    purges from that manifest.
 
-    `slurm_pkg` is the full suite on a Head, just the node daemon on an Arm. Returns the set of
-    packages installed *before* this ran, so the caller can close the manifest window with
-    `record_installed` once apptainer is in too — teardown purges from that manifest, and apptainer
-    plus its deps must be in it.
+    `head` adds Node (`build_spa` runs `npm`) and apache2-utils (`htpasswd` for the registry).
 
-    `head` adds Node: `build_spa` runs `npm` some twenty minutes later,
-    and a Head with no Node used to get that far and then fail on `No such file or directory: 'npm'`
-    with the Dashboard — the primary surface — never built.
-
-    `libnss3-tools` is on every role, this one included: it carries `certutil`, and without it the
-    Chromium-family browsers on this box go on warning about the Dashboard however well the OS trust
-    store is set up (see system.trust_ccc_ca_browsers).
-
-    `uidmap` likewise, and for the same shape of reason: newuidmap/newgidmap are what an unprivileged
-    `apptainer build` uses to map its fakeroot namespace (see ensure_subid_range), and every node
-    builds the Pod image.
+    `libnss3-tools` is on every role: it carries `certutil`, and without it the Chromium-family
+    browsers on this box go on warning about the Dashboard (see system.trust_ccc_ca_browsers).
     """
     run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
     before = system.installed_packages()
     _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
-                  config.UIDMAP_PKG,
-                  *([config.NODE_PKG] if head else [])])
+                  config.PODMAN_PKG,
+                  *([config.NODE_PKG, config.HTPASSWD_PKG] if head else [])])
     return before
-
-
-def install_apptainer(deb: Path) -> None:
-    """Install the Head's pinned apptainer from the .deb itself — the same bytes on the Head and on
-    every Arm, whatever the PPA holds by then.
-
-    By PATH, not by name: apt treats an argument containing `/` as a file, installs that exact file,
-    and resolves its dependencies from the configured sources (all of apptainer's are plain Ubuntu
-    archive packages — measured; the PPA carries nothing else apptainer needs).
-    """
-    _apt_install([str(deb)])
 
 
 def record_installed(before: set[str]) -> None:
@@ -176,43 +147,6 @@ def record_installed(before: set[str]) -> None:
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config.APT_MANIFEST.write_text("\n".join(added) + "\n" if added else "")
     ui.say(f"  [muted]recorded {len(added)} newly-installed packages → {config.APT_MANIFEST}[/muted]")
-
-
-def pin_apptainer_deb() -> Path:
-    """**Head only.** Fetch the apptainer .deb once and keep it forever, as the fleet's one build.
-
-    Launchpad's PPA keeps only its newest build, so an Arm enrolled today and one enrolled in three
-    months would otherwise get different apptainer versions — and the earlier one would by then be
-    unfetchable. Serving the file removes the PPA from the equation entirely: the Head hands the same
-    bytes to every Arm, and to itself.
-
-    **A re-run keeps the recorded .deb.** That is the whole point — re-fetching would silently give
-    later Arms a build the rest of the fleet is not running. Bumping it is a deliberate act: delete
-    config.APPTAINER_RECORD and re-run.
-    """
-    if config.APPTAINER_RECORD.exists():
-        rec = json.loads(config.APPTAINER_RECORD.read_text())
-        ui.say(f"  [muted]apptainer {rec['version']} already pinned for this cluster — keeping it "
-               f"(delete {config.APPTAINER_RECORD} to re-pin)[/muted]")
-        return config.HEAD_DEBS_DIR / rec["filename"]
-
-    run(["install", "-d", "-m", "0755", str(config.HEAD_DEBS_DIR)], sudo=True)
-    # `apt-get download` needs no root, and run as root it warns about the unsandboxed _apt user —
-    # so it runs as the operator, into a temp dir, and the result is installed root-side.
-    with tempfile.TemporaryDirectory() as tmp:
-        run(["apt-get", "download", config.APPTAINER_PKG], cwd=tmp)
-        deb = next(Path(tmp).glob("apptainer_*.deb"))
-        rec = {
-            "version": run(["dpkg-deb", "-f", str(deb), "Version"],
-                           capture_output=True, text=True).stdout.strip(),
-            "filename": deb.name,
-            "sha256": hashlib.sha256(deb.read_bytes()).hexdigest(),
-        }
-        run(["install", "-m", "0644", str(deb), str(config.HEAD_DEBS_DIR / deb.name)], sudo=True)
-    _write_root_file(config.APPTAINER_RECORD, json.dumps(rec, indent=2, sort_keys=True) + "\n")
-    ui.say(f"  [muted]pinned apptainer {rec['version']} for the whole fleet → "
-           f"{config.HEAD_DEBS_DIR / rec['filename']}[/muted]")
-    return config.HEAD_DEBS_DIR / rec["filename"]
 
 
 def write_slurm_config(mesh_ip: str, features: list[dict] | None = None) -> None:
@@ -339,9 +273,8 @@ def provision_mantle() -> None:
     scheduled onto a remote Arm would setuid() to a user that doesn't exist there. One pinned uid,
     cluster-wide, is what makes a Spawn the same Spawn on any node.
 
-    Home-less on purpose: the Mantle owns no per-node state anywhere. It reads base.sif from the
-    world-readable CCC_IMAGES_DIR and scratches in /tmp (see the Spawn job script), so a donor box is
-    left with nothing. `nologin` is fine — slurmd execs the batch script by its shebang, not a shell.
+    Home-less on purpose: the Mantle owns no per-node state anywhere, so a donor box is left with
+    nothing. `nologin` is fine — slurmd execs the batch script by its shebang, not a shell.
 
     Idempotent (re-runs are non-fatal), but a uid/gid COLLISION is fatal by design: useradd fails,
     setup halts, and we decide live rather than silently landing on a mismatched uid.
@@ -480,90 +413,6 @@ def install_rsyncd(mesh_ip: str) -> None:
     run(["systemctl", "restart", config.RSYNCD_SERVICE], sudo=True)
 
 
-def _next_subid_base() -> int:
-    """The first subid past every range already allocated on this box, floored at SUBID_BASE.
-
-    Overlapping ranges are not rejected by anything — shadow writes what it is told — and two users
-    sharing subids means one can act as the other inside a namespace. So this reads BOTH files and
-    starts after the highest end in either, keeping the uid and gid ranges identical as well.
-    """
-    end = config.SUBID_BASE
-    for path in (config.SUBUID_FILE, config.SUBGID_FILE):
-        for line in path.read_text().splitlines() if path.exists() else []:
-            parts = line.split(":")
-            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
-                end = max(end, int(parts[1]) + int(parts[2]))
-    return end
-
-
-def ensure_subid_range() -> None:
-    """Give the operator subordinate uids/gids if they have none. **Every node** — an Arm builds the
-    Pod image too.
-
-    `apptainer build` runs unprivileged, and its fakeroot namespace is exactly a mapping of the
-    operator's subuid range. `adduser` writes that range for a local account; an LDAP or AD account
-    never passed through adduser, so it has none, and the build fails 20 minutes in with
-    `Could not write info to setgroups: Permission denied` — an error that names neither subuid nor
-    the operator.
-
-    Append-only, and only when the operator is absent from the file: these files are the box's own,
-    may already describe other users, and a range once handed out must not move under anyone. For the
-    same reason teardown leaves what this wrote — two lines naming a user, harmless where they sit,
-    and rewriting a shared system file on the way out is the worse trade.
-    """
-    user = getpass.getuser()
-    have = {p: any(line.startswith(f"{user}:") for line in p.read_text().splitlines())
-            for p in (config.SUBUID_FILE, config.SUBGID_FILE) if p.exists()}
-    if all(have.get(p) for p in (config.SUBUID_FILE, config.SUBGID_FILE)):
-        return
-    base = _next_subid_base()
-    for path in (config.SUBUID_FILE, config.SUBGID_FILE):
-        if have.get(path):
-            continue
-        sh(f"echo '{user}:{base}:{config.SUBID_COUNT}' >> {path}", sudo=True)
-    ui.say(f"  [muted]{user} had no subordinate ids — granted {base}+{config.SUBID_COUNT} so the "
-           f"unprivileged image build can map a fakeroot namespace[/muted]")
-
-
-def build_base_sif() -> None:
-    """Build the base Pod image at CCC_SIF — the SAME path on every node, Head or Arm.
-
-    It lands in a world-readable /opt tree rather than the operator's ~/.ccc because Spawns run as the
-    home-less **Mantle**, which cannot traverse a 0750 home. One path cluster-wide means the rendered
-    job script names the sif identically wherever Slurm places the Spawn.
-
-    Built locally on each node (apptainer build) — deliberately NOT shipped from the Head, which would
-    push the image over the mesh at every enrollment. Skipped if already present, and teardown keeps it
-    unless --all.
-
-    **That skip is why a changed image needs `cuttle teardown --all`.** The definition here is rendered
-    fresh on every run, but an existing base.sif is never compared against it: a node that already has
-    one keeps whatever it built, however old. So changing BASE_DEF_TMPL or its pinned digest is a
-    fleet-wide teardown --all + setup, not a re-run.
-    """
-    ensure_subid_range()   # the build maps a fakeroot namespace out of these; before anything else
-    # Root-owned tree; make it operator-writable to build in place, then world-readable to run.
-    # The group is the operator's real primary gid, NOT their username: a user-private group is an
-    # Ubuntu default, not a rule, and a directory-managed operator (LDAP/AD) has no group of their own
-    # name — `-g <username>` there is `install: invalid group`, and setup dies before the Pod image.
-    run(["install", "-d", "-o", getpass.getuser(), "-g", str(os.getgid()),
-         str(config.CCC_IMAGES_DIR)], sudo=True)
-    if config.CCC_SIF.exists():
-        ui.say(f"  [muted]base.sif exists ({config.CCC_SIF}) — skipping build. `cuttle teardown "
-               f"--all` is what rebuilds it if the image definition has changed.[/muted]")
-        return
-    def_file = config.CCC_IMAGES_DIR / "base.def"
-    def_file.write_text(templates.render_base_def())
-    # Cache into CCC's own tree, not the default ~/.apptainer/cache. This build runs unprivileged, so
-    # apptainer caches every pulled layer under the invoking operator's home — multi-GB, outside every
-    # path teardown knows about, and reclaimed by nothing. Pointed at ~/.ccc instead, which teardown
-    # already removes. Not `apptainer cache clean`, which would take the operator's unrelated layers.
-    config.APPTAINER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    run(["apptainer", "build", str(config.CCC_SIF), str(def_file)],
-        env={**os.environ, "APPTAINER_CACHEDIR": str(config.APPTAINER_CACHE_DIR)})
-    run(["chmod", "-R", "a+rX", str(config.CCC_IMAGES_DIR)], sudo=True)
-
-
 def install_env_tools() -> None:
     """Install the pinned uv + micromamba that build a Spawn's declared **Environment**
     (ccc_head_api.environments), into config.ENV_TOOLS_DIR. **Every node**, Head and Arm alike.
@@ -572,9 +421,7 @@ def install_env_tools() -> None:
     bandwidth — see config.ENV_TOOLS_DIR for the measurement that forced that. On the Head because its
     co-located Arm is an Arm like any other, and because **Arm Feature** libraries are still built here.
 
-    Not baked into base.sif: the image is built once per node and skipped when it already exists
-    (`build_base_sif`), so a tool pinned inside it could only be bumped by a full teardown of every
-    enrolled box. As a separate tree it is re-installed by an ordinary re-setup.
+    The base image COPYs the uv from here at build time (podman.build_images), so this runs first.
 
     Verified against the sha256 pinned in config, then installed 0755 into a root-owned tree: the build
     runs as a **Guise** inside a Pod with this directory bound read-only, so the binaries must be
@@ -626,69 +473,6 @@ def provision_env_cache() -> None:
     run(["install", "-d", "-m", "0777", str(config.NODE_ENV_CACHE_DIR)], sudo=True)
     ui.say(f"  [muted]environment build caches → {config.NODE_ENV_CACHE_DIR}/<guise> "
            f"(each pruned past {config.NODE_ENV_CACHE_MAX_GB}GB)[/muted]")
-
-
-def build_bench_env() -> None:
-    """Build THIS node's copy of the enrollment benchmark's torch **Environment**. Every node.
-
-    base.sif carries no Python and no torch any more (templates.BASE_DEF_TMPL), and the benchmark is the
-    one thing that ran on the image's own — so it needs an env of its own. It is not a Spawn's: nobody
-    submitted it, it has no manifest and no Guise, and it is the same declaration on every box forever.
-
-    **Per node, from PyPI, pinned** (config.BENCH_TORCH_PKG). It used to be built once on the Head and
-    pulled by each Arm over a read-only [benchenv] rsync module — but that is 4.6 GB across the mesh,
-    measured at 29 minutes to a remote Arm against the benchmark job's 10-minute wall. The pin is what
-    now carries the comparability that one shared tree used to; see config.BENCH_TORCH_PKG.
-
-    Here at setup rather than inside the benchmark job, for two reasons: the job has a wall and this
-    does not, and a box whose network cannot fetch torch is a box that cannot run a Spawn either — which
-    is worth failing on before it enrolls rather than as an unexplained missing Power.
-
-    Built INSIDE a Pod, with the destination bound at the one path it will ever be used at: a venv bakes
-    its prefix into pyvenv.cfg, its own `bin/python` symlink and every console-script shebang, so the
-    tree does not survive being used from a different path. The host directory underneath is free to
-    move, which is why this can build in the operator's temp dir and be installed afterwards.
-
-    Skipped if it already exists — like base.sif, a re-run must not re-fetch 4.6 GB. `cuttle teardown
-    --all` is what discards it (and the image) when the pin here changes.
-    """
-    dest = config.BENCH_ENV_DIR
-    if (dest / "venv" / "bin" / "python").exists():
-        ui.say(f"  [muted]benchmark environment exists ({dest}) — skipping build[/muted]")
-        return
-    uv = str(config.ENV_TOOLS_DIR / "uv")
-    venv = f"{config.BENCH_ENV_MOUNT}/venv"
-    with tempfile.TemporaryDirectory() as tmp:
-        build, cache = Path(tmp) / "env", Path(tmp) / "cache"
-        build.mkdir(), cache.mkdir()
-        for argv in ([uv, "venv", "--python", config.BENCH_ENV_PYTHON, venv],
-                     [uv, "pip", "install", "--python", f"{venv}/bin/python",
-                      config.BENCH_TORCH_PKG]):
-            # The same two settings that make a Spawn's Environment self-contained (see
-            # ccc_head_api.environments): only-managed forbids uv from adopting an interpreter it did
-            # not install — a system python this box happens to have and the Pod does not — and
-            # INSTALL_DIR puts the one it downloads inside the tree that is kept.
-            #
-            # A THROWAWAY cache, deliberately not the node's (config.NODE_ENV_CACHE_DIR). This runs as
-            # the operator, and every Spawn runs as a **Guise** — different uids, so nothing written
-            # here could ever be reused, and writing it into the shared parent would leave an
-            # operator-owned `uv/` tree that locks every Guise out of its own cache. That is exactly
-            # what shipped and broke on hardware 2026-08-08.
-            run(["apptainer", "exec", "--contain", "--pwd", "/",
-                 "--bind", f"{build}:{config.BENCH_ENV_MOUNT},{cache}:/ccc-cache,"
-                           f"{config.ENV_TOOLS_DIR}:{config.ENV_TOOLS_DIR}:ro",
-                 "--env", f"UV_CACHE_DIR=/ccc-cache/uv,UV_PYTHON_PREFERENCE=only-managed,"
-                          f"UV_PYTHON_INSTALL_DIR={config.BENCH_ENV_MOUNT}/py,"
-                          f"TMPDIR=/ccc-cache/tmp,LC_ALL=C.UTF-8,LANG=C.UTF-8",
-                 str(config.CCC_SIF), *argv], cwd="/")
-        # World-readable in /opt, like base.sif and for the same reason: the benchmark runs as the
-        # home-less cluster **Guise**, which can read neither the operator's home nor a 0700 Mantle
-        # tree. `cp -a` keeps the symlinks as symlinks — `bin/python` points at BENCH_ENV_MOUNT, a path
-        # that exists only inside a Pod, so resolving them here would copy nothing.
-        run(["install", "-d", "-m", "0755", str(dest)], sudo=True)
-        run(["cp", "-a", *[str(p) for p in build.iterdir()], str(dest)], sudo=True)
-        run(["chmod", "-R", "a+rX", str(dest)], sudo=True)
-    ui.say(f"  [muted]{config.BENCH_TORCH_PKG} → {dest}[/muted]")
 
 
 def _fetch(url: str, dest: Path, sha256: str) -> None:
@@ -847,9 +631,7 @@ def build_spa() -> None:
 
 
 def make_user_dirs() -> None:
-    """The operator's own ~/.ccc — settings + credentials only. No images/ or spawns/ here: Pod images
-    live in the world-readable CCC_IMAGES_DIR (the home-less Mantle must read them) and Spawn results
-    live on the Head, fetched over the API.
+    """The operator's own ~/.ccc — settings + credentials only. Images live in rootful Podman's store.
 
     0700 explicitly: everything under ~/.ccc is this operator's alone (credentials, pinned certs, run
     logs), and the ambient umask is not a decision anyone made about it."""
@@ -1003,13 +785,11 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         # design, since it is administered over its own tailnet — drops ccc0 traffic until exempted.
         mesh.ensure_ts_exemption(_write_root_file)
     with ui.step("Adding package repositories"):
-        add_repos(head=True)  # the apptainer PPA is added HERE and nowhere else in the fleet
-    with ui.step("Installing Slurm, munge, Apptainer and Node"):
+        add_repos(head=True)  # NodeSource is added HERE and nowhere else in the fleet
+    with ui.step("Installing Slurm, munge, Podman and Node"):
         before = install_packages(head=True)
-        # /var/lib/ccc must exist before the .deb can be stored under it, and it is munge-owned — so
-        # this waits until apt has created the `munge` user, i.e. until just now.
+        # /var/lib/ccc is munge-owned, so this waits until apt has created the `munge` user.
         make_registry_dir()
-        install_apptainer(pin_apptainer_deb())  # the Head runs exactly what it serves its Arms
         record_installed(before)
     # Before write_slurm_config, which reads this box's Features back out of the registry to render its
     # NodeName line.
@@ -1057,6 +837,10 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         # The Head answers on itself. Written after the cert, so the name and the SAN that covers it
         # arrive together and the Dashboard is never briefly resolvable but untrusted.
         system.write_hosts_entry("127.0.0.1")
+    with ui.step("Installing the container runtime and registry"):
+        podman.install_cdi(_write_root_file)
+        podman.install_launcher(_write_root_file)   # every node: cluster jobs start through it
+        podman.install_registry(_write_root_file, mesh_ip)  # after the cert: it serves the Head's leaf
     with ui.step("Starting the Head API and the Karma tick"):
         headapi.install_head(_write_root_file, mesh_ip)  # board + SPA + auth, LAN+mesh
         headapi.install_karma(_write_root_file)  # ranks the queue by standing (same venv)
@@ -1066,15 +850,13 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         monitor.install(_write_root_file)        # disk/services/rogue-usage, see monitor.py
         if not update:
             monitor.prompt_smtp(_write_root_file)  # SMTP creds for alerting; skippable
-    with ui.step("Building the Pod image"):
-        build_base_sif()                         # Mantle-readable, at the cluster-wide path
     with ui.step("Installing the Environment build tools"):
-        install_env_tools()                      # uv + micromamba — every node builds (environments.py)
+        install_env_tools()                      # uv + micromamba — the base image COPYs this uv
         provision_env_cache()                    # what every build on this box downloads into
-    with ui.step("Building the benchmark environment"):
-        build_bench_env()                        # the torch base.sif no longer carries; needs both above
+    with ui.step("Building the base and benchmark images"):
+        podman.build_images(_write_root_file)    # once per release; pushed for every Arm to pull
     # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because it is a real
-    # job: it needs slurmd up, the Pod image built, and rsyncd listening.
+    # job: it needs slurmd up, the images pushed, and rsyncd listening.
     #
     # Skipped outright by an Update, and skipped by `setup` too when the registry row already carries
     # the answer: a benchmark costs ten minutes and a card, not something a re-run should spend.
@@ -1530,14 +1312,9 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         enroll.wait_for_admit(t["mesh_ip"], node_name)
 
     with ui.step("Adding package repositories"):
-        add_repos()  # no apptainer PPA: this is a donor's box, and it gains no third-party repo
-    with ui.step("Installing Slurm, munge and Apptainer"):
+        add_repos()  # no NodeSource: this is a donor's box
+    with ui.step("Installing Slurm, munge and Podman"):
         before = install_packages(config.SLURMD_PKG)
-        # Apptainer comes from the HEAD, not from Launchpad — the same .deb every other node in this
-        # cluster installed, checksum-verified. `info` carried its version + sha256 back from /enroll.
-        deb = enroll.fetch_apptainer_deb(t["mesh_ip"], info["apptainer"])
-        install_apptainer(deb)
-        deb.unlink()  # 35 MB, kept only as long as apt needed to read it
         record_installed(before)
         enroll.write_munge_key(info["munge_key"])  # now that `munge` exists to own it
 
@@ -1567,20 +1344,20 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         # and `Prolog=` may still be held back fleet-wide at that moment (enroll.arms_missing). Every
         # other Guise on this box is created lazily, by the prolog, when that User's work first lands.
         auth.provision_guise(config.GUISE_CLUSTER_UID)
-    with ui.step("Building the Pod image"):
-        build_base_sif()
+    # Pulled, never built: the base must be the Head's exact bytes (a Dive's User layer is only valid
+    # on the base it was committed from). Needs the hosts entry + CA from enrolling, above.
+    with ui.step("Installing the container runtime and pulling the images"):
+        podman.install_cdi(_write_root_file)
+        podman.install_launcher(_write_root_file)
+        podman.write_registry_auth(_write_root_file, info["registry"]["user"],
+                                   info["registry"]["password"])
+        podman.pull_images(info["images"])
     # Every Environment this Arm ever runs is built HERE, at job start, out of this box's own bandwidth
     # — a Head-built env had to cross the mesh, and that measured 29 minutes for a 4.6 GB torch tree
     # (config.ENV_TOOLS_DIR). So the tools and the cache are part of enrolling, not Head furniture.
     with ui.step("Installing the Environment build tools"):
         install_env_tools()
         provision_env_cache()
-    # Before the benchmark below, which runs this env's interpreter. The long one: a cold torch install
-    # over a donor's link. It is the same one-time cost as the base.sif build above, and it is paid here
-    # rather than inside the benchmark job because that job has a 10-minute wall.
-    with ui.step("Building the benchmark environment"):
-        build_bench_env()
-
     with ui.step("Recording Arm Features"):
         # World-readable like the other rendered configs here: install paths aren't secret, and a
         # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The

@@ -109,9 +109,7 @@ _SUDOERS_CCC_SLURM = f"""\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
 # The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Spawns as the Guise that owns
 # them: submit, re-nice, cancel, signal. Runas is the Guise group — NOT root.
-# NO `apptainer`. It was granted here while the Head built each Spawn's **Environment**; the Arm that
-# runs the Spawn builds it now, inside its own job, so the Head API runs no User's code at all and has
-# no business entering a Pod. Slurm's four verbs are the whole grant.
+# The Head API runs no User's code and starts no container; Slurm's verbs are the whole grant.
 {config.HEAD_API_USER} ALL=(%{config.GUISE_GROUP}) NOPASSWD: /usr/bin/sbatch, /usr/bin/scancel, \
 /usr/bin/scontrol
 """
@@ -148,12 +146,10 @@ Environment=CCC_HEAD_DB={config.HEAD_DB}
 # Served open at GET /ca.pem: the public half of the CA, so a box can trust this Head instead of
 # clicking through a warning. The key beside it is 0600 {config.HEAD_API_USER}-owned and stays here.
 Environment=CCC_CA_CERT={config.HEAD_CA_CERT}
-# Submission: the Head's mesh IP (so a remote Arm can rsync results home) and the cluster-wide image
-# path. Nothing reads CCC_MESH_IP/CCC_SIF in 2.0 until Dives bring submission back; the state dir is
-# still read (spawns, siphons). Paths match cuttle.config defaults.
+# The Head's mesh IP (so a remote Arm can rsync home; unread until Dives) and the state dir (spawns,
+# siphons). Paths match cuttle.config defaults.
 Environment=CCC_MESH_IP={mesh_ip}
 Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
-Environment=CCC_SIF={config.CCC_SIF}
 # --no-access-log: the app's own middleware logs one enriched line per request (with the authed user
 # and latency), so uvicorn's bare access log would only duplicate it. Its error log (startup, 500s
 # it re-raises) stays on.

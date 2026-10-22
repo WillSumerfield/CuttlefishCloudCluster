@@ -25,9 +25,9 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(enroll, "MUNGE_KEY", tmp_path / "munge.key")
     enroll.MUNGE_KEY.write_bytes(b"the-cluster-secret")
     monkeypatch.setattr(enroll, "REGISTRY", tmp_path / "arms.json")
-    monkeypatch.setattr(enroll, "APPTAINER_RECORD", tmp_path / "apptainer.json")
-    enroll.APPTAINER_RECORD.write_text(
-        json.dumps({"version": "1.5.3", "filename": "apptainer.deb", "sha256": "x"}))
+    monkeypatch.setattr(enroll, "IMAGES_RECORD", tmp_path / "images.json")
+    enroll.IMAGES_RECORD.write_text(json.dumps({"base": "b", "bench": "c"}))
+    monkeypatch.setattr(enroll, "_pull_password", lambda name: "pw")
     monkeypatch.setenv("CCC_CTLD_ADDR", "100.99.0.1:6817")
     monkeypatch.setenv("CCC_CLUSTER", "ccc")
     monkeypatch.setenv("CCC_PARTITION", "ccc")

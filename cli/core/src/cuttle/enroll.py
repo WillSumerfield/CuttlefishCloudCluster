@@ -22,7 +22,6 @@ Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import base64
-import hashlib
 import json
 import re
 import tempfile
@@ -32,7 +31,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import auth, config, headapi, menu, mesh, settings, system, templates, ui
+from . import auth, config, headapi, menu, mesh, podman, settings, system, templates, ui
 from . import features as features_mod   # `features` is a parameter name throughout this module
 from .system import run
 
@@ -165,35 +164,6 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
         except json.JSONDecodeError:
             detail = raw
         raise ui.abort(f"the Head refused this Arm's enrollment ({e.code}): {detail}") from e
-
-
-def fetch_apptainer_deb(head_mesh_ip: str, pin: dict) -> Path:
-    """Pull the apptainer .deb the Head pinned for this cluster, and refuse anything else.
-
-    Reproducibility here is fleet-internal by necessity: the Launchpad PPA keeps only its newest build,
-    so a version cannot be resurrected once pruned — but the Head downloaded it once and hands every
-    Arm those same bytes, so a node enrolled today and one enrolled next year agree. `pin` is the
-    {version, sha256, filename} block /enroll returned.
-
-    The sha256 is checked because it is nearly free, not because the mesh is doubted: this file becomes
-    root-installed software, and a truncated download (the ordinary failure) would otherwise reach
-    `apt-get install` as an unreadable archive.
-    """
-    dest = Path(tempfile.gettempdir()) / pin["filename"]
-    urllib.request.urlretrieve(f"{headapi.enroll_url(head_mesh_ip)}/apptainer.deb", dest)
-    got = hashlib.sha256(dest.read_bytes()).hexdigest()
-    if got != pin["sha256"]:
-        dest.unlink(missing_ok=True)
-        raise ui.abort(
-            f"the apptainer .deb from the Head does not match what the Head said it would be\n"
-            f"  expected sha256 {pin['sha256']}\n"
-            f"  got      sha256 {got}",
-            next_step="re-run `cuttle setup --arm` — if it happens again, the Head's copy is damaged "
-                      "and the operator should delete /var/lib/ccc/apptainer.json and re-run "
-                      "`cuttle setup --head`")
-    ui.say(f"  [muted]apptainer {pin['version']} from the Head — the build the rest of this cluster "
-           f"runs[/muted]")
-    return dest
 
 
 def wait_for_admit(head_mesh_ip: str, node_name: str, timeout_s: int = 900) -> None:
@@ -588,11 +558,12 @@ def _benchmark_arm(name: str) -> dict:
     run(["rm", "-f", str(dest / "power")], sudo=True)  # a re-benchmark must not read the old numbers
 
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
-        f.write(templates.render_bench_sbatch(name, head_ip, _bench_secret(), gpus))
+        f.write(templates.render_bench_sbatch(name, head_ip, _bench_secret(),
+                                              podman.load_images()["bench"], gpus))
         job_file = f.name
     Path(job_file).chmod(0o644)  # sbatch reads it as the cluster Guise, not as the operator
 
-    with ui.step(f"Benchmarking {name} (matmul in the Pod — this is what prices a second on it)"):
+    with ui.step(f"Benchmarking {name} (matmul in the benchmark image — this prices a second on it)"):
         # Unlinked the moment sbatch has read it — it holds no state past submission, and left behind
         # it is one /tmp/tmp*.sbatch per benchmark, forever.
         #
@@ -621,22 +592,12 @@ def _benchmark_arm(name: str) -> dict:
                 time.sleep(3)
             else:
                 # The job's own output cannot be shown here: `JobContainerType=job_container/tmpfs`
-                # gives every job a PRIVATE /tmp, so the sink the benchmark writes dies with it and no
-                # later job — not even on the same node — can read it. So this names the one cause the
-                # operator cannot otherwise guess.
-                #
-                # The Head renders this job (templates.BENCH_SBATCH_TMPL) and binds the node's own
-                # benchmark **Environment** at config.BENCH_ENV_DIR. A box set up by a `cuttle` older
-                # than that env — one that still expected to pull the env over the mesh — has no such
-                # directory, apptainer fails on a bind source that does not exist, and the job dies in
-                # seconds while this loop waits out the full timeout with nothing to report. That is a
-                # version skew between the Head and the Arm, and it looks exactly like a hung job.
+                # gives every job a PRIVATE /tmp, so the sink the benchmark writes dies with it.
                 raise ui.abort(f"{name}'s benchmark produced no result within "
                                f"{config.BENCH_TIMEOUT_S}s",
-                               next_step=f"check `{config.BENCH_ENV_DIR}` exists on {name} — an Arm "
-                                         f"set up with an older cuttle has not got it, and must "
-                                         f"re-run `cuttle setup --arm`. Then `cuttle arm benchmark "
-                                         f"{name}`")
+                               next_step=f"on {name}: `sudo podman images` should list the bench "
+                                         f"image, and `journalctl -u slurmd` the job's ccc-launch "
+                                         f"refusal if any. Then `cuttle arm benchmark {name}`")
         except KeyboardInterrupt:
             run(["scancel", bench_job], sudo=True, check=False)
             raise
@@ -646,7 +607,7 @@ def _benchmark_arm(name: str) -> dict:
     if len(result["powers"]) != gpus:
         raise ui.abort(
             f"{name} registered {gpus} GPU(s) but the benchmark priced {len(result['powers'])} — "
-            f"the Pod saw different hardware than enrollment did",
+            f"the container saw different hardware than enrollment did",
             next_step=f"check `scontrol show node {name}` against nvidia-smi on that box, then "
                       f"re-run `cuttle arm benchmark {name}`")
     reg[name]["powers"] = result["powers"]
@@ -736,6 +697,8 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     reg[name] = {"owner": owner, "gpu_devices": None, "mesh_ip": None, "admitted": False,
                  "vram_mb": None, "powers": None, "gpu": None}
     save_registry(reg)
+    # Its own registry pull credential, handed over at /enroll beside the munge key.
+    podman.mint_pull_cred(write_root_file, name)
 
     token = _mint_token(name, mesh.mint_preauthkey())
     # The token has to be readable RIGHT NOW: the next line blocks for up to five minutes waiting for
@@ -890,7 +853,9 @@ def remove_arm(name: str, write_root_file) -> None:
     if reg.pop(name, None) is not None:
         save_registry(reg)
         render_gres(reg, write_root_file)
-    print(f"cuttle: {name} removed from Slurm, the registry, and evicted from the mesh")
+    podman.revoke_pull_cred(write_root_file, name)
+    print(f"cuttle: {name} removed from Slurm, the registry, and evicted from the mesh; its image "
+          f"pull credential is revoked")
     # What removal does NOT do: this box's copy of the munge key is not invalidated by any of the
     # above (munge has no per-holder revocation). Said every time, not just when it might matter,
     # because "might matter" is a judgment this command has no way to make about a donor it just evicted.

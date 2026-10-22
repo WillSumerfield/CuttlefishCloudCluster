@@ -1,5 +1,8 @@
 """Render single-node slurm.conf + gres.conf."""
 
+import base64
+import json
+
 from . import config, system
 
 SLURM_CONF_TMPL = """\
@@ -172,41 +175,40 @@ ConstrainDevices=yes
 # index `gres_detail` reports at Settlement. The benchmark holds every card (--gres=gpu:N), so the
 # allocation is the whole node and the two orders coincide exactly.
 BENCH_PY = """\
-import json, os, sys, time, torch
+import json, os, subprocess, sys
 
-out = os.environ["CCC_BENCH_OUT"]
+out = os.environ.get("CCC_BENCH_OUT", "/job")
 
-# `merge <gres_index>...` — fold the per-Device files into the ONE `power` file the Head polls for
-# (enroll._benchmark_arm). The indices are passed in gres.conf order, so `powers` comes out in the order
-# Settlement maps back: powers[n] is the Power of the card Slurm reports as IDX:n.
-if sys.argv[1] == "merge":
-    parts = [json.load(open("%s/power.%s" % (out, i))) for i in sys.argv[2:]]
+# `all` — the job's entry point. ccc-launch hands the job's GPUs in CCC_GPUS (GPU or MIG UUIDs, GRES
+# order); the job holds every card, so position i IS GRES index i. One process per Device: a MIG
+# instance is the only device its process can address. Then fold the per-Device files into the ONE
+# `power` file the Head polls for: powers[n] is the Power of the card Slurm reports as IDX:n.
+if sys.argv[1] == "all":
+    devs = os.environ["CCC_GPUS"].split(",")
+    for i, dev in enumerate(devs):
+        subprocess.run([sys.executable, __file__, "measure", str(i)], check=True,
+                       env={{**os.environ, "CUDA_VISIBLE_DEVICES": dev}})
+    parts = [json.load(open("%s/power.%d" % (out, i))) for i in range(len(devs))]
     json.dump({{"powers": [p["power"] for p in parts],
                "vram_mb": parts[0]["vram_mb"], "gpu": parts[0]["gpu"]}},
               open(out + "/power", "w"))
     raise SystemExit
 
-# `measure <torch_index> <gres_index>` — ONE Device, in its own process.
-#
-# One process per Device is not a style choice: a MIG instance is the only device its process can ever
-# address, so a single process could not reach a second card on a MIG-mode Arm however it looped. The
-# caller runs this once per allocated Device. `torch_index` is the index within THIS process's
-# CUDA_VISIBLE_DEVICES — 0 when the caller narrowed that to one MIG UUID, the GRES index when it left
-# Slurm's own value alone on a whole-card Arm.
-dev, gres = int(sys.argv[2]), sys.argv[3]
-assert torch.cuda.device_count() > dev, "CUDA not visible in Pod"
-props = torch.cuda.get_device_properties(dev)   # under MIG this is the INSTANCE's memory, not the card's
-with torch.cuda.device(dev):                    # scopes the allocator and synchronize() to this card
-    a = torch.randn({n}, {n}, device="cuda")
-    b = torch.randn({n}, {n}, device="cuda")
-    for _ in range({warmup}):    # the first matmul pays cuBLAS init — never time it
-        c = a @ b
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    for _ in range({iters}):
-        c = a @ b
-    torch.cuda.synchronize()
-    elapsed = time.perf_counter() - t0
+# `measure <gres_index>` — the ONE Device in CUDA_VISIBLE_DEVICES, as torch device 0.
+import time, torch
+gres = sys.argv[2]
+assert torch.cuda.device_count() == 1, "CUDA not visible in the container"
+props = torch.cuda.get_device_properties(0)     # under MIG this is the INSTANCE's memory, not the card's
+a = torch.randn({n}, {n}, device="cuda")
+b = torch.randn({n}, {n}, device="cuda")
+for _ in range({warmup}):    # the first matmul pays cuBLAS init — never time it
+    c = a @ b
+torch.cuda.synchronize()
+t0 = time.perf_counter()
+for _ in range({iters}):
+    c = a @ b
+torch.cuda.synchronize()
+elapsed = time.perf_counter() - t0
 json.dump({{
     "power": round({iters} * 2 * {n}**3 / elapsed / 1e12, 2),   # fp32 TFLOP/s
     "vram_mb": props.total_memory // 1024**2,
@@ -214,49 +216,11 @@ json.dump({{
 }}, open("%s/power.%s" % (out, gres), "w"))
 """
 
-# Submitted as the **cluster's own Guise** (`sudo -u ccc-u60001 sbatch`), like every Spawn is submitted
-# as somebody's — it must be, or slurmd on a remote Arm would setuid() to an operator uid that does not
-# exist there. The uid is reserved (config.GUISE_CLUSTER_UID) and the prolog creates the account on the
-# Arm being priced, exactly as it would for any User. --nodelist pins it to the node being
-# priced, and --gres=gpu:N takes ALL of its cards at once so one job measures every Device. Results come home the way every remote Spawn's do: rsync to the Head's [spawns] module, which
-# the Head then reads. That path is identical on the Head's own co-located Arm (it rsyncs to itself over
-# the mesh), so there is no is-this-the-Head branch here.
-# Resolving a card's MIG device, for the job scripts that must name one. Inserted verbatim (never
-# `.format`ed), so it is written in ordinary shell rather than doubled braces.
-#
-# **Why the device MINOR is the input.** A job knows which cards it holds as Slurm GRES indices, and a
-# GRES index is a position in gres.conf — which CCC writes from `/dev/nvidiaN` paths in numeric order
-# (system.gpu_devices). nvidia-smi enumerates by PCI bus instead, and the two orders are not guaranteed
-# to agree. On a box whose cards are identical — dex, two RTX PRO 6000s — a mismatch is *invisible*:
-# every Spawn still runs, and Settlement simply bills one card's seconds at the other card's Power,
-# forever, with nothing anywhere to notice.
-#
-# `/proc/driver/nvidia/gpus/<bdf>/information` is what makes this exact rather than assumed: it carries
-# `Device Minor` and `GPU UUID` in the SAME file, so a minor resolves to a GPU UUID with no PCI bus-id
-# reformatting in between (nvidia-smi prints `00000000:07:00.0` where /proc uses `0000:07:00.0`).
-# `nvidia-smi -L` then lists each MIG device underneath the GPU carrying that UUID.
-#
-# Prints nothing at all for a card that is not in MIG mode, which is how every caller tells the two
-# fleets apart without asking the Head anything.
-MIG_RESOLVER_SH = """\
-ccc_mig_uuid() {
-    local minor="${1#/dev/nvidia}" gpu_uuid
-    [ -d /proc/driver/nvidia/gpus ] || return 0
-    gpu_uuid=$(awk -v m="$minor" '
-        /^GPU UUID:/     { u = $NF }
-        /^Device Minor:/ { if ($NF == m) { print u; exit } }
-    ' /proc/driver/nvidia/gpus/*/information)
-    [ -n "$gpu_uuid" ] || return 0
-    # The first MIG device under this GPU is the whole card: one full-size instance is the resting state
-    # the prolog guarantees. A Spawn that re-carved its own card mid-run is on its own here, and that is
-    # the point — by then it is setting CUDA_VISIBLE_DEVICES for itself.
-    nvidia-smi -L | awk -v g="$gpu_uuid" '
-        /^GPU /      { u = $NF; gsub(/[()]/, "", u); cur = (u == g); next }
-        cur && /MIG/ { m = $NF; gsub(/[()]/, "", m); print m; exit }
-    '
-}
-"""
-
+# The **Benchmark** job. Submitted as the **cluster's own Guise** (`sudo -u ccc-u60001 sbatch`), pinned
+# to the node being priced, holding ALL its cards so one job prices every Device. The container is
+# started by `ccc-launch` from the spec line below (the benchmark image, `bench.py all`); its /job is
+# config.JOBS_DIR/<jid>, handed back to the Guise when the container exits, so the Power file goes home
+# over the [bench] rsync module from the host. Same on the Head's co-located Arm (rsync to itself).
 BENCH_SBATCH_TMPL = """\
 #!/bin/bash
 #SBATCH --job-name=ccc-bench
@@ -266,58 +230,15 @@ BENCH_SBATCH_TMPL = """\
 #SBATCH --chdir=/tmp
 #SBATCH --output=/tmp/ccc-bench-%j.log
 #SBATCH --error=/tmp/ccc-bench-%j.log
+{spec_line}
 set -e
-out=/tmp/ccc-bench-$SLURM_JOB_ID
-# The .log is sbatch's own sink and stays empty unless the shell itself failed — kept only then, or
-# every benchmark would leave a 0-byte file behind (same rule as a Spawn's /tmp/ccc-<jid>.slurm).
 sink=/tmp/ccc-bench-$SLURM_JOB_ID.log
-trap 'rm -rf "$out"; [ -s "$sink" ] || rm -f "$sink"' EXIT
-mkdir -p "$out"
-cat > "$out/bench.py" <<'CCC_BENCH_PY'
-{bench_py}
-CCC_BENCH_PY
-# The stage-out uses the cluster-lifetime secret from RSYNCD_BENCH_SECRETS — a benchmark never goes
-# through the Head API, so there is no **Siphon** for it to be handed. The module is rooted at the bench
-# subtree, so this URL reaches the Power files and nothing else.
+trap '[ -s "$sink" ] || rm -f "$sink"' EXIT
+sudo -n {launch} "$SLURM_JOB_ID"
+# The cluster-lifetime [bench] secret — a Benchmark never goes through the Head API, so there is no
+# **Siphon** for it. The module is rooted at the bench subtree: this reaches the Power files only.
 export RSYNC_PASSWORD={bench_secret}
-# The torch this measurement needs, which base.sif no longer carries. Built by THIS node at
-# `cuttle setup` (setup.build_bench_env) into config.BENCH_ENV_DIR, so nothing is fetched here — the
-# env was 4.6 GB and pulling it from the Head measured 29 minutes against this job's 10-minute wall.
-#
-# CCC_BENCH_OUT is the benchmark's OWN channel. This is CCC's own script writing to CCC's own path,
-# so it may name it whatever it likes.
-#
-{mig_resolver}
-# This node's Devices in gres.conf order — the list a Slurm GRES index indexes into. `sort -V` so
-# nvidia10 follows nvidia2, matching system.gpu_devices()'s numeric sort exactly rather than by luck.
-mapfile -t devs < <(printf '%s\\n' /dev/nvidia[0-9]* | sort -V)
-# The cards Slurm gave this job. Read rather than assumed, so the merge below emits Powers in gres.conf
-# order whatever the allocation was — though this job always asks for ALL of them (--gres=gpu:N), which
-# is also why a node-global GRES index and an index within the allocation are the same number here.
-IFS=, read -ra held <<< "$CUDA_VISIBLE_DEVICES"
-#
-# ONE PROCESS PER DEVICE. A MIG instance is the only device its process can ever address, so the single
-# process that used to loop over `torch.cuda.device_count()` could not price a second card on a MIG-mode
-# Arm however it was written. The loop moved out here, where each card gets its own interpreter.
-#
-# /tmp is auto-mounted by Apptainer, so it needs no explicit --bind (unlike a Spawn's, which lives
-# under /var/lib/ccc). The env is bound at the ONE path it was built at and cannot be moved from
-# (config.BENCH_ENV_MOUNT), and its own interpreter is what runs — the image has none.
-for g in "${{held[@]}}"; do
-    uuid=$(ccc_mig_uuid "${{devs[$g]}}")
-    # MIG: narrow this process to the one instance it may address, which is then its torch device 0.
-    # Whole card: leave Slurm's own CUDA_VISIBLE_DEVICES exactly as it set it and index into it, which
-    # is what this benchmark did before MIG was ever on this fleet.
-    if [ -n "$uuid" ]; then cvd="$uuid"; tdev=0; else cvd="$CUDA_VISIBLE_DEVICES"; tdev="$g"; fi
-    apptainer exec --nv --env CCC_BENCH_OUT="$out" --env CUDA_VISIBLE_DEVICES="$cvd" \\
-      --bind "{bench_env_dir}:{env_mount}" \\
-      {sif} {env_mount}/venv/bin/python "$out/bench.py" measure "$tdev" "$g"
-done
-# No --nv: the merge touches no card, it only folds the per-Device files into the one `power` file the
-# Head has been polling for all along (enroll._benchmark_arm reads exactly that path).
-apptainer exec --env CCC_BENCH_OUT="$out" --bind "{bench_env_dir}:{env_mount}" \\
-  {sif} {env_mount}/venv/bin/python "$out/bench.py" merge "${{held[@]}}"
-rsync -a "$out/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
+rsync -a "{jobs_dir}/$SLURM_JOB_ID/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """
 
 
@@ -350,194 +271,180 @@ def render_ubuntu_snapshot_list() -> str:
     )
 
 
-# Base Pod image: plain Ubuntu and the handful of things a Pod cannot bring with it. NO Python, no torch, no
-# CUDA — every Spawn declares an **Environment** and that Environment carries its own interpreter and its
-# own torch (ccc_head_api.environments), so anything supplied here would be shadowed by what the Spawn
-# brought and paid for in durable disk on every donated box regardless. ~150 MB instead of 2.9 GB.
+# The **base image** — frozen per release, built once on the Head (podman.build_images), pulled by
+# every Arm by digest. Everything a User's Tidepool and Dives start from; Users add to it with
+# `apt install` as container root (an unprivileged host id range), and the diff is their own layer.
 #
-# `--nv` still injects the host's driver at exec, and PyPI's torch wheels bundle their own CUDA runtime,
-# so removing the CUDA image costs a GPU Spawn nothing.
+# No Python packages, on purpose: every library comes from a Dive's dependency file, so a User's env
+# never inherits defaults. Python 3.12 (Ubuntu's) + the pinned uv only.
+# CUDA: the driver arrives via CDI and the runtime libs in wheels; only nvcc + headers live here, for
+# compiling extensions. build-essential for the same reason (Triton/Inductor shell out to a C compiler).
 #
-# * `git` — the binary every other git tool shells out to: `git clone`, `pip install git+https://`,
-#   and uv's git dependencies all end up here. ~15MB.
-# * `openssh-server` — sshd runs INSIDE the Pod, unprivileged, as the Mantle (see
-#   the Tide Pool payload). It never setuid()s: the "login" is to the SAME uid already
-#   running the Pod, so there is no privilege drop and no per-User account to provision on the Arm.
-#   It pulls in openssh-client, which is where `ssh-keygen -A` comes from.
-# * `ca-certificates` — an Environment is built in a Pod off THIS image, and uv fetches every package
-#   (and the standalone CPython itself) over TLS. A stock Ubuntu image carries no trust store, so
-#   without this every build fails at the first HTTPS connection. The PyTorch image happened to have
-#   one; nothing here may depend on happening to.
-# * `build-essential` — a toolchain, because Python packages COMPILE AT RUNTIME. Triton is the case
-#   that forced it: the first `torch.compile`d kernel makes Inductor instantiate Triton's CUDA driver,
-#   which builds a `cuda_utils` C shim by shelling out to `$CC`, else to whatever `gcc`/`clang` is on
-#   PATH. No wheel on PyPI ships a compiler, so an **Environment** cannot supply one however it is
-#   declared, and `--contain` (the Pod's payload) hides the host's — a box with gcc in /usr/bin and
-#   none in its Pods was the observed failure. Without it every Spawn that reaches torch.compile dies
-#   at the WORST moment: the card is already held and the Environment already built, so it is a
-#   full-price failed Spawn rather than a refusal at submit.
-#
-#   **The metapackage, deliberately, rather than the minimal closure.** Naming packages one at a time
-#   cost two fleet-wide `teardown --all` cycles to learn what a toolchain is: `gcc` alone missed
-#   `libc6-dev` (a *Recommends*, dropped by `--no-install-recommends`, and the owner of stdio.h,
-#   stdlib.h and the crt objects), and `gcc` + `libc6-dev` still had no C++ compiler for Inductor's CPU
-#   kernels, `torch.utils.cpp_extension`, or any sdist that has to build a wheel. Each wrong guess is
-#   another teardown of every enrolled box, to save ~100 MB. build-essential is what every one of those
-#   packages already expects to find, and it ends the guessing.
-#
-#   It is the single largest thing in this image — roughly +250 MB, against ~150 MB for everything else
-#   put together — and that is a real cost paid in durable disk on somebody's own machine. Named here
-#   as a deliberate trade, not an oversight.
-# * `zsh` plus the vendored oh-my-zsh tree and gitstatusd (config.ZSH_DATA_DIR) — the shell a **Tide
-#   Pool** hands its User. Only the *tree* is here; the two files that configure it are rendered by the
-#   Head at every session (ccc_head_api.zshrc), because a prompt is the part anybody actually iterates on
-#   and this image can only be changed by a fleet-wide teardown.
-# * `/etc/zsh/zprofile` gets one appended line, and it is the load-bearing half of the whole change.
-#   The Tide Pool payload puts the `cd` into the project and the scratch TMPDIR in
-#   `/etc/profile.d/ccc-tidepool.sh`, because sshd builds a fresh environment per session and
-#   drops apptainer's `--env`. **zsh does not read /etc/profile.d.** Debian's zprofile sources
-#   /etc/profile and Ubuntu's ships as comments only, so without this line every one of those is silently
-#   lost — the session opens, the prompt looks right, and the shell is in the wrong place. That exact
-#   bug was already found and fixed once on the bash path (spawns.py, 2026-08-07); this is the line that
-#   keeps switching shells from re-introducing it.
-# * `ncurses-term` — sshd forwards the connecting client's TERM, and `ncurses-base` carries 61 entries
-#   which cover xterm/screen and not tmux-256color, kitty, alacritty or wezterm. A missing terminfo entry
-#   renders as a mangled prompt, which reads to a User as "p10k is broken" rather than as a TERM problem.
-# * `man-db`, the removal of dpkg's excludes file, and a reinstall of the core tools — the
-#   `colored-man-pages` plugin is inert without a `man`, and an ubuntu image discards /usr/share/man/* on
-#   unpack. Removing the excludes only helps packages installed *after* it, so the already-unpacked core
-#   is reinstalled to get its pages back; otherwise `man zsh` works and `man ls` does not, which is a
-#   worse state than having no man at all.
-# * `nano` and `neovim` — the editors. A **Tide Pool** is a shell a person sits in, and until now the
-#   only way to change a line of code in one was to edit it somewhere else and re-upload. Two, not one,
-#   and not a choice offered at submit: which editor a person reaches for is a fifty-year-old argument
-#   and neither costs enough to be worth having it. Between them they are ~20 MB against build-essential's
-#   250, so the trade is not close.
-# * `curl` — the image has neither curl nor wget, and VS Code's Remote-SSH downloads its server into the
-#   Pod over one of them. Nothing else in CCC needs it: every transfer CCC itself makes is rsync over the
-#   Mesh.
-# * `/usr/local/bin/{apt,apt-get,sudo}` — the shims that make `apt install` work for a Guise. See
-#   APT_SHIM below, which is where the reasoning lives.
-# * a baked-in `mantle` passwd/group/home entry, at exactly CCC_UID/CCC_GID — the ONE thing unprivileged
-#   sshd still needs that a stock image does not have: the connecting uid has to resolve via
-#   getpwuid, or sshd cannot find a home dir for authorized_keys or set up a session at all. Written
-#   directly rather than via useradd/groupadd (not guaranteed present in every base image) — three text
-#   appends and a directory, nothing that can fail for a missing tool.
-# What `apt` means inside a Pod. Baked into /usr/local/bin by the %post block below, ahead of
-# /usr/bin on PATH, so a User types the command they already know and it works.
-#
-# **Why it cannot just be `apt`.** A Pod runs as an unprivileged **Guise** and `dpkg` refuses outright:
-# "requested operation requires superuser privilege". Two separate things are missing, and only one of
-# them is solved by the writable overlay the payload now carries (ccc_head_api.spawns): the overlay
-# gives `/usr` and `/var/lib/dpkg` somewhere to write, but dpkg also `chown`s every unpacked file to
-# root:root, and that is a question about identity rather than about permissions.
-#
-# **A nested user namespace is most of the answer.** `unshare -r` maps the Guise to a real uid 0 one
-# level down, so `chown(0,0)` is not faked but genuinely permitted — and it wraps only this command, so
-# nothing touches the Pod's own process tree. That is what makes apptainer's `--fakeroot` unnecessary
-# as well: a Tide Pool's sshd is PID 1 in its Pod, and wrapping THAT would fake the privilege
-# separation and per-session setuid() it actually performs.
-#
-# **`unshare -r` maps ONE id pair, and that is the rest of the story.** A package shipping a file owned
-# by any group other than root — `utmp` (tmux, screen), `crontab`, `ssl-cert`, `messagebus` — makes dpkg
-# call `chown(0, 43)` for a gid that does not exist in that namespace, and the kernel answers EINVAL
-# rather than EPERM. dpkg treats it as fatal: `tmux` unpacked, `libutempter0` did not, and the install
-# died half-done ("error setting ownership of './usr/lib/.../utempter': Invalid argument").
-#
-# `fakeroot` closes it, but ONLY with `FAKEROOTDONTTRYCHOWN=1`, and the distinction is the whole reason
-# this line reads the way it does. libfakeroot intercepts `chown` and then still issues the real syscall
-# underneath, swallowing the failure only when it is EPERM — so plain `fakeroot` passes EINVAL straight
-# through and changes nothing. That variable stops it attempting the real call at all. Measured here
-# (2026-08-18): `unshare -r fakeroot chown 0:43` fails EINVAL, the same command with the variable set
-# succeeds. Ownership is then faked rather than applied, which costs nothing real: ns-uid 0 IS the
-# Guise, so every file dpkg unpacks was already landing Guise-owned on the disk underneath.
-#
-# `APT::Sandbox::User=root` is not optional. apt drops to `_apt` to fetch, and a namespace holding one
-# mapped uid has no such account — without it every download dies on "setgroups: Operation not
-# permitted" long before dpkg is reached.
-#
-# The `update` is once per Pod, behind a marker on the bound disk scratch. BASE_DEF_TMPL ends with
-# `rm -rf /var/lib/apt/lists/*` (an image ships no stale index), so a fresh Pod knows of no packages
-# at all and the first install would otherwise fail with "unable to locate package" — which reads as
-# a broken name rather than a missing index.
-#
-# `DEBIAN_FRONTEND=noninteractive` because there is no one to answer. A package that stops to ask
-# (tzdata is the usual one) would hang the Spawn holding it until its wall clock ran out.
-#
-# Three lines are dropped from stderr, and only three — each measured on hardware, each printed on
-# every single invocation, none of them meaning anything failed. `setpriv: setresuid failed` is
-# man-db's trigger trying to drop to its own service account, and `chown to root:adm` is apt failing
-# to give its own log away, both direct consequences of a namespace that maps ONE uid. `debconf:
-# delaying package configuration` is the slim image not shipping apt-utils, which is deliberate.
-# Leaving them in would teach Users to read past apt's stderr, and that is where the real failures
-# appear too. Anything else apt says comes through untouched.
-APT_SHIM = """\
-#!/bin/sh
-# Rendered into every Pod image by `cuttle setup`. Do not hand-edit.
-export DEBIAN_FRONTEND=noninteractive
-ccc_noise='setpriv: setresuid failed|chown to root:adm of file|^debconf: delaying package'
-# stderr is filtered via a file rather than inline, so the exit status stays apt's own rather than
-# grep's; stdout, where apt's progress and package list go, is never touched and stays live.
-ccc_apt() {
-    ccc_err=/ccc-tmp/.apt-stderr.$$
-    ccc_ns="unshare -r env FAKEROOTDONTTRYCHOWN=1 fakeroot"
-    $ccc_ns /usr/bin/apt-get -o APT::Sandbox::User=root "$@" 2>"$ccc_err"
-    ccc_rc=$?
-    grep -Ev "$ccc_noise" "$ccc_err" >&2
-    rm -f "$ccc_err"
-    return $ccc_rc
-}
-[ -f /ccc-tmp/.apt-updated ] || { ccc_apt update && : > /ccc-tmp/.apt-updated; }
-ccc_apt "$@"
+# The dpkg excludes file goes first so man pages survive, and the already-unpacked core is reinstalled
+# to get its pages back. The zprofile line makes zsh logins read /etc/profile.d (Ubuntu's zsh doesn't).
+BASE_CONTAINERFILE_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+FROM {image}
+ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \\
+    CUDA_HOME={cuda_home} PATH={cuda_home}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes \\
+ && apt-get update \\
+ && apt-get install -y --no-install-recommends {apt} \\
+ && apt-get install -y --reinstall --no-install-recommends \\
+      coreutils bash grep sed findutils procps tar \\
+ && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen \\
+ && curl -fsSL -o /tmp/cuda-keyring.deb {cuda_keyring} && dpkg -i /tmp/cuda-keyring.deb \\
+ && rm /tmp/cuda-keyring.deb && apt-get update \\
+ && apt-get install -y --no-install-recommends {cuda_pkgs} \\
+ && rm -rf /var/lib/apt/lists/*
+RUN printf 'export CUDA_HOME={cuda_home}\\nexport PATH={cuda_home}/bin:$PATH\\n' > /etc/profile.d/ccc-cuda.sh \\
+ && echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile
+COPY uv /usr/local/bin/uv
+COPY oh-my-zsh {omz}
+RUN chown -R root:root {omz} && chmod -R go-w {omz} \\
+ && chmod 0755 /usr/local/bin/uv {omz}/custom/themes/powerlevel10k/gitstatus/usrbin/gitstatusd-linux-x86_64
+"""
+
+BASE_APT_PKGS = (
+    "sudo openssh-server openssh-client rsync ca-certificates zsh locales procps iproute2 git "
+    "git-lfs curl wget tmux vim nano less htop nvtop tree jq file unzip zip zstd xz-utils "
+    "bash-completion man-db ncurses-term build-essential python3 python3.12-dev python-is-python3"
+)
+
+# The **benchmark image**: base + the pinned torch + bench.py. Only the torch layer is new on an Arm.
+# Users never see it. `--pull=never` FROM the local base tag: exactly the base just built.
+BENCH_CONTAINERFILE_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+FROM {base}
+RUN uv venv --python /usr/bin/python3.12 {venv} \\
+ && uv pip install --no-cache --python {venv}/bin/python {torch}
+COPY bench.py {bench_py}
 """
 
 
-BASE_DEF_TMPL = """\
-Bootstrap: docker
-From: {image}
+def render_base_containerfile() -> str:
+    return BASE_CONTAINERFILE_TMPL.format(
+        image=config.BASE_IMAGE_DOCKER, apt=BASE_APT_PKGS, cuda_home=config.CUDA_HOME,
+        cuda_keyring=config.CUDA_REPO_KEYRING, cuda_pkgs=config.CUDA_PKGS, omz=config.POD_OMZ_DIR)
 
-%files
-    {zsh_src}/oh-my-zsh {omz}
 
-%post
-    # Runs inside the (disposable) build container only — never the host.
-    #
-    # The excludes file goes FIRST: it is what tells dpkg to throw away /usr/share/man/* as each package
-    # unpacks, so it has to be gone before anything below is installed or their pages go with it.
-    rm -f /etc/dpkg/dpkg.cfg.d/excludes
-    apt-get update && apt-get install -y --no-install-recommends openssh-server ca-certificates \
-      build-essential zsh zoxide ncurses-term man-db nano neovim curl fakeroot \
-      && apt-get install -y --reinstall --no-install-recommends \
-      coreutils bash grep sed findutils procps tar \
-      && rm -rf /var/lib/apt/lists/*
-    echo "mantle:x:{uid}:{gid}:CCC Mantle:/home/mantle:/bin/bash" >> /etc/passwd
-    echo "mantle:x:{gid}:" >> /etc/group
-    mkdir -p /home/mantle && chown {uid}:{gid} /home/mantle
-    # The bridge. See the note above this template — without it a zsh login silently loses everything
-    # the Tide Pool payload writes to /etc/profile.d.
-    echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile
-    # %files preserves the building operator's ownership and mode. Asserted here instead, so the tree is
-    # identical whoever built the node: oh-my-zsh runs `compaudit` over its own directories at every
-    # login and warns loudly about anything group-writable or owned by a third party, and a Pod's shell
-    # is not the place to be explaining that.
-    chown -R root:root {omz}
-    chmod -R go-w {omz}
-    chmod 0755 {omz}/custom/themes/powerlevel10k/gitstatus/usrbin/gitstatusd-linux-x86_64
-    # The package-manager shims. /usr/local/bin precedes /usr/bin on every PATH a Pod ever has, so
-    # these are what `apt` means in here without anybody being told.
-    cat > /usr/local/bin/apt-get <<'CCC_APT'
-{apt_shim}
-CCC_APT
-    cp /usr/local/bin/apt-get /usr/local/bin/apt
-    # `sudo` grants nothing and pretends to grant nothing — a Pod has no privilege left to escalate
-    # to. It exists because `sudo apt install x` is muscle memory, and without it that types out as
-    # "sudo: command not found", which reads as a broken image rather than as an unnecessary word.
-    cat > /usr/local/bin/sudo <<'CCC_SUDO'
-#!/bin/sh
-exec "$@"
-CCC_SUDO
-    chmod 0755 /usr/local/bin/apt-get /usr/local/bin/apt /usr/local/bin/sudo
+def render_bench_containerfile() -> str:
+    return BENCH_CONTAINERFILE_TMPL.format(
+        base=f"{config.REGISTRY}/ccc/base:{config.IMAGE_TAG}", venv=config.BENCH_VENV,
+        torch=config.BENCH_TORCH_PKG, bench_py=config.BENCH_PY_PATH)
+
+
+def render_bench_py() -> str:
+    return BENCH_PY.format(n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP,
+                           iters=config.BENCH_ITERS)
+
+
+# One `registry:2` config per instance (podman.install_registry). Push: 127.0.0.1, read-write. Pull:
+# the mesh IP, read-only. Same store, same TLS leaf (the Head API's — its SANs carry the Cluster name).
+REGISTRY_CONFIG_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+version: 0.1
+log:
+  level: warn
+storage:
+  filesystem:
+    rootdirectory: /var/lib/registry
+  delete:
+    enabled: false
+  maintenance:
+    uploadpurging:
+      enabled: {purge}
+    readonly:
+      enabled: {readonly}
+http:
+  addr: {addr}:{port}
+  tls:
+    certificate: /certs/head.crt
+    key: /certs/head.key
+auth:
+  htpasswd:
+    realm: ccc
+    path: /auth/htpasswd
 """
+
+REGISTRY_QUADLET_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+[Unit]
+Description=CCC image registry ({role})
+After=network-online.target {ts_service}.service
+Wants=network-online.target
+
+[Container]
+Image={image}
+ContainerName={service}-{role}
+Network=host
+Volume={data}:/var/lib/registry
+Volume={etc}/{role}.yml:/etc/docker/registry/config.yml:ro
+Volume={etc}/{role}.htpasswd:/auth/htpasswd:ro
+Volume={cert}:/certs/head.crt:ro
+Volume={key}:/certs/head.key:ro
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def render_registry_config(addr: str, readonly: bool) -> str:
+    return REGISTRY_CONFIG_TMPL.format(addr=addr, port=config.REGISTRY_PORT,
+                                       readonly=str(readonly).lower(),
+                                       purge=str(not readonly).lower())
+
+
+def render_registry_quadlet(role: str) -> str:
+    return REGISTRY_QUADLET_TMPL.format(
+        role=role, image=config.REGISTRY_IMAGE, service=config.REGISTRY_SERVICE,
+        ts_service=config.CCC_TS_SERVICE, data=config.REGISTRY_DATA, etc=config.REGISTRY_ETC,
+        cert=config.HEAD_CERT, key=config.HEAD_KEY)
+
+
+CDI_PATCH_SERVICE_TMPL = """\
+[Unit]
+Description=CCC: make NVIDIA's CDI spec readable by Podman 4.9
+
+[Service]
+Type=oneshot
+ExecStart={bin} {spec}
+"""
+
+CDI_PATCH_PATH_TMPL = """\
+[Unit]
+Description=CCC: re-patch NVIDIA's CDI spec whenever it is regenerated
+
+[Path]
+PathChanged={spec}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def render_cdi_patch_service() -> str:
+    return CDI_PATCH_SERVICE_TMPL.format(bin=config.CDI_PATCH_BIN, spec=config.CDI_SPEC)
+
+
+def render_cdi_patch_path() -> str:
+    return CDI_PATCH_PATH_TMPL.format(spec=config.CDI_SPEC)
+
+
+# Every node. A Guise may run ccc-launch as root with ONE argument, a job id (sudo's ^…$ regex form);
+# ccc-launch itself checks the caller is inside that job and owns it.
+LAUNCH_SUDOERS_TMPL = """\
+# Managed by `cuttle setup` — do not hand-edit, re-run setup instead.
+%{group} ALL=(root) NOPASSWD: {bin} ^[0-9]+$
+"""
+
+
+def render_launch_sudoers() -> str:
+    return LAUNCH_SUDOERS_TMPL.format(group=config.GUISE_GROUP, bin=config.CCC_LAUNCH_BIN)
 
 
 # rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the
@@ -561,8 +468,7 @@ CCC_SUDO
 # root-owned, unlike a Siphon's, which must be writable by the Head API.
 #
 # It is WRITABLE (it is where a Power file lands) and every Arm holds the one secret, so nothing that
-# must not be overwritten may live under it. Nothing does: the benchmark's torch env is built by each
-# node at setup (config.BENCH_ENV_DIR) rather than served from here.
+# must not be overwritten may live under it.
 RSYNCD_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 address = {mesh_ip}
@@ -616,13 +522,6 @@ def render_rsyncd_unit() -> str:
     return RSYNCD_UNIT_TMPL.format(ts_service=config.CCC_TS_SERVICE, conf=config.RSYNCD_CONF)
 
 
-def render_base_def() -> str:
-    return BASE_DEF_TMPL.format(image=config.BASE_IMAGE_DOCKER,
-                                uid=config.CCC_UID, gid=config.CCC_GID,
-                                zsh_src=config.ZSH_DATA_DIR, omz=config.POD_OMZ_DIR,
-                                apt_shim=APT_SHIM.rstrip("\n"))
-
-
 # The `Prolog=` line, or the reason there isn't one. Rendering the line is the moment Guises become
 # mandatory fleet-wide, and it is the ONE fleet change in this project that punishes being early: an
 # Arm named by it without the script drains, and stays drained across a slurmd restart. So the Head
@@ -637,7 +536,7 @@ _PROLOG_HELD = """\
 # restart. Re-run `cuttle setup --arm` on each, then `cuttle setup --head` here."""
 
 # A private /tmp and /dev/shm per job (temp/spawn-isolation.md Phase 4) — the wall that contains the
-# WRAPPER, not just the Apptainer child inside it. Without it a remote Spawn's scratch sits in the
+# WRAPPER, not just the container inside it. Without it a remote Spawn's scratch sits in the
 # host's shared /tmp beside every concurrent Spawn's.
 #
 # The two lines are one setting: "'PrologFlags=Contain' must be set to use this plugin" (man 5
@@ -719,8 +618,8 @@ MIG_ADMIN_SH = """\
 # profiles, so there is no suffixed spelling of this one to choose between.
 CCC_MIG_FULL_PROFILE=0
 
-# The GPU UUID of a device minor, out of the one file that carries both (see MIG_RESOLVER_SH for why
-# the minor is what everything here is keyed by). Used as nvidia-smi's `-i`, so no index can drift.
+# The GPU UUID of a device minor, out of the one file that carries both (gres.conf is
+# written in device-minor order, so the minor is what everything here is keyed by). Used as nvidia-smi's `-i`, so no index can drift.
 ccc_gpu_uuid() {
     awk -v m="$1" '
         /^GPU UUID:/     { u = $NF }
@@ -823,6 +722,10 @@ EPILOG_TMPL = """\
 # the Head's co-located Arm under its state dir); the absent one is a harmless no-op on the other node.
 # ALWAYS exit 0: a non-zero epilog drains the node, and a stale/missing dir must never do that.
 rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
+# A ccc-launch container whose job was killed (scancel, time limit, OOM) never reached its `--rm`: the
+# kill took its processes, but Podman still holds the record and the overlay mount. Then its /job dir.
+timeout 60 podman rm -f "{job_ctr}$SLURM_JOB_ID" >/dev/null 2>&1
+rm -rf "{jobs_dir}/$SLURM_JOB_ID"
 # sbatch's own stdout/stderr sinks. The wrapper's own
 # `trap ... EXIT` already reaps these when it runs — but that's the same trap that misses SIGKILL, so a
 # hard-killed job leaves one behind forever without this. Same "keep only if non-empty" rule as the
@@ -862,6 +765,7 @@ exit 0
 
 def render_epilog() -> str:
     return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR,
+                              job_ctr=config.JOB_CONTAINER_PREFIX, jobs_dir=config.JOBS_DIR,
                               head_spawns=config.HEAD_SPAWNS_DIR,
                               mantle=config.HEAD_API_USER,
                               guise_group=config.GUISE_GROUP,
@@ -872,10 +776,9 @@ def render_epilog() -> str:
 # Where a **Guise** comes into existence on a machine, and the only place it can be: it runs as root
 # (SlurmdUser=root), before the job step, on whatever node Slurm picked, with no network and no head.db.
 # `SLURM_JOB_UID` is its ONLY input — which is why a Guise is named `ccc-u<uid>` after its uid and
-# nothing else. Measured on hardware: a Slurm job LAUNCHES fine as a uid with no local account, but
-# `apptainer exec` refuses one outright ("Couldn't determine user account
-# information"), and every Spawn is an apptainer exec. So this is mandatory, not an optimisation — and
-# it lands in time, because the job step is where apptainer is invoked and this runs before it.
+# nothing else. A Slurm job LAUNCHES fine as a uid with no local account, but `sudo ccc-launch` (the
+# Guise group's one sudoers rule) needs the account and its group membership. So this is mandatory,
+# and it lands in time: it runs before the job step that calls ccc-launch.
 #
 # Written on every node by `cuttle setup` exactly as the epilog is (setup._start_slurmd): configless
 # Slurm serves slurm.conf but NOT the scripts it names, and a `Prolog=` pointing at a file a node does
@@ -989,25 +892,23 @@ def render_prolog() -> str:
     )
 
 
-def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, gpus: int = 1) -> str:
+def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, bench_image: str,
+                        gpus: int = 1) -> str:
     """`gpus` = how many Devices this node registered. The job holds all of them and returns one Power
-    each, so a re-benchmark of a 4-card box is still a single Spawn."""
-    bench_py = BENCH_PY.format(n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP,
-                               iters=config.BENCH_ITERS)
+    each, so a re-benchmark of a 4-card box is still a single job."""
+    spec = {"image": bench_image, "argv": [f"{config.BENCH_VENV}/bin/python", config.BENCH_PY_PATH,
+                                           "all"],
+            "env": {"CCC_BENCH_OUT": "/job"}}
     return BENCH_SBATCH_TMPL.format(
-        node=node,
-        gpus=gpus,
-        minutes=config.BENCH_TIME_MINUTES,
-        bench_py=bench_py,
-        mig_resolver=MIG_RESOLVER_SH,
-        sif=config.CCC_SIF,
-        head_ip=head_mesh_ip,
-        bench_mod=config.RSYNC_MODULE_BENCH,
-        bench_env_dir=config.BENCH_ENV_DIR,
-        env_mount=config.BENCH_ENV_MOUNT,
-        bench_user=config.RSYNC_BENCH_USER,
-        bench_secret=bench_secret,
-    )
+        node=node, gpus=gpus, minutes=config.BENCH_TIME_MINUTES,
+        spec_line=launch_spec_line(spec), launch=config.CCC_LAUNCH_BIN, jobs_dir=config.JOBS_DIR,
+        head_ip=head_mesh_ip, bench_mod=config.RSYNC_MODULE_BENCH,
+        bench_user=config.RSYNC_BENCH_USER, bench_secret=bench_secret)
+
+
+def launch_spec_line(spec: dict) -> str:
+    """The `# ccc-launch-spec:` line ccc-launch reads back from slurmctld's copy of the batch script."""
+    return "# ccc-launch-spec: " + base64.b64encode(json.dumps(spec, sort_keys=True).encode()).decode()
 
 
 def render_cgroup_conf() -> str:
