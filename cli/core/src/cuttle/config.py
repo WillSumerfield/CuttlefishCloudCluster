@@ -10,7 +10,12 @@ from pathlib import Path
 SLURM_VERSION = "23.11.4-1.2ubuntu5"
 SLURM_PKG = f"slurm-wlm={SLURM_VERSION}"
 SLURMD_PKG = f"slurmd={SLURM_VERSION}"
-NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.20.0-1"  # NVIDIA's repo retains old versions — safe
+NVIDIA_CTK_VERSION = "1.20.0-1"  # NVIDIA's repo retains old versions — safe
+# The toolkit Depends on its siblings at EXACTLY its version, and apt will not pick an older-than-newest
+# sibling on its own ("Depends: … (= 1.20.0-1) but 1.20.1-1 is to be installed") — so all four are pinned.
+NVIDIA_CTK_PKGS = [f"{p}={NVIDIA_CTK_VERSION}" for p in
+                   ("nvidia-container-toolkit", "nvidia-container-toolkit-base",
+                    "libnvidia-container-tools", "libnvidia-container1")]
 MUNGE_PKG = "munge"  # auth; distro version fine
 # Every node: rootful Podman runs every container (cluster jobs, Dives, Tidepools) — see podman.py.
 PODMAN_PKG = "podman"

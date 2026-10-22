@@ -141,7 +141,8 @@ def _apt_install(pkgs: list[str]) -> None:
     Anything else re-raises untouched — `run` has already printed apt's own output.
     """
     try:
-        run(["apt-get", *system.APT_LOCK_WAIT, "install", "-y", *pkgs], sudo=True)
+        # --allow-downgrades: a box already on a newer toolkit than the pin is brought back to it.
+        run(["apt-get", *system.APT_LOCK_WAIT, "install", "-y", "--allow-downgrades", *pkgs], sudo=True)
     except subprocess.CalledProcessError:
         for spec in pkgs:
             if "=" not in spec or _version_available(spec):
@@ -168,7 +169,7 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     """
     run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
     before = system.installed_packages()
-    _apt_install([slurm_pkg, config.NVIDIA_CTK_PKG, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
+    _apt_install([slurm_pkg, *config.NVIDIA_CTK_PKGS, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
                   config.PODMAN_PKG, config.INIT_PKG,
                   *([config.NODE_PKG, config.HTPASSWD_PKG] if head else [])])
     return before

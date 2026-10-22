@@ -117,6 +117,14 @@ class TestUbuntuSnapshot:
         assert not any(config.NODESOURCE_KEY_URL in c for c in ran)
         assert any(c.startswith("rm -f") and str(ours) in c for c in ran)
 
+    def test_the_toolkit_and_its_exact_version_siblings_are_pinned_together(self):
+        """The toolkit Depends on its siblings at `=` its own version; apt won't pick an older sibling
+        than the repo's newest by itself, so every one is named at the pin."""
+        names = {p.split("=")[0]: p.split("=")[1] for p in config.NVIDIA_CTK_PKGS}
+        assert set(names) == {"nvidia-container-toolkit", "nvidia-container-toolkit-base",
+                              "libnvidia-container-tools", "libnvidia-container1"}
+        assert set(names.values()) == {config.NVIDIA_CTK_VERSION}
+
     def test_node_repo_is_signed_and_pinned(self):
         """An unsigned source, or a floating `nodejs`, and the Dashboard build stops being the thing
         that was tested. node_22.x retains its old builds, so the exact pin stays fetchable."""
