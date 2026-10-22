@@ -352,8 +352,11 @@ storage:
   delete:
     enabled: false
   maintenance:
-    uploadpurging:
+    uploadpurging:            # 2.8 panics if enabled without age/interval/dryrun
       enabled: {purge}
+      age: 168h
+      interval: 24h
+      dryrun: false
     readonly:
       enabled: {readonly}
 http:
