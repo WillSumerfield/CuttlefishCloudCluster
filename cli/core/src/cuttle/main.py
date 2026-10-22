@@ -607,12 +607,12 @@ def teardown(
         False, "--keep-packages", help="Leave apt packages + repos installed (fast config reset)."
     ),
     all_: bool = typer.Option(
-        False, "--all", help="Also remove base.sif and the Head's TLS cert (forces an image rebuild "
+        False, "--all", help="Also remove the images and the Head's TLS cert (forces an image rebuild "
                              "and a client re-pin next setup). ~/.ccc is removed either way."
     ),
     full: bool = typer.Option(
         False, "--full", help="Sweep EVERYTHING cuttle installed — every role's services, packages, "
-                              "mesh, ~/.ccc, base.sif and the TLS cert. For a partial/stuck install."
+                              "mesh, ~/.ccc, the images and the TLS cert. For a partial/stuck install."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the typed confirmation."),
 ):
@@ -642,7 +642,7 @@ def teardown(
         else:
             host = system.hostname()
             ui.caution("this removes Slurm, the mesh, head.db (every account, Balance and ledger row) "
-                       "and ~/.ccc" + (" — plus base.sif and the TLS cert" if all_ else ""))
+                       "and ~/.ccc" + (" — plus the images and the TLS cert" if all_ else ""))
             if not ui.ask_typed(f"Tear down {host}?", host):
                 raise ui.abort("not torn down")
 

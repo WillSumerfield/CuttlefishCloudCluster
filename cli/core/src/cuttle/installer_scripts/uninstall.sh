@@ -8,7 +8,7 @@
 set -u
 
 if command -v cuttle >/dev/null 2>&1; then
-    # --full sweeps every role's state plus ~/.ccc, base.sif and the TLS cert, tolerant of whatever
+    # --full sweeps every role's state plus ~/.ccc, the images and the TLS cert, tolerant of whatever
     # was never there — the right hammer for "remove all of it, including anything a partial install
     # left behind." --yes skips the typed confirmation (this is already the confirmation).
     echo "cuttle: tearing this box down..."

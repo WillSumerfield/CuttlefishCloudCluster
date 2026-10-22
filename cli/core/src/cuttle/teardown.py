@@ -1,9 +1,9 @@
 """`cuttle teardown` — reverse `setup`. `--local` (Head+Arm), `--arm` (remote Arm), or `--client`
 (just this box's ~/.ccc). With no role flag the role is auto-detected; `--full` sweeps every role.
 
-Default: full uninstall (daemons + packages + repos + Slurm config/state), but keep ~/.ccc
-(preserves the multi-GB base.sif). Flags: --keep-packages (leave apt pkgs + repos),
---all (also remove ~/.ccc), --full (sweep everything, any role). Tolerant of partial state —
+Default: full uninstall (daemons + packages + repos + Slurm config/state), but keep the base +
+benchmark images (multi-GB, frozen per release). Flags: --keep-packages (leave apt pkgs + repos),
+--all (also remove the images, the registry store and the Head CA), --full (sweep everything, any role). Tolerant of partial state —
 safe to re-run, and every removal step no-ops on a box that never had it.
 """
 
@@ -11,7 +11,7 @@ import glob
 import shutil
 import time
 
-from . import api, config, guest, menu, mesh, settings, sshconfig, system, ui
+from . import api, config, guest, menu, mesh, podman, settings, sshconfig, system, ui
 from .system import run
 
 
@@ -29,7 +29,7 @@ _SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SE
              config.RSYNCD_SERVICE, f"{config.BACKUP_SERVICE}.timer", f"{config.MONITOR_SERVICE}.timer",
              "munge", "slurmctld", "slurmd"]
 _ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / API / rsyncd / headscale
-_PACKAGES = ["slurm-wlm", "slurmd", "apptainer", "nvidia-container-toolkit", "munge"]
+_PACKAGES = ["slurm-wlm", "slurmd", "podman", "nvidia-container-toolkit", "munge"]
 # Every apt source file setup ADDED — and only those. The box's own sources.list/ubuntu.sources were
 # never touched (see templates.UBUNTU_SNAPSHOT_LIST_TMPL), so there is nothing there to restore.
 _APT_SOURCE_FILES = [
@@ -230,9 +230,6 @@ def purge_packages() -> None:
 
 
 def remove_repos() -> None:
-    # The apptainer PPA is added on the Head only now, but the removal stays unconditional: it is
-    # idempotent, and boxes set up before that change still have it.
-    run(["add-apt-repository", "-y", "--remove", config.APPTAINER_PPA], sudo=True, check=False)
     run(["rm", "-f", *_APT_SOURCE_FILES], sudo=True, check=False)
 
 
@@ -294,44 +291,33 @@ def remove_arm_state() -> None:
 
 def prune_opt_dir() -> None:
     """Drop /opt/ccc once its children are gone. `rmdir`, never `rm -rf`: whatever is still in there
-    was kept deliberately (base.sif and the TLS cert both survive a teardown without --all)."""
+    was kept deliberately (the registry store and the TLS cert both survive a teardown without
+    --all)."""
     run(["rmdir", "--ignore-fail-on-non-empty", str(config.CCC_OPT)], sudo=True, check=False)
 
 
-def remove_images() -> None:
-    """The node's base.sif (built to /opt so the home-less Mantle can read it). Every node has one —
-    Head and Arm alike — so both teardowns drop it, and both only under --all: a config-only re-verify
-    must not trigger an apptainer rebuild.
-
-    --all is also the ONLY way a changed image reaches a node. `setup.build_base_sif` skips whenever the
-    file exists and never compares it against the definition it would render now, so a fleet whose image
-    definition moved needs teardown --all + setup on every node, Head included."""
-    run(["rm", "-rf", str(config.CCC_IMAGES_DIR)], sudo=True, check=False)
+def remove_containers(all_: bool) -> None:
+    """CCC's Podman state (podman.remove): job containers, registry units, CDI hook, launcher, creds.
+    Before the package purge — it needs `podman`. Images + registry store only under --all: they are
+    frozen per release and multi-GB, and --all is the only way a changed image reaches this box."""
+    podman.remove(all_)
 
 
 def remove_env_tools() -> None:
     """The pinned uv + micromamba (config.ENV_TOOLS_DIR). Every node has them — every node builds
     Environments now — so both teardowns drop them.
 
-    UNCONDITIONAL, unlike base.sif beside it: these are ~50MB, `setup` re-fetches and re-verifies them
+    UNCONDITIONAL, unlike the images: these are ~50MB, `setup` re-fetches and re-verifies them
     on every run regardless, and nothing downstream is pinned to the copy on disk. Keeping them past a
     teardown would be a pure leak, which is what it was until this existed."""
     run(["rm", "-rf", str(config.ENV_TOOLS_DIR)], sudo=True, check=False)
-
-
-def remove_bench_env() -> None:
-    """This node's benchmark torch **Environment** (config.BENCH_ENV_DIR). Every node builds one at
-    setup, so both teardowns drop it — and only under --all, on exactly base.sif's rule: it is several
-    GB, `setup` skips the build whenever it already exists, and --all is therefore the only way a
-    changed config.BENCH_TORCH_PKG ever reaches this box."""
-    run(["rm", "-rf", str(config.BENCH_ENV_DIR)], sudo=True, check=False)
 
 
 def remove_tls() -> None:
     """The Head's CA and serving cert. Head-only, and --all only: every client has PINNED that CA and
     every box in the cluster has installed it, so dropping it means the next setup mints a different
     one and nothing trusts this Head until each of them is re-trusted. Same preserve-unless--all rule
-    as base.sif, for a different reason."""
+    as the images, for a different reason."""
     run(["rm", "-rf", str(config.CCC_TLS_DIR)], sudo=True, check=False)
 
 
@@ -367,7 +353,7 @@ def _summarise(what: str, keep_packages: bool, kept_images: bool = True,
     """
     ui.result("torn down", what)
     kept = [label for label, keep in (("packages + repos", keep_packages),
-                                      ("base.sif + the benchmark env", kept_images),
+                                      ("the base + benchmark images", kept_images),
                                       ("the cluster's certificate authority", kept_tls)) if keep]
     ui.result("kept", ", ".join(kept) if kept else "nothing — this box is clean")
     if kept_tls is False:
@@ -444,10 +430,8 @@ def end_guise_processes(grace: float = 5.0) -> None:
     Runas list of the Head's sudoers rule, so every Spawn it submitted was refused by sudo. The whole
     chain is silent, and surfaces days later as one User who cannot run anything.
 
-    TERM, then KILL after a grace period: apptainer's own children (squashfuse, fuse-overlayfs) need a
-    moment to unmount the Pod cleanly, and killing them outright leaves mounts behind under
-    /var/lib/apptainer. `cancel_spawns` has usually already done this the polite way — what reaches
-    here is what Slurm no longer knows about.
+    TERM, then KILL after a grace period. `cancel_spawns` has usually already done this the polite
+    way — what reaches here is what Slurm no longer knows about.
     """
     names = guise_names()
     if not names:
@@ -518,6 +502,8 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         remove_guises()  # one per User whose Spawn ever landed here — created by the Slurm prolog
     with ui.step("Removing the cluster name and its certificate authority"):
         untrust_and_unname()    # BEFORE the purge below — it needs certutil, which the purge takes
+    with ui.step("Removing CCC's containers" + (" and images" if all_ else "")):
+        remove_containers(all_)  # BEFORE the purge below — it needs podman
     if not keep_packages:
         with ui.step("Purging packages and repositories"):
             purge_packages()
@@ -526,10 +512,6 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         remove_user_dirs()      # ~/.ccc always (see teardown_local)
         remove_arm_state()      # the Feature mirror + the env build cache, both under CCC_LIB
         remove_env_tools()      # uv + micromamba: re-fetched by every setup, so never worth keeping
-        if all_:
-            remove_images()     # base.sif kept unless --all — in /opt, not ~/.ccc, and --all is the
-                                # only way a changed image definition ever reaches this box
-            remove_bench_env()  # same rule, same reason: setup skips it whenever it already exists
         prune_opt_dir()         # after the /opt removals above: with those gone, /opt/ccc is empty here
     _summarise("Arm", keep_packages, kept_images=not all_)
     # Not hygiene — see `teardown_arm`: the stale Head-side node BLOCKS re-enrolling this box, so it
@@ -558,6 +540,8 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
         remove_slurm_config()
     with ui.step("Removing the cluster name and its certificate authority"):
         untrust_and_unname()    # BEFORE the purge below — it needs certutil, which the purge takes
+    with ui.step("Removing CCC's containers" + (" and images" if all_ else "")):
+        remove_containers(all_)  # BEFORE the purge below — it needs podman
     if not keep_packages:
         with ui.step("Purging packages and repositories"):
             purge_packages()
@@ -567,9 +551,7 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
                                 # pins behind after a teardown is what surprised people
         remove_env_tools()      # uv + micromamba: re-fetched by every setup, so never worth keeping
         if all_:
-            remove_images()     # base.sif lives in /opt, not ~/.ccc; the Head cert
-            remove_tls()        # is pinned by every client — both kept unless --all
-            remove_bench_env()  # base.sif's rule again: setup skips it whenever it already exists
+            remove_tls()        # pinned by every client — kept unless --all
     _summarise("local cluster", keep_packages, kept_images=not all_, kept_tls=not all_)
 
 
@@ -624,13 +606,14 @@ def teardown_full(keep_packages: bool = False) -> None:
             remove_guises()
         with ui.step("Removing the cluster name and its certificate authority"):
             untrust_and_unname()  # BEFORE the purge — it needs certutil, which the purge takes
+        with ui.step("Removing CCC's containers and images"):
+            remove_containers(True)  # BEFORE the purge — it needs podman
         if not keep_packages:
             with ui.step("Purging packages and repositories"):
                 purge_packages()
                 remove_repos()
         with ui.step("Removing this box's CCC state"):
             remove_user_dirs()  # local state — a full sweep always takes it
-            remove_images()
             remove_tls()
             prune_opt_dir()     # last: everything that lived under /opt/ccc is gone by now
     _summarise("everything CCC", keep_packages, kept_images=False, kept_tls=False)
