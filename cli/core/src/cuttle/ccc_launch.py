@@ -45,7 +45,8 @@ UID_FLOOR = 60000     # config.CCC_UID — slot 0; the cluster Guise (60001) is 
 UID_CEIL = 61182      # config.GUISE_UID_MAX
 
 IMAGE_RE = re.compile(rf"^{re.escape(REGISTRY)}/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{{64}}$")
-CGROUP_RE = re.compile(r"^0::(?P<step>/.*/(?P<node>[^/]+)_slurmstepd\.scope/job_(?P<jid>\d+)"
+# `<node>_slurmstepd.scope` on dex (Slurm 23.11); plain `slurmstepd.scope` on other builds.
+CGROUP_RE = re.compile(r"^0::(?P<step>/.*/(?:(?P<node>[^/]+)_)?slurmstepd\.scope/job_(?P<jid>\d+)"
                        r"/step_[^/]+)(/|$)", re.M)
 GRES_RE = re.compile(r"\bGRES=\S*?gpu[^(\s]*\(IDX:(?P<idx>[0-9,\-]*)\)")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -62,12 +63,12 @@ def id_base(uid: int) -> int:
     return ID_BASE + (uid - UID_FLOOR) * ID_COUNT
 
 
-def step_cgroup(proc_cgroup: str, jid: str) -> tuple[str, str]:
-    """(step cgroup path, Slurm node name) from /proc/self/cgroup, if it is inside job `jid`."""
+def step_cgroup(proc_cgroup: str, jid: str) -> str:
+    """The step cgroup path from /proc/self/cgroup, if the caller is inside job `jid`."""
     m = CGROUP_RE.search(proc_cgroup)
     if not m or m["jid"] != jid:
         raise Refused(f"not running inside job {jid}")
-    return m["step"], m["node"]
+    return m["step"]
 
 
 def parse_job(text: str) -> dict:
@@ -196,7 +197,7 @@ def main(argv: list[str]) -> int:
         raise Refused("usage: sudo ccc-launch <jobid>")
     jid = argv[1]
     caller = int(os.environ.get("SUDO_UID", "-1"))
-    step, _node = step_cgroup(Path("/proc/self/cgroup").read_text(), jid)
+    step = step_cgroup(Path("/proc/self/cgroup").read_text(), jid)
     job = parse_job(subprocess.run(["/usr/bin/scontrol", "show", "job", "-d", "-o", jid],
                                    capture_output=True, text=True, check=True).stdout)
     if job["uid"] != caller:

@@ -31,9 +31,9 @@ def test_id_base_refuses_non_ccc_uid(uid):
 
 
 def test_step_cgroup():
-    step, node = L.step_cgroup(CGROUP, "42")
-    assert step == "/system.slice/dex_slurmstepd.scope/job_42/step_batch"
-    assert node == "dex"
+    assert L.step_cgroup(CGROUP, "42") == "/system.slice/dex_slurmstepd.scope/job_42/step_batch"
+    plain = "0::/system.slice/slurmstepd.scope/job_7/step_0/user/task_0\n"
+    assert L.step_cgroup(plain, "7") == "/system.slice/slurmstepd.scope/job_7/step_0"
 
 
 @pytest.mark.parametrize("cg,jid", [
