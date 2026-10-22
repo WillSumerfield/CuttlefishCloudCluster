@@ -1,6 +1,7 @@
 """Shell + host-detection helpers."""
 
 import json
+import os
 import platform
 import shutil
 import socket
@@ -192,6 +193,8 @@ def gpu_devices() -> list[str]:
     (see templates.render_gres_conf) and therefore from a Spawn's held index to the Power it is billed
     at — and `/dev/nvidia10` sorts before `/dev/nvidia2` as a string.
     """
+    if is_wsl():   # one /dev/dxg fronts every GPU; preflight holds a WSL box to one card
+        return [config.WSL_GPU_DEVICE] if Path(config.WSL_GPU_DEVICE).exists() else []
     # `nvidia[0-9]*` and not `nvidia*`: /dev/nvidiactl, /dev/nvidia-uvm and /dev/nvidia-caps are
     # control nodes, not cards, and a Spawn holds none of them.
     return sorted((str(p) for p in Path("/dev").glob("nvidia[0-9]*")),
@@ -284,6 +287,29 @@ def os_release() -> dict[str, str]:
 
 def is_native_linux_x86() -> bool:
     return platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
+def is_wsl() -> bool:
+    """WSL2: Microsoft's kernel. No /dev/nvidiaN — the GPU is behind /dev/dxg."""
+    try:
+        return "microsoft" in Path("/proc/sys/kernel/osrelease").read_text().lower()
+    except OSError:
+        return False
+
+
+def wsl_distro() -> str:
+    return os.environ.get("WSL_DISTRO_NAME") or "Ubuntu-24.04"
+
+
+def wsl_keepalive_cmds() -> tuple[str, str]:
+    """(create, delete): the scheduled task a WSL donor runs in an ADMIN Command Prompt (cmd's `&&`).
+    WSL stops a distro once its last terminal closes; a hidden `sleep infinity` from logon keeps
+    slurmd up."""
+    tr = f"conhost.exe --headless wsl.exe -d {wsl_distro()} --exec sleep infinity"
+    return (f'schtasks /create /tn "{config.WSL_KEEPALIVE_TASK}" /sc onlogon /tr "{tr}" /f && '
+            f'schtasks /run /tn "{config.WSL_KEEPALIVE_TASK}"',
+            f'schtasks /end /tn "{config.WSL_KEEPALIVE_TASK}" & '
+            f'schtasks /delete /tn "{config.WSL_KEEPALIVE_TASK}" /f')
 
 
 def is_crostini() -> bool:

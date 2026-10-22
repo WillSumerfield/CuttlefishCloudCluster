@@ -36,6 +36,24 @@ def _write_root_file(path: Path, content: str, mode: str = "644") -> None:
     system.install_file(content, path, mode)
 
 
+def _preflight_wsl(cards: int, pid1: str, cgroup_v2: bool) -> None:
+    """A WSL box: refused, before anything changes, unless it can hold a Slurm job. CCC never edits the
+    Windows side, so each refusal names what the donor does there."""
+    if cards != 1:
+        raise ui.abort(f"a WSL Arm must have exactly one GPU (this box has {cards})",
+                       next_step="WSL puts every GPU behind one /dev/dxg, so Slurm cannot fence a job "
+                                 "to one card — donate from native Ubuntu instead")
+    if pid1 != "systemd":
+        raise ui.abort("WSL is running without systemd",
+                       next_step="add `[boot]` / `systemd=true` to /etc/wsl.conf, run `wsl --shutdown` "
+                                 "in Windows, reopen this distro and rerun setup")
+    if not cgroup_v2:
+        raise ui.abort("WSL is on cgroup v1 — Slurm's job limits and ccc-launch need cgroup v2",
+                       next_step="in Windows, add to %UserProfile%\\.wslconfig:  [wsl2]  "
+                                 "kernelCommandLine = cgroup_no_v1=all  — then `wsl --shutdown`, "
+                                 "reopen this distro and rerun setup")
+
+
 def preflight() -> None:
     rel = system.os_release()
     # ui.say, not print: inside a section this is a row of the box. print goes to stdout, which
@@ -57,6 +75,9 @@ def preflight() -> None:
     # Arm like any other. Aborts (a clean ✗ naming the cards it found), never a traceback.
     model, vram_mb = system.gpu_profile()
     cards, devices = len(system.gpu_inventory()), len(system.gpu_devices())
+    if system.is_wsl():
+        _preflight_wsl(cards, Path("/proc/1/comm").read_text().strip(),
+                       Path("/sys/fs/cgroup/cgroup.controllers").exists())
     ui.say(f"  [muted]gpu={cards}x {model} ({vram_mb} MiB each) → "
            f"Gres=gpu:{devices} Feature={config.vram_feature(vram_mb)}[/muted]")
 
@@ -1409,6 +1430,8 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     ui.result("arm", node_name)
     ui.result("mesh ip", mesh_ip)
     ui.result("check it", "run `sinfo` on the Head")
+    if system.is_wsl():
+        ui.result("keep it up", f"in an admin Command Prompt (cmd): {system.wsl_keepalive_cmds()[0]}")
 
 
 def _arm_first_login() -> None:

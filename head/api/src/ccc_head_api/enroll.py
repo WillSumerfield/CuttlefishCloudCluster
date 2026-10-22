@@ -78,7 +78,7 @@ FEATURE_NAMES = ("vlearn", "isaaclab")
 # the name the donor claims. An uppercase name therefore cannot pass `/enroll` however it got here, so
 # it is refused with an explanation rather than left to fail as an unexplained 403 two checks later.
 NODE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-GPU_DEVICE_RE = re.compile(r"^/dev/nvidia[0-9]+$")
+GPU_DEVICE_RE = re.compile(r"^/dev/(nvidia[0-9]+|dxg)$")   # /dev/dxg: a WSL Arm, alone
 # Same shape as cuttle.config.FEATURE_NAME_RE — it also becomes a Slurm Feature= token and an env var.
 FEATURE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -231,6 +231,8 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     for device in req.gpu_devices:
         if not GPU_DEVICE_RE.match(device):
             raise HTTPException(422, f"unsupported GPU device {device!r} — expected /dev/nvidiaN")
+    if "/dev/dxg" in req.gpu_devices and len(req.gpu_devices) != 1:
+        raise HTTPException(422, "a WSL Arm's /dev/dxg fronts every GPU — it must be the only device")
     # Hard-validate every declared Arm Feature against the catalog — no free typing. An unknown name
     # means the donor's CCC is NEWER than this Head's (both ends carry the same constant), so the
     # remedy names that, not an operator command.

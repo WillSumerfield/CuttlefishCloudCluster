@@ -157,10 +157,19 @@ def mig_uuid(gpu_uuid: str, smi_list: str) -> str | None:
     return None
 
 
+WSL_DXG = Path("/dev/dxg")
+
+
 def gpu_ids(idx: list[int]) -> list[str]:
-    """GRES indices → the CDI-nameable UUID (MIG instance if the card is in MIG mode), GRES order."""
+    """GRES indices → the CDI-nameable UUID (MIG instance if the card is in MIG mode), GRES order.
+    A WSL Arm (no /dev/nvidiaN, one /dev/dxg) has exactly one card: its UUID from nvidia-smi."""
     if not idx:
         return []
+    if WSL_DXG.exists() and not _device_minors():
+        if idx != [0]:
+            raise Refused(f"a WSL Arm has one GPU, job holds GRES {idx}")
+        return subprocess.run(["/usr/bin/nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                              capture_output=True, text=True, check=True).stdout.split()[:1]
     minors, uuids = _device_minors(), _uuid_by_minor()
     smi = subprocess.run(["/usr/bin/nvidia-smi", "-L"], capture_output=True, text=True).stdout
     out = []
@@ -170,8 +179,13 @@ def gpu_ids(idx: list[int]) -> list[str]:
     return out
 
 
+def cdi_names(gpus: list[str], wsl: bool) -> list[str]:
+    """NVIDIA's WSL-mode CDI spec names one device, `all` (= the box's one GPU); elsewhere, by UUID."""
+    return (["all"] if gpus else []) if wsl else gpus
+
+
 def podman_argv(spec: dict, jid: str, base: int, step: str, gpus: list[str], jobdir: Path,
-                binds: list[tuple[Path, str, bool]]) -> list[str]:
+                binds: list[tuple[Path, str, bool]], cdi: list[str] | None = None) -> list[str]:
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
             "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--rm", "--init",
             "--name", f"{CONTAINER_PREFIX}{jid}", "--cgroup-parent", step,
@@ -180,7 +194,7 @@ def podman_argv(spec: dict, jid: str, base: int, step: str, gpus: list[str], job
             "--network", "private" if spec.get("network") else "none",
             "-v", f"{jobdir}:/job", "-w", spec.get("workdir", "/job"),
             "-e", f"CCC_GPUS={','.join(gpus)}", "-e", f"CCC_JOB_ID={jid}"]
-    for g in gpus:
+    for g in gpus if cdi is None else cdi:
         argv += ["--device", f"nvidia.com/gpu={g}"]
     for src, dst, ro in binds:
         argv += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
@@ -220,8 +234,9 @@ def main(argv: list[str]) -> int:
     jobdir.mkdir(mode=0o700, exist_ok=True)
     _chown_tree(jobdir, base, base)       # container root owns /job while it runs
     try:
-        cmd = podman_argv(spec, jid, base, step, gpu_ids(job["gres_idx"]), jobdir,
-                          resolve_binds(spec, jobdir))
+        gpus = gpu_ids(job["gres_idx"])
+        cmd = podman_argv(spec, jid, base, step, gpus, jobdir, resolve_binds(spec, jobdir),
+                          cdi_names(gpus, WSL_DXG.exists() and not _device_minors()))
         return subprocess.run(cmd).returncode
     finally:
         _chown_tree(jobdir, caller, gid)  # handed back to the job's owner

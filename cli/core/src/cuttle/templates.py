@@ -708,6 +708,7 @@ ccc_held_minors() {
     local devs held g
     [ -n "${SLURM_JOB_GPUS:-}" ] || return 0
     [ -d /proc/driver/nvidia-caps ] || return 0
+    compgen -G '/dev/nvidia[0-9]*' >/dev/null || return 0   # WSL: /dev/dxg only, no MIG
     mapfile -t devs < <(printf '%s\\n' /dev/nvidia[0-9]* | sort -V)
     IFS=, read -ra held <<< "$SLURM_JOB_GPUS"
     for g in "${held[@]}"; do printf '%s\\n' "${devs[$g]#/dev/nvidia}"; done

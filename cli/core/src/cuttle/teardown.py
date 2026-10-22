@@ -518,6 +518,8 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
     # is the one thing the operator must still do, and it belongs with the results rather than in a
     # box that erases itself.
     ui.result("still to do", "on the Head: `cuttle arm remove <name>` (or let re-enrollment reap it)")
+    if system.is_wsl():
+        ui.result("and in Windows", f"(admin Command Prompt) {system.wsl_keepalive_cmds()[1]}")
 
 
 def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:

@@ -372,9 +372,13 @@ IMAGES_RECORD = Path("/opt/ccc/images.json")
 # Per-Arm registry pull passwords {arm: password}, 0600 munge — /enroll hands each Arm its own.
 REGISTRY_CREDS = CCC_LIB / "registry-creds.json"
 
-# An Arm's GPU device node, one /dev/nvidiaN per card. Re-validated root-side before it ever reaches
-# gres.conf.
-GPU_DEVICE_RE = r"^/dev/nvidia[0-9]+$"
+# An Arm's GPU device node, one /dev/nvidiaN per card — or, on a WSL Arm, the one /dev/dxg that fronts
+# every GPU (so a WSL Arm has exactly one card; setup.preflight). Re-validated root-side before it ever
+# reaches gres.conf.
+GPU_DEVICE_RE = r"^/dev/(nvidia[0-9]+|dxg)$"
+WSL_GPU_DEVICE = "/dev/dxg"
+# What a WSL donor runs in Windows so the distro (and slurmd) stays up without a terminal open.
+WSL_KEEPALIVE_TASK = "CCC Arm keep-alive"
 
 # --- Head API (⑥: read board + SPA + auth + submission): LAN+mesh ---
 # The LAN+mesh service backing both the web Dashboard and the CLI (glossary: *Head API*). Split from
