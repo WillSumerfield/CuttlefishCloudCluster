@@ -93,3 +93,10 @@ class TestLaunch:
 
 def test_mig_shell_skips_a_box_with_no_nvidiaN():
     assert "compgen -G '/dev/nvidia[0-9]*' >/dev/null || return 0" in templates.render_epilog()
+
+
+def test_launcher_finds_wsls_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(L.os.path, "exists", lambda p: p == "/usr/lib/wsl/lib/nvidia-smi")
+    assert L.nvidia_smi() == "/usr/lib/wsl/lib/nvidia-smi"
+    monkeypatch.setattr(L.os.path, "exists", lambda p: True)
+    assert L.nvidia_smi() == "/usr/bin/nvidia-smi"

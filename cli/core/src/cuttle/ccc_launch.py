@@ -158,6 +158,12 @@ def mig_uuid(gpu_uuid: str, smi_list: str) -> str | None:
 
 
 WSL_DXG = Path("/dev/dxg")
+# Fixed root-owned paths, never PATH (this runs under sudo). WSL mounts the Windows driver's tools here.
+NVIDIA_SMI_PATHS = ("/usr/bin/nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi")
+
+
+def nvidia_smi() -> str:
+    return next((p for p in NVIDIA_SMI_PATHS if os.path.exists(p)), NVIDIA_SMI_PATHS[0])
 
 
 def gpu_ids(idx: list[int]) -> list[str]:
@@ -168,10 +174,10 @@ def gpu_ids(idx: list[int]) -> list[str]:
     if WSL_DXG.exists() and not _device_minors():
         if idx != [0]:
             raise Refused(f"a WSL Arm has one GPU, job holds GRES {idx}")
-        return subprocess.run(["/usr/bin/nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+        return subprocess.run([nvidia_smi(), "--query-gpu=uuid", "--format=csv,noheader"],
                               capture_output=True, text=True, check=True).stdout.split()[:1]
     minors, uuids = _device_minors(), _uuid_by_minor()
-    smi = subprocess.run(["/usr/bin/nvidia-smi", "-L"], capture_output=True, text=True).stdout
+    smi = subprocess.run([nvidia_smi(), "-L"], capture_output=True, text=True).stdout
     out = []
     for i in idx:
         u = uuids[minors[i]]
