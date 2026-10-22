@@ -117,6 +117,7 @@ def test_podman_argv():
                          Path("/var/lib/ccc/jobs/42"), [(Path("/var/lib/ccc/jobs/42/d"), "/d", True)])
     s = " ".join(argv)
     assert argv[:3] == ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--"]
+    assert "--init" in argv     # PID 1 that passes scancel's SIGTERM to the job
     assert "--cgroup-manager=cgroupfs" in argv and "--cgroup-parent /s/job_42/step_0" in s
     assert "--uidmap 0:2147549184:65536" in s and "--gidmap 0:2147549184:65536" in s
     assert "--network none" in s

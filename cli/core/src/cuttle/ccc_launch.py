@@ -19,6 +19,11 @@ What the caller cannot choose:
 - **ids**: container root = an unprivileged host range fixed per job owner (`id_base`).
 Never `--privileged`, never a host namespace.
 
+What Slurm does NOT reach (measured on dex, Slurm 23.11 cgroup v2): the container's own device program
+replaces the job's, so the GPU fence is the `--device` list built here from the allocation; and
+scancel never signals the container. `--init` + Podman's sig-proxy pass scancel's SIGTERM in (a chance
+to checkpoint); the epilog's `podman rm -f` is the kill, before the node is handed to the next job.
+
 Stdlib only, no CCC imports: it runs under the system python as root.
 """
 
@@ -168,7 +173,7 @@ def gpu_ids(idx: list[int]) -> list[str]:
 def podman_argv(spec: dict, jid: str, base: int, step: str, gpus: list[str], jobdir: Path,
                 binds: list[tuple[Path, str, bool]]) -> list[str]:
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
-            "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--rm",
+            "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--rm", "--init",
             "--name", f"{CONTAINER_PREFIX}{jid}", "--cgroup-parent", step,
             "--uidmap", f"0:{base}:{ID_COUNT}", "--gidmap", f"0:{base}:{ID_COUNT}",
             "--pull=missing", "--authfile", AUTH_FILE,

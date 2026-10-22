@@ -14,6 +14,8 @@ NVIDIA_CTK_PKG = "nvidia-container-toolkit=1.20.0-1"  # NVIDIA's repo retains ol
 MUNGE_PKG = "munge"  # auth; distro version fine
 # Every node: rootful Podman runs every container (cluster jobs, Dives, Tidepools) — see podman.py.
 PODMAN_PKG = "podman"
+# `podman run --init` (ccc-launch): PID 1 that passes Slurm's SIGTERM on. Only a Recommends of podman.
+INIT_PKG = "catatonit"
 # HEAD only: `htpasswd -B` writes the registry's bcrypt credentials (podman.install_registry).
 HTPASSWD_PKG = "apache2-utils"
 

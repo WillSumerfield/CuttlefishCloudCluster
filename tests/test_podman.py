@@ -137,5 +137,7 @@ class TestTeardown:
 
 def test_epilog_reaps_a_killed_jobs_container():
     e = templates.render_epilog()
-    assert f'podman rm -f "{config.JOB_CONTAINER_PREFIX}$SLURM_JOB_ID"' in e
+    assert f'podman rm -f -t 0 "{config.JOB_CONTAINER_PREFIX}$SLURM_JOB_ID"' in e
+    assert "nsenter --mount=/proc/1/ns/mnt -- podman rm" in e
+    assert 'slurmstepd.scope/job_"$SLURM_JOB_ID"' in e and "-exec rmdir {} \\;" in e
     assert f'rm -rf "{config.JOBS_DIR}/$SLURM_JOB_ID"' in e

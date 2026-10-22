@@ -725,10 +725,16 @@ EPILOG_TMPL = """\
 # the Head's co-located Arm under its state dir); the absent one is a harmless no-op on the other node.
 # ALWAYS exit 0: a non-zero epilog drains the node, and a stale/missing dir must never do that.
 rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
-# A ccc-launch container whose job was killed (scancel, time limit, OOM) never reached its `--rm`: the
-# kill took its processes, but Podman still holds the record and the overlay mount. Then its /job dir.
-timeout 60 podman rm -f "{job_ctr}$SLURM_JOB_ID" >/dev/null 2>&1
+# THE kill for a ccc-launch container: Slurm never signals it (its cgroup is Podman's, not a task's),
+# so after scancel / time limit it is still running here, holding its GPU. slurmd hands the node on only
+# after this epilog, so the next job never shares the card. Host mount ns, as ccc-launch ran it.
+timeout 60 nsenter --mount=/proc/1/ns/mnt -- podman rm -f -t 0 "{job_ctr}$SLURM_JOB_ID" >/dev/null 2>&1
 rm -rf "{jobs_dir}/$SLURM_JOB_ID"
+# Podman's cgroup dirs (libpod-*, conmon) block Slurm's own rmdir of the job's cgroup tree. rmdir only
+# takes empty dirs, so anything still in use is left alone.
+for cg in /sys/fs/cgroup/system.slice/*slurmstepd.scope/job_"$SLURM_JOB_ID"; do
+    [ -d "$cg" ] && find "$cg" -depth -type d -exec rmdir {{}} \\; 2>/dev/null
+done
 # sbatch's own stdout/stderr sinks. The wrapper's own
 # `trap ... EXIT` already reaps these when it runs — but that's the same trap that misses SIGKILL, so a
 # hard-killed job leaves one behind forever without this. Same "keep only if non-empty" rule as the
