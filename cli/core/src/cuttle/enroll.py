@@ -426,8 +426,11 @@ def reapply_features(reg: dict) -> None:
         # AvailableFeatures is what the node HAS; ActiveFeatures is what a constraint matches. CCC
         # never uses changeable features (no node reboots into a different personality), so the two
         # are always the same set — and setting only the former would restore nothing schedulable.
+        # check=False: an Arm being admitted for the first time has not registered yet (its slurmd
+        # starts only once admitted), so slurmctld has no such node. Nothing lost — it registers with
+        # this same set from its own `--conf`.
         run(["scontrol", "update", f"NodeName={name}",
-             f"AvailableFeatures={features}", f"ActiveFeatures={features}"], sudo=True)
+             f"AvailableFeatures={features}", f"ActiveFeatures={features}"], sudo=True, check=False)
 
 
 def reapply_weights(reg: dict) -> None:

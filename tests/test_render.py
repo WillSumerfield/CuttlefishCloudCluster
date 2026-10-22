@@ -559,6 +559,15 @@ class TestTheFleetActuallyGetsTheNewConfig:
         assert any("AvailableFeatures=vram48" in c for c in ran)
 
 
+    def test_an_arm_not_yet_registered_does_not_fail_the_re_push(self, monkeypatch):
+        """First admit: the Arm's slurmd starts only after it, so slurmctld has no such node yet and
+        `scontrol update` exits 1. That must not abort the admit — the node brings its own Features."""
+        from cuttle import enroll
+        calls = []
+        monkeypatch.setattr(enroll, "run", lambda cmd, **kw: calls.append(kw))
+        enroll.reapply_features({"new": {"admitted": True, "vram_mb": 24576, "gpu_devices": ["/dev/dxg"]}})
+        assert calls and all(kw.get("check") is False for kw in calls)
+
 class TestJobContainerConf:
     """The per-node file the plugin refuses to start without — its contents, and its lifetime."""
 
