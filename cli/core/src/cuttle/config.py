@@ -148,7 +148,7 @@ PRIORITY_MAX_AGE = "1-0"       # 1 day — the ramp over which waiting earns bac
 BUMP_STEP = 2**17
 
 # **Power**: measured throughput, in fp32 TFLOP/s, of one device — benchmarked once, at enroll, by the
-# Head-submitted **Benchmark** job, in the benchmark image via ccc-launch (templates.BENCH_PY). Intrinsic to the card; the other
+# Head-submitted **Benchmark** job, in the benchmark image via ccc-launch (templates.BENCH_PY/BENCH_CU). Intrinsic to the card; the other
 # half of a device-second's price is Demand, which is live and extrinsic.
 BENCH_MATRIX_N = 4096
 BENCH_WARMUP = 5
@@ -157,11 +157,13 @@ BENCH_TIME_MINUTES = 10
 BENCH_DIR_NAME = "bench"  # HEAD_SPAWNS_DIR/bench/<node>/power — where a benchmark stages its result
 BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may still be booting slurmd)
 
-# Pinned: Power is the divisor in every Settlement, so every card must be measured by the same torch.
-# Baked into the benchmark image (podman.build_images), which every Arm pulls by digest.
-BENCH_TORCH_PKG = "torch==2.13.0"
-BENCH_VENV = "/opt/ccc/bench-venv"   # inside the benchmark image
+# Pinned: Power is the divisor in every Settlement, so every card must be measured by the same cuBLAS
+# (the base's CUDA minor). Baked into the benchmark image (podman.build_images), pulled by digest.
+BENCH_CUBLAS_PKG = "libcublas-12-8"
+BENCH_CUBLAS_DEV_PKG = "libcublas-dev-12-8"   # build stage only
+BENCH_BIN = "/opt/ccc/bench"         # inside the benchmark image: the compiled SGEMM (templates.BENCH_CU)
 BENCH_PY_PATH = "/opt/ccc/bench.py"  # inside the benchmark image
+BENCH_ARGV = ["python3", BENCH_PY_PATH]
 
 # Slurm schedules the LOWEST-weight eligible node first, so Weight must run inverse to Power: the
 # fastest free card that fits wins. It is a preference among *free* nodes, not a reservation — Slurm

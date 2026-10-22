@@ -171,7 +171,7 @@ ConstrainDevices=yes
 # other, each pay Slurm scheduling latency, and could land while another Spawn holds a sibling card.
 #
 # Device i here IS GRES index i. Slurm sets CUDA_VISIBLE_DEVICES to the allocated GRES indices in
-# ascending order, so torch's device i is the i'th card of this node's gres.conf lines — the same
+# ascending order, so the CUDA device i is the i'th card of this node's gres.conf lines — the same
 # index `gres_detail` reports at Settlement. The benchmark holds every card (--gres=gpu:N), so the
 # allocation is the whole node and the two orders coincide exactly.
 BENCH_PY = """\
@@ -179,41 +179,61 @@ import json, os, subprocess, sys
 
 out = os.environ.get("CCC_BENCH_OUT", "/job")
 
-# `all` — the job's entry point. ccc-launch hands the job's GPUs in CCC_GPUS (GPU or MIG UUIDs, GRES
-# order); the job holds every card, so position i IS GRES index i. One process per Device: a MIG
-# instance is the only device its process can address. Then fold the per-Device files into the ONE
-# `power` file the Head polls for: powers[n] is the Power of the card Slurm reports as IDX:n.
-if sys.argv[1] == "all":
-    devs = os.environ["CCC_GPUS"].split(",")
-    for i, dev in enumerate(devs):
-        subprocess.run([sys.executable, __file__, "measure", str(i)], check=True,
+# ccc-launch hands the job's GPUs in CCC_GPUS (GPU or MIG UUIDs, GRES order); the job holds every card,
+# so position i IS GRES index i. One process per Device: a MIG instance is the only device its process
+# can address. Then fold them into the ONE `power` file: powers[n] is the card Slurm reports as IDX:n.
+devs = os.environ["CCC_GPUS"].split(",")
+parts = []
+for dev in devs:
+    r = subprocess.run([{bench_bin!r}], check=True, capture_output=True, text=True,
                        env={{**os.environ, "CUDA_VISIBLE_DEVICES": dev}})
-    parts = [json.load(open("%s/power.%d" % (out, i))) for i in range(len(devs))]
-    json.dump({{"powers": [p["power"] for p in parts],
-               "vram_mb": parts[0]["vram_mb"], "gpu": parts[0]["gpu"]}},
-              open(out + "/power", "w"))
-    raise SystemExit
+    parts.append(json.loads(r.stdout))
+json.dump({{"powers": [p["power"] for p in parts], "vram_mb": parts[0]["vram_mb"], "gpu": parts[0]["gpu"]}},
+          open(out + "/power", "w"))
+"""
 
-# `measure <gres_index>` — the ONE Device in CUDA_VISIBLE_DEVICES, as torch device 0.
-import time, torch
-gres = sys.argv[2]
-assert torch.cuda.device_count() == 1, "CUDA not visible in the container"
-props = torch.cuda.get_device_properties(0)     # under MIG this is the INSTANCE's memory, not the card's
-a = torch.randn({n}, {n}, device="cuda")
-b = torch.randn({n}, {n}, device="cuda")
-for _ in range({warmup}):    # the first matmul pays cuBLAS init — never time it
-    c = a @ b
-torch.cuda.synchronize()
-t0 = time.perf_counter()
-for _ in range({iters}):
-    c = a @ b
-torch.cuda.synchronize()
-elapsed = time.perf_counter() - t0
-json.dump({{
-    "power": round({iters} * 2 * {n}**3 / elapsed / 1e12, 2),   # fp32 TFLOP/s
-    "vram_mb": props.total_memory // 1024**2,
-    "gpu": props.name,
-}}, open("%s/power.%s" % (out, gres), "w"))
+# The measurement itself: fp32 SGEMM through cuBLAS — the exact kernel torch's fp32 `a @ b` dispatches
+# to (TF32 off, cuBLAS's default math mode), without the 5 GB of CUDA stack a torch wheel bundles.
+# N/WARMUP/ITERS come in as -D at build time (BENCH_CONTAINERFILE_TMPL). No kernels of its own, so no
+# GPU arch to target: cuBLAS carries the per-arch code.
+BENCH_CU = r"""
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+
+#define CK(x) do { if ((x) != 0) { fprintf(stderr, "%s failed\n", #x); return 1; } } while (0)
+
+int main() {
+    int count = 0;
+    CK(cudaGetDeviceCount(&count));
+    if (count != 1) { fprintf(stderr, "want exactly 1 visible device, got %d\n", count); return 1; }
+    const size_t n = BENCH_N, bytes = n * n * sizeof(float);
+    std::vector<float> h(n * n);
+    for (auto &v : h) v = rand() / (float)RAND_MAX - 0.5f;
+    float *a, *b, *c;
+    CK(cudaMalloc(&a, bytes)); CK(cudaMalloc(&b, bytes)); CK(cudaMalloc(&c, bytes));
+    CK(cudaMemcpy(a, h.data(), bytes, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(b, h.data(), bytes, cudaMemcpyHostToDevice));
+    cublasHandle_t hd;
+    CK(cublasCreate(&hd));
+    const float one = 1.f, zero = 0.f;
+    for (int i = 0; i < BENCH_WARMUP; i++)  // the first SGEMM pays cuBLAS init — never time it
+        CK(cublasSgemm(hd, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n, &one, a, n, b, n, &zero, c, n));
+    CK(cudaDeviceSynchronize());
+    auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < BENCH_ITERS; i++)
+        CK(cublasSgemm(hd, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n, &one, a, n, b, n, &zero, c, n));
+    CK(cudaDeviceSynchronize());
+    double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    cudaDeviceProp p;
+    CK(cudaGetDeviceProperties(&p, 0));  // under MIG this is the INSTANCE's memory, not the card's
+    printf("{\"power\": %.2f, \"vram_mb\": %zu, \"gpu\": \"%s\"}\n",
+           BENCH_ITERS * 2.0 * n * n * n / s / 1e12, p.totalGlobalMem / (1024 * 1024), p.name);  // fp32 TFLOP/s
+    return 0;
+}
 """
 
 # The **Benchmark** job. Submitted as the **cluster's own Guise** (`sudo -u ccc-u60001 sbatch`), pinned
@@ -311,13 +331,21 @@ BASE_APT_PKGS = (
     "bash-completion man-db ncurses-term build-essential python3 python3.12-dev python-is-python3"
 )
 
-# The **benchmark image**: base + the pinned torch + bench.py. Only the torch layer is new on an Arm.
-# Users never see it. `--pull=never` FROM the local base tag: exactly the base just built.
+# The **benchmark image**: base + cuBLAS (runtime only) + the compiled SGEMM + bench.py — ~0.5 GB new on
+# an Arm. Users never see it. Two stages: the -dev package (headers, and a static lib bigger than the
+# whole result) exists only to compile, and stays out of what Arms pull. FROM the local base tag:
+# exactly the base just built. rpath, because the CUDA libs aren't on the default loader path.
 BENCH_CONTAINERFILE_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
+FROM {base} AS build
+RUN apt-get update && apt-get install -y --no-install-recommends {cublas_dev} && rm -rf /var/lib/apt/lists/*
+COPY bench.cu /tmp/bench.cu
+RUN nvcc -O2 -DBENCH_N={n} -DBENCH_WARMUP={warmup} -DBENCH_ITERS={iters} -Xlinker -rpath={cuda_home}/lib64 \\
+      -o /tmp/bench /tmp/bench.cu -lcublas
+
 FROM {base}
-RUN uv venv --python /usr/bin/python3.12 {venv} \\
- && uv pip install --no-cache --python {venv}/bin/python {torch}
+RUN apt-get update && apt-get install -y --no-install-recommends {cublas} && rm -rf /var/lib/apt/lists/*
+COPY --from=build /tmp/bench {bench_bin}
 COPY bench.py {bench_py}
 """
 
@@ -330,13 +358,13 @@ def render_base_containerfile() -> str:
 
 def render_bench_containerfile() -> str:
     return BENCH_CONTAINERFILE_TMPL.format(
-        base=f"{config.REGISTRY}/ccc/base:{config.IMAGE_TAG}", venv=config.BENCH_VENV,
-        torch=config.BENCH_TORCH_PKG, bench_py=config.BENCH_PY_PATH)
+        base=f"{config.REGISTRY}/ccc/base:{config.IMAGE_TAG}", cublas=config.BENCH_CUBLAS_PKG, cublas_dev=config.BENCH_CUBLAS_DEV_PKG,
+        n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP, iters=config.BENCH_ITERS,
+        cuda_home=config.CUDA_HOME, bench_bin=config.BENCH_BIN, bench_py=config.BENCH_PY_PATH)
 
 
 def render_bench_py() -> str:
-    return BENCH_PY.format(n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP,
-                           iters=config.BENCH_ITERS)
+    return BENCH_PY.format(bench_bin=config.BENCH_BIN)
 
 
 # One `registry:2` config per instance (podman.install_registry). Push: 127.0.0.1, read-write. Pull:
@@ -906,8 +934,7 @@ def render_bench_sbatch(node: str, head_mesh_ip: str, bench_secret: str, bench_i
                         gpus: int = 1) -> str:
     """`gpus` = how many Devices this node registered. The job holds all of them and returns one Power
     each, so a re-benchmark of a 4-card box is still a single job."""
-    spec = {"image": bench_image, "argv": [f"{config.BENCH_VENV}/bin/python", config.BENCH_PY_PATH,
-                                           "all"],
+    spec = {"image": bench_image, "argv": config.BENCH_ARGV,
             "env": {"CCC_BENCH_OUT": "/job"}}
     return BENCH_SBATCH_TMPL.format(
         node=node, gpus=gpus, minutes=config.BENCH_TIME_MINUTES,

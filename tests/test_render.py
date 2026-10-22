@@ -723,7 +723,7 @@ class TestBenchmarkSbatch:
         assert f'sudo -n {config.CCC_LAUNCH_BIN} "$SLURM_JOB_ID"' in job
         spec = ccc_launch.validate_spec(ccc_launch.read_spec(job))
         assert spec["image"] == BENCH_IMG
-        assert spec["argv"] == [f"{config.BENCH_VENV}/bin/python", config.BENCH_PY_PATH, "all"]
+        assert spec["argv"] == config.BENCH_ARGV
 
     def test_launcher_constants_agree(self):
         """ccc_launch.py runs under the system python and imports nothing of CCC's."""
@@ -753,28 +753,26 @@ class TestBenchPy:
         body = templates.render_bench_py()
         compile(body, "bench.py", "exec")
         assert re.search(r"\{\w+\}", body) is None, "an unrendered {placeholder} survived"
-        assert f"range({config.BENCH_ITERS})" in body
+        assert repr(config.BENCH_BIN) in body
 
     def test_warmup_is_not_timed(self):
-        body = templates.render_bench_py()
-        assert body.index(f"range({config.BENCH_WARMUP})") < body.index("perf_counter()")
+        cu = templates.BENCH_CU
+        assert cu.index("i < BENCH_WARMUP") < cu.index("steady_clock::now()") < cu.index("i < BENCH_ITERS")
 
     def test_one_process_per_device_in_gres_order(self, tmp_path, monkeypatch):
-        """`all` runs one `measure` per CCC_GPUS entry with CUDA_VISIBLE_DEVICES narrowed to it (a MIG
-        instance is the only device its process can address), then merges in GRES order."""
+        """One bench process per CCC_GPUS entry with CUDA_VISIBLE_DEVICES narrowed to it (a MIG
+        instance is the only device its process can address), then merged in GRES order."""
         calls = []
 
-        def fake_run(argv, check, env):
-            calls.append((argv[-1], env["CUDA_VISIBLE_DEVICES"]))
-            (tmp_path / f"power.{argv[-1]}").write_text(
-                '{"power": %s, "vram_mb": 1, "gpu": "g"}' % (10 + int(argv[-1])))
+        def fake_run(argv, check, capture_output, text, env):
+            calls.append((argv, env["CUDA_VISIBLE_DEVICES"]))
+            return subprocess.CompletedProcess(
+                argv, 0, '{"power": %s, "vram_mb": 1, "gpu": "g"}' % (10 + len(calls) - 1))
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setenv("CCC_GPUS", "GPU-a,MIG-b")
         monkeypatch.setenv("CCC_BENCH_OUT", str(tmp_path))
-        monkeypatch.setattr("sys.argv", ["bench.py", "all"])
-        with pytest.raises(SystemExit):
-            exec(compile(templates.render_bench_py(), "bench.py", "exec"), {"__file__": "bench.py"})
-        assert calls == [("0", "GPU-a"), ("1", "MIG-b")]
+        exec(compile(templates.render_bench_py(), "bench.py", "exec"), {"__file__": "bench.py"})
+        assert calls == [([config.BENCH_BIN], "GPU-a"), ([config.BENCH_BIN], "MIG-b")]
         assert json.loads((tmp_path / "power").read_text())["powers"] == [10, 11]
 
 

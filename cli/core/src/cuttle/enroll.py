@@ -540,8 +540,7 @@ def bench_locally(bench_image: str, gpus: int) -> dict:
     for g in ccc_launch.cdi_names(ids, system.is_wsl()):
         argv += ["--device", f"nvidia.com/gpu={g}"]
     try:
-        run(argv + [bench_image, f"{config.BENCH_VENV}/bin/python", config.BENCH_PY_PATH, "all"],
-            sudo=True)
+        run(argv + [bench_image, *config.BENCH_ARGV], sudo=True)
         result = json.loads((out / "power").read_text())
     finally:
         run(["rm", "-rf", str(out)], sudo=True, check=False)

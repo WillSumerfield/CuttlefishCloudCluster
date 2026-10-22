@@ -175,10 +175,14 @@ class TestTheBaseImage:
     def test_the_profile_is_bridged_into_zsh(self):
         assert "source /etc/profile" in templates.render_base_containerfile()
 
-    def test_the_benchmark_image_adds_only_torch_and_the_script(self):
+    def test_the_benchmark_image_adds_only_cublas_and_the_bench(self):
         d = templates.render_bench_containerfile()
-        assert d.count("FROM ") == 1 and f"/ccc/base:{config.IMAGE_TAG}" in d
-        assert config.BENCH_TORCH_PKG in d and config.BENCH_PY_PATH in d
+        final = d.split("\nFROM ")[-1]
+        assert d.count("FROM ") == 2 and f"/ccc/base:{config.IMAGE_TAG}" in final
+        assert f"install -y --no-install-recommends {config.BENCH_CUBLAS_PKG} " in final
+        assert config.BENCH_CUBLAS_DEV_PKG in d and "-dev" not in final and "torch" not in d     # the dev package only builds
+        assert config.BENCH_BIN in final and config.BENCH_PY_PATH in final
+        assert f"-DBENCH_N={config.BENCH_MATRIX_N}" in d and f"-DBENCH_ITERS={config.BENCH_ITERS}" in d
 
 
 DONOR_IP = "100.99.0.2"  # where the fake "donor-box" node in `head_pin` is registered

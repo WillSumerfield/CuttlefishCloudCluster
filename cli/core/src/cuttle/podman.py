@@ -4,7 +4,7 @@ Rootful Podman (Ubuntu's 4.9.3) on every node. Users never touch it: containers 
 `ccc-launch` (cluster jobs, Dives) or, from phase 3, the Head's per-User Tidepool units.
 
 **Images.** One frozen **base image** per release (Ubuntu 24.04 + tools + Python 3.12 + uv + nvcc, no
-Python packages) and the **benchmark image** (`FROM base` + torch + bench.py). Both are built once, on
+Python packages) and the **benchmark image** (`FROM base` + cuBLAS + a compiled SGEMM + bench.py). Both are built once, on
 the Head, pushed to the Head registry, and recorded by digest in config.IMAGES_RECORD; every Arm pulls
 both by digest at setup. A Dive's User layer is only valid on the exact base it was committed from,
 which is why the base never changes inside a release (upgrade = clean install).
@@ -62,7 +62,7 @@ def write_registry_auth(write_root_file, user: str, password: str) -> None:
 
 
 def pull_images(images: dict) -> None:
-    """**Arm.** Pull the base + benchmark images by digest (only the torch layer travels twice).
+    """**Arm.** Pull the base + benchmark images by digest (base layers shared: only cuBLAS + the bench are extra).
     A digest pull is content-verified by Podman; the inspect after it is the record that it landed."""
     for name, ref in sorted(images.items()):
         run(["podman", "pull", "--authfile", str(config.REGISTRY_AUTH), ref], sudo=True)
@@ -163,6 +163,7 @@ def build_images(write_root_file) -> dict:
         shutil.copytree(config.ZSH_DATA_DIR / "oh-my-zsh", base_ctx / "oh-my-zsh", symlinks=True)
         (bench_ctx / "Containerfile").write_text(templates.render_bench_containerfile())
         (bench_ctx / "bench.py").write_text(templates.render_bench_py())
+        (bench_ctx / "bench.cu").write_text(templates.BENCH_CU)
         images = {"base": _build_push("base", config.IMAGE_TAG, base_ctx),
                   "bench": _build_push("bench", config.IMAGE_TAG, bench_ctx)}
     write_root_file(config.IMAGES_RECORD, json.dumps(images, indent=2, sort_keys=True) + "\n")
