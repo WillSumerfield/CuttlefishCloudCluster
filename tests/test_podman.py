@@ -141,3 +141,34 @@ def test_epilog_reaps_a_killed_jobs_container():
     assert "nsenter --mount=/proc/1/ns/mnt -- podman rm" in e
     assert 'slurmstepd.scope/job_"$SLURM_JOB_ID"' in e and "-exec rmdir {} \\;" in e
     assert f'rm -rf "{config.JOBS_DIR}/$SLURM_JOB_ID"' in e
+
+
+class TestImageHygiene:
+    def test_arm_prunes_only_unrecorded_digests(self, box):
+        _, _, ran, answers = box
+        answers["{{.ID}} {{.Digest}}"] = subprocess.CompletedProcess(
+            [], 0, stdout="aaa sha256:keep\nbbb sha256:old\nccc sha256:older\n")
+        podman.prune_images({"base": f"{config.REGISTRY}/ccc/base@sha256:keep"})
+        assert ["podman", "rmi", "bbb", "ccc"] in ran
+
+    def test_arm_with_nothing_stale_removes_nothing(self, box):
+        _, _, ran, answers = box
+        answers["{{.ID}} {{.Digest}}"] = subprocess.CompletedProcess([], 0, stdout="aaa sha256:keep\n")
+        podman.prune_images({"base": f"{config.REGISTRY}/ccc/base@sha256:keep"})
+        assert not any("rmi" in c for c in ran)
+
+    def test_head_keeps_its_store_under_the_same_tag(self, box):
+        _, _, ran, answers = box
+        answers["{{.Repository}}"] = subprocess.CompletedProcess(
+            [], 0, stdout=f"{config.REGISTRY}/ccc/base:{config.IMAGE_TAG}\n{config.REGISTRY}/ccc/bench:<none>\n")
+        podman.wipe_old_release()
+        assert not any("rmi" in c or str(config.REGISTRY_DATA) in c for c in ran)
+
+    def test_head_wipes_images_and_store_on_a_tag_change(self, box):
+        _, _, ran, answers = box
+        answers["{{.Repository}}"] = subprocess.CompletedProcess(
+            [], 0, stdout=f"{config.REGISTRY}/ccc/base:1.9\n")
+        answers["{{.ID}}"] = subprocess.CompletedProcess([], 0, stdout="aaa\n")
+        podman.wipe_old_release()
+        assert ["podman", "rmi", "-f", "aaa"] in ran
+        assert ["rm", "-rf", str(config.REGISTRY_DATA), str(config.IMAGES_RECORD)] in ran

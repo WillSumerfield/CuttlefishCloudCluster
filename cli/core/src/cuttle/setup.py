@@ -874,6 +874,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     with ui.step("Installing the container runtime and registry"):
         podman.install_cdi(_write_root_file)
         podman.install_launcher(_write_root_file)   # every node: cluster jobs start through it
+        podman.wipe_old_release()                   # a new IMAGE_TAG starts the store from empty
         podman.install_registry(_write_root_file, mesh_ip)  # after the cert: it serves the Head's leaf
     with ui.step("Starting the Head API and the Karma tick"):
         headapi.install_head(_write_root_file, mesh_ip)  # board + SPA + auth, LAN+mesh
@@ -1386,6 +1387,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         podman.write_registry_auth(_write_root_file, info["registry"]["user"],
                                    info["registry"]["password"])
         podman.pull_images(info["images"])
+        podman.prune_images(info["images"])
     # Every Environment this Arm ever runs is built HERE, at job start, out of this box's own bandwidth
     # — a Head-built env had to cross the mesh, and that measured 29 minutes for a 4.6 GB torch tree
     # (config.ENV_TOOLS_DIR). So the tools and the cache are part of enrolling, not Head furniture.

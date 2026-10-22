@@ -73,7 +73,39 @@ def pull_images(images: dict) -> None:
         ui.say(f"  [muted]{name} image → {ref}[/muted]")
 
 
+def _ccc_images(fmt: str) -> list[str]:
+    return run(["podman", "images", "--digests", "--format", fmt, "--filter",
+                f"reference={config.REGISTRY}/ccc/*"], sudo=True, capture_output=True, text=True,
+               check=False).stdout.splitlines()
+
+
+def prune_images(images: dict) -> None:
+    """**Arm.** Drop every `ccc/*` image the Head no longer records (old releases, stale rebuilds).
+    An image a running container holds survives (`rmi` refuses it); the next setup gets it."""
+    keep = {ref.split("@", 1)[1] for ref in images.values()}
+    stale = sorted({i for i, d in (l.split() for l in _ccc_images("{{.ID}} {{.Digest}}"))
+                    if d not in keep})
+    if stale:
+        run(["podman", "rmi", *stale], sudo=True, check=False)
+        ui.say(f"  [muted]pruned {len(stale)} old image(s)[/muted]")
+
+
 # --- Head only -------------------------------------------------------------------
+
+def wipe_old_release() -> None:
+    """A `ccc/*` image tagged other than config.IMAGE_TAG means a release change: every old image and
+    the whole registry store go (nothing of the old release is pullable once images.json is rebuilt).
+    Run before install_registry, which re-creates the store. Same-tag dev rebuilds are left alone."""
+    tags = {l.rsplit(":", 1)[1] for l in _ccc_images("{{.Repository}}:{{.Tag}}")}
+    if not tags - {config.IMAGE_TAG, "<none>"}:
+        return
+    ids = sorted({l for l in _ccc_images("{{.ID}}")})
+    run(["systemctl", "stop", f"{config.REGISTRY_SERVICE}-push", f"{config.REGISTRY_SERVICE}-pull"],
+        sudo=True, check=False)
+    run(["podman", "rmi", "-f", *ids], sudo=True, check=False)
+    run(["rm", "-rf", str(config.REGISTRY_DATA), str(config.IMAGES_RECORD)], sudo=True)
+    ui.say(f"  [muted]release changed → dropped {len(ids)} old image(s) and the registry store[/muted]")
+
 
 def install_registry(write_root_file, mesh_ip: str) -> None:
     """Both registry instances (Quadlets), their configs, and the Head's own push credential."""
