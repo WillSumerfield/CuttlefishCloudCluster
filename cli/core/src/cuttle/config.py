@@ -34,8 +34,8 @@ UBUNTU_SNAPSHOT_LIST = Path("/etc/apt/sources.list.d/ccc-ubuntu-snapshot.list")
 # (setup.build_spa) — and a donor Arm, which never builds it, never gets Node or this repo. Noble's
 # own nodejs is 18.19 and Tailwind v4 wants >=20, so it comes from NodeSource. Pinned like the rest:
 # node_22.x retains every 22.x build back to 22.0.0, so the pin stays fetchable.
-# The ccc- prefix on both paths matters: a box that already had Node keeps ITS nodesource source
-# file, and teardown removes only ours (apt warns about the duplicate source; it is cosmetic).
+# The ccc- prefix on both paths matters: teardown removes only ours. A box with its own NodeSource
+# source gets none of ours (setup._box_has_nodesource) — same repo, two keyrings is fatal to apt.
 NODE_PKG = "nodejs=22.22.2-1nodesource1"
 NODESOURCE_REPO = "https://deb.nodesource.com/node_22.x"
 NODESOURCE_KEY_URL = "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"

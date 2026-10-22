@@ -61,6 +61,13 @@ def preflight() -> None:
            f"Gres=gpu:{devices} Feature={config.vram_feature(vram_mb)}[/muted]")
 
 
+def _box_has_nodesource() -> bool:
+    """Does a source file other than CCC's own already serve config.NODESOURCE_REPO?"""
+    return any(config.NODESOURCE_REPO in f.read_text(errors="replace")
+               for f in config.NODESOURCE_LIST.parent.glob("*")
+               if f.is_file() and f != config.NODESOURCE_LIST and f.suffix in (".list", ".sources"))
+
+
 def add_repos(head: bool = False) -> None:
     """Add the apt sources CCC's pins need. Every one of them is an EXTRA file under
     sources.list.d — this box's own sources are never rewritten (see the snapshot template).
@@ -68,7 +75,12 @@ def add_repos(head: bool = False) -> None:
     NodeSource is added on the **Head only** (an Arm never builds the Dashboard). Podman is Ubuntu's.
     """
     _write_root_file(config.UBUNTU_SNAPSHOT_LIST, templates.render_ubuntu_snapshot_list())
-    if head:
+    if head and _box_has_nodesource():
+        # Same repo under a different keyring is fatal to apt ("Conflicting values set for option
+        # Signed-By"), so the box's own source serves the pin; drop ours if an earlier run left it.
+        ui.say("  [muted]NodeSource already configured on this box — using its source[/muted]")
+        run(["rm", "-f", str(config.NODESOURCE_LIST), config.NODESOURCE_KEYRING], sudo=True)
+    elif head:
         # Written ourselves rather than by piping NodeSource's setup script to a root shell: the
         # script also apt-get updates, installs, and rewrites sources of its own choosing. Two lines
         # is the whole repo. --yes: clobber on re-run instead of prompting, as above.

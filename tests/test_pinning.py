@@ -71,7 +71,7 @@ class TestUbuntuSnapshot:
         assert config.PODMAN_PKG in arm and config.PODMAN_PKG in head
         assert config.HTPASSWD_PKG not in arm and config.HTPASSWD_PKG in head
 
-    def test_only_the_head_gains_node(self, monkeypatch):
+    def test_only_the_head_gains_node(self, monkeypatch, tmp_path):
         """Node builds the Dashboard, which only the Head does — so NodeSource never reaches a
         donor's box. The install list follows the repo: pinning Node into an
         Arm's apt run would add a repo an Arm has no source for."""
@@ -83,6 +83,7 @@ class TestUbuntuSnapshot:
         installed = []
         monkeypatch.setattr(setup, "_apt_install", lambda pkgs: installed.extend(pkgs))
         monkeypatch.setattr(setup.system, "installed_packages", lambda: set())
+        monkeypatch.setattr(config, "NODESOURCE_LIST", tmp_path / "ccc-nodesource.list")
 
         setup.add_repos()
         setup.install_packages(config.SLURMD_PKG)
@@ -94,6 +95,27 @@ class TestUbuntuSnapshot:
         assert config.NODESOURCE_LIST in [p for p, _ in written]
         assert any(config.NODESOURCE_KEY_URL in c and config.NODESOURCE_KEYRING in c for c in ran)
         assert config.NODE_PKG in installed
+
+    def test_the_boxs_own_nodesource_wins(self, monkeypatch, tmp_path):
+        """Same repo under two keyrings stops apt reading ANY source — so a Head that already has
+        NodeSource gets no second copy, and a copy an earlier run left is removed."""
+        written, ran = [], []
+        monkeypatch.setattr(setup, "_write_root_file", lambda path, content, mode="644":
+                            written.append((path, content)))
+        monkeypatch.setattr(setup, "run", lambda cmd, **kw: ran.append(" ".join(cmd)))
+        monkeypatch.setattr(setup, "sh", lambda script, **kw: ran.append(script))
+        monkeypatch.setattr(setup.ui, "say", lambda *a, **k: None)
+        ours = tmp_path / "ccc-nodesource.list"
+        monkeypatch.setattr(config, "NODESOURCE_LIST", ours)
+        ours.write_text(f"deb [signed-by={config.NODESOURCE_KEYRING}] {config.NODESOURCE_REPO} nodistro main\n")
+        (tmp_path / "nodesource.sources").write_text(
+            f"Types: deb\nURIs: {config.NODESOURCE_REPO}\nSigned-By: /usr/share/keyrings/nodesource.gpg\n")
+
+        setup.add_repos(head=True)
+
+        assert ours not in [p for p, _ in written]
+        assert not any(config.NODESOURCE_KEY_URL in c for c in ran)
+        assert any(c.startswith("rm -f") and str(ours) in c for c in ran)
 
     def test_node_repo_is_signed_and_pinned(self):
         """An unsigned source, or a floating `nodejs`, and the Dashboard build stops being the thing
