@@ -376,6 +376,11 @@ LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
 # The base + benchmark images' digest refs, written by `setup --head` (podman.build_images) and handed
 # to every Arm at /enroll. In /opt, kept by a plain teardown with the images it names.
 IMAGES_RECORD = Path("/opt/ccc/images.json")
+# An Arm refuses setup with less free than this on Podman's store (and, on WSL, the Windows drive the
+# vhdx lives on): the images, Dive layers and job scratch all land there.
+CONTAINERS_STORE = Path("/var/lib/containers")
+WSL_WINDOWS_DRIVE = Path("/mnt/c")
+DONOR_DISK_FLOOR_GB = 25
 # Per-Arm registry pull passwords {arm: password}, 0600 munge — /enroll hands each Arm its own.
 REGISTRY_CREDS = CCC_LIB / "registry-creds.json"
 

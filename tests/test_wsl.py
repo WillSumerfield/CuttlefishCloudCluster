@@ -100,3 +100,32 @@ def test_launcher_finds_wsls_nvidia_smi(monkeypatch):
     assert L.nvidia_smi() == "/usr/lib/wsl/lib/nvidia-smi"
     monkeypatch.setattr(L.os.path, "exists", lambda p: True)
     assert L.nvidia_smi() == "/usr/bin/nvidia-smi"
+
+
+class TestDiskFloor:
+    @pytest.fixture(autouse=True)
+    def _abort(self, monkeypatch):
+        monkeypatch.setattr(setup.ui, "abort", lambda msg, next_step=None, **k: RuntimeError(msg))
+
+    def _free(self, monkeypatch, wsl, free):
+        monkeypatch.setattr(system, "is_wsl", lambda: wsl)
+        monkeypatch.setattr(setup, "_free_gb", lambda p: free[str(p)])
+
+    def test_a_roomy_native_box_passes_without_checking_windows(self, monkeypatch):
+        self._free(monkeypatch, False, {str(config.CONTAINERS_STORE): 100})
+        setup.preflight_disk()
+
+    def test_a_full_store_is_refused(self, monkeypatch):
+        self._free(monkeypatch, False, {str(config.CONTAINERS_STORE): 10})
+        with pytest.raises(RuntimeError, match="only 10 GB free"):
+            setup.preflight_disk()
+
+    def test_wsl_checks_the_windows_drive_behind_the_vhdx(self, monkeypatch):
+        self._free(monkeypatch, True, {str(config.CONTAINERS_STORE): 900,
+                                       str(config.WSL_WINDOWS_DRIVE): 5})
+        with pytest.raises(RuntimeError, match="/mnt/c"):
+            setup.preflight_disk()
+
+
+def test_free_gb_walks_up_to_an_existing_dir(tmp_path):
+    assert setup._free_gb(tmp_path / "not" / "yet") > 0

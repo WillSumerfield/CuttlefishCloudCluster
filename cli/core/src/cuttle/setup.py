@@ -11,6 +11,7 @@ Drives apt+sudo directly. Intended path only — no fallbacks (test box; failure
 
 import hashlib
 import ipaddress
+import os
 import platform
 import re
 import secrets
@@ -80,6 +81,26 @@ def preflight() -> None:
                        Path("/sys/fs/cgroup/cgroup.controllers").exists())
     ui.say(f"  [muted]gpu={cards}x {model} ({vram_mb} MiB each) → "
            f"Gres=gpu:{devices} Feature={config.vram_feature(vram_mb)}[/muted]")
+
+
+def _free_gb(path: Path) -> float:
+    """Free space on `path`'s filesystem — the nearest existing ancestor, before Podman creates it."""
+    while not path.exists():
+        path = path.parent
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize / 1e9
+
+
+def preflight_disk() -> None:
+    """**Arm.** Images + Dive layers + job scratch need room. On WSL the distro's vhdx reports up to
+    its cap, not the real disk, so the Windows drive behind it is checked too."""
+    paths = [config.CONTAINERS_STORE] + ([config.WSL_WINDOWS_DRIVE] if system.is_wsl() else [])
+    for path in paths:
+        free = _free_gb(path)
+        if free < config.DONOR_DISK_FLOOR_GB:
+            raise ui.abort(f"only {free:.0f} GB free on {path} — an Arm needs "
+                           f"{config.DONOR_DISK_FLOOR_GB} GB",
+                           next_step="free some disk and rerun setup")
 
 
 def _box_has_nodesource() -> bool:
@@ -1298,6 +1319,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     t = enroll.decode_token(token) if token else enroll.enrollment_from_state()
     node_name = t["node_name"]
     preflight()
+    preflight_disk()
 
     with ui.step("Joining the mesh"):
         mesh_ip = mesh.up_arm(t["coordinator"], node_name, t["authkey"], _write_root_file,
