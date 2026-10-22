@@ -124,7 +124,7 @@ def enrollment_from_state() -> dict:
 
 def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
                      features: list[dict] | None = None,
-                     provides: list[str] | None = None) -> dict:
+                     provides: list[str] | None = None, bench: dict | None = None) -> dict:
     """Record this Arm with the Head and pull the munge key + ctld address. Only routable from
     inside the mesh — which is exactly why the munge key is safe to send here and nowhere else.
 
@@ -139,6 +139,9 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     is why the first POST of a `setup --arm` sends none: at that point in the run the prolog is not on
     disk yet, and claiming otherwise is exactly the lie that drains a node. `report_capabilities`
     re-POSTs once it is.
+
+    `bench` = this Arm's own Power measurement (`bench_locally`), sent once measured. Omitted, the
+    Head keeps whatever Power it already holds for this Arm.
     """
     # Name and path only. A Feature entry may also carry the local path of a **Licence** key
     # (cuttle.features), which is this box's business and nobody else's — it stays in
@@ -146,7 +149,8 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     reported = [{"name": f["name"], "path": f["path"]} for f in (features or [])]
     body = json.dumps({"node_name": node_name, "gpu_devices": system.gpu_devices(),
                        "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb(),
-                       "features": reported, "provides": provides or []}).encode()
+                       "features": reported, "provides": provides or [],
+                       **({"powers": bench["powers"], "gpu": bench["gpu"]} if bench else {})}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
     # The Head's refusals are WRITTEN TO BE READ — "'willPC' is not registered to … on the mesh",
@@ -246,7 +250,7 @@ def sync_munge_key() -> None:
 # --- slurmd (dynamic + configless) ------------------------------------------
 
 def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
-                  feature_names: list[str] | None = None) -> str:
+                  feature_names: list[str] | None = None, weight: int | None = None) -> str:
     """This Arm's slurmd flags. `-Z` = register as a dynamic node; `--conf-server` = fetch slurm.conf
     from slurmctld instead of having one installed. Gres must be declared here: slurm-wlm ships no
     NVML, so the node cannot introspect its own GPUs — CCC counts them itself at enrollment
@@ -262,15 +266,16 @@ def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
     `--vram`/Arm-Feature constraint would then match nothing. `feature_names` are this Arm's declared
     Arm Features, comma-joined onto the one vram bucket exactly
     like it: Slurm Features are a flat per-node set, so there is no structural difference between the
-    two once rendered. Weight (∝ 1/Power) is deliberately NOT here, and can't be: Power is only
-    measurable once the node is live. Losing Weight costs nothing worse than the fastest-free-card
-    preference; losing a Feature would make the node unschedulable for anything that requires it.
+    two once rendered. `weight` (∝ 1/Power) rides along for the same reason: the Arm measures its own
+    Power before slurmd starts (`bench_locally`), so a restart re-registers with it instead of 1.
 
     A drop-in rather than `/etc/default/slurmd` (see config.SLURMD_DROPIN): systemd does not honour
     quotes *inside* an expanded variable, so the distro's `$SLURMD_OPTIONS` hook cannot express a
     `--conf` with a space in it. Quotes written literally in a unit file are honoured.
     """
     conf = f"Gres=gpu:{gpus} Feature={config.node_features(vram_mb, feature_names)}"
+    if weight:
+        conf += f" Weight={weight}"
     return (
         "# Rendered by `cuttle setup --arm`. Do not hand-edit.\n"
         "[Service]\n"
@@ -450,7 +455,7 @@ def reapply_weights(reg: dict) -> None:
     """
     for name, e in sorted(reg.items()):
         if e["admitted"] and e.get("powers"):
-            apply_weight(name, e["powers"])
+            apply_weight(name, e["powers"], check=False)  # unregistered: see reapply_features
 
 
 def _await_enrollment(name: str, token: str, timeout_s: int = 300) -> dict:
@@ -521,6 +526,29 @@ def benchmark_arm(name: str) -> dict:
     with ui.section(f"Benchmarking {name}", lambda: "benchmarked"):
         system.prime_sudo()
         return _benchmark_arm(name)
+
+
+def bench_locally(bench_image: str, gpus: int) -> dict:
+    """**Arm.** The Power benchmark, run on this box directly in Podman before its slurmd starts —
+    the same image and script as `benchmark_arm`, minus Slurm, so admission never waits on it.
+    Self-reported, and fine: donors are trusted. Returns `{"powers", "vram_mb", "gpu"}`."""
+    from . import ccc_launch  # its GRES-index → UUID mapping, so powers[n] is the card at IDX n
+    ids = ccc_launch.gpu_ids(list(range(gpus)))
+    out = Path(tempfile.mkdtemp(prefix="ccc-bench-"))
+    argv = ["podman", "run", "--rm", "--network", "none", "--authfile", str(config.REGISTRY_AUTH),
+            "-v", f"{out}:/out", "-e", "CCC_BENCH_OUT=/out", "-e", f"CCC_GPUS={','.join(ids)}"]
+    for g in ccc_launch.cdi_names(ids, system.is_wsl()):
+        argv += ["--device", f"nvidia.com/gpu={g}"]
+    try:
+        run(argv + [bench_image, f"{config.BENCH_VENV}/bin/python", config.BENCH_PY_PATH, "all"],
+            sudo=True)
+        result = json.loads((out / "power").read_text())
+    finally:
+        run(["rm", "-rf", str(out)], sudo=True, check=False)
+    if len(result["powers"]) != gpus:
+        raise ui.abort(f"this box registered {gpus} GPU(s) but the benchmark priced "
+                       f"{len(result['powers'])} — the container saw different hardware")
+    return result
 
 
 def ensure_priced(name: str) -> None:
@@ -622,7 +650,7 @@ def _benchmark_arm(name: str) -> dict:
     return result
 
 
-def apply_weight(name: str, powers: list[float]) -> None:
+def apply_weight(name: str, powers: list[float], check: bool = True) -> None:
     """Weight ∝ 1/Power, so Slurm hands out the fastest *free* eligible card first.
 
     Not a reservation: Slurm won't hold a Spawn back waiting for a better GPU to free up — it takes the
@@ -631,7 +659,8 @@ def apply_weight(name: str, powers: list[float]) -> None:
     A node has ONE Weight however many cards it holds, so config.node_weight reduces the list — see
     there for why the mean is sound here and would not be at Settlement.
     """
-    run(["scontrol", "update", f"NodeName={name}", f"Weight={config.node_weight(powers)}"], sudo=True)
+    run(["scontrol", "update", f"NodeName={name}", f"Weight={config.node_weight(powers)}"], sudo=True,
+        check=check)
 
 
 # --- authorize / admit / chown (Head only, operator + sudo) -----------------
@@ -757,10 +786,9 @@ def _admit(name: str, reg: dict, write_root_file) -> None:
         reg[name]["admitted"] = True
         save_registry(reg)
         render_gres(reg, write_root_file)
-    # An Arm with no Power cannot be priced, so it is benchmarked as part of joining — not as an
-    # optional follow-up an operator might forget. Once, though: re-admitting an Arm that is already
-    # priced is a repair, not new hardware.
-    ensure_priced(name)
+    # No benchmark, and no wait: the Arm prices itself (`bench_locally`) after admission, once its
+    # images have landed, and reports the Power on its final /enroll — so the Head never blocks on a
+    # donor's image pull.
 
 
 def chown_arm(name: str, owner: str) -> None:

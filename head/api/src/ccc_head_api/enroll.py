@@ -111,6 +111,10 @@ class EnrollRequest(BaseModel):
     # it. The Head refuses to render `Prolog=` until every admitted Arm has reported it here. Defaults
     # empty: an older CLI hasn't written the prolog, and saying so is exactly right.
     provides: list[str] = []
+    # The Arm's own Power measurement, one per Device in gpu_devices order — sent once, after it ran
+    # the benchmark itself (before its slurmd starts). Absent, the stored Power is left alone.
+    powers: list[float] = []
+    gpu: str = ""
 
 
 def _load() -> dict:
@@ -249,6 +253,8 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
             if not f.path.strip():
                 raise HTTPException(422, f"feature {f.name!r} needs a non-empty install path")
 
+    if req.powers and (len(req.powers) != len(req.gpu_devices) or min(req.powers) <= 0):
+        raise HTTPException(422, f"expected one positive Power per GPU device, got {req.powers}")
     # Read before the row is touched: a Head with no images cannot enroll anyone, so it fails here
     # rather than after the munge key has left.
     images = _images()
@@ -276,9 +282,11 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     # The VERIFIED address, never the request body's: `req.mesh_ip` stays on the wire only because
     # dropping it would break EnrollRequest, but nothing below this line reads it.
     entry["mesh_ip"] = peer
-    # VRAM is *declared* here; Power is *measured* later by a benchmark. A donor could inflate either,
-    # but only VRAM can be taken on the donor's word without also being wrong.
+    # VRAM is declared; Power is measured by the Arm itself. Both on the donor's word — donors are
+    # trusted, and `cuttle arm benchmark` re-measures from the Head through Slurm.
     entry["vram_mb"] = req.vram_mb
+    if req.powers:
+        entry["powers"], entry["gpu"] = req.powers, req.gpu
     # An UPDATE, not a setdefault: a re-enroll resends whatever this Arm currently has, so a genuine
     # removal (owner un-picks a feature, re-runs setup) actually takes.
     entry["features"] = [f.model_dump() for f in req.features]
@@ -298,6 +306,7 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         "cluster": os.environ["CCC_CLUSTER"],
         "partition": os.environ["CCC_PARTITION"],
         "admitted": entry["admitted"],
+        "powers": entry.get("powers"),
         "images": images,  # {base, bench}: digest refs on the Head registry
         "registry": {"user": f"arm-{req.node_name}", "password": _pull_password(req.node_name)},
         # The cluster's CA, so the Arm's owner never sees a fingerprint prompt: this response already

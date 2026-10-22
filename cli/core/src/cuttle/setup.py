@@ -1411,16 +1411,27 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         if licence_home:
             provision_licence_home(licence_home)
 
+    # Before slurmd, so its Weight rides in `--conf`. Once per hardware: a re-run reuses the Power the
+    # Head already holds (`cuttle arm benchmark` on the Head re-measures).
+    bench = None
+    powers = info.get("powers") or []
+    if len(powers) != len(system.gpu_devices()):
+        with ui.step("Benchmarking this Arm (matmul in the benchmark image — prices a second on it)"):
+            bench = enroll.bench_locally(info["images"]["bench"], len(system.gpu_devices()))
+            powers = bench["powers"]
+        ui.result("power", ", ".join(f"{p} TFLOP/s" for p in powers))
+
     # No slurm.conf here — slurmd fetches it from slurmctld (configless) and self-registers (-Z).
     with ui.step("Starting slurmd"):
-        _start_slurmd(node_name, info["ctld_addr"], [f["name"] for f in features])
+        _start_slurmd(node_name, info["ctld_addr"], [f["name"] for f in features],
+                      config.node_weight(powers))
     with ui.step("Reporting this Arm's Slurm hooks to the Head"):
         # ONLY now — both per-node files are on disk and slurmd is up. Until this lands the Head will
         # render neither `Prolog=` nor `JobContainerType=` (enroll.arms_missing, once per capability),
         # because a node named by either without its file fails its jobs and drains, and does not
         # recover when the file appears later.
         enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features,
-                                provides=[config.ARM_CAP_PROLOG, config.ARM_CAP_TMPFS])
+                                provides=[config.ARM_CAP_PROLOG, config.ARM_CAP_TMPFS], bench=bench)
     with ui.step("Checking the Head can reach us"):
         # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
         enroll.check_head_can_reach_us(t["mesh_ip"])
@@ -1454,7 +1465,8 @@ def _arm_first_login() -> None:
         auth.login(None)
 
 
-def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None) -> None:
+def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | None = None,
+                  weight: int | None = None) -> None:
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     # Configless serves the conf (which names Epilog=/Prolog=/JobContainerType=) but NOT the per-node
@@ -1470,7 +1482,7 @@ def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | Non
     # they do). `feature_names` are the same Arm Features just reported at /enroll.
     _write_root_file(config.SLURMD_DROPIN,
                      enroll.slurmd_dropin(node_name, ctld_addr, system.gpu_vram_mb(),
-                                          len(system.gpu_devices()), feature_names))
+                                          len(system.gpu_devices()), feature_names, weight))
     run(["systemctl", "daemon-reload"], sudo=True)  # the drop-in rewrites slurmd's ExecStart
     run(["systemctl", "enable", "slurmd"], sudo=True)
     run(["systemctl", "restart", "slurmd"], sudo=True)
