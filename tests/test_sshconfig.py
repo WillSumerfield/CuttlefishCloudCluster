@@ -1,4 +1,4 @@
-"""`~/.ssh/ccc.config`: `Host glados` + one `Host glados-<id>` per live Dive, all with the User's own
+"""`~/.ssh/ccc.config`: `Host lab` + one `Host lab-<id>` per live Dive, all with the User's own
 key and the Tidepool's pinned host key; the single `Include` line cuttle adds to the User's config;
 the attach that writes it. Where `ssh` is installed the file is parsed by ssh ITSELF.
 
@@ -20,8 +20,8 @@ def _row(dive_id=58, port=31007):
 
 
 class TestTheAlias:
-    def test_a_dive_is_glados_dash_id(self):
-        assert sshconfig.alias(58) == "glados-58"
+    def test_a_dive_is_name_dash_id(self):
+        assert sshconfig.alias(58) == "lab-58"
 
 
 class TestTheGeneratedConfig:
@@ -29,7 +29,7 @@ class TestTheGeneratedConfig:
         _row()
         sshconfig.refresh(live={58})
         text = config.SSH_CCC_CONFIG.read_text()
-        assert "Host glados-58" in text and "  Port 31007" in text
+        assert "Host lab-58" in text and "  Port 31007" in text
         assert f"  IdentityFile {config.TIDEPOOL_KEY}" in text
         assert f"  HostKeyAlias {config.TIDEPOOL_HOSTKEY_ALIAS}" in text
         assert "  StrictHostKeyChecking yes" in text and "/dev/null" not in text
@@ -40,7 +40,7 @@ class TestTheGeneratedConfig:
         _row(59, 31008)
         sshconfig.refresh(live={59})
         text = config.SSH_CCC_CONFIG.read_text()
-        assert "glados-58" not in text and text.count("Host glados-59") == 1
+        assert "lab-58" not in text and text.count("Host lab-59") == 1
 
     def test_an_ended_dive_loses_its_record(self, ccc_home):
         _row()
@@ -50,13 +50,13 @@ class TestTheGeneratedConfig:
     def test_an_unreachable_head_prunes_nothing(self, ccc_home):
         _row()
         sshconfig.refresh(live=None)
-        assert "Host glados-58" in config.SSH_CCC_CONFIG.read_text()
+        assert "Host lab-58" in config.SSH_CCC_CONFIG.read_text()
 
     def test_a_corrupt_record_is_dropped_rather_than_raised(self, ccc_home):
         _row()
         (config.DIVE_DIR / "58.json").write_text("{not json")
         sshconfig.refresh(live={58})
-        assert "glados-58" not in config.SSH_CCC_CONFIG.read_text()
+        assert "lab-58" not in config.SSH_CCC_CONFIG.read_text()
 
     def test_it_is_not_group_readable(self, ccc_home):
         _row()
@@ -115,7 +115,7 @@ class TestSshItselfAgrees:
     def test_the_alias_resolves_to_the_relay(self, ccc_home):
         _row()
         sshconfig.refresh(live={58})
-        got = self._resolved("glados-58")
+        got = self._resolved("lab-58")
         assert got["hostname"] == "head"
         assert got["port"] == "31007"
         assert got["user"] == "alice"
@@ -124,10 +124,10 @@ class TestSshItselfAgrees:
         assert str(config.TIDEPOOL_KEY) in got["identityfile"]
 
     def test_nothing_else_matches_it(self, ccc_home):
-        """The blocks are `Host <alias>`, not `Host glados-*` — an unknown name must fall through."""
+        """The blocks are `Host <alias>`, not `Host lab-*` — an unknown name must fall through."""
         _row()
         sshconfig.refresh(live={58})
-        assert self._resolved("glados-999")["hostname"] == "glados-999"
+        assert self._resolved("lab-999")["hostname"] == "lab-999"
 
 
 class TestTheAttach:
@@ -144,14 +144,14 @@ class TestTheAttach:
 
     def test_a_terminal_session_execs_ssh_on_the_alias(self, placed):
         cli_dive.attach(58)
-        assert placed == [["ssh", "glados-58"]]
-        assert "Host glados-58" in config.SSH_CCC_CONFIG.read_text()
+        assert placed == [["ssh", "lab-58"]]
+        assert "Host lab-58" in config.SSH_CCC_CONFIG.read_text()
 
     def test_vscode_opens_the_main_folder(self, placed, monkeypatch):
         opened = []
         monkeypatch.setattr(sshconfig, "open_vscode", lambda n, f: opened.append((n, f)) or True)
         cli_dive.attach(58, vscode=True)
-        assert opened == [("glados-58", "/home/alice/proj")] and placed == []
+        assert opened == [("lab-58", "/home/alice/proj")] and placed == []
 
 
 class TestMainFolder:

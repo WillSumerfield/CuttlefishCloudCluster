@@ -1,5 +1,5 @@
 """Tidepool (phase 3): the root helper's argv and refusals, the shared templates, the Slurm reserve, the
-`Host glados` alias, and the Head API's status/keys/restart routes.
+`Host lab` alias, and the Head API's status/keys/restart routes.
 
 NOT tested: a real loop image, Podman, sshd or systemd — hardware list (temp/2.0-plan.md).
 """
@@ -35,7 +35,7 @@ class TestConstantsAgree:
         assert (str(head_tp.SETTINGS), str(head_tp.MNT_ROOT), str(head_tp.KEYS_ROOT), head_tp.HELPER) \
             == (str(config.TIDEPOOL_SETTINGS), str(config.TIDEPOOL_MNT_ROOT),
                 str(config.TIDEPOOL_KEYS_ROOT), str(config.TIDEPOOL_HELPER_BIN))
-        assert head_tp.SSH_ALIAS == config.TIDEPOOL_ALIAS == "glados"
+        assert head_tp.cluster_name() == config.cluster_name() == "lab"
         assert head_tp.ssh_port(60002) == H.ssh_port(60002) == 32002
 
     def test_username_rule_is_one_rule(self):
@@ -50,7 +50,7 @@ class TestConstantsAgree:
 
 class TestHelperArgv:
     S = {"cpus": 4, "mem_gb": 16}
-    BASE = "ccc.glados:5000/ccc/base@sha256:" + "a" * 64
+    BASE = "ccc.lab:5000/ccc/base@sha256:" + "a" * 64
 
     def argv(self, user="bob", uid=60003):
         return H.create_argv(user, uid, self.S, self.BASE)
@@ -249,7 +249,7 @@ class TestTheAlias:
                                                         "user": "alice"}))
         sshconfig.refresh()
         text = config.SSH_CCC_CONFIG.read_text()
-        assert "Host glados\n  HostName dex.example\n  Port 32002\n  User alice\n" in text
+        assert "Host lab\n  HostName dex.example\n  Port 32002\n  User alice\n" in text
         assert "StrictHostKeyChecking yes" in text and "StrictHostKeyChecking no" not in text
         assert f"HostKeyAlias {config.TIDEPOOL_HOSTKEY_ALIAS}" in text
         assert f"UserKnownHostsFile {config.TIDEPOOL_KNOWN_HOSTS}" in text
@@ -279,7 +279,7 @@ class TestHeadApi:
         with db.connect() as conn:
             uid = db.guise_uid(conn, db.get_user(conn, "alice")["id"])
         assert (r["user"], r["port"], r["state"]) == ("alice", 32000 + uid - 60000, "active")
-        assert r["host_key"] == "ssh-ed25519 AAAAhost" and r["alias"] == "glados"
+        assert r["host_key"] == "ssh-ed25519 AAAAhost" and r["alias"] == "lab"
 
     def test_keys_round_trip_into_authorized_keys(self, head, keys_root):
         h = _login(head)
@@ -324,7 +324,7 @@ class TestLoginConnects:
         pub = config.TIDEPOOL_KEY.with_suffix(".pub").read_text().strip()
         assert (keys_root / "alice" / "authorized_keys").read_text() == pub + "\n"
         assert config.TIDEPOOL_KNOWN_HOSTS.read_text() == "ccc-tidepool ssh-ed25519 AAAAhost\n"
-        assert re.search(r"Host glados\n  HostName head\n  Port 320\d\d\n  User alice\n",
+        assert re.search(r"Host lab\n  HostName head\n  Port 320\d\d\n  User alice\n",
                          config.SSH_CCC_CONFIG.read_text())
         # a second login re-uses the key, uploads nothing new
         assert cli("login", input="alice\nhunter2\n").exit_code == 0

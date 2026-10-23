@@ -233,7 +233,7 @@ class TestAClientUpdateOnlyRepairsItsTrust:
         """A client keeps its Head's address in that /etc/hosts line and nowhere else — the stored URL
         is the **Cluster name**. With the line gone there is nothing here to restore it from, and
         inventing an address is re-pointing the box, which is a `setup`."""
-        settings.save({"head": "https://ccc.glados"})
+        settings.save({"head": "https://ccc.lab"})
         monkeypatch.setattr(setup_mod, "make_user_dirs", lambda: None)
         monkeypatch.setattr(setup_mod.socket, "gethostbyname",
                             lambda host: (_ for _ in ()).throw(OSError("no such host")))
@@ -243,7 +243,7 @@ class TestAClientUpdateOnlyRepairsItsTrust:
     def test_a_changed_authority_is_never_re_pinned_unattended(self, ccc_home, monkeypatch):
         """Silently re-pinning would turn trust-on-first-use into trust-on-every-use: whatever answers
         at that address gets trusted, which is the check the first ceremony exists to make."""
-        pin = config.PINS_DIR / "ccc.glados"
+        pin = config.PINS_DIR / "ccc.lab"
         pin.parent.mkdir(parents=True, exist_ok=True)
         pin.write_text("old")
         monkeypatch.setattr(tls, "_pin_path", lambda url: pin)
@@ -252,16 +252,16 @@ class TestAClientUpdateOnlyRepairsItsTrust:
         monkeypatch.setattr(tls, "fingerprint", lambda pem: "AA:BB")
         monkeypatch.setattr(ui, "interactive", lambda: False)
         with pytest.raises(typer.Exit):
-            tls.refresh_pin("https://ccc.glados")
+            tls.refresh_pin("https://ccc.lab")
         assert "old" in pin.read_text(), "re-pinned with nobody there to check the fingerprint"
 
     def test_an_unchanged_authority_is_left_alone(self, ccc_home, monkeypatch):
         """The ordinary case, and it must cost nothing — no fetch, no question, no root write."""
-        pin = config.PINS_DIR / "ccc.glados"
+        pin = config.PINS_DIR / "ccc.lab"
         pin.parent.mkdir(parents=True, exist_ok=True)
         pin.write_text("good")
         monkeypatch.setattr(tls, "_pin_path", lambda url: pin)
         monkeypatch.setattr(tls, "signs_leaf", lambda url, pem: True)
         monkeypatch.setattr(tls, "fetch_ca",
                             lambda url: pytest.fail("refetched a CA that still verifies"))
-        tls.refresh_pin("https://ccc.glados")
+        tls.refresh_pin("https://ccc.lab")

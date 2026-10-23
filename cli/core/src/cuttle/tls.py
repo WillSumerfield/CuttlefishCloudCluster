@@ -6,7 +6,7 @@ whenever it stops covering an address, and a client that had pinned the leaf wou
 
 Pinning at all, rather than leaning on the OS trust store the CA is also installed into: `cafile=<the
 CA>` means cuttle verifies the Head against this one authority and nothing else, so a public CA that
-mis-issues for `ccc.glados` — or any other root the box has been talked into trusting — still cannot
+mis-issues for `ccc.<name>` — or any other root the box has been talked into trusting — still cannot
 impersonate the Head to the CLI. The browser gets the weaker, ordinary guarantee; the CLI does not
 have to.
 
@@ -17,6 +17,7 @@ an installed client receives it in the bundle. Only a generic `setup --client` e
 """
 
 import hashlib
+import re
 import ssl
 import urllib.request
 from pathlib import Path
@@ -52,6 +53,16 @@ def fetch_ca(url: str) -> str:
     ctx = ssl._create_unverified_context()
     with urllib.request.urlopen(f"{url.rstrip('/')}/ca.pem", context=ctx, timeout=15) as r:
         return r.read().decode()
+
+
+def fetch_cluster_name(url: str) -> str:
+    """GET /cluster-name, unverified like `fetch_ca` (the ceremony that follows is what vouches)."""
+    ctx = ssl._create_unverified_context()
+    with urllib.request.urlopen(f"{url.rstrip('/')}/cluster-name", context=ctx, timeout=15) as r:
+        name = r.read().decode().strip()
+    if not re.match(config.CLUSTER_NAME_RE, name):
+        raise ui.abort(f"{url} answered with no usable cluster name ({name[:40]!r})")
+    return name
 
 
 def signs_leaf(url: str, ca_pem: str) -> bool:

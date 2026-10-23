@@ -25,7 +25,12 @@ KEYS_ROOT = Path("/var/lib/ccc/head/tidepool-keys")
 HELPER = "/usr/local/sbin/ccc-tidepool"
 SSH_PORT_BASE = 32000
 UID_FLOOR = 60000
-SSH_ALIAS = "glados"
+CLUSTER_NAME_FILE = Path("/etc/ccc/cluster-name")   # config.CLUSTER_NAME_FILE
+
+
+def cluster_name() -> str:
+    """The **Cluster name** (setup --head): domain `ccc.<name>`, Tidepool alias `<name>`."""
+    return CLUSTER_NAME_FILE.read_text().strip()
 
 # One OpenSSH public key line: type, base64 blob, optional comment. No options prefix (from=, command=):
 # the line goes into authorized_keys verbatim.

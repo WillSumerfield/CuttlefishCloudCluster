@@ -359,7 +359,7 @@ def render_base_containerfile() -> str:
 
 def render_bench_containerfile() -> str:
     return BENCH_CONTAINERFILE_TMPL.format(
-        base=f"{config.REGISTRY}/ccc/base:{config.IMAGE_TAG}", cublas=config.BENCH_CUBLAS_PKG, cublas_dev=config.BENCH_CUBLAS_DEV_PKG,
+        base=f"{config.registry()}/ccc/base:{config.IMAGE_TAG}", cublas=config.BENCH_CUBLAS_PKG, cublas_dev=config.BENCH_CUBLAS_DEV_PKG,
         n=config.BENCH_MATRIX_N, warmup=config.BENCH_WARMUP, iters=config.BENCH_ITERS,
         cuda_home=config.CUDA_HOME, bench_bin=config.BENCH_BIN, bench_py=config.BENCH_PY_PATH)
 
@@ -795,7 +795,7 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
         prolog=prolog,
         tmpfs=tmpfs,
         weight=weight,
-        cluster=config.CLUSTER_NAME,
+        cluster=config.SLURM_CLUSTER,
         partition=config.PARTITION,
         host=system.hostname(),
         mesh_ip=mesh_ip,

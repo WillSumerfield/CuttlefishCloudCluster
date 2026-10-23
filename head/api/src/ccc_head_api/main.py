@@ -208,6 +208,13 @@ def ca_pem() -> str:
     return CA_CERT.read_text()
 
 
+@app.get("/cluster-name", response_class=PlainTextResponse)
+def cluster_name() -> str:
+    """The **Cluster name**, so a client given only an address can name the Head (`ccc.<name>`). Open,
+    like /ca.pem: the CA ceremony that follows is what vouches for the answer."""
+    return tp_mod.cluster_name() + "\n"
+
+
 def _db_ok() -> bool:
     try:
         with db.connect() as conn:
@@ -489,7 +496,7 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
     response.set_cookie(_COOKIE_NAME, token, max_age=_COOKIE_MAX_AGE, httponly=True,
                         samesite="lax", secure=_COOKIE_SECURE)
     return {"token": token, "username": user["username"], "is_admin": bool(user["is_admin"]),
-            "must_change_password": bool(user["must_change_password"])}
+            "must_change_password": bool(user["must_change_password"]), "cluster": tp_mod.cluster_name()}
 
 
 @api.post("/logout")
@@ -623,7 +630,7 @@ def dives(user: dict = Depends(current_user)) -> list[dict]:
 
 @api.get("/dives/{job_id}")
 def dive_connection(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """State, and once an sshd answers, where `ssh glados-<id>` connects. Polling it brings an Arm
+    """State, and once an sshd answers, where `ssh <name>-<id>` connects. Polling it brings an Arm
     Dive's relay up."""
     return dive_mod.connection(user, job_id)
 
@@ -652,7 +659,7 @@ def tidepool_status(user: dict = Depends(current_user)) -> dict:
     return {"state": tp_mod.state(name), "used_gb": used if used is not None else 0.0,
             "mounted": used is not None, "size_gb": tp_mod.size_gb(),
             "port": tp_mod.ssh_port(uid) if uid else None, "user": name,
-            "host_key": tp_mod.host_key(name), "alias": tp_mod.SSH_ALIAS}
+            "host_key": tp_mod.host_key(name), "alias": tp_mod.cluster_name()}
 
 
 @api.post("/tidepool/{verb}")

@@ -188,8 +188,8 @@ class TestTheBaseImage:
 DONOR_IP = "100.99.0.2"  # where the fake "donor-box" node in `head_pin` is registered
 
 
-IMAGES = {"base": "ccc.glados:5000/ccc/base@sha256:" + "b" * 64,
-          "bench": "ccc.glados:5000/ccc/bench@sha256:" + "c" * 64}
+IMAGES = {"base": "ccc.lab:5000/ccc/base@sha256:" + "b" * 64,
+          "bench": "ccc.lab:5000/ccc/bench@sha256:" + "c" * 64}
 
 
 @pytest.fixture
@@ -229,6 +229,7 @@ class TestEnrollHandsOverImages:
     def test_enroll_hands_over_digests_and_this_arms_credential(self, head_pin):
         body = _enroll().json()
         assert body["images"] == head_pin
+        assert body["cluster_name"] == "lab"
         assert body["registry"] == {"user": "arm-donor-box", "password": "s3cret"}
 
     def test_a_head_with_no_images_refuses_to_enroll(self, head_pin, monkeypatch, tmp_path):

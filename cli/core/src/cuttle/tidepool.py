@@ -6,7 +6,7 @@ Two halves:
   every User; `user add`/`user remove`/`teardown` call the helper. The Head API reaches the helper only
   through one sudoers rule (restart|reset <user>), and only for the caller's own.
 - **Any box (User)**: `cuttle login` makes `~/.ssh/ccc_ed25519`, uploads its public half, and writes
-  the `Host glados` alias with the Tidepool's host key pinned (sshconfig.py). `cuttle tidepool` ssh's
+  the `Host <name>` alias with the Tidepool's host key pinned (sshconfig.py). `cuttle tidepool` ssh's
   in; plain ssh/scp/rsync/VS Code use the same alias.
 """
 
@@ -152,7 +152,7 @@ def _head_host() -> str:
 
 
 def connect() -> dict:
-    """Make sure this box can `ssh glados`: key uploaded, alias written, host key pinned."""
+    """Make sure this box can `ssh <name>`: key uploaded, alias written, host key pinned."""
     pub = _ensure_key()
     have = {k["pubkey"] for k in auth._api("GET", "/ssh-keys")}
     if pub not in have:
@@ -172,7 +172,7 @@ def enter() -> None:
     tp = connect()
     if tp["state"] != "active":
         ui.warn(f"your Tidepool is {tp['state']} — `cuttle tidepool restart`, or ask an admin")
-    os.execvp("ssh", ["ssh", config.TIDEPOOL_ALIAS])
+    os.execvp("ssh", ["ssh", config.cluster_name()])
 
 
 def _act(verb: str, user: str | None) -> None:
@@ -196,7 +196,7 @@ def status(as_json: bool = False) -> None:
     tp = auth._api("GET", "/tidepool")
     ui.emit(tp, as_json, lambda: ui.kv([
         ("state", tp["state"]), ("used", f"{tp['used_gb']:.1f} / {tp['size_gb']} GB"),
-        ("ssh", f"ssh {config.TIDEPOOL_ALIAS}"), ("port", tp["port"])]))
+        ("ssh", f"ssh {config.cluster_name()}"), ("port", tp["port"])]))
 
 
 def keys(as_json: bool = False) -> None:

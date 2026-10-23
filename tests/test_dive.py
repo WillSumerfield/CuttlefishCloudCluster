@@ -46,7 +46,7 @@ class TestConstantsAgree:
 
     def test_the_spec_line_is_what_ccc_launch_reads(self, monkeypatch):
         monkeypatch.setattr(D, "MESH_IP", "100.99.0.1")
-        spec = D.make_spec("alice", "ab" * 16, "s" * 43, "ccc.glados:5000/ccc/u-alice@sha256:" + "a" * 64,
+        spec = D.make_spec("alice", "ab" * 16, "s" * 43, "ccc.lab:5000/ccc/u-alice@sha256:" + "a" * 64,
                            "proj", ["data"], 31000, "pyproject.toml")
         script = D.render_job(spec, 1, 60, "", "")
         got = L.validate_spec(L.read_spec(script))
@@ -133,7 +133,7 @@ class FakeHead:
             return subprocess.CompletedProcess(argv, 0, "77\n", "")
         verb = argv[argv.index(D.HELPER) + 1]
         self.calls.append((verb, json.loads(input) if input else None))
-        out = {"dive-prep": self.prep, "dive-snap": {"image": "ccc.glados:5000/ccc/u-alice@sha256:" + "f" * 64}}
+        out = {"dive-prep": self.prep, "dive-snap": {"image": "ccc.lab:5000/ccc/u-alice@sha256:" + "f" * 64}}
         return subprocess.CompletedProcess(argv, 0, json.dumps(out[verb]) if verb in out else "", "")
 
     def verbs(self):

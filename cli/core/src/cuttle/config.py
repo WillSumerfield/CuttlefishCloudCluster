@@ -99,18 +99,40 @@ MICROMAMBA_SHA256 = {
 }
 
 # --- cluster identity ---
-CLUSTER_NAME = "ccc"
+SLURM_CLUSTER = "ccc"      # Slurm's ClusterName — not the Cluster name below
 PARTITION = "ccc"
-# The **Cluster name** (CONTEXT.md): the one name every machine CCC installs on uses to reach the Head,
-# in place of an address. Hardcoded, not a flag — there is one cluster, and a name that varied per
-# deployment would have to be baked into certs, pins and the installer bundle anyway.
+# The **Cluster name** (CONTEXT.md): a short name chosen at `setup --head` (default: the Head's
+# hostname). The domain every machine CCC installs on uses to reach the Head is `ccc.<name>`; the
+# User's ssh aliases are `<name>` (Tidepool) / `<name>-<id>` (Dive). Changing it = teardown + setup:
+# it is baked into the cert, pins and installer bundles.
 #
-# Nothing resolves it. CCC has no DNS: the mesh runs no resolver and there is no router to configure,
-# so `setup` writes it into /etc/hosts on every box it touches (system.write_hosts_entry), pointed at
-# whichever address THAT box can reach the Head on — 127.0.0.1 on the Head, the Head's mesh IP on an
-# Arm, the configured address on a client. A device CCC was never installed on has no way to learn it
-# and reaches the Dashboard by IP instead.
-DOMAIN = "ccc.glados"
+# Stored box-wide in CLUSTER_NAME_FILE (Head: setup --head; Arm: enrollment; root helpers read it
+# too), else per-user in settings["cluster"] (a client: `setup --client` / `cuttle login`).
+#
+# Nothing resolves the domain. CCC has no DNS: the mesh runs no resolver and there is no router to
+# configure, so `setup` writes it into /etc/hosts on every box it touches (system.write_hosts_entry),
+# pointed at whichever address THAT box can reach the Head on — 127.0.0.1 on the Head, the Head's mesh
+# IP on an Arm, the configured address on a client. A device CCC was never installed on has no way to
+# learn it and reaches the Dashboard by IP instead.
+CLUSTER_NAME_FILE = Path("/etc/ccc/cluster-name")   # 0644; ccc_launch/ccc_tidepool/Head API read it
+CLUSTER_NAME_RE = r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$"
+
+
+def cluster_name() -> str:
+    try:
+        return CLUSTER_NAME_FILE.read_text().strip()
+    except FileNotFoundError:
+        pass
+    from . import settings
+    if name := settings.load().get("cluster"):
+        return name
+    raise RuntimeError("this box does not know its cluster's name — run `cuttle login`")
+
+
+def domain() -> str:
+    return f"ccc.{cluster_name()}"
+
+
 # The marker that makes our /etc/hosts line ours: rewritten in place on re-setup, removed by teardown.
 HOSTS_MARKER = "# cuttle"
 
@@ -397,7 +419,7 @@ WSL_KEEPALIVE_TASK = "CCC Arm keep-alive"
 # the Enroll API on purpose: /enroll hands out the munge key and MUST stay mesh-only, but the Head
 # API must reach the LAN too. Bound 0.0.0.0. Reuses API_VENV (same package, different app object). A
 # remote Arm sees it over the mesh; a LAN box sees it too (needs a ufw port rule — system.allow_tcp_port).
-# 443, so the **Cluster name** is the whole address: `https://ccc.glados`, nothing to append. The CLI
+# 443, so the **Cluster name** is the whole address: `https://ccc.<name>`, nothing to append. The CLI
 # could always default a port (it takes a bare host and fills one in); a browser cannot be taught one,
 # and the Dashboard is a browser surface. Costs a capability — the Head API runs as HEAD_API_USER, and
 # a non-root process cannot bind <1024 without CAP_NET_BIND_SERVICE (see headapi._head_unit) — and
@@ -533,7 +555,13 @@ CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; 
 
 # --- Podman (podman.py) ---
 REGISTRY_PORT = 5000
-REGISTRY = f"ccc.glados:{REGISTRY_PORT}"   # DOMAIN:port — Head → 127.0.0.1 (push), Arm → mesh (pull)
+
+
+def registry() -> str:
+    """`ccc.<name>:5000` — Head → 127.0.0.1 (push), Arm → mesh (pull)."""
+    return f"{domain()}:{REGISTRY_PORT}"
+
+
 REGISTRY_SERVICE = "ccc-registry"         # Quadlets ccc-registry-push / ccc-registry-pull
 REGISTRY_ETC = Path("/etc/ccc/registry")  # configs + htpasswd files, 0700 root
 REGISTRY_PUSH_HTPASSWD = REGISTRY_ETC / "push.htpasswd"
@@ -577,8 +605,7 @@ TIDEPOOL_DEFAULT_SIZE_GB = 200
 TIDEPOOL_DEFAULT_CPUS = 4
 TIDEPOOL_DEFAULT_MEM_GB = 16
 TIDEPOOL_DEFAULT_TOTAL_FRACTION = 4                    # total slice = 1/4 of the box
-# Client side: the key `cuttle login` makes, the alias it writes, and the pinned host key.
-TIDEPOOL_ALIAS = DOMAIN.rsplit(".", 1)[-1]             # `ssh glados`
+# Client side: the pinned host key's alias (the Tidepool's own alias is cluster_name()).
 TIDEPOOL_HOSTKEY_ALIAS = "ccc-tidepool"
 # Dives — the helper's per-Dive state (ccc_tidepool.DIVE_*; must match).
 DIVE_RECORDS = Path("/etc/ccc/dives")                  # <token>.json, root
@@ -818,7 +845,7 @@ MAX_LOGS = 500
 # CLI session bearer: the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 SESSION_FILE = CCC_HOME / "session"
-DIVE_DIR = CCC_HOME / "dives"                    # <id>.json per live Dive → glados-<id> aliases
+DIVE_DIR = CCC_HOME / "dives"                    # <id>.json per live Dive → <name>-<id> aliases
 # The User's OWN ssh directory. cuttle writes exactly one file in it (`ccc.config`, wholly generated)
 # and adds exactly one `Include` line to `config` — it never touches an entry anyone else wrote.
 SSH_DIR = Path(os.environ.get("CCC_SSH_DIR") or Path.home() / ".ssh")

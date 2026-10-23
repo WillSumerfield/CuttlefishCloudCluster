@@ -696,7 +696,7 @@ class TestSlurmdDropin:
         assert "Feature=vram24," not in enroll.slurmd_dropin("donor-box", "h:1", 24564, 1)
 
 
-BENCH_IMG = "ccc.glados:5000/ccc/bench@sha256:" + "c" * 64
+BENCH_IMG = "ccc.lab:5000/ccc/bench@sha256:" + "c" * 64
 
 
 def bench(node="donor-box", gpus=1):
@@ -729,7 +729,7 @@ class TestBenchmarkSbatch:
         """ccc_launch.py runs under the system python and imports nothing of CCC's."""
         assert str(config.JOBS_DIR) == str(ccc_launch.JOBS_DIR)
         assert str(config.REGISTRY_AUTH) == ccc_launch.AUTH_FILE
-        assert config.REGISTRY == ccc_launch.REGISTRY
+        assert config.registry() == ccc_launch.registry() == "ccc.lab:5000"
         assert config.JOB_CONTAINER_PREFIX == ccc_launch.CONTAINER_PREFIX
         assert config.GUISE_UID_MAX == ccc_launch.UID_CEIL and config.CCC_UID == ccc_launch.UID_FLOOR
 

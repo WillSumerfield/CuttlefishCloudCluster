@@ -351,9 +351,16 @@ def teardown(all_: bool) -> None:
 DIVE_RECORDS = Path("/etc/ccc/dives")             # config.DIVE_RECORDS — one <tok>.json per Dive
 DIVE_RSYNCD = Path("/etc/ccc/rsyncd-dives.d")     # config.DIVE_RSYNCD — &included by the rsyncd conf
 DIVE_STATE = Path("/var/lib/ccc/dives")           # config.DIVE_STATE — <tok>/{home,sys} bundle
-REGISTRY = "ccc.glados:5000"                      # config.REGISTRY
+CLUSTER_NAME_FILE = Path("/etc/ccc/cluster-name")  # config.CLUSTER_NAME_FILE
+REGISTRY_PORT = 5000                              # config.REGISTRY_PORT
 CA_CERT = "/opt/ccc/tls/ccc-ca.crt"               # config.HEAD_CA_CERT
 HELPER = "/usr/local/sbin/ccc-tidepool"           # config.TIDEPOOL_HELPER_BIN
+
+
+def registry() -> str:
+    """config.registry(): `ccc.<cluster name>:5000`."""
+    return f"ccc.{CLUSTER_NAME_FILE.read_text().strip()}:{REGISTRY_PORT}"
+
 
 DOTFILE_CAP = 2**30
 # The dotfile allowlist, as rsync rules (plan: Dives). Never private keys or credential files.
@@ -493,7 +500,7 @@ def dive_prep(user: str, tok: str, req: dict) -> dict:
 
 
 def _auth_header() -> str:
-    auth = json.loads(Path(AUTH_FILE).read_text())["auths"][REGISTRY]["auth"]
+    auth = json.loads(Path(AUTH_FILE).read_text())["auths"][registry()]["auth"]
     return f"Basic {auth}"
 
 
@@ -501,7 +508,7 @@ def dive_snap(user: str, tok: str) -> dict:
     """Commit + push the User's system layer. The pushed manifest's digest is what the Arm pulls."""
     record(check_user(user))
     check_token(tok)
-    ref = f"{REGISTRY}/ccc/u-{user}:{tok}"
+    ref = f"{registry()}/ccc/u-{user}:{tok}"
     digest_file = DIVE_STATE / f"{tok}.digest"
     DIVE_STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     sh(*podman(user), "commit", "-q", container(user), ref, capture_output=True)
@@ -512,7 +519,7 @@ def dive_snap(user: str, tok: str) -> dict:
         sh(*podman(user), "rmi", "-f", ref, check=False, capture_output=True)
     digest = digest_file.read_text().strip()
     digest_file.unlink()
-    return {"image": f"{REGISTRY}/ccc/u-{user}@{digest}"}
+    return {"image": f"{registry()}/ccc/u-{user}@{digest}"}
 
 
 def render_modules(tok: str, d: dict) -> str:
@@ -731,8 +738,8 @@ def started(user: str) -> None:
 
 def delete_manifest(image: str) -> None:
     """DELETE the snapshot's manifest from the registry (its blobs go at the next registry-gc)."""
-    name, digest = image.removeprefix(f"{REGISTRY}/").split("@")
-    req = urllib.request.Request(f"https://{REGISTRY}/v2/{name}/manifests/{digest}", method="DELETE",
+    name, digest = image.removeprefix(f"{registry()}/").split("@")
+    req = urllib.request.Request(f"https://{registry()}/v2/{name}/manifests/{digest}", method="DELETE",
                                  headers={"Authorization": _auth_header()})
     ctx = ssl.create_default_context(cafile=CA_CERT if Path(CA_CERT).exists() else None)
     try:

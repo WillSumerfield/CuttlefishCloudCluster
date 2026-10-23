@@ -327,7 +327,7 @@ def is_crostini() -> bool:
 # address happened to be listed first. config.HOSTS_MARKER says the line is ours; what makes a line
 # ours to REPLACE is the name it resolves, which is not the same test (see claims_name).
 
-def claims_name(line: str, name: str = config.DOMAIN) -> bool:
+def claims_name(line: str, name: str) -> bool:
     """Whether an /etc/hosts line resolves `name` — ours or anyone else's.
 
     Matched on the NAME, not on config.HOSTS_MARKER: a line for the name that lacks our marker (added
@@ -340,10 +340,11 @@ def claims_name(line: str, name: str = config.DOMAIN) -> bool:
     return name in line.split("#", 1)[0].split()[1:]
 
 
-def write_hosts_entry(addr: str, name: str = config.DOMAIN) -> None:
+def write_hosts_entry(addr: str, name: str | None = None) -> None:
     """Point `name` at `addr` in /etc/hosts, and let nothing else claim it. Idempotent, and a no-op
     when the file already says exactly this — setup writes this on every run, and rewriting an
     unchanged file for nothing is a root mutation with nothing to show for it."""
+    name = name or config.domain()
     want = f"{addr}\t{name} {config.HOSTS_MARKER}"
     current = Path("/etc/hosts").read_text().splitlines()
     kept = [ln for ln in current if not claims_name(ln, name)]
@@ -356,11 +357,17 @@ def write_hosts_entry(addr: str, name: str = config.DOMAIN) -> None:
 def remove_hosts_entry() -> None:
     """Drop every line resolving the **Cluster name**. Every teardown, every role: the name is
     cuttle's own state, and a box that has left the cluster resolving it to a machine it no longer
-    talks to is worse than one that does not resolve it at all."""
+    talks to is worse than one that does not resolve it at all. Our marked lines go too, so a box
+    that already forgot the name (settings wiped) still comes clean."""
     path = Path("/etc/hosts")
     if not path.exists():
         return
-    lines = [ln for ln in path.read_text().splitlines() if not claims_name(ln)]
+    try:
+        name = config.domain()
+    except RuntimeError:
+        name = None
+    lines = [ln for ln in path.read_text().splitlines()
+             if not (ln.rstrip().endswith(config.HOSTS_MARKER) or (name and claims_name(ln, name)))]
     install_file("\n".join(lines) + "\n", path, "644")
 
 

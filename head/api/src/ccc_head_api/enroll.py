@@ -55,6 +55,7 @@ if not log.handlers:
 
 MUNGE_KEY = Path("/etc/munge/munge.key")
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
+CLUSTER_NAME_FILE = Path("/etc/ccc/cluster-name")   # config.CLUSTER_NAME_FILE
 # The base + benchmark images' digest refs (`cuttle setup --head` built and pushed them), and each Arm's
 # own registry pull password (minted at `cuttle arm authorize`, 0600 munge). Mirror cuttle.config's
 # IMAGES_RECORD and REGISTRY_CREDS.
@@ -304,6 +305,7 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         "munge_key": base64.b64encode(MUNGE_KEY.read_bytes()).decode(),
         "ctld_addr": os.environ["CCC_CTLD_ADDR"],
         "cluster": os.environ["CCC_CLUSTER"],
+        "cluster_name": CLUSTER_NAME_FILE.read_text().strip(),   # the Cluster name, not Slurm's
         "partition": os.environ["CCC_PARTITION"],
         "admitted": entry["admitted"],
         "powers": entry.get("powers"),

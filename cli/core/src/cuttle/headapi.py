@@ -37,7 +37,7 @@ StartLimitIntervalSec=0
 [Service]
 User={config.ENROLL_API_USER}
 Environment=CCC_CTLD_ADDR={ctld}
-Environment=CCC_CLUSTER={config.CLUSTER_NAME}
+Environment=CCC_CLUSTER={config.SLURM_CLUSTER}
 Environment=CCC_PARTITION={config.PARTITION}
 # Handed to the Arm in /enroll's response, so it trusts the Head with no fingerprint ceremony.
 Environment=CCC_CA_CERT={config.HEAD_CA_CERT}
@@ -179,8 +179,8 @@ def head_url(host: str) -> str:
     mesh-only, and WireGuard already encrypts that path).
 
     The port is left off when it is https's own default, so every surface that shows an address —
-    settings, `cuttle dashboard`, the closing summary, a baked bundle — reads `https://ccc.glados`
-    and not `https://ccc.glados:443`. Same URL either way; only one of them is worth typing."""
+    settings, `cuttle dashboard`, the closing summary, a baked bundle — reads `https://ccc.<name>`
+    and not `https://ccc.<name>:443`. Same URL either way; only one of them is worth typing."""
     port = "" if config.HEAD_API_PORT == 443 else f":{config.HEAD_API_PORT}"
     return f"https://{host}{port}"
 

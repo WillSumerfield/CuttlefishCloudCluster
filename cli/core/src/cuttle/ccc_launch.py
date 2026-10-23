@@ -46,7 +46,8 @@ import sys
 import threading
 from pathlib import Path
 
-REGISTRY = "ccc.glados:5000"
+CLUSTER_NAME_FILE = Path("/etc/ccc/cluster-name")   # config.CLUSTER_NAME_FILE
+REGISTRY_PORT = 5000                                # config.REGISTRY_PORT
 JOBS_DIR = Path("/var/lib/ccc/jobs")
 AUTH_FILE = "/etc/ccc/registry-auth.json"
 SPEC_PREFIX = "# ccc-launch-spec: "
@@ -70,7 +71,6 @@ ID_COUNT = 65536
 UID_FLOOR = 60000     # config.CCC_UID — slot 0; the cluster Guise (60001) is slot 1
 UID_CEIL = 61182      # config.GUISE_UID_MAX
 
-IMAGE_RE = re.compile(rf"^{re.escape(REGISTRY)}/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{{64}}$")
 # `<node>_slurmstepd.scope` on dex (Slurm 23.11); plain `slurmstepd.scope` on other builds.
 CGROUP_RE = re.compile(r"^0::(?P<step>/.*/(?:(?P<node>[^/]+)_)?slurmstepd\.scope/job_(?P<jid>\d+)"
                        r"/step_[^/]+)(/|$)", re.M)
@@ -78,6 +78,11 @@ GRES_RE = re.compile(r"\bGRES=\S*?gpu[^(\s]*\(IDX:(?P<idx>[0-9,\-]*)\)")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DST_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def registry() -> str:
+    """config.registry(): `ccc.<cluster name>:5000`."""
+    return f"ccc.{CLUSTER_NAME_FILE.read_text().strip()}:{REGISTRY_PORT}"
 USER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 REL_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._ @+-]*(/[A-Za-z0-9._][A-Za-z0-9._ @+-]*)*$")
 HOST_RE = re.compile(r"^[0-9a-fA-F.:]+$")
@@ -135,8 +140,9 @@ def read_spec(script: str) -> dict:
 def validate_spec(spec: dict) -> dict:
     if extra := set(spec) - SPEC_KEYS:
         raise Refused(f"unknown spec keys {sorted(extra)}")
-    if not IMAGE_RE.match(spec.get("image", "")):
-        raise Refused(f"image must be a {REGISTRY}/…@sha256: ref")
+    reg = registry()
+    if not re.match(rf"^{re.escape(reg)}/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{{64}}$", spec.get("image", "")):
+        raise Refused(f"image must be a {reg}/…@sha256: ref")
     argv = spec.get("argv", [])
     if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
         raise Refused("argv must be a list of strings")

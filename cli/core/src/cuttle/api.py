@@ -67,7 +67,7 @@ CERT_MISMATCH = (
 CERT_WRONG_ADDRESS = (
     "{url} is not an address the Head's certificate covers.\n"
     "The certificate is the right one — it just does not list this address, so TLS refuses it.\n"
-    "Point this box at an address the Head serves: " + config.DOMAIN + " if this machine has a hosts "
+    "Point this box at an address the Head serves: ccc.<cluster name> if this machine has a hosts "
     "entry for it, otherwise the Head's LAN IP, or its mesh IP once you are on the CCC mesh.")
 # X509_V_ERR_HOSTNAME_MISMATCH / X509_V_ERR_IP_ADDRESS_MISMATCH.
 _NAME_MISMATCH_CODES = {62, 64}

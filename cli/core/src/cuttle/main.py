@@ -358,7 +358,7 @@ def arm_remove(
 @app.command()
 def login(
     head: str = typer.Option(
-        None, "--head", help="Head address or URL (e.g. ccc.glados); saved for next time."),
+        None, "--head", help="Head address or URL (e.g. ccc.<name>); saved for next time."),
 ):
     """Log in to the Head and store a session token (~/.ccc/session). Forces a password change on
     first login."""
@@ -373,7 +373,7 @@ def login(
             # hosts entry) and the cert covers it. On a client that name means nothing until
             # `setup --client` writes its own entry, so never prefill it: accepted, it saves as an
             # unresolvable name and wedges every login.
-            default = headapi_mod.head_url(config.DOMAIN) if menu_mod.is_head() else ""
+            default = headapi_mod.head_url(config.domain()) if menu_mod.is_head() else ""
             head = ui.ask_text("Head API URL?", default=default)
             if not head.strip():
                 raise ui.abort("no Head URL given",
@@ -589,7 +589,7 @@ _TP_USER = typer.Option(None, "--user", help="Act on this User's Tidepool (admin
 
 @tidepool_app.callback()
 def tidepool(ctx: typer.Context):
-    """Enter your Tidepool (ssh). Same as `ssh glados`; VS Code's Remote-SSH host is `glados` too."""
+    """Enter your Tidepool. (VS Code: Remote-SSH host `<cluster name>`.)"""
     if ctx.invoked_subcommand is None:
         tidepool_mod.enter()
 
@@ -693,7 +693,7 @@ def build_installer(
     ),
     head_url: str = typer.Option(
         None, "--head-url",
-        help="Head URL to bake in (default: https://ccc.glados). Only used when built on a "
+        help="Head URL to bake in (default: https://ccc.<name>). Only used when built on a "
              "Head — the client comes pre-pointed at this address.",
     ),
     generic: bool = typer.Option(

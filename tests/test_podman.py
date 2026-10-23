@@ -51,7 +51,7 @@ class TestRegistry:
         answers["test -s"] = subprocess.CompletedProcess([], 1)    # none yet
         podman.install_registry(write, "100.99.0.1")
         auth, mode = files[config.REGISTRY_AUTH]
-        assert mode == "600" and config.REGISTRY in json.loads(auth)["auths"]
+        assert mode == "600" and "ccc.lab:5000" in json.loads(auth)["auths"]
         files.clear()
         answers["test -s"] = subprocess.CompletedProcess([], 0)    # already there
         podman.install_registry(write, "100.99.0.1")
@@ -89,7 +89,7 @@ class TestBuildImages:
         monkeypatch.setattr(podman, "run", push)
         images = podman.build_images(write)
         assert not any(c[1] == "build" for c in ran)
-        assert images == {n: f"{config.REGISTRY}/ccc/{n}@sha256:{'d' * 64}" for n in ("base", "bench")}
+        assert images == {n: f"ccc.lab:5000/ccc/{n}@sha256:{'d' * 64}" for n in ("base", "bench")}
         assert json.loads(files[config.IMAGES_RECORD][0]) == images
 
 
@@ -149,26 +149,26 @@ class TestImageHygiene:
         _, _, ran, answers = box
         answers["{{.ID}} {{.Digest}}"] = subprocess.CompletedProcess(
             [], 0, stdout="aaa sha256:keep\nbbb sha256:old\nccc sha256:older\n")
-        podman.prune_images({"base": f"{config.REGISTRY}/ccc/base@sha256:keep"})
+        podman.prune_images({"base": f"ccc.lab:5000/ccc/base@sha256:keep"})
         assert ["podman", "rmi", "bbb", "ccc"] in ran
 
     def test_arm_with_nothing_stale_removes_nothing(self, box):
         _, _, ran, answers = box
         answers["{{.ID}} {{.Digest}}"] = subprocess.CompletedProcess([], 0, stdout="aaa sha256:keep\n")
-        podman.prune_images({"base": f"{config.REGISTRY}/ccc/base@sha256:keep"})
+        podman.prune_images({"base": f"ccc.lab:5000/ccc/base@sha256:keep"})
         assert not any("rmi" in c for c in ran)
 
     def test_head_keeps_its_store_under_the_same_tag(self, box):
         _, _, ran, answers = box
         answers["{{.Repository}}"] = subprocess.CompletedProcess(
-            [], 0, stdout=f"{config.REGISTRY}/ccc/base:{config.IMAGE_TAG}\n{config.REGISTRY}/ccc/bench:<none>\n")
+            [], 0, stdout=f"ccc.lab:5000/ccc/base:{config.IMAGE_TAG}\nccc.lab:5000/ccc/bench:<none>\n")
         podman.wipe_old_release()
         assert not any("rmi" in c or str(config.REGISTRY_DATA) in c for c in ran)
 
     def test_head_wipes_images_and_store_on_a_tag_change(self, box):
         _, _, ran, answers = box
         answers["{{.Repository}}"] = subprocess.CompletedProcess(
-            [], 0, stdout=f"{config.REGISTRY}/ccc/base:1.9\n")
+            [], 0, stdout=f"ccc.lab:5000/ccc/base:1.9\n")
         answers["{{.ID}}"] = subprocess.CompletedProcess([], 0, stdout="aaa\n")
         podman.wipe_old_release()
         assert ["podman", "rmi", "-f", "aaa"] in ran

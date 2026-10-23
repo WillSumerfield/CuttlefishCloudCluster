@@ -8,7 +8,7 @@ import pytest
 
 from cuttle import ccc_launch as L
 
-DIGEST = "ccc.glados:5000/ccc/bench@sha256:" + "a" * 64
+DIGEST = "ccc.lab:5000/ccc/bench@sha256:" + "a" * 64
 CGROUP = "0::/system.slice/dex_slurmstepd.scope/job_42/step_batch/user/task_0\n"
 
 
@@ -86,7 +86,7 @@ def test_read_spec_refuses_missing_or_double():
 
 @pytest.mark.parametrize("spec", [
     {"image": "docker.io/library/ubuntu@sha256:" + "a" * 64},     # not the Head registry
-    {"image": "ccc.glados:5000/ccc/base:latest"},                 # tag, not digest
+    {"image": "ccc.lab:5000/ccc/base:latest"},                 # tag, not digest
     {"image": DIGEST, "privileged": True},                        # unknown key
     {"image": DIGEST, "binds": [{"src": "/etc", "dst": "/x"}]},   # absolute host path
     {"image": DIGEST, "binds": [{"src": "../x", "dst": "/x"}]},   # escapes job dir

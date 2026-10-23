@@ -30,7 +30,7 @@ class TestConstantsAgree:
     def test_helper_matches_config(self):
         assert (H.DIVE_RECORDS, H.DIVE_RSYNCD, H.DIVE_STATE) == (
             config.DIVE_RECORDS, config.DIVE_RSYNCD, config.DIVE_STATE)
-        assert H.REGISTRY == config.REGISTRY
+        assert H.registry() == config.registry() == "ccc.lab:5000"
         assert H.CA_CERT == str(config.HEAD_CA_CERT)
         assert H.HELPER == str(config.TIDEPOOL_HELPER_BIN)
         assert H.CDI_SPEC == config.CDI_SPEC
@@ -321,7 +321,7 @@ class TestArmDive:
             (home / p).mkdir(parents=True)
         for f in (".zshrc", ".ssh/config"):
             (home / f).write_text("x")
-        spec = {"image": "ccc.glados:5000/ccc/u-bob@sha256:" + "a" * 64, "argv": ["/bin/sh", "-c", "x"],
+        spec = {"image": "ccc.lab:5000/ccc/u-bob@sha256:" + "a" * 64, "argv": ["/bin/sh", "-c", "x"],
                 "env": {"CCC_USER": "bob"}, "network": True, "dive": DIVE}
         a = L.dive_argv(spec, "77", 2**31, "/s/job_77/step_batch", ["GPU-1"], ["GPU-1"], tmp_path, home,
                         ["data"], "100.99.0.7")

@@ -69,6 +69,20 @@ def no_stray_log(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "_TROUBLE", [])
 
 
+@pytest.fixture(autouse=True)
+def _cluster_name(monkeypatch, tmp_path_factory):
+    """Every box in the suite is in a cluster named `lab` (`ccc.lab`, alias `lab`). Autouse: the domain,
+    registry and aliases are all read from this one file, by the CLI, both root helpers and the Head API."""
+    from ccc_head_api import enroll as head_enroll
+    from ccc_head_api import tidepool as head_tp
+    from cuttle import ccc_launch, ccc_tidepool
+    f = tmp_path_factory.mktemp("etc") / "cluster-name"
+    f.write_text("lab\n")
+    for mod in (config, ccc_launch, ccc_tidepool, head_tp, head_enroll):
+        monkeypatch.setattr(mod, "CLUSTER_NAME_FILE", f)
+    return f
+
+
 @pytest.fixture
 def ccc_home(monkeypatch, tmp_path):
     """Redirect every piece of client-side state into tmp. A test that wrote a session into the real

@@ -1,7 +1,7 @@
 """Dives, client side: `cuttle dive [MAIN] …` requests one and drops you into it;
 `cuttle dive attach|end|status [id]` for the rest.
 
-A Dive's shell is reached as `ssh glados-<id>` — the same key and pinned host key as `ssh glados`
+A Dive's shell is reached as `ssh <name>-<id>` — the same key and pinned host key as `ssh <name>`
 (sshconfig.py). On an Arm the main folder is a copy, mirrored back to the Tidepool every minute and
 read-only there meanwhile; on the Head the Dive *is* your Tidepool, with the GPU lent to it.
 

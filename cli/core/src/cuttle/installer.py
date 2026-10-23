@@ -43,20 +43,20 @@ def _bake_head_creds(stage: Path, head_url: str | None, generic: bool = False) -
     """
     if generic or not menu.is_head():
         return None
-    url = head_url or headapi.head_url(config.DOMAIN)
+    url = head_url or headapi.head_url(config.domain())
     if not config.HEAD_CA_CERT.exists():
         ui.warn(f"no CA certificate at {config.HEAD_CA_CERT} — building a generic bundle")
         return None
     head_dir = stage / "head"
     (head_dir / "pins").mkdir(parents=True)
-    (head_dir / "config.yaml").write_text(yaml.safe_dump({"head": url}, sort_keys=False))
+    (head_dir / "config.yaml").write_text(yaml.safe_dump({"head": url, "cluster": config.cluster_name()}, sort_keys=False))
     # The whole hosts line, ready to append — not just the address. install.sh is static package data
     # with no templating, so anything it had to RECONSTRUCT (the name, the marker) would be a literal
     # duplicating config.py, drifting silently the day either changed. Baking the finished line leaves
     # the script with nothing to know but where to put it. Its own file, not a key in config.yaml,
     # which is cuttle's settings file and gets copied verbatim.
     (head_dir / "hosts").write_text(
-        f"{system.primary_ip()}\t{config.DOMAIN} {config.HOSTS_MARKER}\n")
+        f"{system.primary_ip()}\t{config.domain()} {config.HOSTS_MARKER}\n")
     (head_dir / "ca-nickname").write_text(config.HEAD_CA_NICKNAME + "\n")
     # tls._pin_path is the single source of truth for a pin's filename (host_port.pem), so a baked
     # CA lands exactly where cuttle will later look for it — now the same filename on every client,

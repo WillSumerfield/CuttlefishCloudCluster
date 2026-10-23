@@ -1,6 +1,6 @@
-"""`~/.ssh/ccc.config`: the **Tidepool** alias (`Host glados`, written at `cuttle login`) plus one
-`Host glados-<id>` per live **Dive**, so anything that speaks ssh — VS Code's Remote-SSH, `scp`, a plain
-`ssh glados-58` — reaches it without anyone handling a port.
+"""`~/.ssh/ccc.config`: the **Tidepool** alias (`Host <name>`, written at `cuttle login`) plus one
+`Host <name>-<id>` per live **Dive**, so anything that speaks ssh — VS Code's Remote-SSH, `scp`, a plain
+`ssh <name>-58` — reaches it without anyone handling a port.
 
 A Dive answers with the Tidepool's own host key and takes the User's own keys, so every alias pins
 the same known_hosts entry and uses the same `~/.ssh/ccc_ed25519`; only HostName/Port differ (an Arm
@@ -24,8 +24,8 @@ _HEADER = ("# Written by cuttle. Regenerated in full at login and every Dive —
 
 
 def alias(dive_id: int) -> str:
-    """What to type: `glados-58`."""
-    return f"{config.TIDEPOOL_ALIAS}-{dive_id}"
+    """What to type: `<name>-58`."""
+    return f"{config.cluster_name()}-{dive_id}"
 
 
 def _dir() -> Path:
@@ -81,12 +81,12 @@ def _block(row: dict) -> str:
 
 
 def tidepool_block() -> str:
-    """`Host glados` → the User's Tidepool on the Head (`cuttle login` wrote its meta + host key)."""
+    """`Host <name>` → the User's Tidepool on the Head (`cuttle login` wrote its meta + host key)."""
     try:
         m = json.loads(config.TIDEPOOL_SSH_META.read_text())
     except (OSError, ValueError):
         return ""
-    return _pinned(config.TIDEPOOL_ALIAS, m["host"], m["port"], m["user"])
+    return _pinned(config.cluster_name(), m["host"], m["port"], m["user"])
 
 
 def refresh(live: set[int] | None = None) -> None:

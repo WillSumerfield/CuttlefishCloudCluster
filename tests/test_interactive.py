@@ -95,7 +95,7 @@ class TestTheClientWizardPointsTheBoxItself:
     the one question it exists to ask.
 
     What is ASKED for is an address; what is STORED is the **Cluster name**. The address becomes this
-    box's `/etc/hosts` line and is never seen again — so every box in the cluster says `ccc.glados`,
+    box's `/etc/hosts` line and is never seen again — so every box in the cluster says `ccc.lab`,
     and the pin, the config and `cuttle dashboard` all agree on one spelling.
     """
 
@@ -108,23 +108,31 @@ class TestTheClientWizardPointsTheBoxItself:
                             lambda addr, name=None: self.hosts.append(addr))
         monkeypatch.setattr(setup_mod.socket, "gethostbyname",
                             lambda host: "172.30.26.166" if host == "head.lan" else host)
+        self.asked = []
+        monkeypatch.setattr(setup_mod.tls, "fetch_cluster_name",
+                            lambda url: self.asked.append(url) or "lab")
+
+    def test_the_cluster_name_is_asked_of_the_head(self, answers, ccc_home, monkeypatch):
+        answers("172.30.26.166")
+        setup_mod.point_at_head()
+        assert self.asked == ["https://172.30.26.166"] and settings.load()["cluster"] == "lab"
 
     def test_an_unpointed_box_is_asked_which_head(self, answers, ccc_home, monkeypatch):
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
         monkeypatch.setattr(setup_mod.tls, "ensure_ca", lambda url: None)
         answers("172.30.26.166")
         setup_mod.setup_client()
-        assert settings.load()["head"] == headapi.head_url(config.DOMAIN)
+        assert settings.load()["head"] == headapi.head_url("ccc.lab")
 
     def test_the_address_typed_becomes_the_hosts_entry(self, answers, ccc_home):
-        """The name is useless without it: nothing in CCC resolves `ccc.glados`, so a box pointed at
+        """The name is useless without it: nothing in CCC resolves `ccc.lab`, so a box pointed at
         the name with no hosts line is pointed nowhere."""
         answers("172.30.26.166")
         setup_mod.point_at_head()
         assert self.hosts == ["172.30.26.166"]
 
     def test_a_hostname_is_resolved_before_it_is_written(self, answers, ccc_home):
-        """/etc/hosts maps an ADDRESS to a name. Writing `head.lan ccc.glados` would parse fine and
+        """/etc/hosts maps an ADDRESS to a name. Writing `head.lan ccc.lab` would parse fine and
         never resolve anything."""
         answers("http://head.lan:8082")
         setup_mod.point_at_head()
@@ -133,7 +141,7 @@ class TestTheClientWizardPointsTheBoxItself:
     def test_answering_with_the_name_writes_nothing(self, answers, ccc_home):
         """On a box that already has the entry — a re-run, or an Arm — the existing line is the only
         thing that could have resolved the answer. Rewriting it from itself would be circular."""
-        answers(headapi.head_url(config.DOMAIN))
+        answers(headapi.head_url("ccc.lab"))
         setup_mod.point_at_head()
         assert self.hosts == []
 
@@ -141,7 +149,7 @@ class TestTheClientWizardPointsTheBoxItself:
         """install.sh already wrote config.yaml, so the prompt arrives pre-filled and accepting it is
         one Enter — which must not corrupt the URL the bundle baked in. (`_prompt_line` pre-fills its
         buffer with the default, so the scripted human accepts it by supplying it.)"""
-        baked = headapi.head_url(config.DOMAIN)
+        baked = headapi.head_url("ccc.lab")
         settings.save({"head": baked})
         monkeypatch.setattr(setup_mod.auth, "login", lambda head: "alice")
         monkeypatch.setattr(setup_mod.tls, "ensure_ca", lambda url: None)
@@ -154,13 +162,13 @@ class TestTheClientWizardPointsTheBoxItself:
         """The prompt is pre-filled, so "" means the field was cleared — and every normalising branch
         would turn it into a valid-looking `https://` that fails at the next login instead."""
         answers("", "172.30.26.166")
-        assert setup_mod.point_at_head() == headapi.head_url(config.DOMAIN)
+        assert setup_mod.point_at_head() == headapi.head_url("ccc.lab")
 
     @pytest.mark.parametrize("typed,url", [
-        ("172.30.26.166", headapi.head_url(config.DOMAIN)),       # bare host -> scheme, no port
-        ("172.30.26.166:9000", f"https://{config.DOMAIN}:9000"),   # a non-default port survives
-        ("http://head.lan:8082", f"http://{config.DOMAIN}:8082"),  # a deliberate http:// survives
-        ("https://head.lan:8082/", f"https://{config.DOMAIN}:8082"),  # trailing slash dropped
+        ("172.30.26.166", headapi.head_url("ccc.lab")),       # bare host -> scheme, no port
+        ("172.30.26.166:9000", f"https://ccc.lab:9000"),   # a non-default port survives
+        ("http://head.lan:8082", f"http://ccc.lab:8082"),  # a deliberate http:// survives
+        ("https://head.lan:8082/", f"https://ccc.lab:8082"),  # trailing slash dropped
     ])
     def test_an_address_is_accepted_however_it_is_typed(self, answers, ccc_home, typed, url):
         """`--head` takes a URL because it is a flag. A person answering "which Head?" types an
@@ -623,10 +631,10 @@ class TestTheAlternateScreen:
         monkeypatch.setattr(ui, "err", Console(file=buf, force_terminal=True, theme=ui.THEME))
         with ui.fullscreen():
             with ui.section("Setting up the Head", lambda: "done"):
-                ui.result("dashboard", "https://ccc.glados")
+                ui.result("dashboard", "https://ccc.lab")
         errs = buf.getvalue()
-        assert "ccc.glados" in errs
-        assert errs.index("ccc.glados") > errs.index("\x1b[?1049l"), "result died with the buffer"
+        assert "ccc.lab" in errs
+        assert errs.index("ccc.lab") > errs.index("\x1b[?1049l"), "result died with the buffer"
 
     def test_stdout_survives_the_restore(self, on_a_tty, capsys):
         with ui.fullscreen():

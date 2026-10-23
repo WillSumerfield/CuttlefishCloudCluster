@@ -1,6 +1,6 @@
 """The **Cluster name** and the trust that makes it usable.
 
-Two changes that only work together. The name (`ccc.glados`) is carried by /etc/hosts because CCC has
+Two changes that only work together. The name (`ccc.lab`) is carried by /etc/hosts because CCC has
 no DNS, and the cluster's CA is installed into every box's trust stores so the Dashboard loads without
 a warning. Each failure here is silent on the box that works: a hosts line that accumulates duplicates
 resolves to whichever came first, a teardown that leaves the CA behind leaves a machine trusting an
@@ -17,7 +17,8 @@ import typer
 from fastapi.testclient import TestClient
 
 from ccc_head_api import main as head_main
-from cuttle import config, headapi, system, teardown, tls
+from cuttle import config, headapi, settings, system, teardown, tls
+from cuttle import setup as setup_mod
 
 
 @pytest.fixture
@@ -38,7 +39,7 @@ def hosts(monkeypatch, tmp_path):
 class TestTheHostsLine:
     def test_the_name_resolves_to_the_address_it_was_given(self, hosts):
         system.write_hosts_entry("10.0.0.5")
-        assert f"10.0.0.5\t{config.DOMAIN} {config.HOSTS_MARKER}" in hosts.read_text().splitlines()
+        assert f"10.0.0.5\tccc.lab {config.HOSTS_MARKER}" in hosts.read_text().splitlines()
 
     def test_the_box_s_own_entries_survive(self, hosts):
         system.write_hosts_entry("10.0.0.5")
@@ -51,8 +52,8 @@ class TestTheHostsLine:
         the old address — with the new one below it and no symptom but a timeout."""
         system.write_hosts_entry("10.0.0.5")
         system.write_hosts_entry("10.0.0.9")
-        lines = [ln for ln in hosts.read_text().splitlines() if config.DOMAIN in ln]
-        assert lines == [f"10.0.0.9\t{config.DOMAIN} {config.HOSTS_MARKER}"]
+        lines = [ln for ln in hosts.read_text().splitlines() if "ccc.lab" in ln]
+        assert lines == [f"10.0.0.9\tccc.lab {config.HOSTS_MARKER}"]
 
     def test_writing_the_same_line_twice_touches_nothing(self, hosts, monkeypatch):
         """setup runs this on every invocation. Rewriting an unchanged root-owned file is a mutation
@@ -68,24 +69,24 @@ class TestTheHostsLine:
         """A line for the name without our marker (added by hand, say). Matching on the marker alone
         would leave it and append a second line for the same name, which resolves to whichever came
         first — not the address setup just wrote."""
-        hosts.write_text(f"127.0.0.1\tlocalhost\n10.0.0.5\t{config.DOMAIN}\n")
+        hosts.write_text(f"127.0.0.1\tlocalhost\n10.0.0.5\tccc.lab\n")
         system.write_hosts_entry("10.0.0.9")
-        lines = [ln for ln in hosts.read_text().splitlines() if config.DOMAIN in ln]
-        assert lines == [f"10.0.0.9\t{config.DOMAIN} {config.HOSTS_MARKER}"]
+        lines = [ln for ln in hosts.read_text().splitlines() if "ccc.lab" in ln]
+        assert lines == [f"10.0.0.9\tccc.lab {config.HOSTS_MARKER}"]
 
     def test_teardown_takes_an_inherited_line_too(self, hosts):
         """The same line, at the other end of the box's life. A teardown that left it behind would
         leave the box resolving the name to a Head it no longer talks to — which is the one outcome
         `untrust_and_unname` exists to prevent."""
-        hosts.write_text(f"127.0.0.1\tlocalhost\n10.0.0.5\t{config.DOMAIN}\n")
+        hosts.write_text(f"127.0.0.1\tlocalhost\n10.0.0.5\tccc.lab\n")
         system.remove_hosts_entry()
-        assert config.DOMAIN not in hosts.read_text()
+        assert "ccc.lab" not in hosts.read_text()
         assert "127.0.0.1\tlocalhost" in hosts.read_text()
 
     def test_a_comment_mentioning_the_name_is_not_a_line_that_resolves_it(self, hosts):
         """Matching by name means matching the NAME FIELDS. Someone's note about the cluster is not
         an entry, and eating it would make cuttle a thing that edits your comments."""
-        note = f"# {config.DOMAIN} is the cluster, ask the admin"
+        note = f"# ccc.lab is the cluster, ask the admin"
         hosts.write_text(f"127.0.0.1\tlocalhost\n{note}\n")
         system.write_hosts_entry("10.0.0.9")
         system.remove_hosts_entry()
@@ -95,8 +96,62 @@ class TestTheHostsLine:
         system.write_hosts_entry("10.0.0.5")
         system.remove_hosts_entry()
         text = hosts.read_text()
-        assert config.DOMAIN not in text
+        assert "ccc.lab" not in text
         assert "127.0.0.1\tlocalhost" in text and "127.0.1.1\tthis-box" in text
+
+
+    def test_teardown_on_a_box_that_forgot_the_name_takes_our_marked_line(self, hosts, monkeypatch,
+                                                                           ccc_home):
+        system.write_hosts_entry("10.0.0.5")
+        config.CLUSTER_NAME_FILE.unlink()
+        system.remove_hosts_entry()
+        assert "ccc.lab" not in hosts.read_text() and "localhost" in hosts.read_text()
+
+
+class TestChoosingTheName:
+    """`setup --head` asks it once; Arms get it at enrollment, clients from `/cluster-name` or login."""
+
+    def test_a_client_falls_back_to_what_login_saved(self, ccc_home):
+        config.CLUSTER_NAME_FILE.unlink()
+        settings.save({"cluster": "kraken"})
+        assert (config.domain(), config.registry()) == ("ccc.kraken", "ccc.kraken:5000")
+
+    def test_a_box_that_knows_nothing_says_log_in(self, ccc_home):
+        config.CLUSTER_NAME_FILE.unlink()
+        with pytest.raises(RuntimeError, match="cuttle login"):
+            config.cluster_name()
+
+    def test_the_default_is_the_hostname_made_legal(self, monkeypatch):
+        monkeypatch.setattr(setup_mod.system, "hostname", lambda: "Dex_Box.doc.ic.ac.uk")
+        assert setup_mod._default_cluster_name() == "dex-box"
+
+    def test_a_bad_answer_is_re_asked(self, monkeypatch):
+        config.CLUSTER_NAME_FILE.unlink()
+        said = iter(["Glados!", "glados"])
+        monkeypatch.setattr(setup_mod.ui, "ask_text", lambda msg, default="": next(said))
+        assert setup_mod.ask_cluster_name(update=False) == "glados"
+
+    def test_renaming_a_named_head_is_refused(self, monkeypatch):
+        monkeypatch.setattr(setup_mod.ui, "ask_text", lambda msg, default="": "other")
+        with pytest.raises((typer.Exit, SystemExit, Exception)):
+            setup_mod.ask_cluster_name(update=False)
+
+    def test_an_update_asks_nothing(self, monkeypatch):
+        monkeypatch.setattr(setup_mod.ui, "ask_text", lambda *a, **k: pytest.fail("asked"))
+        assert setup_mod.ask_cluster_name(update=True) == "lab"
+
+    def test_the_head_serves_it_without_a_session(self):
+        r = TestClient(head_main.app).get("/cluster-name")
+        assert r.status_code == 200 and r.text.strip() == "lab"
+
+    def test_login_hands_it_over(self, head):
+        r = head.post("/login", json={"username": "alice", "password": "hunter2"})
+        assert r.json()["cluster"] == "lab"
+
+    def test_a_cli_login_remembers_it(self, cli, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "CLUSTER_NAME_FILE", tmp_path / "absent")   # a bare client
+        cli("login", input="alice\nhunter2\n")
+        assert settings.load()["cluster"] == "lab" and config.cluster_name() == "lab"
 
 
 class TestFirefoxPolicy:
@@ -219,26 +274,26 @@ class TestTrustOnFirstUse:
         installed = []
         monkeypatch.setattr(tls, "install_ca", lambda url, pem: installed.append(pem))
         with pytest.raises(Exception):
-            tls.ensure_ca(headapi.head_url(config.DOMAIN))
+            tls.ensure_ca(headapi.head_url("ccc.lab"))
         assert installed == [], "a CA that did not sign the served cert must never be installed"
 
     def test_an_existing_pin_asks_nothing(self, monkeypatch, tmp_path):
         pins = tmp_path / "pins"
         pins.mkdir()
         monkeypatch.setattr(config, "PINS_DIR", pins)
-        url = headapi.head_url(config.DOMAIN)
+        url = headapi.head_url("ccc.lab")
         tls._pin_path(url).write_text("already trusted")
         monkeypatch.setattr(tls, "fetch_ca", lambda url: pytest.fail("re-fetched a known CA"))
         tls.ensure_ca(url)
 
     def test_a_plain_http_head_has_nothing_to_trust(self, monkeypatch):
         monkeypatch.setattr(tls, "fetch_ca", lambda url: pytest.fail("fetched over http"))
-        tls.ensure_ca("http://ccc.glados")
+        tls.ensure_ca("http://ccc.lab")
 
     def test_the_pin_is_the_same_filename_on_every_client(self):
         """Every box in the cluster dials the same name now, so every box's pin has one name. It is
         also what build-installer bakes into a bundle, so the two must agree by construction."""
-        assert tls._pin_path(headapi.head_url(config.DOMAIN)).name == f"{config.DOMAIN}_443.pem"
+        assert tls._pin_path(headapi.head_url("ccc.lab")).name == f"ccc.lab_443.pem"
 
 
 class TestCertutilArrivesOnDemand:
@@ -309,12 +364,13 @@ class TestTeardownUndoesTheHostMutations:
     the name to a Head it no longer talks to, and trusting a CA whose private key lives there, is
     exactly the residue a teardown exists to remove."""
 
-    def test_it_removes_both(self, monkeypatch):
+    def test_it_removes_all_three(self, monkeypatch):
         done = []
         monkeypatch.setattr(teardown.system, "remove_hosts_entry", lambda: done.append("hosts"))
+        monkeypatch.setattr(teardown.system, "run", lambda argv, **kw: done.append(argv))
         monkeypatch.setattr(teardown.system, "untrust_ccc_ca", lambda: done.append("ca"))
         teardown.untrust_and_unname()
-        assert done == ["hosts", "ca"]
+        assert done == ["hosts", ["rm", "-f", str(config.CLUSTER_NAME_FILE)], "ca"]
 
     def test_it_runs_before_packages_are_purged(self):
         """`untrust_ccc_ca` needs `certutil`, which lives in libnss3-tools — and the purge takes that
@@ -332,7 +388,7 @@ class TestTeardownUndoesTheHostMutations:
 
 
 class TestTheNameIsTheWholeAddress:
-    """`https://ccc.glados`, with no port to remember or type. The CLI could always fill a port in
+    """`https://ccc.lab`, with no port to remember or type. The CLI could always fill a port in
     for a bare host; a browser cannot be taught one, and the Dashboard is a browser surface — so the
     Head API serves https's own default instead."""
 
@@ -348,16 +404,16 @@ class TestTheNameIsTheWholeAddress:
         assert f"--port {config.HEAD_API_PORT}" in unit
 
     def test_no_surface_shows_the_default_port(self):
-        """`https://ccc.glados:443` is the same URL and half the point of the change."""
-        assert headapi.head_url(config.DOMAIN) == f"https://{config.DOMAIN}"
+        """`https://ccc.lab:443` is the same URL and half the point of the change."""
+        assert headapi.head_url("ccc.lab") == f"https://ccc.lab"
 
     def test_a_bare_address_is_enough_for_login(self, ccc_home):
         """`--head` is a flag, so it takes a URL — but what a person has to hand is an address, and
         storing that verbatim leaves `urlparse` reading the whole thing as a path: empty hostname,
         a pin filename of `_443.pem`, and a dial that goes nowhere."""
         from cuttle import auth, settings
-        auth._set_head(config.DOMAIN)
-        assert settings.load()["head"] == f"https://{config.DOMAIN}"
+        auth._set_head("ccc.lab")
+        assert settings.load()["head"] == f"https://ccc.lab"
 
     def test_a_deliberate_port_still_survives(self, ccc_home):
         from cuttle import auth, settings

@@ -414,7 +414,7 @@ class TestACleanRunNeverReportsWarnings:
         config.SESSION_FILE.write_text("tok-abc123")
 
         def unreachable(*a, **kw):
-            raise api.ApiError("/logout", api.UNREACHABLE.format(where="https://ccc.glados"))
+            raise api.ApiError("/logout", api.UNREACHABLE.format(where="https://ccc.lab"))
 
         monkeypatch.setattr(api, "for_head", unreachable)
         emitted = []

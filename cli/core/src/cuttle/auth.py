@@ -135,6 +135,10 @@ def login_seeded(username: str, temp_password: str) -> str:
 def _login_with(username: str, password: str) -> str:
     resp = _api("POST", "/login", token="", body={"username": username, "password": password})
     _save_token(resp["token"])
+    data = settings.load()
+    if data.get("cluster") != resp["cluster"]:
+        data["cluster"] = resp["cluster"]   # the Cluster name: aliases, domain on a client
+        settings.save(data)
     if resp["must_change_password"]:
         # A forced first-login change earns a frame: it is a step of its own, and the operator-issued
         # temp password needs one line saying why you are being asked. Voluntary `cuttle passwd` reuses
@@ -147,8 +151,8 @@ def _login_with(username: str, password: str) -> str:
     ui.ok(f"logged in as {who}")
     from . import tidepool
     try:
-        tidepool.connect()   # key uploaded, `ssh <alias>` written, host key pinned
-        ui.ok(f"Tidepool: ssh {config.TIDEPOOL_ALIAS}")
+        tidepool.connect()   # key uploaded, alias written, host key pinned
+        ui.ok("Tidepool: `cuttle tidepool`")
     except Exception as e:   # the login itself stands; `cuttle tidepool` retries this
         if ui.DEBUG:
             raise

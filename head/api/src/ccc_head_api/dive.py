@@ -12,8 +12,8 @@ as `ccc` and cannot read Tidepool files, so every step that touches them is the 
 5. sbatch as the User's Guise; the job is one `ccc-launch`, which either copies onto an Arm or lends
    the Head's GPU to the Tidepool itself (ccc_launch.py).
 
-Attach: the User's own keys + the Tidepool's host key (staged into the Dive), so `ssh glados-<id>`
-pins the same host key as `ssh glados`. An Arm Dive is reached through a Head-side relay (Users are
+Attach: the User's own keys + the Tidepool's host key (staged into the Dive), so `ssh <name>-<id>`
+pins the same host key as `ssh <name>`. An Arm Dive is reached through a Head-side relay (Users are
 not Mesh members); a Head Dive *is* the Tidepool, at its usual port.
 
 End: the tick sees the job leave the queue (final mirror done inside KillWait) and runs `dive-close`:
@@ -369,7 +369,7 @@ def rows(user_id: int | None = None) -> list[dict]:
 
 
 def connection(user: dict, job_id: int) -> dict:
-    """What `ssh glados-<id>` needs, once the Dive can take it: `ready` means an sshd answered."""
+    """What `ssh <name>-<id>` needs, once the Dive can take it: `ready` means an sshd answered."""
     with db.connect() as conn:
         row, d = db.get_spawn(conn, job_id), db.get_dive(conn, job_id)
         uid = db.guise_uid(conn, user["id"])
@@ -378,7 +378,7 @@ def connection(user: dict, job_id: int) -> dict:
     if row["user_id"] != user["id"]:
         raise HTTPException(403, "you can only attach to your own Dives")
     base = {"id": job_id, "user": user["username"], "host_key": tp_mod.host_key(user["username"]),
-            "main": d["main"]}
+            "main": d["main"], "alias": f"{tp_mod.cluster_name()}-{job_id}"}
     if d["closed"]:
         return {**base, "ready": False, "state": "ended", "head": False, "port": None}
     state = spawns_mod.active_state(job_id)

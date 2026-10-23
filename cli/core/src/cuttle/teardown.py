@@ -329,7 +329,7 @@ def untrust_and_unname() -> None:
 
     Every role, every teardown, `--all` or not — deliberately unlike `remove_tls` above. That one keeps
     the Head's own keypair so a redeploy does not un-trust the fleet; this one is about a box that has
-    left. A machine still resolving `ccc.glados` to a Head it no longer talks to, and still trusting a
+    left. A machine still resolving `ccc.<name>` to a Head it no longer talks to, and still trusting a
     CA whose private key lives there, is exactly the residue a teardown exists to remove. Same
     reasoning, and the same unconditional placement, as the headscale CA in `_leave_ccc_mesh`.
 
@@ -340,6 +340,7 @@ def untrust_and_unname() -> None:
     """
     guest.withdraw()
     system.remove_hosts_entry()
+    system.run(["rm", "-f", str(config.CLUSTER_NAME_FILE)], sudo=True, check=False)
     system.untrust_ccc_ca()
 
 

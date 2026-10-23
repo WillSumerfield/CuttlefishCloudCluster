@@ -13,7 +13,7 @@ which is why the base never changes inside a release (upgrade = clean install).
 - *push*: 127.0.0.1, one root-only credential — only the Head itself writes;
 - *pull*: the mesh IP, read-only mode, one htpasswd user per Arm (minted at `arm authorize`, handed
   over at /enroll, dropped at `arm remove`).
-Everything names images `ccc.glados:5000/…`: the Head resolves the Cluster name to 127.0.0.1 (push
+Everything names images `ccc.<name>:5000/…`: the Head resolves the Cluster name to 127.0.0.1 (push
 instance), an Arm to the Head's mesh IP (pull instance). TLS is the Head API's own leaf.
 """
 
@@ -58,7 +58,7 @@ def write_registry_auth(write_root_file, user: str, password: str) -> None:
     """The root-only auth.json `podman pull/push --authfile` and ccc-launch read."""
     tok = base64.b64encode(f"{user}:{password}".encode()).decode()
     write_root_file(config.REGISTRY_AUTH,
-                    json.dumps({"auths": {config.REGISTRY: {"auth": tok}}}, indent=2) + "\n", "600")
+                    json.dumps({"auths": {config.registry(): {"auth": tok}}}, indent=2) + "\n", "600")
 
 
 def pull_images(images: dict) -> None:
@@ -75,7 +75,7 @@ def pull_images(images: dict) -> None:
 
 def _ccc_images(fmt: str) -> list[str]:
     return run(["podman", "images", "--digests", "--format", fmt, "--filter",
-                f"reference={config.REGISTRY}/ccc/*"], sudo=True, capture_output=True, text=True,
+                f"reference={config.registry()}/ccc/*"], sudo=True, capture_output=True, text=True,
                check=False).stdout.splitlines()
 
 
@@ -171,7 +171,7 @@ def _image_exists(ref: str) -> bool:
 
 def _build_push(name: str, tag: str, ctx: Path) -> str:
     """Build `ctx` into `<registry>/ccc/<name>:<tag>` if it is not here yet, push, return the digest ref."""
-    local = f"{config.REGISTRY}/ccc/{name}:{tag}"
+    local = f"{config.registry()}/ccc/{name}:{tag}"
     if _image_exists(local):
         ui.say(f"  [muted]{name} image exists ({local}) — not rebuilt (frozen per release; "
                f"`cuttle teardown --all` drops it)[/muted]")
@@ -182,7 +182,7 @@ def _build_push(name: str, tag: str, ctx: Path) -> str:
         run(["podman", "push", "--authfile", str(config.REGISTRY_AUTH), "--digestfile",
              str(digest_file), local], sudo=True)
         digest = digest_file.read_text().strip()
-    return f"{config.REGISTRY}/ccc/{name}@{digest}"
+    return f"{config.registry()}/ccc/{name}@{digest}"
 
 
 def build_images(write_root_file) -> dict:
@@ -223,7 +223,7 @@ def remove(all_: bool) -> None:
             run(["podman", "rm", "-f", *ids], sudo=True, check=False)
         if all_:
             refs = run(["podman", "images", "--format", "{{.ID}}", "--filter",
-                        f"reference={config.REGISTRY}/ccc/*"], sudo=True, capture_output=True,
+                        f"reference={config.registry()}/ccc/*"], sudo=True, capture_output=True,
                        text=True, check=False).stdout.split()
             run(["podman", "rmi", "-f", *refs, config.REGISTRY_IMAGE], sudo=True, check=False)
     run(["systemctl", "disable", "--now", f"{config.CDI_PATCH_SERVICE}.path"], sudo=True, check=False)

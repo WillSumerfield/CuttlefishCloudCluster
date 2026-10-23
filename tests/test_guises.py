@@ -408,7 +408,7 @@ class TestTheTlsKeysStayMantleOnly:
         # What openssl actually prints, IP SANs spelled its way — the exact shape _cert_sans has to
         # normalise, so a covering cert here proves the normalisation as well as the keep path.
         return ("X509v3 Subject Alternative Name:\n"
-                f"    DNS:{config.DOMAIN}, DNS:head, DNS:localhost, "
+                f"    DNS:ccc.lab, DNS:head, DNS:localhost, "
                 "IP Address:192.168.1.2, IP Address:100.99.0.1, IP Address:127.0.0.1\n")
 
     def test_a_rerun_re_asserts_the_modes_on_a_cert_it_keeps(self, monkeypatch, tmp_path):
@@ -445,7 +445,7 @@ class TestTheLeafIsReissuedWhenItStopsCovering:
         calls = self._install(monkeypatch, tmp_path, leaf_sans=before)
         issued = [c for c in calls if c[0] == "sh"]
         assert issued, "a cert that does not cover the Cluster name must be reissued"
-        assert f"DNS:{config.DOMAIN}" in issued[0][1]
+        assert f"DNS:ccc.lab" in issued[0][1]
         assert not [c for c in calls if c[:2] == ["openssl", "req"]], "the CA must survive a reissue"
 
     def test_a_cert_the_ca_did_not_sign_is_reissued(self, monkeypatch, tmp_path):

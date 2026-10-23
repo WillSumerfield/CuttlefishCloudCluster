@@ -379,7 +379,7 @@ def point_at_self() -> str:
     would be asking the operator to vouch for a certificate against nothing but the copy they are being
     shown. There is no first use to trust on.
     """
-    url = headapi.head_url(config.DOMAIN)
+    url = headapi.head_url(config.domain())
     # Skipped on a re-run: `install_ca` also re-runs the box-wide trust install, and `trust_own_ca`
     # already did that a few steps ago with the same bytes.
     if not tls.pinned(url):
@@ -549,11 +549,11 @@ def _fetch(url: str, dest: Path, sha256: str) -> None:
 def required_sans(mesh_ip: str) -> list[str]:
     """Every address a client might dial the Head at. All of them must be in the serving cert's SANs,
     or TLS rejects the connection with a name mismatch:
-      - the **Cluster name** — what everything canonically uses now (config.DOMAIN),
+      - the **Cluster name** — what everything canonically uses now (config.domain()),
       - the LAN IP + hostname  — a browser or CLI on the local network, or a device with no hosts entry,
       - the mesh IP            — a remote Arm's owner browsing over the mesh.
     """
-    return [f"DNS:{config.DOMAIN}", f"DNS:{system.hostname()}",
+    return [f"DNS:{config.domain()}", f"DNS:{system.hostname()}",
             f"IP:{system.primary_ip()}", f"IP:{mesh_ip}"]
 
 
@@ -628,7 +628,7 @@ keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 subjectAltName={san}
 EOF
-openssl req -newkey rsa:4096 -nodes -subj '/CN={config.DOMAIN}' \
+openssl req -newkey rsa:4096 -nodes -subj '/CN={config.domain()}' \
     -keyout {config.HEAD_KEY} -out {d}/head.csr
 openssl x509 -req -in {d}/head.csr -CA {config.HEAD_CA_CERT} -CAkey {config.HEAD_CA_KEY} \
     -CAcreateserial -days {config.CERT_DAYS} -extfile {d}/head.ext -out {config.HEAD_CERT}
@@ -816,6 +816,28 @@ def setup_head(address: str | None = None, update: bool = False) -> None:
         _setup_head(address, update=update)
 
 
+def _default_cluster_name() -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", system.hostname().lower().split(".")[0]).strip("-")[:32] or "ccc"
+
+
+def ask_cluster_name(update: bool) -> str:
+    """The **Cluster name**: `ccc.<name>` is the Dashboard, `<name>` the Tidepool's ssh alias. Fixed
+    once chosen — it is in the cert, every pin and every bundle, so a change is teardown + setup."""
+    current = config.CLUSTER_NAME_FILE.read_text().strip() if config.CLUSTER_NAME_FILE.exists() else ""
+    if update:
+        return current or _default_cluster_name()
+    while True:
+        name = ui.ask_text("Cluster name? (Dashboard at ccc.<name>; lowercase letters, digits, -)",
+                           current or _default_cluster_name()).strip()
+        if re.match(config.CLUSTER_NAME_RE, name):
+            break
+        ui.warn("lowercase letters, digits and '-' only, at most 32")
+    if current and name != current:
+        raise ui.abort(f"this Head is already named {current!r}",
+                       next_step="renaming means `cuttle teardown` first, then `cuttle setup --head`")
+    return name
+
+
 def _setup_head(address: str | None = None, update: bool = False) -> None:
     """`update` is the **Update** duty: lay this Head down again from what it already recorded. Every
     question below is skipped in favour of the stored answer — see `update_this_box`."""
@@ -837,7 +859,10 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     if not update:
         tp_settings = tidepool.prompt_settings(tp_settings)
     tp_settings = tp_settings or tidepool.default_settings()
+    name = ask_cluster_name(update)
     preflight()
+    # First thing written: the domain, registry, cert SANs and aliases below all read it.
+    _write_root_file(config.CLUSTER_NAME_FILE, name + "\n")
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
     # (b) if a mesh change ever breaks host DNS, a re-run still reaches the code that repairs it
@@ -936,13 +961,13 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     lan = system.primary_ip()
     # Results, not `ui.kv` — kv writes straight to stdout, which inside a box is both uncounted (so
     # the erase lands in the wrong place) and unreadable by the time eleven phases have scrolled by.
-    ui.result("dashboard", headapi.head_url(config.DOMAIN))
+    ui.result("dashboard", headapi.head_url(config.domain()))
     ui.result("dashboard (by IP)", f"{headapi.head_url(lan)} · {headapi.head_url(mesh_ip)}")
     ui.result("coordinator", mesh_ip)
     ui.result("add an Arm", "cuttle arm authorize <name> --user <owner>")
     print(f"\ncuttle: this cluster signs its own certificates (no public domain = no CA can sign for\n"
           f"        it), and every box CCC installs on is told to trust the one authority that does.\n"
-          f"        So {config.DOMAIN} loads clean on this box, on every Arm, and on any client set up\n"
+          f"        So {config.domain()} loads clean on this box, on every Arm, and on any client set up\n"
           f"        with `cuttle setup --client` — no 'your connection is not private'.\n"
           f"        A phone or a borrowed laptop gets neither the name nor the trust: reach the\n"
           f"        Dashboard at the IP above and expect the warning there.")
@@ -962,7 +987,8 @@ def point_at_head() -> str:
 
     What is ASKED for is an address; what is STORED is always the **Cluster name**. The answer becomes
     this box's /etc/hosts entry, and from then on every surface — settings, the cert pin's filename,
-    what `cuttle dashboard` opens — says `ccc.glados` on every box in the cluster. Answering with the
+    what `cuttle dashboard` opens — says `ccc.<name>` on every box in the cluster. The name itself
+    is asked of the Head (unverified, like ca.pem: the CA ceremony right after is what vouches). Answering with the
     name itself is fine on a box that already has the entry; the hosts write is then a no-op.
     """
     data = settings.load()
@@ -982,17 +1008,19 @@ def point_at_head() -> str:
         url = f"https://{answer}"
     else:
         url = headapi.head_url(answer)
+    data["cluster"] = tls.fetch_cluster_name(url)
+    settings.save(data)
     u = urlparse(url)
     # Point the name at whatever they gave us, unless they gave us the name — in which case this box
     # already has an entry, and it is the only thing that could have resolved the answer they typed.
     # A hostname is resolved first: /etc/hosts maps an ADDRESS to a name, so `myhead` would be a line
     # that parses and never works.
-    if u.hostname and u.hostname != config.DOMAIN:
+    if u.hostname and u.hostname != config.domain():
         system.write_hosts_entry(socket.gethostbyname(u.hostname))
     # Swap the host for the name, keeping their scheme and port: a deliberate `http://` or a
     # non-default port is a choice this has no business overriding.
     data["head"] = url = u._replace(
-        netloc=config.DOMAIN + (f":{u.port}" if u.port else "")).geturl()
+        netloc=config.domain() + (f":{u.port}" if u.port else "")).geturl()
     settings.save(data)
     return url
 
@@ -1049,9 +1077,9 @@ def _update_client() -> None:
     with ui.section("Updating this client", lambda: url):
         make_user_dirs()
         try:
-            socket.gethostbyname(config.DOMAIN)
+            socket.gethostbyname(config.domain())
         except OSError:
-            raise ui.abort(f"{config.DOMAIN} does not resolve on this box — its /etc/hosts line is "
+            raise ui.abort(f"{config.domain()} does not resolve on this box — its /etc/hosts line is "
                            f"gone, and a client keeps its Head's address nowhere else",
                            next_step="re-point it with `cuttle setup --client`")
         tls.refresh_pin(url)
@@ -1365,6 +1393,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
 
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)
+        _write_root_file(config.CLUSTER_NAME_FILE, info["cluster_name"] + "\n")
         # The name can only be written now: it points at the Head's MESH address, which did not exist
         # until the join a few steps ago. Enrollment itself dialled the admin-supplied `--address`, so
         # the Cluster name is never on the bootstrap path — it only has to work from here on.
@@ -1372,7 +1401,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         # The CA rode in on /enroll, over a channel the join token and Headscale's own view of the
         # caller already authenticated — so this box is spared the fingerprint ceremony entirely.
         if info.get("ca_pem"):
-            tls.install_ca(headapi.head_url(config.DOMAIN), info["ca_pem"])
+            tls.install_ca(headapi.head_url(config.domain()), info["ca_pem"])
 
     # Mesh admission (the token) and Slurm admission are separate. The Admin's blocked `arm authorize`
     # sees our /enroll above and writes our gres.conf line within seconds — but if they weren't at
@@ -1400,7 +1429,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     # address is the one that cannot work from here. The hosts entry written during enrollment resolves
     # the name to the Head's mesh IP, so this reaches the same place the old literal did, under the one
     # spelling every other box in the cluster also uses.
-    data["head"] = headapi.head_url(config.DOMAIN)
+    data["head"] = headapi.head_url(config.domain())
     settings.save(data)
 
     # The Mantle must exist here BEFORE slurmd can accept a Spawn: slurmd setuid()s to the submitting

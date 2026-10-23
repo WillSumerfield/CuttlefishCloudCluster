@@ -16,7 +16,7 @@ from cuttle import config, dashboard, settings
 def resolves(monkeypatch):
     """The **Cluster name**, resolvable — inside the guest, which is the only side that ever can."""
     monkeypatch.setattr(dashboard.socket, "gethostbyname",
-                        lambda host: "192.168.1.10" if host == config.DOMAIN else host)
+                        lambda host: "192.168.1.10" if host == "ccc.lab" else host)
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ class TestTheAddressItOpens:
     def test_a_chromebook_always_gets_the_address(self, ccc_home, crostini, resolves):
         """Crostini's own /etc/hosts is fine and `cuttle` works; the browser is on the ChromeOS side,
         which has no hosts file at any privilege. Nothing can ever make the name work there."""
-        settings.save({"head": f"https://{config.DOMAIN}:8082"})
+        settings.save({"head": f"https://ccc.lab:8082"})
         assert dashboard.url() == "https://192.168.1.10:8082/"
 
     def test_an_unresolvable_name_is_left_alone_rather_than_mangled(self, ccc_home, crostini,
@@ -50,8 +50,8 @@ class TestTheAddressItOpens:
         inventing an address for it would report that problem as a Dashboard that will not load."""
         monkeypatch.setattr(dashboard.socket, "gethostbyname",
                             lambda host: (_ for _ in ()).throw(OSError("no")))
-        settings.save({"head": f"https://{config.DOMAIN}:8082"})
-        assert dashboard.url() == f"https://{config.DOMAIN}:8082/"
+        settings.save({"head": f"https://ccc.lab:8082"})
+        assert dashboard.url() == f"https://ccc.lab:8082/"
 
 
 class TestHandingItToABrowser:
