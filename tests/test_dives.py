@@ -137,14 +137,19 @@ class TestModules:
             elif cur is not None and "=" in line:
                 k, v = line.split("=", 1)
                 cur[k.strip()] = v.strip()
-        assert set(mods) == {f"d{TOK}-main", f"d{TOK}-dep0", f"d{TOK}-sys"}
+        assert set(mods) == {f"d{TOK}-main", f"d{TOK}-dep0", f"d{TOK}-dot", f"d{TOK}-sys"}
         main, dep, sysm = mods[f"d{TOK}-main"], mods[f"d{TOK}-dep0"], mods[f"d{TOK}-sys"]
+        dot = mods[f"d{TOK}-dot"]
         assert main["read only"] == "false" and dep["read only"] == sysm["read only"] == "true"
-        assert main["uid"] == dep["uid"] == str(u)
+        assert main["uid"] == dep["uid"] == dot["uid"] == str(u)
+        # a User's symlinks travel as they are; only the root-run module keeps rsync's munging
+        assert main["munge symlinks"] == dep["munge symlinks"] == dot["munge symlinks"] == "no"
+        assert sysm["uid"] == "root" and "munge symlinks" not in sysm
         assert main["path"] == str(home / "proj") and dep["path"] == str(home / "data")
         assert main["pre-xfer exec"] == f"/usr/local/sbin/ccc-tidepool dive-lock {TOK}"
         assert "pre-xfer exec" not in dep
-        assert sysm["path"] == str(H.DIVE_STATE / TOK)
+        assert sysm["path"] == str(H.DIVE_STATE / TOK / "sys")
+        assert dot["path"] == str(H.DIVE_STATE / TOK / "home")
         assert {m["auth users"] for m in mods.values()} == {f"d{TOK}"}
 
     def test_rsyncd_includes_the_root_owned_dir(self):
@@ -292,8 +297,8 @@ class TestArmDive:
         monkeypatch.setattr(L.os, "chown", lambda p, u, g: chowned.append((str(p), u)))
         home = L.stage_in(DIVE, tmp_path, 4242)
         srcs = [c[-2] for c in calls]
-        assert srcs == [f"rsync://d{TOK}@100.99.0.1/d{TOK}-sys/sys/",
-                        f"rsync://d{TOK}@100.99.0.1/d{TOK}-sys/home/",
+        assert srcs == [f"rsync://d{TOK}@100.99.0.1/d{TOK}-sys/",
+                        f"rsync://d{TOK}@100.99.0.1/d{TOK}-dot/",
                         f"rsync://d{TOK}@100.99.0.1/d{TOK}-dep0/",
                         f"rsync://d{TOK}@100.99.0.1/d{TOK}-main/"]   # main last: it locks
         assert all("--numeric-ids" in c for c in calls)

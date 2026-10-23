@@ -310,8 +310,8 @@ def stage_in(d: dict, jobdir: Path, owner: int) -> Path:
     home.mkdir(mode=0o750, exist_ok=True)
     os.chown(home, owner, owner)
     run = lambda argv: subprocess.run(argv, check=True)   # noqa: E731
-    run(rsync_argv(module(d, "sys") + "sys/", f"{jobdir}/sys/", filters=False))
-    run(rsync_argv(module(d, "sys") + "home/", f"{home}/", filters=False))
+    run(rsync_argv(module(d, "sys"), f"{jobdir}/sys/", filters=False))
+    run(rsync_argv(module(d, "dot"), f"{home}/", filters=False))
     for i, dep in enumerate(d["deps"]):
         run(rsync_argv(module(d, f"dep{i}"), f"{_mkdirs(home, dep, owner)}/"))
     run(rsync_argv(module(d, "main"), f"{_mkdirs(home, d['main'], owner)}/"))

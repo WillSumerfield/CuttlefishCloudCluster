@@ -516,17 +516,22 @@ def dive_snap(user: str, tok: str) -> dict:
 
 
 def render_modules(tok: str, d: dict) -> str:
+    """User-data modules run as the User's mapped uid with symlinks left as they are (munging would
+    break every symlink in a project; an unprivileged uid reaches nothing a symlink could point at
+    that the User cannot already read). Only `-sys` (host key + keys, files we wrote) runs as root,
+    and keeps rsync's default symlink munging."""
     u = id_base(d["uid"]) + INNER_UID
     sec = DIVE_RSYNCD / f"{tok}.secrets"
-    common = f"    auth users = d{tok}\n    secrets file = {sec}\n    strict modes = true\n"
+    common = f"    auth users = d{tok}\n    secrets file = {sec}\n    strict modes = true\n    numeric ids = yes\n"
+    user = f"    uid = {u}\n    gid = {u}\n    munge symlinks = no\n"
     out = (f"# Written by ccc-tidepool for one Dive. Removed at its end.\n"
-           f"[d{tok}-main]\n    path = {host_dir(d['user'], d['main'])}\n    read only = false\n"
-           f"    uid = {u}\n    gid = {u}\n{common}"
+           f"[d{tok}-main]\n    path = {host_dir(d['user'], d['main'])}\n    read only = false\n{user}{common}"
            f"    pre-xfer exec = {HELPER} dive-lock {tok}\n")
     for i, dep in enumerate(d["deps"]):
-        out += (f"[d{tok}-dep{i}]\n    path = {host_dir(d['user'], dep)}\n    read only = true\n"
-                f"    uid = {u}\n    gid = {u}\n{common}")
-    out += f"[d{tok}-sys]\n    path = {DIVE_STATE / tok}\n    read only = true\n    uid = root\n    gid = root\n{common}"
+        out += f"[d{tok}-dep{i}]\n    path = {host_dir(d['user'], dep)}\n    read only = true\n{user}{common}"
+    out += f"[d{tok}-dot]\n    path = {DIVE_STATE / tok / 'home'}\n    read only = true\n{user}{common}"
+    out += (f"[d{tok}-sys]\n    path = {DIVE_STATE / tok / 'sys'}\n    read only = true\n"
+            f"    uid = root\n    gid = root\n{common}")
     return out
 
 
@@ -592,8 +597,10 @@ def apply_lock(d: dict) -> None:
     pid = _ctr_pid(d["user"])
     if pid:
         p = _inner(d)
+        # best effort: this runs as rsyncd's pre-xfer exec, and a failure there would abort staging
         sh("nsenter", "-t", str(pid), "-m", "--", "sh", "-c",
-           'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1"', "_", p, capture_output=True)
+           'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1"', "_", p, check=False,
+           capture_output=True)
 
 
 def release_lock(d: dict) -> None:
@@ -604,6 +611,8 @@ def release_lock(d: dict) -> None:
 
 def dive_lock(tok: str) -> None:
     """First stage-in only — a User who unmounts it inside is left alone until the next restart."""
+    if not dive_record_path(tok).exists():
+        return
     d = dive_record(tok)
     if d["locked"]:
         return
