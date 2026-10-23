@@ -10,6 +10,7 @@ import { HistoryPage } from "../pages/HistoryPage";
 import { ArmsPage } from "../pages/ArmsPage";
 import { TidePage } from "../pages/TidePage";
 import { AccountPage } from "../pages/AccountPage";
+import { FilesPage } from "../pages/FilesPage";
 import { UsersPage } from "../pages/UsersPage";
 import { SpawnPage } from "../pages/SpawnPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
@@ -37,6 +38,8 @@ function Route() {
       return <KarmaPage />;
     case "/tide":
       return <TidePage />;
+    case "/files":
+      return <FilesPage />;
     case "/account":
       return <AccountPage />;
     // Not a redirect: a non-admin who types /users should be told it isn't there, not bounced somewhere

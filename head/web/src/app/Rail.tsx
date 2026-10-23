@@ -22,6 +22,7 @@ const DESTINATIONS: Dest[] = [
   { to: "/arms", label: "Arms" },
   { to: "/karma", label: "Karma" },
   { to: "/tide", label: "Tide" },
+  { to: "/files", label: "Files" },
   { to: "/account", label: "Account" },
   { to: "/users", label: "Users", admin: true },
 ];

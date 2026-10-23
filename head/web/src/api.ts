@@ -361,3 +361,41 @@ export const addSshKey = (pubkey: string, name?: string) =>
     body: JSON.stringify({ pubkey, name: name || null }),
   }).then(() => {})
 export const removeSshKey = (id: number) => req(`/ssh-keys/${id}`, { method: 'DELETE' }).then(() => {})
+
+// The file browser over your own Tidepool home (paths from the home; "." is the home itself).
+export type FileEntry = {
+  name: string
+  path: string
+  type: 'dir' | 'file' | 'link' | 'other'
+  size: number | null
+  mtime: number
+  /** A main folder a Dive holds: read-only until it ends. */
+  locked: boolean
+}
+export const listFiles = (path: string) =>
+  json<{ path: string; entries: FileEntry[] }>(`/files?path=${encodeURIComponent(path)}`)
+export const downloadUrl = (path: string) => `${API}/files/download?path=${encodeURIComponent(path)}`
+const jsonPost = (path: string, body: unknown) =>
+  req(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(() => {})
+export const makeFolder = (path: string) => jsonPost('/files/mkdir', { path })
+export const renameFile = (path: string, to: string) => jsonPost('/files/rename', { path, to })
+export const deleteFile = (path: string) =>
+  req(`/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' }).then(() => {})
+
+/** One file's upload. `'exists'` = a 409 (already there): the caller asks before overwriting. */
+export async function uploadFile(path: string, body: Blob, overwrite: boolean): Promise<'ok' | 'exists'> {
+  let r: Response
+  try {
+    r = await fetch(`${API}/files?path=${encodeURIComponent(path)}&overwrite=${overwrite}`,
+      { method: 'PUT', body })
+  } catch {
+    throw new Error(HEAD_UNREACHABLE)
+  }
+  if (r.status === 409 && !overwrite) return 'exists'
+  if (r.ok) return 'ok'
+  if (r.status === 401) throw new Unauthorized('your session ended')
+  let detail: string | null = null
+  try { detail = (await r.json()).detail ?? null } catch { /* not JSON */ }
+  throw new Error(detail ?? HEAD_ERROR)
+}
