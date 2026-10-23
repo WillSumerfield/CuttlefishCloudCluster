@@ -20,9 +20,9 @@ from fastapi.testclient import TestClient
 from ccc_head_api import db, guises, slurm, tick, zshrc
 from ccc_head_api import main as head_main
 from ccc_head_api import spawns as head_spawns
-from ccc_head_api import tidepool as head_tidepool
+from ccc_head_api import dive as head_tidepool
 from cuttle import config, templates
-from cuttle import tidepool as cli_tidepool
+from cuttle import dive as cli_tidepool
 
 
 # --- keypair + port reservation ----------------------------------------------

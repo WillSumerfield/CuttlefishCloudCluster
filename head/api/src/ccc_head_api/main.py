@@ -31,7 +31,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import db, guises, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import spawns as spawns_mod
-from . import tidepool as tidepool_mod
+from . import dive as tidepool_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.

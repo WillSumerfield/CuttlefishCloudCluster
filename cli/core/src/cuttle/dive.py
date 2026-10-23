@@ -1,8 +1,8 @@
-"""Attach to a Tide Pool — an interactive Spawn that drops the User into a live shell.
+"""Attach to a Tide Pool (Dive from phase 4) — an interactive Spawn that drops the User into a live shell.
 
 Dormant in 2.0: the request half (`cuttle run`) went with the submit path, and nothing calls
 `_wait_and_attach` until Dives. What is left: poll for placement, fetch the ephemeral keypair the Head
-minted, and exec a REAL `ssh` — the Head-side relay (ccc_head_api.tidepool/relay.py) is what makes an Arm reachable from a
+minted, and exec a REAL `ssh` — the Head-side relay (ccc_head_api.dive/relay.py) is what makes an Arm reachable from a
 client that is not a Mesh member, but nothing on this end knows or cares that a relay exists; it looks
 like any other `ssh -p <port> <host>`.
 
@@ -40,7 +40,7 @@ def _head_host() -> str:
     """The bare host the CLI already talks to for the Head API — the Tide Pool relay listens on the
     SAME box, at a different port, so there is no separate address to configure or discover. (When the
     Spawn landed on the Head's own co-located Arm there is no relay at all and this reaches the Pod's
-    sshd directly — same address either way, which is the point. See ccc_head_api.tidepool.)"""
+    sshd directly — same address either way, which is the point. See ccc_head_api.dive.)"""
     url = settings.load().get("head") or ""
     host = urlsplit(url).hostname
     if not host:

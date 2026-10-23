@@ -580,7 +580,7 @@ KARMA_SERVICE = "ccc-karma"
 KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 
 # --- Tide Pool: interactive Spawn relay ---
-# The Head-side TCP relay's listen-port range (ccc_head_api.tidepool.PORT_BASE/PORT_RANGE) — MUST match
+# The Head-side TCP relay's listen-port range (ccc_head_api.dive.PORT_BASE/PORT_RANGE) — MUST match
 # those constants exactly; duplicated here rather than shared because the CLI and the head-side API
 # package do not import each other (same reason FEATURE_NAMES is duplicated between
 # ccc_head_api.enroll and ccc_head_api.slurm). Opened once, as a whole range, at `setup --head`

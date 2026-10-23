@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, karma, siphons, slurm, spawns, tidepool
+from . import db, dive as tidepool, karma, siphons, slurm, spawns
 
 log = logging.getLogger("ccc.karma")
 

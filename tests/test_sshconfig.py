@@ -17,7 +17,7 @@ import pytest
 
 from ccc_head_api import spawns as head_spawns
 from cuttle import config, sshconfig
-from cuttle import tidepool as cli_tidepool
+from cuttle import dive as cli_tidepool
 
 
 def _row(spawn_id=58, port=41007, proj="/tmp/ccc-58/proj"):
