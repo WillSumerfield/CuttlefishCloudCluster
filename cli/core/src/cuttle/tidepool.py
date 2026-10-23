@@ -11,12 +11,11 @@ Two halves:
 """
 
 import json
-import os
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import api, auth, config, sshconfig, system, templates, ui
+from . import api, auth, config, sshconfig, system, templates, transfer, ui
 from .system import run
 
 _HERE = Path(__file__).resolve().parent
@@ -168,11 +167,14 @@ def connect() -> dict:
 
 
 def enter() -> None:
-    """Refresh the alias (port/host key may have changed at a reset or re-setup), then ssh in."""
+    """Refresh the alias (port/host key may have changed at a reset or re-setup), then ssh in, with
+    this folder forwarded for `cuttle upload/download` inside (transfer.Forward)."""
     tp = connect()
     if tp["state"] != "active":
         ui.warn(f"your Tidepool is {tp['state']} — `cuttle tidepool restart`, or ask an admin")
-    os.execvp("ssh", ["ssh", config.cluster_name()])
+    with transfer.Forward(config.cluster_name()) as fwd:
+        ui.hint(f"`cuttle upload/download` inside reach {fwd.root}")
+        subprocess.run(["ssh", *fwd.ssh_args(), config.cluster_name()])
 
 
 def _act(verb: str, user: str | None) -> None:
@@ -196,7 +198,8 @@ def status(as_json: bool = False) -> None:
     tp = auth._api("GET", "/tidepool")
     ui.emit(tp, as_json, lambda: ui.kv([
         ("state", tp["state"]), ("used", f"{tp['used_gb']:.1f} / {tp['size_gb']} GB"),
-        ("ssh", f"ssh {config.cluster_name()}"), ("port", tp["port"])]))
+        ("enter", "cuttle tidepool"), ("editors (ssh host)", config.cluster_name()),
+        ("port", tp["port"])]))
 
 
 def keys(as_json: bool = False) -> None:

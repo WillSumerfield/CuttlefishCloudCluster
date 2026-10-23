@@ -137,6 +137,9 @@ UsePAM no
 X11Forwarding no
 AllowAgentForwarding yes
 AllowTcpForwarding yes
+AllowStreamLocalForwarding yes
+StreamLocalBindUnlink yes
+AcceptEnv CCC_FWD
 PrintMotd no
 SetEnv LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 ClientAliveInterval 60

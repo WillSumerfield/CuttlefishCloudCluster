@@ -23,6 +23,7 @@ from . import spawns as spawns_mod
 from . import system
 from . import teardown as teardown_mod
 from . import tidepool as tidepool_mod
+from . import transfer as transfer_mod
 from . import ui
 
 # pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
@@ -684,6 +685,32 @@ def dive_end(dive_id: int = typer.Argument(None, help="Dive id (default: your on
 def dive_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Your open Dives."""
     dive_mod.status(as_json)
+
+
+_XFER_DIVE = typer.Option(None, "--dive", help="A Dive id instead of your Tidepool (from your own "
+                                               "machine; inside, paths are already this container's).")
+_XFER_FORCE = typer.Option(False, "--force", help="Overwrite files already at the destination.")
+
+
+@app.command()
+def download(path: str = typer.Argument(..., help="File or folder. From your machine: from your Tidepool "
+                                                  "home (`proj` = `~/proj`), absolute allowed. Inside: "
+                                                  "from here."),
+             dest: str = typer.Argument(None, help="Folder it lands in (default: the current one; "
+                                                   "inside: the folder you entered from)."),
+             dive: int = _XFER_DIVE, force: bool = _XFER_FORCE):
+    """Copy a file or folder to your own machine. Resumable; never deletes."""
+    transfer_mod.download(path, dest, dive, force)
+
+
+@app.command()
+def upload(path: str = typer.Argument(..., help="File or folder on your machine (inside: from the "
+                                                "folder you entered from)."),
+           dest: str = typer.Argument(None, help="Folder it lands in (default: your Tidepool home, or "
+                                                 "the Dive's main folder; inside: here)."),
+           dive: int = _XFER_DIVE, force: bool = _XFER_FORCE):
+    """Copy a file or folder from your own machine. Resumable; never deletes."""
+    transfer_mod.upload(path, dest, dive, force)
 
 
 @app.command("build-installer")

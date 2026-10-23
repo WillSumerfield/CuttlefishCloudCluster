@@ -386,8 +386,8 @@ class TestTheMenuIsGroupedNotFlat:
         root = typer.main.get_command(main.app)
         return menu._entries(root, menu.MenuState(**state), "", root)
 
-    def test_the_head_sees_eight_rows_not_twenty_five(self):
-        assert len(self._top(**self.HEAD)) == 8   # Tidepool, Dives, 5 folders, dashboard
+    def test_the_head_sees_nine_rows_not_twenty_five(self):
+        assert len(self._top(**self.HEAD)) == 9   # Tidepool, Dives, 6 folders, dashboard
 
     def test_a_folder_is_never_part_of_a_command_line(self):
         """The whole risk of a synthetic level: a path that reads fine in the menu and is not a

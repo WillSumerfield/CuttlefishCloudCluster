@@ -50,7 +50,8 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"queue", "history", "dive", "karma",
-                  "tide", "account", "logout", "whoami", "passwd", "tidepool"}
+                  "tide", "account", "logout", "whoami", "passwd", "tidepool",
+                  "upload", "download"}
 
 
 @dataclass
@@ -68,6 +69,7 @@ class MenuState:
 FOLDER = "\0"
 GROUPS: dict[str, list[str]] = {
     f"{FOLDER}spawns": ["queue", "history"],
+    f"{FOLDER}files": ["upload", "download"],
     # `karma` whole, rather than its standings here and `bump`/`override` under the admin folder: one
     # command's subtree splits across two places exactly once and then nobody can find either half.
     # Both are Head-gated inside it anyway, so a donor's box still never sees them.
@@ -90,6 +92,9 @@ GROUPS: dict[str, list[str]] = {
 #   "Change the settings" out there names nothing.
 LABELS = {
     f"{FOLDER}spawns": "The queue",
+    f"{FOLDER}files": "My files",
+    "upload": "Upload to the Tidepool",
+    "download": "Download from the Tidepool",
     f"{FOLDER}cluster": "The cluster",
     f"{FOLDER}account": "My account",
     f"{FOLDER}admin": "Run the cluster",
@@ -207,7 +212,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset", "div
 # Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
 # inside a real group the declaration order does — both because the sort is stable and everything
 # unlisted ties.
-ORDER = ["tidepool", "dive", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
+ORDER = ["tidepool", "dive", f"{FOLDER}files", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
          "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 

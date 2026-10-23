@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import auth, config, menu, sshconfig, tidepool, ui
+from . import auth, config, menu, sshconfig, tidepool, transfer, ui
 from .system import run
 
 VERBS = ("attach", "end", "status")
@@ -119,21 +119,27 @@ def _live_ids() -> set[int] | None:
         return None
 
 
+def ensure_alias(dive_id: int) -> tuple[str, dict]:
+    """Wait for the Dive's sshd, then write its `<name>-<id>` alias. (alias, connection info)."""
+    info = _wait_ready(dive_id)
+    sshconfig.record(dive_id, port=info["port"], user=info["user"], host=tidepool._head_host())
+    live = _live_ids()
+    sshconfig.refresh(None if live is None else live | {dive_id})
+    return sshconfig.alias(dive_id), info
+
+
 def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     dive_id = dive_id or _pick("Attach to which Dive?")
-    info = _wait_ready(dive_id)
     if in_container():
         # No key or alias in here: the shell is reached from your own machine.
+        info = _wait_ready(dive_id)
         if info["head"]:
             ui.ok(f"Dive {dive_id} is on the Head: this Tidepool now has the GPU")
         else:
             ui.ok(f"Dive {dive_id} is up on {info.get('node')} — from your own machine: "
                   f"`cuttle dive attach {dive_id}`")
         return
-    sshconfig.record(dive_id, port=info["port"], user=info["user"], host=tidepool._head_host())
-    live = _live_ids()
-    sshconfig.refresh(None if live is None else live | {dive_id})
-    name = sshconfig.alias(dive_id)
+    name, info = ensure_alias(dive_id)
     folder = f"/home/{info['user']}/{info['main']}"
     if info["head"]:
         ui.ok(f"Dive {dive_id} is on the Head: your Tidepool itself now has the GPU")
@@ -142,7 +148,7 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
               f"every minute (read-only there until the Dive ends)")
     ui.warn(f"the GPU is yours until `cuttle dive end {dive_id}` or --time runs out — disconnecting "
             f"does not free it")
-    ui.hint(f"editors and other terminals: `ssh {name}`")
+    ui.hint(f"editors (VS Code Remote-SSH host): {name}")
     if vscode:
         if sshconfig.open_vscode(name, folder):
             ui.ok(f"opening Dive {dive_id} in VS Code ({name})")
@@ -150,7 +156,9 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     stop = threading.Event()
     _warn_thread(dive_id, _deadline(dive_id), stop)
     try:
-        subprocess.run(["ssh", name])
+        with transfer.Forward(name) as fwd:
+            ui.hint(f"`cuttle upload/download` inside reach {fwd.root}")
+            subprocess.run(["ssh", *fwd.ssh_args(), name])
     finally:
         stop.set()
     _report_ending(dive_id)

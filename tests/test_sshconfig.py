@@ -142,9 +142,12 @@ class TestTheAttach:
         monkeypatch.setattr(cli_dive.subprocess, "run", lambda a, **k: ran.append(a))
         return ran
 
-    def test_a_terminal_session_execs_ssh_on_the_alias(self, placed):
+    def test_a_terminal_session_sshes_to_the_alias_with_the_link_forwarded(self, placed):
         cli_dive.attach(58)
-        assert placed == [["ssh", "lab-58"]]
+        [argv] = placed
+        assert argv[0] == "ssh" and argv[-1] == "lab-58"
+        assert argv[argv.index("-R") + 1].startswith("/tmp/ccc-fwd-")
+        assert any(a.startswith("SetEnv=CCC_FWD=/tmp/ccc-fwd-") for a in argv)
         assert "Host lab-58" in config.SSH_CCC_CONFIG.read_text()
 
     def test_vscode_opens_the_main_folder(self, placed, monkeypatch):
