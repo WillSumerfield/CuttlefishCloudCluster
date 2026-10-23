@@ -323,8 +323,10 @@ def spawns(limit: int | None = None, user: dict = Depends(current_user)) -> list
     ids = [r["id"] for r in rows if r["id"] is not None]
     with db.connect() as conn:
         submitters = db.spawn_submitters(conn, ids)
+        mains = db.dive_mains(conn, ids)
     for r in rows:
         r["submitted_by"] = submitters.get(r["id"])
+        r["main"] = mains.get(r["id"])
     return rows
 
 

@@ -42,6 +42,8 @@ export type Spawn = {
   submitted_by: string | null
   // Declared duration (`--time`), in minutes. Null on Spawns submitted before it was surfaced.
   time_limit: number | null
+  /** The Dive's main folder, from the Tidepool home. */
+  main?: string | null
 }
 
 // How a Spawn ended. `retracted` = its Arm was reclaimed (Owner hit Retract); it settles at zero and
@@ -97,6 +99,8 @@ export type SpawnDetail = {
    *  a Spawn that ended before a single meter pass caught it running. */
   placed_node?: string | null
   submitted_by?: string | null
+  /** The Dive's main folder, from the Tidepool home. */
+  main?: string | null
   // What it settled at. Null while it still holds an Escrow, and for a Spawn that never settled at all
   // (Admin-owned, or ended before the meter reached it).
   cost?: number | null
@@ -172,6 +176,7 @@ type HistoryRow = {
   gpus: number
   minutes: number | null
   submitted_by: string | null
+  main: string | null
   cost: number | null
 }
 
@@ -199,6 +204,7 @@ export const getHistory = () =>
       (r): ArchivedSpawn => ({
         id: r.job_id,
         script: r.script,
+        main: r.main,
         state: r.cancelled ? 'cancelled' : 'finished',
         // For a FINISHED Spawn "the arm" means the one it ran on. The declared node is the fallback
         // only because when it is set at all, an Admin named it and the Spawn went there.
@@ -223,7 +229,20 @@ export const getStderr = (id: number) => req(`/spawns/${id}/stderr`).then((r) =>
 export const getLogs = (id: number) => req(`/spawns/${id}/logs`).then((r) => r.text())
 
 /** End a live Spawn. Yours, or anyone's if you're an Admin (the Head 403s otherwise). */
-export const cancelSpawn = (id: number) => req(`/spawns/${id}`, { method: 'DELETE' }).then(() => {})
+export const cancelSpawn = (id: number) => req(`/dives/${id}`, { method: 'DELETE' }).then(() => {})
+
+/** Where your own Dive is reached, once an sshd answers (`ready`). */
+export type DiveConn = {
+  id: number
+  ready: boolean
+  state: string
+  head: boolean
+  node?: string | null
+  port: number | null
+  user: string
+  main: string
+}
+export const getDiveConn = (id: number) => json<DiveConn>(`/dives/${id}`)
 
 // Arm lifecycle, in full. `retract`/`return` are real, owner-scoped routes on the Head (app-layer — see
 // retraction.py, no real Slurm DRAIN). There is no admit/benchmark/remove here and never will be: those

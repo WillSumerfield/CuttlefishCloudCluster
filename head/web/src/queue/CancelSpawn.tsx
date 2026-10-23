@@ -47,11 +47,11 @@ export function CancelSpawn({
     <div className={className}>
       {!confirming ? (
         <button className="btn-ghost" onClick={() => setConfirming(true)} disabled={busy}>
-          Cancel
+          End
         </button>
       ) : (
         <div className="flex items-center gap-2">
-          <span className="hidden text-[12px] text-ink-mute sm:inline">Settles for time held.</span>
+          <span className="hidden text-[12px] text-ink-mute sm:inline">Final mirror, then settles.</span>
           <button className="btn-ghost" onClick={() => setConfirming(false)} disabled={busy}>
             Keep
           </button>
@@ -61,7 +61,7 @@ export function CancelSpawn({
             disabled={busy}
             style={{ color: "var(--alarm)" }}
           >
-            {busy ? "Cancelling…" : "Cancel spawn"}
+            {busy ? "Ending…" : "End dive"}
           </button>
         </div>
       )}

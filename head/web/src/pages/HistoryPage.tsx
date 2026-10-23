@@ -91,7 +91,7 @@ export function HistoryPage() {
                 of <span className="num text-ink-soft">{rows.length}</span>
               </>
             )}{" "}
-            spawn{shown.length === 1 ? "" : "s"}
+            dive{shown.length === 1 ? "" : "s"}
           </span>
         ) : null
       }

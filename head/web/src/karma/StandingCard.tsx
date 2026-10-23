@@ -57,7 +57,7 @@ export function StandingCard({ standing }: { standing: Standing }) {
               −{escrow.toFixed(0)}
             </span>
             <Tip className="text-sm text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Spawn ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">
-              ESCROW, {n} Spawn{n === 1 ? "" : "s"}
+              ESCROW, {n} Dive{n === 1 ? "" : "s"}
             </Tip>
 
           </div>

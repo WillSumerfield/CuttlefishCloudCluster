@@ -841,6 +841,13 @@ def create_dive(conn: sqlite3.Connection, job_id: int, token: str, main: str, de
     conn.commit()
 
 
+def dive_mains(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str]:
+    if not job_ids:
+        return {}
+    q = f"SELECT job_id, main FROM dives WHERE job_id IN ({','.join('?' * len(job_ids))})"
+    return {r["job_id"]: r["main"] for r in conn.execute(q, job_ids).fetchall()}
+
+
 def get_dive(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM dives WHERE job_id=?", (job_id,)).fetchone()
 

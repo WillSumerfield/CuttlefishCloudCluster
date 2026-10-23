@@ -95,7 +95,7 @@ export function Ledger({ data }: { data: LedgerData }) {
     <section className="surface p-12 md:p-20">
       <header className="mb-6">
         {/* Quiet, like the page title: muted ink at 300 weight, so the rows are what the eye lands on. */}
-        <Tip text="Every time Karma actually moved: a Spawn settling, or an Admin granting or taking some.">
+        <Tip text="Every time Karma actually moved: a Dive settling, or an Admin granting or taking some.">
           <h2 style={{ fontSize: 20, fontWeight: 300, letterSpacing: "-0.02em" }} className="text-ink-mute">
             Ledger
           </h2>
@@ -117,7 +117,7 @@ export function Ledger({ data }: { data: LedgerData }) {
 
       {rows.length === 0 ? (
         <p className="px-2 py-6 text-[13px] text-ink-mute">
-          Nothing settled yet. A Spawn pays its Arm's owner when it ends, and that is the first row you'll see.
+          Nothing settled yet. A Dive pays its Arm's owner when it ends, and that is the first row you'll see.
         </p>
       ) : (
         <>

@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
 import {
-  getLogs,
+  getDiveConn,
   getSpawn,
-  getStderr,
   Unauthorized,
   errMessage,
+  type DiveConn,
   type SpawnDetail,
 } from "../api";
 import { useAuth } from "../app/auth";
@@ -25,16 +25,6 @@ function verdict(d: SpawnDetail): { word: string; color: string; live: boolean }
   return { word: `failed · exit ${rc}`, color: "var(--alarm)", live: false };
 }
 
-/**
- * Has this Spawn been placed on a machine — i.e. can a log file exist at all? Deliberately NOT
- * `verdict().live`, which tests /run|complet/ and so misses CONFIGURING: a Spawn whose nodes are booting
- * is allocated and about to write. This is `LiveQueue.isRunning`'s predicate, so a Spawn the queue calls
- * Running never tells its own page it has not started. A finished Spawn started by definition.
- */
-function hasStarted(d: SpawnDetail): boolean {
-  return d.done || /running|completing|configuring/i.test(d.state);
-}
-
 /** A fact and its name, in the column of them. `—` for what the Head does not know rather than a gap:
  *  an absent row would leave the reader wondering whether the fact exists or merely wasn't fetched. */
 function Fact({ label, value, help }: { label: string; value: React.ReactNode; help?: string }) {
@@ -46,126 +36,36 @@ function Fact({ label, value, help }: { label: string; value: React.ReactNode; h
   );
 }
 
-/** The knobs worth tuning on a log pane. Edit, save, watch. */
-const LOG_PANE = {
-  /**
-   * The pool colour. Set inline, which is what makes it IMMOVABLE: `.field` recolours `--fill` on
-   * hover and on focus, and an inline custom property outranks both. Lighter than a `.field`'s own
-   * resting fill, because a log is read rather than typed into.
-   */
-  fill: "color-mix(in oklab, var(--well) 92%, var(--shoal))",
-
-  /**
-   * Edge feather, px — how far the fill dissolves at every rim before it is gone. Overrides the root
-   * `--feather` (7, what every control shares) for this pane alone: a log is a wide reading surface, not
-   * a control in a row of controls, so it melts further. Past ~24 on a short pane the two opposing ramps
-   * start meeting in the middle and the whole fill goes translucent.
-   */
-  feather: 16,
-
-  /** Corner radius, px — `.field`'s `--frad` (default 12). The feather rounds with it. */
-  radius: 14,
-
-  /** How tall a pane may grow before it scrolls internally rather than lengthening the page. */
-  maxHeight: "28rem",
-
-  /** Inner padding, px. Wants to comfortably clear `feather`, or the first glyph sits in the melt. */
-  padX: 22,
-  padY: 18,
-
-  /** Line height of the mono text. Logs are scanned in columns, so a little air pays. */
-  lineHeight: 1.6,
-};
-
 /**
- * One output stream. stdout and stderr get their own panes rather than being interleaved the way
- * `cuttle logs -f` does: the CLI interleaves because a terminal has one column, but the two files carry
- * no shared timestamps, so a merge here would be a guess presented as fact. The Environment build's own
- * output is not a third pane: the Arm builds it inside the job now, so it IS this Spawn's stderr.
- *
- * Empty is stated, not blank: "nothing on stderr" is good news on a Spawn that ran fine; an empty black
- * box says nothing at all. But it is only good news once something HAS run — a Spawn still waiting for a
- * machine returns the same "" from `/logs` (the sbatch file does not exist yet), and reading that as
- * "nothing on stdout" claims it ran and printed nothing. `started` tells the two apart. It is the third
- * collision on this empty string; main.py's `_SWEPT` is the Head's answer to the second.
- *
- * While unfinished the pane FOLLOWS: pinned to the newest line as each poll appends, like `cuttle logs -f`.
- * Scrolling up releases it and it holds still — a log that kept yanking you back would make a long
- * traceback unreadable — and scrolling back to the bottom re-arms it. A finished pane never follows and
- * opens at the top: it is a record, read from the start. A Spawn that finishes while you are watching
- * keeps whatever scroll position it had rather than jumping anywhere.
+ * How to reach your own live Dive: the same `ssh` alias `cuttle dive` writes, once an sshd answers.
+ * Queued or still staging says so; a Head Dive is the Tidepool itself, holding the GPU.
  */
-function LogPane({
-  title,
-  text,
-  live,
-  started,
-}: {
-  title: string;
-  text: string | null;
-  live: boolean;
-  started: boolean;
-}) {
-  const pane = useRef<HTMLPreElement | null>(null);
-  const [following, setFollowing] = useState(true);
-
-  // Layout effect, not effect: pin before the browser paints, or every poll flashes the old scroll
-  // position for a frame. `live` gates it so a finished Spawn is never scrolled for you.
-  useLayoutEffect(() => {
-    const el = pane.current;
-    if (!el || !live || !following) return;
-    el.scrollTop = el.scrollHeight;
-  }, [text, live, following]);
-
-  // 8px of slack: a pane scrolled to the bottom can sit a subpixel short of it, and demanding exact
-  // equality would drop you out of following the moment you touched the wheel.
-  const onScroll = () => {
-    const el = pane.current;
-    if (el) setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 8);
-  };
-
-  // Only a live pane has a state worth naming. The note used to read "updating every 3s", which said
-  // what the PAGE does rather than what you are looking at — and overstated freshness besides, since a
-  // remote Arm's out/err ride a 5s rsync (spawns.py push_periodic) on top of the 3s poll.
-  const note = live ? (following ? "following" : "paused — scroll down to resume") : undefined;
-
+function Connect({ conn }: { conn: DiveConn | null }) {
+  if (!conn) return null;
+  const alias = `glados-${conn.id}`;
   return (
-    <div className="min-w-0">
-      <div className="mb-2 flex items-baseline justify-between gap-3">
-        <Tip
-          className="label"
-          text="Kept as two streams rather than merged, because they carry no shared timestamps and interleaving them would be a guess. A crash's traceback lands in stderr — as does the Environment build that runs before it."
-        >
-          {title}
-        </Tip>
-        {note && <span className="text-[12px] text-ink-mute">{note}</span>}
-      </div>
-      {/* `field` — the same recess form inputs sit in, feathering at every edge so a long log
-          dissolves instead of ending on a hard rim. Vars set INLINE so they beat `.field`'s own
-          `&:hover { --fill: … }` and hold the colour still: a log is not a control, so lighting up under
-          the pointer would promise an interaction that doesn't exist. */}
-      <pre
-        ref={pane}
-        onScroll={onScroll}
-        className="field num overflow-auto text-[12px] whitespace-pre"
-        style={{
-          color: "var(--ink-soft)",
-          "--fill": LOG_PANE.fill,
-          "--feather": `${LOG_PANE.feather}px`,
-          "--frad": `${LOG_PANE.radius}px`,
-          maxHeight: LOG_PANE.maxHeight,
-          padding: `${LOG_PANE.padY}px ${LOG_PANE.padX}px`,
-          lineHeight: LOG_PANE.lineHeight,
-        } as React.CSSProperties}
-      >
-        {text === null
-          ? "…"
-          : text.trim() !== ""
-            ? text
-            : started
-              ? `nothing on ${title.toLowerCase()}`
-              : "not started — no output yet"}
-      </pre>
+    <div className="surface space-y-3" style={{ padding: "calc(var(--pad) + 12px)" }}>
+      <Tip className="label" text="Your own keys and your Tidepool's host key, so `cuttle login` already set this box up. VS Code: Remote-SSH, host glados-<id>.">
+        Connect
+      </Tip>
+      {conn.ready ? (
+        <>
+          <pre className="field num text-[13px]" style={{ padding: "12px 18px", color: "var(--ink)" }}>
+            {`cuttle dive attach ${conn.id}`}
+            {"\n"}
+            {`ssh ${alias}`}
+          </pre>
+          <p className="text-[13px] text-ink-soft">
+            {conn.head
+              ? "On the Head: your Tidepool itself has the GPU until this Dive ends."
+              : `On ${conn.node}: ~/${conn.main} is mirrored back to your Tidepool every minute, and is read-only there until the Dive ends.`}
+          </p>
+        </>
+      ) : (
+        <p className="text-[13px] text-ink-soft">
+          {conn.state === "pending" ? "Queued — waiting for a GPU." : conn.state === "running" ? "Staging your folders…" : conn.state}
+        </p>
+      )}
     </div>
   );
 }
@@ -183,19 +83,15 @@ export function SpawnPage({ id }: { id: string }) {
   const { logout } = useAuth();
   const [detail, setDetail] = useState<SpawnDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [out, setOut] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [conn, setConn] = useState<DiveConn | null>(null);
   const [confirming, setConfirming] = useState(false);
   const timer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [d, o, e] = await Promise.all([
-        getSpawn(jobId), getLogs(jobId), getStderr(jobId),
-      ]);
+      const d = await getSpawn(jobId);
       setDetail(d);
-      setOut(o);
-      setErr(e);
+      setConn(!d.done && d.submitted_by === session.username ? await getDiveConn(jobId) : null);
       return d.done;
     } catch (e) {
       if (e instanceof Unauthorized) logout();
@@ -221,8 +117,8 @@ export function SpawnPage({ id }: { id: string }) {
   }, [jobId, refresh]);
 
   const v = detail ? verdict(detail) : null;
-  // Cancel is for an OUTSTANDING Spawn — queued or running, `done` says which. Your own only: an Admin
-  // may end anyone's, but that road is `cuttle cancel <id>` on the Head, not this button — the API's
+  // End is for an OUTSTANDING Dive — queued or running, `done` says which. Your own only: an Admin
+  // may end anyone's, but that road is `cuttle dive end <id>` on the Head, not this button — the API's
   // ownership test is unconditional and gets no admin branch (docs/Security.md). The row you clicked in
   // from can still be stopped from here.
   const canCancel =
@@ -230,7 +126,7 @@ export function SpawnPage({ id }: { id: string }) {
 
   return (
     <Page
-      title={detail?.script || id}
+      title={detail?.main ? `~/${detail.main}` : `Dive ${id}`}
       actions={
         v ? (
           <span className="flex items-center gap-2 text-[13px]">
@@ -241,7 +137,7 @@ export function SpawnPage({ id }: { id: string }) {
               />
             )}
             <Tip
-              text="One run of one piece of work. It runs exactly once — if the machine it landed on dies, the Spawn dies with it rather than quietly starting again somewhere else."
+              text="A GPU session over folders of a Tidepool. It ends at its time limit or when its owner ends it — disconnecting never does."
               className=""
             >
               <span style={{ color: v.color }}>{v.word}</span>
@@ -274,6 +170,7 @@ export function SpawnPage({ id }: { id: string }) {
             style={{ padding: "calc(var(--pad) + 18px)" }}
           >
             <Fact label="Submitted by" value={detail.submitted_by} />
+            <Fact label="Main folder" help="Mirrored back to its owner's Tidepool; read-only there while the Dive holds it." value={detail.main ? `~/${detail.main}` : null} />
             {/* Where it RAN once there is such a thing, falling back to the Admin's demand — and the
                 two words for "we don't know" are different on purpose: a queued Spawn is genuinely
                 unplaced, a finished one was placed and simply ended too fast to be metered. */}
@@ -291,7 +188,7 @@ export function SpawnPage({ id }: { id: string }) {
               help="What was asked for — the total across those cards, not the size of each."
               value={detail.vram_gb ? `${detail.vram_gb} GB` : null}
             />
-            <Fact label="Declared" help="The time limit you asked for at submit, not how long it actually ran." value={duration(detail.minutes ?? null)} />
+            <Fact label="Time limit" help="What was asked for (--time), not how long it actually ran." value={duration(detail.minutes ?? null)} />
             <Fact
               label="Submitted"
               value={detail.submitted_at ? new Date(detail.submitted_at).toLocaleString() : null}
@@ -318,8 +215,7 @@ export function SpawnPage({ id }: { id: string }) {
           </section>
 
           <section className="min-w-0 space-y-8">
-            <LogPane title="stdout" text={out} live={!detail.done} started={hasStarted(detail)} />
-            <LogPane title="stderr" text={err} live={!detail.done} started={hasStarted(detail)} />
+            <Connect conn={conn} />
           </section>
         </div>
       )}
