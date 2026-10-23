@@ -379,7 +379,7 @@ storage:
   filesystem:
     rootdirectory: /var/lib/registry
   delete:
-    enabled: false
+    enabled: {delete}
   maintenance:
     uploadpurging:            # 2.8 panics if enabled without age/interval/dryrun
       enabled: {purge}
@@ -428,6 +428,7 @@ WantedBy=multi-user.target
 def render_registry_config(addr: str, readonly: bool) -> str:
     return REGISTRY_CONFIG_TMPL.format(addr=addr, port=config.REGISTRY_PORT,
                                        readonly=str(readonly).lower(),
+                                       delete=str(not readonly).lower(),
                                        purge=str(not readonly).lower())
 
 
@@ -496,6 +497,8 @@ StartLimitIntervalSec=0
 [Service]
 Slice={slice}
 ExecStart={podman} start --attach tp-%i
+# A fresh scope each start: GPU denied again (unless a Dive holds it), main-folder locks put back.
+ExecStartPost=-{helper} started %i
 ExecStop={podman} stop -t 10 tp-%i
 Restart=always
 RestartSec=5
@@ -517,10 +520,13 @@ CPUQuota={cpu_pct}%
 MemoryMax={mem_gb}G
 """
 
-# The Head API may restart or reset a Tidepool by username — the API checks it is the caller's own.
+# The Head API may restart or reset a Tidepool by username — the API checks it is the caller's own —
+# and prepare/open/close a Dive (token = 32 hex the API minted).
 TIDEPOOL_SUDOERS_TMPL = """\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
 {user} ALL=(root) NOPASSWD: {bin} ^(restart|reset) [a-z][a-z0-9_-]{{0,31}}$
+{user} ALL=(root) NOPASSWD: {bin} ^dive-(prep|snap|open) [a-z][a-z0-9_-]{{0,31}} [0-9a-f]{{32}}$
+{user} ALL=(root) NOPASSWD: {bin} ^dive-close [0-9a-f]{{32}}$
 """
 
 # Container-side boot, at every start, as container root under catatonit (`--init`). Read from the
@@ -599,7 +605,36 @@ def tidepool_podman() -> str:
 
 def render_tidepool_unit() -> str:
     return TIDEPOOL_UNIT_TMPL.format(mnt=config.TIDEPOOL_MNT_ROOT, slice=config.TIDEPOOL_SLICE,
-                                     podman=tidepool_podman())
+                                     podman=tidepool_podman(), helper=config.TIDEPOOL_HELPER_BIN)
+
+
+# Nightly: the registry frees blobs no manifest references — each ended Dive's snapshot layer (its
+# manifest is deleted at the Dive's end).
+REGISTRY_GC_SERVICE_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+[Unit]
+Description=CCC registry garbage collection (ended Dives' snapshots)
+
+[Service]
+Type=oneshot
+ExecStart={helper} registry-gc
+"""
+REGISTRY_GC_TIMER_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+[Unit]
+Description=CCC registry garbage collection, nightly
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def render_registry_gc_service() -> str:
+    return REGISTRY_GC_SERVICE_TMPL.format(helper=config.TIDEPOOL_HELPER_BIN)
 
 
 def render_tidepool_slice(total_cpus: int, total_mem_gb: int) -> str:
@@ -658,6 +693,7 @@ strict modes = false
     secrets file = {bench_secrets}
     strict modes = true
 &include {rsyncd_dir}
+&include {dive_dir}
 """
 
 RSYNCD_UNIT_TMPL = """\
@@ -684,7 +720,7 @@ def render_rsyncd_conf(mesh_ip: str) -> str:
         bench_mod=config.RSYNC_MODULE_BENCH,
         bench_dir=config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME,
         bench_user=config.RSYNC_BENCH_USER, bench_secrets=config.RSYNCD_BENCH_SECRETS,
-        rsyncd_dir=config.RSYNCD_DIR,
+        rsyncd_dir=config.RSYNCD_DIR, dive_dir=config.DIVE_RSYNCD,
         v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
     )
 
@@ -904,6 +940,9 @@ rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
 # so after scancel / time limit it is still running here, holding its GPU. slurmd hands the node on only
 # after this epilog, so the next job never shares the card. Host mount ns, as ccc-launch ran it.
 timeout 60 nsenter --mount=/proc/1/ns/mnt -- podman rm -f -t 0 "{job_ctr}$SLURM_JOB_ID" >/dev/null 2>&1
+# A Dive on the Head's own GPU lent it to the User's Tidepool; ccc-launch takes it back at the end, and
+# this is the backstop if ccc-launch was killed first. No-op on an Arm (no helper) or any other job.
+[ -x {helper} ] && timeout 60 {helper} dive-gpu revoke-job "$SLURM_JOB_ID" >/dev/null 2>&1
 rm -rf "{jobs_dir}/$SLURM_JOB_ID"
 # Podman's cgroup dirs (libpod-*, conmon) block Slurm's own rmdir of the job's cgroup tree. rmdir only
 # takes empty dirs, so anything still in use is left alone.
@@ -948,7 +987,7 @@ exit 0
 
 
 def render_epilog() -> str:
-    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR,
+    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR, helper=config.TIDEPOOL_HELPER_BIN,
                               job_ctr=config.JOB_CONTAINER_PREFIX, jobs_dir=config.JOBS_DIR,
                               head_spawns=config.HEAD_SPAWNS_DIR,
                               mantle=config.HEAD_API_USER,

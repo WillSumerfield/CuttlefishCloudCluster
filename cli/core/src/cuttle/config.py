@@ -580,6 +580,14 @@ TIDEPOOL_DEFAULT_TOTAL_FRACTION = 4                    # total slice = 1/4 of th
 # Client side: the key `cuttle login` makes, the alias it writes, and the pinned host key.
 TIDEPOOL_ALIAS = DOMAIN.rsplit(".", 1)[-1]             # `ssh glados`
 TIDEPOOL_HOSTKEY_ALIAS = "ccc-tidepool"
+# Dives — the helper's per-Dive state (ccc_tidepool.DIVE_*; must match).
+DIVE_RECORDS = Path("/etc/ccc/dives")                  # <token>.json, root
+DIVE_RSYNCD = Path("/etc/ccc/rsyncd-dives.d")          # per-Dive rsync modules, root; rsyncd &includes
+DIVE_STATE = CCC_LIB / "dives"                         # <token>/{home,sys}: dotfiles + host key bundle
+DIVE_MAX_MINUTES = 14 * 24 * 60
+REGISTRY_GC_SERVICE = "ccc-registry-gc"                # nightly: blobs of ended Dives' snapshots
+REGISTRY_GC_UNIT = Path("/etc/systemd/system/ccc-registry-gc.service")
+REGISTRY_GC_TIMER = Path("/etc/systemd/system/ccc-registry-gc.timer")
 
 
 # --- the interactive shell a Tide Pool hands its User ---

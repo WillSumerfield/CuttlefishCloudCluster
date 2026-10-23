@@ -62,6 +62,11 @@ class TestHelperArgv:
         for bad in ("--privileged", "--device", "nvidia", "--network host", "--pid", "--ipc"):
             assert bad not in a
 
+    def test_a_gpu_head_gives_every_gpu_via_cdi(self):
+        a = H.create_argv("bob", 60003, self.S, self.BASE, gpus=True)
+        assert a[a.index("--device") + 1] == "nvidia.com/gpu=all"
+        assert f"ccc.tidepool.spec={H.SPEC_VERSION}" in a
+
     def test_caps_port_network_and_slice(self):
         a = " ".join(self.argv())
         assert "--cpus 4 --memory 16g --memory-swap 16g" in a
@@ -132,12 +137,17 @@ class TestEnsureContainer:
         return [next(x for x in c if x in ("update", "rm", "create", "stop")) for c in calls]
 
     def test_same_base_only_recaps(self, ran, monkeypatch):
-        monkeypatch.setattr(H, "_container_image", lambda u: self.BASE)
+        monkeypatch.setattr(H, "_container_image", lambda u: f"{self.BASE} {H.SPEC_VERSION}")
         H.ensure_container("bob", 60003, TestHelperArgv.S)
         assert self.verbs(ran) == ["update"]
 
     def test_new_release_base_recreates(self, ran, monkeypatch):
-        monkeypatch.setattr(H, "_container_image", lambda u: "old@sha256:" + "b" * 64)
+        monkeypatch.setattr(H, "_container_image", lambda u: f"old@sha256:{'b' * 64} {H.SPEC_VERSION}")
+        H.ensure_container("bob", 60003, TestHelperArgv.S)
+        assert self.verbs(ran) == ["stop", "rm", "create"]
+
+    def test_new_create_spec_recreates(self, ran, monkeypatch):
+        monkeypatch.setattr(H, "_container_image", lambda u: f"{self.BASE} 1")
         H.ensure_container("bob", 60003, TestHelperArgv.S)
         assert self.verbs(ran) == ["stop", "rm", "create"]
 
@@ -148,10 +158,15 @@ class TestEnsureContainer:
 
 
 class TestTemplates:
-    def test_sudoers_is_restart_and_reset_only(self):
-        line = templates.render_tidepool_sudoers().splitlines()[-1]
-        assert line == ("ccc ALL=(root) NOPASSWD: /usr/local/sbin/ccc-tidepool "
-                        "^(restart|reset) [a-z][a-z0-9_-]{0,31}$")
+    def test_sudoers_is_restart_reset_and_dive_verbs_only(self):
+        rules = [l.split("ccc-tidepool ", 1)[1] for l in templates.render_tidepool_sudoers().splitlines()
+                 if l.startswith("ccc ")]
+        assert rules == ["^(restart|reset) [a-z][a-z0-9_-]{0,31}$",
+                         "^dive-(prep|snap|open) [a-z][a-z0-9_-]{0,31} [0-9a-f]{32}$",
+                         "^dive-close [0-9a-f]{32}$"]
+        # the root-only verbs never reach the API
+        for verb in ("dive-lock", "dive-gpu", "started", "registry-gc", "create", "remove", "teardown"):
+            assert not any(re.match(r, f"{verb} bob") for r in rules)
 
     def test_slice_caps_the_total(self):
         s = templates.render_tidepool_slice(32, 128)
@@ -162,6 +177,7 @@ class TestTemplates:
         assert "start --attach tp-%i" in u and "Restart=always" in u
         assert f"RequiresMountsFor={config.TIDEPOOL_MNT_ROOT}/%i" in u
         assert " run " not in u and "--rm" not in u   # the apt layer must survive a restart
+        assert "ExecStartPost=-/usr/local/sbin/ccc-tidepool started %i" in u
 
     def test_init_makes_uid_1000_with_sudo_then_execs_sshd(self):
         s = templates.render_tidepool_init()

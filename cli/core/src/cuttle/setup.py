@@ -461,6 +461,8 @@ def install_rsyncd(mesh_ip: str) -> None:
     first."""
     run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
          str(config.RSYNCD_DIR)], sudo=True)
+    # Dives' modules: root's (ccc-tidepool writes them — they run as a User's uid and lock folders).
+    run(["install", "-d", "-m", "0700", str(config.DIVE_RSYNCD)], sudo=True)
     ensure_bench_secret()
     _write_root_file(config.RSYNCD_CONF, templates.render_rsyncd_conf(mesh_ip))
     _write_root_file(config.RSYNCD_UNIT, templates.render_rsyncd_unit())

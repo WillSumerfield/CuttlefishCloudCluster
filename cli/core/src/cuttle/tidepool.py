@@ -86,8 +86,13 @@ def install(write_root_file, s: dict) -> None:
          str(config.TIDEPOOL_KEYS_ROOT)], sudo=True)
     run(["install", "-d", "-m", "0755", str(config.TIDEPOOL_MNT_ROOT)], sudo=True)
     run(["install", "-d", "-m", "0700", str(s["image_dir"])], sudo=True)
+    run(["install", "-d", "-m", "0700", str(config.DIVE_RECORDS), str(config.DIVE_RSYNCD)], sudo=True)
+    run(["install", "-d", "-m", "0711", str(config.DIVE_STATE)], sudo=True)
+    write_root_file(config.REGISTRY_GC_UNIT, templates.render_registry_gc_service())
+    write_root_file(config.REGISTRY_GC_TIMER, templates.REGISTRY_GC_TIMER_TMPL)
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "start", config.TIDEPOOL_SLICE], sudo=True)
+    run(["systemctl", "enable", "--now", f"{config.REGISTRY_GC_SERVICE}.timer"], sudo=True)
     system.allow_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count(),
                                 "ccc tidepool ssh (LAN+mesh)")
 
@@ -120,6 +125,10 @@ def teardown(all_: bool) -> None:
         _helper("teardown", *(["--all"] if all_ else []), check=False)
     system.deny_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count())
     run(["systemctl", "stop", config.TIDEPOOL_SLICE], sudo=True, check=False)
+    run(["systemctl", "disable", "--now", f"{config.REGISTRY_GC_SERVICE}.timer"], sudo=True, check=False)
+    run(["rm", "-rf", str(config.REGISTRY_GC_UNIT), str(config.REGISTRY_GC_TIMER),
+         str(config.DIVE_RECORDS), str(config.DIVE_RSYNCD), str(config.DIVE_STATE)], sudo=True,
+        check=False)
     run(["rm", "-rf", str(config.TIDEPOOL_HELPER_BIN), str(config.SUDOERS_CCC_TIDEPOOL),
          str(config.TIDEPOOL_FILES_DIR), str(config.TIDEPOOL_UNIT), str(config.TIDEPOOL_SLICE_UNIT),
          str(config.TIDEPOOL_RECORDS), str(config.TIDEPOOL_SETTINGS)], sudo=True, check=False)
