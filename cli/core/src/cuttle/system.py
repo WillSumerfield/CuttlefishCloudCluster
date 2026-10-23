@@ -439,6 +439,13 @@ def ensure_certutil() -> None:
         raise _no_certutil(f"{config.NSS_TOOLS_PKG} installed without leaving `certutil` on PATH")
 
 
+def ensure_rsync() -> None:
+    """`cuttle upload/download` run rsync on this box. A client's one package; unrecorded, like certutil."""
+    if shutil.which("rsync"):
+        return
+    run(["apt-get", *APT_LOCK_WAIT, "install", "-y", "rsync"], sudo=True)
+
+
 def trust_ccc_ca_browsers(pem: str) -> None:
     """Trust the CA in this user's Chromium-family NSS db and, box-wide, in Firefox.
 

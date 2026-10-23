@@ -1048,6 +1048,7 @@ def setup_client(update: bool = False) -> None:
     pointed: dict[str, str] = {}
     with ui.section("Set up this client", lambda: pointed.get("head", "")):
         make_user_dirs()
+        system.ensure_rsync()   # upload/download
         pointed["head"] = point_at_head()
         # Before login, which is what would otherwise ask: `auth.login` calls tls.ensure_ca itself, so
         # this is only the difference between confirming a fingerprint inside the wizard and outside it.
