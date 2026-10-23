@@ -149,22 +149,29 @@ if [ -n "${CCC_DIVE_ENV:-}" ]; then
   venv="$(dirname "$f")/.venv"
 fi
 cat >> /etc/zsh/zshenv <<EOF
-export UV_CACHE_DIR=/ccc-cache/uv CCC_JOB_ID=$CCC_JOB_ID CCC_DIVE_VENV="$venv"
+export UV_CACHE_DIR=/ccc-cache/uv MAMBA_ROOT_PREFIX=/ccc-cache/mamba PIP_CACHE_DIR=/ccc-cache/pip
+export CCC_JOB_ID=$CCC_JOB_ID CCC_DIVE_VENV="$venv"
 EOF
 cat >> /etc/zsh/zshrc <<'EOF'
 case "$(cat /run/ccc-env.status 2>/dev/null)" in
   building) print -P "%F{yellow}ccc: environment still building — tail -f /run/ccc-env.log%f" ;;
   failed) print -P "%F{red}ccc: environment build failed — see /run/ccc-env.log%f" ;;
 esac
-[ -n "$CCC_DIVE_VENV" ] && [ -f "$CCC_DIVE_VENV/bin/activate" ] && source "$CCC_DIVE_VENV/bin/activate"
+if [ -d "$CCC_DIVE_VENV/conda-meta" ]; then
+  eval "$(micromamba shell hook -s zsh)" && micromamba activate "$CCC_DIVE_VENV"
+elif [ -f "$CCC_DIVE_VENV/bin/activate" ]; then
+  source "$CCC_DIVE_VENV/bin/activate"
+fi
 EOF
 if [ -n "$venv" ]; then
   echo building > /run/ccc-env.status
-  ( cd "$(dirname "$f")" && runuser -u "$u" -- env HOME="$h" UV_CACHE_DIR=/ccc-cache/uv sh -c '
+  ( cd "$(dirname "$f")" && runuser -u "$u" -- env HOME="$h" UV_CACHE_DIR=/ccc-cache/uv \
+      MAMBA_ROOT_PREFIX=/ccc-cache/mamba PIP_CACHE_DIR=/ccc-cache/pip sh -c '
       case "$(basename "$1")" in
         pyproject.toml|uv.lock) uv sync ;;
         *.txt) uv venv -q .venv && VIRTUAL_ENV="$PWD/.venv" uv pip install -r "$1" ;;
-        *) echo "ccc: cannot build $1 — name a pyproject.toml or a requirements .txt"; exit 1 ;;
+        *.yml|*.yaml) micromamba create -y -p .venv -f "$1" ;;
+        *) echo "ccc: cannot build $1 — name a pyproject.toml, requirements .txt or environment.yml"; exit 1 ;;
       esac' _ "$f" > /run/ccc-env.log 2>&1 \
     && echo ok > /run/ccc-env.status || echo failed > /run/ccc-env.status ) &
 fi

@@ -291,3 +291,33 @@ class TestTidepoolRestartDuringAHeadDive:
         monkeypatch.setattr(head_tp, "act", refuse)
         r = _client(monkeypatch).post("/api/tidepool/restart")
         assert r.status_code == 409 and r.json()["detail"].startswith("a Dive is using")
+
+
+# --- environment build dispatch ----------------------------------------------------
+
+def _build_script() -> str:
+    return D.DIVE_INIT.split("sh -c '", 1)[1].split("' _ ", 1)[0]
+
+
+@pytest.mark.parametrize("name,ran", [
+    ("pyproject.toml", "uv sync"), ("requirements.txt", "uv venv -q .venv"),
+    ("environment.yml", "micromamba create -y -p .venv -f environment.yml"),
+    ("conda/env.yaml", "micromamba create -y -p .venv -f conda/env.yaml")])
+def test_env_build_dispatch(tmp_path, name, ran):
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    for tool in ("uv", "micromamba"):
+        (bin_ / tool).write_text(f'#!/bin/sh\necho {tool} "$@"\n')
+        (bin_ / tool).chmod(0o755)
+    r = subprocess.run(["sh", "-c", _build_script(), "_", name], capture_output=True, text=True,
+                       env={"PATH": f"{bin_}:/usr/bin:/bin"}, cwd=tmp_path)
+    assert r.returncode == 0 and ran in r.stdout
+
+
+def test_env_build_refuses_unknown(tmp_path):
+    r = subprocess.run(["sh", "-c", _build_script(), "_", "setup.cfg"], capture_output=True, text=True)
+    assert r.returncode == 1 and "environment.yml" in r.stdout
+
+
+def test_conda_prefix_activates_with_micromamba():
+    assert 'micromamba activate "$CCC_DIVE_VENV"' in D.DIVE_INIT
