@@ -35,7 +35,7 @@ def _client() -> api.Api:
 
 
 def _api(method: str, path: str, token: str | None = None, body: dict | None = None,
-         auth: bool = True, refused_ok: bool = False) -> dict | None:
+         auth: bool = True, refused_ok: bool = False, timeout: float | None = None) -> dict | None:
     """A JSON call to the Head API, verified against the Head's pinned certificate (see tls.py).
 
     `auth=True` (the default) attaches the stored session bearer. Every route but /healthz needs one.
@@ -51,7 +51,7 @@ def _api(method: str, path: str, token: str | None = None, body: dict | None = N
     if token is None and auth:
         token = _load_token()
     try:
-        return _client().json(method, path, body=body, token=token, auth=auth)
+        return _client().json(method, path, body=body, token=token, auth=auth, timeout=timeout)
     except api.ApiError as e:
         if refused_ok and e.status == 403:
             return None                # a branch, not a failure — checked before --debug for that reason

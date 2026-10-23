@@ -1,77 +1,50 @@
-"""`~/.ssh/ccc.config`: the **Tidepool** alias (`Host glados`, written at `cuttle login`) plus one real
-ssh `Host` alias per live **Tide Pool** (Dive from phase 4, dormant), so anything that speaks ssh
-— VS Code's Remote-SSH, `scp`, a plain `ssh ccc-tp-58` — can reach a Pod without anyone ever handling
-a key or a port.
+"""`~/.ssh/ccc.config`: the **Tidepool** alias (`Host glados`, written at `cuttle login`) plus one
+`Host glados-<id>` per live **Dive**, so anything that speaks ssh — VS Code's Remote-SSH, `scp`, a plain
+`ssh glados-58` — reaches it without anyone handling a port.
 
-Nothing here is a second way to connect. The attach (tidepool.py) still execs `ssh` with the flags
-spelled out, because that path must work on a box whose `~/.ssh` is unwritable or hand-tuned. This
-file exists for the tools that cannot be handed flags: VS Code takes a *host alias* and nothing else.
+A Dive answers with the Tidepool's own host key and takes the User's own keys, so every alias pins
+the same known_hosts entry and uses the same `~/.ssh/ccc_ed25519`; only HostName/Port differ (an Arm
+Dive is reached through the Head's relay port, a Head Dive is the Tidepool itself).
 
-**Generated wholly, every open, from the sessions this box can still reach.** No merge, no in-place
-edit, no marker-delimited region to get out of step — the file is rewritten from `TIDEPOOL_DIR`, and a
-Spawn the Head no longer lists as live is not reproduced (and its key is deleted). That is what keeps
-it bounded on a box someone opens a Tide Pool from every day, and it is why cuttle needs exactly one
-line in the User's own `~/.ssh/config` and never a second.
+**Generated wholly, every time, from the Dives this box knows of** (DIVE_DIR). A Dive the Head no
+longer lists as live is not reproduced, so the file stays bounded, and cuttle needs exactly one line
+in the User's own `~/.ssh/config`.
 """
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
 from . import config, ui
 
-# `ccc-` first so a User's own hosts sort away from these, and so `ssh ccc-<tab>` lists the live
-# sessions and nothing else.
-TP_PREFIX = "ccc-tp-"
 INCLUDE_LINE = "Include ccc.config"
-_HEADER = ("# Written by cuttle. Regenerated in full at login and every Tide Pool open —\n"
+_HEADER = ("# Written by cuttle. Regenerated in full at login and every Dive —\n"
            "# anything you add here is lost. Edit ~/.ssh/config instead.\n")
 
 
-def alias(spawn_id: int) -> str:
-    """What to type."""
-    return f"{TP_PREFIX}{spawn_id}"
+def alias(dive_id: int) -> str:
+    """What to type: `glados-58`."""
+    return f"{config.TIDEPOOL_ALIAS}-{dive_id}"
 
 
 def _dir() -> Path:
     config.ensure_ccc_home()
-    config.TIDEPOOL_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    config.TIDEPOOL_DIR.chmod(0o700)
-    return config.TIDEPOOL_DIR
+    config.DIVE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return config.DIVE_DIR
 
 
-def key_path(spawn_id: int) -> Path:
-    return _dir() / f"{spawn_id}.key"
+def _meta_path(dive_id: int) -> Path:
+    return _dir() / f"{dive_id}.json"
 
 
-def _meta_path(spawn_id: int) -> Path:
-    return _dir() / f"{spawn_id}.json"
+def record(dive_id: int, *, port: int, user: str, host: str) -> None:
+    _meta_path(dive_id).write_text(json.dumps({"id": dive_id, "port": port, "user": user,
+                                               "host": host}) + "\n")
 
 
-def record(spawn_id: int, *, private_key: str, port: int, user: str, host: str,
-           proj: str | None) -> Path:
-    """Put this session's key and connection details on disk, and return the key's path.
-
-    The key is written 0600 before its bytes go in (`os.open` with the mode, not a chmod afterwards) —
-    ssh refuses a group-readable IdentityFile outright, and a private key that is briefly world-
-    readable on a shared box has already leaked by the time the chmod lands.
-    """
-    path = key_path(spawn_id)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(private_key if private_key.endswith("\n") else private_key + "\n")
-    _meta_path(spawn_id).write_text(json.dumps({
-        "id": spawn_id, "port": port, "user": user, "host": host,
-        "proj": proj,
-    }) + "\n")
-    return path
-
-
-def forget(spawn_id: int) -> None:
-    key_path(spawn_id).unlink(missing_ok=True)
-    _meta_path(spawn_id).unlink(missing_ok=True)
+def forget(dive_id: int) -> None:
+    _meta_path(dive_id).unlink(missing_ok=True)
 
 
 def _sessions() -> list[dict]:
@@ -84,38 +57,15 @@ def _sessions() -> list[dict]:
     return rows
 
 
-def _block(row: dict) -> str:
-    """One Host entry. The options mirror `tidepool._wait_and_attach`'s `ssh` flags exactly, and for
-    the same reasons: the Pod mints a fresh host key every session, so there is nothing to pin and a
-    known_hosts entry would be a warning every time; `IdentitiesOnly` stops an agent with a dozen keys
-    from exhausting `MaxAuthTries` before the one that works is offered."""
+def _pinned(name: str, host: str, port: int, user: str) -> str:
+    """A Host entry for the Tidepool or one of its Dives: the User's CCC key, the Tidepool's host key
+    pinned (no TOFU prompt, no StrictHostKeyChecking=no) via HostKeyAlias, so it holds whatever
+    address this box reaches the Head at."""
     return "\n".join([
-        f"Host {alias(row['id'])}",
-        f"  HostName {row['host']}",
-        f"  Port {row['port']}",
-        f"  User {row['user']}",
-        f"  IdentityFile {key_path(row['id'])}",
-        "  IdentitiesOnly yes",
-        "  StrictHostKeyChecking no",
-        "  UserKnownHostsFile /dev/null",
-        "  LogLevel ERROR",
-        "  ServerAliveInterval 30",
-    ]) + "\n"
-
-
-def tidepool_block() -> str:
-    """`Host glados` → the User's Tidepool on the Head. The host key is pinned (no TOFU prompt, no
-    StrictHostKeyChecking=no): `cuttle login` writes it from the Head API to TIDEPOOL_KNOWN_HOSTS,
-    keyed by HostKeyAlias so it holds whatever address this box reaches the Head at."""
-    try:
-        m = json.loads(config.TIDEPOOL_SSH_META.read_text())
-    except (OSError, ValueError):
-        return ""
-    return "\n".join([
-        f"Host {config.TIDEPOOL_ALIAS}",
-        f"  HostName {m['host']}",
-        f"  Port {m['port']}",
-        f"  User {m['user']}",
+        f"Host {name}",
+        f"  HostName {host}",
+        f"  Port {port}",
+        f"  User {user}",
         f"  IdentityFile {config.TIDEPOOL_KEY}",
         "  IdentitiesOnly yes",
         f"  HostKeyAlias {config.TIDEPOOL_HOSTKEY_ALIAS}",
@@ -126,13 +76,24 @@ def tidepool_block() -> str:
     ]) + "\n"
 
 
+def _block(row: dict) -> str:
+    return _pinned(alias(row["id"]), row["host"], row["port"], row["user"])
+
+
+def tidepool_block() -> str:
+    """`Host glados` → the User's Tidepool on the Head (`cuttle login` wrote its meta + host key)."""
+    try:
+        m = json.loads(config.TIDEPOOL_SSH_META.read_text())
+    except (OSError, ValueError):
+        return ""
+    return _pinned(config.TIDEPOOL_ALIAS, m["host"], m["port"], m["user"])
+
+
 def refresh(live: set[int] | None = None) -> None:
     """Prune dead sessions and rewrite `~/.ssh/ccc.config` from what is left.
 
-    `live` is the set of Spawn ids the Head still has in its queue; `None` means we could not ask, in
-    which case nothing is pruned. That asymmetry is deliberate — a Head that is down or unreachable is
-    not evidence that a session ended, and deleting the key on the strength of a failed request would
-    lock a User out of a Pod that is still running and still billing them.
+    `live` is the set of Dive ids the Head still lists; `None` means we could not ask, in which case
+    nothing is pruned — an unreachable Head is not evidence that a Dive ended.
 
     Best effort throughout: a `~/.ssh` that cannot be written is a missing convenience, never a reason
     to fail an attach that is otherwise working.
@@ -174,14 +135,8 @@ def _ensure_include() -> None:
 
 
 def open_vscode(name: str, proj: str | None) -> bool:
-    """Launch VS Code straight into the Pod. False (with a reason) if it could not be.
-
-    `--remote ssh-remote+<alias> <folder>` is VS Code's own documented spelling, and it is the whole
-    integration: Remote-SSH reads `~/.ssh/config`, finds the alias `refresh` just wrote, and installs
-    its server on the Pod's disk scratch — a `~/.vscode-server` symlink the Tide Pool's boot script
-    lays down, because the ~150MB server does not fit the 64MB tmpfs home and the variables that are
-    supposed to redirect it depend on which bootstrap the client uses (ccc_head_api.spawns).
-    """
+    """Launch VS Code straight into a Dive (`--remote ssh-remote+<alias> <folder>`: Remote-SSH reads
+    the alias `refresh` wrote). False (with a reason) if it could not be."""
     exe = shutil.which("code")
     if not exe:
         ui.warn("VS Code's `code` command is not on PATH — open it yourself and pick the host below "

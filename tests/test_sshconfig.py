@@ -1,12 +1,8 @@
-"""`~/.ssh/ccc.config` and `--vscode` — reaching a Pod with something that is not this CLI.
+"""`~/.ssh/ccc.config`: `Host glados` + one `Host glados-<id>` per live Dive, all with the User's own
+key and the Tidepool's pinned host key; the single `Include` line cuttle adds to the User's config;
+the attach that writes it. Where `ssh` is installed the file is parsed by ssh ITSELF.
 
-What is tested here: the alias namespaces, the key's new lifetime (a file under ~/.ccc that dies with
-its Tide Pool, not a tempfile that died with `ssh`), the generated-in-full config and the single
-`Include` line cuttle adds to the User's own file, and the `--vscode` branch of the attach. Where
-`ssh` is installed the generated file is parsed by ssh ITSELF rather than by a regex here.
-
-NOT tested: a real VS Code, a real remote session — same hardware carve-out as the rest of the Tide
-Pool (see test_tidepool.py).
+NOT tested: a real VS Code, a real remote session — hardware list.
 """
 
 import shutil
@@ -15,84 +11,52 @@ import subprocess
 
 import pytest
 
-from ccc_head_api import spawns as head_spawns
-from cuttle import config, sshconfig
-from cuttle import dive as cli_tidepool
+from cuttle import config, sshconfig, tidepool
+from cuttle import dive as cli_dive
 
 
-def _row(spawn_id=58, port=41007, proj="/tmp/ccc-58/proj"):
-    return sshconfig.record(spawn_id, private_key="-----BEGIN OPENSSH PRIVATE KEY-----",
-                            port=port, user="ccc-u60002", host="head", proj=proj)
+def _row(dive_id=58, port=31007):
+    sshconfig.record(dive_id, port=port, user="alice", host="head")
 
 
 class TestTheAlias:
-    def test_a_tide_pool_is_addressed_by_id(self):
-        assert sshconfig.alias(58) == "ccc-tp-58"
-
-
-class TestTheKeyOutlivesTheCommand:
-    def test_it_is_written_where_the_alias_points(self, ccc_home):
-        path = _row()
-        assert path == config.TIDEPOOL_DIR / "58.key"
-        assert path.read_text().startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
-
-    def test_it_is_private_from_the_moment_it_exists(self, ccc_home):
-        """ssh refuses a group-readable IdentityFile outright — and a key that is briefly world-
-        readable on a shared box has already leaked by the time a chmod lands."""
-        path = _row()
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
-        assert stat.S_IMODE(config.TIDEPOOL_DIR.stat().st_mode) == 0o700
-
-    def test_it_ends_in_a_newline(self, ccc_home):
-        """ssh rejects a private key whose final line is unterminated."""
-        assert _row().read_text().endswith("\n")
-
-    def test_forgetting_takes_both_files(self, ccc_home):
-        _row()
-        sshconfig.forget(58)
-        assert list(config.TIDEPOOL_DIR.iterdir()) == []
+    def test_a_dive_is_glados_dash_id(self):
+        assert sshconfig.alias(58) == "glados-58"
 
 
 class TestTheGeneratedConfig:
-    def test_a_live_session_gets_a_host_block(self, ccc_home):
+    def test_a_live_dive_gets_a_pinned_block(self, ccc_home):
         _row()
         sshconfig.refresh(live={58})
         text = config.SSH_CCC_CONFIG.read_text()
-        assert "Host ccc-tp-58" in text
-        assert "  Port 41007" in text
-        assert "  User ccc-u60002" in text
-        assert f"  IdentityFile {config.TIDEPOOL_DIR / '58.key'}" in text
+        assert "Host glados-58" in text and "  Port 31007" in text
+        assert f"  IdentityFile {config.TIDEPOOL_KEY}" in text
+        assert f"  HostKeyAlias {config.TIDEPOOL_HOSTKEY_ALIAS}" in text
+        assert "  StrictHostKeyChecking yes" in text and "/dev/null" not in text
 
     def test_it_is_rewritten_whole_rather_than_appended_to(self, ccc_home):
-        """No merge, no marker-delimited region to get out of step. The file IS the session list."""
-        _row(58)
+        _row()
         sshconfig.refresh(live={58})
-        _row(59, port=41008, proj=None)
+        _row(59, 31008)
         sshconfig.refresh(live={59})
         text = config.SSH_CCC_CONFIG.read_text()
-        assert text.count("Host ") == 1
-        assert "ccc-tp-59" in text and "ccc-tp-58" not in text
+        assert "glados-58" not in text and text.count("Host glados-59") == 1
 
-    def test_an_ended_session_loses_its_key_too(self, ccc_home):
-        _row(58)
+    def test_an_ended_dive_loses_its_record(self, ccc_home):
+        _row()
         sshconfig.refresh(live=set())
-        assert not (config.TIDEPOOL_DIR / "58.key").exists()
-        assert "Host " not in config.SSH_CCC_CONFIG.read_text()
+        assert list(config.DIVE_DIR.iterdir()) == []
 
     def test_an_unreachable_head_prunes_nothing(self, ccc_home):
-        """`None` is "could not ask", not "none of them". A Head that is down is no evidence a
-        session ended, and deleting the key on a failed request locks a User out of a Pod that is
-        still running and still billing them."""
-        _row(58)
+        _row()
         sshconfig.refresh(live=None)
-        assert (config.TIDEPOOL_DIR / "58.key").exists()
-        assert "Host ccc-tp-58" in config.SSH_CCC_CONFIG.read_text()
+        assert "Host glados-58" in config.SSH_CCC_CONFIG.read_text()
 
     def test_a_corrupt_record_is_dropped_rather_than_raised(self, ccc_home):
-        _row(58)
-        (config.TIDEPOOL_DIR / "58.json").write_text("{not json")
+        _row()
+        (config.DIVE_DIR / "58.json").write_text("{not json")
         sshconfig.refresh(live={58})
-        assert "Host " not in config.SSH_CCC_CONFIG.read_text()
+        assert "glados-58" not in config.SSH_CCC_CONFIG.read_text()
 
     def test_it_is_not_group_readable(self, ccc_home):
         _row()
@@ -151,109 +115,59 @@ class TestSshItselfAgrees:
     def test_the_alias_resolves_to_the_relay(self, ccc_home):
         _row()
         sshconfig.refresh(live={58})
-        got = self._resolved("ccc-tp-58")
+        got = self._resolved("glados-58")
         assert got["hostname"] == "head"
-        assert got["port"] == "41007"
-        assert got["user"] == "ccc-u60002"
+        assert got["port"] == "31007"
+        assert got["user"] == "alice"
         assert got["identitiesonly"] == "yes"
-        assert str(config.TIDEPOOL_DIR / "58.key") in got["identityfile"]
+        assert got["hostkeyalias"] == config.TIDEPOOL_HOSTKEY_ALIAS
+        assert str(config.TIDEPOOL_KEY) in got["identityfile"]
 
     def test_nothing_else_matches_it(self, ccc_home):
-        """The blocks are `Host <alias>`, not `Host ccc-*` — an unknown name must fall through."""
+        """The blocks are `Host <alias>`, not `Host glados-*` — an unknown name must fall through."""
         _row()
         sshconfig.refresh(live={58})
-        assert self._resolved("ccc-tp-999")["hostname"] == "ccc-tp-999"
-
-
-class TestTheProjectFolder:
-    """VS Code opens a FOLDER, and the folder is the Pod's working directory."""
-
-    def test_a_donors_arm(self):
-        assert head_spawns.pod_project_dir(58, head_arm=False) == "/tmp/ccc-58/proj"
-
-    def test_the_heads_own_arm(self):
-        assert head_spawns.pod_project_dir(58, head_arm=True) == f"{head_spawns.SCRATCH_DIR}/58/proj"
+        assert self._resolved("glados-999")["hostname"] == "glados-999"
 
 
 class TestTheAttach:
-    """`_wait_and_attach` with the network taken out of it."""
-
     @pytest.fixture
-    def placed(self, monkeypatch, ccc_home):
-        monkeypatch.setattr(cli_tidepool, "_wait_for_running", lambda _id: None)
-        monkeypatch.setattr(cli_tidepool, "_wait_for_relay",
-                            lambda _id: (41007, "PRIVATEKEY", "ccc-u60002", "/tmp/ccc-58/proj"))
-        monkeypatch.setattr(cli_tidepool, "_deadline", lambda _id: None)
-        monkeypatch.setattr(cli_tidepool, "_live_ids", lambda: {58})
-        monkeypatch.setattr(cli_tidepool, "_report_ending", lambda *a: None)
-        ran: list[list] = []
-        monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: ran.append(argv))
-        launched: list[list] = []
-        monkeypatch.setattr(sshconfig.shutil, "which", lambda _n: "/usr/bin/code")
-        monkeypatch.setattr(sshconfig.subprocess, "Popen",
-                            lambda argv, **kw: launched.append(argv))
-        return ran, launched
+    def placed(self, ccc_home, monkeypatch):
+        ran = []
+        info = {"id": 58, "ready": True, "state": "running", "head": False, "node": "arm1",
+                "port": 31007, "user": "alice", "main": "proj", "host_key": None}
+        monkeypatch.setattr(tidepool, "_head_host", lambda: "head")
+        monkeypatch.setattr(cli_dive.auth, "_api", lambda m, p, **k: info if p == "/dives/58" else
+                            [{"id": 58, "state": "running", "start_time": None, "time_limit": None}])
+        monkeypatch.setattr(cli_dive.subprocess, "run", lambda a, **k: ran.append(a))
+        return ran
 
-    def test_a_terminal_session_still_execs_ssh(self, placed):
-        ran, launched = placed
-        cli_tidepool._wait_and_attach(58)
-        assert ran and ran[0][0] == "ssh"
-        assert launched == []
+    def test_a_terminal_session_execs_ssh_on_the_alias(self, placed):
+        cli_dive.attach(58)
+        assert placed == [["ssh", "glados-58"]]
+        assert "Host glados-58" in config.SSH_CCC_CONFIG.read_text()
 
-    def test_the_key_is_still_there_afterwards(self, placed):
-        """It used to be unlinked the moment `ssh` exited, which made it useless to anything that is
-        not this process — and VS Code is exactly that."""
-        cli_tidepool._wait_and_attach(58)
-        assert (config.TIDEPOOL_DIR / "58.key").is_file()
+    def test_vscode_opens_the_main_folder(self, placed, monkeypatch):
+        opened = []
+        monkeypatch.setattr(sshconfig, "open_vscode", lambda n, f: opened.append((n, f)) or True)
+        cli_dive.attach(58, vscode=True)
+        assert opened == [("glados-58", "/home/alice/proj")] and placed == []
 
-    def test_the_alias_is_live_without_anyone_asking_for_vscode(self, placed):
-        cli_tidepool._wait_and_attach(58)
-        assert "Host ccc-tp-58" in config.SSH_CCC_CONFIG.read_text()
 
-    def test_a_lagging_queue_does_not_sweep_the_session_being_attached(self, monkeypatch, placed):
-        """squeue is a poll behind now and then. Trusting it here would delete the key this very
-        attach is about to hand to `ssh`."""
-        monkeypatch.setattr(cli_tidepool, "_live_ids", lambda: set())
-        cli_tidepool._wait_and_attach(58)
-        assert (config.TIDEPOOL_DIR / "58.key").is_file()
-        assert "Host ccc-tp-58" in config.SSH_CCC_CONFIG.read_text()
+class TestMainFolder:
+    def test_outside_the_tidepool_it_is_named_from_home(self, monkeypatch):
+        monkeypatch.setattr(cli_dive, "in_tidepool", lambda: False)
+        assert cli_dive.main_rel("proj/a/") == "proj/a"
+        assert cli_dive.main_rel("~/proj") == "proj"
+        assert cli_dive.main_rel("/home/alice/proj") == "proj"
 
-    def test_vscode_is_launched_at_the_project_folder(self, placed):
-        ran, launched = placed
-        cli_tidepool._wait_and_attach(58, vscode=True)
-        assert launched == [["/usr/bin/code", "--remote", "ssh-remote+ccc-tp-58", "/tmp/ccc-58/proj"]]
-        assert ran == []   # no terminal shell
-
-    def test_an_older_head_sending_no_folder_still_opens(self, monkeypatch, placed):
-        """`proj` is new on the wire. Without it VS Code opens on the host and the User picks."""
-        monkeypatch.setattr(cli_tidepool, "_wait_for_relay",
-                            lambda _id: (41007, "PRIVATEKEY", "ccc-u60002", None))
-        _, launched = placed
-        cli_tidepool._wait_and_attach(58, vscode=True)
-        assert launched == [["/usr/bin/code", "--remote", "ssh-remote+ccc-tp-58"]]
-
-    def test_both_paths_say_how_to_copy_a_file_in(self, placed, capsys):
-        """The scp target is the one thing a User cannot derive: the alias is printed, but a bare
-        `<alias>:` lands in the Pod's 64MB tmpfs home and `<guise>@<head>` lands on the Head's own sshd
-        asking for a password that does not exist."""
-        cli_tidepool._wait_and_attach(58, vscode=True)
-        assert "scp <file> ccc-tp-58:/tmp/ccc-58/proj/" in capsys.readouterr().err
-        cli_tidepool._wait_and_attach(58)
-        assert "scp <file> ccc-tp-58:/tmp/ccc-58/proj/" in capsys.readouterr().err
-
-    def test_an_older_head_sending_no_folder_says_nothing_about_scp(self, monkeypatch, placed, capsys):
-        """No path on the wire means no target to name — better silent than wrong."""
-        monkeypatch.setattr(cli_tidepool, "_wait_for_relay",
-                            lambda _id: (41007, "PRIVATEKEY", "ccc-u60002", None))
-        cli_tidepool._wait_and_attach(58, vscode=True)
-        assert "scp" not in capsys.readouterr().err
-
-    def test_no_code_on_path_says_so_and_leaves_the_alias(self, monkeypatch, placed, capsys):
-        monkeypatch.setattr(sshconfig.shutil, "which", lambda _n: None)
-        _, launched = placed
-        cli_tidepool._wait_and_attach(58, vscode=True)
-        assert launched == []
-        assert "Host ccc-tp-58" in config.SSH_CCC_CONFIG.read_text()
+    def test_inside_it_defaults_to_the_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_dive, "in_tidepool", lambda: True)
+        (tmp_path / "proj" / "sub").mkdir(parents=True)
+        assert cli_dive.main_rel(None, cwd=tmp_path / "proj", home=tmp_path) == "proj"
+        assert cli_dive.main_rel("sub", cwd=tmp_path / "proj", home=tmp_path) == "proj/sub"
+        with pytest.raises(BaseException):
+            cli_dive.main_rel(None, cwd=tmp_path, home=tmp_path)    # ~ itself is not a main folder
 
 
 class TestTeardownLeavesNothing:

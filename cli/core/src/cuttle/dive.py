@@ -1,261 +1,218 @@
-"""Attach to a Tide Pool (Dive from phase 4) — an interactive Spawn that drops the User into a live shell.
+"""Dives, client side: `cuttle dive [MAIN] …` requests one and drops you into it;
+`cuttle dive attach|end|status [id]` for the rest.
 
-Dormant in 2.0: the request half (`cuttle run`) went with the submit path, and nothing calls
-`_wait_and_attach` until Dives. What is left: poll for placement, fetch the ephemeral keypair the Head
-minted, and exec a REAL `ssh` — the Head-side relay (ccc_head_api.dive/relay.py) is what makes an Arm reachable from a
-client that is not a Mesh member, but nothing on this end knows or cares that a relay exists; it looks
-like any other `ssh -p <port> <host>`.
+A Dive's shell is reached as `ssh glados-<id>` — the same key and pinned host key as `ssh glados`
+(sshconfig.py). On an Arm the main folder is a copy, mirrored back to the Tidepool every minute and
+read-only there meanwhile; on the Head the Dive *is* your Tidepool, with the GPU lent to it.
 
-**Disconnecting never ends the Spawn.** A clean `exit`, a dropped connection, Ctrl-C — none of them
-cancel it, exactly like Ctrl-C on `cuttle logs -f`'s log stream does not cancel the Spawn it is
-following. It keeps billing Karma until `--time` runs out or `cuttle cancel <id>`, which is why leaving
-the shell says so with the exact command to stop it.
-
-**Being thrown out at `--time` is a different ending and says a different thing.** There the Spawn is
-already over — the shell died under us, the job is COMPLETING, and nothing is billing — so repeating
-"still running, still billing" would be false twice over.
+**Disconnecting never ends a Dive.** `exit`, a dropped connection, Ctrl-C — it keeps its GPU (and
+keeps billing Karma) until `--time` runs out or `cuttle dive end`.
 """
 
 import os
+import re
 import subprocess
 import threading
 import time
-from urllib.parse import urlsplit
+from pathlib import Path
 
-from . import auth, config, settings, spawns as spawns_mod, sshconfig, ui
+from . import auth, config, menu, sshconfig, tidepool, ui
+from .system import run
 
-_POLL_S = 1.0
-_PLACEMENT_TIMEOUT_S = 3600     # an hour queued is already a long wait; fail loud rather than hang forever
-_RELAY_TIMEOUT_S = 30           # the relay is brought up synchronously by the poll itself — this is slack
-# How long before `--time` expires to interrupt the live session with a warning. At the limit Slurm
-# sends TERM and waits `KillWait` (600s — cli.templates) before KILL; the shell closes mid-keystroke and
-# the session's files go with it.
-# A quarter of the total, capped at 5 minutes and floored at 30s, is not exact science;
-# it just has to exist (this feature's own spec is explicit that the threshold is an engineering call).
+VERBS = ("attach", "end", "status")
+_POLL_S = 2.0
+_REQUEST_TIMEOUT_S = 900       # the system layer is snapshotted + pushed before sbatch
+# Warn inside the shell before --time: a quarter of the total, between 30 s and 5 min.
 _WARN_MAX_S = 5 * 60
 _WARN_MIN_S = 30
+_TIDEPOOL_MARK = Path("/etc/ccc/tidepool/init")
 
 
-def _head_host() -> str:
-    """The bare host the CLI already talks to for the Head API — the Tide Pool relay listens on the
-    SAME box, at a different port, so there is no separate address to configure or discover. (When the
-    Spawn landed on the Head's own co-located Arm there is no relay at all and this reaches the Pod's
-    sshd directly — same address either way, which is the point. See ccc_head_api.dive.)"""
-    url = settings.load().get("head") or ""
-    host = urlsplit(url).hostname
-    if not host:
-        raise ui.abort("no Head configured — run `cuttle login --head <url>` first")
-    return host
+def in_tidepool() -> bool:
+    return _TIDEPOOL_MARK.exists()
 
 
-def _cancel_hint(spawn_id: int) -> str:
-    return f"cuttle cancel {spawn_id}"
+def main_rel(main: str | None, cwd: Path | None = None, home: Path | None = None) -> str:
+    """The main folder, relative to the Tidepool home. Inside the Tidepool it may be a path from the
+    cwd (default: the cwd itself); elsewhere it is named from ~ (`proj`, `~/proj`, `/home/me/proj`)."""
+    inside = in_tidepool()
+    if main is None:
+        if not inside:
+            raise ui.abort("name the main folder, from your Tidepool home — e.g. `cuttle dive proj`")
+        main = "."
+    if main.startswith("~/") or main == "~":
+        return main[2:].strip("/")
+    if inside:
+        home = home or Path.home()
+        p = ((cwd or Path.cwd()) / main).resolve()
+        if p == home or home not in p.parents:
+            raise ui.abort(f"{p} is not a folder under your home ({home})")
+        return str(p.relative_to(home))
+    return re.sub(r"^/home/[^/]+/", "", main).strip("/")
 
 
-def _noun(spawn_id: int) -> str:
-    return f"tide pool {spawn_id}"
+def request(main: str | None, deps: list[str] | None, gpus: int | None, vram: int | None,
+            time_: str | None, features: list[str] | None, env: str | None, vscode: bool = False) -> None:
+    rel = main_rel(main)
+    tidepool.connect()   # key uploaded, alias + pinned host key fresh
+    body = {"main": rel, "deps": [d.removeprefix("~/").strip("/") for d in deps] if deps else None,
+            "gpus": gpus, "vram": vram, "time": time_, "features": features or None, "env": env}
+    with ui.step("snapshotting your Tidepool and queueing the Dive"):
+        r = auth._api("POST", "/dives", body=body, timeout=_REQUEST_TIMEOUT_S)
+    deps_s = ", ".join(f"~/{d}" for d in r["deps"]) or "none"
+    ui.ok(f"Dive {r['id']} queued — main ~/{r['main']}, deps {deps_s}, {r['gpus']} GPU, "
+          f"{_minutes(r['minutes'])}, {r['size_gb']:.1f} GB to stage")
+    for n in r.get("notes") or []:
+        ui.warn(n)
+    attach(r["id"], vscode=vscode)
 
 
-def _wait_for_running(spawn_id: int) -> None:
-    deadline = time.monotonic() + _PLACEMENT_TIMEOUT_S
-    with ui.step("waiting for placement"):
-        while True:
-            st = auth._api("GET", f"/spawns/{spawn_id}")
-            if st["state"] == "RUNNING":
-                return
-            if st.get("done"):
-                raise ui.abort(f"tide pool {spawn_id} ended before it started "
-                               f"({spawns_mod._outcome(st)})")
-            if time.monotonic() > deadline:
-                raise ui.abort(f"tide pool {spawn_id} is still queued after an hour — it is not gone, "
-                               f"just not placed yet")
-            time.sleep(_POLL_S)
+def _minutes(m: int) -> str:
+    d, h, mi = m // 1440, m % 1440 // 60, m % 60
+    return "".join(f"{v}{u}" for v, u in ((d, "d"), (h, "h"), (mi, "m")) if v) or "0m"
 
 
-def _wait_for_relay(spawn_id: int) -> tuple[int, str, str, str | None]:
-    """Poll until the Head hands back the port + private key + login account + Pod working directory —
-    see main.spawn_tidepool: this call is what BRINGS the relay up, not just a passive read, so it
-    converges quickly rather than waiting on the karma tick's cadence.
+def _pick(message: str) -> int:
+    rows = auth._api("GET", "/dives") or []
+    if not rows:
+        raise ui.abort("you have no open Dives — start one with `cuttle dive <folder>`")
+    if len(rows) == 1:
+        return rows[0]["id"]
+    return ui.ask_select(message, [ui.choice(f"{r['id']}  {r['state']}  ~/{r['main']}", r["id"])
+                                   for r in rows])
 
-    The account is the owner's **Guise** (`ccc-u<uid>`), and it has to come from the Head because a uid
-    is a Head-side fact — there is nothing here to derive it from. `proj` is Head-side for the same
-    kind of reason: it depends on which Arm took the Spawn. Older Heads send neither; falling back to
-    the Mantle, and to no folder at all, keeps this CLI working against one."""
-    deadline = time.monotonic() + _RELAY_TIMEOUT_S
-    with ui.step("connecting"):
-        while True:
-            info = auth._api("GET", f"/spawns/{spawn_id}/tidepool")
-            if info["ready"]:
-                return (info["port"], info["private_key"],
-                        info.get("user") or config.HEAD_API_USER, info.get("proj"))
-            if time.monotonic() > deadline:
-                raise ui.abort(f"tide pool {spawn_id} is running but never came up for SSH")
-            time.sleep(_POLL_S)
+
+def _wait_ready(dive_id: int) -> dict:
+    """Poll until an sshd answers. Ctrl-C stops waiting, never the Dive."""
+    try:
+        with ui.step(f"waiting for Dive {dive_id}") as st:
+            while True:
+                info = auth._api("GET", f"/dives/{dive_id}")
+                if info["ready"]:
+                    return info
+                if info["state"] == "ended":
+                    raise ui.abort(f"Dive {dive_id} has ended")
+                if hasattr(st, "update"):
+                    st.update(f"Dive {dive_id}: {_state_words(info['state'])}")
+                time.sleep(_POLL_S)
+    except KeyboardInterrupt:
+        ui.hint(f"stopped waiting — Dive {dive_id} is still queued; `cuttle dive attach {dive_id}` "
+                f"later, `cuttle dive end {dive_id}` to drop it")
+        raise SystemExit(0) from None
+
+
+def _state_words(state: str) -> str:
+    return {"pending": "queued", "running": "staging your folders"}.get(state, state)
 
 
 def _live_ids() -> set[int] | None:
-    """Every Spawn id the Head still has in its queue, or None if it could not be asked. `None` is not
-    "none of them" — see sshconfig.refresh, which prunes on this and must not act on a failed GET."""
     try:
-        return {r["id"] for r in auth._api("GET", "/spawns") if r.get("id") is not None}
-    except Exception:
+        return {r["id"] for r in auth._api("GET", "/dives")}
+    except (Exception, SystemExit):
         return None
 
 
-def _deadline(spawn_id: int) -> float | None:
-    """This Tide Pool's `start_time + time_limit`, as a monotonic-clock deadline — or None if either is
-    unknown (a freshly-started Spawn squeue hasn't fully reported yet). Best-effort: missing it just
-    means no advance warning, never a reason to refuse the session."""
+def attach(dive_id: int | None = None, vscode: bool = False) -> None:
+    dive_id = dive_id or _pick("Attach to which Dive?")
+    info = _wait_ready(dive_id)
+    sshconfig.record(dive_id, port=info["port"], user=info["user"], host=tidepool._head_host())
+    live = _live_ids()
+    sshconfig.refresh(None if live is None else live | {dive_id})
+    name = sshconfig.alias(dive_id)
+    folder = f"/home/{info['user']}/{info['main']}"
+    if info["head"]:
+        ui.ok(f"Dive {dive_id} is on the Head: your Tidepool itself now has the GPU")
+    else:
+        ui.ok(f"Dive {dive_id} on {info.get('node')}: ~/{info['main']} is mirrored back to your Tidepool "
+              f"every minute (read-only there until the Dive ends)")
+    ui.warn(f"the GPU is yours until `cuttle dive end {dive_id}` or --time runs out — disconnecting "
+            f"does not free it")
+    ui.hint(f"editors and other terminals: `ssh {name}`")
+    if vscode:
+        if sshconfig.open_vscode(name, folder):
+            ui.ok(f"opening Dive {dive_id} in VS Code ({name})")
+        return
+    stop = threading.Event()
+    _warn_thread(dive_id, _deadline(dive_id), stop)
     try:
-        rows = auth._api("GET", "/spawns")
-    except Exception:
+        subprocess.run(["ssh", name])
+    finally:
+        stop.set()
+    _report_ending(dive_id)
+
+
+def _deadline(dive_id: int) -> float | None:
+    try:
+        row = next((r for r in auth._api("GET", "/dives") if r["id"] == dive_id), None)
+    except (Exception, SystemExit):
         return None
-    row = next((r for r in rows if r["id"] == spawn_id), None)
     if not row or not row.get("time_limit") or not row.get("start_time"):
         return None
-    wall_deadline = row["start_time"] + row["time_limit"] * 60
-    return time.monotonic() + (wall_deadline - time.time())
+    return time.monotonic() + (row["start_time"] + row["time_limit"] * 60 - time.time())
 
 
-def _warn_text(spawn_id: int, left: int) -> str:
-    """The `--time` warning, `\\r\\n`-framed for a terminal `ssh` has in raw mode."""
-    what = "the shell closes with no warning, and everything in it is gone"
-    return f"\r\n*** ccc: --time runs out in ~{left // 60}m{left % 60}s — {what} ***\r\n"
+def _warn_text(left: int) -> str:
+    """`\\r\\n`-framed: ssh holds the terminal in raw mode."""
+    return (f"\r\n*** ccc: --time runs out in ~{left // 60}m{left % 60}s — the Dive ends; the main "
+            f"folder gets a final mirror, everything else on the Arm is gone ***\r\n")
 
 
-def _warn_thread(spawn_id: int, deadline: float | None,
-                 stop: threading.Event) -> threading.Thread | None:
+def _warn_thread(dive_id: int, deadline: float | None, stop: threading.Event) -> None:
     if deadline is None:
-        return None
+        return
     remaining = deadline - time.monotonic()
     warn_at = deadline - max(_WARN_MIN_S, min(_WARN_MAX_S, remaining / 4))
     if warn_at <= time.monotonic():
-        return None   # already inside the warning window — nothing useful left to schedule
-
-    def _loop():
-        if stop.wait(warn_at - time.monotonic()):
-            return   # the session ended before the warning was due
-        # Direct terminal write, not ui.warn: `ssh` owns the screen (raw mode, its own pty) by the time
-        # this fires, and this is a second thread writing beside it — interleaved, not framed. That is
-        # an accepted cosmetic cost; the alternative is no warning at all inside a live session.
-        left = max(0, round(deadline - time.monotonic()))
-        os.write(2, _warn_text(spawn_id, left).encode())
-
-    t = threading.Thread(target=_loop, daemon=True)
-    t.start()
-    return t
-
-
-def _copy_hint(name: str, proj: str | None) -> None:
-    """How to get a file INTO the session. Printed with the alias, because the two are one answer: the
-    alias is the only thing carrying the Pod's relay port AND its ephemeral key, and a User who reaches
-    for `<guise>@<head>` instead lands on the Head's own sshd — where the Guise is a real, passwordless
-    account, so the prompt they get is one no password can answer.
-
-    The path is spelled out rather than left as `~`: an scp with no path lands in the Pod's home, which
-    is a 64MB tmpfs that dies with the session and is mirrored nowhere.
-    """
-    if proj:
-        ui.hint(f"copy files in with `scp <file> {name}:{proj}/` (that folder is the session's working "
-                f"directory — a bare `{name}:` would land in a home that keeps nothing)")
-
-
-def _wait_and_attach(spawn_id: int, vscode: bool = False) -> None:
-    """Attach to a placed Spawn and hold the terminal until the shell detaches — or, with `vscode`,
-    hand the session to VS Code and return immediately.
-    """
-    _wait_for_running(spawn_id)
-    port, private_key, login, proj = _wait_for_relay(spawn_id)
-    deadline = _deadline(spawn_id)
-
-    # On disk under ~/.ccc, not in a tempfile unlinked when `ssh` exits: an alias in ~/.ssh/ccc.config
-    # is only as good as the IdentityFile it names, and VS Code opens its own connections long after
-    # this process is gone. The key dies with the Tide Pool instead — sshconfig.refresh reaps both.
-    host = _head_host()
-    keypath = sshconfig.record(spawn_id, private_key=private_key, port=port, user=login,
-                               host=host, proj=proj)
-    name = sshconfig.alias(spawn_id)
-    # THIS session is live by construction — we just waited for RUNNING and the Head just handed over
-    # its key. Adding it by hand rather than trusting the queue read costs nothing and takes the one
-    # outcome that would actually hurt (squeue lagging by a poll, and the sweep deleting the key this
-    # very attach is about to use) off the table entirely.
-    live = _live_ids()
-    sshconfig.refresh(None if live is None else live | {spawn_id})
-
-    if vscode:
-        # No terminal, so no `--time` warner (nothing to write to) and no ending to report: this
-        # process exits while the session goes on running, which is exactly what detaching means here.
-        ui.warn(f"this GPU is yours until you cancel it — `{_cancel_hint(spawn_id)}` — or --time runs "
-                f"out. Closing VS Code does NOT free it.")
-        if sshconfig.open_vscode(name, proj):
-            ui.ok(f"opening {_noun(spawn_id)} in VS Code ({name})")
-        ui.hint(f"reconnect any time with `ssh {name}`")
-        _copy_hint(name, proj)
         return
 
-    ui.warn(f"this GPU is yours until you cancel it — `{_cancel_hint(spawn_id)}` — or --time runs "
-            f"out. Disconnecting (closing this terminal, a dropped connection) does NOT free it.")
-    # Said up front, not only at the limit: where the files go is what a User plans the session
-    # around, and learning it five minutes before the cutoff is learning it too late to act on.
-    ui.hint("everything in this session is gone when it ends")
-    ui.hint("type `exit` to leave the shell — the Tide Pool itself keeps running either way")
-    # The alias is live from here on whether or not anyone asked for VS Code — printed rather than
-    # acted on, because an editor is not what most people opened a terminal to get.
-    ui.hint(f"editors and a second terminal reach this session as `{name}` (ssh {name})")
-    _copy_hint(name, proj)
-    stop = threading.Event()
-    _warn_thread(spawn_id, deadline, stop)
+    def _loop():
+        if not stop.wait(warn_at - time.monotonic()):
+            os.write(2, _warn_text(max(0, round(deadline - time.monotonic()))).encode())
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+def _report_ending(dive_id: int) -> None:
+    """Left the shell: still running (and billing), ending (hit --time / ended), or gone."""
     try:
-        # Real ssh, real protocol — the relay is a pure byte pipe underneath (relay.py); nothing
-        # about the session is aware it exists. Host-key checking is off deliberately: the Pod mints
-        # a fresh host key every Tide Pool, so there is nothing to pin, and the actual security
-        # boundary is the ephemeral client keypair handed over the CLI's own authenticated session.
-        #
-        # Login account is the submitter's own **Guise**, never `mantle@` or `ccc@`: apptainer's
-        # --writable-tmpfs patches the invoking uid's /etc/passwd entry to its real host identity,
-        # so the invoking uid is the Guise owning this Spawn. User never types it (nobody knows
-        # their own uid).
-        subprocess.run([
-            "ssh", "-i", keypath, "-p", str(port),
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            # LogLevel=ERROR: the discarded (/dev/null) known_hosts still gets an "added" notice
-            # every single connection otherwise — pure noise for a host key nothing ever pins.
-            "-o", "LogLevel=ERROR",
-            "-o", "IdentitiesOnly=yes", "-o", "ServerAliveInterval=30",
-            f"{login}@{host}",
-        ])
-    finally:
-        stop.set()
-
-    _report_ending(spawn_id)
-
-
-def _report_ending(spawn_id: int) -> None:
-    """Say how the session ended, once the shell has let go of the terminal.
-
-    Three endings, not two, because there are three ways to arrive here.
-
-    `exit` was typed or the connection dropped -> the Spawn is genuinely RUNNING and genuinely
-    billing, which is the warning that has to be repeated with the command to stop it.
-
-    `--time` ran out -> Slurm TERM'd the job and the shell died under us. The job is now COMPLETING
-    while its EXIT trap sends the logs home, for up to `KillWait` (600s — cli.templates). It is NOT
-    running and it is NOT billing — the tick only accrues onto RUNNING Spawns (ccc_head_api.tick) — so
-    the running-and-billing warning is false in both halves, and at a 10-minute KillWait it would stay
-    false for ten minutes. `done` cannot tell us this: it stays False through COMPLETING.
-
-    Already settled -> plain end.
-    """
-    try:
-        st = auth._api("GET", f"/spawns/{spawn_id}")
-        state = None if st.get("done") else (st.get("state") or "RUNNING")
-    except Exception:
-        state = "RUNNING"   # can't check — say the thing with a cost attached
-    noun = _noun(spawn_id)
-    if state == "COMPLETING":
-        ui.ok(f"{noun} hit its --time limit and has stopped billing")
-    elif state is not None:
-        ui.warn(f"{noun} is still running and still billing Karma — `{_cancel_hint(spawn_id)}` to end "
-                f"it")
+        state = next((r["state"] for r in auth._api("GET", "/dives") if r["id"] == dive_id), None)
+    except (Exception, SystemExit):
+        state = "running"
+    if state is None or state in ("ending",) or state.startswith("completing"):
+        ui.ok(f"Dive {dive_id} has ended")
     else:
-        ui.ok(f"{noun} has ended")
+        ui.warn(f"Dive {dive_id} is still running and still billing Karma — `cuttle dive end {dive_id}` "
+                f"to end it, `cuttle dive attach {dive_id}` to go back")
+
+
+def end(dive_id: int | None = None, yes: bool = False) -> None:
+    """Your own over the API, from anywhere. Someone else's only on the Head: the API's 403 is the
+    ownership test, and the operator's road is `sudo scancel` (the tick closes it either way). A 404
+    is never escalated."""
+    dive_id = dive_id or _pick("End which Dive?")
+    if not yes and not ui.ask_confirm(f"End Dive {dive_id}? (the main folder gets a final mirror)"):
+        raise ui.abort("not ended")
+    if auth._api("DELETE", f"/dives/{dive_id}", refused_ok=True) is None:
+        if not menu.is_head():
+            raise ui.abort("you can only end your own Dives",
+                           next_step="someone else's can only be ended by the operator on the Head")
+        ui.say(f"  [muted]Dive {dive_id} isn't yours — ending it as the Head operator[/muted]")
+        run(["scancel", str(dive_id)], sudo=True)
+        run(["-u", config.HEAD_API_USER, "touch",
+             str(config.HEAD_SPAWNS_DIR / str(dive_id) / "cancelled")], sudo=True, check=False)
+    sshconfig.forget(dive_id)
+    ui.ok(f"Dive {dive_id} ending")
+
+
+def status(as_json: bool = False) -> None:
+    rows = auth._api("GET", "/dives") or []
+
+    def render():
+        if not rows:
+            ui.say("no open Dives")
+            return
+        ui.table(["ID", "STATE", "NODE", "MAIN", "DEPS", "GPU", "TIME"],
+                 [[r["id"], r["state"], r.get("node") or "-", f"~/{r['main']}",
+                   ", ".join(r["deps"]) or "-", r["gpus"], _minutes(r["minutes"] or 0)] for r in rows])
+
+    ui.emit(rows, as_json, render)

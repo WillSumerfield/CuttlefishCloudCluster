@@ -818,11 +818,7 @@ MAX_LOGS = 500
 # CLI session bearer: the token `cuttle login` stores, 0600, kept out of config.yaml so a
 # submitter who never ran setup still has just this one secret file. The Head URL lives in config.yaml.
 SESSION_FILE = CCC_HOME / "session"
-# One `<id>.key` (0600) + `<id>.json` per Tide Pool this box can still reach. The key used to be a
-# tempfile unlinked the moment `ssh` exited, which made it unusable by anything that is not this
-# process — and VS Code is exactly that. A key's lifetime is now its Tide Pool's: the same sweep that
-# rewrites SSH_CCC_CONFIG deletes both files once the Head no longer lists the Spawn as live.
-TIDEPOOL_DIR = CCC_HOME / "tidepool"
+DIVE_DIR = CCC_HOME / "dives"                    # <id>.json per live Dive → glados-<id> aliases
 # The User's OWN ssh directory. cuttle writes exactly one file in it (`ccc.config`, wholly generated)
 # and adds exactly one `Include` line to `config` — it never touches an entry anyone else wrote.
 SSH_DIR = Path(os.environ.get("CCC_SSH_DIR") or Path.home() / ".ssh")

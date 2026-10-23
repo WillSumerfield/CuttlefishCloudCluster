@@ -3,11 +3,13 @@
 from pathlib import Path
 
 import typer
+from typer.core import TyperGroup
 
 from . import auth as auth_mod
 from . import backup as backup_mod
 from . import config
 from . import dashboard as dashboard_mod
+from . import dive as dive_mod
 from . import enroll as enroll_mod
 from . import features as feature_profiles
 from . import headapi as headapi_mod
@@ -46,6 +48,20 @@ tidepool_app = typer.Typer(invoke_without_command=True,
 app.add_typer(tidepool_app, name="tidepool")
 keys_app = typer.Typer(invoke_without_command=True, help="SSH keys that may log into your Tidepool.")
 tidepool_app.add_typer(keys_app, name="keys")
+
+
+class _DiveGroup(TyperGroup):
+    """`cuttle dive [MAIN] [opts]` starts one; `cuttle dive attach|end|status` are the rest. Anything
+    that is not a subcommand name is `start`'s."""
+
+    def parse_args(self, ctx, args):
+        if not args or (args[0] not in self.commands and args[0] not in ("--help", "-h")):
+            args = ["start", *args]
+        return super().parse_args(ctx, args)
+
+
+dive_app = typer.Typer(cls=_DiveGroup, help="Dives: a GPU session over folders of your Tidepool.")
+app.add_typer(dive_app, name="dive")
 feature_app = typer.Typer(no_args_is_help=True,
                           help="Arm Features: heavy/hardware-licence-gated software CCC knows how to run.")
 app.add_typer(feature_app, name="feature")
@@ -629,6 +645,47 @@ def tidepool_key_remove(key_id: int = typer.Argument(..., help="Key id from `cut
     tidepool_mod.key_remove(key_id)
 
 
+@dive_app.command("start")
+def dive_start(
+    main: str = typer.Argument(None, help="Main folder, from your Tidepool home (inside the Tidepool: "
+                                          "default the current folder). Mirrored back; read-only "
+                                          "in the Tidepool while the Dive holds it."),
+    dep: list[str] = typer.Option(None, "--dep", help="A dep folder (read-only copy). Repeatable."),
+    gpus: int = typer.Option(None, "--gpus", help="GPUs, on one Arm (default 1)."),
+    vram: int = typer.Option(None, "--vram", help="Total VRAM needed, GB."),
+    time_: str = typer.Option(None, "--time", help="How long: 90m, 4h, 2d (max 14d). Required once."),
+    feature: list[str] = typer.Option(None, "--feature", help="An Arm Feature. Repeatable."),
+    env: str = typer.Option(None, "--env", help="Dependency file in the main folder, built into .venv "
+                                                "beside it (pyproject.toml, requirements.txt)."),
+    vscode: bool = typer.Option(False, "--vscode", help="Open it in VS Code instead of a shell."),
+):
+    """Start a Dive and enter it. Settings come from the main folder's cuttle.toml; flags override
+    and are saved there."""
+    if main is None and not dive_mod.in_tidepool() and ui.interactive():
+        main = ui.ask_text("Main folder (from your Tidepool home)?")
+    dive_mod.request(main, dep, gpus, vram, time_, feature, env, vscode=vscode)
+
+
+@dive_app.command("attach")
+def dive_attach(dive_id: int = typer.Argument(None, help="Dive id (default: your only one)."),
+                vscode: bool = typer.Option(False, "--vscode", help="Open it in VS Code.")):
+    """Enter a running Dive (or wait for a queued one)."""
+    dive_mod.attach(dive_id, vscode=vscode)
+
+
+@dive_app.command("end")
+def dive_end(dive_id: int = typer.Argument(None, help="Dive id (default: your only one)."),
+             yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation.")):
+    """End a Dive: the GPU is freed, the main folder gets a final mirror."""
+    dive_mod.end(dive_id, yes=yes)
+
+
+@dive_app.command("status")
+def dive_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+    """Your open Dives."""
+    dive_mod.status(as_json)
+
+
 @app.command("build-installer")
 def build_installer(
     out: Path = typer.Option(
@@ -726,29 +783,6 @@ def teardown(
         teardown_mod.teardown_client()
 
 
-@app.command()
-def cancel(
-    spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id."),
-    any_owner: bool = typer.Option(
-        False, "--any",
-        help="Cancel without asking the Head who owns it — reaps a job the ledger never recorded. "
-             "ONLY on the Head (uses sudo scancel). On the Head, cancelling someone else's Spawn "
-             "needs no flag."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
-):
-    """End a Spawn early. Your own from anywhere; anyone's only on the Head."""
-    # On the Head the picker offers the WHOLE queue, flag or no flag. The menu can only ever run this
-    # command bare (menu.choose returns argv with no options), so a picker filtered to your own Spawns
-    # made the operator's road unreachable from the menu entirely — the Spawn you meant to stop was
-    # simply not on the list. `karma bump`, the other Head-local command that points at someone else's
-    # Spawn, has always listed everything for the same reason.
-    spawn_id = ui.need(spawn_id, "the Spawn id",
-                       lambda: pickers.pick_spawn(
-                           "Which Spawn to cancel?",
-                           mine_only=not (any_owner or menu_mod.is_head())))
-    spawns_mod.cancel(spawn_id, any_owner=any_owner, yes=yes)
-
-
 # `--limit` defaults to a sentinel (-1 = unset) so we can resolve it per format: a human table caps at
 # 50, but `--json` stays a complete data feed (0 = uncapped) unless the user asks for a cap explicitly.
 def _resolve_limit(limit: int, as_json: bool) -> int:
@@ -789,24 +823,6 @@ def tide(
 ):
     """Show the Tide — how badly each Arm has been wanted, hour by hour, as a sparkline per Arm."""
     karma_mod.tide(days=days, as_json=as_json)
-
-
-@app.command()
-def status(spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id."),
-           as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
-    """Show a Spawn's state (queued/running, or DONE with exit code)."""
-    spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Which Spawn?"))
-    spawns_mod.status(spawn_id, as_json=as_json)
-
-
-@app.command()
-def logs(
-    spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id."),
-    follow: bool = typer.Option(False, "--follow", "-f", help="Interleave both streams live, tagged [out]/[err]."),
-):
-    """Print (or follow) a Spawn's stdout and stderr."""
-    spawn_id = ui.need(spawn_id, "the Spawn id", lambda: pickers.pick_spawn("Read which Spawn?"))
-    spawns_mod.logs(spawn_id, follow=follow)
 
 
 def main() -> None:

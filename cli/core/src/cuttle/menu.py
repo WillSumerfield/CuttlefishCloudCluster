@@ -49,7 +49,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # Commands that reach the Head API with a session bearer, so they are useless without one. The whole
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
-LOGIN_REQUIRED = {"queue", "history", "status", "logs", "cancel", "karma",
+LOGIN_REQUIRED = {"queue", "history", "dive", "karma",
                   "tide", "account", "logout", "whoami", "passwd", "tidepool"}
 
 
@@ -67,7 +67,7 @@ class MenuState:
 # collide with, because these are the only menu paths that never become a command line.
 FOLDER = "\0"
 GROUPS: dict[str, list[str]] = {
-    f"{FOLDER}spawns": ["queue", "history", "status", "logs", "cancel"],
+    f"{FOLDER}spawns": ["queue", "history"],
     # `karma` whole, rather than its standings here and `bump`/`override` under the admin folder: one
     # command's subtree splits across two places exactly once and then nobody can find either half.
     # Both are Head-gated inside it anyway, so a donor's box still never sees them.
@@ -89,7 +89,7 @@ GROUPS: dict[str, list[str]] = {
 #   holding one visible row collapses INTO the top level (see `_collapse`), and a collapsed
 #   "Change the settings" out there names nothing.
 LABELS = {
-    f"{FOLDER}spawns": "Spawns",
+    f"{FOLDER}spawns": "The queue",
     f"{FOLDER}cluster": "The cluster",
     f"{FOLDER}account": "My account",
     f"{FOLDER}admin": "Run the cluster",
@@ -98,13 +98,16 @@ LABELS = {
     "dashboard": "Open the dashboard",
     "login": "Log in",
 
-    # Spawns. Cluster-wide, so no possessive: `queue` and `history` are everyone's, like the
-    # Dashboard's landing table. "My" is kept only where ownership really is the filter.
+    # Cluster-wide, so no possessive: `queue` and `history` are everyone's, like the Dashboard's
+    # landing table. "My" is kept only where ownership really is the filter.
     "queue": "See the queue",
-    "history": "See past Spawns",
-    "status": "Check a Spawn",
-    "logs": "Read a Spawn's output",
-    "cancel": "Cancel a Spawn",
+    "history": "See past Dives",
+
+    "dive": "My Dives",
+    "dive start": "Start one (pick folders)",
+    "dive attach": "Enter one",
+    "dive end": "End one",
+    "dive status": "See them",
 
     # The cluster.
     "tidepool": "My Tidepool",
@@ -118,7 +121,7 @@ LABELS = {
 
     "karma": "Karma",
     "karma ledger": "My ledger",
-    "karma bump": "Bump a Spawn up the queue",
+    "karma bump": "Bump a Dive up the queue",
     "karma override": "Adjust someone's Balance",
     "tide": "See the Tide (demand)",
 
@@ -191,7 +194,7 @@ BACK = "\0back"
 QUIT = "\0quit"
 
 # Never the pre-selected entry: destructive, and one arrow key from `setup`.
-NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset"}
+NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset", "dive end"}
 
 # Top-level order — by how often you reach for it, not by declaration order in main.py. The first
 # entry is pre-selected, so it should be the daily verb rather than the one that re-provisions the
@@ -204,7 +207,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset"}
 # Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
 # inside a real group the declaration order does — both because the sort is stable and everything
 # unlisted ties.
-ORDER = ["tidepool", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
+ORDER = ["tidepool", "dive", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
          "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 

@@ -80,7 +80,7 @@ def ccc_home(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SESSION_FILE", home / "session")
     monkeypatch.setattr(config, "PINS_DIR", home / "pins")
     monkeypatch.setattr(config, "LOG_DIR", home / "logs")
-    monkeypatch.setattr(config, "TIDEPOOL_DIR", home / "tidepool")
+    monkeypatch.setattr(config, "DIVE_DIR", home / "dives")
     # The User's own ~/.ssh, redirected for the same reason as everything above and then some: a test
     # that regenerated the operator's real ssh config would rewrite the file their whole machine's ssh
     # reads (sshconfig.refresh writes it in full).

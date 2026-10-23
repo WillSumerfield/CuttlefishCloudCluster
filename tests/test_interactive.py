@@ -196,7 +196,7 @@ class TestTheMenuIsDerived:
         check renders arm/user/karma as leaves and silently loses all their subcommands."""
         root = self._root()
         assert [n for n, c in root.commands.items() if menu._is_group(c)] == \
-            ["arm", "user", "karma", "backup", "munge", "tidepool", "feature"]
+            ["arm", "user", "karma", "backup", "munge", "tidepool", "dive", "feature"]
 
     def test_hiding_is_menu_only(self, monkeypatch):
         """The command must stay reachable when typed. A detection bug that removed it outright is
@@ -256,12 +256,12 @@ class TestTheMenuGatesByState:
     def test_logged_out_hides_the_submit_suite_and_offers_login(self):
         paths = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
         assert "login" in paths
-        assert paths.isdisjoint({"status", "logs", "cancel", "karma"})
+        assert paths.isdisjoint({"dive", "karma"})
         assert "logout" not in paths and "whoami" not in paths
 
     def test_logged_in_shows_the_submit_suite_and_hides_login(self):
         paths = self._paths(logged_in=True, provisioned=True, pointed=True, on_head=False)
-        assert {"status", "logs", "cancel", "karma"} <= paths
+        assert {"dive", "karma"} <= paths
         assert {"logout", "whoami", "passwd"} <= paths
         assert "login" not in paths
 
@@ -274,8 +274,7 @@ class TestTheMenuGatesByState:
         Checked at every level, not just the first: filing a command into a folder must not be a way
         to smuggle it past its own gate."""
         logged_out = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
-        assert logged_out.isdisjoint({"queue", "history", "status", "logs",
-                                      "cancel", "karma", "tide", "account"})
+        assert logged_out.isdisjoint({"queue", "history", "dive", "karma", "tide", "account"})
 
     def test_the_menu_never_falls_back_to_a_truncated_help_string(self):
         """`_label` falls back to `get_short_help_str(limit=40)` — a command missing from LABELS gets
@@ -379,8 +378,8 @@ class TestTheMenuIsGroupedNotFlat:
         root = typer.main.get_command(main.app)
         return menu._entries(root, menu.MenuState(**state), "", root)
 
-    def test_the_head_sees_seven_rows_not_twenty_five(self):
-        assert len(self._top(**self.HEAD)) == 7   # Tidepool, 5 folders, dashboard
+    def test_the_head_sees_eight_rows_not_twenty_five(self):
+        assert len(self._top(**self.HEAD)) == 8   # Tidepool, Dives, 5 folders, dashboard
 
     def test_a_folder_is_never_part_of_a_command_line(self):
         """The whole risk of a synthetic level: a path that reads fine in the menu and is not a
@@ -496,7 +495,7 @@ class TestTheMenuReadsAsOneList:
         """`queue` and `history` are everyone's, like the Dashboard's landing table; the account is
         yours. "My Spawns" would have promised a filter there is no code for."""
         labels = dict(_labels(menu.MenuState(**self.HEAD)))
-        assert labels[f"{menu.FOLDER}spawns"] == "Spawns"
+        assert labels[f"{menu.FOLDER}spawns"] == "The queue"
         assert menu.LABELS[f"{menu.FOLDER}account"].startswith("My")
 
     def test_a_group_that_also_runs_is_named_twice(self):
