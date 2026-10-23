@@ -191,7 +191,8 @@ def build_images(write_root_file) -> dict:
         base_ctx, bench_ctx = Path(tmp) / "base", Path(tmp) / "bench"
         base_ctx.mkdir(), bench_ctx.mkdir()
         (base_ctx / "Containerfile").write_text(templates.render_base_containerfile())
-        shutil.copy2(config.ENV_TOOLS_DIR / "uv", base_ctx / "uv")
+        for tool in ("uv", "micromamba"):
+            shutil.copy2(config.ENV_TOOLS_DIR / tool, base_ctx / tool)
         shutil.copytree(config.ZSH_DATA_DIR / "oh-my-zsh", base_ctx / "oh-my-zsh", symlinks=True)
         (bench_ctx / "Containerfile").write_text(templates.render_bench_containerfile())
         (bench_ctx / "bench.py").write_text(templates.render_bench_py())

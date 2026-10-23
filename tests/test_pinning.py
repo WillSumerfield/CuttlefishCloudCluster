@@ -166,9 +166,9 @@ class TestTheBaseImage:
     def test_the_apt_list(self, pkg):
         assert pkg in templates.BASE_APT_PKGS.split()
 
-    def test_uv_and_nvcc_only(self):
+    def test_uv_micromamba_and_nvcc_only(self):
         d = templates.render_base_containerfile()
-        assert "COPY uv /usr/local/bin/uv" in d
+        assert "COPY uv micromamba /usr/local/bin/" in d
         assert "cuda-nvcc-12-8" in d and config.CUDA_REPO_KEYRING in d
         assert "cuda-libraries" not in d    # runtime libs come in wheels
 

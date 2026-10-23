@@ -320,10 +320,10 @@ RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes \\
 RUN printf 'export CUDA_HOME={cuda_home}\\nexport PATH={cuda_home}/bin:$PATH\\n' > /etc/profile.d/ccc-cuda.sh \\
  && echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile \\
  && userdel -r ubuntu
-COPY uv /usr/local/bin/uv
+COPY uv micromamba /usr/local/bin/
 COPY oh-my-zsh {omz}
 RUN chown -R root:root {omz} && chmod -R go-w {omz} \\
- && chmod 0755 /usr/local/bin/uv {omz}/custom/themes/powerlevel10k/gitstatus/usrbin/gitstatusd-linux-x86_64
+ && chmod 0755 /usr/local/bin/uv /usr/local/bin/micromamba {omz}/custom/themes/powerlevel10k/gitstatus/usrbin/gitstatusd-linux-x86_64
 """
 
 BASE_APT_PKGS = (

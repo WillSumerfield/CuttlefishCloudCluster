@@ -76,6 +76,7 @@ class TestBuildImages:
         tools = tmp_path / "tools"
         tools.mkdir()
         (tools / "uv").write_text("uv")
+        (tools / "micromamba").write_text("mm")
         monkeypatch.setattr(config, "ENV_TOOLS_DIR", tools)
         answers["image exists"] = subprocess.CompletedProcess([], 0)    # both already built
 
