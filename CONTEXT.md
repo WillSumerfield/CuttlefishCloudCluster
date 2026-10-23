@@ -27,7 +27,7 @@
   Mesh, then registers with the scheduler.
 - **Registration** — an Arm's node agent announcing its own hardware to the scheduler at runtime,
   rather than being declared in advance by the Head.
-- **Cluster name** — the one name a machine uses to reach the **Head**, in place of an address. It is
+- **Cluster name** — the one name a machine uses to reach the **Head**, in place of an address, chosen when the Head is set up. It is
   not a public domain and nothing outside the cluster resolves it: a machine has the name only because
   something put it there, normally CCC installing there. The name means whichever address that machine
   can actually reach the Head on, so a **Client** on the LAN and an Arm on the **Mesh** dial the same

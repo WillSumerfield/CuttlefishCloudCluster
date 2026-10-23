@@ -75,7 +75,7 @@ external identity provider, and no sign-up — the Admin provisions accounts.
 
 TLS for the human surface runs under an authority the cluster mints for itself. No public CA will sign
 for a box with no public domain name, so the Head is its own: every machine CCC installs on trusts that
-root, which is why the Dashboard loads at `ccc.glados` — the cluster's name, carried in `/etc/hosts`
+root, which is why the Dashboard loads at `ccc.<name>` — the cluster's name, carried in `/etc/hosts`
 because CCC runs no DNS — without a browser warning. The CLI additionally pins the authority
 `known_hosts`-style and accepts no other. A bundle built on a Head carries both, so a client installed
 from it is pre-pointed and already trusting the cluster.

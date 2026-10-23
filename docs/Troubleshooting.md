@@ -101,7 +101,7 @@ A client trusts exactly one certificate authority — the cluster's — `known_h
 was rebuilt from scratch (`teardown --all`), it minted a new one and nothing recognises it: re-run
 `cuttle setup --client`, or take a fresh bundle.
 
-### `ccc.glados` does not resolve
+### `ccc.<name>` does not resolve
 
 Nothing outside the cluster resolves that name; each box gets an `/etc/hosts` line from `cuttle setup`.
 Re-run `setup` for the box's role to rewrite it. The Head's IP works for everything in the meantime.

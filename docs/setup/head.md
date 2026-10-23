@@ -46,6 +46,10 @@ stage-out, builds the dashboard, issues a TLS certificate, starts the Head API a
 installs the nightly backup timer and the health monitor, builds the Pod image, installs the
 Environment build tools, and builds the benchmark environment every Arm is priced against.
 
+It first asks the **cluster name** (default: this box's hostname; lowercase letters, digits, `-`).
+The Dashboard becomes `https://ccc.<name>`, and editors reach your Tidepool as ssh host `<name>`. It
+is baked into the certificate and every installer bundle, so renaming means teardown + setup.
+
 Along the way it asks which [Features](../elements/arm-features.md) *this* box has — the Head's own
 Arm is an Arm like any other — and, if you want alerting, for [SMTP credentials](../SMTP-Runbook.md).
 Both are skippable and both can be filled in by re-running setup later.
@@ -163,7 +167,7 @@ removes the tool.
 
 ## The dashboard
 
-`setup --head` builds and serves it, at `https://ccc.glados` — the cluster's name, which every
+`setup --head` builds and serves it, at `https://ccc.<name>` — the cluster's name, which every
 machine CCC installs on resolves and trusts. No browser warning on any of them; a phone or a borrowed
 laptop has neither, and reaches it by IP with the warning.
 

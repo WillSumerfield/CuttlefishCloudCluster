@@ -6,7 +6,7 @@ No scheduler, no mesh. It creates a couple of directories, teaches this box the 
 certificate, and logs you in.
 
 It does need `sudo` once, and installs one package (`libnss3-tools`). Both are for the same thing: the
-cluster is reachable at **`ccc.glados`** on every machine CCC installs on, and that name — plus the
+cluster is reachable at **`ccc.<name>`** on every machine CCC installs on, and that name — plus the
 certificate authority that makes it load without a browser warning — has to be written outside your
 home directory. A box where you have no `sudo` cannot be set up as a client.
 
@@ -28,7 +28,7 @@ cuttle login
 ```
 
 That is the whole of it. `install.sh` installs `uv` if you do not have it, installs `cuttle`, writes
-the config, and asks for `sudo` once — to add `ccc.glados` to `/etc/hosts` and to trust the cluster's
+the config, and asks for `sudo` once — to add `ccc.<name>` to `/etc/hosts` and to trust the cluster's
 certificate authority. A bundle carries the Head's LAN address, so it only works on that LAN.
 
 **From the repo:**
@@ -58,7 +58,7 @@ cuttle login
 ```
 
 `setup --client` asks for the Head's address, points this box at it, and then everything afterwards
-says `ccc.glados` — that is the name in your config, in `cuttle dashboard`, and in the certificate.
+says `ccc.<name>` — that is the name in your config, in `cuttle dashboard`, and in the certificate.
 
 After the first time, both the menu and a bare `cuttle login` remember where to go.
 
@@ -116,7 +116,7 @@ IP is only reachable from that LAN.
 rebuilt from scratch (`teardown --all`), it minted a new one and nothing here recognises it: run
 `cuttle setup --client` again, or take a fresh bundle.
 
-**`ccc.glados` does not resolve.** The `/etc/hosts` line is missing — re-run `cuttle setup --client`.
+**`ccc.<name>` does not resolve.** The `/etc/hosts` line is missing — re-run `cuttle setup --client`.
 The Head's IP still works for everything, so this never blocks you.
 
 **The browser still says "not private".** The name and the certificate are per-machine, and a phone or
@@ -129,7 +129,7 @@ More at [Troubleshooting](../Troubleshooting.md).
 ## On a Chromebook
 
 CCC installs into ChromeOS's Linux virtual machine, and the browser you actually use runs on ChromeOS
-around it. That OS is a separate machine as far as CCC is concerned. It has neither `ccc.glados` nor
+around it. That OS is a separate machine as far as CCC is concerned. It has neither `ccc.<name>` nor
 the cluster's certificate authority, and `sudo` in here cannot give it them.
 
 `cuttle` works regardless — it resolves the name inside the VM — and `cuttle dashboard` always opens

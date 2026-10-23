@@ -108,14 +108,14 @@ The human-facing surface is TLS, under a certificate authority the cluster mints
 CA will sign for a box with no public domain name, so the Head is its own: it mints a root once at
 `setup --head` and signs the certificate it serves with it. Every machine CCC installs on is told to
 trust that root — the OS store, and the separate stores Chromium-family browsers and Firefox read — so
-the Dashboard loads at `ccc.glados` with no warning. A device CCC never installed on gets neither the
+the Dashboard loads at `ccc.<name>` with no warning. A device CCC never installed on gets neither the
 name nor the trust, and sees the warning as before.
 
 A **guest** install — a Chromebook client — is the one case where the browser is not on the box CCC
 was invited onto. ChromeOS is not given the trust: its store can only be written by hand.
 
 The CLI does not settle for that. It verifies the Head against this one authority and **nothing else**,
-so a public CA that mis-issued for `ccc.glados` still could not impersonate the Head to `cuttle`. The
+so a public CA that mis-issued for `ccc.<name>` still could not impersonate the Head to `cuttle`. The
 authority is pinned on first contact the way `ssh` pins a host key, and an attacker present at that
 exact moment is the standing weak point — the same one `ssh` has. Two of the three ways in avoid it
 entirely: an Arm receives the authority inside `/enroll`'s token-authenticated response, and a
@@ -135,7 +135,7 @@ Stated so nobody assumes otherwise:
 - **Public exposure.** The Head is reachable over the LAN or the CCC mesh, and CCC is built for
   nothing wider. There is no public tunnel, no publicly-trusted certificate, and no hardening for an
   internet-facing deployment — the Head signs its own certificate and clients pin it on first use,
-  which is sufficient on a LAN and is not sufficient on the internet. `ccc.glados` is a private name
+  which is sufficient on a LAN and is not sufficient on the internet. `ccc.<name>` is a private name
   carried in `/etc/hosts`, not a domain; nothing outside the cluster resolves it. Put this cluster on
   the open internet and none of the above becomes true by itself.
 - **A stolen Head.** The authority's private key lives on the Head, so whoever holds that box can mint

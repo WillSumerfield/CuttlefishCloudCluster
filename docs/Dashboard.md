@@ -19,7 +19,7 @@ browser and want to paste it into one that has.
 The address it opens is:
 
 ```
-https://ccc.glados
+https://ccc.<name>
 ```
 
 That name is the cluster's, on every machine CCC installs on — Head, Arms and clients alike. Nothing
