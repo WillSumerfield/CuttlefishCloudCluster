@@ -257,3 +257,110 @@ class TestRegistry:
     def test_gc_is_a_nightly_helper_run(self):
         assert "ExecStart=/usr/local/sbin/ccc-tidepool registry-gc" in templates.render_registry_gc_service()
         assert "OnCalendar=" in templates.REGISTRY_GC_TIMER_TMPL
+
+
+# --- ccc-launch, Dive mode ---------------------------------------------------------
+
+from cuttle import ccc_launch as L  # noqa: E402
+
+DIVE = {"token": TOK, "user": "bob", "secret": "s" * 43, "head": "100.99.0.1", "main": "proj/a",
+        "deps": ["data"], "port": 31005}
+
+
+class TestLaunchSpec:
+    def test_constants_agree_with_the_helper(self):
+        assert L.DIVE_FILTERS == H.FILTER_ARGS
+        assert L.REL_RE.pattern == H.REL_RE.pattern and L.TOKEN_RE.pattern == H.TOKEN_RE.pattern
+        assert L.TIDEPOOL_HELPER == H.HELPER and L.DIVE_RECORDS == H.DIVE_RECORDS
+        assert L.ENV_CACHE == config.NODE_ENV_CACHE_DIR and L.MESH_IFACE == config.CCC_TS_TUN
+
+    def test_a_good_dive_spec_passes(self):
+        L.validate_dive(dict(DIVE))
+
+    @pytest.mark.parametrize("bad", [{"main": "../etc"}, {"main": "/etc"}, {"deps": ["a/../../b"]},
+                                     {"token": "x"}, {"user": "Root"}, {"head": "evil.com"},
+                                     {"port": 22}, {"secret": "short"}, {"extra": 1}])
+    def test_bad_dive_specs_refused(self, bad):
+        with pytest.raises(L.Refused):
+            L.validate_dive({**DIVE, **bad})
+
+
+class TestArmDive:
+    def test_stage_in_pulls_main_last_and_owns_new_dirs(self, tmp_path, monkeypatch):
+        calls, chowned = [], []
+        monkeypatch.setattr(L.subprocess, "run", lambda a, **k: calls.append(a))
+        monkeypatch.setattr(L.os, "chown", lambda p, u, g: chowned.append((str(p), u)))
+        home = L.stage_in(DIVE, tmp_path, 4242)
+        srcs = [c[-2] for c in calls]
+        assert srcs == [f"rsync://d{TOK}@100.99.0.1/d{TOK}-sys/sys/",
+                        f"rsync://d{TOK}@100.99.0.1/d{TOK}-sys/home/",
+                        f"rsync://d{TOK}@100.99.0.1/d{TOK}-dep0/",
+                        f"rsync://d{TOK}@100.99.0.1/d{TOK}-main/"]   # main last: it locks
+        assert all("--numeric-ids" in c for c in calls)
+        assert calls[-1][-1] == f"{home}/proj/a/"
+        assert {u for _, u in chowned} == {4242}
+        assert {p for p, _ in chowned} >= {str(home), str(home / "proj"), str(home / "proj/a")}
+
+    def test_mirror_is_main_only_with_delete_and_the_filters(self, monkeypatch, tmp_path):
+        seen = []
+        monkeypatch.setattr(L.subprocess, "run",
+                            lambda a, **k: seen.append(a) or subprocess.CompletedProcess(a, 0))
+        assert L.mirror(DIVE, tmp_path)
+        a = seen[0]
+        assert a[-2:] == [f"{tmp_path}/proj/a/", f"rsync://d{TOK}@100.99.0.1/d{TOK}-main/"]
+        assert "--delete" in a and "--filter=:- .cuttleignore" in a and "--exclude=.venv" in a
+
+    def test_container_argv(self, tmp_path):
+        home = tmp_path / "home"
+        for p in ("proj/a", "data", ".config/git", ".config/gh-not-staged-anyway", ".ssh"):
+            (home / p).mkdir(parents=True)
+        for f in (".zshrc", ".ssh/config"):
+            (home / f).write_text("x")
+        spec = {"image": "ccc.glados:5000/ccc/u-bob@sha256:" + "a" * 64, "argv": ["/bin/sh", "-c", "x"],
+                "env": {"CCC_USER": "bob"}, "network": True, "dive": DIVE}
+        a = L.dive_argv(spec, "77", 2**31, "/s/job_77/step_batch", ["GPU-1"], ["GPU-1"], tmp_path, home,
+                        ["data"], "100.99.0.7")
+        j = " ".join(a)
+        vols = [a[i + 1] for i, x in enumerate(a) if x == "-v"]
+        assert f"{home}:/home/bob" in vols and f"{home}/data:/home/bob/data:ro" in vols
+        assert f"{home}/.zshrc:/home/bob/.zshrc:ro" in vols
+        assert f"{home}/.config/git:/home/bob/.config/git:ro" in vols
+        assert f"{home}/.ssh/config:/home/bob/.ssh/config:ro" in vols
+        assert not any(v.startswith(f"{home}/proj") for v in vols)
+        assert f"{tmp_path}/sys:/etc/ccc/dive:ro" in vols
+        assert f"{L.ENV_CACHE}:/ccc-cache:idmap" in vols
+        assert "-p 100.99.0.7:31005:22" in j and "--device nvidia.com/gpu=GPU-1" in j
+        assert "--cgroup-parent /s/job_77/step_batch" in j
+        assert "--privileged" not in j and "--network host" not in j
+        assert a[-4:] == [spec["image"], "/bin/sh", "-c", "x"]
+
+    def test_a_dot_main_folder_is_never_bound_read_only(self, tmp_path):
+        home = tmp_path / "home"
+        (home / ".work").mkdir(parents=True)
+        (home / ".bashrc").write_text("x")
+        assert [d for _, d in L.dotfile_binds(home, "bob", [".work"])] == ["/home/bob/.bashrc"]
+
+
+class TestHeadDive:
+    def test_detected_by_the_helpers_record(self, tmp_path, monkeypatch):
+        helper = tmp_path / "helper"
+        helper.write_text("")
+        monkeypatch.setattr(L, "TIDEPOOL_HELPER", str(helper))
+        monkeypatch.setattr(L, "DIVE_RECORDS", tmp_path)
+        assert not L.head_dive(TOK)
+        (tmp_path / f"{TOK}.json").write_text("{}")
+        assert L.head_dive(TOK)
+
+    def test_grant_then_revoke_on_the_way_out(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(L.subprocess, "run", lambda a, **k: calls.append(a))
+        monkeypatch.setattr(L, "_device_minors", lambda: [0, 1, 2])
+        monkeypatch.setattr(L.signal, "signal", lambda *a: None)
+
+        class Ev:
+            def set(self): pass
+            def wait(self, t): return True
+        monkeypatch.setattr(L.threading, "Event", Ev)
+        L.run_head_dive(DIVE, "77", {"gres_idx": [1], "cpus": 8, "mem_mb": 32768})
+        assert calls == [[L.TIDEPOOL_HELPER, "dive-gpu", "grant", TOK, "77", "1", "8", "32768"],
+                         [L.TIDEPOOL_HELPER, "dive-gpu", "revoke", TOK]]

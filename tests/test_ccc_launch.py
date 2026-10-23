@@ -50,7 +50,16 @@ def test_parse_job():
     text = ("JobId=42 JobName=ccc-bench UserId=ccc-u60001(60001) GroupId=ccc-u60001(60001) "
             "JobState=RUNNING Reason=None JOB_GRES=gpu:2 Nodes=dex CPU_IDs=0-1 Mem=0 "
             "GRES=gpu:2(IDX:0-1) TresPerNode=gres/gpu:2")
-    assert L.parse_job(text) == {"uid": 60001, "state": "RUNNING", "gres_idx": [0, 1]}
+    assert L.parse_job(text) == {"uid": 60001, "state": "RUNNING", "gres_idx": [0, 1], "cpus": 1,
+                                 "mem_mb": 0}
+
+
+def test_parse_job_cpus_and_memory():
+    text = ("UserId=a(60002) JobState=RUNNING NumNodes=1 NumCPUs=8 NumTasks=1 "
+            "TRES=cpu=8,mem=32G,node=1,billing=8,gres/gpu=1 GRES=gpu:1(IDX:0)")
+    j = L.parse_job(text)
+    assert (j["cpus"], j["mem_mb"]) == (8, 32768)
+    assert L.parse_job("UserId=a(60002) NumCPUs=2 TRES=cpu=2,mem=1500M")["mem_mb"] == 1500
 
 
 def test_parse_job_typed_gres_and_no_gpu():

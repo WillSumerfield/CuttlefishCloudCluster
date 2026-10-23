@@ -24,6 +24,14 @@ replaces the job's, so the GPU fence is the `--device` list built here from the 
 scancel never signals the container. `--init` + Podman's sig-proxy pass scancel's SIGTERM in (a chance
 to checkpoint); the epilog's `podman rm -f` is the kill, before the node is handed to the next job.
 
+**A Dive** (spec key `dive`) is a shell, not a script, and runs one of two ways:
+- **on an Arm**: the User's folders are pulled from the Head's per-Dive rsync modules into the job dir
+  (`--numeric-ids`: same id_base everywhere, so they are uid 1000 inside with no chown), the User's
+  snapshot image runs sshd on this Arm's mesh address, the main folder is mirrored back every
+  MIRROR_S and once more at the end (Slurm's TERM → the container stops → final mirror, inside KillWait).
+- **on the Head** (ccc-tidepool holds a record of the Dive): nothing is copied — the User's own
+  Tidepool container is lent the allocated GPU and the job's CPU/RAM until the job ends.
+
 Stdlib only, no CCC imports: it runs under the system python as root.
 """
 
@@ -32,8 +40,10 @@ import json
 import os
 import pwd
 import re
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 REGISTRY = "ccc.glados:5000"
@@ -41,7 +51,18 @@ JOBS_DIR = Path("/var/lib/ccc/jobs")
 AUTH_FILE = "/etc/ccc/registry-auth.json"
 SPEC_PREFIX = "# ccc-launch-spec: "
 CONTAINER_PREFIX = "ccc-job-"
-SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir"}
+SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir", "dive"}
+DIVE_KEYS = {"token", "user", "secret", "head", "main", "deps", "port"}
+TIDEPOOL_HELPER = "/usr/local/sbin/ccc-tidepool"   # Head only (config.TIDEPOOL_HELPER_BIN)
+DIVE_RECORDS = Path("/etc/ccc/dives")               # config.DIVE_RECORDS
+ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR — shared uv cache
+MESH_IFACE = "ccc0"                                 # config.CCC_TS_TUN
+INNER_UID = 1000
+MIRROR_S = 60
+# ccc_tidepool.DENYLIST / FILTER_ARGS — never staged, never deleted on the Head by the mirror.
+DIVE_FILTERS = ["--exclude=.venv", "--exclude=venv", "--exclude=__pycache__", "--exclude=.cache",
+                "--exclude=node_modules", "--exclude=.mypy_cache", "--exclude=.pytest_cache",
+                "--exclude=.ipynb_checkpoints", "--filter=:- .cuttleignore"]
 
 # Fixed per-User id range: same formula on every node, so rsync -a keeps ownership across nodes.
 ID_BASE = 2**31
@@ -56,6 +77,12 @@ CGROUP_RE = re.compile(r"^0::(?P<step>/.*/(?:(?P<node>[^/]+)_)?slurmstepd\.scope
 GRES_RE = re.compile(r"\bGRES=\S*?gpu[^(\s]*\(IDX:(?P<idx>[0-9,\-]*)\)")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DST_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
+TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+USER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+REL_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._ @+-]*(/[A-Za-z0-9._][A-Za-z0-9._ @+-]*)*$")
+HOST_RE = re.compile(r"^[0-9a-fA-F.:]+$")
+SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+TRES_MEM_RE = re.compile(r"\bTRES=\S*?\bmem=(?P<n>[\d.]+)(?P<u>[KMGT]?)")
 
 
 class Refused(Exception):
@@ -81,9 +108,13 @@ def parse_job(text: str) -> dict:
     fields = dict(t.split("=", 1) for t in text.split() if "=" in t)
     uid = re.search(r"\((\d+)\)", fields.get("UserId", ""))
     gres = GRES_RE.search(text)
+    mem = TRES_MEM_RE.search(text)
+    mult = {"K": 1 / 1024, "": 1, "M": 1, "G": 1024, "T": 1024 ** 2}
     return {"uid": int(uid[1]) if uid else None,
             "state": fields.get("JobState"),
-            "gres_idx": parse_idx(gres["idx"]) if gres else []}
+            "gres_idx": parse_idx(gres["idx"]) if gres else [],
+            "cpus": int(fields.get("NumCPUs", "1").split("-")[0]),
+            "mem_mb": int(float(mem["n"]) * mult[mem["u"]]) if mem else 0}
 
 
 def parse_idx(spec: str) -> list[int]:
@@ -118,7 +149,27 @@ def validate_spec(spec: dict) -> dict:
             raise Refused(f"bind {src!r}:{dst!r} must be a relative path under the job dir")
     if not DST_RE.match(spec.get("workdir", "/job")):
         raise Refused("bad workdir")
+    if "dive" in spec:
+        validate_dive(spec["dive"])
     return spec
+
+
+def _rel_ok(rel) -> bool:
+    return isinstance(rel, str) and bool(REL_RE.match(rel)) and \
+        not any(p in (".", "..") for p in rel.split("/"))
+
+
+def validate_dive(d: dict) -> None:
+    if set(d) != DIVE_KEYS:
+        raise Refused(f"dive spec keys must be {sorted(DIVE_KEYS)}")
+    if not TOKEN_RE.match(d["token"]) or not USER_RE.match(d["user"]) or \
+            not SECRET_RE.match(d["secret"]) or not HOST_RE.match(d["head"]):
+        raise Refused("bad dive token/user/secret/head")
+    if not _rel_ok(d["main"]) or not isinstance(d["deps"], list) or \
+            not all(_rel_ok(x) for x in d["deps"]):
+        raise Refused("dive folders must be relative paths under the home")
+    if not isinstance(d["port"], int) or not 1024 < d["port"] < 65536:
+        raise Refused("bad dive port")
 
 
 def resolve_binds(spec: dict, jobdir: Path) -> list[tuple[Path, str, bool]]:
@@ -209,6 +260,148 @@ def podman_argv(spec: dict, jid: str, base: int, step: str, gpus: list[str], job
     return argv + [spec["image"], *spec.get("argv", [])]
 
 
+# --- Dives -----------------------------------------------------------------------
+
+def head_dive(tok: str) -> bool:
+    """The Head keeps a record of every open Dive; a job that lands here works in the Tidepool."""
+    return Path(TIDEPOOL_HELPER).exists() and (DIVE_RECORDS / f"{tok}.json").exists()
+
+
+def run_head_dive(d: dict, jid: str, job: dict) -> int:
+    """Lend the Tidepool the allocated GPU and the job's CPU/RAM until Slurm ends the job."""
+    minors = [_device_minors()[i] for i in job["gres_idx"]]
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda *_: stop.set())
+    subprocess.run([TIDEPOOL_HELPER, "dive-gpu", "grant", d["token"], jid, ",".join(map(str, minors)),
+                    str(job["cpus"]), str(job["mem_mb"])], check=True)
+    try:
+        while not stop.wait(3600):
+            pass
+    finally:
+        subprocess.run([TIDEPOOL_HELPER, "dive-gpu", "revoke", d["token"]])
+    return 0
+
+
+def module(d: dict, name: str) -> str:
+    return f"rsync://d{d['token']}@{d['head']}/d{d['token']}-{name}/"
+
+
+def rsync_argv(src: str, dst: str, filters: bool = True, delete: bool = False) -> list[str]:
+    return ["/usr/bin/rsync", "-a", "--numeric-ids", "--timeout=120",
+            *(["--delete"] if delete else []), *(DIVE_FILTERS if filters else []), src, dst]
+
+
+def _mkdirs(root: Path, rel: str, owner: int) -> Path:
+    """root/rel, every new component owned by the User (uid 1000 inside)."""
+    p = root
+    for part in rel.split("/"):
+        p = p / part
+        if not p.exists():
+            p.mkdir(mode=0o755)
+            os.chown(p, owner, owner)
+    return p
+
+
+def stage_in(d: dict, jobdir: Path, owner: int) -> Path:
+    """Pull the bundle (host key, keys), dotfiles, dep folders, then the main folder — that first
+    pull of the main module is what locks it read-only in the Tidepool (rsyncd pre-xfer exec)."""
+    home = jobdir / "home"
+    home.mkdir(mode=0o750, exist_ok=True)
+    os.chown(home, owner, owner)
+    run = lambda argv: subprocess.run(argv, check=True)   # noqa: E731
+    run(rsync_argv(module(d, "sys") + "sys/", f"{jobdir}/sys/", filters=False))
+    run(rsync_argv(module(d, "sys") + "home/", f"{home}/", filters=False))
+    for i, dep in enumerate(d["deps"]):
+        run(rsync_argv(module(d, f"dep{i}"), f"{_mkdirs(home, dep, owner)}/"))
+    run(rsync_argv(module(d, "main"), f"{_mkdirs(home, d['main'], owner)}/"))
+    return home
+
+
+def mirror(d: dict, home: Path) -> bool:
+    return subprocess.run(rsync_argv(f"{home / d['main']}/", module(d, "main"), delete=True)).returncode == 0
+
+
+def dotfile_binds(home: Path, user: str, folders: list[str]) -> list[tuple[Path, str]]:
+    """Every staged dotfile, read-only at its home path (`.config`/`.ssh`: their children only, so
+    the rest of those dirs stays writable scratch). Never a staged folder (a main folder may be a
+    dot-folder too)."""
+    tops = {f.split("/")[0] for f in folders}
+    out = []
+    for p in sorted(home.iterdir()):
+        if not p.name.startswith(".") or p.name in tops:
+            continue
+        kids = sorted(p.iterdir()) if p.name in (".config", ".ssh") and p.is_dir() else [p]
+        out += [(k, f"/home/{user}/{k.relative_to(home)}") for k in kids]
+    return out
+
+
+def mesh_ip() -> str:
+    out = subprocess.run(["/usr/sbin/ip", "-4", "-o", "addr", "show", "dev", MESH_IFACE],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", out)
+    if not m:
+        raise Refused(f"no mesh address on {MESH_IFACE}")
+    return m[1]
+
+
+def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: list[str], jobdir: Path,
+              home: Path, deps: list[str], addr: str) -> list[str]:
+    d = spec["dive"]
+    u = d["user"]
+    argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
+            "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--rm", "--init",
+            "--name", f"{CONTAINER_PREFIX}{jid}", "--cgroup-parent", step, "--hostname", f"dive-{jid}",
+            "--uidmap", f"0:{base}:{ID_COUNT}", "--gidmap", f"0:{base}:{ID_COUNT}",
+            "--pull=missing", "--authfile", AUTH_FILE,
+            "--network", "private", "-p", f"{addr}:{d['port']}:22",
+            "-v", f"{home}:/home/{u}", "-v", f"{jobdir}/sys:/etc/ccc/dive:ro",
+            "-v", f"{ENV_CACHE}:/ccc-cache:idmap",
+            "-e", f"CCC_GPUS={','.join(gpus)}", "-e", f"CCC_JOB_ID={jid}"]
+    for dep in deps:
+        argv += ["-v", f"{home / dep}:/home/{u}/{dep}:ro"]
+    for src, dst in dotfile_binds(home, u, [d["main"], *deps]):
+        argv += ["-v", f"{src}:{dst}:ro"]
+    for g in cdi:
+        argv += ["--device", f"nvidia.com/gpu={g}"]
+    for k, v in spec.get("env", {}).items():
+        argv += ["-e", f"{k}={v}"]
+    return argv + [spec["image"], *spec.get("argv", [])]
+
+
+def run_arm_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
+    d = spec["dive"]
+    os.environ["RSYNC_PASSWORD"] = d["secret"]
+    JOBS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
+    ENV_CACHE.mkdir(mode=0o755, parents=True, exist_ok=True)
+    jobdir = JOBS_DIR / jid
+    jobdir.mkdir(mode=0o700, exist_ok=True)
+    home = stage_in(d, jobdir, base + INNER_UID)
+    gpus = gpu_ids(job["gres_idx"])
+    wsl = WSL_DXG.exists() and not _device_minors()
+    proc = subprocess.Popen(dive_argv(spec, jid, base, step, cdi_names(gpus, wsl), gpus, jobdir, home,
+                                      d["deps"], mesh_ip()))
+    done = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: proc.send_signal(signal.SIGTERM))
+
+    def loop():
+        while not done.wait(MIRROR_S):
+            mirror(d, home)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    try:
+        rc = proc.wait()
+    finally:
+        done.set()
+        t.join()
+        # the last word: whatever the shell wrote before the end, inside Slurm's KillWait
+        for _ in range(3):
+            if mirror(d, home):
+                break
+    return rc
+
+
 def _chown_tree(root: Path, uid: int, gid: int) -> None:
     """chown without following symlinks — the container wrote this tree."""
     os.lchown(root, uid, gid)
@@ -233,6 +426,10 @@ def main(argv: list[str]) -> int:
                             capture_output=True, text=True, check=True).stdout
     spec = validate_spec(read_spec(script))
     base = id_base(caller)
+    if "dive" in spec:
+        if head_dive(spec["dive"]["token"]):
+            return run_head_dive(spec["dive"], jid, job)
+        return run_arm_dive(spec, jid, job, step, base)
     gid = pwd.getpwuid(caller).pw_gid
 
     JOBS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
