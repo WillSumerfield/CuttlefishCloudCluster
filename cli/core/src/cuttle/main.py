@@ -20,6 +20,7 @@ from . import setup as setup_mod
 from . import spawns as spawns_mod
 from . import system
 from . import teardown as teardown_mod
+from . import tidepool as tidepool_mod
 from . import ui
 
 # pretty_exceptions_enable=False: ui.run_app owns error rendering (one line, or a traceback under
@@ -40,6 +41,11 @@ app.add_typer(backup_app, name="backup")
 munge_app = typer.Typer(no_args_is_help=True,
                         help="The cluster's shared munge key (rotate on the Head, sync from an Arm).")
 app.add_typer(munge_app, name="munge")
+tidepool_app = typer.Typer(invoke_without_command=True,
+                           help="Your Tidepool: enter it, restart/reset it, manage its SSH keys.")
+app.add_typer(tidepool_app, name="tidepool")
+keys_app = typer.Typer(invoke_without_command=True, help="SSH keys that may log into your Tidepool.")
+tidepool_app.add_typer(keys_app, name="keys")
 feature_app = typer.Typer(no_args_is_help=True,
                           help="Arm Features: heavy/hardware-licence-gated software CCC knows how to run.")
 app.add_typer(feature_app, name="feature")
@@ -419,7 +425,8 @@ def user_remove(
     """Delete a user."""
     username = ui.need(username, "the username", lambda: pickers.pick_user("Which user to delete?"))
     if not yes and ui.interactive():
-        ui.caution(f"deleting {username} and every session they hold")
+        ui.caution(f"deleting {username}, every session they hold, and their Tidepool — "
+                   f"its image and every file in it")
         if not ui.ask_typed(f"Delete {username}?", username):
             raise ui.abort("not deleted")
     auth_mod.user_remove(username)
@@ -561,6 +568,67 @@ def feature_show(name: str = typer.Argument(..., help="A Feature from `cuttle fe
     print(feature_profiles.runtime_summary(name), end="")
 
 
+_TP_USER = typer.Option(None, "--user", help="Act on this User's Tidepool (admin, on the Head).")
+
+
+@tidepool_app.callback()
+def tidepool(ctx: typer.Context):
+    """Enter your Tidepool (ssh). Same as `ssh glados`; VS Code's Remote-SSH host is `glados` too."""
+    if ctx.invoked_subcommand is None:
+        tidepool_mod.enter()
+
+
+@tidepool_app.command("enter")
+def tidepool_enter():
+    """Enter your Tidepool (ssh) — what bare `cuttle tidepool` does."""
+    tidepool_mod.enter()
+
+
+@tidepool_app.command("status")
+def tidepool_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+    """State, disk use against its size, and how to reach it."""
+    tidepool_mod.status(as_json)
+
+
+@tidepool_app.command("restart")
+def tidepool_restart(user: str = _TP_USER):
+    """Restart it: running processes die; installed packages and your files stay."""
+    tidepool_mod.restart(user)
+
+
+@tidepool_app.command("reset")
+def tidepool_reset(user: str = _TP_USER,
+                   yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation.")):
+    """Rebuild it from the base image: your home stays; everything installed outside it is lost."""
+    if not yes and ui.interactive():
+        ui.caution("reset drops every package installed outside your home (apt etc.); files in "
+                   "your home are kept")
+        if not ui.ask_confirm("Reset the Tidepool?", False):
+            raise ui.abort("not reset")
+    tidepool_mod.reset(user)
+
+
+@keys_app.callback()
+def tidepool_keys(ctx: typer.Context,
+                  as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
+    """List the keys (`cuttle login` adds this box's own)."""
+    if ctx.invoked_subcommand is None:
+        tidepool_mod.keys(as_json)
+
+
+@keys_app.command("add")
+def tidepool_key_add(path: Path = typer.Argument(..., help="A public key file, e.g. ~/.ssh/id_ed25519.pub."),
+                     name: str = typer.Option(None, "--name", help="A label (default: the file name).")):
+    """Allow another key in."""
+    tidepool_mod.key_add(path, name)
+
+
+@keys_app.command("remove")
+def tidepool_key_remove(key_id: int = typer.Argument(..., help="Key id from `cuttle tidepool keys`.")):
+    """Stop a key logging in."""
+    tidepool_mod.key_remove(key_id)
+
+
 @app.command("build-installer")
 def build_installer(
     out: Path = typer.Option(
@@ -607,8 +675,9 @@ def teardown(
         False, "--keep-packages", help="Leave apt packages + repos installed (fast config reset)."
     ),
     all_: bool = typer.Option(
-        False, "--all", help="Also remove the images and the Head's TLS cert (forces an image rebuild "
-                             "and a client re-pin next setup). ~/.ccc is removed either way."
+        False, "--all", help="Also remove the images, the Head's TLS cert and every Tidepool image "
+                             "(forces an image rebuild and a client re-pin next setup). ~/.ccc is "
+                             "removed either way."
     ),
     full: bool = typer.Option(
         False, "--full", help="Sweep EVERYTHING cuttle installed — every role's services, packages, "
@@ -642,7 +711,8 @@ def teardown(
         else:
             host = system.hostname()
             ui.caution("this removes Slurm, the mesh, head.db (every account, Balance and ledger row) "
-                       "and ~/.ccc" + (" — plus the images and the TLS cert" if all_ else ""))
+                       "and ~/.ccc" + (" — plus the images, the TLS cert and every Tidepool image"
+                                       if all_ else " (Tidepool images are kept, orphaned)"))
             if not ui.ask_typed(f"Tear down {host}?", host):
                 raise ui.abort("not torn down")
 

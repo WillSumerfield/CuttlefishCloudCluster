@@ -88,6 +88,9 @@ def ccc_home(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SSH_DIR", ssh)
     monkeypatch.setattr(config, "SSH_CONFIG", ssh / "config")
     monkeypatch.setattr(config, "SSH_CCC_CONFIG", ssh / "ccc.config")
+    monkeypatch.setattr(config, "TIDEPOOL_KEY", ssh / "ccc_ed25519")
+    monkeypatch.setattr(config, "TIDEPOOL_SSH_META", home / "tidepool-ssh.json")
+    monkeypatch.setattr(config, "TIDEPOOL_KNOWN_HOSTS", home / "known_hosts")
     # Plain http, so tls pinning is a no-op: certificate handling is its own concern and not one the
     # CLI's behaviour should be coupled to in every test.
     settings.save({"head": "http://head"})

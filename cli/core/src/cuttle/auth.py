@@ -145,6 +145,15 @@ def _login_with(username: str, password: str) -> str:
             _rotate(resp["token"], old=password)
     who = username + (" (admin)" if resp["is_admin"] else "")
     ui.ok(f"logged in as {who}")
+    from . import tidepool
+    try:
+        tidepool.connect()   # key uploaded, `ssh <alias>` written, host key pinned
+        ui.ok(f"Tidepool: ssh {config.TIDEPOOL_ALIAS}")
+    except Exception as e:   # the login itself stands; `cuttle tidepool` retries this
+        if ui.DEBUG:
+            raise
+        ui.warn(f"logged in, but the Tidepool ssh alias was not set up ({e or type(e).__name__}) — "
+                f"`cuttle tidepool` retries")
     return who
 
 
@@ -261,6 +270,8 @@ def _admin(args: list[str], check: bool = True, echo: bool = True):
 def user_add(username: str, admin: bool = False) -> None:
     _admin(["add", *(["--admin"] if admin else []), username])
     ensure_guise_accounts()
+    from . import tidepool
+    tidepool.ensure_all()   # the new User's image + container; back-fills anyone missing one
 
 
 # --- Guises -------------------------------------------------------------------
@@ -341,6 +352,8 @@ def user_list() -> None:
 
 
 def user_remove(username: str) -> None:
+    from . import tidepool
+    tidepool.remove_user(username)   # first: the helper keeps its own record, head.db not needed
     _admin(["remove", username])
 
 

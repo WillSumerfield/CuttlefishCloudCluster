@@ -196,7 +196,7 @@ class TestTheMenuIsDerived:
         check renders arm/user/karma as leaves and silently loses all their subcommands."""
         root = self._root()
         assert [n for n, c in root.commands.items() if menu._is_group(c)] == \
-            ["arm", "user", "karma", "backup", "munge", "feature"]
+            ["arm", "user", "karma", "backup", "munge", "tidepool", "feature"]
 
     def test_hiding_is_menu_only(self, monkeypatch):
         """The command must stay reachable when typed. A detection bug that removed it outright is
@@ -379,8 +379,8 @@ class TestTheMenuIsGroupedNotFlat:
         root = typer.main.get_command(main.app)
         return menu._entries(root, menu.MenuState(**state), "", root)
 
-    def test_the_head_sees_six_rows_not_twenty_five(self):
-        assert len(self._top(**self.HEAD)) == 6
+    def test_the_head_sees_seven_rows_not_twenty_five(self):
+        assert len(self._top(**self.HEAD)) == 7   # Tidepool, 5 folders, dashboard
 
     def test_a_folder_is_never_part_of_a_command_line(self):
         """The whole risk of a synthetic level: a path that reads fine in the menu and is not a

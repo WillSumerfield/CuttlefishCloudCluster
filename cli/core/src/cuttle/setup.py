@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import (api, auth, backup, config, enroll, guest, headapi, menu, mesh, monitor, podman,
-               settings, system, templates, tls, ui)
+               settings, system, templates, tidepool, tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -241,7 +241,8 @@ def write_slurm_config(mesh_ip: str, features: list[dict] | None = None) -> None
         config.SLURM_CONF,
         templates.render_slurm_conf(mesh_ip, config.node_weight(powers) if powers else 1,
                                     features=head_features,
-                                    missing_prolog=missing, missing_tmpfs=missing_tmpfs))
+                                    missing_prolog=missing, missing_tmpfs=missing_tmpfs,
+                                    reserve=tidepool.slurm_reserve()))
     nodes = [templates.head_gres_node()]
     nodes += [(n, e["gpu_devices"]) for n, e in sorted(reg.items())
               if e["admitted"] and not e.get("head")]
@@ -828,6 +829,12 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         head_features = _prompt_arm_features(head_features)
         head_licence = _prompt_licence_home(head_features, head_licence) if head_features else ""
     head_licence = _require_licence_home(head_features, head_licence)
+    # Tidepool sizes: asked here with the other questions; an Update (or a Head set up before
+    # Tidepools) reuses the stored answers, else the scaled defaults.
+    tp_settings = tidepool.load_settings()
+    if not update:
+        tp_settings = tidepool.prompt_settings(tp_settings)
+    tp_settings = tp_settings or tidepool.default_settings()
     preflight()
     address = resolve_coordinator_address(address)  # may prompt — keep it out of the step frames
     # Mesh first, before any apt work: (a) slurm.conf can't be rendered without the Head's mesh IP,
@@ -867,6 +874,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         # `features` explicitly, not left to the registry: on a FIRST setup this box has no registry row
         # yet (register_head_arm runs below, after the admin exists), so there would be nothing to read
         # and the Head would come up with no Feature= line until something re-rendered it.
+        tidepool.save_settings(_write_root_file, tp_settings)  # read back for the node's reserve
         write_slurm_config(mesh_ip, head_features)
         start_daemons()
     with ui.step("Installing the Enroll API"):
@@ -911,6 +919,9 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         provision_env_cache()                    # what every build on this box downloads into
     with ui.step("Building the base and benchmark images"):
         podman.build_images(_write_root_file)    # once per release; pushed for every Arm to pull
+    with ui.step("Starting the Tidepools"):
+        tidepool.install(_write_root_file, tp_settings)  # helper, unit, slice, SSH port range
+        tidepool.ensure_all()                   # one per User; creates what is missing, re-caps the rest
     # The Head's own Arm is an Arm like any other, so it is priced like one. Last, because it is a real
     # job: it needs slurmd up, the images pushed, and rsyncd listening.
     #

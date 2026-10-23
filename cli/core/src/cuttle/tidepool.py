@@ -1,0 +1,207 @@
+"""Tidepool — each User's fixed-size filesystem + always-on CPU container on the Head, reached by SSH.
+
+Two halves:
+- **Head (operator, sudo)**: `setup --head` asks the sizes, installs the root helper
+  (ccc_tidepool.py → /usr/local/sbin/ccc-tidepool), its unit/slice/files, and reconciles a Tidepool for
+  every User; `user add`/`user remove`/`teardown` call the helper. The Head API reaches the helper only
+  through one sudoers rule (restart|reset <user>), and only for the caller's own.
+- **Any box (User)**: `cuttle login` makes `~/.ssh/ccc_ed25519`, uploads its public half, and writes
+  the `Host glados` alias with the Tidepool's host key pinned (sshconfig.py). `cuttle tidepool` ssh's
+  in; plain ssh/scp/rsync/VS Code use the same alias.
+"""
+
+import json
+import os
+import subprocess
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from . import api, auth, config, sshconfig, system, templates, ui
+from .system import run
+
+_HERE = Path(__file__).resolve().parent
+_P10K = Path(__file__).resolve().parents[4] / "head" / "api" / "src" / "ccc_head_api" / "zsh" / "p10k.zsh"
+
+
+# --- Head: settings --------------------------------------------------------------
+
+def load_settings() -> dict | None:
+    try:
+        return json.loads(config.TIDEPOOL_SETTINGS.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def default_settings() -> dict:
+    cpus, mem_gb = system.cpu_count(), system.real_memory_mb() // 1024
+    f = config.TIDEPOOL_DEFAULT_TOTAL_FRACTION
+    return {"image_dir": config.TIDEPOOL_DEFAULT_IMAGE_DIR, "size_gb": config.TIDEPOOL_DEFAULT_SIZE_GB,
+            "cpus": min(config.TIDEPOOL_DEFAULT_CPUS, cpus), "mem_gb": min(config.TIDEPOOL_DEFAULT_MEM_GB, mem_gb),
+            "total_cpus": max(1, cpus // f), "total_mem_gb": max(1, mem_gb // f)}
+
+
+def prompt_settings(existing: dict | None) -> dict:
+    """Asked at `setup --head` (not on update). One size for every User; caps are ceilings."""
+    d = existing or default_settings()
+    s = {"image_dir": ui.ask_text("Folder for Tidepool images (one fixed-size file per User)?",
+                                  d["image_dir"]).strip(),
+         "size_gb": ui.ask_int("Tidepool size per User (GB, reserved up front)?", str(d["size_gb"])),
+         "cpus": ui.ask_int("CPU cap per Tidepool?", str(d["cpus"])),
+         "mem_gb": ui.ask_int("Memory cap per Tidepool (GB)?", str(d["mem_gb"])),
+         "total_cpus": ui.ask_int("CPUs for all Tidepools together (taken off this box's Slurm node)?",
+                                  str(d["total_cpus"])),
+         "total_mem_gb": ui.ask_int("Memory for all Tidepools together (GB, taken off Slurm)?",
+                                    str(d["total_mem_gb"]))}
+    if not s["image_dir"].startswith("/") or Path(s["image_dir"]).resolve().is_relative_to(config.CCC_LIB):
+        raise ui.abort(f"Tidepool folder must be absolute and outside {config.CCC_LIB} "
+                       f"(teardown removes that)")
+    return s
+
+
+def slurm_reserve() -> tuple[int, int]:
+    """(cpus, mem_mb) the Head's Slurm node gives up to the Tidepools — (0, 0) before setup asked."""
+    s = load_settings()
+    return (s["total_cpus"], s["total_mem_gb"] * 1024) if s else (0, 0)
+
+
+def save_settings(write_root_file, s: dict) -> None:
+    write_root_file(config.TIDEPOOL_SETTINGS, json.dumps(s, indent=2, sort_keys=True) + "\n")
+
+
+# --- Head: install / reconcile / remove -------------------------------------------
+
+def install(write_root_file, s: dict) -> None:
+    """Helper, sudoers rule, container-side files, unit template, slice, keys root, SSH port range."""
+    write_root_file(config.TIDEPOOL_HELPER_BIN, (_HERE / "ccc_tidepool.py").read_text(), "755")
+    write_root_file(config.SUDOERS_CCC_TIDEPOOL, templates.render_tidepool_sudoers(), "440")
+    f = config.TIDEPOOL_FILES_DIR
+    write_root_file(f / "init", templates.render_tidepool_init(), "755")
+    write_root_file(f / "sshd_config", templates.TIDEPOOL_SSHD_CONFIG)
+    write_root_file(f / "zshrc", templates.render_tidepool_zshrc())
+    write_root_file(f / "p10k.zsh", _P10K.read_text())
+    write_root_file(config.TIDEPOOL_UNIT, templates.render_tidepool_unit())
+    write_root_file(config.TIDEPOOL_SLICE_UNIT,
+                    templates.render_tidepool_slice(s["total_cpus"], s["total_mem_gb"]))
+    run(["install", "-d", "-m", "0755", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
+         str(config.TIDEPOOL_KEYS_ROOT)], sudo=True)
+    run(["install", "-d", "-m", "0755", str(config.TIDEPOOL_MNT_ROOT)], sudo=True)
+    run(["install", "-d", "-m", "0700", str(s["image_dir"])], sudo=True)
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "start", config.TIDEPOOL_SLICE], sudo=True)
+    system.allow_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count(),
+                                "ccc tidepool ssh (LAN+mesh)")
+
+
+def _port_count() -> int:
+    return config.GUISE_UID_MAX - config.CCC_UID
+
+
+def _helper(*args: str, check: bool = True):
+    r = run([str(config.TIDEPOOL_HELPER_BIN), *args], sudo=True, check=check, capture_output=True,
+            text=True)
+    if (r.stdout or "").strip():
+        ui.say(f"  [muted]{r.stdout.strip()}[/muted]")
+    return r
+
+
+def ensure_all() -> None:
+    """A Tidepool for every User (idempotent: creates what is missing, re-applies caps)."""
+    for uid, name in auth.guise_accounts():
+        _helper("create", name, str(uid))
+
+
+def remove_user(name: str) -> None:
+    _helper("remove", name, check=False)
+
+
+def teardown(all_: bool) -> None:
+    """Every Tidepool stopped and unmounted (images kept unless `all_`), then CCC's shared pieces."""
+    if config.TIDEPOOL_HELPER_BIN.exists():
+        _helper("teardown", *(["--all"] if all_ else []), check=False)
+    system.deny_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count())
+    run(["systemctl", "stop", config.TIDEPOOL_SLICE], sudo=True, check=False)
+    run(["rm", "-rf", str(config.TIDEPOOL_HELPER_BIN), str(config.SUDOERS_CCC_TIDEPOOL),
+         str(config.TIDEPOOL_FILES_DIR), str(config.TIDEPOOL_UNIT), str(config.TIDEPOOL_SLICE_UNIT),
+         str(config.TIDEPOOL_RECORDS), str(config.TIDEPOOL_SETTINGS)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
+# --- any box: the User's own Tidepool -----------------------------------------------
+
+def _ensure_key() -> str:
+    """`~/.ssh/ccc_ed25519`, made once; returns the public line."""
+    key = config.TIDEPOOL_KEY
+    if not key.exists():
+        config.SSH_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+                        f"ccc@{system.hostname()}", "-f", str(key)], check=True)
+    return key.with_suffix(".pub").read_text().strip()
+
+
+def _head_host() -> str:
+    return urlsplit(api._head_url()).hostname
+
+
+def connect() -> dict:
+    """Make sure this box can `ssh glados`: key uploaded, alias written, host key pinned."""
+    pub = _ensure_key()
+    have = {k["pubkey"] for k in auth._api("GET", "/ssh-keys")}
+    if pub not in have:
+        auth._api("POST", "/ssh-keys", body={"pubkey": pub, "name": f"cuttle@{system.hostname()}"})
+    tp = auth._api("GET", "/tidepool")
+    meta = {"host": _head_host(), "port": tp["port"], "user": tp["user"]}
+    config.ensure_ccc_home()
+    config.TIDEPOOL_SSH_META.write_text(json.dumps(meta) + "\n")
+    if tp.get("host_key"):
+        config.TIDEPOOL_KNOWN_HOSTS.write_text(f"{config.TIDEPOOL_HOSTKEY_ALIAS} {tp['host_key']}\n")
+    sshconfig.refresh()
+    return tp
+
+
+def enter() -> None:
+    """Refresh the alias (port/host key may have changed at a reset or re-setup), then ssh in."""
+    tp = connect()
+    if tp["state"] != "active":
+        ui.warn(f"your Tidepool is {tp['state']} — `cuttle tidepool restart`, or ask an admin")
+    os.execvp("ssh", ["ssh", config.TIDEPOOL_ALIAS])
+
+
+def _act(verb: str, user: str | None) -> None:
+    """Restart/reset: your own via the Head API; `--user` (operator, on the Head) via the helper."""
+    if user:
+        _helper(verb, user)
+    else:
+        auth._api("POST", f"/tidepool/{verb}")
+    ui.ok(f"Tidepool {verb} done" if verb == "reset" else "Tidepool restarted")
+
+
+def restart(user: str | None = None) -> None:
+    _act("restart", user)
+
+
+def reset(user: str | None = None) -> None:
+    _act("reset", user)
+
+
+def status(as_json: bool = False) -> None:
+    tp = auth._api("GET", "/tidepool")
+    ui.emit(tp, as_json, lambda: ui.kv([
+        ("state", tp["state"]), ("used", f"{tp['used_gb']:.1f} / {tp['size_gb']} GB"),
+        ("ssh", f"ssh {config.TIDEPOOL_ALIAS}"), ("port", tp["port"])]))
+
+
+def keys(as_json: bool = False) -> None:
+    rows = auth._api("GET", "/ssh-keys")
+    ui.emit(rows, as_json, lambda: ui.table(
+        ["id", "name", "key"], [[k["id"], k["name"] or "", k["pubkey"][:48] + "…"] for k in rows]))
+
+
+def key_add(path: Path, name: str | None) -> None:
+    pub = path.expanduser().read_text().strip()
+    auth._api("POST", "/ssh-keys", body={"pubkey": pub, "name": name or path.name})
+    ui.ok("key added")
+
+
+def key_remove(key_id: int) -> None:
+    auth._api("DELETE", f"/ssh-keys/{key_id}")
+    ui.ok("key removed")

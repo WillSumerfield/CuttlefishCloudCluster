@@ -50,7 +50,7 @@ HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "
 # submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
 # absent; `karma` (standings) is a read behind the session and belongs here.
 LOGIN_REQUIRED = {"queue", "history", "status", "logs", "cancel", "karma",
-                  "tide", "account", "logout", "whoami", "passwd"}
+                  "tide", "account", "logout", "whoami", "passwd", "tidepool"}
 
 
 @dataclass
@@ -107,6 +107,15 @@ LABELS = {
     "cancel": "Cancel a Spawn",
 
     # The cluster.
+    "tidepool": "My Tidepool",
+    "tidepool enter": "Enter it (ssh)",
+    "tidepool status": "See its state and disk use",
+    "tidepool restart": "Restart it (files + packages kept)",
+    "tidepool reset": "Reset it from the base (home kept)",
+    "tidepool keys": "SSH keys",
+    "tidepool keys add": "Allow another key",
+    "tidepool keys remove": "Remove a key",
+
     "karma": "Karma",
     "karma ledger": "My ledger",
     "karma bump": "Bump a Spawn up the queue",
@@ -182,7 +191,7 @@ BACK = "\0back"
 QUIT = "\0quit"
 
 # Never the pre-selected entry: destructive, and one arrow key from `setup`.
-NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
+NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset"}
 
 # Top-level order — by how often you reach for it, not by declaration order in main.py. The first
 # entry is pre-selected, so it should be the daily verb rather than the one that re-provisions the
@@ -195,7 +204,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove"}
 # Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
 # inside a real group the declaration order does — both because the sort is stable and everything
 # unlisted ties.
-ORDER = [f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
+ORDER = ["tidepool", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
          "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 

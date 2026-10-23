@@ -11,7 +11,7 @@ import glob
 import shutil
 import time
 
-from . import api, config, guest, menu, mesh, podman, settings, sshconfig, system, ui
+from . import api, config, guest, menu, mesh, podman, settings, sshconfig, system, tidepool, ui
 from .system import run
 
 
@@ -103,7 +103,8 @@ def remove_enroll_api() -> None:
     (install_enroll built it), and the munge-owned registry dir."""
     run(["rm", "-f", str(config.ENROLL_API_UNIT), str(config.SUDOERS_MUNGE_HEADSCALE)],
         sudo=True, check=False)
-    run(["rm", "-rf", str(config.API_VENV.parent), str(config.CCC_LIB)], sudo=True, check=False)
+    run(["rm", "-rf", "--one-file-system", str(config.API_VENV.parent), str(config.CCC_LIB)],
+        sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
@@ -285,7 +286,7 @@ def remove_arm_state() -> None:
 
     NOT the Licence *directory*: that is the Licence account's home, and it holds machine activations
     the vendor may grant a finite number of times. See `remove_licence_account`."""
-    run(["rm", "-rf", str(config.CCC_LIB)], sudo=True, check=False)
+    run(["rm", "-rf", "--one-file-system", str(config.CCC_LIB)], sudo=True, check=False)
     prune_opt_dir()
 
 
@@ -532,6 +533,8 @@ def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     revoke_session()      # before stop_daemons: on a Head box the API it asks is the one being stopped
     with ui.step("Ending any Spawns still running"):
         cancel_spawns()   # before stop_daemons: scancel needs slurmctld
+    with ui.step("Stopping the Tidepools" + (" and deleting their images" if all_ else "")):
+        tidepool.teardown(all_)  # unmounted BEFORE anything rm -rf's CCC_LIB, where they mount
     with ui.step("Stopping the cluster's services"):
         stop_daemons()
     with ui.step("Removing the Head's services"):
@@ -592,6 +595,8 @@ def teardown_full(keep_packages: bool = False) -> None:
     with ui.section("Removing everything CCC", lambda: "removed"):
         system.prime_sudo()     # sudo as the box's first row, before any step rows grow the frame
         revoke_session()        # before anything below cuts the road to the Head — whichever box this is
+        with ui.step("Stopping the Tidepools and deleting their images"):
+            tidepool.teardown(True)  # unmounted BEFORE anything rm -rf's CCC_LIB, where they mount
         with ui.step("Stopping every CCC service"):
             cancel_spawns()     # first: scancel needs the slurmctld the next line stops
             stop_daemons()      # Head services (no-ops where the units never existed)

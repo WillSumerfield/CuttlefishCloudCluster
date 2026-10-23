@@ -1,4 +1,5 @@
-"""`~/.ssh/ccc.config`: one real ssh `Host` alias per live **Tide Pool**, so anything that speaks ssh
+"""`~/.ssh/ccc.config`: the **Tidepool** alias (`Host glados`, written at `cuttle login`) plus one real
+ssh `Host` alias per live **Tide Pool** (Dive from phase 4, dormant), so anything that speaks ssh
 — VS Code's Remote-SSH, `scp`, a plain `ssh ccc-tp-58` — can reach a Pod without anyone ever handling
 a key or a port.
 
@@ -25,7 +26,7 @@ from . import config, ui
 # sessions and nothing else.
 TP_PREFIX = "ccc-tp-"
 INCLUDE_LINE = "Include ccc.config"
-_HEADER = ("# Written by cuttle. Regenerated in full on every Tide Pool open —\n"
+_HEADER = ("# Written by cuttle. Regenerated in full at login and every Tide Pool open —\n"
            "# anything you add here is lost. Edit ~/.ssh/config instead.\n")
 
 
@@ -102,6 +103,29 @@ def _block(row: dict) -> str:
     ]) + "\n"
 
 
+def tidepool_block() -> str:
+    """`Host glados` → the User's Tidepool on the Head. The host key is pinned (no TOFU prompt, no
+    StrictHostKeyChecking=no): `cuttle login` writes it from the Head API to TIDEPOOL_KNOWN_HOSTS,
+    keyed by HostKeyAlias so it holds whatever address this box reaches the Head at."""
+    try:
+        m = json.loads(config.TIDEPOOL_SSH_META.read_text())
+    except (OSError, ValueError):
+        return ""
+    return "\n".join([
+        f"Host {config.TIDEPOOL_ALIAS}",
+        f"  HostName {m['host']}",
+        f"  Port {m['port']}",
+        f"  User {m['user']}",
+        f"  IdentityFile {config.TIDEPOOL_KEY}",
+        "  IdentitiesOnly yes",
+        f"  HostKeyAlias {config.TIDEPOOL_HOSTKEY_ALIAS}",
+        f"  UserKnownHostsFile {config.TIDEPOOL_KNOWN_HOSTS}",
+        "  StrictHostKeyChecking yes",
+        "  ForwardAgent yes",
+        "  ServerAliveInterval 30",
+    ]) + "\n"
+
+
 def refresh(live: set[int] | None = None) -> None:
     """Prune dead sessions and rewrite `~/.ssh/ccc.config` from what is left.
 
@@ -121,7 +145,8 @@ def refresh(live: set[int] | None = None) -> None:
         rows = [r for r in rows if r["id"] in live]
     try:
         config.SSH_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-        body = _HEADER + "\n" + "\n".join(_block(r) for r in rows)
+        body = _HEADER + "\n" + "\n".join([b for b in [tidepool_block()] if b] +
+                                            [_block(r) for r in rows])
         config.SSH_CCC_CONFIG.write_text(body)
         config.SSH_CCC_CONFIG.chmod(0o600)
         _ensure_include()
@@ -144,7 +169,7 @@ def _ensure_include() -> None:
     # carries one, and a User who added the Include themselves will not have written ours.
     if any(line.split("#", 1)[0].strip() == INCLUDE_LINE for line in existing.splitlines()):
         return
-    config.SSH_CONFIG.write_text(f"{INCLUDE_LINE}   # cuttle: live CCC tide pools\n\n{existing}")
+    config.SSH_CONFIG.write_text(f"{INCLUDE_LINE}   # cuttle: your CCC Tidepool\n\n{existing}")
     config.SSH_CONFIG.chmod(0o600)
 
 
@@ -182,6 +207,8 @@ def remove() -> None:
     for byte.
     """
     config.SSH_CCC_CONFIG.unlink(missing_ok=True)
+    config.TIDEPOOL_KEY.unlink(missing_ok=True)
+    config.TIDEPOOL_KEY.with_suffix(".pub").unlink(missing_ok=True)
     if not config.SSH_CONFIG.is_file():
         return
     lines = config.SSH_CONFIG.read_text().splitlines(keepends=True)
