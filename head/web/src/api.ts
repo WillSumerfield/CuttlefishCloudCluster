@@ -315,3 +315,29 @@ export async function changePassword(oldPassword: string, newPassword: string): 
     body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
   })
 }
+
+// The caller's own Tidepool (always theirs — no route takes a username). `used_gb` is 0 while the
+// image is not mounted (`mounted` false); `size_gb` is null on a Head set up before Tidepools.
+export type Tidepool = {
+  state: string
+  used_gb: number
+  mounted: boolean
+  size_gb: number | null
+  port: number | null
+  user: string
+  host_key: string | null
+  alias: string
+}
+export const getTidepool = () => json<Tidepool>('/tidepool')
+export const tidepoolAct = (verb: 'restart' | 'reset') =>
+  req(`/tidepool/${verb}`, { method: 'POST' }).then(() => {})
+
+export type SshKey = { id: number; name: string | null; pubkey: string; added_at: string }
+export const getSshKeys = () => json<SshKey[]>('/ssh-keys')
+export const addSshKey = (pubkey: string, name?: string) =>
+  req('/ssh-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pubkey, name: name || null }),
+  }).then(() => {})
+export const removeSshKey = (id: number) => req(`/ssh-keys/${id}`, { method: 'DELETE' }).then(() => {})

@@ -6,6 +6,7 @@ import { Link } from "../app/router";
 import { Tip } from "../app/Tip";
 import { FleshCell } from "../account/FleshCell";
 import { PasswordForm } from "../account/PasswordForm";
+import { TidepoolCard } from "../account/TidepoolCard";
 
 /**
  * Account — yourself. The identity sits bold on the right with your pigment bloom (you, as the cluster sees
@@ -78,6 +79,8 @@ export function AccountPage() {
               <FactRow to="/karma" label="Karma" help="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all." value={standing} />
               <FactRow to="/arms" label="Arms" help="Machines you've donated. Each one earns you Karma whenever somebody else's work runs on it." value={armsValue} />
             </div>
+
+            <TidepoolCard onUnauthorized={logout} />
 
             <PasswordForm onUnauthorized={logout} />
 
