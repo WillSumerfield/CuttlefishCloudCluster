@@ -607,6 +607,21 @@ TIDEPOOL_DEFAULT_MEM_GB = 16
 TIDEPOOL_DEFAULT_TOTAL_FRACTION = 4                    # total slice = 1/4 of the box
 # Client side: the pinned host key's alias (the Tidepool's own alias is cluster_name()).
 TIDEPOOL_HOSTKEY_ALIAS = "ccc-tidepool"
+# `cuttle` inside every Tidepool and Dive: a self-contained env built in a throwaway base container
+# (incontainer.py), bind-mounted ro at the same path; PATH gets its `path/` (not `bin/`: that holds a
+# `python`). Plus what lets it talk to the Head with no login (an **ambient** session): the Cluster
+# name, the CA, and a narrow token the API mints — per User in the Tidepool, per Dive in a Dive.
+CONTAINER_CUTTLE = Path("/usr/local/lib/ccc/cuttle")
+CONTAINER_CA = Path("/etc/ccc/ca.crt")                 # inside: the Head CA (Arm: its trusted copy)
+AMBIENT_SESSIONS = (Path("/etc/ccc/keys/session"),     # inside a Tidepool (tidepool-keys/<user>/)
+                    Path("/etc/ccc/dive/session"))     # inside an Arm Dive (<tok>/sys/)
+
+
+def ambient_session() -> Path | None:
+    """Inside a Tidepool/Dive: the token file the Head minted for it (None anywhere else)."""
+    return next((p for p in AMBIENT_SESSIONS if os.access(p, os.R_OK)), None)
+
+
 # Dives — the helper's per-Dive state (ccc_tidepool.DIVE_*; must match).
 DIVE_RECORDS = Path("/etc/ccc/dives")                  # <token>.json, root
 DIVE_RSYNCD = Path("/etc/ccc/rsyncd-dives.d")          # per-Dive rsync modules, root; rsyncd &includes

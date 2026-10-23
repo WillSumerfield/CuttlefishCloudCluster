@@ -11,7 +11,8 @@ import glob
 import shutil
 import time
 
-from . import api, config, guest, menu, mesh, podman, settings, sshconfig, system, tidepool, ui
+from . import (api, config, guest, incontainer, menu, mesh, podman, settings, sshconfig, system,
+               tidepool, ui)
 from .system import run
 
 
@@ -303,6 +304,7 @@ def remove_containers(all_: bool) -> None:
     Before the package purge — it needs `podman`. Images + registry store only under --all: they are
     frozen per release and multi-GB, and --all is the only way a changed image reaches this box."""
     podman.remove(all_)
+    incontainer.remove()
 
 
 def remove_env_tools() -> None:

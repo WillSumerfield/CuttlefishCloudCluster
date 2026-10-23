@@ -26,10 +26,16 @@ _REQUEST_TIMEOUT_S = 900       # the system layer is snapshotted + pushed before
 _WARN_MAX_S = 5 * 60
 _WARN_MIN_S = 30
 _TIDEPOOL_MARK = Path("/etc/ccc/tidepool/init")
+_DIVE_MARK = Path("/etc/ccc/dive")
 
 
 def in_tidepool() -> bool:
     return _TIDEPOOL_MARK.exists()
+
+
+def in_container() -> bool:
+    """Inside a Tidepool or a Dive: `cuttle` runs on the ambient session, with no key or alias here."""
+    return in_tidepool() or _DIVE_MARK.exists()
 
 
 def main_rel(main: str | None, cwd: Path | None = None, home: Path | None = None) -> str:
@@ -54,7 +60,8 @@ def main_rel(main: str | None, cwd: Path | None = None, home: Path | None = None
 def request(main: str | None, deps: list[str] | None, gpus: int | None, vram: int | None,
             time_: str | None, features: list[str] | None, env: str | None, vscode: bool = False) -> None:
     rel = main_rel(main)
-    tidepool.connect()   # key uploaded, alias + pinned host key fresh
+    if not in_container():
+        tidepool.connect()   # key uploaded, alias + pinned host key fresh
     body = {"main": rel, "deps": [d.removeprefix("~/").strip("/") for d in deps] if deps else None,
             "gpus": gpus, "vram": vram, "time": time_, "features": features or None, "env": env}
     with ui.step("snapshotting your Tidepool and queueing the Dive"):
@@ -115,6 +122,14 @@ def _live_ids() -> set[int] | None:
 def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     dive_id = dive_id or _pick("Attach to which Dive?")
     info = _wait_ready(dive_id)
+    if in_container():
+        # No key or alias in here: the shell is reached from your own machine.
+        if info["head"]:
+            ui.ok(f"Dive {dive_id} is on the Head: this Tidepool now has the GPU")
+        else:
+            ui.ok(f"Dive {dive_id} is up on {info.get('node')} — from your own machine: "
+                  f"`cuttle dive attach {dive_id}`")
+        return
     sshconfig.record(dive_id, port=info["port"], user=info["user"], host=tidepool._head_host())
     live = _live_ids()
     sshconfig.refresh(None if live is None else live | {dive_id})

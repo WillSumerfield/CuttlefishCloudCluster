@@ -29,6 +29,7 @@ Stdlib only, no CCC imports: it runs under the system python as root.
 import base64
 import json
 import os
+import pwd
 import re
 import shutil
 import signal
@@ -46,6 +47,8 @@ AUTH_FILE = "/etc/ccc/registry-auth.json"       # config.REGISTRY_AUTH (the Head
 MNT_ROOT = Path("/var/lib/ccc/tidepools")       # config.TIDEPOOL_MNT_ROOT
 KEYS_ROOT = Path("/var/lib/ccc/head/tidepool-keys")  # config.TIDEPOOL_KEYS_ROOT
 FILES_DIR = Path("/usr/local/lib/ccc/tidepool")  # config.TIDEPOOL_FILES_DIR
+CUTTLE_ENV = Path("/usr/local/lib/ccc/cuttle")    # config.CONTAINER_CUTTLE
+MESH_IFACE = "ccc0"                               # config.CCC_TS_TUN
 RECORDS = Path("/etc/ccc/tidepools.d")          # config.TIDEPOOL_RECORDS
 UNIT_DIR = Path("/etc/systemd/system")
 MAIN_STORE = "/var/lib/containers/storage"
@@ -64,7 +67,7 @@ USER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")  # ccc_head_api.admin.USERNAME_
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 # Bumped when create_argv changes in a way an existing container must be recreated for (home kept).
-SPEC_VERSION = "2"
+SPEC_VERSION = "3"
 CDI_SPEC = Path("/var/run/cdi/nvidia.yaml")      # config.CDI_SPEC
 
 
@@ -125,7 +128,18 @@ def head_gpus() -> bool:
     return CDI_SPEC.exists() and any(Path("/dev").glob("nvidia[0-9]*"))
 
 
-def create_argv(user: str, uid: int, s: dict, base_ref: str, gpus: bool = False) -> list[str]:
+def mesh_ip() -> str:
+    """The Head's mesh address: what `ccc.<name>` means inside a Tidepool (the API listens on all)."""
+    out = subprocess.run(["/usr/sbin/ip", "-4", "-o", "addr", "show", "dev", MESH_IFACE],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", out)
+    if not m:
+        raise Refused(f"no mesh address on {MESH_IFACE}")
+    return m[1]
+
+
+def create_argv(user: str, uid: int, s: dict, base_ref: str, head_ip: str,
+                gpus: bool = False) -> list[str]:
     b = id_base(uid)
     m = mnt(user)
     return [*podman(user), "create", "--pull=never", "--name", container(user), "--hostname", "tidepool",
@@ -140,6 +154,11 @@ def create_argv(user: str, uid: int, s: dict, base_ref: str, gpus: bool = False)
             "-v", f"{m / 'ssh'}:/etc/ccc/hostkeys:ro",
             "-v", f"{KEYS_ROOT / user}:/etc/ccc/keys:ro",
             "-v", f"{FILES_DIR}:/etc/ccc/tidepool:ro",
+            # `cuttle` inside, and what it needs to reach the API with the ambient session in keys/
+            "-v", f"{CUTTLE_ENV}:{CUTTLE_ENV}:ro",
+            "-v", f"{CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
+            "-v", f"{CA_CERT}:/etc/ccc/ca.crt:ro",
+            "--add-host", f"ccc.{CLUSTER_NAME_FILE.read_text().strip()}:{head_ip}",
             base_ref, "/etc/ccc/tidepool/init"]
 
 
@@ -197,7 +216,9 @@ def ensure_mount(user: str, img: Path) -> None:
 
 def ensure_dirs(user: str, uid: int) -> None:
     """home/ (the User, uid 1000 inside), storage/ (root), ssh/ (container root, host key), and the
-    keys dir the Head API writes authorized_keys into (`ccc`, read-only in the container)."""
+    keys dir the Head API writes authorized_keys + the ambient session into (`ccc`, read-only in the
+    container). Group = the User's mapped gid, setgid, 2751: the session (0640) is readable inside by
+    the User and by no other host account; authorized_keys (0644) still by the container's sshd."""
     b, m = id_base(uid), mnt(user)
     for d, owner, mode in ((m / "home", b + INNER_UID, 0o750), (m / "storage", 0, 0o700),
                            (m / "ssh", b, 0o700)):
@@ -210,8 +231,9 @@ def ensure_dirs(user: str, uid: int) -> None:
         for p in (key, key.with_suffix(".pub")):
             os.chown(p, b, b)
     keys = KEYS_ROOT / user
-    keys.mkdir(parents=True, exist_ok=True, mode=0o755)
-    shutil.chown(keys, API_USER, API_USER)
+    keys.mkdir(parents=True, exist_ok=True)
+    os.chown(keys, pwd.getpwnam(API_USER).pw_uid, b + INNER_UID)
+    keys.chmod(0o2751)
     shutil.copyfile(key.with_suffix(".pub"), keys / "host_ed25519.pub")
     Path(f"/run/ccc-tidepools/{user}").mkdir(parents=True, exist_ok=True, mode=0o700)
 
@@ -247,7 +269,7 @@ def ensure_container(user: str, uid: int, s: dict) -> None:
     # once into the main store (layers already there — only the manifest moves). Never into the User's.
     if not ok("podman", "image", "exists", base):
         sh("podman", "pull", "-q", "--authfile", AUTH_FILE, base, capture_output=True)
-    sh(*create_argv(user, uid, s, base, gpus=head_gpus()), capture_output=True)
+    sh(*create_argv(user, uid, s, base, mesh_ip(), gpus=head_gpus()), capture_output=True)
 
 
 def create(user: str, uid: int) -> None:
@@ -572,6 +594,12 @@ def dive_open(user: str, tok: str, req: dict) -> None:
     else:
         (sysd / "authorized_keys").touch()
     os.chmod(sysd / "authorized_keys", 0o644)
+    # The Dive's ambient session: `cuttle` inside reads it as the User (uid 1000 inside).
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", req.get("session") or ""):
+        raise Refused("bad Dive session token")
+    (sysd / "session").write_text(req["session"] + "\n")
+    os.chmod(sysd / "session", 0o400)
+    os.chown(sysd / "session", b + INNER_UID, b + INNER_UID)
     d = {"token": tok, "user": user, "uid": uid, "main": main, "deps": deps, "image": req["image"],
          "locked": False, "head": None}
     save_dive(tok, d)
@@ -725,8 +753,10 @@ def dive_gpu_revoke_job(jid: str) -> None:
 
 def started(user: str) -> None:
     """ExecStartPost: a (re)started container has a fresh scope — deny the GPU again (or grant what
-    live Head Dives hold) and put the main-folder locks back."""
+    live Head Dives hold) and put the main-folder locks back. Its ambient session is rotated."""
     check_user(user)
+    # A fresh start rotates the ambient session: the Head API's tick mints the next one.
+    (KEYS_ROOT / user / "session").unlink(missing_ok=True)
     if not _ctr_pid(user, wait_s=60):
         return
     if head_gpus():

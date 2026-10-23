@@ -148,6 +148,9 @@ class TestRequest:
         assert out["id"] == 77 and out["minutes"] == 120
         opened = h.calls[2][1]
         assert D.load_toml(opened["toml"]) == {"time": "2h"}   # args become the folder's defaults
+        with db.connect() as conn:   # the Dive's ambient session, handed to the helper for sys/
+            user = db.lookup_session(conn, opened["session"])
+        assert user["username"] == "alice" and user["session_scope"] == "dive"
         script = h.calls[3][1]
         assert "#SBATCH --time=120" in script and "--gres=gpu:1" in script
         assert f'exec sudo -n {D.LAUNCH} "$SLURM_JOB_ID"' in script
@@ -197,6 +200,7 @@ class TestRequest:
 
 def _client(monkeypatch, user=ALICE):
     head_main.app.dependency_overrides[head_main.current_user] = lambda: user
+    head_main.app.dependency_overrides[head_main.ambient_user] = lambda: user
     return TestClient(head_main.app)
 
 
@@ -270,8 +274,11 @@ class TestClose:
         monkeypatch.setattr(D.subprocess, "run",
                             lambda a, **k: ran.append(a) or subprocess.CompletedProcess(a, 0, "", ""))
         with db.connect() as conn:
+            gone = db.create_session(conn, 1, scope="dive", dive=f"{77:032x}")
+            kept = db.create_session(conn, 1, scope="dive", dive=f"{78:032x}")
             D.reap_dead(conn, {78})
             assert db.get_dive(conn, 77)["closed"] and not db.get_dive(conn, 78)["closed"]
+            assert db.lookup_session(conn, gone) is None and db.lookup_session(conn, kept)
             assert db.used_dive_ports(conn) == {31001}
         assert ran == [["sudo", "-n", D.HELPER, "dive-close", f"{77:032x}"]]
 

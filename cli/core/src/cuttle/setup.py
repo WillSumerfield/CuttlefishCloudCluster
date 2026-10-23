@@ -22,8 +22,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import (api, auth, backup, config, enroll, guest, headapi, menu, mesh, monitor, podman,
-               settings, system, templates, tidepool, tls, ui)
+from . import (api, auth, backup, config, enroll, guest, headapi, incontainer, menu, mesh, monitor,
+               podman, settings, system, templates, tidepool, tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -946,6 +946,8 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         provision_env_cache()                    # what every build on this box downloads into
     with ui.step("Building the base and benchmark images"):
         podman.build_images(_write_root_file)    # once per release; pushed for every Arm to pull
+    with ui.step("Building cuttle for inside the containers"):
+        incontainer.build(podman.load_images()["base"])   # before the Tidepools mount it
     with ui.step("Starting the Tidepools"):
         tidepool.install(_write_root_file, tp_settings)  # helper, unit, slice, SSH port range
         tidepool.ensure_all()                   # one per User; creates what is missing, re-caps the rest
@@ -1452,6 +1454,8 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
                                    info["registry"]["password"])
         podman.pull_images(info["images"])
         podman.prune_images(info["images"])
+    with ui.step("Building cuttle for inside the Dives"):
+        incontainer.build(info["images"]["base"])
     # Every Environment this Arm ever runs is built HERE, at job start, out of this box's own bandwidth
     # — a Head-built env had to cross the mesh, and that measured 29 minutes for a 4.6 GB torch tree
     # (config.ENV_TOOLS_DIR). So the tools and the cache are part of enrolling, not Head furniture.

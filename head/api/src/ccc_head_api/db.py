@@ -107,7 +107,9 @@ CREATE TABLE sessions (
   token_sha256 TEXT    PRIMARY KEY,
   user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  expires_at   TEXT    NOT NULL
+  expires_at   TEXT    NOT NULL,
+  scope        TEXT    NOT NULL DEFAULT 'full',   -- full | tidepool | dive (ambient, see main.py)
+  dive         TEXT                               -- scope=dive: the Dive's token; revoked at its close
 );
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 
@@ -198,7 +200,8 @@ CREATE TABLE guises (
 
 # PRAGMA user_version of a 2.0 head.db. Above every step of the 1.x ladder (1..21), so a 1.x store can
 # never read as this one. 23: ssh_keys (Tidepool). 24: dives + dive_ports (replace tidepools).
-SCHEMA_VERSION = 24
+# 25: sessions.scope/dive (ambient sessions inside containers).
+SCHEMA_VERSION = 25
 
 
 # --- connection + schema ----------------------------------------------------
@@ -384,29 +387,48 @@ def live_guises(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 # --- sessions ---------------------------------------------------------------
 
-def create_session(conn: sqlite3.Connection, user_id: int) -> str:
+def create_session(conn: sqlite3.Connection, user_id: int, scope: str = "full",
+                   dive: str | None = None) -> str:
     """Mint an opaque session token, store only its sha256, return the raw token to the client."""
     token = secrets.token_urlsafe(_TOKEN_BYTES)
     expires = (_now() + timedelta(days=SESSION_TTL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO sessions (token_sha256, user_id, expires_at) VALUES (?,?,?)",
-        (_sha256(token), user_id, expires),
+        "INSERT INTO sessions (token_sha256, user_id, expires_at, scope, dive) VALUES (?,?,?,?,?)",
+        (_sha256(token), user_id, expires, scope, dive),
     )
     conn.commit()
     return token
 
 
+def session_fresh(conn: sqlite3.Connection, token: str, days: int) -> bool:
+    """Valid for at least `days` more."""
+    return conn.execute(
+        """SELECT 1 FROM sessions WHERE token_sha256 = ?
+           AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now', ?)""",
+        (_sha256(token), f"+{days} days")).fetchone() is not None
+
+
+def delete_tidepool_sessions(conn: sqlite3.Connection, user_id: int) -> None:
+    conn.execute("DELETE FROM sessions WHERE scope='tidepool' AND user_id=?", (user_id,))
+    conn.commit()
+
+
+def delete_dive_session(conn: sqlite3.Connection, dive: str) -> None:
+    conn.execute("DELETE FROM sessions WHERE scope='dive' AND dive=?", (dive,))
+    conn.commit()
+
+
 def lookup_session(conn: sqlite3.Connection, token: str) -> sqlite3.Row | None:
     """Resolve a token to its user, or None if unknown/expired. Expiry checked in SQL (UTC)."""
     return conn.execute(
-        """SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+        """SELECT u.*, s.scope AS session_scope FROM sessions s JOIN users u ON u.id = s.user_id
            WHERE s.token_sha256 = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')""",
         (_sha256(token),),
     ).fetchone()
 
 
 def delete_session(conn: sqlite3.Connection, token: str) -> None:
-    conn.execute("DELETE FROM sessions WHERE token_sha256=?", (_sha256(token),))
+    conn.execute("DELETE FROM sessions WHERE token_sha256=? AND scope='full'", (_sha256(token),))
     conn.commit()
 
 

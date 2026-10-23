@@ -151,6 +151,7 @@ fi
 cat >> /etc/zsh/zshenv <<EOF
 export UV_CACHE_DIR=/ccc-cache/uv MAMBA_ROOT_PREFIX=/ccc-cache/mamba PIP_CACHE_DIR=/ccc-cache/pip
 export CCC_JOB_ID=$CCC_JOB_ID CCC_DIVE_VENV="$venv"
+export PATH=/usr/local/lib/ccc/cuttle/path:\$PATH
 EOF
 cat >> /etc/zsh/zshrc <<'EOF'
 case "$(cat /run/ccc-env.status 2>/dev/null)" in
@@ -314,8 +315,10 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
                if k in TOML_KEYS and v not in (None, [], "")}
         image = helper("dive-snap", name, tok)["image"]
         secret = secrets.token_urlsafe(32)
+        with db.connect() as conn:   # the Dive's ambient session (`cuttle` inside), gone at its close
+            session = db.create_session(conn, user["id"], scope="dive", dive=tok)
         helper("dive-open", name, tok, stdin={
-            "main": main, "deps": deps, "secret": secret, "image": image,
+            "main": main, "deps": deps, "secret": secret, "image": image, "session": session,
             "toml": dump_toml(new) if load_toml(dump_toml(new)) != toml else None})
         spec = make_spec(name, tok, secret, image, main, deps, port, s["env"])
         body = render_job(spec, s["gpus"], s["minutes"], constraint, exclude)
@@ -340,8 +343,9 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
             helper("dive-close", tok)
         except Exception:
             log.exception("could not close Dive %s's helper state", tok)
-        if port is not None:
-            with db.connect() as conn:
+        with db.connect() as conn:
+            db.delete_dive_session(conn, tok)
+            if port is not None:
                 db.release_dive_port(conn, port)
         raise
     log.info("dive id=%s user=%s main=%s deps=%s gpus=%s minutes=%s", job_id, name, main, deps,
@@ -486,4 +490,5 @@ def reap_dead(conn, live_job_ids: set[int]) -> None:
         if r.returncode != 0:
             log.warning("dive-close %s (job %s) failed: %s", row["token"], row["job_id"], r.stderr.strip())
             continue
+        db.delete_dive_session(conn, row["token"])
         db.close_dive(conn, row["job_id"])

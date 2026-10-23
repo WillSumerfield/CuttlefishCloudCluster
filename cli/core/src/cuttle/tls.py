@@ -180,6 +180,8 @@ def context(url: str) -> ssl.SSLContext | None:
     if not url.startswith("https://"):
         return None
     pin = _pin_path(url)
+    if not pin.exists() and config.CONTAINER_CA.exists():
+        pin = config.CONTAINER_CA   # inside a Tidepool/Dive: the Head's CA, mounted in
     if not pin.exists():
         raise typer.BadParameter(
             f"no trusted certificate authority for {url} — run `cuttle login --head {url}` first")

@@ -84,5 +84,35 @@ def sync_keys(conn, user_id: int, username: str) -> None:
     os.replace(tmp, d / "authorized_keys")
 
 
+SESSION_RENEW_DAYS = 7
+
+
+def sync_session(conn, user_id: int, username: str) -> None:
+    """The Tidepool's **ambient session**: a narrow token (`scope=tidepool`, main.current_user) in the
+    keys dir, so `cuttle` inside works with no login. Re-minted when missing (the helper deletes it at
+    every Tidepool start), unknown, or within SESSION_RENEW_DAYS of expiry; the old one is revoked.
+    0640 in a setgid dir of the User's mapped group: readable inside by the User only."""
+    d = KEYS_ROOT / username
+    if not d.is_dir():
+        return
+    f = d / "session"
+    try:
+        if db.session_fresh(conn, f.read_text().strip(), SESSION_RENEW_DAYS):
+            return
+    except OSError:
+        pass
+    db.delete_tidepool_sessions(conn, user_id)
+    tmp = d / ".session.tmp"
+    tmp.write_text(db.create_session(conn, user_id, scope="tidepool") + "\n")
+    tmp.chmod(0o640)
+    os.replace(tmp, f)
+
+
+def sync_sessions(conn) -> None:
+    """Every tick: each User's Tidepool session exists and is fresh."""
+    for uid, name in conn.execute("SELECT id, username FROM users").fetchall():
+        sync_session(conn, uid, name)
+
+
 def act(verb: str, username: str) -> None:
     subprocess.run(["sudo", "-n", HELPER, verb, username], check=True, capture_output=True, text=True)

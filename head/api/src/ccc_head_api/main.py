@@ -160,9 +160,7 @@ def _token_from(request: Request) -> str | None:
     return request.cookies.get(_COOKIE_NAME)
 
 
-def current_user(request: Request) -> dict:
-    """Dependency: resolve the session to a user, or 401. Returns a plain dict (row detached from the
-    per-request connection)."""
+def _resolve(request: Request) -> dict:
     token = _token_from(request)
     if not token:
         raise HTTPException(401, "not authenticated")
@@ -174,8 +172,27 @@ def current_user(request: Request) -> dict:
     # otherwise have to re-look-up the session to know who called). scope["state"] is shared, so this
     # write is visible to the middleware once the route returns.
     request.state.username = user["username"]
-    return {"username": user["username"], "is_admin": bool(user["is_admin"]),
-            "must_change_password": bool(user["must_change_password"]), "id": user["id"]}
+    full = user["session_scope"] == "full"
+    # An ambient session (minted into a Tidepool / Dive, see tidepool.sync_session) never carries Admin.
+    return {"username": user["username"], "is_admin": bool(user["is_admin"]) and full,
+            "must_change_password": bool(user["must_change_password"]), "id": user["id"],
+            "scope": user["session_scope"]}
+
+
+def current_user(request: Request) -> dict:
+    """Dependency: resolve the session to a user, or 401. Returns a plain dict (row detached from the
+    per-request connection). An ambient session (from inside a container) may only READ here — the
+    routes it may act on take `ambient_user` instead."""
+    user = _resolve(request)
+    if user["scope"] != "full" and request.method != "GET":
+        raise HTTPException(403, "not with the session inside a container — run this from your own "
+                                 "machine (or `cuttle login` here)")
+    return user
+
+
+def ambient_user(request: Request) -> dict:
+    """Dependency for what `cuttle` inside a Tidepool/Dive may do: its own Dives."""
+    return _resolve(request)
 
 
 # --- health (open) + reads (authed) -----------------------------------------
@@ -614,7 +631,7 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 # --- Dives (the caller's own) -------------------------------------------------------
 
 @api.post("/dives")
-def dive_request(req: DiveRequest, user: dict = Depends(current_user)) -> dict:
+def dive_request(req: DiveRequest, user: dict = Depends(ambient_user)) -> dict:
     """Request a Dive over a main folder (+ dep folders) of the caller's Tidepool. Slow: the system
     layer is snapshotted and pushed before sbatch (dive.request)."""
     args = {"gpus": req.gpus, "vram": req.vram, "time": req.time, "features": req.features,
@@ -636,7 +653,7 @@ def dive_connection(job_id: int, user: dict = Depends(current_user)) -> dict:
 
 
 @api.delete("/dives/{job_id}", status_code=204)
-def dive_end(job_id: int, user: dict = Depends(current_user)) -> Response:
+def dive_end(job_id: int, user: dict = Depends(ambient_user)) -> Response:
     dive_mod.end(user, job_id)
     log.info("dive end id=%s by %s", job_id, user["username"])
     return Response(status_code=204)
@@ -655,6 +672,7 @@ def tidepool_status(user: dict = Depends(current_user)) -> dict:
     with db.connect() as conn:
         uid = db.guise_uid(conn, user["id"])
         tp_mod.sync_keys(conn, user["id"], name)
+        tp_mod.sync_session(conn, user["id"], name)
     used = tp_mod.used_gb(name)
     return {"state": tp_mod.state(name), "used_gb": used if used is not None else 0.0,
             "mounted": used is not None, "size_gb": tp_mod.size_gb(),

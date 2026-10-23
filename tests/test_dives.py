@@ -166,9 +166,11 @@ class TestOpenAndClose:
             (H.MNT_ROOT / "bob" / "ssh" / f).write_text("k")
         (H.DIVE_STATE / TOK / "home").mkdir(parents=True)
         H.dive_open("bob", TOK, {"main": "proj", "deps": [], "toml": None, "secret": "s3",
-                                 "image": "img@sha256:" + "c" * 64})
+                                 "image": "img@sha256:" + "c" * 64, "session": "t" * 43})
         assert (H.DIVE_RSYNCD / f"{TOK}.secrets").read_text() == f"d{TOK}:s3\n"
         assert (H.DIVE_STATE / TOK / "sys" / "ssh_host_ed25519_key").exists()
+        sess = H.DIVE_STATE / TOK / "sys" / "session"
+        assert sess.read_text() == "t" * 43 + "\n" and sess.stat().st_mode & 0o777 == 0o400
         assert H.dive_record(TOK)["main"] == "proj"
         deleted = []
         monkeypatch.setattr(H, "delete_manifest", deleted.append)
@@ -176,6 +178,17 @@ class TestOpenAndClose:
         assert deleted == ["img@sha256:" + "c" * 64]
         assert not list(H.DIVE_RSYNCD.iterdir()) and not list(H.DIVE_RECORDS.iterdir())
         assert not (H.DIVE_STATE / TOK).exists()
+
+    def test_open_refuses_a_bad_session(self, helper_dirs, monkeypatch):
+        monkeypatch.setattr(H.os, "chown", lambda *a: None)
+        monkeypatch.setattr(H, "record", lambda u: {"uid": 60003})
+        (H.MNT_ROOT / "bob" / "home" / "proj").mkdir(parents=True, exist_ok=True)
+        (H.MNT_ROOT / "bob" / "ssh").mkdir(parents=True, exist_ok=True)
+        for f in ("ssh_host_ed25519_key", "ssh_host_ed25519_key.pub"):
+            (H.MNT_ROOT / "bob" / "ssh" / f).write_text("k")
+        (H.DIVE_STATE / TOK / "home").mkdir(parents=True)
+        with pytest.raises(H.Refused, match="session"):
+            H.dive_open("bob", TOK, {"main": "proj", "secret": "s", "image": "i", "session": "x\ny"})
 
     def test_open_without_prep_is_refused(self, helper_dirs):
         (H.MNT_ROOT / "bob" / "home" / "proj").mkdir()
@@ -334,6 +347,10 @@ class TestArmDive:
         assert not any(v.startswith(f"{home}/proj") for v in vols)
         assert f"{tmp_path}/sys:/etc/ccc/dive:ro" in vols
         assert f"{L.ENV_CACHE}:/ccc-cache:idmap" in vols
+        assert {f"{config.CONTAINER_CUTTLE}:{config.CONTAINER_CUTTLE}:ro",
+                f"{config.CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
+                f"{config.HEAD_CA_TRUST_PATH}:{config.CONTAINER_CA}:ro"} <= set(vols)
+        assert a[a.index("--add-host") + 1] == f"ccc.lab:{DIVE['head']}"
         assert "-p 100.99.0.7:31005:22" in j and "--device nvidia.com/gpu=GPU-1" in j
         assert "--cgroup-parent /s/job_77/step_batch" in j
         assert "--privileged" not in j and "--network host" not in j

@@ -306,7 +306,7 @@ BASE_CONTAINERFILE_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 FROM {image}
 ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \\
-    CUDA_HOME={cuda_home} PATH={cuda_home}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    CUDA_HOME={cuda_home} PATH={cuttle}/path:{cuda_home}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes \\
  && apt-get update \\
  && apt-get install -y --no-install-recommends {apt} \\
@@ -354,7 +354,8 @@ COPY bench.py {bench_py}
 def render_base_containerfile() -> str:
     return BASE_CONTAINERFILE_TMPL.format(
         image=config.BASE_IMAGE_DOCKER, apt=BASE_APT_PKGS, cuda_home=config.CUDA_HOME,
-        cuda_keyring=config.CUDA_REPO_KEYRING, cuda_pkgs=config.CUDA_PKGS, omz=config.POD_OMZ_DIR)
+        cuda_keyring=config.CUDA_REPO_KEYRING, cuda_pkgs=config.CUDA_PKGS, omz=config.POD_OMZ_DIR,
+        cuttle=config.CONTAINER_CUTTLE)
 
 
 def render_bench_containerfile() -> str:
@@ -583,6 +584,7 @@ Subsystem sftp internal-sftp
 TIDEPOOL_ZSHRC = """\
 # Rendered by `cuttle setup --head`, copied in at every Tidepool start — edit ~/.zshrc instead.
 typeset -g POWERLEVEL9K_INSTANT_PROMPT=off
+path=({cuttle}/path $path)
 export ZSH={omz}
 ZSH_THEME="powerlevel10k/powerlevel10k"
 zstyle ':omz:update' mode disabled
@@ -650,7 +652,7 @@ def render_tidepool_init() -> str:
 
 
 def render_tidepool_zshrc() -> str:
-    return TIDEPOOL_ZSHRC.format(omz=config.POD_OMZ_DIR)
+    return TIDEPOOL_ZSHRC.format(omz=config.POD_OMZ_DIR, cuttle=config.CONTAINER_CUTTLE)
 
 
 # rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the

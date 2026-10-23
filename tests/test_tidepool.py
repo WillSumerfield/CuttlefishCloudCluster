@@ -53,7 +53,7 @@ class TestHelperArgv:
     BASE = "ccc.lab:5000/ccc/base@sha256:" + "a" * 64
 
     def argv(self, user="bob", uid=60003):
-        return H.create_argv(user, uid, self.S, self.BASE)
+        return H.create_argv(user, uid, self.S, self.BASE, "100.99.0.1")
 
     def test_container_is_unprivileged_and_gpu_free(self):
         a = " ".join(self.argv())
@@ -63,7 +63,7 @@ class TestHelperArgv:
             assert bad not in a
 
     def test_a_gpu_head_gives_every_gpu_via_cdi(self):
-        a = H.create_argv("bob", 60003, self.S, self.BASE, gpus=True)
+        a = H.create_argv("bob", 60003, self.S, self.BASE, "100.99.0.1", gpus=True)
         assert a[a.index("--device") + 1] == "nvidia.com/gpu=all"
         assert f"ccc.tidepool.spec={H.SPEC_VERSION}" in a
 
@@ -79,7 +79,11 @@ class TestHelperArgv:
         assert mounts == [f"{config.TIDEPOOL_MNT_ROOT}/bob/home:/home/bob",
                           f"{config.TIDEPOOL_MNT_ROOT}/bob/ssh:/etc/ccc/hostkeys:ro",
                           f"{config.TIDEPOOL_KEYS_ROOT}/bob:/etc/ccc/keys:ro",
-                          f"{config.TIDEPOOL_FILES_DIR}:/etc/ccc/tidepool:ro"]
+                          f"{config.TIDEPOOL_FILES_DIR}:/etc/ccc/tidepool:ro",
+                          f"{config.CONTAINER_CUTTLE}:{config.CONTAINER_CUTTLE}:ro",
+                          f"{config.CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
+                          f"{config.HEAD_CA_CERT}:{config.CONTAINER_CA}:ro"]
+        assert a[a.index("--add-host") + 1] == "ccc.lab:100.99.0.1"
         assert a[-2:] == [self.BASE, "/etc/ccc/tidepool/init"]
 
     def test_own_store_inside_the_image(self):

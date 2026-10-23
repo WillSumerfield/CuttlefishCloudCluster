@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, dive, karma, siphons, slurm, spawns
+from . import db, dive, karma, siphons, slurm, spawns, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -213,6 +213,8 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         # A Dive whose job has left the queue: relay down, helper dive-close (lock lifted, modules
         # gone, snapshot deleted), port released — the one place a Dive is ever closed.
         dive.reap_dead(conn, set(ids))
+        # Each Tidepool's ambient session: re-minted after a start (the helper deleted it) or near expiry.
+        tidepool.sync_sessions(conn)
         # Close the rsync grant of every Spawn whose grace window has passed.
         siphons.sweep(conn, now)
 

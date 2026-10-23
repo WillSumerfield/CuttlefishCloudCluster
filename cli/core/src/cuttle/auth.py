@@ -96,9 +96,12 @@ def _save_token(token: str) -> None:
 
 
 def _load_token() -> str:
-    if not config.SESSION_FILE.exists():
-        raise typer.BadParameter("not logged in — run `cuttle login`")
-    return config.SESSION_FILE.read_text().strip()
+    """~/.ccc/session, else (inside a Tidepool/Dive) the ambient session the Head put there."""
+    if config.SESSION_FILE.exists():
+        return config.SESSION_FILE.read_text().strip()
+    if amb := config.ambient_session():
+        return amb.read_text().strip()
+    raise typer.BadParameter("not logged in — run `cuttle login`")
 
 
 def have_session() -> bool:

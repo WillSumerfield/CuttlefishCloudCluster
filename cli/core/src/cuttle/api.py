@@ -204,6 +204,8 @@ def _detail(r: httpx.Response) -> str:
 
 def _head_url() -> str:
     url = settings.load().get("head")
+    if not url and config.ambient_session():
+        return f"https://{config.domain()}"   # inside a container: the name maps to the Head
     if not url:
         raise ApiError("config", "no Head URL set — run `cuttle login --head <host>`")
     return url

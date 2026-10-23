@@ -58,6 +58,8 @@ TIDEPOOL_HELPER = "/usr/local/sbin/ccc-tidepool"   # Head only (config.TIDEPOOL_
 DIVE_RECORDS = Path("/etc/ccc/dives")               # config.DIVE_RECORDS
 ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR — shared uv cache
 MESH_IFACE = "ccc0"                                 # config.CCC_TS_TUN
+CUTTLE_ENV = "/usr/local/lib/ccc/cuttle"            # config.CONTAINER_CUTTLE
+HEAD_CA = "/usr/local/share/ca-certificates/ccc-head.crt"   # config.HEAD_CA_TRUST_PATH
 INNER_UID = 1000
 MIRROR_S = 60
 # ccc_tidepool.DENYLIST / FILTER_ARGS — never staged, never deleted on the Head by the mirror.
@@ -80,9 +82,14 @@ DST_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
+def domain() -> str:
+    """config.domain(): `ccc.<cluster name>`."""
+    return f"ccc.{CLUSTER_NAME_FILE.read_text().strip()}"
+
+
 def registry() -> str:
-    """config.registry(): `ccc.<cluster name>:5000`."""
-    return f"ccc.{CLUSTER_NAME_FILE.read_text().strip()}:{REGISTRY_PORT}"
+    """config.registry()."""
+    return f"{domain()}:{REGISTRY_PORT}"
 USER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 REL_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._ @+-]*(/[A-Za-z0-9._][A-Za-z0-9._ @+-]*)*$")
 HOST_RE = re.compile(r"^[0-9a-fA-F.:]+$")
@@ -363,6 +370,10 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
             "--network", "private", "-p", f"{addr}:{d['port']}:22",
             "-v", f"{home}:/home/{u}", "-v", f"{jobdir}/sys:/etc/ccc/dive:ro",
             "-v", f"{ENV_CACHE}:/ccc-cache:idmap",
+            # `cuttle` inside, reaching the Head with the Dive's ambient session (sys/session)
+            "-v", f"{CUTTLE_ENV}:{CUTTLE_ENV}:ro", "-v", f"{CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
+            "-v", f"{HEAD_CA}:/etc/ccc/ca.crt:ro",
+            "--add-host", f"{domain()}:{d['head']}",
             "-e", f"CCC_GPUS={','.join(gpus)}", "-e", f"CCC_JOB_ID={jid}"]
     for dep in deps:
         argv += ["-v", f"{home / dep}:/home/{u}/{dep}:ro"]
