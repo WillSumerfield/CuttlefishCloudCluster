@@ -241,6 +241,7 @@ export type DiveConn = {
   port: number | null
   user: string
   main: string
+  alias: string
 }
 export const getDiveConn = (id: number) => json<DiveConn>(`/dives/${id}`)
 

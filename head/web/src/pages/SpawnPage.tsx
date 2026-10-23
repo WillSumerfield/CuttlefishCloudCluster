@@ -37,23 +37,20 @@ function Fact({ label, value, help }: { label: string; value: React.ReactNode; h
 }
 
 /**
- * How to reach your own live Dive: the same `ssh` alias `cuttle dive` writes, once an sshd answers.
+ * How to reach your own live Dive: `cuttle dive attach`, once an sshd answers (editors: the alias).
  * Queued or still staging says so; a Head Dive is the Tidepool itself, holding the GPU.
  */
 function Connect({ conn }: { conn: DiveConn | null }) {
   if (!conn) return null;
-  const alias = `glados-${conn.id}`;
   return (
     <div className="surface space-y-3" style={{ padding: "calc(var(--pad) + 12px)" }}>
-      <Tip className="label" text="Your own keys and your Tidepool's host key, so `cuttle login` already set this box up. VS Code: Remote-SSH, host glados-<id>.">
+      <Tip className="label" text={`Your own keys and your Tidepool's host key, so \`cuttle login\` already set this box up. VS Code: Remote-SSH, host ${conn.alias}.`}>
         Connect
       </Tip>
       {conn.ready ? (
         <>
           <pre className="field num text-[13px]" style={{ padding: "12px 18px", color: "var(--ink)" }}>
             {`cuttle dive attach ${conn.id}`}
-            {"\n"}
-            {`ssh ${alias}`}
           </pre>
           <p className="text-[13px] text-ink-soft">
             {conn.head

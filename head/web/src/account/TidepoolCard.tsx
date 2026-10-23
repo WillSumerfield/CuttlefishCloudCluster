@@ -72,9 +72,8 @@ export function TidepoolCard({ onUnauthorized }: { onUnauthorized: () => void })
       </div>
 
       <div className="text-[13px] text-ink-soft">
-        <code className="num">ssh {tp?.alias ?? "glados"}</code>
-        <span> · or </span><code className="num">cuttle tidepool</code>
-        <span> · VS Code Remote-SSH host </span><code className="num">{tp?.alias ?? "glados"}</code>
+        <code className="num">cuttle tidepool</code>
+        {tp?.alias && <><span> · VS Code Remote-SSH host </span><code className="num">{tp.alias}</code></>}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
