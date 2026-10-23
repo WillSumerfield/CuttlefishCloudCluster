@@ -557,6 +557,31 @@ SUDOERS_CCC_LAUNCH = Path("/etc/sudoers.d/ccc-launch")
 JOBS_DIR = Path("/var/lib/ccc/jobs")
 JOB_CONTAINER_PREFIX = "ccc-job-"
 
+# --- Tidepool: each User's fixed-size image + always-on container on the Head (ccc_tidepool.py) ---
+# The helper's constants MUST equal these (tests/test_tidepool.py checks). Images live OUTSIDE
+# CCC_LIB on purpose: teardown `rm -rf`s CCC_LIB, and keeps images unless --all.
+TIDEPOOL_HELPER_BIN = Path("/usr/local/sbin/ccc-tidepool")
+SUDOERS_CCC_TIDEPOOL = Path("/etc/sudoers.d/ccc-tidepool")
+TIDEPOOL_SETTINGS = Path("/etc/ccc/tidepools.json")   # setup --head's answers, 0644 (API reads size)
+TIDEPOOL_RECORDS = Path("/etc/ccc/tidepools.d")       # <user>.json {uid}, root
+TIDEPOOL_MNT_ROOT = CCC_LIB / "tidepools"              # <user>/ = the loop-mounted image
+TIDEPOOL_KEYS_ROOT = HEAD_STATE_DIR / "tidepool-keys"  # <user>/authorized_keys (ccc) + host key .pub
+TIDEPOOL_FILES_DIR = Path("/usr/local/lib/ccc/tidepool")  # init, sshd_config, zshrc → /etc/ccc/tidepool
+TIDEPOOL_SERVICE = "ccc-tidepool"                      # ccc-tidepool@<user>.service
+TIDEPOOL_UNIT = Path("/etc/systemd/system/ccc-tidepool@.service")
+TIDEPOOL_SLICE = "ccc-tidepools.slice"
+TIDEPOOL_SLICE_UNIT = Path("/etc/systemd/system") / TIDEPOOL_SLICE
+TIDEPOOL_SSH_PORT_BASE = 32000                         # port = base + (uid - CCC_UID)
+TIDEPOOL_DEFAULT_IMAGE_DIR = "/var/lib/ccc-tidepools"
+TIDEPOOL_DEFAULT_SIZE_GB = 200
+TIDEPOOL_DEFAULT_CPUS = 4
+TIDEPOOL_DEFAULT_MEM_GB = 16
+TIDEPOOL_DEFAULT_TOTAL_FRACTION = 4                    # total slice = 1/4 of the box
+# Client side: the key `cuttle login` makes, the alias it writes, and the pinned host key.
+TIDEPOOL_ALIAS = DOMAIN.rsplit(".", 1)[-1]             # `ssh glados`
+TIDEPOOL_HOSTKEY_ALIAS = "ccc-tidepool"
+
+
 # --- the interactive shell a Tide Pool hands its User ---
 # The oh-my-zsh tree, powerlevel10k and its plugins, vendored INTO this package and COPYed into the
 # base image (podman.build_images) — no upstream clone at build time, so no drift.
@@ -795,6 +820,9 @@ TIDEPOOL_DIR = CCC_HOME / "tidepool"
 SSH_DIR = Path(os.environ.get("CCC_SSH_DIR") or Path.home() / ".ssh")
 SSH_CONFIG = SSH_DIR / "config"
 SSH_CCC_CONFIG = SSH_DIR / "ccc.config"
+TIDEPOOL_KEY = SSH_DIR / "ccc_ed25519"          # made by `cuttle login`; the pubkey goes to the Head
+TIDEPOOL_SSH_META = CCC_HOME / "tidepool-ssh.json"   # {host, port, user} for the alias block
+TIDEPOOL_KNOWN_HOSTS = CCC_HOME / "known_hosts"      # the Tidepool's host key, pinned
 # Packages newly installed by setup (before→after diff) — teardown purges exactly this set.
 APT_MANIFEST = CONFIG_DIR / "apt-installed.txt"
 

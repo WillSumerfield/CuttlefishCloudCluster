@@ -318,7 +318,8 @@ RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes \\
  && apt-get install -y --no-install-recommends {cuda_pkgs} \\
  && rm -rf /var/lib/apt/lists/*
 RUN printf 'export CUDA_HOME={cuda_home}\\nexport PATH={cuda_home}/bin:$PATH\\n' > /etc/profile.d/ccc-cuda.sh \\
- && echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile
+ && echo "emulate sh -c 'source /etc/profile'" >> /etc/zsh/zprofile \\
+ && userdel -r ubuntu
 COPY uv /usr/local/bin/uv
 COPY oh-my-zsh {omz}
 RUN chown -R root:root {omz} && chmod -R go-w {omz} \\
@@ -478,6 +479,145 @@ def render_launch_sudoers() -> str:
     return LAUNCH_SUDOERS_TMPL.format(group=config.GUISE_GROUP, bin=config.CCC_LAUNCH_BIN)
 
 
+# --- Tidepool (ccc_tidepool.py makes the per-User pieces; these are shared) ------------------------
+
+# One template unit, instance = username. The container was created once (`ccc-tidepool create`);
+# this only starts and stops it, so its writable layer (apt installs) survives restarts and reboots.
+# Its cgroup is `--cgroup-parent` the slice, with the per-User cap on the container itself.
+TIDEPOOL_UNIT_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+[Unit]
+Description=CCC Tidepool (%i)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor={mnt}/%i
+StartLimitIntervalSec=0
+
+[Service]
+Slice={slice}
+ExecStart={podman} start --attach tp-%i
+ExecStop={podman} stop -t 10 tp-%i
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# Every Tidepool together. A ceiling (cgroup v2 max), not a reservation; the Head's Slurm node is
+# shrunk by the same amount (render_slurm_conf) so the scheduler does not count it twice.
+TIDEPOOL_SLICE_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+[Unit]
+Description=CCC Tidepools (all Users)
+
+[Slice]
+CPUQuota={cpu_pct}%
+MemoryMax={mem_gb}G
+"""
+
+# The Head API may restart or reset a Tidepool by username — the API checks it is the caller's own.
+TIDEPOOL_SUDOERS_TMPL = """\
+# Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
+{user} ALL=(root) NOPASSWD: {bin} ^(restart|reset) [a-z][a-z0-9_-]{{0,31}}$
+"""
+
+# Container-side boot, at every start, as container root under catatonit (`--init`). Read from the
+# host (/etc/ccc/tidepool, ro), so a change lands at the next restart with no image rebuild.
+TIDEPOOL_INIT = """\
+#!/bin/sh
+# Rendered by `cuttle setup --head`. The Tidepool's boot: account, sudo, zsh, then sshd as PID 2.
+set -eu
+u="$CCC_USER"
+if ! id -u "$u" >/dev/null 2>&1; then
+  useradd --uid {uid} --user-group --no-create-home --home-dir "/home/$u" --shell /bin/zsh \\
+    --groups sudo --password '*' "$u"
+fi
+printf '%s ALL=(ALL) NOPASSWD:ALL\\n' "$u" > /etc/sudoers.d/ccc-tidepool
+chmod 0440 /etc/sudoers.d/ccc-tidepool
+cp /etc/ccc/tidepool/zshrc /etc/zsh/zshrc
+cp /etc/ccc/tidepool/p10k.zsh /etc/zsh/ccc-p10k.zsh
+# zsh's new-user wizard fires in a home with no rc file at all; a stub is the User's to edit.
+h="/home/$u"
+if [ ! -e "$h/.zshrc" ] && [ ! -e "$h/.zshenv" ] && [ ! -e "$h/.zprofile" ] && [ ! -e "$h/.zlogin" ]; then
+  printf '# Yours. Read after the cluster default (/etc/zsh/zshrc), so anything here wins.\\n' > "$h/.zshrc"
+  chown "$u:$u" "$h/.zshrc"
+fi
+mkdir -p /run/sshd
+exec /usr/sbin/sshd -D -e -f /etc/ccc/tidepool/sshd_config -o "AllowUsers=$u"
+"""
+
+# Key-only, the User alone. StrictModes off: the CCC keys file is owned by the Head API's `ccc`,
+# which is unmapped (nobody) inside. No PAM: pam_loginuid fails in a user namespace, and with PAM off
+# a '*' password is not "locked", so pubkey login works.
+TIDEPOOL_SSHD_CONFIG = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+Port 22
+HostKey /etc/ccc/hostkeys/ssh_host_ed25519_key
+AuthorizedKeysFile .ssh/authorized_keys /etc/ccc/keys/authorized_keys
+StrictModes no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+UsePAM no
+X11Forwarding no
+AllowAgentForwarding yes
+AllowTcpForwarding yes
+PrintMotd no
+SetEnv LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+ClientAliveInterval 60
+PidFile /run/sshd.pid
+Subsystem sftp internal-sftp
+"""
+
+# The cluster default shell. Global rc, so a User's own ~/.zshrc is read after it and wins. State in
+# $HOME: the home is the User's own and persistent now.
+TIDEPOOL_ZSHRC = """\
+# Rendered by `cuttle setup --head`, copied in at every Tidepool start — edit ~/.zshrc instead.
+typeset -g POWERLEVEL9K_INSTANT_PROMPT=off
+export ZSH={omz}
+ZSH_THEME="powerlevel10k/powerlevel10k"
+zstyle ':omz:update' mode disabled
+export ZSH_CACHE_DIR=$HOME/.cache/oh-my-zsh
+mkdir -p $ZSH_CACHE_DIR
+HISTFILE=$HOME/.zsh_history
+HISTSIZE=50000
+SAVEHIST=50000
+plugins=(git sudo zsh-syntax-highlighting zsh-autosuggestions you-should-use colored-man-pages extract)
+source $ZSH/oh-my-zsh.sh
+source /etc/zsh/ccc-p10k.zsh
+"""
+
+
+def tidepool_podman() -> str:
+    """The unit's podman prefix — must equal ccc_tidepool.podman() with `%i` for the user."""
+    return (f"/usr/bin/podman --root {config.TIDEPOOL_MNT_ROOT}/%i/storage --runroot "
+            f"/run/ccc-tidepools/%i --storage-opt additionalimagestore=/var/lib/containers/storage")
+
+
+def render_tidepool_unit() -> str:
+    return TIDEPOOL_UNIT_TMPL.format(mnt=config.TIDEPOOL_MNT_ROOT, slice=config.TIDEPOOL_SLICE,
+                                     podman=tidepool_podman())
+
+
+def render_tidepool_slice(total_cpus: int, total_mem_gb: int) -> str:
+    return TIDEPOOL_SLICE_TMPL.format(cpu_pct=total_cpus * 100, mem_gb=total_mem_gb)
+
+
+def render_tidepool_sudoers() -> str:
+    return TIDEPOOL_SUDOERS_TMPL.format(user=config.HEAD_API_USER, bin=config.TIDEPOOL_HELPER_BIN)
+
+
+def render_tidepool_init() -> str:
+    return TIDEPOOL_INIT.replace("{uid}", "1000")
+
+
+def render_tidepool_zshrc() -> str:
+    return TIDEPOOL_ZSHRC.format(omz=config.POD_OMZ_DIR)
+
+
 # rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the
 # LAN or the personal tailnet. Runs as root (873 is privileged) but each module drops to `ccc` (the
 # service account that owns the Head state), so files are read/written as ccc. `use chroot = no`: no
@@ -585,7 +725,8 @@ _TMPFS_HELD = """\
 
 def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None = None,
                       missing_prolog: list[str] | None = None,
-                      missing_tmpfs: list[str] | None = None) -> str:
+                      missing_tmpfs: list[str] | None = None,
+                      reserve: tuple[int, int] = (0, 0)) -> str:
     """`mesh_ip` = the Head's address on the CCC mesh. Baked in because MagicDNS is off: nothing in
     this system can resolve a hostname, so Slurm gets the address literally.
 
@@ -602,8 +743,13 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
     Non-empty holds that line back for the WHOLE fleet, including the Arms that are ready — a line here
     is one setting for every node, so it is on for all of them or none. The two are tracked separately
     because an Arm can legitimately have the prolog and not the other.
+
+    `reserve` = (cpus, mem_mb) the Tidepools' slice holds (tidepool.slurm_reserve): Slurm is told about
+    that much less — bookkeeping only, nothing is fenced (no ConstrainCores). CPUs come off
+    CoresPerSocket, rounded up to whole cores across every socket.
     """
     sockets, cores, threads = system.cpu_topology()
+    cores -= -(-reserve[0] // (sockets * threads))
     feature = ",".join([config.vram_feature(system.gpu_vram_mb()), *sorted(features or [])])
     prolog = (_PROLOG_HELD.format(n=len(missing_prolog), missing=", ".join(missing_prolog))
               if missing_prolog else _PROLOG_LINE.format(prolog=config.SLURM_PROLOG))
@@ -626,7 +772,7 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
         sockets=sockets,
         cores=cores,
         threads=threads,
-        mem=system.real_memory_mb(),
+        mem=system.real_memory_mb() - reserve[1],
         gpus=len(system.gpu_devices()),
         vram_feature=feature,
         state=config.SLURM_STATE_DIR,
