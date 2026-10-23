@@ -10,7 +10,7 @@ Every 30s, one pass, in this order:
 4. **Settle** every Spawn that has vanished from the queue: one ledger row, claim released. One caught by
    a Retract settles at ZERO regardless of what it accrued.
 5. **Reap** any Tide Pool whose Spawn just vanished: kill its relay, forget its port/keypair
-   (tidepool.reap_dead) — a live Tide Pool holds a Device like any RUNNING Spawn, so steps 1-4 already
+   (dive.reap_dead) — a live Dive holds a Device like any RUNNING Spawn, so steps 1-4 already
    meter/settle it with no branch of their own.
 6. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
 
@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, dive as tidepool, karma, siphons, slurm, spawns
+from . import db, dive, karma, siphons, slurm, spawns
 
 log = logging.getLogger("ccc.karma")
 
@@ -210,9 +210,9 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         _force_expired_retractions(conn, set(ids), now)
         settled = _settle(conn, set(ids), arms, now)
         _record_endings(conn, set(ids), now)
-        # Kill the Head-side relay and drop its port/keypair the moment a Tide Pool's Spawn leaves the
-        # queue — the one place a relay ever goes back down.
-        tidepool.reap_dead(conn, set(ids))
+        # A Dive whose job has left the queue: relay down, helper dive-close (lock lifted, modules
+        # gone, snapshot deleted), port released — the one place a Dive is ever closed.
+        dive.reap_dead(conn, set(ids))
         # Close the rsync grant of every Spawn whose grace window has passed.
         siphons.sweep(conn, now)
 

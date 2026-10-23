@@ -13,6 +13,7 @@ Design notes worth keeping:
 """
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -58,7 +59,7 @@ _ph = PasswordHasher()
 #     into it: `spawn_needs` reads `node` as the declaration. Copied off the escrow row by the meter,
 #     since `clear_escrow` deletes that at Settlement — precisely when History starts wanting it. NULL
 #     means "not known", never "unplaced".
-#   * `tidepool` — the payload is a live shell (every Spawn since 2.0 dropped batch ones).
+#   * `tidepool` — the job is a **Dive** (every CCC job since 2.0; 0 = the enrollment benchmark era).
 #   * `script` — what a 1.x batch Spawn ran; written '' since. Still read by the history views.
 #
 # The Karma economy, deliberately with no balances table: Decay is linear, so a decayed sum over the
@@ -79,14 +80,14 @@ _ph = PasswordHasher()
 #     tick force-kills it. Survives Return (a caught Spawn is doomed regardless); cleared when the tick
 #     settles the job, at zero.
 #
-# Tide Pool — two tables because the port has to be reserved BEFORE the job_id exists (baked into the
+# Dives — two tables because the port has to be reserved BEFORE the job_id exists (baked into the
 # job script, rendered before sbatch runs):
-#   * `tidepool_ports` — the reservation, keyed by the port alone, so two submissions racing the same
-#     "lowest free port" collide on ITS primary key (tidepool.reserve_port retries).
-#   * `tidepools` — everything else, written once the job_id is known. `pubkey`/`privkey` are minted
-#     once at submit and never regenerated, so a reattach gets the SAME key; `privkey` is encrypted at
-#     rest (atrest.py), the ONLY thing the Head decrypts unattended. `relay_pid`/`node` are the Head-side
-#     relay, once started. Both rows are deleted the moment the Spawn leaves the queue (tick reap_dead).
+#   * `dive_ports` — the reservation, keyed by the port alone, so two requests racing the same
+#     "lowest free port" collide on ITS primary key (dive.reserve_port retries).
+#   * `dives` — everything else, written once the job_id is known. `token` keys the helper's records,
+#     rsync modules and snapshot; `main` is what single-writer checks; `relay_pid`/`node` are the
+#     Head-side relay, once started. `closed` once the tick has run the helper's dive-close (the port is
+#     released then too); the row stays for history.
 #
 # `guises` — the uid a User's Spawns run as, on every node (guises.py). This table is only the allocator,
 # and its one job is **never hand out a uid twice**: `remove_user` HARD-deletes, so a removed User
@@ -164,17 +165,19 @@ CREATE TABLE retracted_jobs (
   deadline TEXT NOT NULL
 );
 
-CREATE TABLE tidepool_ports (
+CREATE TABLE dive_ports (
   port        INTEGER PRIMARY KEY,
   reserved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-CREATE TABLE tidepools (
+CREATE TABLE dives (
   job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
+  token      TEXT    NOT NULL UNIQUE,
+  main       TEXT    NOT NULL,
+  deps       TEXT    NOT NULL DEFAULT '[]',
   port       INTEGER NOT NULL,
-  pubkey     TEXT    NOT NULL,
-  privkey    BLOB    NOT NULL,
   relay_pid  INTEGER,
-  node       TEXT
+  node       TEXT,
+  closed     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE ssh_keys (
@@ -194,8 +197,8 @@ CREATE TABLE guises (
 """
 
 # PRAGMA user_version of a 2.0 head.db. Above every step of the 1.x ladder (1..21), so a 1.x store can
-# never read as this one. 23: ssh_keys (Tidepool).
-SCHEMA_VERSION = 23
+# never read as this one. 23: ssh_keys (Tidepool). 24: dives + dive_ports (replace tidepools).
+SCHEMA_VERSION = 24
 
 
 # --- connection + schema ----------------------------------------------------
@@ -807,71 +810,61 @@ def clear_retracting_job(conn: sqlite3.Connection, job_id: int) -> None:
     conn.commit()
 
 
-# --- Tide Pool -------------------------------------------------------------------
-# See _SCHEMA's comment for the table shapes. `privkey` is always encrypted (atrest.encrypt) going in
-# and decrypted (atrest.decrypt) coming out — nothing outside this module ever sees the ciphertext.
+# --- Dives -----------------------------------------------------------------------
+# See _SCHEMA's comment for the table shapes.
 
-def used_tidepool_ports(conn: sqlite3.Connection) -> set[int]:
-    """Every port currently reserved — a Tide Pool being placed (job_id unknown yet) as well as a live
-    one. This is the WHOLE point of the separate `tidepool_ports` table: a reservation has to exist
-    before there is a job_id to key `tidepools` on."""
-    return {r["port"] for r in conn.execute("SELECT port FROM tidepool_ports").fetchall()}
+def used_dive_ports(conn: sqlite3.Connection) -> set[int]:
+    """Every port currently reserved — a Dive being requested (job_id unknown yet) as well as a live
+    one. The reservation has to exist before there is a job_id to key `dives` on."""
+    return {r["port"] for r in conn.execute("SELECT port FROM dive_ports").fetchall()}
 
 
-def reserve_tidepool_port(conn: sqlite3.Connection, port: int) -> bool:
-    """Claim `port`, or report someone already has it (its PRIMARY KEY does the real work — this just
-    turns the race into a retry instead of an IntegrityError the caller has to know to catch)."""
+def reserve_dive_port(conn: sqlite3.Connection, port: int) -> bool:
     try:
-        conn.execute("INSERT INTO tidepool_ports (port) VALUES (?)", (port,))
+        conn.execute("INSERT INTO dive_ports (port) VALUES (?)", (port,))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False
 
 
-def release_tidepool_port(conn: sqlite3.Connection, port: int) -> None:
-    conn.execute("DELETE FROM tidepool_ports WHERE port=?", (port,))
+def release_dive_port(conn: sqlite3.Connection, port: int) -> None:
+    conn.execute("DELETE FROM dive_ports WHERE port=?", (port,))
     conn.commit()
 
 
-def create_tidepool(conn: sqlite3.Connection, job_id: int, port: int, pubkey: str,
-                    privkey_plain: str) -> None:
-    from . import atrest
-    conn.execute("INSERT INTO tidepools (job_id, port, pubkey, privkey) VALUES (?,?,?,?)",
-                 (job_id, port, pubkey, atrest.encrypt(privkey_plain)))
+def create_dive(conn: sqlite3.Connection, job_id: int, token: str, main: str, deps: list[str],
+                port: int) -> None:
+    conn.execute("INSERT INTO dives (job_id, token, main, deps, port) VALUES (?,?,?,?,?)",
+                 (job_id, token, main, json.dumps(deps), port))
     conn.commit()
 
 
-def get_tidepool(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM tidepools WHERE job_id=?", (job_id,)).fetchone()
+def get_dive(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM dives WHERE job_id=?", (job_id,)).fetchone()
 
 
-def tidepool_private_key(conn: sqlite3.Connection, job_id: int) -> str | None:
-    """The plaintext private key for a live Tide Pool, or None if there is none (not a Tide Pool, or the
-    at-rest key cannot be read — see atrest.py; either way there is nothing to hand the CLI)."""
-    from . import atrest
-    row = get_tidepool(conn, job_id)
-    return atrest.decrypt(row["privkey"]) if row else None
+def open_dives(conn: sqlite3.Connection, user_id: int | None = None) -> list[sqlite3.Row]:
+    """Dives not yet closed (queued, running, or ended but not yet swept), optionally one User's."""
+    q = ("SELECT d.*, s.user_id, s.submitted_at, s.minutes, s.gpus, s.vram_gb FROM dives d "
+         "JOIN spawns s ON s.job_id = d.job_id WHERE d.closed = 0")
+    if user_id is None:
+        return conn.execute(q + " ORDER BY d.job_id").fetchall()
+    return conn.execute(q + " AND s.user_id=? ORDER BY d.job_id", (user_id,)).fetchall()
 
 
-def set_tidepool_relay(conn: sqlite3.Connection, job_id: int, relay_pid: int, node: str) -> None:
-    conn.execute("UPDATE tidepools SET relay_pid=?, node=? WHERE job_id=?", (relay_pid, node, job_id))
+def set_dive_relay(conn: sqlite3.Connection, job_id: int, relay_pid: int, node: str) -> None:
+    conn.execute("UPDATE dives SET relay_pid=?, node=? WHERE job_id=?", (relay_pid, node, job_id))
     conn.commit()
 
 
-def live_tidepools(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Every Tide Pool's connection state — the tick's working set for reaping a dead one."""
-    return conn.execute("SELECT job_id, port, relay_pid, node FROM tidepools").fetchall()
-
-
-def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
-    """Release the port and forget the keypair. Called once the Spawn has left the queue — after its
-    relay subprocess has already been killed (tidepool.reap_dead), never before."""
-    row = get_tidepool(conn, job_id)
+def close_dive(conn: sqlite3.Connection, job_id: int) -> None:
+    """The helper has closed it: release the port, keep the row (history shows main/deps)."""
+    row = get_dive(conn, job_id)
     if row is None:
         return
-    conn.execute("DELETE FROM tidepools WHERE job_id=?", (job_id,))
-    conn.execute("DELETE FROM tidepool_ports WHERE port=?", (row["port"],))
+    conn.execute("UPDATE dives SET closed=1, relay_pid=NULL WHERE job_id=?", (job_id,))
+    conn.execute("DELETE FROM dive_ports WHERE port=?", (row["port"],))
     conn.commit()
 
 

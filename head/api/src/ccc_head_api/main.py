@@ -28,10 +28,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, guises, karma, ratelimit, retraction, slurm
+from . import db, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import spawns as spawns_mod
-from . import dive as tidepool_mod
+from . import dive as dive_mod
 from . import tidepool as tp_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
@@ -113,6 +113,17 @@ class LoginRequest(BaseModel):
 class PasswdRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class DiveRequest(BaseModel):
+    """`main`/`deps` relative to the Tidepool home. None = not given (cuttle.toml's, if any, applies)."""
+    main: str
+    deps: list[str] | None = None
+    gpus: int | None = None
+    vram: int | None = None
+    time: str | None = None
+    features: list[str] | None = None
+    env: str | None = None
 
 
 class SshKeyRequest(BaseModel):
@@ -590,55 +601,35 @@ def karma_usage(days: int = 30, user: dict = Depends(current_user)) -> list[dict
 # `cuttle user add` and `cuttle karma bump`. See ccc_head_api.admin.
 
 
-@api.get("/spawns/{job_id}/tidepool")
-def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """The one authenticated channel a Tide Pool's ephemeral SSH keypair ever travels over — the CLI
-    polls this after submitting (or when reattaching to an existing one) until `ready` is true, per the
-    "no user ever manages an SSH key themselves" rule.
+# --- Dives (the caller's own) -------------------------------------------------------
 
-    `ready` is false while the Spawn is not yet RUNNING, or RUNNING but nothing is yet accepting on its
-    port — this call is what BRINGS the relay up (`tidepool.ensure_relay`, idempotent), so polling here
-    is what makes attach converge in well under the karma tick's 30s cadence rather than waiting on it.
-    On the Head's own co-located Arm there is no relay to bring up (and starting one breaks the Tide
-    Pool outright — see `ensure_relay`); `ready` there means the Pod's own sshd has finished booting.
+@api.post("/dives")
+def dive_request(req: DiveRequest, user: dict = Depends(current_user)) -> dict:
+    """Request a Dive over a main folder (+ dep folders) of the caller's Tidepool. Slow: the system
+    layer is snapshotted and pushed before sbatch (dive.request)."""
+    args = {"gpus": req.gpus, "vram": req.vram, "time": req.time, "features": req.features,
+            "env": req.env}
+    return dive_mod.request(user, req.main, req.deps, args)
 
-    The SAME port + private key are returned every time, for the Spawn's whole life: a dropped
-    connection or a reattach both need the identical credential back, not a fresh one.
 
-    `user` is the account to ssh in AS — the owner's **Guise** (temp/spawn-isolation.md). It
-    is on the wire because the CLI cannot derive it: it is `ccc-u<uid>`, and a uid is a Head-side fact.
-    The User never types it and never sees it; nobody is expected to know their own uid.
+@api.get("/dives")
+def dives(user: dict = Depends(current_user)) -> list[dict]:
+    """The caller's open Dives (queued, running, or ending)."""
+    return dive_mod.rows(user["id"])
 
-    `proj` is the working directory inside the Pod — what a VS Code remote window should open, and what
-    `scp` copies into. Also not derivable client-side: a Spawn's scratch is `/tmp/ccc-<id>` on a donor's
-    Arm and lives under the Head's state dir on its co-located one, and only this side knows which Arm
-    took it. It is `None` until `ready`, for the same reason.
-    """
-    with db.connect() as conn:
-        row = db.get_spawn(conn, job_id)
-        tp = db.get_tidepool(conn, job_id) if row is not None else None
-    if row is None or not row["tidepool"]:
-        raise HTTPException(404, f"Spawn {job_id} is not a Tide Pool")
-    if row["user_id"] != user["id"]:
-        raise HTTPException(403, "you can only attach to your own Tide Pool")
-    if tp is None:
-        raise HTTPException(404, f"Tide Pool {job_id} has no connection state (already ended?)")
-    # Only past the ownership check: this is the caller's OWN Guise, so there is nothing to look up
-    # until we know the Tide Pool is theirs.
-    with db.connect() as conn:
-        guise = guises.name(db.allocate_guise(conn, user["id"]))
-    if spawns_mod.active_state(job_id) != "RUNNING":
-        return {"ready": False, "port": None, "private_key": None, "user": guise, "proj": None}
-    node_name = next((s["node"] for s in slurm.spawns() if s["id"] == job_id), None)
-    arm = next((a for a in slurm.arms() if a["name"] == node_name), None) if node_name else None
-    if arm is None or not arm.get("mesh_ip"):
-        return {"ready": False, "port": None, "private_key": None, "user": guise, "proj": None}
-    head_arm = bool(arm.get("head"))
-    with db.connect() as conn:
-        up = tidepool_mod.ensure_relay(conn, job_id, arm["mesh_ip"], node_name, head_arm=head_arm)
-        key = db.tidepool_private_key(conn, job_id)
-    return {"ready": up and key is not None, "port": tp["port"], "private_key": key, "user": guise,
-            "proj": spawns_mod.pod_project_dir(job_id, head_arm)}
+
+@api.get("/dives/{job_id}")
+def dive_connection(job_id: int, user: dict = Depends(current_user)) -> dict:
+    """State, and once an sshd answers, where `ssh glados-<id>` connects. Polling it brings an Arm
+    Dive's relay up."""
+    return dive_mod.connection(user, job_id)
+
+
+@api.delete("/dives/{job_id}", status_code=204)
+def dive_end(job_id: int, user: dict = Depends(current_user)) -> Response:
+    dive_mod.end(user, job_id)
+    log.info("dive end id=%s by %s", job_id, user["username"])
+    return Response(status_code=204)
 
 
 # --- Tidepool (the caller's own, always) -----------------------------------------
