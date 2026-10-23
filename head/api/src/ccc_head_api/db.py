@@ -529,9 +529,10 @@ def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, 
 _SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
                        s.gpus, s.vram_gb, s.minutes, s.node, s.placed_node,
                        u.username AS submitted_by,
-                       l.amount AS cost
+                       l.amount AS cost, d.main AS main
                 FROM spawns s
                 LEFT JOIN users u ON u.id = s.user_id
+                LEFT JOIN dives d ON d.job_id = s.job_id
                 LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
 """
 

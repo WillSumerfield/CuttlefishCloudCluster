@@ -16,6 +16,7 @@ warning once. The session cookie is therefore Secure.
 
 import logging
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -660,6 +661,12 @@ def tidepool_act(verb: str, user: dict = Depends(current_user)) -> dict:
         raise HTTPException(404, f"no Tidepool action {verb!r}")
     try:
         tp_mod.act(verb, user["username"])
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 2:   # the helper refused (a Dive holds the Tidepool's GPU)
+            raise HTTPException(409, (e.stderr or "").strip().removeprefix("ccc-tidepool: ")) from None
+        log.warning("tidepool %s user=%s failed: %s", verb, user["username"], e.stderr or e)
+        raise HTTPException(502, f"Tidepool {verb} failed — ask an admin to check "
+                                 f"`systemctl status ccc-tidepool@{user['username']}`") from None
     except Exception as e:
         log.warning("tidepool %s user=%s failed: %s", verb, user["username"],
                     getattr(e, "stderr", "") or e)

@@ -281,3 +281,13 @@ class TestClose:
         with db.connect() as conn:
             D.reap_dead(conn, set())
             assert not db.get_dive(conn, 77)["closed"]
+
+
+class TestTidepoolRestartDuringAHeadDive:
+    def test_the_helpers_refusal_is_a_409_with_its_words(self, conn_db, monkeypatch):
+        def refuse(verb, name):
+            raise subprocess.CalledProcessError(2, ["sudo"], "", "ccc-tidepool: a Dive is using alice's "
+                                                                 "Tidepool for its GPU — end it first\n")
+        monkeypatch.setattr(head_tp, "act", refuse)
+        r = _client(monkeypatch).post("/api/tidepool/restart")
+        assert r.status_code == 409 and r.json()["detail"].startswith("a Dive is using")
