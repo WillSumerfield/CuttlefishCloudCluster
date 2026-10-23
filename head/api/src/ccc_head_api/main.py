@@ -32,6 +32,7 @@ from . import db, guises, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
 from . import spawns as spawns_mod
 from . import dive as tidepool_mod
+from . import tidepool as tp_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
@@ -112,6 +113,11 @@ class LoginRequest(BaseModel):
 class PasswdRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class SshKeyRequest(BaseModel):
+    pubkey: str
+    name: str | None = None
 
 
 def password_policy_error(new: str, current: str) -> str | None:
@@ -633,6 +639,69 @@ def spawn_tidepool(job_id: int, user: dict = Depends(current_user)) -> dict:
         key = db.tidepool_private_key(conn, job_id)
     return {"ready": up and key is not None, "port": tp["port"], "private_key": key, "user": guise,
             "proj": spawns_mod.pod_project_dir(job_id, head_arm)}
+
+
+# --- Tidepool (the caller's own, always) -----------------------------------------
+# No route takes a username: every one acts on the session's User. An Admin acts for anyone from the
+# Head (`cuttle tidepool restart --user`), through the helper directly — never over HTTP.
+
+@api.get("/tidepool")
+def tidepool_status(user: dict = Depends(current_user)) -> dict:
+    """State, usage against the fixed size, and what `cuttle login` needs to write the ssh alias:
+    port, login name, and the host key it pins. Re-syncs authorized_keys as a side effect, so a
+    reset/re-create converges on the next read."""
+    name = user["username"]
+    with db.connect() as conn:
+        uid = db.guise_uid(conn, user["id"])
+        tp_mod.sync_keys(conn, user["id"], name)
+    used = tp_mod.used_gb(name)
+    return {"state": tp_mod.state(name), "used_gb": used if used is not None else 0.0,
+            "mounted": used is not None, "size_gb": tp_mod.size_gb(),
+            "port": tp_mod.ssh_port(uid) if uid else None, "user": name,
+            "host_key": tp_mod.host_key(name), "alias": tp_mod.SSH_ALIAS}
+
+
+@api.post("/tidepool/{verb}")
+def tidepool_act(verb: str, user: dict = Depends(current_user)) -> dict:
+    """restart: processes die, apt layer + home kept. reset: a fresh container from the base, home
+    kept, everything installed outside it lost."""
+    if verb not in ("restart", "reset"):
+        raise HTTPException(404, f"no Tidepool action {verb!r}")
+    try:
+        tp_mod.act(verb, user["username"])
+    except Exception as e:
+        log.warning("tidepool %s user=%s failed: %s", verb, user["username"],
+                    getattr(e, "stderr", "") or e)
+        raise HTTPException(502, f"Tidepool {verb} failed — ask an admin to check "
+                                 f"`systemctl status ccc-tidepool@{user['username']}`") from None
+    log.info("tidepool %s user=%s", verb, user["username"])
+    return {"ok": True}
+
+
+@api.get("/ssh-keys")
+def ssh_keys(user: dict = Depends(current_user)) -> list[dict]:
+    with db.connect() as conn:
+        return [dict(r) for r in db.ssh_keys(conn, user["id"])]
+
+
+@api.post("/ssh-keys")
+def add_ssh_key(req: SshKeyRequest, user: dict = Depends(current_user)) -> dict:
+    pub = req.pubkey.strip()
+    if not tp_mod.PUBKEY_RE.match(pub):
+        raise HTTPException(422, "not an OpenSSH public key line (e.g. the contents of ~/.ssh/id_ed25519.pub)")
+    with db.connect() as conn:
+        added = db.add_ssh_key(conn, user["id"], pub, (req.name or "").strip()[:64] or None)
+        tp_mod.sync_keys(conn, user["id"], user["username"])
+    return {"added": added}
+
+
+@api.delete("/ssh-keys/{key_id}")
+def remove_ssh_key(key_id: int, user: dict = Depends(current_user)) -> dict:
+    with db.connect() as conn:
+        if not db.remove_ssh_key(conn, user["id"], key_id):
+            raise HTTPException(404, f"no key {key_id}")
+        tp_mod.sync_keys(conn, user["id"], user["username"])
+    return {"ok": True}
 
 
 app.include_router(api)

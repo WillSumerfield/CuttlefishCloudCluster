@@ -177,6 +177,15 @@ CREATE TABLE tidepools (
   node       TEXT
 );
 
+CREATE TABLE ssh_keys (
+  id       INTEGER PRIMARY KEY,
+  user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name     TEXT,
+  pubkey   TEXT    NOT NULL,
+  added_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  UNIQUE (user_id, pubkey)
+);
+
 CREATE TABLE guises (
   uid        INTEGER PRIMARY KEY,
   user_id    INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,
@@ -185,8 +194,8 @@ CREATE TABLE guises (
 """
 
 # PRAGMA user_version of a 2.0 head.db. Above every step of the 1.x ladder (1..21), so a 1.x store can
-# never read as this one.
-SCHEMA_VERSION = 22
+# never read as this one. 23: ssh_keys (Tidepool).
+SCHEMA_VERSION = 23
 
 
 # --- connection + schema ----------------------------------------------------
@@ -864,3 +873,26 @@ def delete_tidepool(conn: sqlite3.Connection, job_id: int) -> None:
     conn.execute("DELETE FROM tidepools WHERE job_id=?", (job_id,))
     conn.execute("DELETE FROM tidepool_ports WHERE port=?", (row["port"],))
     conn.commit()
+
+
+# --- SSH keys (Tidepool) ------------------------------------------------------
+# A User's public keys for their Tidepool's sshd. head.db is the source; tidepool.sync_keys writes the
+# authorized_keys the container reads. `cuttle login` adds this box's own; more via CLI or Dashboard.
+
+def ssh_keys(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT id, name, pubkey, added_at FROM ssh_keys WHERE user_id=? ORDER BY id",
+                        (user_id,)).fetchall()
+
+
+def add_ssh_key(conn: sqlite3.Connection, user_id: int, pubkey: str, name: str | None) -> bool:
+    """False if this User already has the key (one row per key; the name of the first add stays)."""
+    cur = conn.execute("INSERT OR IGNORE INTO ssh_keys (user_id, name, pubkey) VALUES (?,?,?)",
+                       (user_id, name, pubkey))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def remove_ssh_key(conn: sqlite3.Connection, user_id: int, key_id: int) -> bool:
+    cur = conn.execute("DELETE FROM ssh_keys WHERE id=? AND user_id=?", (key_id, user_id))
+    conn.commit()
+    return cur.rowcount > 0
