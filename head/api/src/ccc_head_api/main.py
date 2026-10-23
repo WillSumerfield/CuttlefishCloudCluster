@@ -14,17 +14,19 @@ that's the deferred item #8). The CLI pins that cert on first use; browsers show
 warning once. The session cookie is therefore Secure.
 """
 
+import asyncio
 import logging
 import os
 import subprocess
 import sys
 import time
 import traceback
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -34,6 +36,7 @@ from . import features as features_mod   # `features` is the /features endpoint'
 from . import spawns as spawns_mod
 from . import dive as dive_mod
 from . import tidepool as tp_mod
+from . import files as files_mod
 
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
@@ -114,6 +117,11 @@ class LoginRequest(BaseModel):
 class PasswdRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class FileOp(BaseModel):
+    path: str
+    to: str | None = None
 
 
 class DiveRequest(BaseModel):
@@ -656,6 +664,79 @@ def dive_connection(job_id: int, user: dict = Depends(current_user)) -> dict:
 def dive_end(job_id: int, user: dict = Depends(ambient_user)) -> Response:
     dive_mod.end(user, job_id)
     log.info("dive end id=%s by %s", job_id, user["username"])
+    return Response(status_code=204)
+
+
+# --- Files: the Dashboard's browser over the caller's own Tidepool home (files.py) ---------
+
+@api.get("/files")
+def files_list(path: str = ".", user: dict = Depends(current_user)) -> dict:
+    rel = files_mod.check(path)
+    return {"path": rel, "entries": files_mod.listing(user, rel)}
+
+
+@api.get("/files/download")
+def files_download(path: str, user: dict = Depends(current_user)) -> StreamingResponse:
+    """A file as itself; a folder as a streamed .zip (no size cap — it never sits on the Head)."""
+    rel, name = files_mod.check(path), user["username"]
+    st = files_mod.stat(name, rel)
+    if st is None:
+        raise HTTPException(404, f"~/{rel} is not there")
+    folder = st[1] == "d"
+    base = (name if rel == "." else rel.rsplit("/", 1)[-1]) + (".zip" if folder else "")
+    quoted = urllib.parse.quote(base)
+    return StreamingResponse(
+        files_mod.stream(name, "zip" if folder else "get", rel),
+        media_type="application/zip" if folder else "application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})
+
+
+@api.put("/files", status_code=204)
+async def files_upload(request: Request, path: str, overwrite: bool = False,
+                       user: dict = Depends(current_user)) -> Response:
+    """The raw body becomes the file (parents made). An existing one is a 409 unless `overwrite`."""
+    rel, name = files_mod.check(path), user["username"]
+    if rel == ".":
+        raise HTTPException(422, "name the file")
+    await asyncio.to_thread(files_mod.refuse_locked, user, rel)
+    if not overwrite and await asyncio.to_thread(files_mod.stat, name, rel):
+        raise HTTPException(409, f"~/{rel} already exists")
+    proc = await asyncio.create_subprocess_exec(*files_mod.argv(name, "put", rel),
+                                                stdin=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.PIPE)
+    try:
+        async for chunk in request.stream():
+            proc.stdin.write(chunk)
+            await proc.stdin.drain()
+        proc.stdin.close()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    err = (await proc.stderr.read()).decode(errors="replace").strip()
+    if await proc.wait():
+        raise HTTPException(422, err.removeprefix("ccc-tidepool: ") or "upload failed — is it full?")
+    log.info("file upload %s by %s", rel, name)
+    return Response(status_code=204)
+
+
+@api.post("/files/mkdir", status_code=204)
+def files_mkdir(req: FileOp, user: dict = Depends(current_user)) -> Response:
+    files_mod.mkdir(user, files_mod.check(req.path))
+    return Response(status_code=204)
+
+
+@api.post("/files/rename", status_code=204)
+def files_rename(req: FileOp, user: dict = Depends(current_user)) -> Response:
+    if not req.to:
+        raise HTTPException(422, "rename to what?")
+    files_mod.rename(user, files_mod.check(req.path), files_mod.check(req.to))
+    return Response(status_code=204)
+
+
+@api.delete("/files", status_code=204)
+def files_delete(path: str, user: dict = Depends(current_user)) -> Response:
+    rel = files_mod.check(path)
+    files_mod.delete(user, rel)
+    log.info("file delete %s by %s", rel, user["username"])
     return Response(status_code=204)
 
 

@@ -766,6 +766,50 @@ def started(user: str) -> None:
             apply_lock(d)
 
 
+# --- fs: the Dashboard's file browser, as the User inside their own container -----------------
+# `fs <user> <op> <path> [<path2>]` — paths from the Tidepool home. Runs `podman exec -u <user>`, so the
+# User's own permissions and symlinks apply (it is their container); stdin/stdout pass straight
+# through (put / get, zip, list). Argv, never a shell string: paths reach commands as arguments.
+
+FS_OPS = {
+    "list": lambda p: ["find", p, "-mindepth", "1", "-maxdepth", "1", "-printf", "%y\\0%s\\0%T@\\0%f\\0"],
+    "stat": lambda p: ["find", p, "-maxdepth", "0", "-printf", "%y %Y"],
+    "get": lambda p: ["cat", "--", p],
+    "zip": lambda p: ["sh", "-c", 'cd "$(dirname "$1")" && exec zip -q -r -1 -y - "$(basename "$1")"',
+                      "_", p],
+    "put": lambda p: ["sh", "-c", 'mkdir -p "$(dirname "$1")" && exec cat > "$1"', "_", p],
+    "mkdir": lambda p: ["mkdir", "-p", "--", p],
+    "delete": lambda p: ["rm", "-rf", "--", p],
+    "rename": lambda p, q: ["mv", "-T", "--", p, q],
+}
+
+
+def fs_path(user: str, rel: str) -> str:
+    """`/home/<user>/<rel>`; "" or "." is the home itself. No `..`, no absolute paths."""
+    if rel in ("", "."):
+        return f"/home/{user}"
+    if rel.startswith("/") or "\0" in rel or len(rel) > 4096 or \
+            any(c in ("", ".", "..") for c in rel.split("/")):
+        raise Refused(f"{rel!r} is not a path in your Tidepool home")
+    return f"/home/{user}/{rel}"
+
+
+def fs_argv(user: str, op: str, rels: list[str]) -> list[str]:
+    if op not in FS_OPS or len(rels) != (2 if op == "rename" else 1):
+        raise Refused(f"fs: bad op {op!r}")
+    paths = [fs_path(user, r) for r in rels]
+    if op in ("delete", "rename") and f"/home/{user}" in paths:
+        raise Refused("not your home folder itself")
+    return [*podman(user), "exec", *(["-i"] if op == "put" else []), "-u", user, "-w", f"/home/{user}",
+            container(user), *FS_OPS[op](*paths)]
+
+
+def fs(user: str, op: str, rels: list[str]) -> None:
+    record(check_user(user))
+    argv = fs_argv(user, op, rels)
+    os.execvp(argv[0], argv)
+
+
 def delete_manifest(image: str) -> None:
     """DELETE the snapshot's manifest from the registry (its blobs go at the next registry-gc)."""
     name, digest = image.removeprefix(f"{registry()}/").split("@")
@@ -849,11 +893,13 @@ def main(argv: list[str]) -> int:
             started(argv[1])
         elif argv == ["registry-gc"]:
             registry_gc()
+        elif len(argv) in (4, 5) and argv[0] == "fs":
+            fs(argv[1], argv[2], argv[3:])
         else:
             raise Refused("usage: ccc-tidepool create <user> <uid> | restart|reset|remove <user> | "
                           "teardown [--all] | dive-prep|dive-snap|dive-open <user> <token> | "
                           "dive-close|dive-lock <token> | dive-gpu grant|revoke … | started <user> | "
-                          "registry-gc")
+                          "registry-gc | fs <user> <op> <path> [<path>]")
     except (Refused, ValueError) as e:
         print(f"ccc-tidepool: {e}", file=sys.stderr)
         return 2

@@ -162,12 +162,13 @@ class TestEnsureContainer:
 
 
 class TestTemplates:
-    def test_sudoers_is_restart_reset_and_dive_verbs_only(self):
+    def test_sudoers_is_restart_reset_dive_and_fs_verbs_only(self):
         rules = [l.split("ccc-tidepool ", 1)[1] for l in templates.render_tidepool_sudoers().splitlines()
                  if l.startswith("ccc ")]
         assert rules == ["^(restart|reset) [a-z][a-z0-9_-]{0,31}$",
                          "^dive-(prep|snap|open) [a-z][a-z0-9_-]{0,31} [0-9a-f]{32}$",
-                         "^dive-close [0-9a-f]{32}$"]
+                         "^dive-close [0-9a-f]{32}$",
+                         "^fs [a-z][a-z0-9_-]{0,31} (list|stat|get|zip|put|mkdir|delete|rename) .+$"]
         # the root-only verbs never reach the API
         for verb in ("dive-lock", "dive-gpu", "started", "registry-gc", "create", "remove", "teardown"):
             assert not any(re.match(r, f"{verb} bob") for r in rules)
