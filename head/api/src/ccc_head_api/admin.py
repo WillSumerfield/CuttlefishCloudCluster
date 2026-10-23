@@ -10,12 +10,32 @@ first login. Nothing here ever prints or stores a reusable password.
 """
 
 import argparse
+import re
 import sys
 
 from . import db, guises
 
+# A username is also the User's Linux account inside their Tidepool container and part of its paths
+# and unit names on the Head — so a plain lowercase Linux name, and none the base image already has.
+USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+RESERVED = {"root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp",
+            "proxy", "www-data", "backup", "list", "irc", "gnats", "nobody", "messagebus", "sshd",
+            "ubuntu", "ccc"}
+
+
+def username_error(username: str) -> str | None:
+    if not USERNAME_RE.match(username):
+        return "usernames are lowercase letters, digits, '-' or '_', starting with a letter (max 32)"
+    if username in RESERVED or username.startswith(("systemd-", "_")):
+        return f"{username!r} is a system account name"
+    return None
+
 
 def _add(username: str, is_admin: bool) -> int:
+    err = username_error(username)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
     with db.connect() as conn:
         db.init_schema(conn)
         if db.get_user(conn, username):

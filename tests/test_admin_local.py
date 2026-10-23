@@ -122,3 +122,16 @@ class TestTheSchema:
             conn.execute("PRAGMA user_version=21")
             with pytest.raises(RuntimeError, match="clean install"):
                 db.init_schema(conn)
+
+
+class TestUsername:
+    @pytest.mark.parametrize("name", ["bob", "a1", "x_y-z"])
+    def test_linux_names_are_added(self, head_db, name):
+        assert admin.main(["add", name]) == 0
+
+    @pytest.mark.parametrize("name", ["Bob", "1bob", "a b", "a/b", "ubuntu", "sshd", "systemd-x",
+                                      "_apt", "x" * 33])
+    def test_anything_else_is_refused_before_head_db(self, head_db, name, capsys):
+        assert admin.main(["add", name]) == 1
+        with db.connect() as conn:
+            assert db.get_user(conn, name) is None
