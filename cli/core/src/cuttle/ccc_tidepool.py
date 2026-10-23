@@ -256,9 +256,10 @@ def reset(user: str) -> None:
     sh("systemctl", "start", service(user))
 
 
-def _stop(user: str) -> None:
+def _stop(user: str, drop_container: bool) -> None:
     sh("systemctl", "disable", "--now", service(user), check=False, capture_output=True)
-    sh(*podman(user), "rm", "-f", "-t", "5", container(user), check=False, capture_output=True)
+    if drop_container:
+        sh(*podman(user), "rm", "-f", "-t", "5", container(user), check=False, capture_output=True)
     sh("podman", "network", "rm", "-f", network(user), check=False, capture_output=True)
     sh("systemctl", "stop", mount_unit(user), check=False, capture_output=True)
     (UNIT_DIR / mount_unit(user)).unlink(missing_ok=True)
@@ -273,7 +274,7 @@ def remove(user: str) -> None:
     """Everything, the image included — `cuttle user remove` asked for the username typed first."""
     check_user(user)
     s = settings()
-    _stop(user)
+    _stop(user, drop_container=True)
     if os.path.ismount(mnt(user)):
         raise Refused(f"{mnt(user)} is still mounted — image kept")
     image_path(s, user).unlink(missing_ok=True)
@@ -290,7 +291,7 @@ def teardown(all_: bool) -> None:
     so a kept image is an orphan only an operator can recover by hand."""
     s = settings() if SETTINGS.exists() else None
     for user in users():
-        _stop(user)
+        _stop(user, drop_container=all_)   # a kept image keeps its container + apt layer too
         if all_ and s and not os.path.ismount(mnt(user)):
             image_path(s, user).unlink(missing_ok=True)
     sh("systemctl", "daemon-reload", check=False)
