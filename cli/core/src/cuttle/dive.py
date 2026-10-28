@@ -156,7 +156,7 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     _warn_thread(dive_id, _deadline(dive_id), stop)
     try:
         with transfer.Forward(name) as fwd:
-            ui.hint(f"`cuttle download <path>` sends files to {fwd.root}; `cuttle upload <path>` fetches from it")
+            ui.hint(f"`cuttle download <path>` → {fwd.root} (`upload` for the reverse)")
             ui.hint(f"type `exit` to leave — the Dive keeps its GPU until `cuttle dive end {dive_id}`")
             with ui.handover():
                 subprocess.run(["ssh", *fwd.ssh_args(), name])
