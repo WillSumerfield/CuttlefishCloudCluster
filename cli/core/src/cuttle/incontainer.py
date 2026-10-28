@@ -10,6 +10,7 @@ pins the directory's inode, so a rename would leave running Tidepools on the old
 """
 
 import importlib.metadata
+import re
 import tempfile
 from pathlib import Path
 
@@ -20,10 +21,28 @@ _PKG = Path(__file__).resolve().parent
 
 
 def requirements() -> str:
-    """This install's own deps, exactly (cuttle itself is copied, not installed)."""
-    pins = {f"{d.metadata['Name'].lower()}=={d.version}" for d in importlib.metadata.distributions()
-            if d.metadata["Name"] and d.metadata["Name"].lower() not in ("cuttle", "pip", "setuptools")}
-    return "".join(f"{p}\n" for p in sorted(pins))
+    """cuttle's dependency closure, pinned to this install's versions (cuttle itself is copied, not
+    installed). The closure, not every installed dist: a dev venv also holds workspace packages
+    (ccc-head-api, not on PyPI) and test tools. Extras are skipped; a dep not installed here is one
+    whose marker excluded it."""
+    pins, todo = {}, ["cuttle"]
+    while todo:
+        try:
+            dist = importlib.metadata.distribution(todo.pop())
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        for req in dist.requires or []:
+            if "extra ==" in req.replace("extra==", "extra =="):
+                continue
+            name = re.match(r"[A-Za-z0-9._-]+", req).group(0).lower().replace("_", "-")
+            if name in pins:
+                continue
+            try:
+                pins[name] = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError:
+                continue
+            todo.append(name)
+    return "".join(f"{n}=={v}\n" for n, v in sorted(pins.items()))
 
 
 def build_script(dest: Path) -> str:

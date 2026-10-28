@@ -138,6 +138,7 @@ class TestTheEnv:
         reqs = incontainer.requirements().splitlines()
         names = {r.split("==")[0] for r in reqs}
         assert "typer" in names and "httpx" in names and "cuttle" not in names
+        assert not names & {"ccc-head-api", "pytest", "fastapi"}   # dev-venv extras, not cuttle's deps
         assert all("==" in r for r in reqs)
 
     def test_built_in_a_base_container_then_swapped_in_place(self, monkeypatch):
