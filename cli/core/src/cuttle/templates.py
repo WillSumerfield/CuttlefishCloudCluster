@@ -606,7 +606,8 @@ source /etc/zsh/ccc-p10k.zsh
 def tidepool_podman() -> str:
     """The unit's podman prefix — must equal ccc_tidepool.podman() with `%i` for the user."""
     return (f"/usr/bin/podman --root {config.TIDEPOOL_MNT_ROOT}/%i/storage --runroot "
-            f"/run/ccc-tidepools/%i --storage-opt additionalimagestore=/var/lib/containers/storage")
+            f"/run/ccc-tidepools/%i --tmpdir /run/ccc-tidepools/%i/libpod "
+            f"--storage-opt additionalimagestore=/var/lib/containers/storage")
 
 
 def render_tidepool_unit() -> str:

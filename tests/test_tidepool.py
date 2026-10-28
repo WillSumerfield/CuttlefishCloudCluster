@@ -391,3 +391,31 @@ class TestBridgeDns:
         monkeypatch.setattr(system, "run", lambda cmd, **k: (_ for _ in ()).throw(AssertionError(cmd)))
         monkeypatch.setattr(system, "ufw_active", lambda: False)
         system.allow_dns_from("10.89.0.0/16", "c")
+
+
+class TestSurvivesReboot:
+    def test_own_reboot_marker_dir(self):
+        a = H.podman("bob")
+        assert a[a.index("--tmpdir") + 1] == "/run/ccc-tidepools/bob/libpod"
+
+    def test_a_store_from_before_the_marker_is_dropped_once_home_kept(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(H, "MNT_ROOT", tmp_path)
+        monkeypatch.setattr(H, "sh", lambda *a, **k: None)
+        m = tmp_path / "bob"
+        (m / "storage" / "overlay").mkdir(parents=True)
+        (m / "home").mkdir()
+        (m / "home" / "keep").touch()
+        monkeypatch.setattr(H.os, "chown", lambda *a: None)
+        with pytest.raises(Exception):      # stops past the store reset (keys dir, real accounts)
+            H.ensure_dirs("bob", 60003)
+        assert not (m / "storage" / "overlay").exists() and (m / "home" / "keep").exists()
+        assert (m / H.STORE_MARK).exists()
+
+
+class TestEnter:
+    def test_a_stopped_tidepool_is_refused_not_sshed(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_tp, "connect", lambda: {"state": "activating", "user": "bob"})
+        monkeypatch.setattr(cli_tp.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+        with pytest.raises(Exception):
+            cli_tp.enter()
+        assert "isn't running (activating)" in capsys.readouterr().err

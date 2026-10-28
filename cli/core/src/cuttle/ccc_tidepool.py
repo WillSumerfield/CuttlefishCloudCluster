@@ -112,9 +112,16 @@ def network(user: str) -> str:
     return f"ccc-tp-{user}"
 
 
+STORE_MARK = ".store-v2"   # beside storage/: this store was made with podman()'s --tmpdir
+
+
 def podman(user: str) -> list[str]:
     """Podman pointed at this User's store (inside their image), the base read from the main store."""
+    # --tmpdir: its own reboot marker (`alive`). Shared with the main store's /run/libpod, the main
+    # podman's post-boot refresh marks it done, this store never refreshes, and every start after a
+    # reboot fails on run dirs the reboot wiped.
     return ["podman", "--root", str(mnt(user) / "storage"), "--runroot", f"/run/ccc-tidepools/{user}",
+            "--tmpdir", f"/run/ccc-tidepools/{user}/libpod",
             "--storage-opt", f"additionalimagestore={MAIN_STORE}"]
 
 
@@ -224,6 +231,12 @@ def ensure_dirs(user: str, uid: int) -> None:
     container). Group = the User's mapped gid, setgid, 2751: the session (0640) is readable inside by
     the User and by no other host account; authorized_keys (0644) still by the container's sshd."""
     b, m = id_base(uid), mnt(user)
+    # A store made before --tmpdir: podman refuses it under the new one (db config mismatch), so it is
+    # dropped once — its only content is the container's own layer (apt installs); home is kept.
+    if (m / "storage").exists() and not (m / STORE_MARK).exists():
+        sh("systemctl", "stop", service(user), check=False, capture_output=True)
+        shutil.rmtree(m / "storage")
+    (m / STORE_MARK).touch()
     for d, owner, mode in ((m / "home", b + INNER_UID, 0o750), (m / "storage", 0, 0o700),
                            (m / "ssh", b, 0o700)):
         if not d.exists():
