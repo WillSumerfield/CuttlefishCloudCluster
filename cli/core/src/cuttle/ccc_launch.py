@@ -364,6 +364,10 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
     u = d["user"]
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
             "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--rm", "--init",
+            # Also kept in the journal (`journalctl CONTAINER_NAME=ccc-job-<id>`): the Slurm log is in
+            # the job's private /tmp, gone at job end — with it, why a Dive died. Dives only: a
+            # Spawn's output is the User's own, and can be large.
+            "--log-driver=journald",
             "--name", f"{CONTAINER_PREFIX}{jid}", "--cgroup-parent", step, "--hostname", f"dive-{jid}",
             "--uidmap", f"0:{base}:{ID_COUNT}", "--gidmap", f"0:{base}:{ID_COUNT}",
             "--pull=missing", "--authfile", AUTH_FILE,

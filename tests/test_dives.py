@@ -346,6 +346,7 @@ class TestArmDive:
         assert f"{home}/.ssh/config:/home/bob/.ssh/config:ro" in vols
         assert not any(v.startswith(f"{home}/proj") for v in vols)
         assert f"{tmp_path}/sys:/etc/ccc/dive:ro" in vols
+        assert "--log-driver=journald" in a    # why a Dive died outlives the job's private /tmp
         assert f"{L.ENV_CACHE}:/ccc-cache:idmap" in vols
         assert {f"{config.CONTAINER_CUTTLE}:{config.CONTAINER_CUTTLE}:ro",
                 f"{config.CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
