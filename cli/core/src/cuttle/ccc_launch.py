@@ -324,6 +324,11 @@ def stage_in(d: dict, jobdir: Path, owner: int) -> Path:
     os.chown(home, owner, owner)
     run = lambda argv: subprocess.run(argv, check=True)   # noqa: E731
     run(rsync_argv(module(d, "sys"), f"{jobdir}/sys/", filters=False))
+    # rsync -a carries the Head's root 0700 onto the dir: container root (host uid base) could not
+    # open it, so sshd found no host key. Its files keep their own owners (key: container root;
+    # session: the User), so 0711 lets each reach only its own.
+    os.chown(jobdir / "sys", owner - INNER_UID, owner - INNER_UID)
+    (jobdir / "sys").chmod(0o711)
     run(rsync_argv(module(d, "dot"), f"{home}/", filters=False))
     for i, dep in enumerate(d["deps"]):
         run(rsync_argv(module(d, f"dep{i}"), f"{_mkdirs(home, dep, owner)}/"))

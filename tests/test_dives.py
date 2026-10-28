@@ -308,7 +308,11 @@ class TestArmDive:
         calls, chowned = [], []
         monkeypatch.setattr(L.subprocess, "run", lambda a, **k: calls.append(a))
         monkeypatch.setattr(L.os, "chown", lambda p, u, g: chowned.append((str(p), u)))
+        (tmp_path / "sys").mkdir(mode=0o700)      # as rsync leaves it: the Head's root 0700
         home = L.stage_in(DIVE, tmp_path, 4242)
+        assert (str(tmp_path / "sys"), 4242 - L.INNER_UID) in chowned     # container root's
+        assert (tmp_path / "sys").stat().st_mode & 0o777 == 0o711
+        chowned.remove((str(tmp_path / "sys"), 4242 - L.INNER_UID))
         srcs = [c[-2] for c in calls]
         assert srcs == [f"rsync://d{TOK}@100.99.0.1/d{TOK}-sys/",
                         f"rsync://d{TOK}@100.99.0.1/d{TOK}-dot/",
