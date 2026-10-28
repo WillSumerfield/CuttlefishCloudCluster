@@ -195,6 +195,9 @@ def free_bytes(path: Path) -> int:
 def ensure_image(user: str, s: dict) -> Path:
     img = image_path(s, user)
     if img.exists():
+        # Re-fill any holes at its own size: an image made before mkfs was told not to discard is
+        # sparse, and only takes host disk as the User writes — the up-front reservation is the point.
+        sh("fallocate", "-l", str(img.stat().st_size), str(img))
         return img
     img.parent.mkdir(parents=True, exist_ok=True)
     want = s["size_gb"] * 2**30
@@ -203,7 +206,8 @@ def ensure_image(user: str, s: dict) -> Path:
                       f"another {s['size_gb']} GB Tidepool")
     sh("fallocate", "-l", str(want), str(img))
     img.chmod(0o600)
-    sh("mkfs.ext4", "-q", "-F", "-m", "0", "-L", f"tp-{user}"[:16], str(img))
+    # nodiscard: mke2fs otherwise punches out every block of a regular file, undoing the fallocate.
+    sh("mkfs.ext4", "-q", "-F", "-m", "0", "-E", "nodiscard", "-L", f"tp-{user}"[:16], str(img))
     return img
 
 

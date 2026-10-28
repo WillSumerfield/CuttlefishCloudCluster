@@ -6,6 +6,7 @@ NOT tested: a real loop image, Podman, sshd or systemd — hardware list (temp/2
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -122,6 +123,33 @@ class TestHelperRefuses:
     def test_restart_of_a_user_with_no_tidepool(self, monkeypatch, tmp_path):
         monkeypatch.setattr(H, "RECORDS", tmp_path)
         assert H.main(["restart", "bob"]) == 2
+
+
+class TestImageReservation:
+    """The image's space is taken up front, and stays taken."""
+
+    @pytest.fixture
+    def ran(self, monkeypatch):
+        cmds = []
+        def sh(*a, **k):
+            cmds.append(list(a))
+            if a[0] == "fallocate":
+                Path(a[-1]).touch()
+        monkeypatch.setattr(H, "sh", sh)
+        monkeypatch.setattr(H, "free_bytes", lambda p: 2**50)
+        return cmds
+
+    def test_mkfs_does_not_discard_the_fallocated_blocks(self, ran, tmp_path):
+        H.ensure_image("bob", {"image_dir": str(tmp_path), "size_gb": 200})
+        assert ran[0][0] == "fallocate"
+        mkfs = next(c for c in ran if c[0] == "mkfs.ext4")
+        assert mkfs[mkfs.index("-E") + 1] == "nodiscard"
+
+    def test_an_existing_image_has_its_holes_refilled_at_its_own_size(self, ran, tmp_path):
+        img = tmp_path / "bob.img"
+        img.write_bytes(b"x" * 4096)
+        H.ensure_image("bob", {"image_dir": str(tmp_path), "size_gb": 200})
+        assert ran == [["fallocate", "-l", "4096", str(img)]]
 
 
 class TestEnsureContainer:
