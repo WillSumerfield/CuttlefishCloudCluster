@@ -148,7 +148,6 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
               f"every minute (read-only there until the Dive ends)")
     ui.warn(f"the GPU is yours until `cuttle dive end {dive_id}` or --time runs out — disconnecting "
             f"does not free it")
-    ui.hint(f"editors (VS Code Remote-SSH host): {name}")
     if vscode:
         if sshconfig.open_vscode(name, folder):
             ui.ok(f"opening Dive {dive_id} in VS Code ({name})")
@@ -157,7 +156,7 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     _warn_thread(dive_id, _deadline(dive_id), stop)
     try:
         with transfer.Forward(name) as fwd:
-            ui.hint(f"`cuttle upload/download` inside reach {fwd.root}")
+            ui.hint(f"`cuttle download <path>` sends files to {fwd.root}; `cuttle upload <path>` fetches from it")
             ui.hint(f"type `exit` to leave — the Dive keeps its GPU until `cuttle dive end {dive_id}`")
             with ui.handover():
                 subprocess.run(["ssh", *fwd.ssh_args(), name])
