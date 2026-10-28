@@ -34,9 +34,12 @@ def load_settings() -> dict | None:
 def default_settings() -> dict:
     cpus, mem_gb = system.cpu_count(), system.real_memory_mb() // 1024
     f = config.TIDEPOOL_DEFAULT_TOTAL_FRACTION
+    total_cpus, total_mem = max(1, cpus // f), max(1, mem_gb // f)
+    # One Tidepool's cap never above all of them together (the slice would cap it anyway, silently).
     return {"image_dir": config.TIDEPOOL_DEFAULT_IMAGE_DIR, "size_gb": config.TIDEPOOL_DEFAULT_SIZE_GB,
-            "cpus": min(config.TIDEPOOL_DEFAULT_CPUS, cpus), "mem_gb": min(config.TIDEPOOL_DEFAULT_MEM_GB, mem_gb),
-            "total_cpus": max(1, cpus // f), "total_mem_gb": max(1, mem_gb // f)}
+            "cpus": min(config.TIDEPOOL_DEFAULT_CPUS, total_cpus),
+            "mem_gb": min(config.TIDEPOOL_DEFAULT_MEM_GB, total_mem),
+            "total_cpus": total_cpus, "total_mem_gb": total_mem}
 
 
 def prompt_settings(existing: dict | None) -> dict:

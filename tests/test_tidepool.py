@@ -267,6 +267,12 @@ class TestSettings:
         d = cli_tp.default_settings()
         assert (d["size_gb"], d["cpus"], d["mem_gb"], d["total_cpus"]) == (200, 4, 16, 32)
 
+    def test_a_small_box_caps_each_tidepool_at_the_total(self, monkeypatch):
+        monkeypatch.setattr(system, "cpu_count", lambda: 8)
+        monkeypatch.setattr(system, "real_memory_mb", lambda: 63185)
+        d = cli_tp.default_settings()
+        assert (d["cpus"], d["mem_gb"], d["total_cpus"], d["total_mem_gb"]) == (2, 15, 2, 15)
+
     def test_image_dir_under_ccc_lib_is_refused(self, monkeypatch):
         answers = iter(["/var/lib/ccc/imgs"])
         monkeypatch.setattr(cli_tp.ui, "ask_text", lambda *a, **k: next(answers))
