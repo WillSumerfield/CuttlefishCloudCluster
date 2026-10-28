@@ -94,6 +94,7 @@ def install(write_root_file, s: dict) -> None:
     run(["systemctl", "enable", "--now", f"{config.REGISTRY_GC_SERVICE}.timer"], sudo=True)
     system.allow_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count(),
                                 "ccc tidepool ssh (LAN+mesh)")
+    system.allow_dns_from(config.TIDEPOOL_BRIDGE_SUBNETS, "ccc tidepool dns")
 
 
 def _port_count() -> int:
@@ -123,6 +124,7 @@ def teardown(all_: bool) -> None:
     if config.TIDEPOOL_HELPER_BIN.exists():
         _helper("teardown", *(["--all"] if all_ else []), check=False)
     system.deny_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count())
+    system.deny_dns_from(config.TIDEPOOL_BRIDGE_SUBNETS)
     run(["systemctl", "stop", config.TIDEPOOL_SLICE], sudo=True, check=False)
     run(["systemctl", "disable", "--now", f"{config.REGISTRY_GC_SERVICE}.timer"], sudo=True, check=False)
     run(["rm", "-rf", str(config.REGISTRY_GC_UNIT), str(config.REGISTRY_GC_TIMER),

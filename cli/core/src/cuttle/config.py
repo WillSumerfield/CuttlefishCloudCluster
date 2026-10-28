@@ -599,6 +599,9 @@ TIDEPOOL_SERVICE = "ccc-tidepool"                      # ccc-tidepool@<user>.ser
 TIDEPOOL_UNIT = Path("/etc/systemd/system/ccc-tidepool@.service")
 TIDEPOOL_SLICE = "ccc-tidepools.slice"
 TIDEPOOL_SLICE_UNIT = Path("/etc/systemd/system") / TIDEPOOL_SLICE
+# podman's default pool hands each new bridge network the next /24 of this range (the first 256 of
+# them) — every User's isolate=true network included. ufw lets it reach the host's DNS (allow_dns_from).
+TIDEPOOL_BRIDGE_SUBNETS = "10.89.0.0/16"
 TIDEPOOL_SSH_PORT_BASE = 32000                         # port = base + (uid - CCC_UID)
 TIDEPOOL_DEFAULT_IMAGE_DIR = "/var/lib/ccc-tidepools"
 TIDEPOOL_DEFAULT_SIZE_GB = 200

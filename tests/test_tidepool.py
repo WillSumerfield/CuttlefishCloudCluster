@@ -370,3 +370,24 @@ class TestLoginConnects:
         # a second login re-uses the key, uploads nothing new
         assert cli("login", input="alice\nhunter2\n").exit_code == 0
         assert (keys_root / "alice" / "authorized_keys").read_text() == pub + "\n"
+
+
+class TestBridgeDns:
+    """ufw's default deny drops a Tidepool's DNS query to its bridge gateway (host INPUT)."""
+
+    def test_rule_added_when_ufw_enforces_and_deleted_by_the_same_spec(self, monkeypatch):
+        ran = []
+        monkeypatch.setattr(system, "run", lambda cmd, **k: ran.append(cmd))
+        monkeypatch.setattr(system, "ufw_active", lambda: True)
+        monkeypatch.setattr(system.shutil, "which", lambda b: "/usr/sbin/ufw")
+        system.allow_dns_from("10.89.0.0/16", "c")
+        system.deny_dns_from("10.89.0.0/16")
+        add, rm = ran
+        assert add[:add.index("comment")] == ["ufw", "allow", "in", "from", "10.89.0.0/16", "to", "any",
+                                               "port", "53"]
+        assert rm == ["ufw", "delete", *add[1:add.index("comment")]]
+
+    def test_left_alone_without_ufw(self, monkeypatch, capsys):
+        monkeypatch.setattr(system, "run", lambda cmd, **k: (_ for _ in ()).throw(AssertionError(cmd)))
+        monkeypatch.setattr(system, "ufw_active", lambda: False)
+        system.allow_dns_from("10.89.0.0/16", "c")

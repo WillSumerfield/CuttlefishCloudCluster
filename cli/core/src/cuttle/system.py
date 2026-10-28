@@ -599,6 +599,24 @@ def allow_tcp_port_range(base: int, count: int, comment: str) -> None:
     run(["ufw", "allow", f"{base}:{base + count - 1}/tcp", "comment", comment], sudo=True)
 
 
+def allow_dns_from(subnet: str, comment: str) -> None:
+    """Let containers on `subnet` reach this host's DNS (podman's aardvark-dns, at each bridge's
+    gateway). Their internet traffic is forwarded and passes ufw; a query to the gateway is INPUT, and
+    ufw's default deny drops it. Only if ufw is already enforcing, like allow_tcp_port."""
+    if not ufw_active():
+        print(f"ufw inactive or absent — leaving the host firewall alone (nothing blocks DNS from {subnet})")
+        return
+    run(["ufw", "allow", "in", "from", subnet, "to", "any", "port", "53", "comment", comment], sudo=True)
+
+
+def deny_dns_from(subnet: str) -> None:
+    """Reverse of allow_dns_from. Tolerant of partial state (teardown), like deny_mesh_iface."""
+    if not shutil.which("ufw"):
+        return
+    run(["ufw", "delete", "allow", "in", "from", subnet, "to", "any", "port", "53"], sudo=True,
+        check=False)
+
+
 def deny_tcp_port(port: int) -> None:
     """Reverse of allow_tcp_port. Tolerant of partial state (teardown), like deny_mesh_iface."""
     if not shutil.which("ufw"):
