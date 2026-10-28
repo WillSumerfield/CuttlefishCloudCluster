@@ -56,7 +56,10 @@ def install_launcher(write_root_file) -> None:
 
 def write_registry_auth(write_root_file, user: str, password: str) -> None:
     """The root-only auth.json `podman pull/push --authfile` and ccc-launch read."""
-    tok = base64.b64encode(f"{user}:{password}".encode()).decode()
+    _write_auth(write_root_file, base64.b64encode(f"{user}:{password}".encode()).decode())
+
+
+def _write_auth(write_root_file, tok: str) -> None:
     write_root_file(config.REGISTRY_AUTH,
                     json.dumps({"auths": {config.registry(): {"auth": tok}}}, indent=2) + "\n", "600")
 
@@ -111,11 +114,19 @@ def install_registry(write_root_file, mesh_ip: str) -> None:
     """Both registry instances (Quadlets), their configs, and the Head's own push credential."""
     run(["install", "-d", "-m", "0700", str(config.REGISTRY_ETC)], sudo=True)
     run(["install", "-d", "-m", "0700", str(config.REGISTRY_DATA)], sudo=True)
-    if run(["test", "-s", str(config.REGISTRY_AUTH)], sudo=True, check=False).returncode != 0:
+    held = run(["cat", str(config.REGISTRY_AUTH)], sudo=True, capture_output=True, text=True,
+               check=False).stdout.strip()
+    if not held:
         pw = secrets.token_urlsafe(32)
         run(["htpasswd", "-cbB", str(config.REGISTRY_PUSH_HTPASSWD), config.REGISTRY_PUSH_USER, pw],
             sudo=True)
         write_registry_auth(write_root_file, config.REGISTRY_PUSH_USER, pw)
+    else:
+        # The entry is keyed by registry host, which carries the Cluster name: after a rename, move
+        # the same credential (only its hash is in htpasswd) to the new host or every push is anonymous.
+        auths = json.loads(held)["auths"]
+        if list(auths) != [config.registry()]:
+            _write_auth(write_root_file, next(iter(auths.values()))["auth"])
     run(["touch", str(config.REGISTRY_PULL_HTPASSWD)], sudo=True)
     run(["chmod", "600", str(config.REGISTRY_PUSH_HTPASSWD), str(config.REGISTRY_PULL_HTPASSWD)],
         sudo=True)

@@ -48,14 +48,22 @@ class TestRegistry:
 
     def test_push_credential_is_minted_once(self, box):
         write, files, ran, answers = box
-        answers["test -s"] = subprocess.CompletedProcess([], 1)    # none yet
-        podman.install_registry(write, "100.99.0.1")
+        podman.install_registry(write, "100.99.0.1")                # none yet
         auth, mode = files[config.REGISTRY_AUTH]
         assert mode == "600" and "ccc.lab:5000" in json.loads(auth)["auths"]
         files.clear()
-        answers["test -s"] = subprocess.CompletedProcess([], 0)    # already there
+        answers["cat"] = subprocess.CompletedProcess([], 0, stdout=auth)   # already there
         podman.install_registry(write, "100.99.0.1")
         assert config.REGISTRY_AUTH not in files
+
+    def test_a_renamed_cluster_moves_the_credential_to_the_new_host(self, box):
+        write, files, ran, answers = box
+        old = json.dumps({"auths": {"ccc.old:5000": {"auth": "dG9r"}}})
+        answers["cat"] = subprocess.CompletedProcess([], 0, stdout=old)
+        podman.install_registry(write, "100.99.0.1")
+        auth, mode = files[config.REGISTRY_AUTH]
+        assert mode == "600" and json.loads(auth)["auths"] == {"ccc.lab:5000": {"auth": "dG9r"}}
+        assert not any(c[0] == "htpasswd" for c in ran)    # same password, not a new one
 
     def test_pull_cred_mint_and_revoke(self, box):
         write, files, ran, answers = box
