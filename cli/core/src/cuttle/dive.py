@@ -4,6 +4,8 @@
 A Dive's shell is reached as `ssh <name>-<id>` — the same key and pinned host key as `ssh <name>`
 (sshconfig.py). On an Arm the main folder is a copy, mirrored back to the Tidepool every minute and
 read-only there meanwhile; on the Head the Dive *is* your Tidepool, with the GPU lent to it.
+Run inside a Tidepool you entered with `cuttle tidepool`, it closes that session and your machine
+attaches to the Dive (transfer.DIVE_OPS); `--vscode` opens it in VS Code there instead.
 
 **Disconnecting never ends a Dive.** `exit`, a dropped connection, Ctrl-C — it keeps its GPU (and
 keeps billing Karma) until `--time` runs out or `cuttle dive end`.
@@ -11,6 +13,7 @@ keeps billing Karma) until `--time` runs out or `cuttle dive end`.
 
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -119,26 +122,70 @@ def _live_ids() -> set[int] | None:
         return None
 
 
-def ensure_alias(dive_id: int) -> tuple[str, dict]:
-    """Wait for the Dive's sshd, then write its `<name>-<id>` alias. (alias, connection info)."""
-    info = _wait_ready(dive_id)
+def ensure_alias(dive_id: int, info: dict | None = None) -> tuple[str, dict]:
+    """Wait for the Dive's sshd (unless `info` says it's ready), then write its `<name>-<id>` alias.
+    (alias, connection info)."""
+    info = info or _wait_ready(dive_id)
     sshconfig.record(dive_id, port=info["port"], user=info["user"], host=tidepool._head_host())
     live = _live_ids()
     sshconfig.refresh(None if live is None else live | {dive_id})
     return sshconfig.alias(dive_id), info
 
 
+_SESSION_RE = re.compile(rb"^sshd(-session)?: \S+@")
+
+
+def _session_sshd(pid: int | None = None, proc: Path = Path("/proc")) -> int | None:
+    """The `sshd: <user>@pts/N` process above us (this ssh session), or None (e.g. a tmux pane)."""
+    pid = pid or os.getpid()
+    while pid > 1:
+        try:
+            if _SESSION_RE.match((proc / str(pid) / "cmdline").read_bytes()):
+                return pid
+            stat = (proc / str(pid) / "stat").read_text()
+        except OSError:
+            return None
+        pid = int(stat.rsplit(")", 1)[1].split()[1])
+    return None
+
+
+def _attach_inside(dive_id: int, vscode: bool) -> None:
+    """No key or alias in here: the shell is reached from your own machine, over $CCC_FWD."""
+    info = _wait_ready(dive_id)
+    if info["head"]:
+        ui.ok(f"Dive {dive_id} is on the Head: this Tidepool now has the GPU")
+        return
+    if vscode and transfer.notify("vscode", dive_id):
+        ui.ok(f"opening Dive {dive_id} in VS Code on your machine")
+        return
+    if not vscode and transfer.notify("handoff", dive_id):
+        sshd = _session_sshd()
+        if sshd:
+            ui.ok(f"leaving for Dive {dive_id} on {info.get('node')}")
+            os.kill(sshd, signal.SIGHUP)
+        else:
+            ui.ok(f"Dive {dive_id} is up on {info.get('node')} — detach tmux and `exit` to go to it")
+        return
+    ui.ok(f"Dive {dive_id} is up on {info.get('node')} — from your own machine: "
+          f"`cuttle dive attach {dive_id}`")
+
+
+def open_vscode_quiet(dive_id: int) -> bool:
+    """Your machine, asked from inside (transfer.DIVE_OPS): the Dive is ready, so no waiting."""
+    try:
+        info = auth._api("GET", f"/dives/{dive_id}")
+        if not info["ready"]:
+            return False
+        name, info = ensure_alias(dive_id, info)
+        return sshconfig.open_vscode(name, f"/home/{info['user']}/{info['main']}")
+    except (Exception, SystemExit):
+        return False
+
+
 def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     dive_id = dive_id or _pick("Attach to which Dive?")
     if in_container():
-        # No key or alias in here: the shell is reached from your own machine.
-        info = _wait_ready(dive_id)
-        if info["head"]:
-            ui.ok(f"Dive {dive_id} is on the Head: this Tidepool now has the GPU")
-        else:
-            ui.ok(f"Dive {dive_id} is up on {info.get('node')} — from your own machine: "
-                  f"`cuttle dive attach {dive_id}`")
-        return
+        return _attach_inside(dive_id, vscode)
     name, info = ensure_alias(dive_id)
     folder = f"/home/{info['user']}/{info['main']}"
     if info["head"]:
@@ -163,6 +210,8 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
                 subprocess.run(["ssh", *fwd.ssh_args(), name])
     finally:
         stop.set()
+    if fwd.handoff:
+        return attach(fwd.handoff)
     _report_ending(dive_id)
 
 

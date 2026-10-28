@@ -187,6 +187,9 @@ def enter() -> None:
         ui.hint("type `exit` to leave — the Tidepool keeps running either way")
         with ui.handover():
             rc = subprocess.run(["ssh", *fwd.ssh_args(), name]).returncode
+        if fwd.handoff:   # `cuttle dive` in there closed the session to send you on (dive._attach_inside)
+            from . import dive
+            return dive.attach(fwd.handoff)
         if rc == 255:   # ssh's own failure; any other code is the shell's last command
             raise ui.abort("couldn't connect to your Tidepool (ssh exit 255)",
                            next_step="`cuttle tidepool restart`, or ask an admin")

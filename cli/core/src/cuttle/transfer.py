@@ -127,7 +127,7 @@ def inside() -> bool:
     return dive.in_container()
 
 
-def _request(op: str, src: list[str], dest: str, force: bool) -> None:
+def _link() -> socket.socket | None:
     path = os.environ.get(FWD_ENV)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -135,8 +135,31 @@ def _request(op: str, src: list[str], dest: str, force: bool) -> None:
             raise OSError
         s.connect(path)
     except OSError:
+        s.close()
+        return None
+    return s
+
+
+def notify(op: str, dive_id: int) -> bool:
+    """Ask your machine to take you to a Dive (DIVE_OPS). False: no link (plain ssh, an editor's
+    terminal, a stale $CCC_FWD in tmux) or it refused."""
+    s = _link()
+    if s is None:
+        return False
+    with s, s.makefile("rwb") as f:
+        f.write(json.dumps({"op": op, "dive": dive_id}).encode() + b"\n")
+        f.flush()
+        try:
+            return json.loads(f.readline()).get("rc") == 0
+        except ValueError:
+            return False
+
+
+def _request(op: str, src: list[str], dest: str, force: bool) -> None:
+    s = _link()
+    if s is None:
         raise ui.abort("this shell has no link to your machine",
-                       next_step="enter via `cuttle tidepool` (or `cuttle dive attach`) from it") from None
+                       next_step="enter via `cuttle tidepool` (or `cuttle dive attach`) from it")
     with s, s.makefile("rwb") as f:
         f.write(json.dumps({"op": op, "src": src, "dest": dest, "force": force}).encode() + b"\n")
         f.flush()
@@ -185,12 +208,32 @@ def serve(req: dict, alias: str, root: Path, write: Callable[[str], None]) -> in
     raise Refused("bad request")
 
 
+# From inside, about a Dive: `handoff` — attach to it once this ssh ends (the inner cuttle then
+# closes the session); `vscode` — open it in VS Code here now, the session stays.
+DIVE_OPS = ("handoff", "vscode")
+
+
+def _open_vscode(dive_id: int) -> None:
+    from . import dive
+    if not dive.open_vscode_quiet(dive_id):
+        raise Refused("couldn't open VS Code on your machine")
+
+
 class Forward:
-    """What `cuttle tidepool` / `dive attach` hold open around ssh: a socket here, forwarded in."""
+    """What `cuttle tidepool` / `dive attach` hold open around ssh: a socket here, forwarded in.
+    `handoff` is a Dive to attach to once ssh returns (DIVE_OPS)."""
 
     def __init__(self, alias: str, root: Path | None = None):
         self.alias, self.root = alias, (root or Path.cwd()).resolve()
         self.remote = f"/tmp/ccc-fwd-{secrets.token_hex(8)}.sock"
+        self.handoff: int | None = None
+
+    def dive_op(self, req: dict) -> None:
+        dive_id = int(req["dive"])
+        if req["op"] == "handoff":
+            self.handoff = dive_id
+        else:
+            _open_vscode(dive_id)
 
     def __enter__(self) -> "Forward":
         run = config.CCC_HOME / "run"
@@ -205,7 +248,12 @@ class Forward:
                     self.wfile.write(json.dumps({"out": s}).encode() + b"\n")
                     self.wfile.flush()
                 try:
-                    rc = serve(json.loads(self.rfile.readline()), fwd.alias, fwd.root, write)
+                    req = json.loads(self.rfile.readline())
+                    if req.get("op") in DIVE_OPS:
+                        fwd.dive_op(req)
+                        rc = 0
+                    else:
+                        rc = serve(req, fwd.alias, fwd.root, write)
                     end = {"rc": rc}
                 except (Refused, ValueError, KeyError, TypeError) as e:
                     end = {"rc": 2, "error": str(e) or "bad request"}
