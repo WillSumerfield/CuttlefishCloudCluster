@@ -132,7 +132,8 @@ class TestEnsureContainer:
         rec = tmp_path / "images.json"
         rec.write_text(json.dumps({"base": self.BASE}))
         monkeypatch.setattr(H, "IMAGES_RECORD", rec)
-        monkeypatch.setattr(H, "ok", lambda *a: True)
+        self.exists = False     # does `container exists` say yes (images always do)
+        monkeypatch.setattr(H, "ok", lambda *a: self.exists if "container" in a else True)
         calls = []
         monkeypatch.setattr(H, "sh", lambda *a, **k: calls.append(a))
         return calls
@@ -159,6 +160,13 @@ class TestEnsureContainer:
         monkeypatch.setattr(H, "_container_image", lambda u: None)
         H.ensure_container("bob", 60003, TestHelperArgv.S)
         assert self.verbs(ran) == ["create"]
+
+    def test_a_container_whose_image_was_wiped_is_recreated(self, ran, monkeypatch):
+        """inspect fails ('image not known') yet the name is still taken."""
+        monkeypatch.setattr(H, "_container_image", lambda u: None)
+        self.exists = True
+        H.ensure_container("bob", 60003, TestHelperArgv.S)
+        assert self.verbs(ran) == ["stop", "rm", "create"]
 
 
 class TestTemplates:

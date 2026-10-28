@@ -260,7 +260,9 @@ def ensure_container(user: str, uid: int, s: dict) -> None:
         sh(*podman(user), "update", "--cpus", str(s["cpus"]), "--memory", f"{s['mem_gb']}g",
            "--memory-swap", f"{s['mem_gb']}g", container(user), check=False, capture_output=True)
         return
-    if have is not None:
+    # `have` is None also for a container whose image a release wipe deleted (inspect fails on it), so
+    # existence is asked separately — else `create` hits the name it still holds.
+    if have is not None or ok(*podman(user), "container", "exists", container(user)):
         # a new release's base (setup --head wiped the old one), or a new create spec: the old layer
         # cannot outlive it — recreated, home kept, like a reset
         sh("systemctl", "stop", service(user), check=False, capture_output=True)
