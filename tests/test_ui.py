@@ -440,9 +440,12 @@ class TestHandover:
         monkeypatch.setattr(ui, "_tick_stop", lambda: events.append("tick-stop"))
         monkeypatch.setattr(ui, "_tick_start", lambda: events.append("tick-start"))
         monkeypatch.setattr(ui, "_paint", lambda: None)
+        monkeypatch.setattr(ui, "_REPLAY", [(0, "type `exit` to leave")])
+        monkeypatch.setattr(ui.err, "print", lambda m: events.append(f"print {m}"))
         with ui.handover():
             events.append("ssh")
-        assert events == ["tick-stop", "exit", "ssh", "enter", "tick-start"]
+        assert events == ["tick-stop", "exit", "print type `exit` to leave", "ssh", "enter", "tick-start"]
+        assert ui._REPLAY == []     # said once, above the session — not again after it
 
     def test_off_a_terminal_it_does_nothing(self, monkeypatch):
         monkeypatch.setattr(ui, "_ALT", False)

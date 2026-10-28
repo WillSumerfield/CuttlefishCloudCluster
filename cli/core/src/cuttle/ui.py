@@ -982,13 +982,20 @@ def fullscreen():
 def handover():
     """Give the real terminal to an interactive child (ssh) for the duration: no repaint tick, off the
     alternate screen. Otherwise the tick draws over the child ~12×/s and the session looks blank, with
-    the cursor pinned to the bottom. The canvas comes back after, for whatever the flow does next."""
+    the cursor pinned to the bottom. The canvas comes back after, for whatever the flow does next.
+    Lines said so far are printed on the real terminal first, above the child's output."""
     global _SCREEN, _PREV
     if not _ALT:
         yield
         return
     _tick_stop()
     _SCREEN.__exit__(None, None, None)
+    # What the flow said before the child (where it is, how to leave, files) would otherwise only
+    # reappear after it exits — so it goes to the real terminal now, once.
+    for _, markup in _REPLAY:
+        err.print(markup)
+    _REPLAY.clear()
+    _LOOSE.clear()
     try:
         yield
     finally:
