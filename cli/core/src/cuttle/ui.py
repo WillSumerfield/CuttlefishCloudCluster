@@ -978,6 +978,27 @@ def fullscreen():
         _closing(broke)
 
 
+@contextlib.contextmanager
+def handover():
+    """Give the real terminal to an interactive child (ssh) for the duration: no repaint tick, off the
+    alternate screen. Otherwise the tick draws over the child ~12×/s and the session looks blank, with
+    the cursor pinned to the bottom. The canvas comes back after, for whatever the flow does next."""
+    global _SCREEN, _PREV
+    if not _ALT:
+        yield
+        return
+    _tick_stop()
+    _SCREEN.__exit__(None, None, None)
+    try:
+        yield
+    finally:
+        _SCREEN = err.screen()
+        _SCREEN.__enter__()
+        _PREV = None
+        _paint()
+        _tick_start()
+
+
 def _replay(held: str) -> None:
     """Say again, on the real terminal, everything the canvas showed outside a box.
 

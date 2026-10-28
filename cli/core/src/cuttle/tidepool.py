@@ -174,7 +174,8 @@ def enter() -> None:
         ui.warn(f"your Tidepool is {tp['state']} — `cuttle tidepool restart`, or ask an admin")
     with transfer.Forward(config.cluster_name()) as fwd:
         ui.hint(f"`cuttle upload/download` inside reach {fwd.root}")
-        subprocess.run(["ssh", *fwd.ssh_args(), config.cluster_name()])
+        with ui.handover():
+            subprocess.run(["ssh", *fwd.ssh_args(), config.cluster_name()])
 
 
 def _act(verb: str, user: str | None) -> None:

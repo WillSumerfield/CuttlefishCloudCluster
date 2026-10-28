@@ -422,3 +422,30 @@ class TestACleanRunNeverReportsWarnings:
         teardown.revoke_session()          # must not raise: the box is being wiped either way
         assert ui._TROUBLE == []
         assert emitted == []
+
+
+class TestHandover:
+    """ssh under the canvas: the repaint tick drew over the session (blank screen, cursor pinned low)."""
+
+    def test_the_child_runs_off_the_canvas_with_no_tick(self, monkeypatch):
+        events = []
+
+        class Screen:
+            def __enter__(self): events.append("enter")
+            def __exit__(self, *a): events.append("exit")
+
+        monkeypatch.setattr(ui, "_ALT", True)
+        monkeypatch.setattr(ui, "_SCREEN", Screen())
+        monkeypatch.setattr(ui.err, "screen", Screen)
+        monkeypatch.setattr(ui, "_tick_stop", lambda: events.append("tick-stop"))
+        monkeypatch.setattr(ui, "_tick_start", lambda: events.append("tick-start"))
+        monkeypatch.setattr(ui, "_paint", lambda: None)
+        with ui.handover():
+            events.append("ssh")
+        assert events == ["tick-stop", "exit", "ssh", "enter", "tick-start"]
+
+    def test_off_a_terminal_it_does_nothing(self, monkeypatch):
+        monkeypatch.setattr(ui, "_ALT", False)
+        monkeypatch.setattr(ui, "_tick_stop", lambda: pytest.fail("touched the tick"))
+        with ui.handover():
+            pass

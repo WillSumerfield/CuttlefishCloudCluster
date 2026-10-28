@@ -158,7 +158,8 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     try:
         with transfer.Forward(name) as fwd:
             ui.hint(f"`cuttle upload/download` inside reach {fwd.root}")
-            subprocess.run(["ssh", *fwd.ssh_args(), name])
+            with ui.handover():
+                subprocess.run(["ssh", *fwd.ssh_args(), name])
     finally:
         stop.set()
     _report_ending(dive_id)
