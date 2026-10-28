@@ -320,6 +320,11 @@ export async function login(username: string, password: string): Promise<Me> {
     throw new Error("Couldn't reach the sign-in service — check your connection and try again.")
   }
   if (r.status === 401) throw new Error('Incorrect username or password.')
+  if (r.status === 429) {
+    let detail: string | null = null
+    try { detail = (await r.json()).detail ?? null } catch { /* not JSON */ }
+    throw new Error(detail ?? 'Too many failed attempts — try again later.')
+  }
   if (!r.ok) throw new Error("The sign-in service isn't responding right now — try again in a moment.")
   return r.json()
 }
