@@ -19,6 +19,7 @@ instance), an Arm to the Head's mesh IP (pull instance). TLS is the Head API's o
 
 import base64
 import json
+import re
 import secrets
 import shutil
 import tempfile
@@ -233,9 +234,12 @@ def remove(all_: bool) -> None:
         if ids:
             run(["podman", "rm", "-f", *ids], sudo=True, check=False)
         if all_:
-            refs = run(["podman", "images", "--format", "{{.ID}}", "--filter",
-                        f"reference={config.registry()}/ccc/*"], sudo=True, capture_output=True,
-                       text=True, check=False).stdout.split()
+            # Every `ccc.<any name>:5000/ccc/*`, not config.registry(): teardown has already dropped the
+            # Cluster name by now, and images left under an old name must go too.
+            out = run(["podman", "images", "--format", "{{.ID}} {{.Repository}}"], sudo=True,
+                      capture_output=True, text=True, check=False).stdout
+            refs = sorted({i for i, repo in (l.split() for l in out.splitlines() if l.strip())
+                           if re.fullmatch(rf"ccc\.[^/]+:{config.REGISTRY_PORT}/ccc/.+", repo)})
             run(["podman", "rmi", "-f", *refs, config.REGISTRY_IMAGE], sudo=True, check=False)
     run(["systemctl", "disable", "--now", f"{config.CDI_PATCH_SERVICE}.path"], sudo=True, check=False)
     run(["rm", "-rf", str(config.QUADLET_DIR / f"{config.REGISTRY_SERVICE}-push.container"),

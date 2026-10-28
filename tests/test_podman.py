@@ -129,6 +129,17 @@ class TestTeardown:
         assert any("rmi" in c for c in ran)
         assert any(str(config.REGISTRY_DATA) in c for c in ran)
 
+    def test_all_needs_no_cluster_name_and_takes_every_names_images(self, box, monkeypatch):
+        """Teardown drops the Cluster name before this step, so it must not ask for it."""
+        _, _, ran, answers = box
+        monkeypatch.setattr(podman.shutil, "which", lambda b: "/usr/bin/podman")
+        monkeypatch.setattr(config, "cluster_name", lambda: (_ for _ in ()).throw(RuntimeError()))
+        answers["podman images"] = subprocess.CompletedProcess([], 0, stdout=(
+            "aaa ccc.lab:5000/ccc/base\nbbb ccc.old:5000/ccc/bench\nccc docker.io/library/ubuntu\n"))
+        podman.remove(all_=True)
+        rmi = next(c for c in ran if c[:2] == ["podman", "rmi"])
+        assert "aaa" in rmi and "bbb" in rmi and "ccc" not in rmi[3:-1]
+
     def test_containers_go_before_the_package_purge(self, monkeypatch):
         """podman.remove needs the podman the purge takes."""
         order = []
