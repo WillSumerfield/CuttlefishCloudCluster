@@ -242,3 +242,17 @@ class TestQuad100:
         monkeypatch.setattr(fw, "fix_quad100", seen.append)
         fw.main("ccc0", "ts-input")
         assert seen == ["ccc0"]
+
+
+class TestDnatForward:
+    """Docker's FORWARD policy DROP: the Head's relay to a Dive's published sshd must still get in."""
+
+    def test_inserted_at_the_top_when_missing(self, fw, tools):
+        tools("iptables", '[ "$1" = -C ] && exit 1\nexit 0\n')
+        fw.allow_dnat_forward("ccc0")
+        assert "iptables -I FORWARD 1 -i ccc0 -m conntrack --ctstate DNAT -j ACCEPT" in tools.calls()
+
+    def test_left_alone_when_present(self, fw, tools):
+        tools("iptables", "exit 0\n")
+        fw.allow_dnat_forward("ccc0")
+        assert not any(" -I " in c for c in tools.calls())

@@ -594,6 +594,23 @@ def fix_quad100(tun):
             print(f"dropped {tun}'s {addr} route")
 
 
+# A Dive publishes its sshd on this box's mesh address (`-p <mesh ip>:<port>:22`), so the Head's relay
+# reaches it through FORWARD, not INPUT. Docker sets FORWARD's policy to DROP, and netavark accepts only
+# replies there, so on a box with Docker every new connection to a Dive is dropped. Accept exactly the
+# connections that arrived on the mesh and were DNAT'd to a published port; a no-op where the policy
+# is ACCEPT anyway.
+DNAT_RULE = ["-i", None, "-m", "conntrack", "--ctstate", "DNAT", "-j", "ACCEPT"]
+
+
+def allow_dnat_forward(tun):
+    rule = [tun if x is None else x for x in DNAT_RULE]
+    if _run(["iptables", "-C", "FORWARD", *rule]) is None:
+        return
+    if _run(["iptables", "-C", "FORWARD", *rule]).returncode != 0:
+        _run(["iptables", "-I", "FORWARD", "1", *rule])
+        print(f"inserted the {tun} DNAT accept at the top of FORWARD")
+
+
 def main(tun, chain):
     # Refused rather than attempted, because the failure mode is worse than useless: unprivileged,
     # `iptables -S` exits non-zero exactly as it does when the chain is absent, so a hand-run would
@@ -602,6 +619,7 @@ def main(tun, chain):
         print("must run as root to read the firewall — try `sudo`", file=sys.stderr)
         return 2
     fix_quad100(tun)
+    allow_dnat_forward(tun)
     probes = {}
     for name, probe in (("iptables", _via_iptables), ("nft", _via_nft)):
         probes[name] = probe(tun, chain)
@@ -697,6 +715,8 @@ def remove_ts_exemption() -> None:
     run(["systemctl", "disable", "--now", f"{config.MESH_FW_SERVICE}.timer"], sudo=True, check=False)
     run(["iptables", "-D", config.TS_INPUT_CHAIN, "-i", config.CCC_TS_TUN, "-j", "RETURN"],
         sudo=True, check=False)
+    run(["iptables", "-D", "FORWARD", "-i", config.CCC_TS_TUN, "-m", "conntrack", "--ctstate", "DNAT",
+         "-j", "ACCEPT"], sudo=True, check=False)
     # The nft backend has no delete-by-spec, only delete-by-handle, so the rule has to be looked up.
     r = run(["nft", "-a", "list", "chain", "ip", "filter", config.TS_INPUT_CHAIN],
             sudo=True, capture_output=True, text=True, check=False)
