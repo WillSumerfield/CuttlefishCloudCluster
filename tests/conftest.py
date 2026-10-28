@@ -27,7 +27,9 @@ from ccc_head_api import ratelimit
 from ccc_head_api import siphons
 from ccc_head_api import slurm
 from ccc_head_api import spawns as head_spawns
+from ccc_head_api import tidepool as head_tidepool
 from cuttle import api, auth, config, settings, ui
+from cuttle import ccc_tidepool as cli_tidepool
 from cuttle.main import app as cli_app
 
 USERS = {"alice": "hunter2", "root": "toor"}  # root is the Admin
@@ -170,6 +172,12 @@ def _head_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
     monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
     monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
+    # Tidepool keys too: `tick.once` syncs ambient sessions into every User dir it finds there, so on a
+    # real Head the suite would write into the live admin's keys dir.
+    keys = tmp_path_factory.mktemp("tidepool-keys")
+    for mod, attr in ((head_tidepool, "KEYS_ROOT"), (cli_tidepool, "KEYS_ROOT"),
+                      (config, "TIDEPOOL_KEYS_ROOT")):
+        monkeypatch.setattr(mod, attr, keys)
 
 
 @pytest.fixture
