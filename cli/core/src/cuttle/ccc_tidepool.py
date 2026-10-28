@@ -652,9 +652,9 @@ def apply_lock(d: dict) -> None:
     if pid:
         p = _inner(d)
         # best effort: this runs as rsyncd's pre-xfer exec, and a failure there would abort staging.
-        # -p too: with the mount ns alone, /proc is the container's and /proc/self does not resolve,
-        # so `mount -o remount` cannot read the mount table and the lock silently never lands.
-        sh("nsenter", "-t", str(pid), "-m", "-p", "--", "sh", "-c",
+        # -a: every ns incl. the user ns. Host root with -m alone gets EINVAL on the bind (the mount ns
+        # belongs to the Tidepool's user ns); -p too is needed or /proc/self is missing for remount.
+        sh("nsenter", "-t", str(pid), "-a", "--", "sh", "-c",
            'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1"', "_", p, check=False,
            capture_output=True)
 
@@ -662,7 +662,7 @@ def apply_lock(d: dict) -> None:
 def release_lock(d: dict) -> None:
     pid = _ctr_pid(d["user"])
     if pid:
-        sh("nsenter", "-t", str(pid), "-m", "-p", "--", "umount", _inner(d), check=False, capture_output=True)
+        sh("nsenter", "-t", str(pid), "-a", "--", "umount", _inner(d), check=False, capture_output=True)
 
 
 def dive_lock(tok: str) -> None:

@@ -394,14 +394,14 @@ class TestHeadDive:
 
 
 class TestMainLockNamespaces:
-    """The lock runs `mount` inside the Tidepool: it needs the pid ns too, or /proc/self is missing and
-    `mount -o remount` cannot read the mount table."""
+    """The lock runs `mount` inside the Tidepool: it needs every ns. Without the user ns the bind is
+    refused; without the pid ns /proc/self is missing and `mount -o remount` fails."""
 
     @pytest.mark.parametrize("fn", ["apply_lock", "release_lock"])
-    def test_enters_mount_and_pid_ns(self, monkeypatch, fn):
+    def test_enters_all_ns(self, monkeypatch, fn):
         ran = []
         monkeypatch.setattr(H, "_ctr_pid", lambda u: 4242)
         monkeypatch.setattr(H, "_inner", lambda d: "/home/bob/proj")
         monkeypatch.setattr(H, "sh", lambda *a, **k: ran.append(a))
         getattr(H, fn)({"user": "bob"})
-        assert ran[0][:6] == ("nsenter", "-t", "4242", "-m", "-p", "--")
+        assert ran[0][:5] == ("nsenter", "-t", "4242", "-a", "--")
