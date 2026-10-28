@@ -173,7 +173,8 @@ def enter() -> None:
     this folder forwarded for `cuttle upload/download` inside (transfer.Forward)."""
     tp = connect()
     if tp["state"] != "active":
-        ui.warn(f"your Tidepool is {tp['state']} — `cuttle tidepool restart`, or ask an admin")
+        raise ui.abort(f"your Tidepool isn't running ({tp['state']})",
+                       next_step="`cuttle tidepool restart`, or ask an admin")
     name = config.cluster_name()
     with transfer.Forward(name) as fwd:
         ui.ok(f"Tidepool {tp['user']}@{name} — {tp['used_gb']:.1f} / {tp['size_gb']} GB used")
@@ -182,7 +183,10 @@ def enter() -> None:
         ui.hint(f"`cuttle upload <path>` fetches from {fwd.root}")
         ui.hint("type `exit` to leave — the Tidepool keeps running either way")
         with ui.handover():
-            subprocess.run(["ssh", *fwd.ssh_args(), name])
+            rc = subprocess.run(["ssh", *fwd.ssh_args(), name]).returncode
+        if rc == 255:   # ssh's own failure; any other code is the shell's last command
+            raise ui.abort("couldn't connect to your Tidepool (ssh exit 255)",
+                           next_step="`cuttle tidepool restart`, or ask an admin")
 
 
 def _act(verb: str, user: str | None) -> None:
