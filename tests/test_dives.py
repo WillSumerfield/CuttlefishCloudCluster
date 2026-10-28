@@ -391,3 +391,17 @@ class TestHeadDive:
         L.run_head_dive(DIVE, "77", {"gres_idx": [1], "cpus": 8, "mem_mb": 32768})
         assert calls == [[L.TIDEPOOL_HELPER, "dive-gpu", "grant", TOK, "77", "1", "8", "32768"],
                          [L.TIDEPOOL_HELPER, "dive-gpu", "revoke", TOK]]
+
+
+class TestMainLockNamespaces:
+    """The lock runs `mount` inside the Tidepool: it needs the pid ns too, or /proc/self is missing and
+    `mount -o remount` cannot read the mount table."""
+
+    @pytest.mark.parametrize("fn", ["apply_lock", "release_lock"])
+    def test_enters_mount_and_pid_ns(self, monkeypatch, fn):
+        ran = []
+        monkeypatch.setattr(H, "_ctr_pid", lambda u: 4242)
+        monkeypatch.setattr(H, "_inner", lambda d: "/home/bob/proj")
+        monkeypatch.setattr(H, "sh", lambda *a, **k: ran.append(a))
+        getattr(H, fn)({"user": "bob"})
+        assert ran[0][:6] == ("nsenter", "-t", "4242", "-m", "-p", "--")
