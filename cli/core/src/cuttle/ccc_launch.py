@@ -395,6 +395,13 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
     return argv + [spec["image"], *spec.get("argv", [])]
 
 
+def drop_image(ref: str) -> None:
+    """Nothing of a User's stays on a donor: their snapshot goes once the container has (`--rm`).
+    No `-f` — another Dive still running it keeps it, and `cuttle update`'s prune gets it later."""
+    subprocess.run(["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--", "/usr/bin/podman", "rmi", ref],
+                   capture_output=True)
+
+
 def run_arm_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
     d = spec["dive"]
     os.environ["RSYNC_PASSWORD"] = d["secret"]
@@ -425,6 +432,7 @@ def run_arm_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
         for _ in range(3):
             if mirror(d, home):
                 break
+        drop_image(spec["image"])
     return rc
 
 

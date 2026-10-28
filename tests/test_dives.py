@@ -361,6 +361,22 @@ class TestArmDive:
         assert "--privileged" not in j and "--network host" not in j
         assert a[-4:] == [spec["image"], "/bin/sh", "-c", "x"]
 
+    def test_the_snapshot_image_goes_after_the_final_mirror(self, tmp_path, monkeypatch):
+        order = []
+        spec = {"image": "ccc.lab:5000/ccc/u-bob@sha256:" + "a" * 64, "dive": DIVE}
+        monkeypatch.setattr(L, "JOBS_DIR", tmp_path / "jobs")
+        monkeypatch.setattr(L, "ENV_CACHE", tmp_path / "cache")
+        monkeypatch.setattr(L, "stage_in", lambda d, j, u: tmp_path)
+        monkeypatch.setattr(L, "gpu_ids", lambda g: ["GPU-1"])
+        monkeypatch.setattr(L, "mesh_ip", lambda: "100.99.0.7")
+        monkeypatch.setattr(L, "dive_argv", lambda *a: ["true"])
+        monkeypatch.setattr(L, "mirror", lambda d, h: order.append("mirror") or True)
+        monkeypatch.setattr(L.subprocess, "run", lambda a, **k: order.append(a))
+        monkeypatch.setattr(L.signal, "signal", lambda *a: None)
+        assert L.run_arm_dive(spec, "77", {"gres_idx": "0"}, "/s", 2**31) == 0
+        assert order[-2:] == ["mirror", ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
+                                         "/usr/bin/podman", "rmi", spec["image"]]]
+
     def test_a_dot_main_folder_is_never_bound_read_only(self, tmp_path):
         home = tmp_path / "home"
         (home / ".work").mkdir(parents=True)
