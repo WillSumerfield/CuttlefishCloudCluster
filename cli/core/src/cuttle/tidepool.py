@@ -176,7 +176,8 @@ def enter() -> None:
     with transfer.Forward(name) as fwd:
         ui.ok(f"Tidepool {tp['user']}@{name} — {tp['used_gb']:.1f} / {tp['size_gb']} GB used")
         ui.hint("no GPU here: run GPU work in a Dive (`cuttle dive`)")
-        ui.hint(f"`cuttle download <path>` → {fwd.root} (`upload` for the reverse)")
+        ui.hint(f"`cuttle download <path>` sends to {fwd.root}")
+        ui.hint(f"`cuttle upload <path>` fetches from {fwd.root}")
         ui.hint("type `exit` to leave — the Tidepool keeps running either way")
         with ui.handover():
             subprocess.run(["ssh", *fwd.ssh_args(), name])
