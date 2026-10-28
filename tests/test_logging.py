@@ -95,8 +95,8 @@ def test_login_failure_is_logged(monkeypatch, api_caplog):
 
 
 class TestLoginThrottleWiring:
-    """`ratelimit.py` owns the algorithm (see test_ratelimit.py); this only checks `/login` is wired to
-    it — the block fires, it answers 429 + Retry-After, and a successful login clears it again."""
+    """`ratelimit.py` owns the algorithm (see test_ratelimit.py); this only checks `/login` and
+    `/passwd` are wired to it — the block fires, it answers 429 + Retry-After, and what a success clears."""
 
     def _seed_alice(self, monkeypatch):
         _real_db(monkeypatch)
@@ -104,35 +104,63 @@ class TestLoginThrottleWiring:
             db.add_user(conn, "alice", is_admin=False)
             db.set_password(conn, "alice", "hunter2")
 
+    def _bad_logins(self, c, n, user="alice"):
+        for _ in range(n):
+            c.post("/api/login", json={"username": user, "password": "wrong"})
+
     def test_too_many_failures_becomes_429_with_retry_after(self, monkeypatch):
         self._seed_alice(monkeypatch)
         c = TestClient(head_main.app)
-        for _ in range(ratelimit.THRESHOLD):
-            c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        self._bad_logins(c, ratelimit.USER_LIMIT)
         r = c.post("/api/login", json={"username": "alice", "password": "wrong"})
         assert r.status_code == 429
         assert "Retry-After" in r.headers
 
     def test_the_right_password_is_blocked_once_tripped(self, monkeypatch):
-        """The point: once tripped, even the correct password is refused until the cooldown ends."""
+        """The point: once tripped, even the correct password is refused until the window ends."""
         self._seed_alice(monkeypatch)
         c = TestClient(head_main.app)
-        for _ in range(ratelimit.THRESHOLD):
-            c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        self._bad_logins(c, ratelimit.USER_LIMIT)
         r = c.post("/api/login", json={"username": "alice", "password": "hunter2"})
         assert r.status_code == 429
 
-    def test_success_clears_the_counter(self, monkeypatch):
+    def test_success_clears_the_username(self, monkeypatch):
         self._seed_alice(monkeypatch)
         c = TestClient(head_main.app)
-        for _ in range(ratelimit.THRESHOLD - 1):
-            c.post("/api/login", json={"username": "alice", "password": "wrong"})
+        self._bad_logins(c, ratelimit.USER_LIMIT - 1)
         assert c.post("/api/login",
                       json={"username": "alice", "password": "hunter2"}).status_code == 200
-        # a fresh run of failures after a clean success needs the FULL threshold again
-        for _ in range(ratelimit.THRESHOLD - 1):
+        # a fresh run of failures after a clean success needs the FULL limit again
+        for _ in range(ratelimit.USER_LIMIT - 1):
             r = c.post("/api/login", json={"username": "alice", "password": "wrong"})
             assert r.status_code == 401
+
+    def test_success_does_not_clear_the_ip(self, monkeypatch):
+        """Else an attacker logs into its own account between guesses and its IP never trips."""
+        self._seed_alice(monkeypatch)
+        c = TestClient(head_main.app)
+        for i in range(ratelimit.IP_LIMIT - 1):
+            c.post("/api/login", json={"username": f"u{i}", "password": "wrong"})
+        assert c.post("/api/login",
+                      json={"username": "alice", "password": "hunter2"}).status_code == 200
+        c.post("/api/login", json={"username": "nobody", "password": "wrong"})
+        assert c.post("/api/login",
+                      json={"username": "alice", "password": "hunter2"}).status_code == 429
+
+    def _passwd(self, c, tok, old):
+        return c.post("/api/passwd", json={"old_password": old, "new_password": "a-much-longer-pw-1"},
+                      headers={"Authorization": f"Bearer {tok}"})
+
+    def test_passwd_wrong_old_passwords_block_login_too(self, monkeypatch):
+        """Same keys as /login: a stolen session gets no extra guesses at the password."""
+        self._seed_alice(monkeypatch)
+        c = TestClient(head_main.app)
+        tok = c.post("/api/login", json={"username": "alice", "password": "hunter2"}).json()["token"]
+        for _ in range(ratelimit.USER_LIMIT):
+            assert self._passwd(c, tok, "wrong").status_code == 403
+        assert self._passwd(c, tok, "hunter2").status_code == 429
+        assert c.post("/api/login",
+                      json={"username": "alice", "password": "hunter2"}).status_code == 429
 
 
 def test_unhandled_route_error_is_logged_and_500(monkeypatch, api_caplog):

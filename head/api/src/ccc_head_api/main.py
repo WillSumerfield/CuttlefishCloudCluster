@@ -493,30 +493,35 @@ def _human_wait(seconds: float) -> str:
     return f"{(seconds + 59) // 60}m" if seconds >= 60 else f"{seconds}s"
 
 
+def _throttle(request: Request, username: str) -> tuple[str, str]:
+    """The (ip, user) ratelimit keys for a password check, or 429 if either is blocked. The source is
+    the TCP peer: nothing proxies the Head API, so no forwarded-for header is trusted."""
+    keys = (ratelimit.ip(request.client.host if request.client else "?"), ratelimit.user(username))
+    wait = ratelimit.check(*keys)
+    if wait is not None:
+        raise HTTPException(429, f"too many failed attempts — try again in {_human_wait(wait)}",
+                            headers={"Retry-After": str(int(wait) + 1)})
+    return keys
+
+
 @api.post("/login")
 def login(req: LoginRequest, request: Request, response: Response) -> dict:
     """Verify credentials → mint a session. Returns the bearer token (CLI) and sets the HttpOnly
     cookie (browser). A `must_change_password` user still gets a session so it can call /passwd.
 
-    Throttled (see ratelimit.py): blocked by source IP or by the attempted
-    username, whichever trips first, so neither one attacker IP spraying usernames nor a distributed
-    guess against one account slips through."""
-    ip = request.client.host if request.client else "?"
-    wait = ratelimit.check(f"ip:{ip}", f"user:{req.username}")
-    if wait is not None:
-        raise HTTPException(429, f"too many failed attempts — try again in {_human_wait(wait)}",
-                            headers={"Retry-After": str(int(wait) + 1)})
+    Throttled (see ratelimit.py) by source IP and by the attempted username."""
+    keys = _throttle(request, req.username)
     with db.connect() as conn:
         user = db.verify_password(conn, req.username, req.password)
         if user is None:
-            ratelimit.record_failure(f"ip:{ip}", f"user:{req.username}")
+            ratelimit.record_failure(*keys)
             # The one security event most worth a log: it feeds the rate-limiter and is
             # the signal a credential is being guessed. The attempted username and source, never the
             # password. WARNING, not ERROR — a fat-fingered password is not an incident.
-            log.warning("login FAILED user=%s from %s", req.username, ip)
+            log.warning("login FAILED user=%s from %s", req.username, keys[0].removeprefix("ip:"))
             raise HTTPException(401, "bad username or password")
         token = db.create_session(conn, user["id"])
-    ratelimit.clear(f"ip:{ip}", f"user:{req.username}")
+    ratelimit.clear(keys[1])
     log.info("login OK user=%s", user["username"])
     response.set_cookie(_COOKIE_NAME, token, max_age=_COOKIE_MAX_AGE, httponly=True,
                         samesite="lax", secure=_COOKIE_SECURE)
@@ -543,16 +548,20 @@ def me(user: dict = Depends(current_user)) -> dict:
 
 
 @api.post("/passwd")
-def passwd(req: PasswdRequest, user: dict = Depends(current_user)) -> dict:
+def passwd(req: PasswdRequest, request: Request, user: dict = Depends(current_user)) -> dict:
     """Rotate own password (also the forced-first-login path). Verifies the old password, clears the
     must-change flag. Existing sessions stay valid — the client keeps using its token.
 
     A wrong old password is **403, not 401**: the caller's session is fine, this one act is refused.
     401 is the clients' "your session is dead, log in again" signal (the SPA drops to its login form
     on any 401), so answering it here made a typo'd password report itself as `not logged in`.
+
+    Throttled on the same keys as /login: a stolen session gets no extra guesses at the password.
     """
+    keys = _throttle(request, user["username"])
     with db.connect() as conn:
         if db.verify_password(conn, user["username"], req.old_password) is None:
+            ratelimit.record_failure(*keys)
             raise HTTPException(403, "current password is wrong")
         # Policy is checked only after the old password is proven: a 422 otherwise would tell an
         # unauthenticated caller which candidate strings are well-formed. 422 (not 403): the request is
