@@ -50,3 +50,16 @@ def test_main_writes_only_on_change(tmp_path):
     f.write_text(SPEC)
     main(f)
     assert f.read_text() == patch(SPEC)
+
+
+def test_temp_file_is_per_process_and_leaves_nothing(tmp_path, monkeypatch):
+    """setup and the .path unit can run it at once: a shared temp name races on the rename."""
+    spec = tmp_path / "nvidia.yaml"
+    spec.write_text("cdiVersion: 0.8.0\n")
+    import cuttle.cdi_patch as cp
+    seen = []
+    real = cp.Path.replace
+    monkeypatch.setattr(cp.Path, "replace", lambda self, t: seen.append(self.name) or real(self, t))
+    assert main(spec) == 0
+    assert seen == [f".nvidia.yaml.{cp.os.getpid()}.ccc-tmp"]
+    assert [p.name for p in tmp_path.iterdir()] == ["nvidia.yaml"]

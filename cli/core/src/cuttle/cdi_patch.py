@@ -9,6 +9,7 @@ both is all it takes — the gids only matter for /dev/dri, which CUDA never ope
 change, so its own write does not re-trigger the path unit forever.
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -37,7 +38,8 @@ def main(path: Path = SPEC) -> int:
     text = path.read_text()
     new = patch(text)
     if new != text:
-        tmp = path.with_suffix(".ccc-tmp")
+        # Per-process: setup runs this while the .path unit may run it too (same rewrite either way).
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.ccc-tmp")
         tmp.write_text(new)
         tmp.replace(path)
     return 0
