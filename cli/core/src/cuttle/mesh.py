@@ -570,6 +570,30 @@ def _via_nft(tun, chain):
     return True
 
 
+# Tailscale's in-tun DNS address. Every tailscaled routes it into its own tun in table 52 (unconditionally,
+# whatever --accept-dns says), and both daemons share that table, so whichever started last owns it.
+# CCC's never answers (no DNS config), so a box whose resolver IS 100.100.100.100 (WSL, no resolved)
+# loses all DNS, and a resolved box loses its personal *.ts.net names. Hand it back to the personal tun,
+# or drop it if there is none. tailscaled diffs against its own memory, not the kernel, so it stays
+# fixed until that daemon restarts; this timer catches the restart.
+QUAD100 = (("-4", "100.100.100.100"), ("-6", "fd7a:115c:a1e0::53"))
+PERSONAL_TUN = "tailscale0"
+
+
+def fix_quad100(tun):
+    personal = os.path.exists(f"/sys/class/net/{PERSONAL_TUN}")
+    for fam, addr in QUAD100:
+        shown = _run(["ip", fam, "route", "show", "table", "52", addr])
+        if shown is None or f"dev {tun}" not in shown.stdout:
+            continue
+        if personal:
+            _run(["ip", fam, "route", "replace", addr, "dev", PERSONAL_TUN, "table", "52"])
+            print(f"pointed {addr} back at {PERSONAL_TUN} (was {tun})")
+        else:
+            _run(["ip", fam, "route", "del", addr, "dev", tun, "table", "52"])
+            print(f"dropped {tun}'s {addr} route")
+
+
 def main(tun, chain):
     # Refused rather than attempted, because the failure mode is worse than useless: unprivileged,
     # `iptables -S` exits non-zero exactly as it does when the chain is absent, so a hand-run would
@@ -577,6 +601,7 @@ def main(tun, chain):
     if os.geteuid() != 0:
         print("must run as root to read the firewall — try `sudo`", file=sys.stderr)
         return 2
+    fix_quad100(tun)
     probes = {}
     for name, probe in (("iptables", _via_iptables), ("nft", _via_nft)):
         probes[name] = probe(tun, chain)

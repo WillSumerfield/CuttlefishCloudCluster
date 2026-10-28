@@ -202,3 +202,43 @@ def test_the_service_runs_as_root():
     root, and a User= line here would make every tick a silent no-op."""
     assert "User=" not in mesh._FW_SERVICE_UNIT
     assert str(config.MESH_FW_SCRIPT) in mesh._FW_SERVICE_UNIT
+
+
+class TestQuad100:
+    """Both tailscaleds route 100.100.100.100 into their own tun in the shared table 52; CCC's never
+    answers DNS, so a box resolving through it (WSL) loses all DNS. Hand it back to the personal tun."""
+
+    def _ip(self, tools, owner):
+        tools("ip", f'[ "$3" = show ] && echo "$7 dev {owner}"\nexit 0\n')
+
+    def _route_calls(self, tools):
+        return [c for c in tools.calls() if c.split()[3] in ("replace", "del")]
+
+    def test_ccc_held_route_goes_back_to_the_personal_tun(self, fw, tools, monkeypatch):
+        self._ip(tools, "ccc0")
+        monkeypatch.setattr(fw.os.path, "exists", lambda p: p.endswith("tailscale0"))
+        fw.fix_quad100("ccc0")
+        assert self._route_calls(tools) == [
+            "ip -4 route replace 100.100.100.100 dev tailscale0 table 52",
+            "ip -6 route replace fd7a:115c:a1e0::53 dev tailscale0 table 52"]
+
+    def test_no_personal_tailscale_just_drops_it(self, fw, tools, monkeypatch):
+        self._ip(tools, "ccc0")
+        monkeypatch.setattr(fw.os.path, "exists", lambda p: False)
+        fw.fix_quad100("ccc0")
+        assert self._route_calls(tools) == [
+            "ip -4 route del 100.100.100.100 dev ccc0 table 52",
+            "ip -6 route del fd7a:115c:a1e0::53 dev ccc0 table 52"]
+
+    def test_a_personal_held_route_is_left_alone(self, fw, tools, monkeypatch):
+        self._ip(tools, "tailscale0")
+        monkeypatch.setattr(fw.os.path, "exists", lambda p: True)
+        fw.fix_quad100("ccc0")
+        assert self._route_calls(tools) == []
+
+    def test_main_runs_it(self, fw, tools, monkeypatch):
+        seen = []
+        tools("systemctl", "exit 1\n")
+        monkeypatch.setattr(fw, "fix_quad100", seen.append)
+        fw.main("ccc0", "ts-input")
+        assert seen == ["ccc0"]
