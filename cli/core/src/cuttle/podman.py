@@ -194,7 +194,11 @@ def _build_push(name: str, tag: str, ctx: Path) -> str:
         run(["podman", "push", "--authfile", str(config.REGISTRY_AUTH), "--digestfile",
              str(digest_file), local], sudo=True)
         digest = digest_file.read_text().strip()
-    return f"{config.registry()}/ccc/{name}@{digest}"
+    ref = f"{config.registry()}/ccc/{name}@{digest}"
+    # A push doesn't teach the local store the registry's digest; a pull does (layers are here, so it's
+    # instant). Without it `--pull=never <ref>` on the Head (Tidepools, the in-container cuttle) misses.
+    run(["podman", "pull", "--authfile", str(config.REGISTRY_AUTH), ref], sudo=True)
+    return ref
 
 
 def build_images(write_root_file) -> dict:

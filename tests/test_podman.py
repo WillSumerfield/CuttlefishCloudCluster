@@ -99,6 +99,8 @@ class TestBuildImages:
         assert not any(c[1] == "build" for c in ran)
         assert images == {n: f"ccc.lab:5000/ccc/{n}@sha256:{'d' * 64}" for n in ("base", "bench")}
         assert json.loads(files[config.IMAGES_RECORD][0]) == images
+        for ref in images.values():   # pulled back so the Head's own store knows the digest
+            assert ["podman", "pull", "--authfile", str(config.REGISTRY_AUTH), ref] in ran
 
 
 class TestLauncherAndCdi:
