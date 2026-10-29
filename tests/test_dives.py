@@ -402,6 +402,15 @@ class TestArmDive:
         assert "--privileged" not in j and "--network host" not in j
         assert a[-4:] == [spec["image"], "/bin/sh", "-c", "x"]
 
+    def test_launch_leaves_the_jobs_tmp_first(self, monkeypatch):
+        """sbatch --chdir=/tmp is the job's private tmpfs, removed at scancel: the final mirror's rsync
+        died on getcwd() there (Dive 9 on dex lost its last write)."""
+        went = []
+        monkeypatch.setattr(L.os, "chdir", went.append)
+        with pytest.raises(L.Refused):
+            L.main(["ccc-launch"])
+        assert went == ["/"]
+
     def test_the_snapshot_image_goes_after_the_final_mirror(self, tmp_path, monkeypatch):
         order = []
         spec = {"image": "ccc.lab:5000/ccc/u-bob@sha256:" + "a" * 64, "dive": DIVE}

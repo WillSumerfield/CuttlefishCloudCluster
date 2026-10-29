@@ -470,6 +470,9 @@ def _chown_tree(root: Path, uid: int, gid: int) -> None:
 
 
 def main(argv: list[str]) -> int:
+    # sbatch --chdir=/tmp is the job's private tmpfs, gone at scancel while this still runs: a child
+    # started then (the final mirror's rsync) dies on getcwd(). / outlives the job.
+    os.chdir("/")
     if len(argv) != 2 or not argv[1].isdigit():
         raise Refused("usage: sudo ccc-launch <jobid>")
     jid = argv[1]
