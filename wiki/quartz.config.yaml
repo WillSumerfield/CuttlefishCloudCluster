@@ -158,6 +158,21 @@ plugins:
     enabled: true
   - source: "@quartz-community/explorer"
     enabled: true
+    options:
+      # Sidebar order: reading order, not A–Z. Titles listed here come first, in this order; anything
+      # else follows alphabetically. A new page goes into this list where it belongs.
+      sortFn: >-
+        (a, b) => {
+          const order = [
+            "Start", "Overview", "Getting started", "Glossary",
+            "Using CCC", "Tidepool", "Dives", "Files", "Karma", "Environments", "CLI", "Dashboard tour", "Troubleshooting",
+            "Donating", "Arm setup", "Arms", "Arm features",
+            "Admin", "Head setup", "Users and access", "Mesh", "Alerts and email", "Backup", "Security", "Admin troubleshooting",
+            "Contributing", "Architecture", "Isolation", "Roadmap",
+          ];
+          const rank = (n) => { const i = order.indexOf(n.displayName); return i < 0 ? order.length : i; };
+          return rank(a) - rank(b) || (a.displayName || "").localeCompare(b.displayName || "");
+        }
     layout:
       position: left
       priority: 50
