@@ -5,6 +5,7 @@ the attach that writes it. Where `ssh` is installed the file is parsed by ssh IT
 NOT tested: a real VS Code, a real remote session — hardware list.
 """
 
+import json
 import shutil
 import stat
 import subprocess
@@ -203,3 +204,56 @@ class TestTeardownLeavesNothing:
         teardown.remove_user_dirs()
         assert not config.SSH_CCC_CONFIG.exists()
         assert sshconfig.INCLUDE_LINE not in config.SSH_CONFIG.read_text()
+
+
+class TestVSCode:
+    @pytest.fixture
+    def launched(self, monkeypatch):
+        ran = []
+        monkeypatch.setattr(sshconfig.subprocess, "Popen", lambda a, **k: ran.append(a))
+        return ran
+
+    def test_a_folder_uri_so_wsls_shim_cannot_make_it_a_windows_path(self, launched, monkeypatch):
+        monkeypatch.setattr(sshconfig.shutil, "which", lambda c: "/usr/bin/code")
+        assert sshconfig.open_vscode("lab-5", "/home/u/proj")
+        assert launched == [["/usr/bin/code", "--folder-uri", "vscode-remote://ssh-remote+lab-5/home/u/proj"]]
+
+    def test_on_wsl_it_routes_first_and_stops_if_it_cannot(self, launched, monkeypatch):
+        monkeypatch.setattr(sshconfig.shutil, "which", lambda c: "/mnt/c/VSCode/bin/code")
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+        monkeypatch.setattr(sshconfig, "wsl_route", lambda: False)
+        assert not sshconfig.open_vscode("lab-5", "/home/u/proj") and launched == []
+
+
+class TestWslRoute:
+    @pytest.fixture
+    def win(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+        real = subprocess.run
+        monkeypatch.setattr(sshconfig.subprocess, "run", lambda a, **k: type(
+            "R", (), {"stdout": "C:\\Users\\u\\.ccc\\ccc-wsl-ssh.bat\n"})() if a[0] == "wslpath" else real(a, **k))
+        appdata, profile = tmp_path / "AppData", tmp_path / "u"
+        return appdata, profile, appdata / "Code" / "User" / "settings.json"
+
+    def test_wrapper_runs_wsls_ssh_and_settings_point_at_it(self, win):
+        appdata, profile, settings = win
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"editor.fontSize": 14}')
+        assert sshconfig.wsl_route(appdata, profile)
+        assert (profile / ".ccc" / "ccc-wsl-ssh.bat").read_bytes() == b"@wsl.exe -d Ubuntu -e ssh %*\r\n"
+        assert json.loads(settings.read_text()) == {
+            "editor.fontSize": 14, "remote.SSH.path": "C:\\Users\\u\\.ccc\\ccc-wsl-ssh.bat"}
+
+    def test_a_settings_file_with_comments_is_not_rewritten(self, win):
+        appdata, profile, settings = win
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{\n  // mine\n  "a": 1\n}')
+        assert not sshconfig.wsl_route(appdata, profile)
+        assert "// mine" in settings.read_text()
+
+    def test_someone_elses_ssh_path_is_left_alone(self, win):
+        appdata, profile, settings = win
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"remote.SSH.path": "C:\\\\Git\\\\ssh.exe"}')
+        assert not sshconfig.wsl_route(appdata, profile)
+        assert json.loads(settings.read_text())["remote.SSH.path"] == "C:\\Git\\ssh.exe"
