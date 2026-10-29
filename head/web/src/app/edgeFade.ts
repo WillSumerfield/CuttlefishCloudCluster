@@ -13,9 +13,11 @@ import type { CSSProperties } from "react";
  *
  * @param side   fraction of the width each left/right edge fades over (0.1 = 10%)
  * @param bottom fraction of the height the foot fades over
+ * @param clearR fraction of the width at the right kept fully clear (the right fade ends before it) — room
+ *               for something to float there over the abyss, like the Tide page's legend
  */
-export function edgeFade(side = 0.2, bottom = 0.2): CSSProperties {
-  const x = `linear-gradient(90deg, transparent, #000 ${side * 100}%, #000 ${(1 - side) * 100}%, transparent)`;
+export function edgeFade(side = 0.2, bottom = 0.2, clearR = 0): CSSProperties {
+  const x = `linear-gradient(90deg, transparent, #000 ${side * 100}%, #000 ${(1 - side - clearR) * 100}%, transparent ${(1 - clearR) * 100}%)`;
   const y = `linear-gradient(180deg, #000 0%, #000 ${(1 - bottom) * 100}%, transparent 100%)`;
   return {
     maskImage: `${x}, ${y}`,

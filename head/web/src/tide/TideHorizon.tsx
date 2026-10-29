@@ -3,6 +3,7 @@ import { edgeFade } from "../app/edgeFade";
 import { useReducedMotion } from "../app/useReducedMotion";
 import type { Fold } from "./fold";
 import { ratioOf, tideOklch } from "./fold";
+import { LEGEND_W, SEAM, SEAM_FADE, SEAM_FONT, SEAM_TICKS } from "./seam";
 
 /**
  * The Tide — the page's signature, the water the whole metaphor points at. A day of mean Demand across
@@ -11,12 +12,13 @@ import { ratioOf, tideOklch } from "./fold";
  * to read its name and its own multiplier. A marker sits on the current hour. The surface breathes like
  * moving water (the cluster working); reduced-motion stills it.
  *
- * Iridescence only — this is a machine fact. No borders: the body dissolves into the abyss at its foot.
+ * Iridescence only — this is a machine fact. No borders. The body is faint at its waterline and grows
+ * solid toward its foot, which is the seam with the Usage bands below (see seam.ts): hour labels are cut
+ * out of the solid water there, and the last SEAM px fade out over the gold.
  */
 
 const INK_SOFT = "oklch(0.78 0.015 90 / 0.4)"; // now-marker stem
-const ABYSS_FOOT = "oklch(0.14 0.03 205 / 0.62)"; // the body sinking into the abyss at its base
-// Side + foot dissolve now come from the shared edgeFade() CSS mask on the canvas, not an in-canvas pass.
+const SEAM_WASH = "rgba(205,242,255,0.18)"; // light over the foot, so the knocked-out hours have contrast
 const TIDE = {
   // Empty canvas above the water: the now-stem and tall Arm lines rise into it, and a mouse can approach a
   // high line from above (so hover reaches it). The demand band keeps its size — padT absorbs the headroom
@@ -43,7 +45,6 @@ const TIDE = {
 
 const hourLabel = (h: number) =>
   h === 0 ? "12am" : (h === 12 || h === 24) ? "12pm" : h < 12 ? `${h}am` : `${h - 12}pm`;
-const TICKS = [0, 6, 12, 18, 24];
 
 const tideWaveOffset = (hf: number, t: number, reduced: boolean) => {
   if (reduced) return 0;
@@ -57,6 +58,9 @@ type Tip = { x: number; y: number; title: string; sub: string; color: string } |
 
 export function TideHorizon({ fold }: { fold: Fold }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The now-marker's own unmasked layer: the water's mask clears the right strip for the legend, and the
+  // marker must still show when "now" is late in the day.
+  const markRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const hoverArmRef = useRef(-1);
   const timeRef = useRef(0);
@@ -80,8 +84,8 @@ export function TideHorizon({ fold }: { fold: Fold }) {
     const W = Math.max(size.w, 1), H = Math.max(size.h, 1);
     // No horizontal padding: the water spans the full box so edgeFade has real pixels to dissolve at the
     // sides (inset water would leave a near-hard edge just past its end). padT carries the headroom above
-    // the water (see TIDE.headroom); padB stays for the foot.
-    const padL = 0, padR = 0, padT = 26 + TIDE.headroom, padB = 34;
+    // the water (see TIDE.headroom); padB is the solid foot down to the seam, so the canvas fills the box.
+    const padL = 0, padR = 0, padT = 26 + TIDE.headroom, padB = TIDE.footDrop;
     const innerW = Math.max(1, W - padL - padR), innerH = Math.max(1, H - padT - padB);
     const yBottom = padT + innerH;
     const xForHour = (h: number) => padL + (h / 24) * innerW;
@@ -119,16 +123,21 @@ export function TideHorizon({ fold }: { fold: Fold }) {
     const canvas = canvasRef.current;
     if (!canvas || !size.w || !size.h) return;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const mark = markRef.current;
+    const mctx = mark?.getContext("2d");
+    if (!ctx || !mark || !mctx) return;
 
     const { W, padL, padT, innerW, yBottom, xForHour, yForDemand, sampleAt } = geom;
-    // Canvas ends exactly at the body's foot (yFoot): the tick row is HTML, not canvas, so the edgeFade
-    // mask's zero-point lands on the foot and the dissolve matches.
+    // Canvas ends exactly at the body's foot (yFoot) = the box's bottom = the seam.
     const canvasH = yBottom + TIDE.footDrop;
+    const font = `${SEAM_FONT.weight} ${SEAM_FONT.size}px ${getComputedStyle(canvas).fontFamily}`;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = W * dpr; canvas.height = canvasH * dpr;
     canvas.style.width = W + "px"; canvas.style.height = canvasH + "px";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    mark.width = W * dpr; mark.height = canvasH * dpr;
+    mark.style.width = W + "px"; mark.style.height = canvasH + "px";
+    mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
@@ -198,12 +207,10 @@ export function TideHorizon({ fold }: { fold: Fold }) {
       timeRef.current = t;
       const hovered = hoverArmRef.current;
       ctx.clearRect(0, 0, W, canvasH);
+      mctx.clearRect(0, 0, W, canvasH);
       const yFoot = yBottom + TIDE.footDrop;
 
-      // 1 — the Arms, either behind the water or, when hovered, on top of it.
-      if (hovered < 0) drawArms(hovered, t);
-
-      // 2 — the mean body: a filled area, iridescent by hour, sinking to the abyss at its foot.
+      // 1 — the mean body: a filled area, iridescent by hour, sinking to the abyss at its foot.
       const body = samplePoints((hf) => surfaceY(hf, t));
       ctx.save();
       ctx.beginPath();
@@ -215,17 +222,33 @@ export function TideHorizon({ fold }: { fold: Fold }) {
       ctx.clip();
 
       const horiz = ctx.createLinearGradient(padL, 0, padL + innerW, 0);
-      for (let h = 0; h <= 23; h++) horiz.addColorStop(h / 23, tideOklch(fold.mean[h] / dayMean, 0.5));
+      for (let h = 0; h <= 23; h++) horiz.addColorStop(h / 23, tideOklch(fold.mean[h] / dayMean, 1));
       ctx.fillStyle = horiz;
       ctx.fillRect(padL, padT, innerW, yFoot - padT);
 
-      const vert = ctx.createLinearGradient(0, padT, 0, yFoot);
-      vert.addColorStop(0, "rgba(225,244,255,0.12)");
-      vert.addColorStop(0.32, "rgba(0,0,0,0)");
-      vert.addColorStop(1, ABYSS_FOOT);
-      ctx.fillStyle = vert;
+      // Faint at the waterline, solid at the foot: scale the body's alpha by a vertical ramp. The clip
+      // keeps destination-in to the body, so nothing else on the canvas is touched.
+      const ramp = ctx.createLinearGradient(0, padT, 0, yBottom);
+      ramp.addColorStop(0, "rgba(0,0,0,0.22)");
+      ramp.addColorStop(1, "rgba(0,0,0,1)");
+      ctx.globalCompositeOperation = "destination-in";
+      ctx.fillStyle = ramp;
       ctx.fillRect(padL, padT, innerW, yFoot - padT);
+      ctx.globalCompositeOperation = "source-over";
+
+      // Light over the foot — the seam is the brightest band on the page.
+      // A broad rise that plateaus into the seam — no peak, or the peak reads as a stripe.
+      const washTop = yFoot - SEAM - 70;
+      const wash = ctx.createLinearGradient(0, washTop, 0, yFoot);
+      wash.addColorStop(0, "rgba(205,242,255,0)");
+      wash.addColorStop(0.75, SEAM_WASH);
+      wash.addColorStop(1, SEAM_WASH);
+      ctx.fillStyle = wash;
+      ctx.fillRect(padL, washTop, innerW, yFoot - washTop);
       ctx.restore();
+
+      // 2 — the Arms: faint over the water, or, when one is hovered, on top of everything.
+      if (hovered < 0) drawArms(hovered, t);
 
       // 3 — the lit surface line, coloured per hour, dimmed while an Arm is soloed.
       ctx.lineWidth = 2;
@@ -246,19 +269,28 @@ export function TideHorizon({ fold }: { fold: Fold }) {
       // 4 — the now-marker: a quiet stem up from the waterline, a lit bead where it meets the tide. The
       // stem rises from the canvas top through the headroom, fading in, so it reads however high the tide is.
       const nx = xForHour(fold.nowHour), ny = surfaceY(fold.nowHour, t);
-      const stemGrad = ctx.createLinearGradient(0, TIDE.nowStem.stemTop, 0, ny);
+      const stemGrad = mctx.createLinearGradient(0, TIDE.nowStem.stemTop, 0, ny);
       stemGrad.addColorStop(0, "rgba(0,0,0,0)");
       stemGrad.addColorStop(TIDE.nowStem.fadeToTop, INK_SOFT);
       stemGrad.addColorStop(1, INK_SOFT);
-      ctx.strokeStyle = stemGrad;
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(nx, TIDE.nowStem.stemTop); ctx.lineTo(nx, ny); ctx.stroke();
+      mctx.strokeStyle = stemGrad;
+      mctx.lineWidth = 1;
+      mctx.beginPath(); mctx.moveTo(nx, TIDE.nowStem.stemTop); mctx.lineTo(nx, ny); mctx.stroke();
       const bead = tideOklch(fold.multiplier);
-      ctx.fillStyle = bead; ctx.shadowColor = bead; ctx.shadowBlur = 12;
-      ctx.beginPath(); ctx.arc(nx, ny, 3.5, 0, Math.PI * 2); ctx.fill();
-      ctx.shadowBlur = 0;
+      mctx.fillStyle = bead; mctx.shadowColor = bead; mctx.shadowBlur = 12;
+      mctx.beginPath(); mctx.arc(nx, ny, 3.5, 0, Math.PI * 2); mctx.fill();
+      mctx.shadowBlur = 0;
 
       if (hovered >= 0) drawArms(hovered, t);
+
+      // 5 — hours knocked out of the solid foot, just above the overlap with the gold.
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.font = font;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = "#000";
+      for (const f of SEAM_TICKS) ctx.fillText(hourLabel(f * 24), xForHour(f * 24), yFoot - SEAM - 7);
+      ctx.globalCompositeOperation = "source-over";
 
       if (!reduced) raf = requestAnimationFrame(draw);
     };
@@ -307,9 +339,7 @@ export function TideHorizon({ fold }: { fold: Fold }) {
     setTip(null);
   };
 
-  // Overlay geometry — the tick row and "now" label ride as HTML above the masked canvas, so the
-  // edge-fade dissolves the water without touching the text.
-  const yFoot = geom.yBottom + TIDE.footDrop;
+  // The "now" label rides as HTML above the masked canvas, so the edge-fade never touches it.
   const nowX = geom.xForHour(fold.nowHour);
   const nowRight = Math.abs(nowX - (geom.padL + geom.innerW)) < 40;
 
@@ -318,10 +348,13 @@ export function TideHorizon({ fold }: { fold: Fold }) {
       ref={wrapRef}
       onPointerMove={onMove}
       onPointerLeave={onLeave}
-      // Heights = base (16rem / 20rem) + TIDE.headroom (10rem). Keep in sync with TIDE.headroom.
-      className="relative h-[26rem] w-full md:h-[30rem]"
+      // Heights = base (16rem / 20rem) + TIDE.headroom (10rem) + the foot past the old tick row (66px).
+      // Keep in sync with TIDE.headroom / footDrop.
+      className="relative h-[calc(26rem+66px)] w-full md:h-[calc(30rem+66px)]"
     >
-      <canvas ref={canvasRef} className="absolute left-0 top-0 block" style={edgeFade()} />
+      {/* Sides dissolve; the foot fades out only over the SEAM overlap, where the gold shows through. */}
+      <canvas ref={canvasRef} className="absolute left-0 top-0 block" style={edgeFade(0.2, (SEAM * SEAM_FADE) / Math.max(size.h, 1), LEGEND_W)} />
+      <canvas ref={markRef} className="pointer-events-none absolute left-0 top-0 block" />
       {size.w > 0 && (
         <>
           <span
@@ -334,15 +367,6 @@ export function TideHorizon({ fold }: { fold: Fold }) {
           >
             now
           </span>
-          {TICKS.map((h) => (
-            <span
-              key={h}
-              className="pointer-events-none absolute -translate-x-1/2 text-[11px] font-medium text-ink-mute"
-              style={{ left: geom.xForHour(Math.min(Math.max(h, 0.25), 23.75)), top: yFoot + 9 }}
-            >
-              {hourLabel(h)}
-            </span>
-          ))}
         </>
       )}
       {tip && (

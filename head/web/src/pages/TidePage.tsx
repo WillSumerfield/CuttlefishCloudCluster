@@ -4,6 +4,7 @@ import { getDemand, getUsage, type DemandSample, type UsageUser } from "../api";
 import { fold } from "../tide/fold";
 import { NowCard } from "../tide/NowCard";
 import { TideHorizon } from "../tide/TideHorizon";
+import { SEAM } from "../tide/seam";
 import { Usage } from "../tide/Usage";
 
 /**
@@ -41,21 +42,23 @@ export function TidePage() {
 
       {/* The horizon carries no heading — like Standings, it says what it is by being it. The offset is
           the base pull (-12rem) + TIDE.headroom (10rem): the box grew upward, so pull it up to match and
-          keep the waterline where it was. Keep in sync with TIDE.headroom / wrapRef height. */}
-      {/* md:-mb-24 cancels Page's md:pb-24 on whichever section is last — the Tide page wants no trailing
-          blank under the water. Mobile keeps its pb (bottom rail), so the negative margin is md-only. */}
-      <section className={`-mt-[22rem] relative z-0 mb-16`}>
-        <TideHorizon fold={folded} />
+          keep the waterline where it was. Keep in sync with TIDE.headroom / wrapRef height.
+          The Usage bands hang from the horizon's foot, overlapping it by SEAM (seam.ts): the Tide sits above
+          (z-10) and fades out over the gold, so the two melt into one seam. md:-mb-24 cancels Page's
+          md:pb-24 — the page wants no trailing blank under the bands. */}
+      <section className="-mt-[22rem] relative z-0 mb-16 md:-mb-24">
+        <div className="relative z-10">
+          <TideHorizon fold={folded} />
+        </div>
+        {/* Absent, not empty, on a cluster nobody has spent on yet. The top five carry the shape — past
+            that the bands are too thin to read and the legend stops fitting. No z-index here, so the
+            legend's own z-20 can rise above the Tide's canvas. */}
+        {usage.length > 0 && (
+          <div className="relative" style={{ marginTop: -SEAM }}>
+            <Usage data={usage.slice(0, 5)} />
+          </div>
+        )}
       </section>
-
-      {/* Absent, not empty, on a cluster nobody has spent on yet: a stacked area with no bands is a
-          labelled blank rectangle, which says less than saying nothing. The top five carry the shape —
-          past that the bands are too thin to read and the legend stops fitting. */}
-      {usage.length > 0 && (
-        <section className="mt-34 md:-mb-24 relative z-0">
-          <Usage data={usage.slice(0, 5)} />
-        </section>
-      )}
     </Page>
   );
 }
