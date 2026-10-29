@@ -1,6 +1,5 @@
 ---
 title: Head setup
-tags: [leaf]
 ---
 The [[Glossary#Head|Head]] is the one machine that runs the cluster: the queue, everyone's
 [[Glossary#Tidepool|Tidepools]], the [[Glossary#Dashboard|Dashboard]] and the [[Glossary#Mesh|Mesh]]

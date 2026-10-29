@@ -1,6 +1,5 @@
 ---
 title: Roadmap
-tags: [leaf]
 ---
 CCC is partway through its 2.0 rebuild: every User gets a [[Glossary#Tidepool|Tidepool]] on the
 [[Glossary#Head|Head]], and all GPU work is a [[Glossary#Dive|Dive]]. This page shows where that

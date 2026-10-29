@@ -1,6 +1,5 @@
 ---
 title: CCC Wiki
-tags: [node]
 ---
 The Cuttlefish Cloud Cluster (CCC) is a shared pool of GPUs. People in the group lend it their machines,
 and everyone takes turns using them, fairly. This wiki covers how to use it, how to lend it a machine,

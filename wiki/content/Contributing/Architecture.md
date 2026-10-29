@@ -1,6 +1,5 @@
 ---
 title: Architecture
-tags: [leaf]
 ---
 CCC is a [[Glossary#Head|Head]] that runs the control plane and holds everyone's files, plus any
 number of [[Glossary#Arm|Arms]] that lend GPUs. Slurm does the scheduling, Podman runs every User

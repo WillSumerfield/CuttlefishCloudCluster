@@ -1,6 +1,5 @@
 ---
 title: Isolation
-tags: [leaf]
 ---
 Every User's work runs in a Podman container, on the [[Glossary#Head|Head]] or on someone else's
 [[Glossary#Arm|Arm]]. Isolation is what keeps one User out of another's files, GPUs and processes,

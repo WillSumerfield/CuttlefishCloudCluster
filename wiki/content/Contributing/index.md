@@ -1,6 +1,5 @@
 ---
 title: Contributing
-tags: [node]
 ---
 How CCC is built, for people changing it. These pages cover the moving parts and how they talk, how
 work is kept apart on shared machines, and what's coming next. If you only want to use the cluster,

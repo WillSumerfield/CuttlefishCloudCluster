@@ -1,6 +1,5 @@
 ---
 title: Arm features
-tags: [leaf]
 ---
 A Feature is a piece of special software your Arm has that most machines don't, like a big simulator
 install or software licensed to your machine. You tell CCC about it during setup, and Dives that need

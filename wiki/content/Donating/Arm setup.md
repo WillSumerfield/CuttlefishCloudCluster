@@ -1,6 +1,5 @@
 ---
 title: Arm setup
-tags: [leaf]
 ---
 To lend your machine to CCC, you install `cuttle`, get a one-time token from an
 [[Glossary#Admin|Admin]], and run one setup command. It takes a while (it installs packages and pulls

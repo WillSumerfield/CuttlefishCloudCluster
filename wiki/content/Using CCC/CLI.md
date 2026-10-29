@@ -1,6 +1,5 @@
 ---
 title: CLI
-tags: [leaf]
 ---
 [[Glossary#cuttle|`cuttle`]] is CCC's command-line tool. It runs on your own machine, and also inside
 your Tidepool and your Dives. Here is every command you'll use day to day. For admin and

@@ -1,6 +1,5 @@
 ---
 title: Mesh
-tags: [leaf]
 ---
 The [[Glossary#Mesh|Mesh]] is CCC's private network between the Head and every
 [[Glossary#Arm|Arm]]. An Arm can be on any network, as long as it can reach the Head once to join;

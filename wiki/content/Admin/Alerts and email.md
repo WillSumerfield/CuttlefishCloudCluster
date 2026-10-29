@@ -1,6 +1,5 @@
 ---
 title: Alerts and email
-tags: [leaf]
 ---
 Every five minutes the Head checks its own health: is the disk filling up, are CCC's services
 running, and is something using the GPU or CPU outside a Dive. When a check fails, it emails you.

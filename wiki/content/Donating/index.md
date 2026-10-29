@@ -1,6 +1,5 @@
 ---
 title: Donating
-tags: [node]
 ---
 To donate a machine, you lend its GPUs to the cluster as an [[Glossary#Arm|Arm]]. Other people's Dives
 run on it while you're not using it, and you earn [[Glossary#Karma|Karma]] for that. These pages are for

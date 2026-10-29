@@ -1,6 +1,5 @@
 ---
 title: Admin troubleshooting
-tags: [leaf]
 ---
 When something's wrong on the Head, start by finding which service is unhappy, then read its log.
 Below are the commands for that, and fixes for the problems you're most likely to meet.

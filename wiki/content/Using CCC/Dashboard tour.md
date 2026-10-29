@@ -1,6 +1,5 @@
 ---
 title: Dashboard tour
-tags: [leaf]
 ---
 The [[Glossary#Dashboard|Dashboard]] is CCC's website, served by the Head. Use it to watch the queue,
 browse your files, check your Karma and manage your Tidepool. To open it from a machine with `cuttle`

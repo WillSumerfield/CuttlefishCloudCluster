@@ -1,6 +1,5 @@
 ---
 title: Backup
-tags: [leaf]
 ---
 The Head backs up the cluster's records every night: accounts, Karma, Dives, the Arm list and the
 Mesh. `cuttle backup create` takes one by hand, and `cuttle backup restore` puts one back.

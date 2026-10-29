@@ -1,6 +1,5 @@
 ---
 title: Admin
-tags: [node]
 ---
 Running the [[Glossary#Head|Head]]: setting it up, adding people, admitting machines, keeping an eye on
 it, and getting it back when something breaks. It's for whoever looks after the Head box. Almost

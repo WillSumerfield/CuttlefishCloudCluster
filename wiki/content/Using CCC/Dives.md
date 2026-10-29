@@ -1,6 +1,5 @@
 ---
 title: Dives
-tags: [leaf]
 ---
 A [[Glossary#Dive|Dive]] is a GPU session. You pick a folder from your [[Tidepool]], CCC copies it to
 a free GPU, and you get a shell there. You work in that copy, and your changes flow back to your

@@ -1,6 +1,5 @@
 ---
 title: Environments
-tags: [leaf]
 ---
 A Dive runs the same system as your [[Tidepool]]: the same tools, and the same packages you've
 installed. Python libraries are separate: you list them in a dependency file, and each Dive builds a

@@ -1,6 +1,5 @@
 ---
 title: Files
-tags: [leaf]
 ---
 Your files live in your [[Tidepool]] on the Head. There are three ways to move them between your own
 machine and the cluster: `cuttle upload` / `cuttle download`, the Files page in the

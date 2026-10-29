@@ -1,6 +1,5 @@
 ---
 title: Troubleshooting
-tags: [leaf]
 ---
 Common problems when using CCC, and how to fix them. Each heading is what you see or the message
 `cuttle` prints. If you donate a machine, see [[Admin troubleshooting]] and [[Arm setup]] for

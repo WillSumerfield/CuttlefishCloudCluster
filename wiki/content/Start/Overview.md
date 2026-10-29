@@ -1,6 +1,5 @@
 ---
 title: Overview
-tags: [leaf]
 ---
 CCC is a shared pool of NVIDIA GPUs. People in the group lend it their machines, and everyone takes
 turns using them. You keep your work in one place on a central machine, and borrow a GPU only while

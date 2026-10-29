@@ -1,6 +1,5 @@
 ---
 title: Arms
-tags: [leaf]
 ---
 An Arm is a machine someone has lent to CCC for its GPUs: a gaming PC, a lab desktop, a spare server.
 When someone starts a [[Glossary#Dive|Dive]], CCC puts it on a free GPU on one of the Arms. Every Arm

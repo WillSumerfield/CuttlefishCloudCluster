@@ -1,6 +1,5 @@
 ---
 title: Security
-tags: [leaf]
 ---
 CCC keeps Users apart from each other and from the machines they run on, and keeps every powerful
 action on the Head itself. Your code runs on machines you don't own, and other people's code runs on

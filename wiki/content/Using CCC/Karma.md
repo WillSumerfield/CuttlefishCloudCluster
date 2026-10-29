@@ -1,6 +1,5 @@
 ---
 title: Karma
-tags: [leaf]
 ---
 [[Glossary#Karma|Karma]] is how CCC keeps the queue fair. Using GPUs costs Karma, and lending a
 machine earns it. When the GPUs are busy and several people are waiting, people with more Karma go

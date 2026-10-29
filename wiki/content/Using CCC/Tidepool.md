@@ -1,6 +1,5 @@
 ---
 title: Tidepool
-tags: [leaf]
 ---
 Your [[Glossary#Tidepool|Tidepool]] is your own space on the [[Glossary#Head|Head]]: a folder that
 holds all your work, plus a small Linux computer that is always running and that you can SSH into.

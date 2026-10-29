@@ -1,6 +1,5 @@
 ---
 title: Getting started
-tags: [leaf]
 ---
 This guide takes you from a brand-new account to your first GPU session and back.
 You'll need a Linux computer (Ubuntu works) where you can use `sudo`.

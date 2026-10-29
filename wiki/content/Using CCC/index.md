@@ -1,6 +1,5 @@
 ---
 title: Using CCC
-tags: [node]
 ---
 Day-to-day work on the cluster: your Tidepool, your Dives, and the tools you reach them with. Start
 here once you can log in. If you can't yet, see [[Getting started]] first.

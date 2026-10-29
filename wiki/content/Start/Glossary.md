@@ -1,6 +1,5 @@
 ---
 title: Glossary
-tags: [leaf]
 ---
 Every CCC word in plain language, with a link to the page that covers it. The first group are the
 words you'll meet every day; the rest come up as you go.

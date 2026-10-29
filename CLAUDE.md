@@ -56,7 +56,6 @@ prose ("CCC is…") than under `## Summary`. Keep the frontmatter, and on Nodes 
 ```markdown
 ---
 title: <Page>
-tags: [leaf]          # or [node]
 ---
 ## Summary
 1–2 sentences: what this is at a high level.

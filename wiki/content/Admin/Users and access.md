@@ -1,6 +1,5 @@
 ---
 title: Users and access
-tags: [leaf]
 ---
 Everyone who uses CCC has an account on the Head: a [[Glossary#User|User]], or an
 [[Glossary#Admin|Admin]]. You create accounts on the Head with `cuttle user add`, hand over a one-time

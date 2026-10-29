@@ -1,6 +1,5 @@
 ---
 title: Start
-tags: [node]
 ---
 New to CCC? Start here. These pages explain what the cluster is, walk you from "I have an account" to
 your first GPU session, and define every word you'll meet along the way.
