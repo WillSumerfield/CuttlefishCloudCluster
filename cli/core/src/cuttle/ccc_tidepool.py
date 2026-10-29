@@ -965,12 +965,17 @@ def copy_sources(user: str, src: Path, log: list[str]) -> list[str]:
             continue
         for f in sorted(d.iterdir()):
             target = f"{dest}/{f.name}"
-            if f.is_symlink() or not f.is_file() or _exec(user, "test", "-e", target).returncode == 0:
+            if f.is_symlink() or not f.is_file():
                 continue
-            sh(*podman(user), "cp", "--archive=false", str(f), f"{container(user)}:{target}", check=False,
-               capture_output=True)
-            log.append(f"copied {target}")
-            out.append(f.name)
+            # exec + cat, not `podman cp` (into the running Tidepool it reported success, wrote nothing)
+            r = subprocess.run([*podman(user), "exec", "-i", "-u", "0", container(user), "sh", "-c",
+                                '[ ! -e "$1" ] || exit 3; cat > "$1" && chmod 644 "$1"', "_", target],
+                               input=f.read_bytes(), capture_output=True)
+            if r.returncode == 0:
+                log.append(f"copied {target}")
+                out.append(f.name)
+            elif r.returncode != 3:
+                log.append(f"not copied {target}: {r.stderr.decode(errors='replace').strip()}")
     return out
 
 

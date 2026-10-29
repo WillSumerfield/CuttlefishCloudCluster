@@ -204,11 +204,25 @@ class TestSources:
         (d / "new.list").write_text("deb x")
         (d / "have.list").write_text("deb y")
         (d / "link.list").symlink_to("/etc/shadow")
-        monkeypatch.setattr(H, "_exec", lambda u, *a: subprocess.CompletedProcess(a, 0 if "have.list" in a[-1] else 1))
-        cps = []
-        monkeypatch.setattr(H, "sh", lambda *a, **k: cps.append(a))
-        assert H.copy_sources("bob", tmp_path, []) == ["new.list"]
-        assert cps[0][-1].endswith(":/etc/apt/sources.list.d/new.list") and "--archive=false" in cps[0]
+        calls = []
+
+        def run(argv, **k):
+            calls.append((argv, k.get("input")))
+            return subprocess.CompletedProcess(argv, 3 if argv[-1].endswith("have.list") else 0, b"", b"")
+        monkeypatch.setattr(H.subprocess, "run", run)
+        log = []
+        assert H.copy_sources("bob", tmp_path, log) == ["new.list"]
+        # never the symlink; the Tidepool's own file left alone (exit 3), not logged as copied
+        assert [c[0][-1] for c in calls] == ["/etc/apt/sources.list.d/have.list", "/etc/apt/sources.list.d/new.list"]
+        assert calls[1][1] == b"deb x" and log == ["copied /etc/apt/sources.list.d/new.list"]
+
+    def test_a_failed_copy_is_logged_not_reported(self, monkeypatch, tmp_path):
+        d = tmp_path / "etc_apt_keyrings"
+        d.mkdir()
+        (d / "k.gpg").write_bytes(b"k")
+        monkeypatch.setattr(H.subprocess, "run", lambda a, **k: subprocess.CompletedProcess(a, 1, b"", b"boom"))
+        log = []
+        assert H.copy_sources("bob", tmp_path, log) == [] and log == ["not copied /etc/apt/keyrings/k.gpg: boom"]
 
 
 def test_tidepool_shell_prints_the_result_once():
