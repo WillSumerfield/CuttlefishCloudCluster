@@ -27,6 +27,8 @@ Stdlib only, no CCC imports: it runs under the system python as root.
 """
 
 import base64
+import gzip
+import hashlib
 import json
 import os
 import pwd
@@ -35,6 +37,8 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -373,7 +377,8 @@ def teardown(all_: bool) -> None:
 # - `dive-prep <user> <tok>` (stdin {main, deps}): checks the paths, copies the dotfile allowlist into
 #   DIVE_STATE/<tok>/home, and prints sizes (real staging totals, excludes applied) + cuttle.toml.
 # - `dive-snap <user> <tok>`: commits the Tidepool container and pushes it — only the User's layer
-#   travels; the base is already in the registry. Prints the digest ref.
+#   travels; the base is already in the registry. Prints the digest ref. The commit records the
+#   container's host ids (id_base+n), so the pushed layer is rewritten with them shifted back to n.
 # - `dive-open <user> <tok>` (stdin {main, deps, toml, secret, image}): writes cuttle.toml back, the
 #   record, and the per-Dive rsync modules (root-owned dir rsyncd &includes): main writable, deps and
 #   the dotfile/host-key bundle read-only. Modules run as the User's mapped uid, so the files are uid
@@ -542,7 +547,7 @@ def _auth_header() -> str:
 
 def dive_snap(user: str, tok: str) -> dict:
     """Commit + push the User's system layer. The pushed manifest's digest is what the Arm pulls."""
-    record(check_user(user))
+    rec = record(check_user(user))
     check_token(tok)
     ref = f"{registry()}/ccc/u-{user}:{tok}"
     digest_file = DIVE_STATE / f"{tok}.digest"
@@ -555,7 +560,93 @@ def dive_snap(user: str, tok: str) -> dict:
         sh(*podman(user), "rmi", "-f", ref, check=False, capture_output=True)
     digest = digest_file.read_text().strip()
     digest_file.unlink()
-    return {"image": f"{registry()}/ccc/u-{user}@{digest}"}
+    return {"image": shift_snapshot(f"ccc/u-{user}", tok, digest, id_base(rec["uid"]))}
+
+
+MANIFEST_TYPES = "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+
+
+def _reg(method: str, path: str, data=None, headers: dict | None = None):
+    """One registry API call. `path` is after /v2/, or an upload Location (absolute or /v2/…)."""
+    url = path if path.startswith("https://") else f"https://{registry()}" + (
+        path if path.startswith("/") else f"/v2/{path}")
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Authorization": _auth_header(), **(headers or {})})
+    ctx = ssl.create_default_context(cafile=CA_CERT if Path(CA_CERT).exists() else None)
+    return urllib.request.urlopen(req, context=ctx, timeout=600)
+
+
+class _Hashing:
+    """A write-through file wrapper counting bytes and their sha256."""
+    def __init__(self, f):
+        self.f, self.h, self.n = f, hashlib.sha256(), 0
+
+    def write(self, b) -> int:
+        self.h.update(b)
+        self.n += len(b)
+        return self.f.write(b)
+
+    def flush(self) -> None:
+        self.f.flush()
+
+    def digest(self) -> str:
+        return "sha256:" + self.h.hexdigest()
+
+
+def _shift(i: int, base: int) -> int:
+    return i - base if base <= i < base + ID_COUNT else i
+
+
+def shift_layer(src, dst, base: int) -> str:
+    """Copy layer tar stream `src` to gzip `dst` with ids base..base+ID_COUNT moved down to 0… Returns
+    the new uncompressed sha256 (the config's diff_id)."""
+    gz = gzip.GzipFile(fileobj=dst, mode="wb", mtime=0)
+    raw = _Hashing(gz)
+    with tarfile.open(fileobj=src, mode="r|") as tin, \
+            tarfile.open(fileobj=raw, mode="w|", format=tarfile.PAX_FORMAT) as tout:
+        for ti in tin:
+            ti.uid, ti.gid = _shift(ti.uid, base), _shift(ti.gid, base)
+            ti.pax_headers.pop("uid", None)       # else the old big id survives in the pax header
+            ti.pax_headers.pop("gid", None)
+            tout.addfile(ti, tin.extractfile(ti) if ti.isreg() else None)
+    gz.close()
+    return raw.digest()
+
+
+def _upload(name: str, f, size: int, digest: str) -> None:
+    with _reg("POST", f"{name}/blobs/uploads/") as r:
+        loc = r.headers["Location"]
+    _reg("PUT", f"{loc}{'&' if '?' in loc else '?'}digest={digest}", data=f,
+         headers={"Content-Length": str(size), "Content-Type": "application/octet-stream"}).close()
+
+
+def shift_snapshot(name: str, tag: str, digest: str, base: int) -> str:
+    """Rewrite the pushed snapshot's top (User) layer with container ids, re-tag, drop the old manifest.
+    Only that layer moves; the base layers are untouched. Returns the new digest ref."""
+    with _reg("GET", f"{name}/manifests/{digest}", headers={"Accept": MANIFEST_TYPES}) as r:
+        mtype = r.headers["Content-Type"]
+        m = json.loads(r.read())
+    with _reg("GET", f"{name}/blobs/{m['config']['digest']}") as r:
+        cfg = json.loads(r.read())
+    top = m["layers"][-1]
+    if not top["mediaType"].endswith("gzip"):
+        raise Refused(f"snapshot layer is {top['mediaType']}, not gzip")
+    with tempfile.TemporaryFile(dir=DIVE_STATE) as tmp:
+        out = _Hashing(tmp)
+        with _reg("GET", f"{name}/blobs/{top['digest']}") as r:
+            cfg["rootfs"]["diff_ids"][-1] = shift_layer(gzip.GzipFile(fileobj=r), out, base)
+        tmp.seek(0)
+        _upload(name, tmp, out.n, out.digest())
+    top["digest"], top["size"] = out.digest(), out.n
+    body = json.dumps(cfg).encode()
+    cd = "sha256:" + hashlib.sha256(body).hexdigest()
+    _upload(name, body, len(body), cd)
+    m["config"]["digest"], m["config"]["size"] = cd, len(body)
+    mbody = json.dumps(m).encode()
+    _reg("PUT", f"{name}/manifests/{tag}", data=mbody, headers={"Content-Type": mtype}).close()
+    new = "sha256:" + hashlib.sha256(mbody).hexdigest()
+    delete_manifest(f"{registry()}/{name}@{digest}")
+    return f"{registry()}/{name}@{new}"
 
 
 def render_modules(tok: str, d: dict) -> str:

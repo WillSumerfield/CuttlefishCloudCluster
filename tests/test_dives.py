@@ -1,11 +1,15 @@
 """Dives (phase 4): the root helper's Dive verbs — folder checks, rsync filters (real rsync), modules,
-locks, the Head-GPU grant/revoke — plus the templates and constants they share.
+locks, the snapshot id shift — plus the templates and constants they share.
 
-NOT tested: Podman commit/push, nsenter, systemd device policy, a real Arm — hardware list.
+NOT tested: Podman commit/push, a real registry, nsenter, systemd device policy, a real Arm — hardware list.
 """
 
+import gzip
+import hashlib
+import io
 import json
 import subprocess
+import tarfile
 
 import pytest
 
@@ -221,6 +225,97 @@ class TestRegistry:
     def test_gc_is_a_nightly_helper_run(self):
         assert "ExecStart=/usr/local/sbin/ccc-tidepool registry-gc" in templates.render_registry_gc_service()
         assert "OnCalendar=" in templates.REGISTRY_GC_TIMER_TMPL
+
+
+BASE = H.id_base(60003)
+
+
+def _layer(entries) -> bytes:
+    """entries: (name, type, uid, data, xattrs)"""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        for name, typ, uid, data, xattrs in entries:
+            ti = tarfile.TarInfo(name)
+            ti.type, ti.uid, ti.gid = typ, uid, uid
+            ti.pax_headers = {f"SCHILY.xattr.{k}": v for k, v in xattrs.items()}
+            if typ == tarfile.LNKTYPE:
+                ti.linkname = "etc/f"
+            ti.size = len(data) if typ == tarfile.REGTYPE else 0
+            t.addfile(ti, io.BytesIO(data) if typ == tarfile.REGTYPE else None)
+    return buf.getvalue()
+
+
+LAYER = [("etc/ccc", tarfile.DIRTYPE, BASE, b"", {}),
+         ("etc/f", tarfile.REGTYPE, BASE + 1000, b"hello", {"user.k": "v"}),
+         ("etc/h", tarfile.LNKTYPE, BASE, b"", {}),
+         ("etc/.wh.gone", tarfile.REGTYPE, BASE, b"", {}),
+         ("etc/odd", tarfile.REGTYPE, 5, b"x", {})]
+
+
+class TestShiftSnapshot:
+    """`podman commit` of a Tidepool records host ids (id_base+n): in a Dive (mapped 0→id_base) those
+    are unmapped, so /etc/ccc was unwritable and a Head Dive's crun mkdir failed."""
+
+    def test_layer_ids_shift_to_container_ids(self):
+        out = io.BytesIO()
+        diff_id = H.shift_layer(io.BytesIO(_layer(LAYER)), out, BASE)
+        raw = gzip.decompress(out.getvalue())
+        assert diff_id == "sha256:" + hashlib.sha256(raw).hexdigest()
+        with tarfile.open(fileobj=io.BytesIO(raw)) as t:
+            got = {m.name: m for m in t.getmembers()}
+            assert {n: (m.uid, m.gid) for n, m in got.items()} == {
+                "etc/ccc": (0, 0), "etc/f": (1000, 1000), "etc/h": (0, 0), "etc/.wh.gone": (0, 0),
+                "etc/odd": (5, 5)}
+            assert t.extractfile("etc/f").read() == b"hello"
+            assert got["etc/f"].pax_headers["SCHILY.xattr.user.k"] == "v"
+            assert got["etc/h"].islnk() and got["etc/h"].linkname == "etc/f"
+
+    def test_only_the_top_layer_is_replaced_and_old_manifest_dropped(self, helper_dirs, monkeypatch):
+        monkeypatch.setattr(H, "registry", lambda: "ccc.c:5000")
+        base_layer = {"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:base",
+                      "size": 9}
+        top = gzip.compress(_layer(LAYER))
+        m = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+             "config": {"digest": "sha256:cfg", "size": 1},
+             "layers": [base_layer, {**base_layer, "digest": "sha256:top", "size": len(top)}]}
+        blobs = {"sha256:cfg": json.dumps({"rootfs": {"diff_ids": ["sha256:b0", "sha256:t0"]}}).encode(),
+                 "sha256:top": top}
+        put, calls = {}, []
+
+        class R(io.BytesIO):
+            def __init__(self, body, headers):
+                super().__init__(body)
+                self.headers = headers
+
+        def reg(method, path, data=None, headers=None):
+            calls.append((method, path))
+            if method == "GET" and "/manifests/" in path:
+                return R(json.dumps(m).encode(), {"Content-Type": m["mediaType"]})
+            if method == "GET":
+                return R(blobs[path.rsplit("/", 1)[1]], {})
+            if method == "POST":
+                return R(b"", {"Location": "/v2/up/1?state=x"})
+            body = data if isinstance(data, bytes) else data.read()
+            put[path] = body
+            return R(b"", {})
+
+        monkeypatch.setattr(H, "_reg", reg)
+        deleted = []
+        monkeypatch.setattr(H, "delete_manifest", deleted.append)
+        ref = H.shift_snapshot("ccc/u-bob", TOK, "sha256:old", BASE)
+
+        newm = put[f"ccc/u-bob/manifests/{TOK}"]
+        assert ref == "ccc.c:5000/ccc/u-bob@sha256:" + hashlib.sha256(newm).hexdigest()
+        newm = json.loads(newm)
+        assert newm["layers"][0] == base_layer
+        newtop = put[f"/v2/up/1?state=x&digest={newm['layers'][1]['digest']}"]
+        assert newm["layers"][1]["size"] == len(newtop)
+        cfg = json.loads(put[f"/v2/up/1?state=x&digest={newm['config']['digest']}"])
+        assert cfg["rootfs"]["diff_ids"] == [
+            "sha256:b0", "sha256:" + hashlib.sha256(gzip.decompress(newtop)).hexdigest()]
+        with tarfile.open(fileobj=io.BytesIO(gzip.decompress(newtop))) as t:
+            assert t.getmember("etc/ccc").uid == 0
+        assert deleted == ["ccc.c:5000/ccc/u-bob@sha256:old"]
 
 
 # --- ccc-launch, Dive mode ---------------------------------------------------------
