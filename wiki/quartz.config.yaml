@@ -6,7 +6,8 @@ configuration:
   enablePopovers: true
   analytics: null
   locale: en-US
-  baseUrl: localhost:8080
+  # The Head serves the wiki under /wiki/: this sets every page's base path (`--serve` ignores it).
+  baseUrl: localhost/wiki
   ignorePatterns:
     - private
     - templates
