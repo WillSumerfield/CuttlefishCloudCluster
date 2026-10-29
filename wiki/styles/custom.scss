@@ -97,3 +97,22 @@ $rightPanelWidth: 370px;
     color: var(--secondary);
   }
 }
+
+// ── Search: solid panels over a dimmed page ──
+// Out of the box the search overlay is see-through, so the page behind shows through the results and
+// makes them hard to read.
+.search > .search-container {
+  background: color-mix(in srgb, var(--dark) 35%, transparent);
+
+  & > .search-space > input,
+  & > .search-space > .search-layout {
+    background: var(--light);
+    border: 1px solid var(--lightgray);
+    border-radius: 7px;
+    box-shadow: 0 14px 50px rgba(27, 33, 48, 0.12), 0 5.5px 16px rgba(0, 0, 0, 0.04);
+  }
+
+  & > .search-space > .search-layout {
+    margin-top: 0.5rem;
+  }
+}
