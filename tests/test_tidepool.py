@@ -225,6 +225,12 @@ class TestTemplates:
         assert "--uid 1000" in s and "NOPASSWD:ALL" in s
         assert s.rstrip().splitlines()[-1].startswith("exec /usr/sbin/sshd -D -e")
 
+    def test_cuttle_on_path_for_non_interactive_ssh(self):   # zshenv, once across restarts
+        s = templates.render_tidepool_init()
+        assert f"path=({config.CONTAINER_CUTTLE}/path $path)" in s and "/etc/zsh/zshenv" in s
+        assert "grep -q 'ccc cuttle' /etc/zsh/zshenv ||" in s
+        assert "/path $path" not in templates.render_tidepool_zshrc()
+
     def test_sshd_is_key_only(self):
         c = dict(l.split(" ", 1) for l in templates.TIDEPOOL_SSHD_CONFIG.splitlines()
                  if l and not l.startswith("#"))

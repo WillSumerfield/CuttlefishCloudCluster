@@ -546,6 +546,8 @@ printf '%s ALL=(ALL) NOPASSWD:ALL\\n' "$u" > /etc/sudoers.d/ccc-tidepool
 chmod 0440 /etc/sudoers.d/ccc-tidepool
 cp /etc/ccc/tidepool/zshrc /etc/zsh/zshrc
 cp /etc/ccc/tidepool/p10k.zsh /etc/zsh/ccc-p10k.zsh
+# zshenv, not zshrc: `ssh lab 'cuttle …'` runs a non-interactive shell, which skips zshrc.
+grep -q 'ccc cuttle' /etc/zsh/zshenv || echo 'path=({cuttle}/path $path)  # ccc cuttle' >> /etc/zsh/zshenv
 # zsh's new-user wizard fires in a home with no rc file at all; a stub is the User's to edit.
 h="/home/$u"
 if [ ! -e "$h/.zshrc" ] && [ ! -e "$h/.zshenv" ] && [ ! -e "$h/.zprofile" ] && [ ! -e "$h/.zlogin" ]; then
@@ -588,7 +590,6 @@ Subsystem sftp internal-sftp
 TIDEPOOL_ZSHRC = """\
 # Rendered by `cuttle setup --head`, copied in at every Tidepool start — edit ~/.zshrc instead.
 typeset -g POWERLEVEL9K_INSTANT_PROMPT=off
-path=({cuttle}/path $path)
 export ZSH={omz}
 ZSH_THEME="powerlevel10k/powerlevel10k"
 zstyle ':omz:update' mode disabled
@@ -653,11 +654,11 @@ def render_tidepool_sudoers() -> str:
 
 
 def render_tidepool_init() -> str:
-    return TIDEPOOL_INIT.replace("{uid}", "1000")
+    return TIDEPOOL_INIT.replace("{uid}", "1000").replace("{cuttle}", str(config.CONTAINER_CUTTLE))
 
 
 def render_tidepool_zshrc() -> str:
-    return TIDEPOOL_ZSHRC.format(omz=config.POD_OMZ_DIR, cuttle=config.CONTAINER_CUTTLE)
+    return TIDEPOOL_ZSHRC.format(omz=config.POD_OMZ_DIR)
 
 
 # rsync daemon for stage-in/out. `address` pins it to the Head's mesh IP, so it never listens on the
