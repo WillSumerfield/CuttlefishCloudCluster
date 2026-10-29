@@ -21,6 +21,8 @@ export type Arm = {
   // owner paused it; `state` (raw sinfo) never reflects that, so it rides its own field rather than a
   // synthetic word squeezed into `state`.
   retracted: boolean
+  // The Head pushing its cuttle build to this Arm (cuttle.rollout), or null when there's nothing to do.
+  update: { status: "waiting" | "updating" | "failed"; error: string | null } | null
   // The hardware profile Karma prices from: what the card can do (Power, in TFLOP/s, measured by a
   // benchmark Dive at enroll) and how much it can hold. Null until an Arm has been benchmarked.
   gpu: string | null

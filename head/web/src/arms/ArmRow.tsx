@@ -47,6 +47,7 @@ export function ArmRow({ arm }: { arm: Arm }) {
               {arm.features.map((f) => f.name).join(", ")}
             </div>
           )}
+          {arm.update && <UpdateNote update={arm.update} />}
         </div>
 
         {/* OWNER — plain ink. Unowned (awaiting a donor) reads as a dash, never blank. */}
@@ -87,5 +88,21 @@ export function ArmRow({ arm }: { arm: Arm }) {
       </div>
 
     </li>
+  );
+}
+
+/** The Head is pushing a new cuttle to this Arm. It takes no new Dives meanwhile, so say why. */
+function UpdateNote({ update }: { update: NonNullable<Arm["update"]> }) {
+  if (update.status === "failed") {
+    return (
+      <Tip className="truncate text-[11px]" text={`Not taking new Dives until it updates. ${update.error ?? ""} Retry on the Head with cuttle arm update.`}>
+        <span style={{ color: "var(--alarm)" }}>Update failed</span>
+      </Tip>
+    );
+  }
+  return (
+    <div className="truncate text-[11px] text-ink-mute">
+      {update.status === "updating" ? "Updating cuttle" : "Updating after its current Dive"}
+    </div>
   );
 }
