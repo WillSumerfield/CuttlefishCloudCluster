@@ -34,7 +34,7 @@ UPDATER = "@UPDATER@"
 
 # The job, run on the Arm as root. Python, so it can talk JSON to the Enroll API without extra tools.
 JOB = """#!/usr/bin/python3
-import json, os, pwd, subprocess, sys, tempfile, urllib.request
+import json, os, pwd, shutil, subprocess, sys, tempfile, urllib.request
 HEAD, NAME, TARGET = %r, %r, %r
 
 def fail(msg):
@@ -56,15 +56,18 @@ except OSError:
          "cuttle lives. Its owner must install the new cuttle and update once, on the Arm:\\n"
          "  curl -fo " + w + " " + HEAD + "/cuttle/wheel && uv tool install --force " + w +
          " && cuttle update")
-d = tempfile.mkdtemp()
-os.chmod(d, 0o755)
+pw = pwd.getpwnam(rec["user"])
+# In the owner's home, not /tmp: Slurm gives this job a private /tmp only root can enter.
+d = tempfile.mkdtemp(prefix=".ccc-update-", dir=rec["home"])
 wheel = os.path.join(d, meta["wheel"])
 with urllib.request.urlopen(HEAD + "/cuttle/wheel", timeout=300) as r, open(wheel, "wb") as f:
     f.write(r.read())
-os.chmod(wheel, 0o644)
+os.chown(d, pw.pw_uid, pw.pw_gid)
+os.chown(wheel, pw.pw_uid, pw.pw_gid)
 env = {"HOME": rec["home"], "PATH": rec["path"], "USER": rec["user"], "LOGNAME": rec["user"]}
 r = subprocess.run(["runuser", "-u", rec["user"], "--", rec["uv"], "tool", "install", "--force", wheel],
                    env=env, capture_output=True, text=True)
+shutil.rmtree(d, ignore_errors=True)
 if r.returncode:
     fail("installing the new cuttle failed:\\n" + (r.stdout + r.stderr)[-3000:])
 # Outside this job's cgroup and namespace: the update restarts slurmd, and must outlive this job.
@@ -72,7 +75,6 @@ r = subprocess.run(["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
                     "--setenv=HOME=" + rec["home"], "--setenv=CCC_HOME=" + rec["ccc_home"],
                     "--setenv=PATH=" + rec["path"], rec["cuttle"], "--no-input", "update"],
                    stdin=subprocess.DEVNULL, capture_output=True, text=True)
-pw = pwd.getpwnam(rec["user"])
 subprocess.run(["chown", "-R", "%%d:%%d" %% (pw.pw_uid, pw.pw_gid), rec["ccc_home"]])
 if r.returncode:
     fail("cuttle update failed:\\n" + (r.stdout + r.stderr)[-3000:])
