@@ -43,16 +43,15 @@ function Verdict({ outcome }: { outcome: Outcome }) {
 }
 
 export function HistoryRow({ dive, depth }: { dive: ArchivedDive; depth: number }) {
-  // Same falloff as the Karma ledger: the pool of light under a row weakens and the row dims as it ages,
-  // so the archive sinks into the dark instead of stopping on a line. Newest (depth 0) sits at the surface.
-  const band = Math.max(0, 20 * (1 - depth * 0.9));
+  // Same falloff as the Karma ledger: the row dims as it ages, so the archive sinks into the dark instead
+  // of stopping on a line. Newest (depth 0) sits at the surface.
   const dim = 1 - depth * 0.42;
   return (
     <li>
       <Link
         to={`/dive/${dive.id}`}
         className="history-row px-2 py-3.5"
-        style={{ "--band": `${band.toFixed(1)}%`, "--dim": dim } as React.CSSProperties}
+        style={{ "--dim": dim } as React.CSSProperties}
       >
         <div className="flex items-center gap-4">
           <div className="min-w-0 flex-1">

@@ -228,7 +228,7 @@ export function Tip({
               zIndex: 200,
               // The tint knobs, resolved here rather than via custom properties — nothing downstream
               // reads them now that the ::before plate is gone.
-              background: `radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, ${SHOAL} 55%, transparent) 0%, transparent 60%), linear-gradient(180deg, color-mix(in oklab, ${SHOAL} 35%, ${BODY}) 0%, ${BODY} 25%, color-mix(in oklab, ${DEEP} ${TIP.sink}, ${BODY}) 100%)`,
+              background: `linear-gradient(180deg, color-mix(in oklab, ${SHOAL} 35%, ${BODY}) 0%, ${BODY} 25%, color-mix(in oklab, ${DEEP} ${TIP.sink}, ${BODY}) 100%)`,
               border: `${TIP.borderWidth}px solid ${TIP.borderColor}`,
               borderRadius: TIP.radius,
               maxWidth: TIP.maxWidth,
