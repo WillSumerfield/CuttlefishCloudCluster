@@ -47,12 +47,15 @@ def fail(msg):
         print(msg, file=sys.stderr)
         sys.exit(1)
 
+meta = json.load(urllib.request.urlopen(HEAD + "/cuttle", timeout=15))
 try:
     rec = json.load(open(%r))
 except OSError:
-    fail("this Arm was set up before updates from the Head, so the Head does not know where its "
-         "cuttle lives. Its owner must run `cuttle update` on it once.")
-meta = json.load(urllib.request.urlopen(HEAD + "/cuttle", timeout=15))
+    w = "/tmp/" + meta["wheel"]
+    fail("this Arm was set up before updates from the Head, so the Head doesn't know where its "
+         "cuttle lives. Its owner must install the new cuttle and update once, on the Arm:\\n"
+         "  curl -fo " + w + " " + HEAD + "/cuttle/wheel && uv tool install --force " + w +
+         " && cuttle update")
 d = tempfile.mkdtemp()
 os.chmod(d, 0o755)
 wheel = os.path.join(d, meta["wheel"])

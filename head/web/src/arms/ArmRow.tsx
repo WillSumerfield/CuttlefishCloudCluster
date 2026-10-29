@@ -102,7 +102,7 @@ function UpdateNote({ update }: { update: NonNullable<Arm["update"]> }) {
   }
   return (
     <div className="truncate text-[11px] text-ink-mute">
-      {update.status === "updating" ? "Updating cuttle" : "Updating after its current Dive"}
+      {update.status === "updating" ? "Updating cuttle" : "Update queued: starts once it's free"}
     </div>
   );
 }

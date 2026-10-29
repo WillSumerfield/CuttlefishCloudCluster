@@ -874,7 +874,7 @@ def _update_label(a: dict) -> str:
         return "-"
     pushing = rollout.status().get(a["name"])
     if pushing:
-        return {"waiting": "updating after current Dive", "updating": "updating",
+        return {"waiting": "update queued", "updating": "updating",
                 "failed": "update failed"}.get(pushing["status"], pushing["status"])
     served = dist.served()
     if not served or not a.get("build"):

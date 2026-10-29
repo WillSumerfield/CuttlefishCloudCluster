@@ -985,7 +985,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         rollout.install(_write_root_file, mesh_ip)
         pushing = rollout.push(mesh_ip)
     for arm, state, err in pushing:
-        ui.result(f"arm {arm}", {"waiting": "updating after its current Dive",
+        ui.result(f"arm {arm}", {"waiting": "update queued: starts once the Arm is free",
                                  "updating": "updating", "failed": f"update failed: {err}"}
                   .get(state, state))
     if not update:
