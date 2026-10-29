@@ -681,6 +681,13 @@ def dive_end(dive_id: int = typer.Argument(None, help="Dive id (default: your on
     dive_mod.end(dive_id, yes=yes)
 
 
+@dive_app.command("holders", hidden=True)
+def dive_holders(folder: str = typer.Argument(...)):
+    """Inside the Tidepool: processes still on the unlocked copy of a locked main folder."""
+    for line in dive_mod.holders(folder):
+        print(line)
+
+
 @dive_app.command("status")
 def dive_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Your open Dives."""

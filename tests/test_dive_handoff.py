@@ -67,7 +67,9 @@ class TestInside:
     def inside(self, monkeypatch):
         sent, killed = [], []
         monkeypatch.setattr(dive, "in_container", lambda: True)
-        monkeypatch.setattr(dive, "_wait_ready", lambda i: {"head": False, "node": "arm1"})
+        monkeypatch.setattr(dive, "_wait_ready",
+                            lambda i: {"head": False, "node": "arm1", "user": "u", "main": "m"})
+        monkeypatch.setattr(dive, "holders", lambda f: [])
         monkeypatch.setattr(transfer, "notify", lambda op, i: sent.append((op, i)) or self.link)
         monkeypatch.setattr(dive, "_session_sshd", lambda: self.sshd)
         monkeypatch.setattr(dive.os, "kill", lambda pid, sig: killed.append((pid, sig)))
@@ -114,3 +116,71 @@ def test_enter_attaches_after_a_handoff(ccc_home, monkeypatch):
     monkeypatch.setattr(dive, "attach", lambda i: attached.append(i))
     tidepool.enter()
     assert attached == [7]
+
+
+class TestHolders:
+    """Processes that were in the main folder before its lock: on the folder underneath, not on the
+    read-only bind — told apart by mount id."""
+
+    LOCK = 999999
+
+    @pytest.fixture
+    def proc(self, tmp_path):
+        folder = tmp_path / "home" / "main"
+        (folder / "sub").mkdir(parents=True)
+        p = tmp_path / "proc"
+        (p / "self").mkdir(parents=True)
+        (p / "self" / "mountinfo").write_text(
+            f"1 0 7:1 / / rw - ext4 /dev/x rw\n{self.LOCK} 1 7:1 /main {folder} ro - ext4 /dev/x rw\n")
+        return p, folder
+
+    def _pid(self, p, pid, cwd, fds=(), cmd="zsh"):
+        d = p / str(pid)
+        (d / "fd").mkdir(parents=True)
+        (d / "fdinfo").mkdir()
+        (d / "cwd").symlink_to(cwd)
+        (d / "cmdline").write_bytes(cmd.encode() + b"\0-i\0")
+        for n, (target, mnt) in enumerate(fds):
+            (d / "fd" / str(n)).symlink_to(target)
+            (d / "fdinfo" / str(n)).write_text(f"pos:\t0\nflags:\t02\nmnt_id:\t{mnt}\n")
+
+    def test_a_shell_already_in_the_folder_is_named(self, proc, tmp_path):
+        p, folder = proc
+        self._pid(p, 10, folder / "sub")   # its cwd is not on the lock's mount
+        self._pid(p, 11, tmp_path)         # elsewhere
+        assert dive.holders(str(folder), p) == ["10 zsh -i"]
+
+    def test_an_open_file_off_the_lock_is_named(self, proc, tmp_path):
+        p, folder = proc
+        self._pid(p, 12, tmp_path, fds=[(folder / "a.txt", 5)], cmd="vim")
+        self._pid(p, 13, tmp_path, fds=[(folder / "b.txt", self.LOCK)], cmd="less")   # opened after
+        assert dive.holders(str(folder), p) == ["12 vim -i"]
+
+    def test_a_folder_that_is_not_locked_has_none(self, proc, tmp_path):
+        p, folder = proc
+        self._pid(p, 10, folder)
+        assert dive.holders(str(tmp_path / "home" / "other"), p) == []
+
+    def test_a_sibling_with_the_same_prefix_is_not_inside(self):
+        assert not dive._under("/home/u/main2", "/home/u/main")
+        assert dive._under("/home/u/main", "/home/u/main") and dive._under("/home/u/main/x", "/home/u/main")
+
+    def test_inside_in_tmux_it_warns(self, monkeypatch, capsys):
+        monkeypatch.setattr(dive, "in_container", lambda: True)
+        monkeypatch.setattr(dive, "_wait_ready",
+                            lambda i: {"head": False, "node": "arm1", "user": "u", "main": "m"})
+        monkeypatch.setattr(transfer, "notify", lambda op, i: True)
+        monkeypatch.setattr(dive, "_session_sshd", lambda: None)
+        monkeypatch.setattr(dive, "holders", lambda f: ["10 zsh"] if f == "/home/u/m" else [])
+        dive.attach(7)
+        err = capsys.readouterr().err
+        assert "1 process(es) were in ~/m" in err and "10 zsh" in err
+
+
+def test_from_your_machine_it_asks_the_tidepool(monkeypatch):
+    monkeypatch.setattr(dive.config, "cluster_name", lambda: "lab")
+    ran = []
+    monkeypatch.setattr(dive.subprocess, "run", lambda a, **k: ran.append(a) or
+                        type("R", (), {"returncode": 0, "stdout": "10 zsh\n"})())
+    assert dive._remote_holders("/home/u/m") == ["10 zsh"]
+    assert ran == [["ssh", "-o", "BatchMode=yes", "lab", "cuttle", "dive", "holders", "/home/u/m"]]

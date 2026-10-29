@@ -140,6 +140,7 @@ class TestTheAttach:
         monkeypatch.setattr(cli_dive.auth, "_api", lambda m, p, **k: info if p == "/dives/58" else
                             [{"id": 58, "state": "running", "start_time": None, "time_limit": None}])
         monkeypatch.setattr(cli_dive.subprocess, "run", lambda a, **k: ran.append(a))
+        monkeypatch.setattr(cli_dive, "_remote_holders", lambda f: [])
         return ran
 
     def test_a_terminal_session_sshes_to_the_alias_with_the_link_forwarded(self, placed):

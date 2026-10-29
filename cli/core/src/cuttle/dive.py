@@ -149,23 +149,110 @@ def _session_sshd(pid: int | None = None, proc: Path = Path("/proc")) -> int | N
     return None
 
 
+# --- processes that got into the main folder before its lock --------------------------------------
+# The lock is a read-only bind mounted over the folder: a process already in it (a shell's cwd, an
+# editor's open file) keeps the writable folder underneath, and what it writes is lost when the
+# Dive's mirror lands. Told apart from newcomers by mount id: theirs isn't the lock's.
+
+def _under(path: str, folder: str) -> bool:
+    return path == folder or path.startswith(folder + "/")
+
+
+def _lock_mount_id(folder: str, mountinfo: Path = Path("/proc/self/mountinfo")) -> int | None:
+    ids = [int(f[0]) for f in (l.split() for l in mountinfo.read_text().splitlines())
+           if f[4].replace("\\040", " ") == folder]
+    return ids[-1] if ids else None
+
+
+def _fd_mount_id(fdinfo: Path) -> int | None:
+    for line in fdinfo.read_text().splitlines():
+        if line.startswith("mnt_id:"):
+            return int(line.split()[1])
+    return None
+
+
+def _cwd_mount_id(pid_dir: Path) -> int | None:
+    fd = os.open(pid_dir / "cwd", os.O_PATH | os.O_DIRECTORY)
+    try:
+        return _fd_mount_id(Path(f"/proc/self/fdinfo/{fd}"))
+    finally:
+        os.close(fd)
+
+
+def _stale(pid_dir: Path, folder: str, lock: int) -> bool:
+    if _under(os.readlink(pid_dir / "cwd"), folder) and _cwd_mount_id(pid_dir) != lock:
+        return True
+    for fd in (pid_dir / "fd").iterdir():
+        try:
+            if (_under(os.readlink(fd), folder)
+                    and _fd_mount_id(pid_dir / "fdinfo" / fd.name) not in (None, lock)):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def holders(folder: str, proc: Path = Path("/proc")) -> list[str]:
+    """`<pid> <command>` for each of this User's processes still on the unlocked folder. [] if it
+    isn't locked."""
+    lock = _lock_mount_id(folder, proc / "self" / "mountinfo")
+    if lock is None:
+        return []
+    out = []
+    for p in sorted((p for p in proc.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)):
+        if int(p.name) == os.getpid():
+            continue
+        try:
+            if _stale(p, folder, lock):
+                cmd = (p / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                out.append(f"{p.name} {cmd.strip()[:60]}")
+        except OSError:
+            continue
+    return out
+
+
+def _remote_holders(folder: str) -> list[str]:
+    """From your machine: the same check, run in your Tidepool. [] if it can't be asked."""
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", config.cluster_name(), "cuttle", "dive",
+                            "holders", folder], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return r.stdout.splitlines() if r.returncode == 0 else []
+
+
+def warn_holders(main: str, found: list[str]) -> None:
+    if not found:
+        return
+    ui.warn(f"{len(found)} process(es) were in ~/{main} before it locked and can still write to it — "
+            f"those writes are lost when the Dive's mirror lands. `cd` out / restart them:")
+    for line in found[:5]:
+        ui.hint(line)
+    if len(found) > 5:
+        ui.hint(f"… and {len(found) - 5} more")
+
+
 def _attach_inside(dive_id: int, vscode: bool) -> None:
     """No key or alias in here: the shell is reached from your own machine, over $CCC_FWD."""
     info = _wait_ready(dive_id)
     if info["head"]:
         ui.ok(f"Dive {dive_id} is on the Head: this Tidepool now has the GPU")
         return
+    folder = f"/home/{info['user']}/{info['main']}"
     if vscode and transfer.notify("vscode", dive_id):
+        warn_holders(info["main"], holders(folder))
         ui.ok(f"opening Dive {dive_id} in VS Code on your machine")
         return
     if not vscode and transfer.notify("handoff", dive_id):
         sshd = _session_sshd()
-        if sshd:
+        if sshd:   # your machine checks, once this session (and the shell you ran it from) is gone
             ui.ok(f"leaving for Dive {dive_id} on {info.get('node')}")
             os.kill(sshd, signal.SIGHUP)
         else:
+            warn_holders(info["main"], holders(folder))
             ui.ok(f"Dive {dive_id} is up on {info.get('node')} — detach tmux and `exit` to go to it")
         return
+    warn_holders(info["main"], holders(folder))
     ui.ok(f"Dive {dive_id} is up on {info.get('node')} — from your own machine: "
           f"`cuttle dive attach {dive_id}`")
 
@@ -193,6 +280,7 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
     else:
         ui.ok(f"Dive {dive_id} on {info.get('node')}: ~/{info['main']} is mirrored back to your Tidepool "
               f"every minute (read-only there until the Dive ends)")
+        warn_holders(info["main"], _remote_holders(folder))
     ui.warn(f"the GPU is yours until `cuttle dive end {dive_id}` or --time runs out — disconnecting "
             f"does not free it")
     if vscode:
