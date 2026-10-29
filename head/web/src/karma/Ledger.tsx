@@ -21,11 +21,10 @@ function amountColor(amount: number) {
   return amount >= 0 ? "var(--gold-hi)" : "var(--bronze)";
 }
 
-/** What the row DID, from your side. An Override has no counterparty by construction — Karma with no
- *  source was conjured, with no destination destroyed — so it is named for the act, not the party. */
-function kindLabel(r: LedgerRow) {
-  if (r.kind === "override") return r.amount >= 0 ? "granted" : "taken";
-  return r.amount >= 0 ? "earned" : "paid";
+/** An Override has no counterparty by construction — Karma with no source was conjured, with no
+ *  destination destroyed — so it is named for the act, not the party. */
+function overrideLabel(r: LedgerRow) {
+  return r.amount >= 0 ? "granted" : "taken";
 }
 
 /** Absolute clock time, relative day — the two things you actually want from a ledger timestamp. A
@@ -43,7 +42,7 @@ function when(at: string): string {
 /** The Balance over the window, with each event marked where it landed on it. Zero is drawn because the
  *  whole shape is "distance from zero, decaying back toward it" — without that line the sag is just a
  *  wobble. Credit above it, debt below, in the same two colours the amounts use. */
-function Curve({ data }: { data: LedgerData }) {
+export function Curve({ data }: { data: LedgerData }) {
   const { path, zeroY, marks } = useMemo(() => {
     const pts = data.curve;
     const vals = pts.map((p) => p.balance);
@@ -76,7 +75,7 @@ function Curve({ data }: { data: LedgerData }) {
     <svg
       viewBox={`0 0 ${VB_W} ${VB_H}`}
       preserveAspectRatio="none"
-      className="block h-24 w-full"
+      className="block h-28 w-full"
       style={edgeFade()}
     >
       <line x1={0} x2={VB_W} y1={zeroY} y2={zeroY} stroke="var(--ink-mute)" strokeWidth={0.5} opacity={0.35} />
@@ -92,8 +91,8 @@ export function Ledger({ data }: { data: LedgerData }) {
   const { rows } = data;
 
   return (
-    <section className="surface p-12 md:p-20">
-      <header className="mb-6">
+    <div className="min-w-0">
+      <header className="mb-4 px-2">
         {/* Quiet, like the page title: muted ink at 300 weight, so the rows are what the eye lands on. */}
         <Tip text="Every time Karma actually moved: a Dive settling, or an Admin granting or taking some.">
           <h2 style={{ fontSize: 20, fontWeight: 300, letterSpacing: "-0.02em" }} className="text-ink-mute">
@@ -102,17 +101,15 @@ export function Ledger({ data }: { data: LedgerData }) {
         </Tip>
       </header>
 
-      <div className="mb-10">
+      {/* The curve gets the column's full width — it is a shape over time, and width is what shows one. */}
+      <div className="mb-8 px-2">
         <Curve data={data} />
-        <div className="mt-2 flex items-baseline justify-between">
-          <Tip
-            className="text-[12px] text-ink-mute"
-            text="Your Balance over the last 30 days. Between events it drifts back toward zero on its own, so debt is forgiven and hoarded standing evaporates — that sag is the drift, and it never appears as a row because it isn't something that happens, it's what happens in between."
-          >
-            Between events your Balance drifts back toward zero — the sag is the Decay.
-          </Tip>
-          <span className="label shrink-0">Last 30 days</span>
-        </div>
+        <Tip
+          className="mt-2 block text-[12px] text-ink-mute"
+          text="Your Balance over the last 30 days. Between events it drifts back toward zero on its own, so debt is forgiven and hoarded standing evaporates — that sag is the Decay. It never appears as a row because it isn't something that happens, it's what happens in between."
+        >
+          Last 30 days. Between events your Balance drifts back toward zero.
+        </Tip>
       </div>
 
       {rows.length === 0 ? (
@@ -120,104 +117,73 @@ export function Ledger({ data }: { data: LedgerData }) {
           Nothing settled yet. A Dive pays its Arm's owner when it ends, and that is the first row you'll see.
         </p>
       ) : (
-        <>
-          <div className="grid grid-cols-[110px_1fr_170px] items-center gap-x-6 px-2 pb-3">
-            <Tip className="label" text="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all.">Karma</Tip>
-            <span className="label">Transaction</span>
-            <span className="label text-right">When</span>
-          </div>
+        // Rows stay a compact block: four short fields spread over a wide panel leave a gulf mid-row.
+        <ul className="max-w-[720px]">
+          {rows.map((row, idx) => {
+            /*
+             * Rows sink as they age. `depth` runs 0 (newest, right at the surface) → 1 (oldest, down in
+             * the dark): the row dims, so the ledger recedes into the abyss rather than ending at a
+             * boundary. No per-row background — a per-row pool bands into stripes over the moving abyss.
+             */
+            const depth = rows.length > 1 ? idx / (rows.length - 1) : 0;
 
-          <ul>
-            {rows.map((row, idx) => {
-              /*
-               * Rows sink as they age. `depth` runs 0 (newest, right at the surface) → 1 (oldest, down
-               * in the dark): the band of light under a row weakens and the whole row dims, so the
-               * ledger recedes into the abyss rather than ending at a boundary.
-               */
-              const depth = rows.length > 1 ? idx / (rows.length - 1) : 0;
+            return (
+              <li
+                key={row.id}
+                className="grid grid-cols-[56px_1fr_auto_auto] items-baseline gap-x-6 px-2 py-2.5"
+                style={{ opacity: 1 - depth * 0.42 }}
+              >
+                <span className="num" style={{ fontSize: 16, fontWeight: 500, color: amountColor(row.amount) }}>
+                  {row.amount >= 0 ? "+" : "−"}
+                  {Math.abs(row.amount).toFixed(0)}
+                </span>
 
-              // The band is a soft pool of light with no edge anywhere — NOT a zebra stripe. A stripe's
-              // gradient starts abruptly at the row's top edge, which draws a hard line across the card.
-              // Clamped at 0: a negative percentage makes the whole color-mix invalid and the browser
-              // discards the background entirely, so rows past the fade point would lose their band.
-              const band = Math.max(0, 20 * (1 - depth * 0.9));
-
-              return (
-                <li
-                  key={row.id}
-                  className="grid grid-cols-[110px_1fr_170px] items-start gap-x-6 rounded-[10px] px-2 py-4"
-                  style={{
-                    background: `radial-gradient(130% 130% at 50% 45%, color-mix(in oklab, var(--shoal) ${band.toFixed(1)}%, transparent) 0%, transparent 72%)`,
-                    opacity: 1 - depth * 0.42,
-                  }}
-                >
-                  <div className="flex items-baseline gap-1">
-                    <span className="num" style={{ fontSize: 17, fontWeight: 500, color: amountColor(row.amount) }}>
-                      {row.amount >= 0 ? "+" : "−"}
-                      {Math.abs(row.amount).toFixed(0)}
-                    </span>
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                      <span className="text-[15px] text-ink">
-                        {row.counterparty === null ? (
-                          // No counterparty is not a missing name — it is the point. An Override
-                          // conjures Karma from nowhere; a Dive on a commons Arm destroys what it pays.
-                          <Tip
-                            className="text-ink-mute"
-                            text={
-                              row.kind === "override"
-                                ? "An Admin adding or removing Karma directly. It's the only movement with nobody on the other side of it."
-                                : "This ran on a machine the Admin owns, so there was nobody to pay — the Karma was destroyed rather than transferred."
-                            }
-                          >
-                            {row.kind === "override" ? "by an Admin" : "to the commons"}
-                          </Tip>
-                        ) : (
-                          <>
-                            <span className="text-ink-mute">{row.amount >= 0 ? "from " : "to "}</span>
-                            <span className="text-ink">{row.counterparty}</span>
-                          </>
-                        )}
-                      </span>
+                <span className="min-w-0 truncate text-[14px]">
+                  {row.kind === "override" ? (
+                    <>
                       <Tip
-                        className="label"
-                        text={
-                          row.kind === "override"
-                            ? "An Admin adding or removing Karma directly. It's the only movement with nobody on the other side of it."
-                            : "Karma moves from the person who ran the work to the owner of the machine it ran on. Running on your own Arm is free."
-                        }
+                        className="text-ink"
+                        text="An Admin adding or removing Karma directly. It's the only movement with nobody on the other side of it."
                       >
-                        {kindLabel(row)}
+                        {overrideLabel(row)}
                       </Tip>
-                    </div>
-                    {(row.job_id !== null || row.note) && (
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
-                        {row.job_id !== null && (
-                          <Link
-                            to={`/dive/${row.job_id}`}
-                            className="num text-ink-soft"
-                            style={{ letterSpacing: "0.02em" }}
-                          >
-                            {row.job_id}
-                          </Link>
-                        )}
-                        {row.job_id !== null && row.note && <span className="text-ink-mute">·</span>}
-                        {row.note && <span className="text-ink-mute">{row.note}</span>}
-                      </div>
-                    )}
-                  </div>
+                      {row.note && <span className="text-ink-mute"> · “{row.note}”</span>}
+                    </>
+                  ) : row.counterparty === null ? (
+                    // No counterparty is not a missing name — it is the point: a Dive on a commons Arm
+                    // destroys what it pays.
+                    <Tip
+                      className="text-ink-mute"
+                      text="This ran on a machine the Admin owns, so there was nobody to pay — the Karma was destroyed rather than transferred."
+                    >
+                      to the commons
+                    </Tip>
+                  ) : (
+                    <Tip
+                      text="Karma moves from the person who ran the work to the owner of the machine it ran on. Running on your own Arm is free."
+                    >
+                      <span className="text-ink-mute">{row.amount >= 0 ? "from " : "to "}</span>
+                      <span className="text-ink">{row.counterparty}</span>
+                    </Tip>
+                  )}
+                </span>
 
-                  <div className="num text-right text-ink-mute" style={{ fontSize: 12 }}>
-                    {when(row.at)}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </>
+                {row.job_id !== null ? (
+                  <Link to={`/dive/${row.job_id}`} className="num text-[13px] text-ink-soft hover:text-ink">
+                    Dive {row.job_id}
+                  </Link>
+                ) : (
+                  <span />
+                )}
+
+                <span className="num text-right text-[12px] text-ink-mute" style={{ minWidth: 110 }}>
+                  {when(row.at)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       )}
-    </section>
+    </div>
   );
 }

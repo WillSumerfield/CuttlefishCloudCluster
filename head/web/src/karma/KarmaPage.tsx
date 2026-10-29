@@ -40,28 +40,31 @@ export function KarmaPage() {
     <Page title="Karma">
       {error && <p className="mb-6 text-[13px]" style={{ color: "var(--bronze)" }}>{error}</p>}
 
-      {you ? (
-        <StandingCard standing={you} />
-      ) : (
-        me.is_admin && (
-          <p className="text-[13px] text-ink-mute">
-            Admins hold no Karma. You run the cluster rather than compete for it — an Arm you own is a
-            commons Arm, and what it earns is destroyed instead of paid to you.
-          </p>
-        )
-      )}
-
       {/* Standings carries no heading — it is the page, and it says what it is by being it. */}
       {members.length > 0 && (
-        <section className="mt-30 mb-36">
+        <section className="mt-44 mb-48">
           <Standings members={members} youId={you?.user_id ?? null} />
         </section>
       )}
 
-      {ledger && (
-        <section>
-          <Ledger data={ledger} />
+      {/* Your side of it, in one panel under the field and as wide as it (the field is 70vw): your
+          numbers on the left, held in view while the ledger beside them scrolls. */}
+      {you ? (
+        <section className="surface [--sink:40%] mx-auto w-full px-8 pt-14 pb-10 md:w-[70vw] md:px-14 md:pt-20 md:pb-12">
+          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[minmax(240px,300px)_1fr] lg:gap-16">
+            <div className="self-start lg:sticky lg:top-8">
+              <StandingCard standing={you} />
+            </div>
+            {ledger && <Ledger data={ledger} />}
+          </div>
         </section>
+      ) : (
+        me.is_admin && (
+          <p className="mx-auto text-[13px] text-ink-mute md:w-[70vw]">
+            Admins hold no Karma. You run the cluster rather than compete for it — an Arm you own is a
+            commons Arm, and what it earns is destroyed instead of paid to you.
+          </p>
+        )
       )}
     </Page>
   );

@@ -8,7 +8,8 @@ function formatSigned(n: number) {
 }
 
 /**
- * Your own two numbers: what you hold, and what your live Dives are holding of it.
+ * Your own numbers: what you hold, and what your live Dives are holding of it.
+ * The left column of the Karma panel — no plate of its own, it sits on the panel it shares with the Ledger.
  *
  * The Escrow list is the whole reason the total is worth showing — "−140" is a fact you can do nothing
  * with, and "the sweep on arm-mantle-01 is holding 90 of it" is one you can. Each claim links to its
@@ -19,48 +20,41 @@ export function StandingCard({ standing }: { standing: Standing }) {
   const n = escrowDives.length;
 
   return (
-    <section className="surface [--sink:40%] px-12 py-8 pb-10 md:px-20 md:py-10 md:pb-20">
-      <div className="grid grid-cols-1 md:grid-cols-[1.15fr_1fr] gap-10">
-        {/* Balance — sits low in its half, and the one number on the page big enough to be the point */}
-        <div className="flex h-full items-end justify-center pb-6">
-          <div className="flex items-baseline gap-4">
-            <span
-              className="num"
-              style={{
-                fontSize: 88,
-                lineHeight: 1,
-                fontWeight: 300,
-                letterSpacing: "-0.03em",
-                color: "var(--gold-hi)",
-                textShadow: "0 0 40px color-mix(in oklab, var(--gold) 30%, transparent)",
-              }}
-            >
-              {formatSigned(balance)}
-            </span>
-            <Tip className="label" text="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all.">Karma</Tip>
-          </div>
-        </div>
+    <div>
+      {/* Balance — the one number on the page big enough to be the point */}
+      <div className="flex items-baseline gap-3">
+        <span
+          className="num"
+          style={{
+            fontSize: 72,
+            lineHeight: 1,
+            fontWeight: 300,
+            letterSpacing: "-0.03em",
+            color: "var(--gold-hi)",
+            textShadow: "0 0 40px color-mix(in oklab, var(--gold) 30%, transparent)",
+          }}
+        >
+          {formatSigned(balance)}
+        </span>
+        <Tip className="text-[14px] text-ink-mute" text="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all.">Karma</Tip>
+      </div>
 
-        {/* Escrow */}
-        {/* No rule between the columns. Space separates them; a 1px line is the most machine-drawn
-            mark there is, and this interface has none. */}
-        <div className="relative md:pl-10">
-          <div className="mt-3 flex items-baseline gap-3">
-            <span
-              className="num"
-              style={{
-                fontSize: 36,
-                fontWeight: 400,
-                color: "var(--bronze)",
-              }}
-            >
+      {/* Escrow */}
+      <div className="mt-8">
+        {n === 0 ? (
+          <Tip className="text-[13px] text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Dive ends and the real cost is taken instead.">
+            Nothing held right now
+          </Tip>
+        ) : (
+          <div className="flex items-baseline gap-2.5">
+            <span className="num" style={{ fontSize: 24, fontWeight: 400, color: "var(--bronze)" }}>
               −{escrow.toFixed(0)}
             </span>
-            <Tip className="text-sm text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Dive ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">
-              ESCROW, {n} Dive{n === 1 ? "" : "s"}
+            <Tip className="text-[13px] text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Dive ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">
+              held by {n} Dive{n === 1 ? "" : "s"}
             </Tip>
-
           </div>
+        )}
 
           <ul className="mt-2.5 space-y-2.5">
             {escrowDives.map((s) => (
@@ -112,8 +106,8 @@ export function StandingCard({ standing }: { standing: Standing }) {
               </Link>
             ))}
           </ul>
-        </div>
       </div>
-    </section>
+
+    </div>
   );
 }
