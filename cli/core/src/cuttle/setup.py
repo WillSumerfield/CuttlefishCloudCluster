@@ -884,6 +884,8 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     with ui.step("Joining the mesh"):
         mesh_ip = mesh_up_head(address)
         system.allow_mesh_iface(config.CCC_TS_TUN)
+        # Arms reach the coordinator BEFORE they're on the mesh, so its port must be open off-mesh too.
+        system.allow_tcp_port(config.HEADSCALE_PORT, "ccc mesh coordinator (headscale)")
         # Before anything dials this box over the mesh: a personal tailscaled — which the Head has, by
         # design, since it is administered over its own tailnet — drops ccc0 traffic until exempted.
         mesh.ensure_ts_exemption(_write_root_file)

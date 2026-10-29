@@ -286,3 +286,19 @@ class TestDnatForward:
         tools("iptables", "exit 0\n")
         fw.allow_dnat_forward("ccc0")
         assert not any(" -I " in c for c in tools.calls())
+
+
+def test_teardown_closes_the_coordinator_port(monkeypatch):
+    """`setup --head` opens Headscale's port (Arms dial it before they're on the mesh); teardown shuts it."""
+    from cuttle import teardown
+    closed = []
+    monkeypatch.setattr(teardown, "_leave_ccc_mesh", lambda: None)
+    monkeypatch.setattr(teardown, "run", lambda *a, **k: None)
+    monkeypatch.setattr(teardown.system, "deny_tcp_port", closed.append)
+    teardown.remove_mesh(keep_packages=True)
+    assert closed == [config.HEADSCALE_PORT]
+
+
+def test_head_setup_opens_the_coordinator_port():
+    src = pathlib.Path(__import__("cuttle.setup").setup.__file__).read_text()
+    assert "system.allow_tcp_port(config.HEADSCALE_PORT" in src

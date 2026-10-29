@@ -92,6 +92,7 @@ def remove_mesh(keep_packages: bool = False) -> None:
     """Head mesh teardown: leave the mesh (client) AND tear down the Headscale coordinator (CCC-only,
     so safe to purge). The Arm path calls `_leave_ccc_mesh` only — it runs no Headscale."""
     _leave_ccc_mesh()
+    system.deny_tcp_port(config.HEADSCALE_PORT)
     run(["systemctl", "disable", "--now", "headscale"], sudo=True, check=False)
     run(["rm", "-rf", str(config.HEADSCALE_CONF.parent), str(config.HEADSCALE_LIB)],
         sudo=True, check=False)
