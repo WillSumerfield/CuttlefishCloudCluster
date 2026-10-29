@@ -115,4 +115,9 @@ $rightPanelWidth: 370px;
   & > .search-space > .search-layout {
     margin-top: 0.5rem;
   }
+
+  // The result titles sat flush against the panel's left edge.
+  .results-container .result-card {
+    padding: 0.4rem 1rem;
+  }
 }
