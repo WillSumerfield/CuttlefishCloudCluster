@@ -116,7 +116,11 @@ $rightPanelWidth: 370px;
     margin-top: 0.5rem;
   }
 
-  // The result titles sat flush against the panel's left edge.
+  // The query and the result titles sat flush against the panel's left edge.
+  & > .search-space > input {
+    padding: 0.5rem 1rem;
+  }
+
   .results-container .result-card {
     padding: 0.4rem 1rem;
   }
