@@ -121,16 +121,18 @@ def arms() -> list[dict]:
     authoritative node list; the Head's own co-located Arm is in it and carries an admin-owned
     registry row despite never enrolling."""
     reg = load_registry()
+    # Per node: sinfo groups nodes sharing a state into one record whose gres is the group's, not each
+    # node's (dex's 2 GPUs were shown on a 1-GPU Arm).
+    gres = {n["name"]: n.get("gres", "") for n in _slurm_json("scontrol", "show", "nodes", "--json").get("nodes", [])}
     out = []
     for rec in _slurm_json("sinfo", "--json").get("sinfo", []):
         state = "+".join(s.lower() for s in rec.get("node", {}).get("state", []))
-        gpus = _gpu_count(rec.get("gres", {}).get("total", ""))
         for name in rec.get("nodes", {}).get("nodes", []):
             e = reg.get(name, {})
             out.append({
                 "name": name,
                 "state": state,
-                "gpus": gpus,
+                "gpus": _gpu_count(gres.get(name, "")),
                 "owner": e.get("owner"),
                 "mesh_ip": e.get("mesh_ip"),
                 "admitted": e.get("admitted", True),
