@@ -49,5 +49,9 @@ npm ci --no-audit --no-fund --loglevel=error
 
 step "Installing plugins (also builds plugins/graph)"
 npx quartz plugin install --from-config
+# The install skips plugins it already has, so rebuild the graph each time to pick up edits.
+step "Building plugins/graph"
+[ -d plugins/graph/node_modules ] || (cd plugins/graph && npm ci --no-audit --no-fund --loglevel=error)
+(cd plugins/graph && npm run --silent build >/dev/null) || fail "Could not build plugins/graph."
 
 echo "✓ Wiki ready. Run: npx quartz build --serve   → http://localhost:8080"
