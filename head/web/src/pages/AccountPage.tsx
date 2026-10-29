@@ -73,7 +73,7 @@ export function AccountPage() {
         </aside>
 
         {/* Everything you can read or change, one column on one surface. */}
-        <section className="surface lg:col-start-1 lg:row-start-1" style={{ padding: "calc(var(--pad) + 12px)" }}>
+        <section className="surface lg:col-start-1 lg:row-start-1" style={{ padding: "calc(var(--pad) + 12px) calc(var(--pad) + 44px)" }}>
           <div className="space-y-7">
             {/* Standing + holdings — facts that live elsewhere; each row is the way there. */}
             <div className="space-y-1">

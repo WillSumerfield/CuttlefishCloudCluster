@@ -55,7 +55,7 @@ export function Filters({
   };
 
   return (
-    <aside className="surface [--sink:35%] space-y-6" style={{ padding: "calc(var(--pad) + 50px)" }}>
+    <aside className="surface [--sink:35%] space-y-6" style={{ padding: "calc(var(--pad) + 20px)" }}>
       <input
         className="field"
         placeholder="script, user, or id"

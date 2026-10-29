@@ -101,7 +101,7 @@ export function MyArms({ arms, onAct }: { arms: Arm[]; onAct: (name: string, act
   return (
     <section>
       <h2 className="label mb-3 pl-1">My arms</h2>
-      <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,360px))] gap-4">
         {arms.map((a) => (
           <MyArmCard key={a.name} arm={a} onAct={onAct} />
         ))}
