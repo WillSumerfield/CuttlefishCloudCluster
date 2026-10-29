@@ -8,6 +8,12 @@ import pytest
 
 from cuttle import ccc_launch as L
 
+
+@pytest.fixture(autouse=True)
+def _stay_put(monkeypatch):
+    """main() chdirs to / first; not the test process's cwd."""
+    monkeypatch.setattr(L.os, "chdir", lambda p: None)
+
 DIGEST = "ccc.lab:5000/ccc/bench@sha256:" + "a" * 64
 CGROUP = "0::/system.slice/dex_slurmstepd.scope/job_42/step_batch/user/task_0\n"
 

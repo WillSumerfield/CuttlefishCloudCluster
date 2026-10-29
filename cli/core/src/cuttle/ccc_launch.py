@@ -60,6 +60,8 @@ ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR 
 MESH_IFACE = "ccc0"                                 # config.CCC_TS_TUN
 CUTTLE_ENV = "/usr/local/lib/ccc/cuttle"            # config.CONTAINER_CUTTLE
 HEAD_CA = "/usr/local/share/ca-certificates/ccc-head.crt"   # config.HEAD_CA_TRUST_PATH
+CDI_SPEC = Path("/var/run/cdi/nvidia.yaml")         # config.CDI_SPEC
+CDI_PATCH_BIN = "/usr/local/sbin/ccc-cdi-patch"     # config.CDI_PATCH_BIN
 INNER_UID = 1000
 MIRROR_S = 60
 # ccc_tidepool.DENYLIST / FILTER_ARGS — never staged, never deleted on the Head by the mirror.
@@ -255,6 +257,21 @@ def cdi_names(gpus: list[str], wsl: bool) -> list[str]:
     return (["all"] if gpus else []) if wsl else gpus
 
 
+def _cdi_missing(names: list[str], spec: str) -> list[str]:
+    have = set(re.findall(r"^\s*- name: \"?([^\"\s]+)\"?\s*$", spec, re.M))
+    return [n for n in names if n not in have]
+
+
+def ensure_cdi(names: list[str]) -> None:
+    """nvidia-cdi-refresh rewrites the spec at boot and on a driver change only — not when MIG is
+    switched on, so a MIG instance's UUID is unknown to Podman until something regenerates it. A
+    missing name: regenerate now (and patch it for Podman 4.9, not waiting on the path unit)."""
+    if not names or not _cdi_missing(names, CDI_SPEC.read_text() if CDI_SPEC.exists() else ""):
+        return
+    subprocess.run(["/usr/bin/systemctl", "start", "nvidia-cdi-refresh.service"], capture_output=True)
+    subprocess.run([CDI_PATCH_BIN, str(CDI_SPEC)], capture_output=True)
+
+
 def podman_argv(spec: dict, jid: str, base: int, step: str, gpus: list[str], jobdir: Path,
                 binds: list[tuple[Path, str, bool]], cdi: list[str] | None = None) -> list[str]:
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
@@ -437,7 +454,9 @@ def run_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
     where = dive_where(job["node"])
     write_shell_info(jobdir / "sys", where, d["main"],
                      dive_banner(jid, where, job["gres_idx"], gpu_names(gpus), job["end"], d["main"]))
-    proc = subprocess.Popen(dive_argv(spec, jid, base, step, cdi_names(gpus, wsl), gpus, jobdir, home,
+    cdi = cdi_names(gpus, wsl)
+    ensure_cdi(cdi)
+    proc = subprocess.Popen(dive_argv(spec, jid, base, step, cdi, gpus, jobdir, home,
                                       d["deps"], "" if on_head() else mesh_ip()))
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: proc.send_signal(signal.SIGTERM))
@@ -498,8 +517,9 @@ def main(argv: list[str]) -> int:
     _chown_tree(jobdir, base, base)       # container root owns /job while it runs
     try:
         gpus = gpu_ids(job["gres_idx"])
-        cmd = podman_argv(spec, jid, base, step, gpus, jobdir, resolve_binds(spec, jobdir),
-                          cdi_names(gpus, WSL_DXG.exists() and not _device_minors()))
+        cdi = cdi_names(gpus, WSL_DXG.exists() and not _device_minors())
+        ensure_cdi(cdi)
+        cmd = podman_argv(spec, jid, base, step, gpus, jobdir, resolve_binds(spec, jobdir), cdi)
         return subprocess.run(cmd).returncode
     finally:
         _chown_tree(jobdir, caller, gid)  # handed back to the job's owner

@@ -418,6 +418,7 @@ class TestArmDive:
         monkeypatch.setattr(L, "ENV_CACHE", tmp_path / "cache")
         monkeypatch.setattr(L, "stage_in", lambda d, j, u: tmp_path)
         monkeypatch.setattr(L, "gpu_ids", lambda g: ["GPU-1"])
+        monkeypatch.setattr(L, "ensure_cdi", lambda names: None)
         monkeypatch.setattr(L, "mesh_ip", lambda: "100.99.0.7")
         monkeypatch.setattr(L, "dive_argv", lambda *a: ["true"])
         monkeypatch.setattr(L, "gpu_names", lambda u: ["RTX"])

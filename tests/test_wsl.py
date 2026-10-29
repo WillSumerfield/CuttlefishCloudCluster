@@ -77,6 +77,22 @@ class TestLaunch:
         assert L.cdi_names([], wsl=True) == []
         assert L.cdi_names(["GPU-aaa"], wsl=False) == ["GPU-aaa"]
 
+    def test_a_name_missing_from_the_cdi_spec_regenerates_it(self, tmp_path, monkeypatch):
+        """nvidia-cdi-refresh runs at boot / driver change only: MIG switched on later left the
+        instance's UUID unresolvable (dex Dive 20)."""
+        spec = tmp_path / "nvidia.yaml"
+        spec.write_text('devices:\n    - name: "0"\n    - name: GPU-aaa\n    - name: all\n')
+        monkeypatch.setattr(L, "CDI_SPEC", spec)
+        ran = []
+        monkeypatch.setattr(L.subprocess, "run", lambda argv, **kw: ran.append(argv))
+        L.ensure_cdi(["GPU-aaa"])
+        L.ensure_cdi(["all"])
+        L.ensure_cdi([])
+        assert ran == []
+        L.ensure_cdi(["GPU-aaa", "MIG-bbb"])
+        assert ran == [["/usr/bin/systemctl", "start", "nvidia-cdi-refresh.service"],
+                       [L.CDI_PATCH_BIN, str(spec)]]
+
     def test_argv_uses_cdi_names_but_ccc_gpus_keeps_the_uuid(self):
         argv = L.podman_argv({"image": "x"}, "1", 2**31, "/s", ["GPU-aaa"], L.Path("/j"), [],
                              cdi=["all"])
