@@ -259,9 +259,14 @@ def settings(toml: dict, args: dict) -> dict:
         raise HTTPException(422, str(e)) from None
     if not 1 <= minutes <= MAX_MINUTES:
         raise HTTPException(422, f"--time must be between 1m and 14d (got {minutes} minutes)")
-    gpus, vram = int(s.get("gpus") or 1), int(s.get("vram") or 0)
+    if s.get("vram") is None:
+        raise HTTPException(422, "a Dive needs --vram: total GB of VRAM across its GPUs (e.g. 16) — or "
+                                 "`vram` in cuttle.toml")
+    gpus, vram = int(s.get("gpus") or 1), int(s["vram"])
     if gpus < 1:
         raise HTTPException(422, "a Dive holds at least one GPU")
+    if vram < 1:
+        raise HTTPException(422, "--vram must be at least 1 (GB)")
     feats = sorted(set(s.get("features") or []))
     env = s.get("env") or None
     if env is not None and (env.startswith("/") or ".." in env.split("/")):

@@ -673,7 +673,7 @@ def dive_start(
                                           "in the Tidepool while the Dive holds it."),
     dep: list[str] = typer.Option(None, "--dep", help="A dep folder (read-only copy). Repeatable."),
     gpus: int = typer.Option(None, "--gpus", help="GPUs, on one Arm (default 1)."),
-    vram: int = typer.Option(None, "--vram", help="Total VRAM needed, GB."),
+    vram: int = typer.Option(None, "--vram", help="Total VRAM needed across its GPUs, GB. Required once."),
     time_: str = typer.Option(None, "--time", help="How long: 90m, 4h, 2d (max 14d). Required once."),
     feature: list[str] = typer.Option(None, "--feature", help="An Arm Feature. Repeatable."),
     env: str = typer.Option(None, "--env", help="Dependency file in the main folder, built into .venv "

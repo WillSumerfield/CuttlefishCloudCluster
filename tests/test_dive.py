@@ -64,23 +64,30 @@ class TestSettings:
             D.parse_time(v)
 
     def test_args_override_toml(self):
-        s = D.settings({"time": "4h", "gpus": 2, "deps": ["data"]}, {"time": "1d", "gpus": None})
+        s = D.settings({"time": "4h", "gpus": 2, "deps": ["data"], "vram": 16}, {"time": "1d", "gpus": None})
         assert (s["minutes"], s["gpus"], s["deps"]) == (1440, 2, ["data"])
 
     def test_time_is_required_and_capped(self):
         with pytest.raises(HTTPException, match="needs --time"):
-            D.settings({}, {})
+            D.settings({}, {"vram": 8})
         with pytest.raises(HTTPException, match="between 1m and 14d"):
-            D.settings({}, {"time": "15d"})
-        assert D.settings({}, {"time": "14d"})["minutes"] == config.DIVE_MAX_MINUTES
+            D.settings({}, {"time": "15d", "vram": 8})
+        assert D.settings({}, {"time": "14d", "vram": 8})["minutes"] == config.DIVE_MAX_MINUTES
+
+    def test_vram_is_required(self):
+        with pytest.raises(HTTPException, match="needs --vram"):
+            D.settings({}, {"time": "1h"})
+        with pytest.raises(HTTPException, match="at least 1"):
+            D.settings({}, {"time": "1h", "vram": 0})
+        assert D.settings({"vram": 24}, {"time": "1h"})["vram"] == 24
 
     def test_env_stays_in_the_main_folder(self):
         with pytest.raises(HTTPException):
-            D.settings({}, {"time": "1h", "env": "../x/pyproject.toml"})
+            D.settings({}, {"time": "1h", "vram": 8, "env": "../x/pyproject.toml"})
 
     def test_a_profiled_feature_needs_an_env(self):
         with pytest.raises(HTTPException, match="needs an environment"):
-            D.settings({}, {"time": "1h", "features": ["vlearn"]})
+            D.settings({}, {"time": "1h", "vram": 8, "features": ["vlearn"]})
 
     def test_toml_round_trip(self):
         d = {"deps": ["data", "My Lib"], "gpus": 2, "vram": 40, "time": "4h", "features": ["vsim"],
@@ -142,11 +149,11 @@ class FakeHead:
 class TestRequest:
     def test_order_prep_snap_open_sbatch_then_recorded(self, conn_db, monkeypatch):
         h = FakeHead(monkeypatch)
-        out = D.request(ALICE, "proj", None, {"time": "2h"})
+        out = D.request(ALICE, "proj", None, {"time": "2h", "vram": 8})
         assert h.verbs() == ["dive-prep", "dive-snap", "dive-open", "sbatch"]
         assert out["id"] == 77 and out["minutes"] == 120
         opened = h.calls[2][1]
-        assert D.load_toml(opened["toml"]) == {"time": "2h"}   # args become the folder's defaults
+        assert D.load_toml(opened["toml"]) == {"time": "2h", "vram": 8}   # args become the folder's defaults
         with db.connect() as conn:   # the Dive's ambient session, handed to the helper for sys/
             user = db.lookup_session(conn, opened["session"])
         assert user["username"] == "alice" and user["session_scope"] == "dive"
@@ -159,7 +166,7 @@ class TestRequest:
             assert d["user_id"] == 1
 
     def test_toml_supplies_deps_and_time_and_is_not_rewritten(self, conn_db, monkeypatch):
-        h = FakeHead(monkeypatch, prep={**PREP, "toml": 'time = "3h"\ndeps = ["data"]\n'})
+        h = FakeHead(monkeypatch, prep={**PREP, "toml": 'time = "3h"\nvram = 8\ndeps = ["data"]\n'})
         D.request(ALICE, "proj", None, {})
         assert h.verbs() == ["dive-prep", "dive-prep", "dive-snap", "dive-open", "sbatch"]
         assert h.calls[1][1]["deps"] == ["data"]
@@ -167,23 +174,23 @@ class TestRequest:
 
     def test_a_held_main_folder_is_refused(self, conn_db, monkeypatch):
         FakeHead(monkeypatch)
-        D.request(ALICE, "proj", None, {"time": "1h"})
+        D.request(ALICE, "proj", None, {"time": "1h", "vram": 8})
         h = FakeHead(monkeypatch)
         with pytest.raises(HTTPException) as e:
-            D.request(ALICE, "proj", None, {"time": "1h"})
+            D.request(ALICE, "proj", None, {"time": "1h", "vram": 8})
         assert e.value.status_code == 409 and "held by Dive 77" in e.value.detail
         assert h.verbs()[-1] == "dive-close"     # the second request's prep is cleaned up
 
     def test_over_the_cap_cleans_up_before_anything_is_pushed(self, conn_db, monkeypatch):
         h = FakeHead(monkeypatch, prep={**PREP, "folders": {"proj": 30 * 2**30}})
         with pytest.raises(HTTPException):
-            D.request(ALICE, "proj", None, {"time": "1h"})
+            D.request(ALICE, "proj", None, {"time": "1h", "vram": 8})
         assert h.verbs() == ["dive-prep", "dive-close"]
 
     def test_sbatch_refusal_releases_the_port_and_closes(self, conn_db, monkeypatch):
         h = FakeHead(monkeypatch, sbatch_rc=1)
         with pytest.raises(HTTPException, match="sbatch refused"):
-            D.request(ALICE, "proj", None, {"time": "1h"})
+            D.request(ALICE, "proj", None, {"time": "1h", "vram": 8})
         assert h.verbs()[-1] == "dive-close"
         with db.connect() as conn:
             assert db.used_dive_ports(conn) == set()
