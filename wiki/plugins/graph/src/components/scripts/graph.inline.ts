@@ -235,6 +235,15 @@ import {
       var dark = resolveColor(styles.getPropertyValue("--dark").trim(), "#1a1a1a");
       var light = resolveColor(styles.getPropertyValue("--light").trim(), "#f5f5f5");
       var bodyFont = styles.getPropertyValue("--bodyFont").trim() || "inherit";
+      // Wiki: the colour the graph is drawn on, for the label backdrops.
+      var backdropColor = light;
+      for (var el = graph; el; el = el.parentElement) {
+        var bg = getComputedStyle(el).backgroundColor;
+        if (bg && bg !== "transparent" && !/rgba\(.*,\s*0\)$/.test(bg)) {
+          backdropColor = resolveColor(bg, light);
+          break;
+        }
+      }
       // Wiki: one colour per Section, from the --section-<key> variables Graph.tsx writes.
       var sectionColors = {};
       (config.sections || []).forEach(function (key) {
@@ -292,7 +301,11 @@ import {
       var linkContainer = new PIXI.Container();
       var nodesContainer = new PIXI.Container();
       var labelsContainer = new PIXI.Container();
+      // Wiki: a page-coloured rounded box behind each label hides the links under it, so
+      // labels stay readable. Above the links, below the dots.
+      var backdropContainer = new PIXI.Container();
       stage.addChild(linkContainer);
+      stage.addChild(backdropContainer);
       stage.addChild(nodesContainer);
       stage.addChild(labelsContainer);
 
@@ -513,7 +526,14 @@ import {
 
         nodesContainer.addChild(gfx);
 
+        var backdrop = new PIXI.Graphics();
+        backdrop.eventMode = "none";
+        backdropContainer.addChild(backdrop);
+
         nodeRenderData.push({
+          backdrop: backdrop,
+          backdropW: 0,
+          backdropH: 0,
           simulationData: node,
           gfx: gfx,
           label: label,
@@ -740,6 +760,18 @@ import {
             n.gfx.position.set(x + width / 2, y + height / 2);
             if (n.label) {
               n.label.position.set(x + width / 2, y + height / 2 - n.labelOffset);
+              // Wiki: keep the backdrop on its label: same place, size and fade.
+              var lw = n.label.width, lh = n.label.height;
+              if (lw !== n.backdropW || lh !== n.backdropH) {
+                var pad = 2 / scale;
+                n.backdrop.clear();
+                n.backdrop.roundRect(-lw / 2 - pad, -lh - pad / 2, lw + 2 * pad, lh + pad, 3 / scale);
+                n.backdrop.fill({ color: backdropColor });
+                n.backdropW = lw;
+                n.backdropH = lh;
+              }
+              n.backdrop.position.copyFrom(n.label.position);
+              n.backdrop.alpha = n.label.alpha;
             }
           }
         }
