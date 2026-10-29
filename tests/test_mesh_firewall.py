@@ -123,6 +123,36 @@ class TestIptablesBackend:
         assert not [c for c in tools.calls() if c.startswith("nft")]
 
 
+IP_ADDR = 'echo "5: ccc0    inet 100.99.0.1/32 scope global ccc0"; exit 0\n'
+
+
+class TestOwnMeshAddressOnLo:
+    """The box reaching its own mesh IP (slurm clients -> slurmctld at 100.99.0.1) arrives on lo with a
+    CGNAT source: without this the DROP blackholes squeue on the Head."""
+
+    def test_iptables_gets_a_lo_exemption_per_mesh_ip(self, fw, tools):
+        tools("iptables", _iptables(chain_present=True, exemption_present=False))
+        tools("ip", IP_ADDR)
+        tools("systemctl", "exit 0\n")
+        assert fw.main(config.CCC_TS_TUN, config.TS_INPUT_CHAIN) == 0
+        assert "iptables -I ts-input 1 -s 100.99.0.1/32 -i lo -j RETURN" in tools.calls()
+
+    def test_iptables_lo_exemption_left_alone_when_present(self, fw, tools):
+        tools("iptables", _iptables(chain_present=True, exemption_present=True))
+        tools("ip", IP_ADDR)
+        tools("systemctl", "exit 0\n")
+        fw.main(config.CCC_TS_TUN, config.TS_INPUT_CHAIN)
+        assert not [c for c in tools.calls() if c.startswith("iptables -I")]
+
+    def test_nft_gets_one_too(self, fw, tools):
+        tools("iptables", _iptables(chain_present=False, exemption_present=False))
+        tools("nft", _nft(chain_present=True, exemption_present=True))
+        tools("ip", IP_ADDR)
+        tools("systemctl", "exit 0\n")
+        fw.main(config.CCC_TS_TUN, config.TS_INPUT_CHAIN)
+        assert 'nft insert rule ip filter ts-input iifname "lo" ip saddr 100.99.0.1 return' in tools.calls()
+
+
 class TestNftablesBackend:
     def test_a_native_nft_chain_is_found_and_prepended_to(self, fw, tools):
         """A tailscaled that chose the native backend puts ts-input where the iptables binary cannot

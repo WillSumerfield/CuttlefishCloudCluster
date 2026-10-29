@@ -535,6 +535,15 @@ def _run(cmd):
         return None
 
 
+def _tun_v4(tun):
+    """The box's own mesh IPv4s. Traffic to itself (slurm clients -> slurmctld on the mesh address)
+    arrives on lo with a CGNAT source, which the DROP catches unless lo is exempt for these too."""
+    out = _run(["ip", "-4", "-o", "addr", "show", "dev", tun])
+    if out is None or out.returncode != 0:
+        return []
+    return [f.split()[3].split("/")[0] for f in out.stdout.splitlines() if len(f.split()) > 3]
+
+
 def _via_iptables(tun, chain):
     """True if the chain lives here and now carries the exemption; False if it isn't this backend;
     None if iptables could not be consulted at all."""
@@ -543,11 +552,11 @@ def _via_iptables(tun, chain):
         return None
     if listed.returncode != 0:
         return False
-    rule = ["-i", tun, "-j", "RETURN"]
-    if _run(["iptables", "-C", chain, *rule]).returncode == 0:
-        return True
-    _run(["iptables", "-I", chain, "1", *rule])
-    print(f"re-inserted the {tun} exemption at the top of {chain} (iptables)")
+    for what, rule in [(tun, ["-i", tun, "-j", "RETURN"])] + [
+            (f"lo {a}", ["-s", f"{a}/32", "-i", "lo", "-j", "RETURN"]) for a in _tun_v4(tun)]:
+        if _run(["iptables", "-C", chain, *rule]).returncode != 0:
+            _run(["iptables", "-I", chain, "1", *rule])
+            print(f"re-inserted the {what} exemption at the top of {chain} (iptables)")
     return True
 
 
@@ -561,12 +570,16 @@ def _via_nft(tun, chain):
         return False
     # tailscale's own DROP reads `iifname != "tailscale0" ip saddr 100.64.0.0/10 drop`, so matching on
     # our own iifname cannot collide with it.
-    if f'iifname "{tun}"' in listed.stdout:
-        return True
     # `nft insert` (as against `add`) prepends, which is the whole point — the exemption is worthless
     # anywhere below the DROP.
-    _run(["nft", "insert", "rule", "ip", "filter", chain, "iifname", f'"{tun}"', "return"])
-    print(f"re-inserted the {tun} exemption at the top of {chain} (nftables)")
+    if f'iifname "{tun}"' not in listed.stdout:
+        _run(["nft", "insert", "rule", "ip", "filter", chain, "iifname", f'"{tun}"', "return"])
+        print(f"re-inserted the {tun} exemption at the top of {chain} (nftables)")
+    for a in _tun_v4(tun):
+        if f'iifname "lo" ip saddr {a} return' not in listed.stdout:
+            _run(["nft", "insert", "rule", "ip", "filter", chain, "iifname", '"lo"', "ip", "saddr", a,
+                  "return"])
+            print(f"re-inserted the lo {a} exemption at the top of {chain} (nftables)")
     return True
 
 
