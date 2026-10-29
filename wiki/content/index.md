@@ -33,7 +33,7 @@ is busy, people who've used less go first.
 | **Dashboard** | The website on the Head. Shows the queue, your files, your Karma and the machines. |
 | **`cuttle`** | The command-line tool. Starts Dives, attaches to them and moves files around. |
 
-The Glossary (under Start) explains these and every other term in more detail.
+The [[Glossary]] explains these and every other term in more detail.
 
 ## Where to go next
 
