@@ -75,6 +75,11 @@ keeps them. See [[Environments]].
 Every Dive needs a time limit, given once per folder. Add one, like `--time 4h`. After that it's
 saved in the folder's `cuttle.toml`.
 
+### "a Dive needs --vram"
+
+Every Dive says how much GPU memory it needs, in GB, across all its GPUs, given once per folder.
+Add it, like `--vram 16`. After that it's saved in the folder's `cuttle.toml`.
+
 ### "name the main folder, from your Tidepool home"
 
 From your own machine, say which folder: `cuttle dive fractals`. Only inside your Tidepool does

@@ -38,7 +38,7 @@ More in [[Tidepool]].
 
 | Command | What it does | Example |
 | --- | --- | --- |
-| `cuttle dive` | Start a Dive on a folder and go into it. | `cuttle dive fractals --time 4h` |
+| `cuttle dive` | Start a Dive on a folder and go into it. | `cuttle dive fractals --time 4h --vram 16` |
 | `cuttle dive attach` | Go back into a running Dive, or wait for a queued one. | `cuttle dive attach 58` |
 | `cuttle dive end` | End a Dive. The main folder gets a final copy back. | `cuttle dive end 58` |
 | `cuttle dive status` | List your open Dives. | `cuttle dive status` |
@@ -49,7 +49,7 @@ Options for starting a Dive:
 | --- | --- | --- |
 | `--time` | How long: `90m`, `4h`, `2d`, at most `14d`. Needed once per folder. | `--time 4h` |
 | `--gpus` | Number of GPUs, on one machine (default 1). | `--gpus 2` |
-| `--vram` | Total GPU memory needed, in GB. | `--vram 24` |
+| `--vram` | Total GPU memory needed, in GB, across all its GPUs. Needed once per folder. | `--vram 24` |
 | `--dep` | A read-only extra folder. Repeat for more. | `--dep datasets/mnist` |
 | `--env` | Dependency file to build a Python environment from. | `--env pyproject.toml` |
 | `--feature` | An Arm Feature the Dive needs. Repeat for more. | `--feature vlearn` |

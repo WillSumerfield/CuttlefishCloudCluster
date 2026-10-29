@@ -10,7 +10,7 @@ Tidepool every minute. The Dive keeps its GPU until you end it or its time runs 
 Say your project lives in `~/fractals` in your Tidepool and you want one GPU for four hours:
 
 ```bash
-cuttle dive fractals --time 4h
+cuttle dive fractals --time 4h --vram 16
 ```
 
 `cuttle` takes a quick snapshot of your Tidepool's system, queues the Dive, waits for a GPU, and drops
@@ -44,7 +44,7 @@ folder you're in, and `cuttle` moves you over to the Dive once it's ready.
 | `MAIN` (the folder) | The folder to work in. It's copied over, and changes come back. | the current folder, inside your Tidepool |
 | `--time` | How long the Dive may run: `90m`, `4h`, `2d`, `1d12h`. At most `14d`. | none: you must give it once |
 | `--gpus` | How many GPUs, all on one machine. | 1 |
-| `--vram` | Total GPU memory you need, in GB, across all your GPUs. | any |
+| `--vram` | Total GPU memory you need, in GB, across all your GPUs. | none: you must give it once |
 | `--dep` | Another folder to bring along, read-only. Repeat it for more. | none |
 | `--env` | A dependency file in the main folder to build a Python environment from. See [[Environments]]. | none |
 | `--feature` | A special capability an Arm must have. See [[Arm features]]. | none |
@@ -63,6 +63,7 @@ folder:
 deps = ["datasets/mnist"]
 gpus = 1
 time = "4h"
+vram = 16
 env = "pyproject.toml"
 ```
 

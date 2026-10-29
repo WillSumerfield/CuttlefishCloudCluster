@@ -62,7 +62,7 @@ Answer no to walk through the list again. `cuttle update` never changes your Fea
 People ask for a Feature when they start a Dive:
 
 ```bash
-cuttle dive start my-project --time 4h --feature isaaclab
+cuttle dive start my-project --time 4h --vram 16 --feature isaaclab
 ```
 
 If no Arm in the cluster has it, the Dive is refused straight away with a list of the Features the

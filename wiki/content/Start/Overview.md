@@ -38,7 +38,7 @@ Say you're training a model in `~/fractals`.
 
 1. You open a terminal on your laptop and run `cuttle tidepool`. You're now in your Tidepool on the
    Head. You pull the latest code and tidy up some data.
-2. You need a GPU, so you run `cuttle dive fractals --time 4h`. CCC copies `~/fractals` to a free
+2. You need a GPU, so you run `cuttle dive fractals --time 4h --vram 16`. CCC copies `~/fractals` to a free
    GPU and drops you into a shell there.
 3. You start training inside `tmux`, then close your laptop. The Dive keeps going.
 4. Later you run `cuttle dive attach` to check on it. Your checkpoints have been copying back to

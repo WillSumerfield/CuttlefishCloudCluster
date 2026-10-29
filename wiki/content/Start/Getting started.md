@@ -106,19 +106,20 @@ drag it onto the Files page in the Dashboard. See [[Files]].
 ## 7. Start your first Dive
 
 ```bash
-cuttle dive myproject --time 1h
+cuttle dive myproject --time 1h --vram 8
 ```
 
-This asks for a one-hour [[Glossary#Dive|Dive]] with `~/myproject` as its main folder. CCC copies the
-folder to a free GPU, waits for it to be ready, and drops you into a shell there. The prompt now
-starts with `in a dive`, and a line at the top tells you which GPU you got and when the Dive ends.
+This asks for a one-hour [[Glossary#Dive|Dive]] on a GPU with at least 8 GB of memory, with
+`~/myproject` as its main folder. CCC copies the folder to a free GPU, waits for it to be ready, and
+drops you into a shell there. The prompt now starts with `in a dive`, and a line at the top tells you
+which GPU you got and when the Dive ends.
 
 Try `nvidia-smi` to see your GPU.
 
 Some things to know:
 
-- `--time` is required the first time. It's saved in `myproject/cuttle.toml`, so next time
-  `cuttle dive myproject` is enough. The longest you can ask for is 14 days (`14d`).
+- `--time` and `--vram` are required the first time. They're saved in `myproject/cuttle.toml`, so
+  next time `cuttle dive myproject` is enough. The longest you can ask for is 14 days (`14d`).
 - If the queue is busy, you wait. Press Ctrl-C to stop waiting: the Dive stays in the queue, and
   `cuttle dive attach` gets you in once it starts.
 - Your changes in `~/myproject` are copied back to your Tidepool every minute. Meanwhile that folder

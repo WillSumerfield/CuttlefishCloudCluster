@@ -23,7 +23,7 @@ nothing changes under you.
 Put a dependency file in your main folder and name it with `--env`:
 
 ```bash
-cuttle dive fractals --time 4h --env pyproject.toml
+cuttle dive fractals --time 4h --vram 16 --env pyproject.toml
 ```
 
 When the Dive starts, CCC builds a `.venv` next to that file and turns it on in every shell. What it

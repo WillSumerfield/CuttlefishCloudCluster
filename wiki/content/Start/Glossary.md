@@ -25,7 +25,7 @@ all the same size. More in [[Tidepool]].
 
 A GPU session. You name a folder in your Tidepool, CCC copies it to a free GPU and gives you a shell
 there, and your changes copy back every minute. It lasts until you end it or its `--time` runs out.
-Example: `cuttle dive myproject --time 4h`. More in [[Dives]].
+Example: `cuttle dive myproject --time 4h --vram 16`. More in [[Dives]].
 
 ## Karma
 

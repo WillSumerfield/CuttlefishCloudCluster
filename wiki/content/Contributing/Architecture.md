@@ -163,7 +163,7 @@ the User's layer travels. [[Isolation]] covers the details.
 
 ## The life of a Dive
 
-Say you run `cuttle dive start projects/fractals --gpus 1 --time 2h`.
+Say you run `cuttle dive start projects/fractals --gpus 1 --vram 16 --time 2h`.
 
 ```mermaid
 sequenceDiagram
