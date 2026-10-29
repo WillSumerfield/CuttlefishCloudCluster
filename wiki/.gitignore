@@ -1,0 +1,12 @@
+# Quartz itself is fetched by setup.sh. Only the wiki's own files are committed.
+/*
+!/.gitignore
+!/README.md
+!/setup.sh
+!/check_links.py
+!/quartz.config.yaml
+!/content/
+!/plugins/
+!/styles/
+/plugins/*/node_modules/
+/plugins/*/dist/

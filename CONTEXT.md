@@ -361,3 +361,17 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   Karma. Deliberately **bypasses** the economy rather than participating in it: it moves one job, once,
   and leaves no trace in the ledger. Distinct from **Override**, which would buy the same result by
   permanently distorting a User's standing.
+
+## Documentation
+
+- **Wiki** — the project's documentation, for every reader (Users, donors, Admins, contributors): a
+  Quartz site built from `wiki/`, served by the Head at `/wiki/` to signed-in Users. _Avoid_: docs,
+  notes, knowledge base.
+- **Section** — one of the Wiki's top-level areas: Start, Using CCC, Donating, Admin, Contributing.
+  _Avoid_: category, topic.
+- **Node** — a Wiki page whose main job is to group other pages (its children); it may have content of
+  its own. A role, not a fixed kind: a Leaf becomes a Node once pages hang off it. _Avoid_: hub, index
+  page.
+- **Leaf** — a Wiki page about one specific thing, with no children. _Avoid_: article, subpage.
+- **Parent** — the single Node a page hangs off (a Section's is the home page); any other connection is
+  a link in Relates To. _Avoid_: category, tag.
