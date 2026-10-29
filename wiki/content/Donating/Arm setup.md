@@ -82,7 +82,7 @@ ask the Admin to finish the job with `cuttle arm admit <name>`.
 
 You don't need to do anything when the Admin upgrades CCC: the Head updates your Arm for you. It
 waits until your Arm is free, so a running Dive is never cut short, and your Arm takes no new Dives
-until it's done. The [Arms page](dashboard:/arms) says **Updating after its current Dive** meanwhile.
+until it's done. The [Arms page](dashboard:/arms) says **Update queued** until it starts.
 
 If an update fails, the Arm stays out of service and the Arms page says **Update failed** (hover it
 for the reason). The Admin gets an email too. Fix what it names, then ask them to retry.
@@ -93,8 +93,10 @@ You can always update by hand, on the Arm:
 cuttle update
 ```
 
-It asks no questions and keeps your settings. An Arm set up before automatic updates needs this once,
-so the Head learns where its `cuttle` is installed.
+It asks no questions and keeps your settings.
+
+An Arm set up before automatic updates needs a new `cuttle` installed by hand once. Its update fails,
+and the reason on the Arms page is the exact command to run on the Arm.
 
 If the Admin rotates the cluster key, they'll ask you to run:
 

@@ -149,8 +149,9 @@ fixed:
 cuttle arm update <name>      # or --all
 ```
 
-An Arm set up before automatic updates fails its first one, saying its owner must run `cuttle update`
-on it once.
+An Arm set up before automatic updates fails its first one: its old `cuttle` can't be updated from
+here. The failure gives its owner a one-line command that installs the new `cuttle` and runs
+`cuttle update`; after that, updates are automatic.
 
 ## Tearing down
 
