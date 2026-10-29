@@ -8,7 +8,7 @@ import {
 } from "../api";
 
 // NAME · SIZE · MODIFIED · ACTIONS
-const COLS = "minmax(180px,1fr) 90px 150px 210px";
+const COLS = "minmax(180px,1fr) 90px 160px 210px";
 
 const fmtSize = (b: number | null) => {
   if (b === null) return "—";
@@ -18,7 +18,7 @@ const fmtSize = (b: number | null) => {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
 };
-const fmtTime = (t: number) => new Date(t * 1000).toLocaleString();
+const fmtTime = (t: number) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 const join = (dir: string, name: string) => (dir === "." ? name : `${dir}/${name}`);
 
 type Pending = { path: string; file: File };
@@ -112,7 +112,7 @@ export function FilesPage() {
       title="Files"
       actions={
         <span className="flex items-center gap-2">
-          <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => setMaking(true)}>New folder</button>
+          <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => { setRenaming(null); setNewName(""); setMaking(true); }}>New folder</button>
           <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => fileInput.current?.click()}>Upload files</button>
           <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => folderInput.current?.click()}>Upload a folder</button>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { picked(e.target.files); e.target.value = ""; }} />
@@ -217,7 +217,7 @@ export function FilesPage() {
                   )}
                 </span>
                 <span className="num text-right text-[13px] text-ink-mute">{fmtSize(f.size)}</span>
-                <span className="num text-[13px] text-ink-mute">{fmtTime(f.mtime)}</span>
+                <span className="num whitespace-nowrap text-[13px] text-ink-mute">{fmtTime(f.mtime)}</span>
                 <span className="flex justify-end gap-2 text-[13px]">
                   {deleting === f.path ? (
                     <>
@@ -229,7 +229,7 @@ export function FilesPage() {
                       <a className="btn-ghost" href={downloadUrl(f.path)} download>{f.type === "dir" ? ".zip" : "Download"}</a>
                       {!f.locked && !held && (
                         <>
-                          <button className="btn-ghost" onClick={() => { setRenaming(f.path); setNewName(f.name); }}>Rename</button>
+                          <button className="btn-ghost" onClick={() => { setMaking(false); setRenaming(f.path); setNewName(f.name); }}>Rename</button>
                           <button className="btn-ghost" onClick={() => setDeleting(f.path)}>Delete</button>
                         </>
                       )}
