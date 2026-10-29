@@ -26,7 +26,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse, RedirectResponse,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -40,6 +41,8 @@ from . import files as files_mod
 # The built SPA, copied here by `cuttle setup --head` (world-readable). Kept out of the service user's
 # home on purpose. Env var is set by the systemd unit; the default is only for fresh checkouts/tests.
 WEB_DIR = Path(os.environ.get("CCC_WEB_DIR", "/opt/ccc/head-api/web"))
+# The built wiki (Quartz), beside it. Served at /wiki/ to signed-in Users only (wiki() below).
+WIKI_DIR = Path(os.environ.get("CCC_WIKI_DIR", "/opt/ccc/head-api/wiki"))
 
 # This cluster's CA certificate — the public half only; the key beside it is 0600 and this process is
 # the only account that can read it, which is exactly the asymmetry that makes serving this one safe.
@@ -693,6 +696,32 @@ def remove_ssh_key(key_id: int, user: dict = Depends(current_user)) -> dict:
 
 
 app.include_router(api)
+
+
+@app.get("/wiki", include_in_schema=False)
+@app.get("/wiki/{path:path}", include_in_schema=False)
+def wiki(request: Request, path: str = "") -> Response:
+    """The wiki, for signed-in Users (the session cookie; an ambient session is fine — it only reads).
+    No session → the Dashboard's sign-in, which sends the browser back here after. Quartz links pages
+    without `.html`, so `Start/Glossary` is `Start/Glossary.html`; a folder is its `index.html`."""
+    try:
+        _resolve(request)
+    except HTTPException:
+        return RedirectResponse(f"/?next={urllib.parse.quote(request.url.path)}", status_code=303)
+    if not request.url.path.startswith("/wiki/"):
+        return RedirectResponse("/wiki/", status_code=308)
+    root = WIKI_DIR.resolve()
+    for p in dict.fromkeys((path, path.lower())):   # Quartz lowercases some slugs (folder pages)
+        f = (root / p).resolve()
+        if not f.is_relative_to(root):
+            raise HTTPException(404)
+        for c in (f / "index.html", f, f.with_name(f.name + ".html")):
+            if c.is_file():
+                return FileResponse(c)
+    missing = root / "404.html"
+    if missing.is_file():
+        return FileResponse(missing, status_code=404)
+    raise HTTPException(404, "the wiki isn't built on this Head")
 
 
 class SPAFiles(StaticFiles):

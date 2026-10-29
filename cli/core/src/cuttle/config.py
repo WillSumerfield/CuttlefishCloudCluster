@@ -486,6 +486,7 @@ def guise_name(uid: int) -> str:
 # it's an app-level account in head.db, unrelated to any Unix uid. Dives show `submitted_by: admin`.
 FIRST_ADMIN_USER = "admin"
 HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
+HEAD_API_WIKI_DIR = Path("/opt/ccc/head-api/wiki")  # built wiki (Quartz), served at /wiki/ behind sign-in
 # LAN TLS. The Head API carries passwords and session tokens on `0.0.0.0`, so the LAN path must be
 # encrypted. No public CA will sign a cert for a box with no public domain, so the Head is its OWN CA:
 # it mints a root once and signs its serving cert (the "leaf") with it.

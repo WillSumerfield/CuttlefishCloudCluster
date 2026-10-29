@@ -671,6 +671,7 @@ def build_spa() -> None:
     run(["rm", "-rf", str(config.HEAD_API_WEB_DIR)], sudo=True)
     run(["install", "-d", str(config.HEAD_API_WEB_DIR.parent)], sudo=True)
     run(["cp", "-r", str(web_src / "dist"), str(config.HEAD_API_WEB_DIR)], sudo=True)
+    build_wiki()
     run(["chmod", "-R", "a+rX", str(config.HEAD_API_WEB_DIR.parent)], sudo=True)
     system.allow_tcp_port(config.HEAD_API_PORT, "ccc head api (LAN+mesh)")
     # Dive's (docs/TODO.md) per-Dive relay ports — one whole range, opened once, not one ufw rule
@@ -678,6 +679,17 @@ def build_spa() -> None:
     system.allow_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE,
                                 "ccc tide pool relay (LAN+mesh)")
     print(f"cuttle: Dashboard SPA built → {config.HEAD_API_WEB_DIR}")
+
+
+def build_wiki() -> None:
+    """Build the wiki (Quartz, repo `wiki/`) and stage it beside the SPA; the Head API serves it at
+    /wiki/ to signed-in Users. `setup.sh` fetches Quartz from GitHub at a pinned commit the first time."""
+    wiki_src = headapi.REPO_ROOT / "wiki"
+    run(["./setup.sh"], cwd=str(wiki_src))
+    run(["npx", "quartz", "build"], cwd=str(wiki_src))
+    run(["rm", "-rf", str(config.HEAD_API_WIKI_DIR)], sudo=True)
+    run(["cp", "-r", str(wiki_src / "public"), str(config.HEAD_API_WIKI_DIR)], sudo=True)
+    print(f"cuttle: wiki built → {config.HEAD_API_WIKI_DIR}")
 
 
 def make_user_dirs() -> None:

@@ -142,6 +142,7 @@ User={config.HEAD_API_USER}
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 Environment=CCC_PARTITION={config.PARTITION}
 Environment=CCC_WEB_DIR={config.HEAD_API_WEB_DIR}
+Environment=CCC_WIKI_DIR={config.HEAD_API_WIKI_DIR}
 Environment=CCC_HEAD_DB={config.HEAD_DB}
 # Served open at GET /ca.pem: the public half of the CA, so a box can trust this Head instead of
 # clicking through a warning. The key beside it is 0600 {config.HEAD_API_USER}-owned and stays here.
