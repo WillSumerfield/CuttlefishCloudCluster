@@ -31,7 +31,7 @@ _SERVICES = [config.ENROLL_API_SERVICE, config.HEAD_API_SERVICE, config.KARMA_SE
              config.RSYNCD_SERVICE, f"{config.BACKUP_SERVICE}.timer", f"{config.MONITOR_SERVICE}.timer",
              "munge", "slurmctld", "slurmd"]
 _ARM_SERVICES = ["slurmd", "munge"]  # an Arm runs no slurmctld / API / rsyncd / headscale
-_PACKAGES = ["slurm-wlm", "slurmd", "podman", "nvidia-container-toolkit", "munge"]
+_PACKAGES = ["slurm-wlm", "slurmd", "slurm-client", "podman", "nvidia-container-toolkit", "munge"]
 # Every apt source file setup ADDED — and only those. The box's own sources.list/ubuntu.sources were
 # never touched (see templates.UBUNTU_SNAPSHOT_LIST_TMPL), so there is nothing there to restore.
 _APT_SOURCE_FILES = [

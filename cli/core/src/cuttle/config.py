@@ -10,6 +10,8 @@ from pathlib import Path
 SLURM_VERSION = "23.11.4-1.2ubuntu5"
 SLURM_PKG = f"slurm-wlm={SLURM_VERSION}"
 SLURMD_PKG = f"slurmd={SLURM_VERSION}"
+# An Arm's ccc-launch reads its job back with `scontrol` (slurm-wlm carries it on a Head).
+SLURM_CLIENT_PKG = f"slurm-client={SLURM_VERSION}"
 NVIDIA_CTK_VERSION = "1.20.0-1"  # NVIDIA's repo retains old versions — safe
 # The toolkit Depends on its siblings at EXACTLY its version, and apt will not pick an older-than-newest
 # sibling on its own ("Depends: … (= 1.20.0-1) but 1.20.1-1 is to be installed") — so all four are pinned.

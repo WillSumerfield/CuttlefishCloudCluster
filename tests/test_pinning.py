@@ -69,6 +69,9 @@ class TestUbuntuSnapshot:
         setup.install_packages(head=True)
         arm, head = installed
         assert config.PODMAN_PKG in arm and config.PODMAN_PKG in head
+        # ccc-launch on an Arm runs scontrol: slurmd alone does not ship it (willpc Dive 15)
+        assert config.SLURM_CLIENT_PKG in arm
+        assert config.SLURM_CLIENT_PKG.split("=", 1)[1] == config.SLURM_VERSION
         assert config.HTPASSWD_PKG not in arm and config.HTPASSWD_PKG in head
 
     def test_only_the_head_gains_node(self, monkeypatch, tmp_path):

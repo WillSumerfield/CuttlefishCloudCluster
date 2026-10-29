@@ -190,7 +190,8 @@ def install_packages(slurm_pkg: str = config.SLURM_PKG, head: bool = False) -> s
     """
     run(["apt-get", *system.APT_LOCK_WAIT, "update"], sudo=True)
     before = system.installed_packages()
-    _apt_install([slurm_pkg, *config.NVIDIA_CTK_PKGS, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
+    client = [config.SLURM_CLIENT_PKG] if slurm_pkg == config.SLURMD_PKG else []
+    _apt_install([slurm_pkg, *client, *config.NVIDIA_CTK_PKGS, config.MUNGE_PKG, config.NSS_TOOLS_PKG,
                   config.PODMAN_PKG, config.INIT_PKG,
                   *([config.NODE_PKG, config.HTPASSWD_PKG] if head else [])])
     return before
