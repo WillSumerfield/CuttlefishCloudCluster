@@ -70,11 +70,11 @@ REGISTRY_IMAGE = ("docker.io/library/registry:2.8.3@sha256:"
                   "a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373")
 
 # --- pinned Environment build tools (every node) ---
-# uv and micromamba build a Spawn's declared Environment (ccc_head_api.environments). Pinned by
+# uv and micromamba build a Dive's declared Environment (ccc_head_api.environments). Pinned by
 # version AND sha256, checked here rather than against the sidecar .sha256 each project publishes: a
 # sidecar fetched from the same host as the file it vouches for proves only that the download wasn't
 # truncated. These hashes are in the repo, so bumping a tool is a reviewed commit — a uv release can change what `uv sync` resolves and every
-# Spawn's dependencies would move underneath their Users with nothing to point at.
+# Dive's dependencies would move underneath their Users with nothing to point at.
 #
 # Installed on EVERY node, Head and Arm alike, because every node builds: an Environment is built by
 # the Arm that runs it, at job start, from its own bandwidth. A Head-built env had to cross the mesh —
@@ -146,27 +146,27 @@ HOSTS_MARKER = "# cuttle"
 
 # --- Karma substrate: priority, Power, VRAM features ---
 # Nice is how Karma reaches the queue: the Head lowers the priority of a poor-standing User's pending
-# Spawns. It can do that with ZERO privilege, because every Spawn runs as the Mantle — so the Head is
+# Dives. It can do that with ZERO privilege, because every Dive runs as the Mantle — so the Head is
 # the *owner* of every job in the queue, and lowering your own job's priority is an owner's right.
 # (Only NEGATIVE nice — a boost — needs an operator; that's the admin Queue bump, which goes through
 # sudo. See docs/Architecture.md, "Scheduling: Slurm, and no accounting database".)
 #
-# Treat a Spawn's priority as a SIGNED int32 whose zero sits at 2^31. Slurm's priority is a `uint32_t`
-# and it clamps: with no base, a *fresh* Spawn (age factor 0) computes `-nice`, which underflows to the
-# floor — so every new Spawn from every User in less than perfect standing would tie there, and Karma
+# Treat a Dive's priority as a SIGNED int32 whose zero sits at 2^31. Slurm's priority is a `uint32_t`
+# and it clamps: with no base, a *fresh* Dive (age factor 0) computes `-nice`, which underflows to the
+# floor — so every new Dive from every User in less than perfect standing would tie there, and Karma
 # would rank correctly, push nice successfully, and change nothing. The flat base is what keeps the
 # subtraction off the rail. PriorityWeightPartition is the only base available without slurmdbd, and
 # with a single partition Slurm normalizes the partition factor to exactly 1.0 for every job — so it
 # adds a constant, reorders nobody, and exists purely to lift the range clear of zero.
-PRIORITY_BASE = 2**31          # PriorityWeightPartition — the flat base under every Spawn
+PRIORITY_BASE = 2**31          # PriorityWeightPartition — the flat base under every Dive
 NICE_MAX = 2**16               # nice = (1 - Share) * NICE_MAX, so standing spans [0, NICE_MAX]
-# Equal ranges for nice and age, so poor standing costs a Spawn AT MOST a day of apparent queue age —
+# Equal ranges for nice and age, so poor standing costs a Dive AT MOST a day of apparent queue age —
 # Slurm treats it as though it arrived later than it did. Bounded and intelligible. It is NOT a
 # starvation bound (age saturates at PRIORITY_MAX_AGE; a rival can max its age out too) — that bound is
 # economic: spending Karma is what makes you poor. See temp/KARMA.md "the priority floor".
 PRIORITY_WEIGHT_AGE = NICE_MAX
 PRIORITY_MAX_AGE = "1-0"       # 1 day — the ramp over which waiting earns back a full nice range
-# One admin Queue bump. Bigger than age + nice combined, so a bumped Spawn beats anything the economy
+# One admin Queue bump. Bigger than age + nice combined, so a bumped Dive beats anything the economy
 # can produce; negative nice is operator-only, which is what makes it a flag needing no state of its own
 # (the tick skips any job with nice < 0 — only an operator could have set it).
 BUMP_STEP = 2**17
@@ -178,7 +178,6 @@ BENCH_MATRIX_N = 4096
 BENCH_WARMUP = 5
 BENCH_ITERS = 50
 BENCH_TIME_MINUTES = 10
-BENCH_DIR_NAME = "bench"  # HEAD_SPAWNS_DIR/bench/<node>/power — where a benchmark stages its result
 BENCH_TIMEOUT_S = 600     # from sbatch to the result landing (a cold node may still be booting slurmd)
 
 # Pinned: Power is the divisor in every Settlement, so every card must be measured by the same cuBLAS
@@ -191,7 +190,7 @@ BENCH_ARGV = ["python3", BENCH_PY_PATH]
 
 # Slurm schedules the LOWEST-weight eligible node first, so Weight must run inverse to Power: the
 # fastest free card that fits wins. It is a preference among *free* nodes, not a reservation — Slurm
-# will not hold a Spawn back waiting for a better card, which is exactly the "first one that fits, else
+# will not hold a Dive back waiting for a better card, which is exactly the "first one that fits, else
 # queue" behaviour we want.
 WEIGHT_SCALE = 10000
 
@@ -202,7 +201,7 @@ def node_weight(powers: list[float]) -> int:
     Weight is inherently node-level — Slurm has one per node, not one per GRES — so a multi-GPU box's
     cards must be summarised somehow. The mean is the honest summary *here specifically*, and only
     here: Weight is a **preference ordering among nodes**, never a price. It decides which free box
-    Slurm reaches for first; it never multiplies a second of held time. A Spawn's bill is still
+    Slurm reaches for first; it never multiplies a second of held time. A Dive's bill is still
     settled against the Power of the Device it actually held (tick._meter), so the reduction cannot
     reach anyone's Balance. Max would over-prefer a box whose one fast card is already busy; the mean
     ranks a box by what it is typically worth to land on.
@@ -219,14 +218,14 @@ def card_gb(vram_mb: int) -> int:
     advertises anything below 15.5 GB the same way. Either leaves a User looking at a 16 GB card that
     refuses `--vram 16`, which is the confusion this exists to stop.
 
-    The cost is real and bounded: a card counts as up to 1 GB larger than it is, so a Spawn that asks
+    The cost is real and bounded: a card counts as up to 1 GB larger than it is, so a Dive that asks
     for exactly what the card claims may OOM instead of being refused at submit. That is the trade
     deliberately made — a number a User can predict from the box's spec sheet beats a number only the
     driver knows.
 
     **Mirrored in `ccc_head_api.slurm.card_gb`**, which cannot import this module (see the note at the
     bottom of this file). The Arm advertises with this one and the Head selects with that one, so the
-    two must agree exactly or a Spawn is placed on a card the Head never priced.
+    two must agree exactly or a Dive is placed on a card the Head never priced.
     """
     return -(-vram_mb // 1024)
 
@@ -261,10 +260,10 @@ GRES_CONF = Path("/etc/slurm/gres.conf")
 # siblings (cgroup.conf, gres.conf) to every Arm, and there is no per-node override — one file, whole
 # cluster. See templates.CGROUP_CONF_TMPL.
 CGROUP_CONF = Path("/etc/slurm/cgroup.conf")
-# slurmd runs this on the node after every Spawn, however it ended — the reclaim the job script's own
+# slurmd runs this on the node after every Dive, however it ended — the reclaim the job script's own
 # `trap ... EXIT` can't do because SIGKILL (OOM, `scancel -9`, a Phase-2 Retract) bypasses the trap.
 SLURM_EPILOG = Path("/etc/slurm/ccc-epilog.sh")
-# slurmd runs this on the node BEFORE every Spawn, as root: it creates the **Guise** the Spawn will run
+# slurmd runs this on the node BEFORE every Dive, as root: it creates the **Guise** the Dive will run
 # as, if this node has never run one of that User's before. Like the epilog it is served by neither
 # configless nor any push — every node writes its own at `cuttle setup` (see templates.PROLOG_TMPL).
 SLURM_PROLOG = Path("/etc/slurm/ccc-prolog.sh")
@@ -281,7 +280,7 @@ JOB_CONTAINER_CONF = Path("/etc/slurm/job_container.conf")
 JOB_CONTAINER_ROOT = Path("/var/lib/slurm/jobcontainer")
 JOB_CONTAINER_BASE = f"{JOB_CONTAINER_ROOT}/%h"
 # What an Arm reports having written, in its /enroll POST, so the Head can refuse to name a file the
-# fleet does not have yet (see enroll.arms_missing and the Rollout section of temp/spawn-isolation.md).
+# fleet does not have yet (see enroll.arms_missing).
 #
 # Two names, not one, and they are gated independently: an Arm enrolled before job_container/tmpfs
 # shipped reports only "prolog", so folding tmpfs into that name would either hold `Prolog=` back on
@@ -299,7 +298,7 @@ SLURMD_PORT = 6818
 # `ExecStart=/usr/sbin/slurmd --systemd $SLURMD_OPTIONS`, and systemd splits a variable's value at
 # whitespace **without honouring quotes inside it** — so `--conf "Gres=gpu:1 Feature=vram24"` would
 # reach slurmd as three mangled arguments the moment `--conf` grew a second key (Feature=vramN is what
-# a Spawn's --vram matches). Quotes written literally in a unit file ARE honoured,
+# a Dive's --vram matches). Quotes written literally in a unit file ARE honoured,
 # so the drop-in states the whole command and keeps the space-separated --conf intact.
 SLURMD_DROPIN = Path("/etc/systemd/system/slurmd.service.d/ccc.conf")
 MUNGE_KEY = Path("/etc/munge/munge.key")  # 0400 munge:munge — cluster-wide, never expires
@@ -337,8 +336,8 @@ ENROLL_API_UNIT = Path("/etc/systemd/system/ccc-enroll-api.service")
 SUDOERS_MUNGE_HEADSCALE = Path("/etc/sudoers.d/ccc-munge-headscale")
 ENROLL_API_USER = "munge"
 CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only writable location
-# The package download cache that makes a per-Spawn build affordable — NOT an env cache. Node-local,
-# never staged anywhere. Without it every Spawn re-downloads its whole dependency set; with it, uv and
+# The package download cache that makes a per-Dive build affordable — NOT an env cache. Node-local,
+# never staged anywhere. Without it every Dive re-downloads its whole dependency set; with it, uv and
 # micromamba hard-link a rebuild out of what is already on disk. Under CCC_LIB so both teardowns already
 # sweep it (remove_arm_state on an Arm, remove_enroll_api on the Head).
 #
@@ -359,7 +358,7 @@ CCC_LIB = Path("/var/lib/ccc")          # munge-owned; the Enroll API's only wri
 #
 # Whole-subtree pruning at the cap, not per-entry LRU: both tools hard-link OUT of these trees, so
 # evicting one entry needs their own bookkeeping to be safe. Emptying costs re-downloads and nothing
-# else — it holds no state any Spawn depends on.
+# else — it holds no state any Dive depends on.
 NODE_ENV_CACHE_DIR = CCC_LIB / "envcache"
 NODE_ENV_CACHE_MAX_GB = 20
 # The Arm registry. `cuttle arm authorize` CREATES each row (owner + name) before the donor's token is
@@ -368,7 +367,7 @@ NODE_ENV_CACHE_MAX_GB = 20
 # `head: true` marks the Head's own co-located Arm (admin-owned, never enrolls, GRES lines come from
 # templates.head_gres_node() — so gres rendering skips it).
 # `gpu_devices` and `powers` are parallel lists, index-aligned, and that alignment is load-bearing:
-# it is what turns a Slurm GRES index back into the Power a Spawn is settled at. There is deliberately
+# it is what turns a Slurm GRES index back into the Power a Dive is settled at. There is deliberately
 # no node-level `power` beside them — a summary stored next to the list it came from is a second
 # number that can silently disagree with it. Where one is needed it is derived at the point of use.
 ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_devices, powers, mesh_ip, admitted, ...}}
@@ -377,7 +376,7 @@ ARMS_REGISTRY = CCC_LIB / "arms.json"   # {name: {owner, gpu_devices, powers, me
 # Named capabilities an Arm may report having: heavy, hardware- or licence-gated software that is not
 # installed everywhere. BUILT IN rather than admin-curated, because CCC knows what each name MEANS.
 # At minimum that is placement plus `$<NAME>_PATH`; a name may also carry a runtime profile (see
-# ccc_head_api.features), in which case CCC arranges the env vars, binds, cache and licence a Spawn
+# ccc_head_api.features), in which case CCC arranges the env vars, binds, cache and licence a Dive
 # needs. A name CCC has never heard of would be a Slurm `Feature=` token with neither: an Arm could
 # advertise it and nothing on the other end would know what to do with it. So the catalog is a
 # constant, and an Arm picks FROM it at `cuttle setup`.
@@ -388,14 +387,14 @@ FEATURE_NAMES = ("vlearn", "isaaclab")
 # Each name also becomes a Slurm Feature= token and (uppercased) an env var name. Kept as a check on
 # what arrives over the wire at /enroll — the CLI no longer takes a typed feature name anywhere.
 FEATURE_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
-# Where `cuttle setup --arm` records this box's declared features + install paths, so a Spawn's payload
+# Where `cuttle setup --arm` records this box's declared features + install paths, so a Dive's payload
 # can find e.g. $VSIM_PATH without knowing whether this node has it — the
-# Spawn job script sources this unconditionally (a no-op where it's absent).
+# Dive job script sources this unconditionally (a no-op where it's absent).
 ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
 # This Arm's **Licence** directory, exported into that same file. ONE per Arm regardless of how many
 # Features it offers: a licence is locked to the machine, and an Arm is one machine — so two Features
-# can never collide over it. The Spawn job script binds it at the Guise's home inside the Pod
-# (the only place a licence manager looks), and only for a Spawn that requested a Feature.
+# can never collide over it. The Dive job script binds it at the Guise's home inside the container
+# (the only place a licence manager looks), and only for a Dive that requested a Feature.
 LICENCE_HOME_VAR = "CCC_LICENCE_HOME"
 # The base + benchmark images' digest refs, written by `setup --head` (podman.build_images) and handed
 # to every Arm at /enroll. In /opt, kept by a plain teardown with the images it names.
@@ -429,7 +428,7 @@ WSL_KEEPALIVE_TASK = "CCC Arm keep-alive"
 HEAD_API_PORT = 443  # 8080 = headscale, 8081 = enroll API
 HEAD_API_SERVICE = "ccc-head-api"
 HEAD_API_UNIT = Path("/etc/systemd/system/ccc-head-api.service")
-# The **Mantle** (glossary): the single service identity every Spawn executes as, on every node. On the
+# The **Mantle** (glossary): the single service identity every Dive executes as, on every node. On the
 # Head it also runs the Head API, owns the auth DB (head.db), and submits via the munge socket — never
 # reading the munge key.
 HEAD_API_USER = "ccc"
@@ -441,14 +440,14 @@ HEAD_API_USER = "ccc"
 CCC_UID = 60000
 CCC_GID = 60000
 # --- Guises: a per-User Unix identity on every node ---
-# A **Guise** is what a Spawn runs as. The Mantle above is what the *cluster* is — no Spawn runs as
+# A **Guise** is what a Dive runs as. The Mantle above is what the *cluster* is — no Dive runs as
 # it, and one that does is a bug. Every Guise is `ccc-u<uid>`, named after its uid and
 # nothing else: the Prolog that creates the account on a donor's Arm has `SLURM_JOB_UID` and no other
 # input at all (no network, no head.db), so the name must be derivable from the uid alone. It also
 # cannot collide with a donor's own accounts, and needs no CCC-username regex.
 GUISE_PREFIX = "ccc-u"
-# Reserved for the cluster itself — the enrollment benchmark, the one Spawn no User submits. It is a
-# Guise like any other, so that "a Spawn owned by `ccc` is a bug" has no exceptions.
+# Reserved for the cluster itself — the enrollment benchmark, the one Dive no User submits. It is a
+# Guise like any other, so that "a Dive owned by `ccc` is a bug" has no exceptions.
 GUISE_CLUSTER_UID = 60001
 GUISE_UID_MAX = 61182    # same reserved block as CCC_UID, below systemd's DynamicUser (61184+)
 # The shared SECONDARY group every Guise joins, and the only thing the Head's sudoers rule names: `ccc`
@@ -473,7 +472,7 @@ SUDOERS_CCC_SLURM = Path("/etc/sudoers.d/ccc-slurm")
 # underivable), and every version bump renames all of them.
 #
 # NOT a pinned uid, unlike the Mantle above. That pin exists because Slurm setuid()s to the submitting
-# uid on every node, so the Mantle must be the same uid cluster-wide. This account never runs a Spawn,
+# uid on every node, so the Mantle must be the same uid cluster-wide. This account never runs a Dive,
 # never appears to Slurm and never leaves the box that holds the licence — a locally-allocated system
 # uid is correct, and staying out of the reserved 60000+ block means it can never shadow a Guise.
 LICENCE_USER = "ccc-licence"
@@ -481,10 +480,10 @@ LICENCE_GECOS = "CCC Licence"   # matched as a prefix by teardown, exactly like 
 
 
 def guise_name(uid: int) -> str:
-    """The Unix account a Spawn owned by this uid runs as. The ONLY place the name is formed."""
+    """The Unix account a Dive owned by this uid runs as. The ONLY place the name is formed."""
     return f"{GUISE_PREFIX}{uid}"
 # The first CCC login account, seeded at `setup --head`. A fixed name (NOT the operator's OS username):
-# it's an app-level account in head.db, unrelated to any Unix uid. Spawns show `submitted_by: admin`.
+# it's an app-level account in head.db, unrelated to any Unix uid. Dives show `submitted_by: admin`.
 FIRST_ADMIN_USER = "admin"
 HEAD_API_WEB_DIR = Path("/opt/ccc/head-api/web")  # built SPA, world-readable
 # LAN TLS. The Head API carries passwords and session tokens on `0.0.0.0`, so the LAN path must be
@@ -547,12 +546,8 @@ FIREFOX_CA = Path("/etc/firefox/ccc-head.crt")
 # `ccc` can't create files in a munge-owned dir. 0600 db, seeded at `setup --head`.
 HEAD_STATE_DIR = CCC_LIB / "head"
 HEAD_DB = HEAD_STATE_DIR / "head.db"
-# Submission state (all ccc-owned, 0700, under HEAD_STATE_DIR so `ccc` can create/traverse them):
-#   spawns/<id>/      — a Spawn's out/err/exit (the rsync [spawns] stage-out target). The CLI
-#                       reads these back over the API, never off local disk (jobs run as ccc now).
-#   scratch/<id>/     — the co-located Arm's per-Spawn run dir.
-HEAD_SPAWNS_DIR = HEAD_STATE_DIR / "spawns"
-HEAD_SCRATCH_DIR = HEAD_STATE_DIR / "scratch"
+# bench/<node>/power — where an enrollment benchmark stages its result (the rsync [bench] module).
+HEAD_BENCH_DIR = HEAD_STATE_DIR / "bench"
 CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; teardown rmdirs it last
 
 # --- Podman (podman.py) ---
@@ -640,7 +635,7 @@ REGISTRY_GC_UNIT = Path("/etc/systemd/system/ccc-registry-gc.service")
 REGISTRY_GC_TIMER = Path("/etc/systemd/system/ccc-registry-gc.timer")
 
 
-# --- the interactive shell a Tide Pool hands its User ---
+# --- the interactive shell a Dive hands its User ---
 # The oh-my-zsh tree, powerlevel10k and its plugins, vendored INTO this package and COPYed into the
 # base image (podman.build_images) — no upstream clone at build time, so no drift.
 #
@@ -649,20 +644,18 @@ REGISTRY_GC_TIMER = Path("/etc/systemd/system/ccc-registry-gc.timer")
 # x86_64-only, deliberately: it is per-architecture and this fleet is x86_64. An aarch64 Arm would need
 # its own copy dropped in beside it under that release's name.
 ZSH_DATA_DIR = Path(__file__).resolve().parent / "zsh"
-# Where the above lands INSIDE the image. Duplicated in ccc_head_api.zshrc, which renders the rc that
-# points at it — the CLI and the head-side package do not import each other (see the Tide Pool relay
-# port note below for the same duplication and the same reason).
+# Where the above lands INSIDE the image.
 POD_OMZ_DIR = "/opt/ccc/oh-my-zsh"
 
 # --- Karma tick: the service that ranks the queue by standing ---
 # A THIRD unit off the same venv and the same head.db (`ccc_head_api.tick`). Deliberately not a task
 # inside the Head API: the economy must not be able to wedge the API, nor the API the economy — and
-# the meter (sample Demand, settle ended Spawns) is this same tick. Runs as the Mantle, which
+# the meter (sample Demand, settle ended Dives) is this same tick. Runs as the Mantle, which
 # owns every job in the queue and so may re-nice any of them with no privilege at all.
 KARMA_SERVICE = "ccc-karma"
 KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 
-# --- Tide Pool: interactive Spawn relay ---
+# --- Dive: interactive Dive relay ---
 # The Head-side TCP relay's listen-port range (ccc_head_api.dive.PORT_BASE/PORT_RANGE) — MUST match
 # those constants exactly; duplicated here rather than shared because the CLI and the head-side API
 # package do not import each other (same reason FEATURE_NAMES is duplicated between
@@ -670,9 +663,9 @@ KARMA_UNIT = Path("/etc/systemd/system/ccc-karma.service")
 # (system.allow_tcp_port_range) — a per-Tide-Pool ufw rule would mean firewall churn on every submit.
 #
 # BELOW Linux's default ephemeral range (net.ipv4.ip_local_port_range = 32768-60999): these ports are
-# LISTENED on, by the relay on the Head and by the Pod's sshd on an Arm, so a range inside the ephemeral
+# LISTENED on, by the relay on the Head and by the container's sshd on an Arm, so a range inside the ephemeral
 # one is racing the kernel's own allocator on every box — any outbound connection can be handed the port
-# a Tide Pool is about to want, and the bind then fails with EADDRINUSE.
+# a Dive is about to want, and the bind then fails with EADDRINUSE.
 TIDEPOOL_PORT_BASE = 31000
 TIDEPOOL_PORT_RANGE = 200
 
@@ -803,38 +796,25 @@ BACKUP_SERVICE_UNIT = Path("/etc/systemd/system/ccc-backup.service")
 BACKUP_TIMER_UNIT = Path("/etc/systemd/system/ccc-backup.timer")
 
 # --- stage-in/out (④): rsync daemon on the Head, bound to the mesh ---
-# A Spawn on a remote Arm has none of the submitter's files. The Head runs an rsync daemon on its
-# mesh address ONLY (never 0.0.0.0 / the personal tailnet); the job pulls the project in and pushes
-# results back. rsync 873 is privileged, so the daemon runs as root and each module drops to the Head
-# user via uid=/gid=.
-#
-# Mesh membership is NOT the authz: nothing about a uid or a namespace closes a network service, so a
-# shared module reachable by every Arm would let any payload name it and overwrite any Spawn's `exit`
-# marker. What the daemon serves is one module per Spawn, rooted at that Spawn's own results dir,
-# minted at submit and revoked when its transfers end — a **Siphon** (ccc_head_api.siphons).
-# Those live in RSYNCD_DIR, which the Head API writes and rsyncd `&include`s; this file's job is the
-# globals they inherit (mesh-only `hosts allow`, the drop to `ccc`) plus [bench], below.
+# A Dive on a remote Arm pulls its folders from, and mirrors them back to, the Head's rsync daemon on
+# its mesh address ONLY (never 0.0.0.0 / the personal tailnet). 873 is privileged, so the daemon runs
+# as root; each module drops to its own uid. The per-Dive modules are DIVE_RSYNCD (ccc-tidepool writes
+# them); this file holds the globals they inherit (mesh-only `hosts allow`) plus [bench], below.
 RSYNCD_CONF = Path("/etc/ccc-rsyncd.conf")
 RSYNCD_SERVICE = "ccc-rsyncd"
 RSYNCD_UNIT = Path("/etc/systemd/system/ccc-rsyncd.service")
 RSYNCD_PORT = 873
-# Per-Spawn module files (+ their secrets), written by the Head API as `ccc`, re-read by rsyncd on
-# every connection — so opening and closing a Siphon needs no reload, no signal, and no root.
-RSYNCD_DIR = HEAD_STATE_DIR / "rsyncd.d"
-# The one module that is NOT per-Spawn: the enrollment benchmark's stage-out target, rooted at the
-# bench subtree so a benchmark can reach the Power files and nothing else. It cannot borrow a Siphon —
-# it never goes through the Head API at all (enroll.py sbatches it directly) — so it carries a
-# cluster-lifetime secret instead. Both the module and its secret stay in the ROOT-owned conf above,
-# out of RSYNCD_DIR: that directory is writable by the Head API by necessity, and this is the one part
-# of the daemon's config a compromised Head API should not be able to rewrite.
+# The one module that is not per-Dive: the enrollment benchmark's stage-out target, rooted at
+# HEAD_BENCH_DIR so a benchmark can reach the Power files and nothing else. It never goes through the
+# Head API (enroll.py sbatches it directly), so it carries a cluster-lifetime secret. Module and secret
+# stay in the root-owned conf.
 RSYNC_MODULE_BENCH = "bench"
 RSYNC_BENCH_USER = "ccc-bench"
 RSYNCD_BENCH_SECRETS = Path("/etc/ccc-rsyncd.bench.secrets")
 
 # --- CCC user artifacts ---
-# The OPERATOR's own dir — settings + credentials only. It holds no Spawn machinery: images live in
-# CCC_IMAGES_DIR (world-readable, so the home-less Mantle can read them) and Spawn results live on the
-# Head under HEAD_SPAWNS_DIR, fetched over the API. A submitter never needs a local .ccc/spawns.
+# The OPERATOR's own dir — settings + credentials only. Images live in CCC_IMAGES_DIR (world-readable,
+# so the home-less Mantle can read them).
 # `$CCC_HOME` overrides the location, so a test (or a second cluster) can point cuttle at an isolated
 # home instead of the operator's real `~/.ccc`. Without it a pty test inherits the live box's
 # credentials and its menu state depends on whether the real Head is reachable — flaky by construction.

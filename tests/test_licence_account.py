@@ -78,7 +78,7 @@ class TestTheAccountCarriesTheDirectory:
 class TestTheUidIsDeliberatelyNotPinned:
     def test_it_cannot_shadow_a_guise(self, commands):
         """Unlike the Mantle, which MUST be one uid cluster-wide because Slurm setuid()s to the
-        submitting uid on every node. This account never runs a Spawn and never leaves its box, so it
+        submitting uid on every node. This account never runs a Dive and never leaves its box, so it
         takes a locally-allocated system uid — below 1000, where the prolog (which only ever acts on
         the 60000+ Guise range) can never mistake it for a Guise."""
         setup.provision_licence_home("/opt/ccc/licence")
@@ -89,7 +89,7 @@ class TestTheUidIsDeliberatelyNotPinned:
 
 class TestASpawnCanWriteToIt:
     def test_the_guise_group_owns_it(self, commands):
-        """A Spawn runs as a **Guise** — a different uid — so group ownership is the only way it
+        """A Dive runs as a **Guise** — a different uid — so group ownership is the only way it
         reaches this directory at all."""
         setup.provision_licence_home("/opt/ccc/licence")
         argv = _argv(commands, "install")
@@ -104,7 +104,7 @@ class TestASpawnCanWriteToIt:
         assert argv[argv.index("-m") + 1] == "2770"
 
     def test_the_shared_group_is_ensured_first(self, commands):
-        """On an Arm the group may not exist yet — the prolog creates it lazily, when the first Spawn
+        """On an Arm the group may not exist yet — the prolog creates it lazily, when the first Dive
         lands, which is after setup. Chowning to a group that does not exist would fail the run."""
         setup.provision_licence_home("/opt/ccc/licence")
         assert commands[0][0] == "groupadd"

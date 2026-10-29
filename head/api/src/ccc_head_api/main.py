@@ -33,7 +33,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, karma, ratelimit, retraction, slurm
 from . import features as features_mod   # `features` is the /features endpoint's own function name
-from . import spawns as spawns_mod
 from . import dive as dive_mod
 from . import tidepool as tp_mod
 from . import files as files_mod
@@ -101,7 +100,7 @@ async def access_log(request: Request, call_next):
     return response
 
 # Every API endpoint lives under `/api`, so no API path can ever collide with a client-side route the
-# SPA owns (the Dashboard routes `/arms`, `/karma`, `/spawn/<id>` in the browser). Without this, a hard
+# SPA owns (the Dashboard routes `/arms`, `/karma`, `/dive/<id>` in the browser). Without this, a hard
 # reload on `/karma` matched the API's `/karma` and returned raw JSON instead of the page. `/healthz`
 # stays at the root — it's a liveness probe, not part of the app surface.
 api = APIRouter(prefix="/api")
@@ -266,7 +265,7 @@ def readyz(response: Response) -> dict:
 def arms(user: dict = Depends(current_user)) -> list[dict]:
     """Every compute node's live status + enrollment facts. See slurm.arms(). `retracted` is app-layer
     state slurm.arms() never sees (there is no real Slurm DRAIN behind it — see retraction.py) —
-    enriched here the same way `/spawns` adds `submitted_by`."""
+    enriched here the same way `/dives` adds `started_by`."""
     rows = slurm.arms()
     with db.connect() as conn:
         retracted = db.retracted_nodes(conn)
@@ -281,7 +280,7 @@ def _arm_owner(name: str) -> str | None:
 
 @api.get("/features")
 def features(user: dict = Depends(current_user)) -> list[str]:
-    """The Arm Features THIS HEAD'S VERSION supports (`cuttle.config.FEATURE_NAMES`) — what a Spawn
+    """The Arm Features THIS HEAD'S VERSION supports (`cuttle.config.FEATURE_NAMES`) — what a Dive
     may require.
 
     A constant, not state: there is nothing to mutate and no endpoint that could. It is still served
@@ -295,7 +294,7 @@ def feature_environment(name: str, user: dict = Depends(current_user)) -> str:
     """What CCC arranges for a Feature that has a runtime profile (`cuttle feature show`).
 
     Served rather than shipped in the CLI so the library list a Feature's software links against has
-    exactly one copy — this one, which is also the list CCC builds into every Spawn that asks for it.
+    exactly one copy — this one, which is also the list CCC builds into every Dive that asks for it.
 
     404 for a Feature with no profile: `isaaclab` is a real, catalogued Feature that simply has no
     runtime to describe, and that is an answer rather than a failure."""
@@ -307,10 +306,10 @@ def feature_environment(name: str, user: dict = Depends(current_user)) -> str:
 
 @api.post("/arms/{name}/retract", status_code=204)
 def retract_arm(name: str, user: dict = Depends(current_user)) -> Response:
-    """Pause YOUR OWN Arm: stop taking new Spawns on it and end whatever is running there right now.
+    """Pause YOUR OWN Arm: stop taking new Dives on it and end whatever is running there right now.
 
     App-layer, not real Slurm DRAIN — see retraction.py's module docstring for why
-    that needs no privilege the Head API doesn't already have. Every Spawn currently RUNNING on this
+    that needs no privilege the Head API doesn't already have. Every Dive currently RUNNING on this
     Arm is sent TERM immediately and has retraction.GRACE_SECONDS to exit before the Karma tick
     force-kills it; either way it settles at ZERO.
 
@@ -331,7 +330,7 @@ def retract_arm(name: str, user: dict = Depends(current_user)) -> Response:
 
 @api.post("/arms/{name}/return", status_code=204)
 def return_arm(name: str, user: dict = Depends(current_user)) -> Response:
-    """Reopen YOUR OWN retracted Arm for new placement. Does not reprieve a Spawn already caught by the
+    """Reopen YOUR OWN retracted Arm for new placement. Does not reprieve a Dive already caught by the
     Retract — see retraction.py's module docstring. Same ownership rule as retract: no Admin branch."""
     owner = _arm_owner(name)
     if owner is None:
@@ -340,149 +339,6 @@ def return_arm(name: str, user: dict = Depends(current_user)) -> Response:
         raise HTTPException(403, "you can only return your own Arm")
     retraction.unretract(name)
     log.info("return arm=%s by %s", name, user["username"])
-    return Response(status_code=204)
-
-
-@api.get("/spawns")
-def spawns(limit: int | None = None, user: dict = Depends(current_user)) -> list[dict]:
-    """The live Spawn queue (pending/running, CCC partition), enriched with Attribution. Every Spawn
-    runs as the Mantle now, so Slurm's own user field says `ccc` for all of them and is useless — the
-    ledger is what says who submitted it. See slurm.spawns(). `limit` caps to the front of the queue
-    (rows are ascending by id — running + next-to-run first); None = every row, the Dashboard's read."""
-    rows = slurm.spawns()
-    if limit:
-        rows = rows[:limit]
-    ids = [r["id"] for r in rows if r["id"] is not None]
-    with db.connect() as conn:
-        submitters = db.spawn_submitters(conn, ids)
-        mains = db.dive_mains(conn, ids)
-    for r in rows:
-        r["submitted_by"] = submitters.get(r["id"])
-        r["main"] = mains.get(r["id"])
-    return rows
-
-
-def _archive_row(r: dict) -> dict:
-    """Finish an archive row from db.py — whether an exit-less end was asked for.
-
-    Shared by `/spawns/history` and `/spawns/{job_id}` so a Spawn cannot read `failed` in the list and
-    `cancelled` on its own page.
-    """
-    # The ledger cannot answer cancelled-vs-failed — it records the absent exit code, not the reason —
-    # so the marker is consulted, and only for the rows that lack one.
-    r["cancelled"] = (r["exit_code"] is None and r["finished_at"] is not None
-                      and spawns_mod.was_cancelled(r["job_id"]))
-    return r
-
-
-# Declared BEFORE `/spawns/{job_id}`: FastAPI matches in order, and `history` would otherwise be parsed
-# as an int job_id and 422.
-@api.get("/spawns/history")
-def spawns_history(days: int = 30, limit: int | None = None,
-                   user: dict = Depends(current_user)) -> list[dict]:
-    """The durable archive: Spawns submitted within `days`, newest first — everything the live queue has
-    forgotten. Excludes what is still queued, so history and `/spawns` are disjoint (queue is now,
-    history is done). Everyone's, like the queue: what ran on the shared cluster is not private. Each row
-    carries the ledger's attribution, its settled cost, and the outcome the tick stamped (exit_code +
-    finished_at)."""
-    live = [r["id"] for r in slurm.spawns() if r["id"] is not None]
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with db.connect() as conn:
-        return [_archive_row(dict(r)) for r in db.spawn_history(conn, since, live, limit)]
-
-
-@api.get("/spawns/{job_id}")
-def spawn_status(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """A single Spawn, whole: its state, and everything the archive knows about it.
-
-    The Attribution ledger is what distinguishes "this Spawn died" from "no such Spawn". A Spawn that
-    is gone from squeue with no `exit` file never recorded one — it was scancel'd, OOM-killed, or its
-    Arm dropped off the mesh before staging out. That is `failed`, not 404, and only the ledger can say
-    so. Remote Arms are the flakiest nodes in the cluster (donor box sleeps, loses power), so this
-    is the common case there, not a corner.
-
-    A Spawn somebody *cancelled* lands in that same exit-code-less state, and reporting it as died-on-
-    us is a lie the submitter can see through. It is told apart by the marker `DELETE /spawns/{id}`
-    leaves — see spawns.mark_cancelled.
-
-    The archive fields (cost, node, script, the shape it asked for, both expiry countdowns) ride along
-    when there is a `spawns` row, which is every Spawn the API submitted. They are what let the Spawn
-    page render from ONE fetch without caring whether its subject is queued, running or a year old —
-    the alternative was pulling the whole cluster archive to show a single Spawn. The CLI polls this
-    route and ignores them; the keys it reads (`done`, `state`, `exit`) are unchanged.
-
-    A Spawn with no `spawns` row is not an error here: the enrollment benchmark is sbatched outside the
-    API, so it is live in Slurm and absent from the ledger. It answers with state alone.
-    """
-    state = spawns_mod.active_state(job_id)
-    rc = None if state is not None else spawns_mod.exit_code(job_id)
-    with db.connect() as conn:
-        row = db.spawn_detail(conn, job_id)
-
-    if state is not None:
-        out = {"id": job_id, "done": False, "state": state}
-    elif rc is not None:
-        out = {"id": job_id, "done": True, "state": "done", "exit": rc}
-    elif row is not None:
-        # `cancelled` before `failed`: both lack an exit code, but one of them somebody asked for.
-        out = {"id": job_id, "done": True,
-               "state": "cancelled" if spawns_mod.was_cancelled(job_id) else "failed"}
-    else:
-        raise HTTPException(404, f"unknown Spawn {job_id}")
-
-    if row is not None:
-        archive = _archive_row(dict(row))
-        archive.pop("job_id")
-        archive.pop("cancelled")  # `state` already says it, and says it for the live cases too
-        out |= archive
-    return out
-
-
-@api.get("/spawns/{job_id}/logs", response_class=PlainTextResponse)
-def spawn_logs(job_id: int, user: dict = Depends(current_user)) -> str:
-    """The Spawn's stdout so far (a remote Spawn's arrives only at stage-out — post-hoc)."""
-    return spawns_mod.out_text(job_id) or ""
-
-
-@api.get("/spawns/{job_id}/stderr", response_class=PlainTextResponse)
-def spawn_stderr(job_id: int, user: dict = Depends(current_user)) -> str:
-    """The Spawn's stderr — where a crash's traceback lands (`/logs` serves stdout, empty on a crash)."""
-    return spawns_mod.err_text(job_id) or ""
-
-
-@api.delete("/spawns/{job_id}", status_code=204)
-def cancel_spawn(job_id: int, user: dict = Depends(current_user)) -> Response:
-    """End YOUR OWN live Spawn early. Attribution is the ledger's, not Slurm's (every Spawn runs as
-    the Mantle).
-
-    Closes the gap FRONTEND.md names most loudly: until now nothing in CCC could stop a job from any
-    client, and under Karma a User was *paying* until `--time` expired. Settles for the seconds
-    actually held, by the Karma tick, when the cancelled Spawn drops out of squeue — see slurm.cancel.
-
-    **Cancelling someone else's Spawn is an admin WRITE and is not reachable from here**: it is
-    `cuttle cancel <id>`, run *on the Head*, where the client reads this route's 403 as the ownership
-    test and takes the operator's `sudo scancel` road instead. The test below is unconditional — an
-    Admin gets no branch — so a stolen admin Session is worth exactly one User's Session, and the
-    Dashboard (which has only this route) offers Cancel on your own Spawns and nobody else's.
-
-    The 404 above matters to that client: an id this ledger never recorded is never escalated to a
-    blind scancel. Reaping one of those is `--any`, deliberately typed.
-    """
-    with db.connect() as conn:
-        row = db.get_spawn(conn, job_id)
-    # Only Spawns the Head actually recorded can be cancelled through here. An id squeue knows but the
-    # ledger doesn't is not a CCC Spawn (or predates attribution); refuse rather than scancel blindly.
-    if row is None:
-        raise HTTPException(404, f"unknown Spawn {job_id}")
-    if row["user_id"] != user["id"]:
-        raise HTTPException(403, "you can only cancel your own Spawns")
-    slurm.cancel(job_id)
-    # AFTER the scancel, never before: the marker only changes how this Spawn is *described*, and a
-    # Spawn left running because we could not write a file would be a real cost to its submitter. The
-    # window between the two is a status read that says "failed" — the answer given before this
-    # existed at all.
-    spawns_mod.mark_cancelled(job_id)
-    log.info("cancel id=%s by %s", job_id, user["username"])
     return Response(status_code=204)
 
 
@@ -611,7 +467,7 @@ def karma_demand(days: int = 7, user: dict = Depends(current_user)) -> list[dict
     This is the **only** surface the Tide is ever seen through, and it is deliberately not a forecast: a
     User reads the shape and infers the quiet hours for themselves. Nothing quotes them a predicted
     price, warns them, or asks them to confirm — *Karma ranks, it never gates*, and a blocking "this
-    will cost you N" would have been the first thing in the model able to stop a Spawn.
+    will cost you N" would have been the first thing in the model able to stop a Dive.
     """
     with db.connect() as conn:
         return [dict(r) for r in db.demand_series(conn, days)]
@@ -657,16 +513,32 @@ def dive_request(req: DiveRequest, user: dict = Depends(ambient_user)) -> dict:
 
 
 @api.get("/dives")
-def dives(user: dict = Depends(current_user)) -> list[dict]:
+def dives(limit: int | None = None, user: dict = Depends(current_user)) -> list[dict]:
+    """The live queue — everyone's pending/running Dives, with who started each. `limit` caps to the
+    front (running + next-to-run first); None = every row, the Dashboard's read."""
+    return dive_mod.queue(limit)
+
+
+@api.get("/dives/mine")
+def dives_mine(user: dict = Depends(current_user)) -> list[dict]:
     """The caller's open Dives (queued, running, or ending)."""
     return dive_mod.rows(user["id"])
 
 
+@api.get("/dives/history")
+def dives_history(days: int = 30, limit: int | None = None,
+                  user: dict = Depends(current_user)) -> list[dict]:
+    """The durable archive: Dives started within `days` that have left the queue, newest first —
+    disjoint from `GET /dives` (queue is now, history is done). Each row carries who started it, its
+    settled cost, and its `outcome`."""
+    return dive_mod.history(days, limit)
+
+
 @api.get("/dives/{job_id}")
-def dive_connection(job_id: int, user: dict = Depends(current_user)) -> dict:
-    """State, and once an sshd answers, where `ssh <name>-<id>` connects. Polling it brings an Arm
-    Dive's relay up."""
-    return dive_mod.connection(user, job_id)
+def dive_detail(job_id: int, user: dict = Depends(current_user)) -> dict:
+    """One Dive, whole — state + archive, and for its owner where `ssh <name>-<id>` connects (polling
+    it brings an Arm Dive's relay up)."""
+    return dive_mod.detail(user, job_id)
 
 
 @api.delete("/dives/{job_id}", status_code=204)
@@ -826,7 +698,7 @@ app.include_router(api)
 class SPAFiles(StaticFiles):
     """Static files, but unknown paths fall back to index.html.
 
-    The Dashboard routes client-side (/arms, /karma, /spawn/<id>). Those paths are not files, so a hard
+    The Dashboard routes client-side (/arms, /karma, /dive/<id>). Those paths are not files, so a hard
     reload or a pasted link would otherwise 404 — the SPA never gets a chance to run and read the URL.
     This is why the API lives under `/api`: a client route like `/karma` reaches this fallback and gets
     the SPA, instead of being shadowed by an identically-named endpoint and returning JSON.

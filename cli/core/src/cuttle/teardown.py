@@ -45,15 +45,15 @@ _APT_SOURCE_FILES = [
 ]
 
 
-def cancel_spawns() -> None:
-    """End every Spawn still queued or running, BEFORE the services that own them are stopped.
+def cancel_dives() -> None:
+    """End every Dive still queued or running, BEFORE the services that own them are stopped.
 
     Head only, and necessarily first: `scancel` asks slurmctld, so once `stop_daemons` has run there
     is nothing left to ask. Slurm gets to end its own jobs — epilogs run, allocations are released —
     rather than having the tree shot out from under it.
 
     Nothing did this before, and stopping slurmd does NOT end a running batch step: its process tree
-    detaches and survives, so a Tide Pool's sshd was still listening on its port hours after the
+    detaches and survives, so a Dive's sshd was still listening on its port hours after the
     cluster it belonged to had been torn down. `end_guise_processes` is the backstop that guarantees
     the ones this misses are gone — this is the graceful half.
     """
@@ -116,7 +116,7 @@ def remove_head_api() -> None:
     remove_enroll_api."""
     system.deny_tcp_port(config.HEAD_API_PORT)
     system.deny_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE)
-    # Legacy range Tide Pools used before moving out of the ephemeral port range (config.
+    # Legacy range Dives used before moving out of the ephemeral port range (config.
     # TIDEPOOL_PORT_BASE) — drop once no Head set up before that move remains.
     system.deny_tcp_port_range(41000, 200)
     run(["rm", "-f", str(config.HEAD_API_UNIT), str(config.SUDOERS_CCC_SLURM)], sudo=True, check=False)
@@ -171,11 +171,10 @@ def remove_head_services() -> None:
 
 def remove_rsyncd() -> None:
     """Stage-in/out daemon (Head-only, CCC-only — safe to remove wholesale). The service was already
-    stopped/disabled by stop_daemons; drop its unit + config, the [bench] secret, and every open
-    **Siphon**. RSYNCD_DIR lives under HEAD_STATE_DIR, which teardown removes wholesale anyway — it is
-    named here too so the credentials go with the daemon that honoured them, whatever the order."""
+    stopped/disabled by stop_daemons; drop its unit + config, the [bench] secret, and every Dive's
+    module."""
     run(["rm", "-rf", str(config.RSYNCD_UNIT), str(config.RSYNCD_CONF),
-         str(config.RSYNCD_BENCH_SECRETS), str(config.RSYNCD_DIR), str(config.DIVE_RSYNCD)],
+         str(config.RSYNCD_BENCH_SECRETS), str(config.DIVE_RSYNCD)],
         sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
@@ -199,12 +198,12 @@ def remove_slurm_config() -> None:
     _sweep_job_tmp()
 
 
-# The per-job files a Spawn leaves in /tmp: its scratch dir (remote branch), its sbatch sink, and an
+# The per-job files a Dive leaves in /tmp: its scratch dir (remote branch), its sbatch sink, and an
 # enrolment benchmark's log. All named after a job id, and it is `remove_slurm_config` above that makes
 # a job id ambiguous — dropping the state dir resets Slurm's counter, so the NEXT cluster issues 1, 2, 3
 # over the top of a previous one's leftovers. Those leftovers belong to accounts the next cluster's
 # **Guise**s cannot write to, and a sink slurmd cannot open kills the batch step outright (see
-# ccc_head_api.spawns' `sink=` line; found on hardware 2026-08-02). So the sweep belongs exactly here,
+# the job script's `--output` sink; found on hardware 2026-08-02). So the sweep belongs exactly here,
 # beside the reset that causes the collision.
 #
 # `[0-9]*` and not `*`: only job-id-suffixed names are ours to take. Nothing else in /tmp starting
@@ -383,14 +382,14 @@ def remove_munge_key() -> None:
 
 
 def remove_mantle() -> None:
-    """The Spawn-execution identity `setup` created on this node (provision_mantle). Dropped on both
+    """The Dive-execution identity `setup` created on this node (provision_mantle). Dropped on both
     the Head and an Arm — a departed node must not keep a cluster account at a pinned uid."""
     run(["userdel", config.HEAD_API_USER], sudo=True, check=False)
     run(["groupdel", config.HEAD_API_USER], sudo=True, check=False)
 
 
 def remove_guises() -> None:
-    """Every **Guise** this node accumulated — one per User whose Spawn ever landed here, created by
+    """Every **Guise** this node accumulated — one per User whose Dive ever landed here, created by
     the Slurm prolog as they arrived.
 
     Found by their GECOS tag, which is the only reason it exists: the accounts are named after uids,
@@ -430,13 +429,13 @@ def end_guise_processes(grace: float = 5.0) -> None:
     """Make sure nothing is still running as a **Guise**, so the `userdel` above can remove one.
 
     `userdel` REFUSES an account with a live process ("currently used by process") and every call in
-    this module is check=False, so a surviving Spawn used to make its Guise silently outlive the
+    this module is check=False, so a surviving Dive used to make its Guise silently outlive the
     teardown. The next `setup` then found that account already there, `useradd --groups` no-opped on
     it, and the freshly re-created GUISE_GROUP came back WITHOUT it — leaving that one Guise off the
-    Runas list of the Head's sudoers rule, so every Spawn it submitted was refused by sudo. The whole
+    Runas list of the Head's sudoers rule, so every Dive it submitted was refused by sudo. The whole
     chain is silent, and surfaces days later as one User who cannot run anything.
 
-    TERM, then KILL after a grace period. `cancel_spawns` has usually already done this the polite
+    TERM, then KILL after a grace period. `cancel_dives` has usually already done this the polite
     way — what reaches here is what Slurm no longer knows about.
     """
     names = guise_names()
@@ -485,8 +484,8 @@ def teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
 
     No Headscale/head-api/rsyncd here; an Arm runs none.
 
-    And no `cancel_spawns`, deliberately: scancel asks the CONTROLLER, so a donor taking their own box
-    back would end Spawns running on everyone else's machines too. `remove_guises` ends the ones
+    And no `cancel_dives`, deliberately: scancel asks the CONTROLLER, so a donor taking their own box
+    back would end Dives running on everyone else's machines too. `remove_guises` ends the ones
     running HERE, and the Head marks this node down like any other that went away."""
     with ui.section("Tearing down this Arm", lambda: "removed"):
         system.prime_sudo()   # sudo as the box's first row, before any step rows grow the frame
@@ -505,7 +504,7 @@ def _teardown_arm(keep_packages: bool = False, all_: bool = False) -> None:
         remove_munge_key()
         remove_mantle()  # created by setup_arm.provision_mantle
         remove_licence_account()  # before remove_guises: it is in GUISE_GROUP
-        remove_guises()  # one per User whose Spawn ever landed here — created by the Slurm prolog
+        remove_guises()  # one per User whose Dive ever landed here — created by the Slurm prolog
     with ui.step("Removing the cluster name and its certificate authority"):
         untrust_and_unname()    # BEFORE the purge below — it needs certutil, which the purge takes
     with ui.step("Removing CCC's containers" + (" and images" if all_ else "")):
@@ -536,8 +535,8 @@ def teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
 
 def _teardown_local(keep_packages: bool = False, all_: bool = False) -> None:
     revoke_session()      # before stop_daemons: on a Head box the API it asks is the one being stopped
-    with ui.step("Ending any Spawns still running"):
-        cancel_spawns()   # before stop_daemons: scancel needs slurmctld
+    with ui.step("Ending any Dives still running"):
+        cancel_dives()   # before stop_daemons: scancel needs slurmctld
     with ui.step("Stopping the Tidepools" + (" and deleting their images" if all_ else "")):
         tidepool.teardown(all_)  # unmounted BEFORE anything rm -rf's CCC_LIB, where they mount
     with ui.step("Stopping the cluster's services"):
@@ -603,7 +602,7 @@ def teardown_full(keep_packages: bool = False) -> None:
         with ui.step("Stopping the Tidepools and deleting their images"):
             tidepool.teardown(True)  # unmounted BEFORE anything rm -rf's CCC_LIB, where they mount
         with ui.step("Stopping every CCC service"):
-            cancel_spawns()     # first: scancel needs the slurmctld the next line stops
+            cancel_dives()     # first: scancel needs the slurmctld the next line stops
             stop_daemons()      # Head services (no-ops where the units never existed)
             stop_arm_daemons()  # Arm bits
         with ui.step("Removing the Head's services"):

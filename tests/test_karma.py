@@ -56,7 +56,7 @@ class TestLedger:
         assert sum(karma.balances(conn).values()) == pytest.approx(0.0)
 
     def test_a_commons_burn_destroys_karma_and_an_override_conjures_it(self, conn):
-        """The two flows that are NOT transfers, and the only two that may move Σ off zero. A Spawn on
+        """The two flows that are NOT transfers, and the only two that may move Σ off zero. A Dive on
         an admin-owned Arm has no owner to pay, so its cost is burned (NULL `to`); an Override credit
         comes from nowhere (NULL `from`). Neither is a leak: Decay reabsorbs the drift, which is why
         Σ≡0 is an attractor here rather than something anyone has to police."""
@@ -126,7 +126,7 @@ class TestLedger:
         assert rolling != pytest.approx(summed, rel=1e-3), "the curve is memoryless after all"
 
     def test_events_past_the_curves_floor_are_deleted(self, conn):
-        """The ledger is the one table here that is pruned. `spawns` and `users` are the permanent
+        """The ledger is the one table here that is pruned. `dives` and `users` are the permanent
         accounting record; a Karma row that no longer moves any Balance is not evidence of anything.
         Safe only because of the curve: at this age a row is worth ~5%, so what the prune discards is
         a rounding error rather than someone's standing."""
@@ -173,8 +173,8 @@ class TestShare:
 
     def test_escrow_suppresses_share_immediately(self, conn):
         """The anti-flooding property, and the reason Escrow exists at all. Settle-at-end alone is
-        gameable: 500 queued Spawns move no Balance until they finish, so a burst would hold the top of
-        the queue for hours. The hold lands when the Spawn QUEUES, so flooding instantly costs the
+        gameable: 500 queued Dives move no Balance until they finish, so a burst would hold the top of
+        the queue for hours. The hold lands when the Dive QUEUES, so flooding instantly costs the
         flooder their own queue position."""
         assert karma.share(5000.0, escrow=20_000.0) < karma.share(5000.0, escrow=0.0)
 
@@ -196,7 +196,7 @@ class TestSeamWithTheScheduler:
 
     def test_best_standing_is_slurms_default_nice(self):
         """nice 0 must mean 'best standing', because 0 is what Slurm gives a job we have never touched.
-        Were it the other way round, an unattributed Spawn would arrive at the WORST standing — and the
+        Were it the other way round, an unattributed Dive would arrive at the WORST standing — and the
         enrollment benchmark, which the CLI sbatches outside the API, would sink to the back of the
         queue behind everyone's backlog."""
         assert karma.nice_for(karma.share(1e9)) == 0
@@ -209,7 +209,7 @@ class TestOverride:
 
     def test_override_is_felt_in_the_queue(self, conn):
         """An Override changes *standing*, so it is felt in every future contention — that is the whole
-        difference from a Queue bump, which moves one Spawn once and touches no Balance."""
+        difference from a Queue bump, which moves one Dive once and touches no Balance."""
         before = karma.nice_by_user(conn)[uid(conn, "alice")]
         karma.override(conn, "alice", 50_000.0)
         assert karma.nice_by_user(conn)[uid(conn, "alice")] < before
@@ -239,7 +239,7 @@ class TestTheTick:
                                       "start_time": None, **j} for j in jobs])
 
     def test_a_spawn_is_niced_by_its_submitters_standing(self, conn, cluster, monkeypatch):
-        db.record_spawn(conn, 101, uid(conn, "alice"), "train.py")
+        db.create_dive(conn, 101, uid(conn, "alice"), f"{101:032x}", "train", [], 31000)
         karma.override(conn, "alice", -50_000.0)  # deep in debt: should sink
         self.queue(monkeypatch, [{"id": 101, "nice": 0}])
         tick.once()
@@ -248,12 +248,12 @@ class TestTheTick:
 
     def test_a_bumped_spawn_is_left_alone(self, conn, cluster, monkeypatch):
         """The bump flag, and why it needs no table. Slurm refuses a negative nice from a job's owner,
-        and every Spawn is owned by the Mantle — so a negative nice is a thing ONLY an operator could
+        and every Dive is owned by the Mantle — so a negative nice is a thing ONLY an operator could
         have set. Skipping it is the entire coordination protocol between the admin and the economy.
 
         Without this, the very next tick would overwrite the admin's bump with the submitter's ordinary
         standing — and the bump would appear to work, for up to 30 seconds."""
-        db.record_spawn(conn, 102, uid(conn, "alice"), "train.py")
+        db.create_dive(conn, 102, uid(conn, "alice"), f"{102:032x}", "train", [], 31000)
         karma.override(conn, "alice", -50_000.0)
         self.queue(monkeypatch, [{"id": 102, "nice": -cli_config.BUMP_STEP}])
         tick.once()
@@ -270,23 +270,23 @@ class TestTheTick:
 
     def test_an_admins_spawn_is_left_alone(self, conn, cluster, monkeypatch):
         """The Admin is outside the economy — a role for running the cluster, not using it. They hold
-        no Balance, so there is no standing to rank their Spawns by, and `spawn_owners` omits them
+        no Balance, so there is no standing to rank their Dives by, and `spawn_owners` omits them
         exactly as it omits the enrollment benchmark. Same skip, no new branch.
 
-        The consequence is deliberate and worth seeing in a test: an Admin's Spawn sits at nice 0 and
+        The consequence is deliberate and worth seeing in a test: an Admin's Dive sits at nice 0 and
         therefore outranks every User's, for free. Doing research from the admin account would exempt
         that work from the economy entirely."""
         db.add_user(conn, "root", is_admin=True)
-        db.record_spawn(conn, 105, uid(conn, "root"), "train.py")
+        db.create_dive(conn, 105, uid(conn, "root"), f"{105:032x}", "train", [], 31000)
         self.queue(monkeypatch, [{"id": 105, "nice": 0}])
         assert tick.once() == (0, 0)
         assert cluster == {}
 
     def test_an_unchanged_nice_is_not_rewritten(self, conn, cluster, monkeypatch):
         """The tick runs every 30s forever. Pushing a value Slurm already holds would hammer slurmctld
-        with writes that change nothing, for every queued Spawn in the cluster, for as long as it is
+        with writes that change nothing, for every queued Dive in the cluster, for as long as it is
         queued."""
-        db.record_spawn(conn, 104, uid(conn, "bob"), "train.py")
+        db.create_dive(conn, 104, uid(conn, "bob"), f"{104:032x}", "train", [], 31000)
         settled = karma.nice_by_user(conn)[uid(conn, "bob")]
         self.queue(monkeypatch, [{"id": 104, "nice": settled}])
         assert tick.once() == (0, 0)
@@ -310,10 +310,10 @@ class TestQueueBump:
 
     def test_bumping_a_running_spawn_is_refused(self, slurm, capsys):
         """`squeue` lists RUNNING jobs too, so a naive "did squeue return anything?" guard only
-        catches a Spawn that's *gone*, despite its error saying otherwise.
+        catches a Dive that's *gone*, despite its error saying otherwise.
 
-        A bump on a running Spawn would then succeed, do nothing, and claim to have worked. nice
-        feeds the priority that decides who runs *next*; a Spawn already holding a card is past
+        A bump on a running Dive would then succeed, do nothing, and claim to have worked. nice
+        feeds the priority that decides who runs *next*; a Dive already holding a card is past
         that decision, and no value written can reach back and change it. Reporting success
         there is worse than failing — the operator moves on believing the queue was reordered.
         """
@@ -335,7 +335,7 @@ class TestQueueBump:
         assert pushed == []
 
     def test_a_pending_spawn_takes_one_negative_step(self, slurm):
-        """A bump is one step BELOW the Spawn's current nice — not a reset to 0. Slurm's nice 0 is
+        """A bump is one step BELOW the Dive's current nice — not a reset to 0. Slurm's nice 0 is
         merely *best standing*; only a negative nice outranks a perfectly-standing rival, and only an
         operator can set one, which is exactly what makes it the bump flag the tick reads."""
         squeue, pushed = slurm
@@ -351,7 +351,7 @@ class TestQueueBump:
         assert pushed == [["scontrol", "update", "JobId=42", f"Nice={-2 * cli_config.BUMP_STEP}"]]
 
     def test_clear_is_guarded_too(self, slurm, capsys):
-        """--clear on a running Spawn is just as much of a no-op — silently, without this guard."""
+        """--clear on a running Dive is just as much of a no-op — silently, without this guard."""
         squeue, pushed = slurm
         squeue("RUNNING -131072\n")
         with pytest.raises(typer.Exit):
@@ -378,12 +378,12 @@ def arm(name, power=50.0, vram_mb=24564, owner="carol", state="idle", admitted=T
             "vram_mb": vram_mb, "owner": owner, "state": state, "admitted": admitted}
 
 
-def need(gpus=1, vram_gb=8, node=None):
-    return {"gpus": gpus, "vram_gb": vram_gb, "node": node}
+def need(gpus=1, vram_gb=8):
+    return {"gpus": gpus, "vram_gb": vram_gb}
 
 
 def job(jid, state="PENDING", node=None, gpus=1, nice=0, start_time=None, devices=None):
-    """`devices` = the GRES indices Slurm reports a RUNNING Spawn holds (slurm._gpu_indices). Defaults
+    """`devices` = the GRES indices Slurm reports a RUNNING Dive holds (slurm._gpu_indices). Defaults
     to the first `gpus` cards, the ordinary case on a one-card Arm."""
     return {"id": jid, "state": state, "node": node, "gpus": gpus, "nice": nice,
             "start_time": start_time,
@@ -392,19 +392,19 @@ def job(jid, state="PENDING", node=None, gpus=1, nice=0, start_time=None, device
 
 
 class TestDemand:
-    """How badly each Arm is wanted. Every Spawn's price is this number times its card's Power, so an
+    """How badly each Arm is wanted. Every Dive's price is this number times its card's Power, so an
     error here is an error in every bill the cluster ever sends."""
 
     def test_the_plans_worked_example(self):
-        """'A GPU used 1h with someone queued behind it the whole hour = 2.0.' The running Spawn claims
+        """'A GPU used 1h with someone queued behind it the whole hour = 2.0.' The running Dive claims
         the card (1.0) and the queued one, eligible for nothing else, claims it too (1.0)."""
         arms, jobs = [arm("a")], [job(1, "RUNNING", node="a"), job(2)]
         assert karma.demand_by_arm(arms, jobs, {2: need()})["a"] == 2.0
 
     def test_an_arm_running_anything_is_never_below_one(self):
-        """The floor, and the invariant that makes the whole meter safe: a running Spawn counts ITSELF,
+        """The floor, and the invariant that makes the whole meter safe: a running Dive counts ITSELF,
         so Demand on a busy card is ≥ 1.0 and **a second is never sold below its Power**. Were the
-        running Spawn not to count itself, a Spawn alone on an idle cluster would read Demand 0 and run
+        running Dive not to count itself, a Dive alone on an idle cluster would read Demand 0 and run
         for free — and the cluster's quietest hours would be its most exploitable."""
         assert karma.demand_by_arm([arm("a")], [job(1, "RUNNING", node="a")], {})["a"] == 1.0
 
@@ -412,8 +412,8 @@ class TestDemand:
         assert karma.demand_by_arm([arm("a")], [], {})["a"] == 0.0
 
     def test_a_queued_spawn_spreads_one_claim_across_what_it_could_run_on(self):
-        """One Spawn is one claim on the fleet, wherever it lands — so it adds 1/3 to each of the three
-        Arms it is eligible for, not 1.0 to each. Otherwise a single queued Spawn would triple the
+        """One Dive is one claim on the fleet, wherever it lands — so it adds 1/3 to each of the three
+        Arms it is eligible for, not 1.0 to each. Otherwise a single queued Dive would triple the
         price of the whole cluster."""
         arms = [arm("a"), arm("b"), arm("c")]
         d = karma.demand_by_arm(arms, [job(1)], {1: need()})
@@ -430,7 +430,7 @@ class TestDemand:
 
     def test_a_flood_is_capped(self):
         """The griefing bound. Demand is set by whoever is *queuing* and paid by whoever is *running*,
-        so 500 queued Spawns would bill every running Spawn 500x — and the flooder, who need only
+        so 500 queued Dives would bill every running Dive 500x — and the flooder, who need only
         cancel, would pay nothing at all. Since Balance drives nice for tau=30 days, that would let one
         User bench another for a month: a gate, in a model that has none."""
         jobs = [job(1, "RUNNING", node="a")] + [job(i) for i in range(2, 502)]
@@ -438,7 +438,7 @@ class TestDemand:
         assert karma.demand_by_arm([arm("a")], jobs, needs)["a"] == karma.DEMAND_MAX
 
     def test_a_drained_arm_takes_no_demand_and_makes_the_rest_scarcer(self):
-        """Slurm will not place work on a drained Arm, so no queued Spawn is eligible for it — and the
+        """Slurm will not place work on a drained Arm, so no queued Dive is eligible for it — and the
         claim it would have taken lands on the cards that remain. A machine going away makes the others
         more expensive, which is what scarcity means."""
         healthy = karma.demand_by_arm([arm("a"), arm("b")], [job(1)], {1: need()})
@@ -448,7 +448,7 @@ class TestDemand:
         assert drained["b"] == 0.0
 
     def test_a_queued_spawn_is_not_eligible_for_an_arm_with_too_few_devices(self):
-        """Both declared needs, one question. A two-card Spawn adds no Demand to a one-card Arm, because
+        """Both declared needs, one question. A two-card Dive adds no Demand to a one-card Arm, because
         it could never land there — were the count ignored, every single-card Arm in the fleet would be
         priced for work it cannot take."""
         d = karma.demand_by_arm([arm("solo"), arm("pair", powers=[50.0, 50.0])],
@@ -462,17 +462,11 @@ class TestDemand:
         assert karma.eligible([pair], need(gpus=2, vram_gb=48)) == [pair]
         assert karma.eligible([pair], need(gpus=1, vram_gb=48)) == []
 
-    def test_an_admin_pinned_spawn_concentrates_its_demand(self):
-        """--node names a machine instead of declaring a need, so all of its Demand lands on that one
-        Arm. The honest price of sidestepping eligibility."""
-        d = karma.demand_by_arm([arm("a"), arm("b")], [job(1)], {1: need(node="b")})
-        assert d == {"a": 0.0, "b": 1.0}
-
     def test_demand_is_per_card_not_per_arm(self):
         """Demand is 'the device-claims on it over the devices it has' — a per-card figure. One held
         card out of four reads 0.25, not 1.0: a busy 4-card box must not quadruple every bill it
         charges. A fully-busy 4-card box (all four running) reads exactly 1.0, same as a fully-busy
-        single-card Arm — cost() multiplies Demand by a Spawn's own Power sum once, so this figure has
+        single-card Arm — cost() multiplies Demand by a Dive's own Power sum once, so this figure has
         to mean the same thing regardless of how many cards share it."""
         one_of_four = karma.demand_by_arm(
             [arm("a", powers=[50.0] * 4)], [job(1, "RUNNING", node="a", gpus=1)], {})
@@ -486,7 +480,7 @@ class TestDemand:
 class TestTheHold:
     def test_quoted_from_the_priciest_arm_it_could_land_on(self):
         """Max, not mean — and not merely to be safe. Node Weight ∝ 1/Power, so Slurm actively PREFERS
-        the fastest free eligible card: a --vram 8 Spawn is eligible for the 4090 and will often land
+        the fastest free eligible card: a --vram 8 Dive is eligible for the 4090 and will often land
         there. Quoting from the cheapest card would under-hold the common case, and under-holding is
         the direction a queue-flooder exploits."""
         elig = [arm("slow", power=10.0), arm("fast", power=50.0)]
@@ -513,25 +507,25 @@ class TestTheMeter:
         monkeypatch.setattr(tick.slurm, "set_nice", lambda job, nice, owner=None: None)
         return state
 
-    def spawn(self, conn, jid, user, hold=100.0, **kw):
-        db.record_spawn(conn, jid, uid(conn, user), "train.py",
-                        minutes=60, gpus=1, vram_gb=8, hold=hold, **kw)
+    def dive(self, conn, jid, user, hold=100.0, **kw):
+        db.create_dive(conn, jid, uid(conn, user), f"{jid:032x}", "train", [], 31000,
+                       minutes=60, gpus=1, vram_gb=8, hold=hold, **kw)
 
     def test_the_hold_suppresses_share_the_moment_a_spawn_queues(self, conn):
-        """Why Escrow exists at all. A settle-at-end economy is trivially gamed: 500 queued Spawns move
+        """Why Escrow exists at all. A settle-at-end economy is trivially gamed: 500 queued Dives move
         no Balance until they finish, so a burst holds the top of the queue for hours. The hold lands
-        the instant the Spawn is queued, so flooding the queue instantly costs you your own position."""
+        the instant the Dive is queued, so flooding the queue instantly costs you your own position."""
         before = karma.nice_by_user(conn)[uid(conn, "alice")]
-        self.spawn(conn, 201, "alice", hold=20_000.0)
+        self.dive(conn, 201, "alice", hold=20_000.0)
         assert karma.nice_by_user(conn)[uid(conn, "alice")] > before  # worse standing, immediately
 
     def test_the_meter_ratchets_past_the_hold_but_never_below_it(self, conn):
         """MAX(hold, accrued) is the ratchet. The forecast is a FLOOR — so an under-quoted hold cannot
         be exploited — and the meter raises it if the real cost overtakes it, so a Demand spike is felt
         in the submitter's Share within 30s rather than as a surprise at Settlement. The claim can only
-        ever go up, and a Spawn can never quietly cheapen its own submitter's standing while it runs."""
+        ever go up, and a Dive can never quietly cheapen its own submitter's standing while it runs."""
         u = uid(conn, "alice")
-        self.spawn(conn, 202, "alice", hold=100.0)
+        self.dive(conn, 202, "alice", hold=100.0)
         assert db.escrow_totals(conn)[u] == 100.0        # accrued 0 -> the hold is the floor
 
         db.accrue(conn, 202, "donor", 40.0, at(conn, 0))
@@ -544,7 +538,7 @@ class TestTheMeter:
         """If the karma service was down for an hour, the User still HELD the card for that hour and
         still owes for it. Billing per-tick instead of per-second would mean an outage silently makes
         the cluster free — and would make the tick interval a price."""
-        self.spawn(conn, 203, "alice")
+        self.dive(conn, 203, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=2)
         cluster["jobs"] = [job(203, "RUNNING", node="donor", start_time=started.timestamp())]
         tick.once()
@@ -555,7 +549,7 @@ class TestTheMeter:
     def test_settling_transfers_to_the_arms_owner_and_sums_to_zero(self, conn, cluster):
         """The core flow, and the invariant it preserves. The submitter is debited and the Arm's owner
         credited the SAME Karma, so Σ balances ≡ 0 — there is no supply, no pot, and nothing to inflate."""
-        self.spawn(conn, 204, "alice")
+        self.dive(conn, 204, "alice")
         db.accrue(conn, 204, "donor", 75.0, at(conn, 0))
         cluster["jobs"] = []                     # gone from squeue == it ended
         assert tick.once() == (0, 1)
@@ -572,7 +566,7 @@ class TestTheMeter:
         which is why Σ ≡ 0 is an attractor rather than an invariant anyone has to police."""
         db.add_user(conn, "root", is_admin=True)
         cluster["arms"] = [arm("donor", owner="root")]
-        self.spawn(conn, 205, "alice")
+        self.dive(conn, 205, "alice")
         db.accrue(conn, 205, "donor", 60.0, at(conn, 0))
         cluster["jobs"] = []
         tick.once()
@@ -585,7 +579,7 @@ class TestTheMeter:
     def test_running_on_your_own_arm_is_free(self, conn, cluster):
         """You pay yourself: the transfer nets to zero with no special case anywhere in the code."""
         cluster["arms"] = [arm("donor", owner="alice")]
-        self.spawn(conn, 206, "alice")
+        self.dive(conn, 206, "alice")
         db.accrue(conn, 206, "donor", 90.0, at(conn, 0))
         cluster["jobs"] = []
         tick.once()
@@ -594,7 +588,7 @@ class TestTheMeter:
     def test_a_spawn_cancelled_while_queued_settles_at_zero(self, conn, cluster):
         """It never held a card, so it owes nothing — and its hold is released in full. This is also
         what makes over-declaring --time cost a User nothing but queue position."""
-        self.spawn(conn, 207, "alice", hold=500.0)
+        self.dive(conn, 207, "alice", hold=500.0)
         cluster["jobs"] = []
         tick.once()
         assert karma.balances(conn).get(uid(conn, "alice"), 0.0) == pytest.approx(0.0, abs=1e-9)
@@ -605,14 +599,14 @@ class TestTheMeter:
         log — but it must not take the tick down with it, because a dead tick freezes the whole queue's
         nice at whatever it last held, silently, forever."""
         cluster["arms"] = [arm("donor", power=None)]
-        self.spawn(conn, 208, "alice")
+        self.dive(conn, 208, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=2)
         cluster["jobs"] = [job(208, "RUNNING", node="donor", start_time=started.timestamp())]
         tick.once()
         assert db.live_escrows(conn)[0]["accrued"] == 0.0
 
     def test_a_spawn_is_billed_for_the_card_it_actually_held(self, conn, cluster):
-        """The claim per-Device Power exists to make true. Two Spawns, same box, same second, same
+        """The claim per-Device Power exists to make true. Two Dives, same box, same second, same
         Demand — the one on the throttled card pays less, because a second on that card really does buy
         less. A node average would charge them identically and nothing in the system would ever notice.
 
@@ -621,8 +615,8 @@ class TestTheMeter:
         order."""
         cluster["arms"] = [arm("donor", powers=[80.0, 20.0])]
         started = datetime.now(timezone.utc) - timedelta(hours=1)
-        self.spawn(conn, 301, "alice")
-        self.spawn(conn, 302, "alice")
+        self.dive(conn, 301, "alice")
+        self.dive(conn, 302, "alice")
         cluster["jobs"] = [
             job(301, "RUNNING", node="donor", devices=[0], start_time=started.timestamp()),
             job(302, "RUNNING", node="donor", devices=[1], start_time=started.timestamp()),
@@ -635,10 +629,10 @@ class TestTheMeter:
         assert accrued[302] == pytest.approx(20.0, rel=0.01)   # 1h x 20 TFLOP/s x 1.0
 
     def test_two_cards_are_two_separate_purchases(self, conn, cluster):
-        """'Several Devices are several separate purchases.' A Spawn holding both cards pays each one's
+        """'Several Devices are several separate purchases.' A Dive holding both cards pays each one's
         own Power added together — not twice the faster, and not twice the average."""
         cluster["arms"] = [arm("donor", powers=[80.0, 20.0])]
-        self.spawn(conn, 303, "alice")
+        self.dive(conn, 303, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=1)
         cluster["jobs"] = [job(303, "RUNNING", node="donor", gpus=2, devices=[0, 1],
                                start_time=started.timestamp())]
@@ -648,10 +642,10 @@ class TestTheMeter:
 
     def test_a_spawn_slurm_reports_no_device_for_runs_free_and_loudly(self, conn, cluster):
         """The failure this design refuses to paper over. If the held card cannot be identified, the
-        Spawn is NOT billed at the node's average — a bill nobody could ever check is worse than an
+        Dive is NOT billed at the node's average — a bill nobody could ever check is worse than an
         obvious zero and a log line, which is exactly how an unpriced Arm already behaves."""
         cluster["arms"] = [arm("donor", powers=[80.0, 20.0])]
-        self.spawn(conn, 304, "alice")
+        self.dive(conn, 304, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=1)
         cluster["jobs"] = [job(304, "RUNNING", node="donor", devices=[],
                                start_time=started.timestamp())]
@@ -659,11 +653,11 @@ class TestTheMeter:
         assert db.live_escrows(conn)[0]["accrued"] == 0.0
 
     def test_a_running_spawn_slurm_reports_no_devices_for_is_not_guessed_at(self, conn, cluster):
-        """Every Spawn holds at least one Device, so an empty device list on a RUNNING one is Slurm
-        failing to say WHICH — not a Spawn that wanted none. Billing it at a guessed card's rate would
+        """Every Dive holds at least one Device, so an empty device list on a RUNNING one is Slurm
+        failing to say WHICH — not a Dive that wanted none. Billing it at a guessed card's rate would
         be silent and wrong, so it bills nothing."""
         cluster["arms"] = [arm("donor", powers=[80.0])]
-        self.spawn(conn, 305, "alice")
+        self.dive(conn, 305, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=1)
         cluster["jobs"] = [job(305, "RUNNING", node="donor", devices=[],
                                start_time=started.timestamp())]
@@ -674,7 +668,7 @@ class TestTheMeter:
         """A donor added a fourth GPU and slurmd re-registered with it; the registry still holds three
         Powers. Billing index 3 at index 0's rate would be silent and wrong, so it bills nothing."""
         cluster["arms"] = [arm("donor", powers=[80.0, 80.0, 80.0])]
-        self.spawn(conn, 306, "alice")
+        self.dive(conn, 306, "alice")
         started = datetime.now(timezone.utc) - timedelta(hours=1)
         cluster["jobs"] = [job(306, "RUNNING", node="donor", devices=[3],
                                start_time=started.timestamp())]
@@ -685,7 +679,7 @@ class TestTheMeter:
         """The Admin is outside the economy: no hold, no meter, no ledger row. `hold=None` at submit is
         the whole of it."""
         db.add_user(conn, "root", is_admin=True)
-        self.spawn(conn, 209, "root", hold=None)
+        self.dive(conn, 209, "root", hold=None)
         assert db.live_escrows(conn) == []
         cluster["jobs"] = []
         assert tick.once() == (0, 0)
@@ -702,7 +696,7 @@ class TestTheMeter:
 
 class TestRetraction:
     """`ccc_head_api.retraction` starts the TERM + the 3-minute grace; this is the tick's half —
-    force-killing whatever is still alive past the deadline, and making sure a caught Spawn
+    force-killing whatever is still alive past the deadline, and making sure a caught Dive
     settles at ZERO no matter what it accrued. Retract must never be a way to farm Karma by
     donating a card and yanking it back mid-run."""
 
@@ -718,8 +712,8 @@ class TestRetraction:
         return state, signalled
 
     def _spawn(self, conn, jid, user="alice", hold=100.0):
-        db.record_spawn(conn, jid, uid(conn, user), "train.py",
-                        minutes=60, gpus=1, vram_gb=8, hold=hold)
+        db.create_dive(conn, jid, uid(conn, user), f"{jid:032x}", "train", [], 31000,
+                       minutes=60, gpus=1, vram_gb=8, hold=hold)
 
     def test_a_caught_job_past_its_deadline_is_force_killed(self, conn, cluster):
         state, signalled = cluster
@@ -794,7 +788,7 @@ class TestTheTide:
     input and nothing else — it never reaches a screen as a forecast."""
 
     def test_an_empty_history_forecasts_one(self, conn):
-        """The cold start, and the load-bearing default. 1.0 is what a card running exactly one Spawn
+        """The cold start, and the load-bearing default. 1.0 is what a card running exactly one Dive
         reads, and it is what makes the flat-hold formula a special case of the Tide rather than
         something to rewrite: with a flat Tide the hold reduces EXACTLY to minutes/60 x gpus x
         max(Power)."""
@@ -831,7 +825,7 @@ class TestTheTide:
 
 class TestTheHoldRidesTheTide:
     def test_a_busy_hour_costs_more(self, conn):
-        """The Tide's whole purpose. Same Spawn, same card, twice the usual Demand at that hour ->
+        """The Tide's whole purpose. Same Dive, same card, twice the usual Demand at that hour ->
         twice the hold. Scarcity is priced at submit, not just at settle."""
         sample(conn, "gpu", days_ago=1, hour=13, demand=2.0)
         elig = [arm("gpu", power=50.0)]
@@ -841,7 +835,7 @@ class TestTheHoldRidesTheTide:
         assert busy == pytest.approx(100.0)   # Tide 2.0
 
     def test_a_long_spawn_is_quoted_at_the_MEAN_of_its_hours_not_the_peak(self, conn):
-        """Mean, not max, over the span. Otherwise a 24h Spawn touches every hour and would be quoted
+        """Mean, not max, over the span. Otherwise a 24h Dive touches every hour and would be quoted
         at the daily peak purely for being long — which would price honesty about duration."""
         sample(conn, "gpu", days_ago=1, hour=13, demand=3.0)  # one spike...
         elig = [arm("gpu", power=50.0)]

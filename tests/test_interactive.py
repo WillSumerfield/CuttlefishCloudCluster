@@ -455,7 +455,7 @@ class TestNavigatingAFolderStillProducesACommandLine:
             menu.MenuState(logged_in=True, provisioned=True, pointed=True, on_head=True), None))
 
     def test_a_command_inside_a_folder_comes_back_as_its_own_argv(self, answers):
-        answers(f"{menu.FOLDER}spawns", "queue")
+        answers(f"{menu.FOLDER}queue", "queue")
         assert menu.choose(main.app) == ["queue"]
 
     def test_a_subcommand_two_levels_down_keeps_its_real_path(self, answers):
@@ -470,7 +470,7 @@ class TestNavigatingAFolderStillProducesACommandLine:
         assert menu.choose(main.app) == ["munge", "rotate"]
 
     def test_backing_out_of_a_folder_returns_to_the_top(self, answers):
-        answers(f"{menu.FOLDER}spawns", menu.BACK, "dashboard")
+        answers(f"{menu.FOLDER}queue", menu.BACK, "dashboard")
         assert menu.choose(main.app) == ["dashboard"]
 
 
@@ -501,9 +501,9 @@ class TestTheMenuReadsAsOneList:
 
     def test_the_possessive_is_kept_only_where_ownership_is_the_filter(self):
         """`queue` and `history` are everyone's, like the Dashboard's landing table; the account is
-        yours. "My Spawns" would have promised a filter there is no code for."""
+        yours. "My Dives" would have promised a filter there is no code for."""
         labels = dict(_labels(menu.MenuState(**self.HEAD)))
-        assert labels[f"{menu.FOLDER}spawns"] == "The queue"
+        assert labels[f"{menu.FOLDER}queue"] == "The queue"
         assert menu.LABELS[f"{menu.FOLDER}account"].startswith("My")
 
     def test_a_group_that_also_runs_is_named_twice(self):

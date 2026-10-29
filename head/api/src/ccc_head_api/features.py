@@ -1,8 +1,8 @@
-"""Runtime **profiles** for Arm Features (temp/FEATURES_BUILTIN.md) — what CCC does for a Spawn that
+"""Runtime **profiles** for Arm Features (temp/FEATURES_BUILTIN.md) — what CCC does for a Dive that
 asked for one.
 
 A Feature is a name in `cuttle.config.FEATURE_NAMES`. Without a profile it buys two things: placement
-(a Slurm `Feature=` token) and `$<NAME>_PATH` in the Spawn's environment — all `isaaclab` gets, and a
+(a Slurm `Feature=` token) and `$<NAME>_PATH` in the Dive's environment — all `isaaclab` gets, and a
 complete, useful Feature on its own.
 
 A profile adds the rest — package, binds, working directory, cache, env vars — so the submitter's
@@ -15,35 +15,35 @@ fleet and cannot know where any donor installed anything, so snippets name `$VLE
 variables the Arm exports from `/etc/ccc/features.env`, written by `cuttle setup --arm` (see
 `cuttle.features` for the Arm-side half: what it must have on disk and how it prepares it, offline).
 
-**A profile's failures are the Spawn's, and loud.** Every check ends in `feature_fail`, which writes a
-sentence naming the Arm and what was wrong into the Spawn's `err`, records exit 1, and stages out — a
+**A profile's failures are the Dive's, and loud.** Every check ends in `feature_fail`, which writes a
+sentence naming the Arm and what was wrong into the Dive's `err`, records exit 1, and stages out — a
 mismatch reads as a mismatch, not an `ImportError` a User would blame on their own code.
 """
 
 import textwrap
 from dataclasses import dataclass
 
-# Where a profile's Arm-side package is bound inside the Pod. Under /ccc rather than into the
+# Where a profile's Arm-side package is bound inside the container. Under /ccc rather than into the
 # Environment's own tree: the Environment is bound read-only at one fixed path and belongs to the
 # submitter, while this belongs to the Arm — two owners, two mount points, no chance of one silently
 # shadowing part of the other.
 FEATURE_MOUNT = "/ccc/feature"
 
 # Where the SYSTEM LIBRARIES a Feature's shared objects link against are bound — a small conda prefix
-# CCC builds on the Head per Spawn (environments.build_feature_libs) and ships inside the project, the
+# CCC builds on the Head per Dive (environments.build_feature_libs) and ships inside the project, the
 # same way the Environment travels.
 #
 # A third mount for a third owner, by the same rule as FEATURE_MOUNT above. These are not the
 # submitter's dependencies and must not be in their Environment: they used to be, back when a vlearn
-# Spawn's manifest HAD to be an `environment.yml` (conda was the only way to get an interpreter vlearn
+# Dive's manifest HAD to be an `environment.yml` (conda was the only way to get an interpreter vlearn
 # ships a wheel for). Now that an Environment carries its own interpreter, a submitter can declare a
 # `pyproject.toml` — and uv has no way to install libassimp.so.5. So CCC builds these itself, and a
 # submitter never has to discover by watching `import` fail that `libgym.so` wanted SDL2.
 FEATLIB_MOUNT = "/ccc/featlibs"
 
 # Where a profile's own WORKING DIRECTORY is bound — the directory a Feature's software resolves its
-# vendor data against, built per Spawn on the Arm and writable, since that is the one of these three
-# mounts something inside the Pod writes to.
+# vendor data against, built per Dive on the Arm and writable, since that is the one of these three
+# mounts something inside the container writes to.
 #
 # A fourth mount for a fourth owner, and the reason is the same rule that separated the first three: it
 # is CCC's, not the submitter's. It used to be `$proj` itself, which put a real cache/ inside the
@@ -62,8 +62,8 @@ class Profile:
 
     `libs` are the system libraries the Feature's shared objects link against — the ONE canonical copy,
     and CCC's own responsibility rather than the submitter's. `environments.build_feature_libs` builds
-    exactly this list into a conda prefix at FEATLIB_MOUNT for every Spawn that asks for the Feature, so
-    a library added for a new release reaches every Spawn without anyone editing a manifest.
+    exactly this list into a conda prefix at FEATLIB_MOUNT for every Dive that asks for the Feature, so
+    a library added for a new release reaches every Dive without anyone editing a manifest.
 
     Each entry is `(spec, why)` — the reason travels with the requirement, since "why is assimp pinned
     to 5" is the question a future reader of this list will actually have.
@@ -114,7 +114,7 @@ VLEARN_SETUP = r"""
 # and checked before anything else, since every path below is inside the answer.
 vl_pkg="$VLEARN_PKG_ROOT/$feature_abi"
 [ -d "$vl_pkg" ] || feature_fail \
-  "this Spawn's Environment is Python $feature_abi, and this Arm's vlearn is built for: $(ls "$VLEARN_PKG_ROOT" 2>/dev/null | tr '\n' ' '). vlearn ships binary wheels only, so the two have to match -- pin that Python in your environment.yml. (No Environment at all means the base image's Python, which vlearn has never shipped a wheel for.)"
+  "this Dive's Environment is Python $feature_abi, and this Arm's vlearn is built for: $(ls "$VLEARN_PKG_ROOT" 2>/dev/null | tr '\n' ' '). vlearn ships binary wheels only, so the two have to match -- pin that Python in your environment.yml. (No Environment at all means the base image's Python, which vlearn has never shipped a wheel for.)"
 # The Environment must not contain a WORKING vlearn, and this is where that is made true rather than
 # merely likely. The Head replaced the submitter's declared wheel with an empty stub before the build
 # (environments.substitute_supplied), because vlearn is licensed per machine and the copy that runs has
@@ -126,9 +126,9 @@ vl_pkg="$VLEARN_PKG_ROOT/$feature_abi"
 # Python's to change, and a `.pth` file in site-packages can reorder it. Deleting the stub outright
 # means there is only ever one vlearn on the box to find.
 if [ -n "$envmount" ] && [ -n "$feature_purelib" ]; then
-    # $feature_purelib is the Pod-side path the probe asked the interpreter for; the deletion happens
+    # $feature_purelib is the container-side path the probe asked the interpreter for; the deletion happens
     # out here on the ARM's filesystem, where the env is still writable -- it is bound read-only into
-    # every Pod, so this could not be done from inside one.
+    # every container, so this could not be done from inside one.
     vl_site="$scratch/env${feature_purelib#$envmount}"
     rm -rf "$vl_site/vlearn" "$vl_site"/vlearn-*.dist-info "$vl_site"/vlearn_bindings*.so \
            "$vl_site"/*vlearn*.pth
@@ -145,21 +145,21 @@ vlwd="$scratch/vlwd"
 rm -rf "$vlwd"
 mkdir -p "$vlwd"
 # SYMLINKS, not copies or binds, and still load-bearing rather than tidy: ~1 GB of assets/ COPIED per
-# Spawn would be a minute of disk per run for vendor data that has not changed since setup.
+# Dive would be a minute of disk per run for vendor data that has not changed since setup.
 ln -s "$VLEARN_PATH/assets" "$vlwd/assets"
 ln -s "$VLEARN_PATH/shaders" "$vlwd/shaders"
 ln -s "$VLEARN_PATH/TurboActivate.dat" "$vlwd/TurboActivate.dat"
 # cache/ is the one of the four vlearn WRITES (compiled assets, content-addressed), so it cannot be a
-# symlink into a read-only bind -- that is an EROFS the first time a Spawn meets an asset the Arm's
-# owner never opened. Copied per Spawn instead: ~1 MB, warm from whatever they did generate, with no
+# symlink into a read-only bind -- that is an EROFS the first time a Dive meets an asset the Arm's
+# owner never opened. Copied per Dive instead: ~1 MB, warm from whatever they did generate, with no
 # shared writers and nothing written back into their tree.
 cp -r "$VLEARN_PATH/cache" "$vlwd/cache" 2>/dev/null || mkdir -p "$vlwd/cache"
 # Only those three paths are bound, never the install root. The vendor's README puts the **Licence**
-# key at the checkout root, and an ordinary Spawn has no business seeing it (Phase 3's activation Spawn
+# key at the checkout root, and an ordinary Dive has no business seeing it (Phase 3's activation Dive
 # is the one thing that does). Bound at their OWN host paths, so the symlinks just made resolve to the
-# same files inside the Pod as outside.
+# same files inside the container as outside.
 #
-# $vlwd itself is bound WRITABLE -- it is the only one of CCC's four mounts something inside the Pod
+# $vlwd itself is bound WRITABLE -- it is the only one of CCC's four mounts something inside the container
 # writes to, and cache/ is what writes to it.
 featbind="$featbind,$VLEARN_PATH/assets:$VLEARN_PATH/assets:ro,$VLEARN_PATH/shaders:$VLEARN_PATH/shaders:ro,$VLEARN_PATH/TurboActivate.dat:$VLEARN_PATH/TurboActivate.dat:ro,$vl_pkg:%%FEATURE_MOUNT%%/vlearn:ro,$vlwd:%%VLWD_MOUNT%%"
 # The WHOLE unpacked wheel goes on PYTHONPATH, not its `vlearn/` subdirectory: a wheel unpacks to three
@@ -183,18 +183,18 @@ vl_ld="%%FEATURE_MOUNT%%/vlearn/vlearn/lib:%%FEATLIB_MOUNT%%/vlearn/lib:%%FEATLI
 featenv="$featenv,PYTHONPATH=%%FEATURE_MOUNT%%/vlearn,VL_WORKING_DIRECTORY=%%VLWD_MOUNT%%,LD_LIBRARY_PATH=$vl_ld"
 """
 
-# The extra an ACTIVATION Spawn gets, and nothing else does. An ordinary Spawn runs against activation
+# The extra an ACTIVATION Dive gets, and nothing else does. An ordinary Dive runs against activation
 # state already in the Arm's **Licence** directory; the key that PRODUCED that state is the credential
-# and stays out of every Pod but this one.
+# and stays out of every container but this one.
 #
 # The key never leaves the Arm: `cuttle setup --arm` mirrors the owner's file into that box's CCC state
-# at 0640 (cuttle.features.mirror_licence_key — a Pod can't reach a file under someone's home), and
-# this binds that copy at its own host path, so it has one name inside the Pod and out.
+# at 0640 (cuttle.features.mirror_licence_key — a container can't reach a file under someone's home), and
+# this binds that copy at its own host path, so it has one name inside the container and out.
 VLEARN_ACTIVATION = r"""
 # --- Arm Feature: vlearn, ACTIVATION ---------------------------------------
-# No Licence directory bound means `$HOME` is the Pod's throwaway tmpfs: TurboActivate would activate
+# No Licence directory bound means `$HOME` is the container's throwaway tmpfs: TurboActivate would activate
 # INTO it, exit 0, and the Arm would be marked activated with nothing kept -- one vendor activation
-# burnt and every later Spawn unlicensed. `$licbind` is the job script's answer to "is it bound".
+# burnt and every later Dive unlicensed. `$licbind` is the job script's answer to "is it bound".
 [ -n "$licbind" ] || feature_fail \
   "this Arm has no Licence directory (CCC_LICENCE_HOME in /etc/ccc/features.env is unset or missing), so an activation would be written nowhere that lasts. Its owner should re-run 'cuttle setup --arm' and name one."
 [ -n "${VLEARN_LICENCE_KEY:-}" ] || feature_fail \
@@ -219,7 +219,7 @@ featenv="$featenv,VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY"
 VLEARN_ACTIVATE_PY = """\
 # Run by CCC on an Arm as it is admitted (the activation job). The vendor's
 # activate_vlearn.sh is this line; creating a gym is what makes TurboActivate write this machine's
-# activation into the Licence directory, which is bound at this Spawn's home.
+# activation into the Licence directory, which is bound at this Dive's home.
 import vlearn
 
 vlearn.create_gym(with_render=False)
@@ -248,7 +248,7 @@ VLEARN = Profile(
         ("zeromq", ""),
         ("czmq", ""),
         ("libglu", ""),
-        ("mesalib", "software GL, so a Spawn is not relying on --nv having injected a libGL.so.1"),
+        ("mesalib", "software GL, so a Dive is not relying on --nv having injected a libGL.so.1"),
         # From conda-forge rather than the `nvidia-cuda-runtime` PyPI wheel it used to be. That wheel
         # needed a pip, which needed a Python, in a prefix whose whole point is that it holds neither —
         # this prefix is libraries and nothing else. (libcuda.so.1 is the host driver's, injected by
@@ -261,7 +261,7 @@ VLEARN = Profile(
     # `OSError: libcudart.so.12: cannot open shared object file` with everything else on its
     # LD_LIBRARY_PATH supplying 13, and nothing in CCC could tell it apart from an Arm needing 13.
     #
-    # Both are shipped rather than detected: they cost one extra conda solve per Spawn and cannot
+    # Both are shipped rather than detected: they cost one extra conda solve per Dive and cannot
     # collide (see `alt_libs`), where detection would need the major recorded per Arm at enroll, a
     # Head-side render that varies by placement, and a migration for every Arm already enrolled.
     alt_libs=(
@@ -277,7 +277,7 @@ VLEARN = Profile(
         "You may declare vlearn as a path to your own wheel, and should if that is what makes your "
         "project resolve. CCC replaces it with an empty placeholder before building, and removes "
         "that again on the Arm: what you import is the Arm's own build, which is the one its licence "
-        "covers. A Spawn that declares vlearn must also ask for this Feature.",
+        "covers. A Dive that declares vlearn must also ask for this Feature.",
     ),
 )
 
@@ -290,19 +290,19 @@ PROFILES: dict[str, Profile] = {VLEARN.name: VLEARN}
 def profiled(features: list[str]) -> list[str]:
     """Which of `features` carry a **runtime profile** — the ones whose setup needs an interpreter.
 
-    A profiled Feature attaches its software to the Spawn's **Environment**: PREAMBLE probes `$py` for
+    A profiled Feature attaches its software to the Dive's **Environment**: PREAMBLE probes `$py` for
     the ABI to match, the nvidia lib dirs to put on LD_LIBRARY_PATH, and where site-packages is. So one
-    requested by a Spawn that declared no Environment has nothing to attach to, and cannot work.
+    requested by a Dive that declared no Environment has nothing to attach to, and cannot work.
 
     Sorted, so a refusal names them the same way however the User typed the request.
     """
     return sorted({f for f in features if f in PROFILES})
 
 
-# The preamble every profiled Spawn gets, once, before the individual blocks. Rendered only when at
-# least one requested Feature HAS a profile — an ordinary Spawn's script doesn't contain it at all.
+# The preamble every profiled Dive gets, once, before the individual blocks. Rendered only when at
+# least one requested Feature HAS a profile — an ordinary Dive's script doesn't contain it at all.
 #
-# The probe is one Pod launch asking this Spawn's own interpreter three questions rather than assuming
+# The probe is one container launch asking this Dive's own interpreter three questions rather than assuming
 # any of them: which ABI tag a Feature's binary package must match, where the nvidia wheels in that
 # Environment put their shared libraries, and where its site-packages is. Runs on the ARM, where the
 # Environment has landed and where the Feature's package lives — both halves of the comparison are here.
@@ -310,10 +310,10 @@ PREAMBLE = r"""
 # Arm **Features** were requested, so CCC arranges each one's runtime here -- package, binds, working
 # directory, cache and env vars -- and the submitter's script contains none of it. See
 # ccc_head_api.features: LD_LIBRARY_PATH is read by the loader at exec, so nothing running INSIDE the
-# Pod can set it for itself.
+# container can set it for itself.
 feature_fail() {
     echo "ccc: $1" >> "$err"
-    echo "ccc: this Spawn never started." >> "$err"
+    echo "ccc: this Dive never started." >> "$err"
     echo 1 > "$exitf"
     kill "$loop_pid" 2>/dev/null   # remote branch only; unset is a harmless no-op on the Head's
     stage_out
@@ -326,7 +326,7 @@ feature_fail() {
 # `profiled()` is the submit-time gate meant to refuse this (a profiled Feature needs an Environment to
 # attach to), so reaching here means that gate was bypassed rather than that a User did something ordinary.
 [ -n "$py" ] || feature_fail \
-  "could not run this Spawn's interpreter () to identify it, which every Feature below needs. The Pod image supplies none, so this is a Spawn that declared no Environment -- a Tide Pool opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to."
+  "could not run this Dive's interpreter () to identify it, which every Feature below needs. The container image supplies none, so this is a Dive that declared no Environment -- a Dive opened without --manifest is the one way to get here. Declare one and the Features below have an interpreter to attach to."
 feature_probe=$(apptainer exec --contain --bind "$proj$envbind" "$sif" $py -c '
 import glob, os, sys, sysconfig
 print("cp%d%d" % sys.version_info[:2])
@@ -335,19 +335,19 @@ print(sysconfig.get_paths()["purelib"])
 ' 2>>"$err")
 feature_abi=$(printf %s "$feature_probe" | sed -n 1p)
 feature_nvlibs=$(printf %s "$feature_probe" | sed -n 2p)
-# Pod-side, so it starts with $envmount; a profile that needs the ARM-side path rewrites the prefix.
+# container-side, so it starts with $envmount; a profile that needs the ARM-side path rewrites the prefix.
 feature_purelib=$(printf %s "$feature_probe" | sed -n 3p)
 # A DIFFERENT failure from the one above, now that an absent interpreter is caught before the probe:
 # `$py` exists and ran, but said nothing useful. That is the declared Environment's build to look at.
 [ -n "$feature_abi" ] || feature_fail \
-  "this Spawn's interpreter ($py) ran but could not be identified, which every Feature below needs. Its Environment build is the place to look -- the output above is the whole story."
+  "this Dive's interpreter ($py) ran but could not be identified, which every Feature below needs. Its Environment build is the place to look -- the output above is the whole story."
 """
 
 
 def setup_snippet(features: list[str], activation: bool = False) -> str:
-    """The bash CCC splices into the job script for this Spawn's requested Features, or `""`.
+    """The bash CCC splices into the job script for this Dive's requested Features, or `""`.
 
-    Empty for most Spawns, and for one that asked only for Features with no profile (`isaaclab`) —
+    Empty for most Dives, and for one that asked only for Features with no profile (`isaaclab`) —
     those need nothing beyond `$<NAME>_PATH`, which the Arm already exports, and the placement Slurm
     already did.
 
@@ -356,7 +356,7 @@ def setup_snippet(features: list[str], activation: bool = False) -> str:
 
     `activation` appends each profile's activation block, where the Arm's licence *key* is bound. No
     caller since 2.0 dropped the activation call (rebuilt in phase 2), and never anything a submitted
-    Spawn could request — a User able to set this flag could read every Arm owner's key.
+    Dive could request — a User able to set this flag could read every Arm owner's key.
     """
     blocks = [PROFILES[n].setup + (PROFILES[n].activation if activation else "")
               for n in sorted(set(features)) if n in PROFILES]
@@ -380,7 +380,7 @@ def lib_specs(features: list[str]) -> dict[str, list[str]]:
     with none. What `environments.build_feature_libs` turns into a prefix at FEATLIB_MOUNT.
 
     Ordered by Feature name so the same request builds the same prefix — a solve that varies with
-    argument order would make two identical Spawns ship different bytes.
+    argument order would make two identical Dives ship different bytes.
     """
     out: dict[str, list[str]] = {}
     for n in sorted(set(features)):
@@ -389,7 +389,7 @@ def lib_specs(features: list[str]) -> dict[str, list[str]]:
             continue
         if p.libs:
             out[n] = [s for s, _why in p.libs]
-        # After its Feature's own prefix, so the build order a Spawn watches reads as one Feature's
+        # After its Feature's own prefix, so the build order a Dive watches reads as one Feature's
         # libraries then its alternates, rather than interleaving two Features.
         for suffix, extra in p.alt_libs:
             out[f"{n}-{suffix}"] = [s for s, _why in extra]
@@ -397,10 +397,10 @@ def lib_specs(features: list[str]) -> dict[str, list[str]]:
 
 
 def lib_prefix_label(key: str) -> str:
-    """What one `lib_specs` key means in prose, for the line a Spawn's log shows while it builds.
+    """What one `lib_specs` key means in prose, for the line a Dive's log shows while it builds.
 
     A key is usually a Feature name, but an `alt_libs` prefix is not a Feature and saying so would
-    invent one — the Dashboard would then show a Spawn building "the 'vlearn-cuda12' Arm Feature".
+    invent one — the Dashboard would then show a Dive building "the 'vlearn-cuda12' Arm Feature".
     """
     if key in PROFILES:
         return f"the '{key}' Arm Feature's system libraries"
@@ -411,15 +411,15 @@ def lib_prefix_label(key: str) -> str:
     return f"system libraries for {key}"
 
 
-# The activation Spawn's whole manifest: an interpreter of the right version and nothing else.
+# The activation Dive's whole manifest: an interpreter of the right version and nothing else.
 #
 # It used to be the same starter `environment.yml` a submitter was handed, carrying the full system
 # library list — because back then that file was the ONLY way to get a Python vlearn ships a wheel for,
 # and the libraries had nowhere else to live. Both halves of that have gone: an Environment carries its
 # own interpreter whatever its manifest, and the libraries are CCC's own prefix now (`lib_specs`),
-# built for this Spawn because it asks for the Feature like any other. So what is left to declare is
+# built for this Dive because it asks for the Feature like any other. So what is left to declare is
 # the version, which is a real requirement — a binary wheel cannot be built for an ABI it was not
-# compiled against, and this is the one Spawn CCC writes the manifest for.
+# compiled against, and this is the one Dive CCC writes the manifest for.
 #
 # `package = false` because there is no package here to install: two loose files, no build backend.
 ACTIVATION_PYPROJECT = """\
@@ -441,9 +441,9 @@ DEFAULT_ACTIVATION_PYTHON = "3.12"
 
 
 def activation_project(name: str) -> dict[str, str]:
-    """The whole project an activation Spawn uploads for `name`: `{filename: contents}`.
+    """The whole project an activation Dive uploads for `name`: `{filename: contents}`.
 
-    Two files, no repository. Deliberately excludes the Feature's own package: what a Spawn imports
+    Two files, no repository. Deliberately excludes the Feature's own package: what a Dive imports
     comes from the Arm's unpacked wheel (the copy the licence covers), and installing a second from an
     index would activate the wrong build.
 
@@ -486,7 +486,7 @@ def runtime_summary(name: str) -> str:
     for n in p.notes:
         out += textwrap.wrap(n, 96, initial_indent="  ", subsequent_indent="  ") + [""]
     if p.libs:
-        out.append("CCC builds these into every Spawn that asks for this Feature. Do not declare them")
+        out.append("CCC builds these into every Dive that asks for this Feature. Do not declare them")
         out.append("yourself — they are system libraries, and no Python manifest can install them:")
         for s, why in [*p.libs, *(e for _suffix, extra in p.alt_libs for e in extra)]:
             out.append(f"  {s}" + (f"   # {why}" if why and len(s) + len(why) < 88 else ""))

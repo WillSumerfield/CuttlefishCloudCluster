@@ -68,7 +68,7 @@ class MenuState:
 # collide with, because these are the only menu paths that never become a command line.
 FOLDER = "\0"
 GROUPS: dict[str, list[str]] = {
-    f"{FOLDER}spawns": ["queue", "history"],
+    f"{FOLDER}queue": ["queue", "history"],
     f"{FOLDER}files": ["upload", "download"],
     # `karma` whole, rather than its standings here and `bump`/`override` under the admin folder: one
     # command's subtree splits across two places exactly once and then nobody can find either half.
@@ -91,7 +91,7 @@ GROUPS: dict[str, list[str]] = {
 #   holding one visible row collapses INTO the top level (see `_collapse`), and a collapsed
 #   "Change the settings" out there names nothing.
 LABELS = {
-    f"{FOLDER}spawns": "The queue",
+    f"{FOLDER}queue": "The queue",
     f"{FOLDER}files": "My files",
     "upload": "Upload to the Tidepool",
     "download": "Download from the Tidepool",
@@ -173,7 +173,7 @@ LABELS = {
 class _Folder:
     """A synthetic menu folder — a row you open, holding commands that are not its subcommands.
 
-    It has no callback and never becomes argv: there is no `cuttle spawns`. `_menu_children` answers
+    It has no callback and never becomes argv: there is no `cuttle <folder>`. `_menu_children` answers
     for it instead of a `.commands` dict, so nothing can mistake it for a real group and try to
     prefix its members' paths with it.
     """
@@ -204,7 +204,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset", "div
 # Top-level order — by how often you reach for it, not by declaration order in main.py. The first
 # entry is pre-selected, so it should be the daily verb rather than the one that re-provisions the
 # box. Anything unlisted keeps its declared position, after these.
-# `login` trails the Spawn folders but leads everything unlisted, so on a freshly-installed box the
+# `login` trails the Dive folders but leads everything unlisted, so on a freshly-installed box the
 # pre-selected row is "Log in" — what install.sh printed as the next step — rather than `setup`. It
 # only ever shows when logged out, so this costs the everyday menu nothing.
 # `dashboard` sits *after* login for the same reason: it shows on any pointed box, including the
@@ -212,7 +212,7 @@ NEVER_DEFAULT = {"teardown", "user remove", "arm remove", "tidepool reset", "div
 # Only top-level rows are ranked here. Inside a folder the member order in `GROUPS` governs, and
 # inside a real group the declaration order does — both because the sort is stable and everything
 # unlisted ties.
-ORDER = ["tidepool", "dive", f"{FOLDER}files", f"{FOLDER}spawns", f"{FOLDER}cluster", f"{FOLDER}account",
+ORDER = ["tidepool", "dive", f"{FOLDER}files", f"{FOLDER}queue", f"{FOLDER}cluster", f"{FOLDER}account",
          "login", "dashboard", f"{FOLDER}admin", f"{FOLDER}box"]
 
 

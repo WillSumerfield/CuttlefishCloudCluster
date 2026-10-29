@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 from ccc_head_api import db, karma, slurm
 from ccc_head_api import dive as D
 from ccc_head_api import main as head_main
-from ccc_head_api import spawns as head_spawns
 from ccc_head_api import tidepool as head_tp
 from cuttle import config
 from cuttle import ccc_launch as L
@@ -157,7 +156,7 @@ class TestRequest:
         with db.connect() as conn:
             d = db.get_dive(conn, 77)
             assert d["main"] == "proj" and d["port"] == D.PORT_BASE and not d["closed"]
-            assert db.get_spawn(conn, 77)["user_id"] == 1
+            assert d["user_id"] == 1
 
     def test_toml_supplies_deps_and_time_and_is_not_rewritten(self, conn_db, monkeypatch):
         h = FakeHead(monkeypatch, prep={**PREP, "toml": 'time = "3h"\ndeps = ["data"]\n'})
@@ -212,40 +211,43 @@ def _clear_overrides():
 
 def _seed(job_id=77, user_id=1, main="proj", port=31000):
     with db.connect() as conn:
-        db.record_spawn(conn, job_id, user_id, "", minutes=60, gpus=1, tidepool=True)
         db.reserve_dive_port(conn, port)
-        db.create_dive(conn, job_id, f"{job_id:032x}", main, [], port)
+        db.create_dive(conn, job_id, user_id, f"{job_id:032x}", main, [], port, minutes=60, gpus=1)
         db.allocate_guise(conn, user_id)
 
 
 class TestAttach:
-    def test_unknown_and_foreign(self, conn_db, monkeypatch):
+    def test_unknown_is_404_and_foreign_has_no_connection(self, conn_db, monkeypatch):
         _seed(user_id=2)
+        monkeypatch.setattr(slurm, "state", lambda j: "RUNNING")
+        monkeypatch.setattr(D, "ensure_relay", lambda *a: pytest.fail("not the caller's Dive"))
         c = _client(monkeypatch)
         assert c.get("/api/dives/5").status_code == 404
-        assert c.get("/api/dives/77").status_code == 403
+        r = c.get("/api/dives/77").json()
+        assert r["state"] == "running" and r["main"] == "proj"
+        assert "port" not in r and "host_key" not in r
 
     def test_not_ready_while_queued(self, conn_db, monkeypatch):
         _seed()
-        monkeypatch.setattr(head_spawns, "active_state", lambda j: "PENDING")
+        monkeypatch.setattr(slurm, "state", lambda j: "PENDING")
         r = _client(monkeypatch).get("/api/dives/77").json()
         assert (r["ready"], r["state"]) == (False, "pending")
 
     def test_a_head_dive_is_its_own_port_with_no_relay(self, conn_db, monkeypatch):
         _seed()
-        monkeypatch.setattr(head_spawns, "active_state", lambda j: "RUNNING")
-        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "dex"}])
+        monkeypatch.setattr(slurm, "state", lambda j: "RUNNING")
+        monkeypatch.setattr(slurm, "dives", lambda: [{"id": 77, "node": "dex"}])
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "dex", "mesh_ip": "100.99.0.1", "head": True}])
         monkeypatch.setattr(D, "ensure_relay", lambda *a: pytest.fail("no relay on the Head"))
         monkeypatch.setattr(D, "_banner", lambda p: True)
-        monkeypatch.setattr(D.tp_mod, "cluster_name", lambda: "glados")
+        monkeypatch.setattr(D.tp_mod, "cluster_name", lambda: "head1")
         r = _client(monkeypatch).get("/api/dives/77").json()
-        assert r["ready"] and r["port"] == 31000 and r["node"] == "glados"
+        assert r["ready"] and r["port"] == 31000 and r["node"] == "head1"
 
     def test_an_arm_dive_is_ready_only_when_sshd_answers(self, conn_db, monkeypatch):
         _seed()
-        monkeypatch.setattr(head_spawns, "active_state", lambda j: "RUNNING")
-        monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "arm1"}])
+        monkeypatch.setattr(slurm, "state", lambda j: "RUNNING")
+        monkeypatch.setattr(slurm, "dives", lambda: [{"id": 77, "node": "arm1"}])
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "arm1", "mesh_ip": "100.99.0.7"}])
         monkeypatch.setattr(D, "ensure_relay", lambda *a: True)
         monkeypatch.setattr(D, "_banner", lambda p: False)
@@ -255,16 +257,18 @@ class TestAttach:
         r = c.get("/api/dives/77").json()
         assert r["ready"] and r["port"] == 31000 and r["user"] == "alice" and r["node"] == "arm1"
 
-    def test_end_is_yours_only(self, conn_db, monkeypatch, tmp_path):
+    def test_end_is_yours_only(self, conn_db, monkeypatch):
         _seed()
         _seed(78, user_id=2, main="x", port=31001)
-        monkeypatch.setattr(head_spawns, "SPAWNS_DIR", tmp_path / "spawns")
         ended = []
         monkeypatch.setattr(slurm, "cancel", ended.append)
         c = _client(monkeypatch)
         assert c.delete("/api/dives/78").status_code == 403
         assert c.delete("/api/dives/77").status_code == 204
-        assert ended == [77] and head_spawns.was_cancelled(77)
+        assert c.delete("/api/dives/5").status_code == 404
+        with db.connect() as conn:
+            assert ended == [77] and db.get_dive(conn, 77)["cancelled"]
+            assert not db.get_dive(conn, 78)["cancelled"]
 
 
 class TestClose:

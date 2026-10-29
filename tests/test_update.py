@@ -165,7 +165,7 @@ class TestTheRoleComesFromTheBoxNotAFlag:
 
 class TestTheHeadsRegistryRowSurvivesBeingRewritten:
     """`register_head_arm` runs on every `setup --head`, and the row it writes is also where the
-    Head's own Arm keeps everything only a real Spawn could learn. Writing it fresh reset all of it,
+    Head's own Arm keeps everything only a real Dive could learn. Writing it fresh reset all of it,
     so each re-setup re-benchmarked the card and re-ran the licence handshake — and an activation
     spent that way does not come back."""
 

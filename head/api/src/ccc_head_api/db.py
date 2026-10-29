@@ -45,28 +45,32 @@ _ph = PasswordHasher()
 #
 # `users` / `sessions` — the auth store. Session tokens are stored hashed (see the module docstring).
 #
-# `spawns` — the Attribution ledger: one row per submitted Spawn, keyed by the Slurm job id (the spawn
-# id). `user_id` is ON DELETE SET NULL so removing a user keeps the historical row (shown as "unknown"
-# rather than vanishing). The single source of truth for who submitted what.
-#   * `minutes`/`gpus`/`vram_gb`/`node` — what the User DECLARED, frozen at submit. The tick needs a
-#     queued Spawn's needs to know which Arms it is eligible for (and so which Arms' Demand it adds to);
-#     eligibility itself is re-derived from the live registry each pass. `node` is what the submitter
-#     *demanded* (an Admin pin; nothing sets it since 2.0 dropped pinning, so it is NULL).
-#   * `exit_code`/`finished_at` — the ending, recorded once by the tick the pass it notices the Spawn has
-#     left the queue (squeue forgets a finished job and there is no slurmdbd). `exit_code` NULL with
-#     `finished_at` set is a Spawn that ended without recording one — a failure.
-#   * `placed_node` — where the cluster actually PUT it, which is not `node` and must never be folded
-#     into it: `spawn_needs` reads `node` as the declaration. Copied off the escrow row by the meter,
-#     since `clear_escrow` deletes that at Settlement — precisely when History starts wanting it. NULL
-#     means "not known", never "unplaced".
-#   * `tidepool` — the job is a **Dive** (every CCC job since 2.0; 0 = the enrollment benchmark era).
-#   * `script` — what a 1.x batch Spawn ran; written '' since. Still read by the history views.
+# `dives` — one row per Dive, keyed by the Slurm job id (the Dive id). The Attribution ledger and the
+# Dive's own state in one: every CCC job is a Dive. `user_id` is ON DELETE SET NULL so removing a user
+# keeps the historical row (shown as "unknown" rather than vanishing).
+#   * `minutes`/`gpus`/`vram_gb` — what the User DECLARED, frozen at request. The tick needs a queued
+#     Dive's needs to know which Arms it is eligible for (and so which Arms' Demand it adds to);
+#     eligibility itself is re-derived from the live registry each pass.
+#   * `started_at` — first seen RUNNING (with `placed_node`, by the meter's record_placement).
+#   * `finished_at` — the ending, stamped once by the tick the pass it notices the Dive has left the
+#     queue (squeue forgets a finished job and there is no slurmdbd). `cancelled` = someone ended it
+#     (`DELETE /dives/{id}`, or the operator on the Head); unset with `finished_at` set = it ran out its
+#     time or was lost.
+#   * `placed_node` — where the cluster actually PUT it. Copied off the escrow row by the meter, since
+#     `clear_escrow` deletes that at Settlement — precisely when History starts wanting it. NULL means
+#     "not known", never "unplaced".
+#   * `token` keys the helper's records, rsync modules and snapshot; `main` is what single-writer
+#     checks; `relay_pid`/`relay_node` are the Head-side relay, once started. `closed` once the tick has
+#     run the helper's dive-close (the port is released then too); the row stays for history.
+# `dive_ports` is separate because the port has to be reserved BEFORE the job_id exists (baked into the
+# job script, rendered before sbatch runs). Keyed by the port alone, so two requests racing the same
+# "lowest free port" collide on ITS primary key (dive.reserve_port retries).
 #
 # The Karma economy, deliberately with no balances table: Decay is linear, so a decayed sum over the
 # ledger and a decay-on-touch running total are exactly equal, and a cached balance could only disagree.
 #   * `karma_ledger` — ONE ROW PER EVENT, both parties nullable: a NULL `from_user` is Karma conjured
-#     (an Override credit), a NULL `to_user` is Karma destroyed (a Spawn on a commons Arm).
-#   * `karma_escrow` — a Spawn's outstanding claim, and so the meter itself. `hold` is the forecast
+#     (an Override credit), a NULL `to_user` is Karma destroyed (a Dive on a commons Arm).
+#   * `karma_escrow` — a Dive's outstanding claim, and so the meter itself. `hold` is the forecast
 #     quoted at submit (a FLOOR); `accrued` is what it has really cost so far, ticked while it RUNS (a
 #     RATCHET). Share subtracts MAX(hold, accrued). At Settlement the row is DELETED and one ledger row
 #     written; the escrow is a live claim, never history, and does not decay.
@@ -76,20 +80,11 @@ _ph = PasswordHasher()
 # Arm Retract/Return — two tables because the two things they track have different lifetimes:
 #   * `arm_retractions` — a row means "this node takes no NEW placement"; submit builds --exclude= from
 #     it. Return deletes the row, and that is all Return ever does.
-#   * `retracted_jobs` — one row per Spawn RUNNING on the node when Retract fired; `deadline` is when the
-#     tick force-kills it. Survives Return (a caught Spawn is doomed regardless); cleared when the tick
+#   * `retracted_jobs` — one row per Dive RUNNING on the node when Retract fired; `deadline` is when the
+#     tick force-kills it. Survives Return (a caught Dive is doomed regardless); cleared when the tick
 #     settles the job, at zero.
 #
-# Dives — two tables because the port has to be reserved BEFORE the job_id exists (baked into the
-# job script, rendered before sbatch runs):
-#   * `dive_ports` — the reservation, keyed by the port alone, so two requests racing the same
-#     "lowest free port" collide on ITS primary key (dive.reserve_port retries).
-#   * `dives` — everything else, written once the job_id is known. `token` keys the helper's records,
-#     rsync modules and snapshot; `main` is what single-writer checks; `relay_pid`/`node` are the
-#     Head-side relay, once started. `closed` once the tick has run the helper's dive-close (the port is
-#     released then too); the row stays for history.
-#
-# `guises` — the uid a User's Spawns run as, on every node (guises.py). This table is only the allocator,
+# `guises` — the uid a User's Dives run as, on every node (guises.py). This table is only the allocator,
 # and its one job is **never hand out a uid twice**: `remove_user` HARD-deletes, so a removed User
 # leaves a tombstone here (`user_id` goes NULL, the row stays forever to keep that uid retired). UNIQUE
 # on user_id makes it one Guise per User — SQLite allows many NULLs in a UNIQUE column, which is exactly
@@ -113,21 +108,26 @@ CREATE TABLE sessions (
 );
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 
-CREATE TABLE spawns (
+CREATE TABLE dives (
   job_id       INTEGER PRIMARY KEY,
   user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
   submitted_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  script       TEXT    NOT NULL DEFAULT '',
   minutes      INTEGER,
   gpus         INTEGER,
   vram_gb      INTEGER,
-  node         TEXT,
-  exit_code    INTEGER,
+  started_at   TEXT,
   finished_at  TEXT,
-  tidepool     INTEGER NOT NULL DEFAULT 0,
-  placed_node  TEXT
+  cancelled    INTEGER NOT NULL DEFAULT 0,
+  placed_node  TEXT,
+  token        TEXT    NOT NULL UNIQUE,
+  main         TEXT    NOT NULL,
+  deps         TEXT    NOT NULL DEFAULT '[]',
+  port         INTEGER NOT NULL,
+  relay_pid    INTEGER,
+  relay_node   TEXT,
+  closed       INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_spawns_user ON spawns(user_id);
+CREATE INDEX idx_dives_user ON dives(user_id);
 
 CREATE TABLE karma_ledger (
   id        INTEGER PRIMARY KEY,
@@ -171,17 +171,6 @@ CREATE TABLE dive_ports (
   port        INTEGER PRIMARY KEY,
   reserved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-CREATE TABLE dives (
-  job_id     INTEGER PRIMARY KEY REFERENCES spawns(job_id) ON DELETE CASCADE,
-  token      TEXT    NOT NULL UNIQUE,
-  main       TEXT    NOT NULL,
-  deps       TEXT    NOT NULL DEFAULT '[]',
-  port       INTEGER NOT NULL,
-  relay_pid  INTEGER,
-  node       TEXT,
-  closed     INTEGER NOT NULL DEFAULT 0
-);
-
 CREATE TABLE ssh_keys (
   id       INTEGER PRIMARY KEY,
   user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -200,8 +189,8 @@ CREATE TABLE guises (
 
 # PRAGMA user_version of a 2.0 head.db. Above every step of the 1.x ladder (1..21), so a 1.x store can
 # never read as this one. 23: ssh_keys (Tidepool). 24: dives + dive_ports (replace tidepools).
-# 25: sessions.scope/dive (ambient sessions inside containers).
-SCHEMA_VERSION = 25
+# 25: sessions.scope/dive (ambient sessions inside containers). 26: spawns merged into dives.
+SCHEMA_VERSION = 26
 
 
 # --- connection + schema ----------------------------------------------------
@@ -346,7 +335,7 @@ def set_password(conn: sqlite3.Connection, username: str, new_password: str) -> 
 _DUMMY_HASH = _ph.hash("__ccc_dummy__")
 
 
-# --- Guises (temp/spawn-isolation.md) ----------------------------------------
+# --- Guises ----------------------------------------------------------------------
 # See _SCHEMA for the table and why it is its own. Allocating a uid needs no privilege whatsoever —
 # it is one row in head.db — which is what lets `cuttle user add` stay a Head-local command with an
 # operator at a tty, and keeps a root helper out of the Head API entirely. CREATING the Unix account
@@ -440,23 +429,22 @@ def purge_expired(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
-# --- spawn ledger -------------------------------------------------------------
+# --- Dives ---------------------------------------------------------------------
 
-def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: str,
-                 minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
-                 node: str | None = None, hold: float | None = None,
-                 tidepool: bool = False) -> None:
-    """Attribute a submitted Spawn to its user (keyed by the Slurm job id) and place its Escrow — in
-    ONE transaction. A Spawn that existed without its hold, even briefly, would be a Spawn its
-    submitter's Share had not yet been charged for, which is exactly the window a queue-flooder wants.
+def create_dive(conn: sqlite3.Connection, job_id: int, user_id: int, token: str, main: str,
+                deps: list[str], port: int, minutes: int = 0, gpus: int = 0, vram_gb: int = 0,
+                hold: float | None = None) -> None:
+    """Record a submitted Dive (keyed by the Slurm job id) and place its Escrow — in ONE transaction. A
+    Dive that existed without its hold, even briefly, would be one its owner's Share had not yet been
+    charged for, which is exactly the window a queue-flooder wants.
 
-    `hold` is None for a Spawn nobody is charged for: the **Admin** is outside the economy, so their
-    Spawns get an Attribution row (the Dashboard still says who submitted what) and no Escrow at all.
+    `hold` is None for a Dive nobody is charged for: the **Admin** is outside the economy, so their
+    Dives get a row (the Dashboard still says who started what) and no Escrow at all.
     """
     conn.execute(
-        """INSERT INTO spawns (job_id, user_id, script, minutes, gpus, vram_gb, node, tidepool)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (job_id, user_id, script, minutes, gpus, vram_gb, node, int(tidepool)),
+        """INSERT INTO dives (job_id, user_id, minutes, gpus, vram_gb, token, main, deps, port)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (job_id, user_id, minutes, gpus, vram_gb, token, main, json.dumps(deps), port),
     )
     if hold is not None:
         conn.execute("INSERT INTO karma_escrow (job_id, user_id, hold) VALUES (?,?,?)",
@@ -464,128 +452,115 @@ def record_spawn(conn: sqlite3.Connection, job_id: int, user_id: int, script: st
     conn.commit()
 
 
-def get_spawn(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM spawns WHERE job_id=?", (job_id,)).fetchone()
+def get_dive(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM dives WHERE job_id=?", (job_id,)).fetchone()
 
 
-def spawn_submitters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str | None]:
-    """Map job_id -> who submitted it (**Attribution**) — the one thing the live `GET /spawns` queue
-    cannot learn from Slurm, which says `ccc` for every Spawn. A job id with no row (submitted outside
-    CCC, or already reaped) is simply absent."""
+def _by_ids(conn: sqlite3.Connection, sql: str, job_ids: list[int]) -> list[sqlite3.Row]:
     if not job_ids:
-        return {}
-    marks = ",".join("?" * len(job_ids))
-    rows = conn.execute(
-        f"""SELECT s.job_id, u.username FROM spawns s
-            LEFT JOIN users u ON u.id = s.user_id WHERE s.job_id IN ({marks})""",
-        job_ids,
-    ).fetchall()
+        return []
+    return conn.execute(sql.format(marks=",".join("?" * len(job_ids))), job_ids).fetchall()
+
+
+def dive_starters(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str | None]:
+    """Map job_id -> who started it (**Attribution**) — the one thing the live queue cannot learn from
+    Slurm, which names a Guise. A job id with no row (the enrollment benchmark) is simply absent."""
+    rows = _by_ids(conn, """SELECT d.job_id, u.username FROM dives d
+                            LEFT JOIN users u ON u.id = d.user_id WHERE d.job_id IN ({marks})""", job_ids)
     return {r["job_id"]: r["username"] for r in rows}
 
 
-def spawn_owners(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, int]:
-    """Map job_id -> the user_id whose STANDING ranks this Spawn. The Karma tick's whole link from a
-    queued Slurm job back to a person: Slurm says every Spawn belongs to `ccc`, so only this ledger
-    knows whose standing to apply.
+def dive_mains(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str]:
+    rows = _by_ids(conn, "SELECT job_id, main FROM dives WHERE job_id IN ({marks})", job_ids)
+    return {r["job_id"]: r["main"] for r in rows}
 
-    Two kinds of Spawn are deliberately ABSENT, and the tick skips whatever is absent — so both take
-    the same path, and it needs no branch for either:
-      * **no Attribution row** — the enrollment benchmark, which the CLI sbatches outside the API.
-      * **submitted by an Admin** — the Admin is outside the economy: they earn no Karma, pay none, and
-        hold no Balance, so there is no standing to rank their Spawns by.
+
+def dive_owners(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, int]:
+    """Map job_id -> the user_id whose STANDING ranks this Dive. The Karma tick's whole link from a
+    queued Slurm job back to a person.
+
+    Two kinds of job are deliberately ABSENT, and the tick skips whatever is absent — so both take the
+    same path, and it needs no branch for either:
+      * **no row** — the enrollment benchmark, which the CLI sbatches outside the API.
+      * **started by an Admin** — the Admin is outside the economy: they earn no Karma, pay none, and
+        hold no Balance, so there is no standing to rank their Dives by.
     Both therefore keep nice 0 and outrank queued work. For the benchmark that is wanted (admitting an
     Arm should not wait behind a poor-standing User's backlog); for the Admin it is the privilege of the
-    role. See temp/KARMA.md.
+    role.
     """
-    if not job_ids:
-        return {}
-    marks = ",".join("?" * len(job_ids))
-    rows = conn.execute(
-        f"""SELECT s.job_id, s.user_id FROM spawns s JOIN users u ON u.id = s.user_id
-            WHERE u.is_admin = 0 AND s.job_id IN ({marks})""",
-        job_ids,
-    ).fetchall()
+    rows = _by_ids(conn, """SELECT d.job_id, d.user_id FROM dives d JOIN users u ON u.id = d.user_id
+                            WHERE u.is_admin = 0 AND d.job_id IN ({marks})""", job_ids)
     return {r["job_id"]: r["user_id"] for r in rows}
 
 
-def spawn_needs(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlite3.Row]:
-    """Map job_id -> what the User declared (gpus, vram_gb, node). What a queued Spawn is *eligible*
-    for, and therefore whose Demand it adds to.
+def dive_needs(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, sqlite3.Row]:
+    """Map job_id -> what the User declared (gpus, vram_gb). What a queued Dive is *eligible* for, and
+    therefore whose Demand it adds to.
 
-    Unlike spawn_owners this does NOT exclude Admins: an Admin's queued Spawn is a real claim on the
+    Unlike dive_owners this does NOT exclude Admins: an Admin's queued Dive is a real claim on the
     cards it could run on, and every other User's price should reflect that it is waiting. The Admin is
     outside the economy as a *payer*, not as a *body in the queue*.
     """
-    if not job_ids:
-        return {}
-    marks = ",".join("?" * len(job_ids))
-    rows = conn.execute(
-        f"SELECT job_id, user_id, gpus, vram_gb, node FROM spawns WHERE job_id IN ({marks})", job_ids
-    ).fetchall()
+    rows = _by_ids(conn, "SELECT job_id, user_id, gpus, vram_gb FROM dives WHERE job_id IN ({marks})",
+                   job_ids)
     return {r["job_id"]: r for r in rows}
 
 
-def unfinished_spawns(conn: sqlite3.Connection) -> list[int]:
-    """Every Spawn with no ending recorded yet — the tick's candidates for outcome-stamping. Once
-    stamped (finished_at set) a Spawn drops out, so after the first pass this is just the live queue plus
-    whatever ended in the last 30s."""
+def unfinished_dives(conn: sqlite3.Connection) -> list[int]:
+    """Every Dive with no ending stamped yet — the tick's candidates. Once stamped a Dive drops out, so
+    after the first pass this is just the live queue plus whatever ended in the last 30s."""
     return [r["job_id"] for r in
-            conn.execute("SELECT job_id FROM spawns WHERE finished_at IS NULL").fetchall()]
+            conn.execute("SELECT job_id FROM dives WHERE finished_at IS NULL").fetchall()]
 
 
-def mark_finished(conn: sqlite3.Connection, job_id: int, exit_code: int | None, at: str) -> None:
-    """Stamp a Spawn's ending, once. Idempotent on `finished_at`: a later pass cannot overwrite the code
-    with a NULL once the exit file has aged out, and a Spawn's recorded end is its first observed one."""
-    conn.execute(
-        "UPDATE spawns SET exit_code=?, finished_at=? WHERE job_id=? AND finished_at IS NULL",
-        (exit_code, at, job_id))
+def mark_finished(conn: sqlite3.Connection, job_id: int, at: str) -> None:
+    """Stamp a Dive's ending, once: its recorded end is its first observed one."""
+    conn.execute("UPDATE dives SET finished_at=? WHERE job_id=? AND finished_at IS NULL", (at, job_id))
     conn.commit()
 
 
-# The archive row, shared by the many-row read (`spawn_history`) and the one-row read
-# (`spawn_detail`). One string rather than two, because the Spawn page and the History row show the
-# same facts about the same thing and drifting them apart is how a Spawn comes to cost one number in
-# the list and another on its own page. The settled cost joins in from the ledger's `settle` row (a
-# Spawn that never settled — Admin-owned, or ended before its escrow was metered — has NULL cost,
-# which reads as `—`).
-_SPAWN_ROW = """SELECT s.job_id, s.submitted_at, s.finished_at, s.exit_code, s.script,
-                       s.gpus, s.vram_gb, s.minutes, s.node, s.placed_node,
-                       u.username AS submitted_by,
-                       l.amount AS cost, d.main AS main
-                FROM spawns s
-                LEFT JOIN users u ON u.id = s.user_id
-                LEFT JOIN dives d ON d.job_id = s.job_id
-                LEFT JOIN karma_ledger l ON l.job_id = s.job_id AND l.kind = 'settle'
+def mark_cancelled(conn: sqlite3.Connection, job_id: int) -> None:
+    """Someone ended this Dive. Written at the scancel — the one moment it is known for certain: Slurm
+    keeps no accounting (`AccountingStorageType = null`), so an ended Dive and a lost one look the same
+    once the job leaves squeue."""
+    conn.execute("UPDATE dives SET cancelled=1 WHERE job_id=?", (job_id,))
+    conn.commit()
+
+
+# The archive row, shared by the many-row read (`dive_history`) and the one-row read (`dive_detail`), so
+# a Dive cannot cost one number in the list and another on its own page. The settled cost joins in from
+# the ledger's `settle` row (a Dive that never settled — Admin-owned, or ended before its escrow was
+# metered — has NULL cost, which reads as `—`).
+_DIVE_ROW = """SELECT d.job_id, d.submitted_at, d.started_at, d.finished_at, d.cancelled, d.gpus, d.vram_gb,
+                      d.minutes, d.placed_node, d.main, d.deps, u.username AS started_by,
+                      l.amount AS cost
+               FROM dives d
+               LEFT JOIN users u ON u.id = d.user_id
+               LEFT JOIN karma_ledger l ON l.job_id = d.job_id AND l.kind = 'settle'
 """
 
 
-def spawn_history(conn: sqlite3.Connection, since: str, exclude: list[int],
-                  limit: int | None = None) -> list[sqlite3.Row]:
-    """Every Spawn submitted since `since`, minus the ids in `exclude` (the live queue) — the durable
+def dive_history(conn: sqlite3.Connection, since: str, exclude: list[int],
+                 limit: int | None = None) -> list[sqlite3.Row]:
+    """Every Dive started since `since`, minus the ids in `exclude` (the live queue) — the durable
     archive, newest first. Everyone's, like the live queue: what ran on the shared cluster is not
-    private. `limit` caps the result to the newest N (None = every row, the Dashboard's read); the CLI
-    passes it for readability."""
+    private. `limit` caps the result to the newest N (None = every row)."""
     # `NOT IN ()` has no valid SQL spelling — `NOT IN (NULL)` is UNKNOWN for every row and drops the
     # whole table — so the exclusion is a clause only when there is something live to exclude.
-    clause = f" AND s.job_id NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
+    clause = f" AND d.job_id NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
     limit_clause = " LIMIT ?" if limit else ""
     return conn.execute(
-        f"""{_SPAWN_ROW}
-            WHERE s.submitted_at >= ?{clause}
-            ORDER BY s.submitted_at DESC{limit_clause}""",
+        f"""{_DIVE_ROW}
+            WHERE d.submitted_at >= ?{clause}
+            ORDER BY d.submitted_at DESC{limit_clause}""",
         (since, *exclude, *((limit,) if limit else ())),
     ).fetchall()
 
 
-def spawn_detail(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
-    """One Spawn's archive row — the same shape `spawn_history` serves, for a Spawn the caller names.
-
-    Deliberately indifferent to whether the Spawn is still running: `submitted_at`, `script`, `node` and
-    the shape it asked for are all recorded at submit, and the rest fill in as they become true. That is
-    what lets `GET /spawns/{job_id}` answer with one payload whether the Spawn is queued, running or a
-    year old — the alternative was a Dashboard that fetched the whole cluster archive to render one page.
-    """
-    return conn.execute(f"{_SPAWN_ROW}\n WHERE s.job_id = ?", (job_id,)).fetchone()
+def dive_detail(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    """One Dive's archive row — the same shape `dive_history` serves — whether it is queued, running or
+    a year old, so `GET /dives/{id}` answers from one read."""
+    return conn.execute(f"{_DIVE_ROW}\n WHERE d.job_id = ?", (job_id,)).fetchone()
 
 
 # --- Karma ledger --------------------------------------------------------------
@@ -627,9 +602,9 @@ def escrow_totals(conn: sqlite3.Connection) -> dict[int, float]:
 
     `MAX(hold, accrued)` — SQLite's *scalar* max — is the ratchet, and it is the whole reason this is
     one table rather than two. The hold is a FLOOR (so an under-quoted forecast cannot be exploited);
-    the meter raises it if the Spawn's real cost overtakes it (so a Demand spike is felt in the
+    the meter raises it if the Dive's real cost overtakes it (so a Demand spike is felt in the
     submitter's Share within 30s, not at Settlement). The claim therefore only ever goes UP, and a
-    Spawn can never quietly cheapen its own submitter's standing while it runs.
+    Dive can never quietly cheapen its own submitter's standing while it runs.
     """
     rows = conn.execute(
         "SELECT user_id, SUM(MAX(hold, accrued)) AS total FROM karma_escrow GROUP BY user_id"
@@ -641,15 +616,15 @@ def escrow_breakdown(conn: sqlite3.Connection) -> dict[int, list[sqlite3.Row]]:
     """user_id -> the individual claims that sum to `escrow_totals`, dearest first.
 
     The same `MAX(hold, accrued)` ratchet, left un-summed — the aggregate says a User is holding 140
-    Karma, this says *which Spawns are holding it*, which is the only form of the number a User can act
-    on (one of them is the sweep they forgot to cancel). Carries the Spawn's script and node so the
+    Karma, this says *which Dives are holding it*, which is the only form of the number a User can act
+    on (one of them is the sweep they forgot to cancel). Carries the Dive's script and node so the
     Dashboard can name each claim without a second fetch; both are NULL-safe (a claim always has a
-    spawns row, since the escrow is opened by the same submit that writes it).
+    dives row, since the escrow is opened by the same request that writes it).
     """
     rows = conn.execute(
-        """SELECT e.user_id, e.job_id, MAX(e.hold, e.accrued) AS amount, e.node, s.script
+        """SELECT e.user_id, e.job_id, MAX(e.hold, e.accrued) AS amount, e.node, d.main
            FROM karma_escrow e
-           LEFT JOIN spawns s ON s.job_id = e.job_id
+           LEFT JOIN dives d ON d.job_id = e.job_id
            ORDER BY amount DESC"""
     ).fetchall()
     out: dict[int, list[sqlite3.Row]] = defaultdict(list)
@@ -662,7 +637,7 @@ def usage_series(conn: sqlite3.Connection, since: str) -> list[sqlite3.Row]:
     """Karma spent per User per UTC day since `since` — who has been consuming the cluster.
 
     Settlements only, and *spend* only (`from_user`): a settle row is the one place the economy states
-    what a finished Spawn actually cost, already weighted by the card's Power and the Demand it ran
+    what a finished Dive actually cost, already weighted by the card's Power and the Demand it ran
     against. Raw GPU-hours would have called an hour on a quiet little card the same as an hour on the
     coveted one, which is exactly the distinction the Tide exists to draw.
 
@@ -679,14 +654,14 @@ def usage_series(conn: sqlite3.Connection, since: str) -> list[sqlite3.Row]:
 
 
 def live_escrows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Every outstanding claim — the meter's working set. A row here means "this Spawn has not settled
+    """Every outstanding claim — the meter's working set. A row here means "this Dive has not settled
     yet", whatever Slurm currently thinks."""
     return conn.execute(
         "SELECT job_id, user_id, hold, accrued, node, last_at FROM karma_escrow").fetchall()
 
 
 def accrue(conn: sqlite3.Connection, job_id: int, node: str, accrued: float, last_at: str) -> None:
-    """Advance one running Spawn's meter. `last_at` is stored so the NEXT pass bills from real elapsed
+    """Advance one running Dive's meter. `last_at` is stored so the NEXT pass bills from real elapsed
     time rather than assuming a tick fired — a restarted karma service must not lose money, and the
     User held the card across the gap regardless.
 
@@ -698,21 +673,21 @@ def accrue(conn: sqlite3.Connection, job_id: int, node: str, accrued: float, las
     conn.commit()
 
 
-def record_placement(conn: sqlite3.Connection, job_id: int, node: str) -> None:
-    """Write down which Arm a Spawn actually landed on, the first time we see it running.
+def record_placement(conn: sqlite3.Connection, job_id: int, node: str, at: str) -> None:
+    """Write down which Arm a Dive actually landed on, the first time we see it running.
 
     The escrow row already carries the live node, but `clear_escrow` deletes it at Settlement —
     precisely when History starts wanting it — so it is copied somewhere durable on the way past (see
-    _SCHEMA). Kept OFF the meter deliberately: an Admin's Spawn and the enrollment benchmark have
+    _SCHEMA). Kept OFF the meter deliberately: an Admin's Dive and the enrollment benchmark have
     no Escrow at all, and both still ran somewhere worth naming.
 
-    Write-once (`WHERE placed_node IS NULL`): one write per Spawn rather than one per 30s pass, and a
-    Spawn's placement cannot be rewritten by a later, confused reading. Commits, like every other writer
-    here — the tick keeps no transaction of its own, and the Admin-Spawn path returns from the meter
+    Write-once (`WHERE placed_node IS NULL`): one write per Dive rather than one per 30s pass, and a
+    Dive's placement cannot be rewritten by a later, confused reading. Commits, like every other writer
+    here — the tick keeps no transaction of its own, and the Admin-Dive path returns from the meter
     before anything else would commit for it.
     """
-    conn.execute("UPDATE spawns SET placed_node=? WHERE job_id=? AND placed_node IS NULL",
-                 (node, job_id))
+    conn.execute("UPDATE dives SET placed_node=?, started_at=? WHERE job_id=? AND placed_node IS NULL",
+                 (node, at, job_id))
     conn.commit()
 
 
@@ -748,7 +723,7 @@ def prune_demand(conn: sqlite3.Connection, days: int, now: datetime | None = Non
 def prune_ledger(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> int:
     """Drop Karma events past the decay curve's floor (karma.KARMA_LEDGER_RETENTION_DAYS).
 
-    The one table here that is deleted from rather than kept: `spawns` and `users` are the permanent
+    The one table here that is deleted from rather than kept: `dives` and `users` are the permanent
     accounting record, but a Karma row that no longer moves any Balance is not evidence of anything —
     at this age `karma.decay` has it at ~5% and falling off a cliff. Without this the ledger grows for
     the cluster's whole life to keep rows nobody's standing can feel."""
@@ -804,7 +779,7 @@ def mark_arm_retracted(conn: sqlite3.Connection, node: str) -> None:
 
 
 def clear_arm_retraction(conn: sqlite3.Connection, node: str) -> None:
-    """Return: reopen `node` for new placement. Never touches `retracted_jobs` — a Spawn already
+    """Return: reopen `node` for new placement. Never touches `retracted_jobs` — a Dive already
     caught by the Retract is doomed regardless (see the table's docstring above)."""
     conn.execute("DELETE FROM arm_retractions WHERE node=?", (node,))
     conn.commit()
@@ -815,14 +790,14 @@ def retracted_nodes(conn: sqlite3.Connection) -> set[str]:
 
 
 def catch_retracting_job(conn: sqlite3.Connection, job_id: int, node: str, deadline: str) -> None:
-    """Snapshot one Spawn caught by a Retract, at the moment it fired."""
+    """Snapshot one Dive caught by a Retract, at the moment it fired."""
     conn.execute("INSERT OR REPLACE INTO retracted_jobs (job_id, node, deadline) VALUES (?,?,?)",
                  (job_id, node, deadline))
     conn.commit()
 
 
 def retracting_jobs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Every Spawn a Retract has ever caught that has not settled yet — the tick's working set for the
+    """Every Dive a Retract has ever caught that has not settled yet — the tick's working set for the
     force-kill deadline and the zero-billing it enforces at Settlement."""
     return conn.execute("SELECT job_id, node, deadline FROM retracted_jobs").fetchall()
 
@@ -856,35 +831,16 @@ def release_dive_port(conn: sqlite3.Connection, port: int) -> None:
     conn.commit()
 
 
-def create_dive(conn: sqlite3.Connection, job_id: int, token: str, main: str, deps: list[str],
-                port: int) -> None:
-    conn.execute("INSERT INTO dives (job_id, token, main, deps, port) VALUES (?,?,?,?,?)",
-                 (job_id, token, main, json.dumps(deps), port))
-    conn.commit()
-
-
-def dive_mains(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, str]:
-    if not job_ids:
-        return {}
-    q = f"SELECT job_id, main FROM dives WHERE job_id IN ({','.join('?' * len(job_ids))})"
-    return {r["job_id"]: r["main"] for r in conn.execute(q, job_ids).fetchall()}
-
-
-def get_dive(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM dives WHERE job_id=?", (job_id,)).fetchone()
-
-
 def open_dives(conn: sqlite3.Connection, user_id: int | None = None) -> list[sqlite3.Row]:
     """Dives not yet closed (queued, running, or ended but not yet swept), optionally one User's."""
-    q = ("SELECT d.*, s.user_id, s.submitted_at, s.minutes, s.gpus, s.vram_gb FROM dives d "
-         "JOIN spawns s ON s.job_id = d.job_id WHERE d.closed = 0")
+    q = "SELECT * FROM dives WHERE closed = 0"
     if user_id is None:
-        return conn.execute(q + " ORDER BY d.job_id").fetchall()
-    return conn.execute(q + " AND s.user_id=? ORDER BY d.job_id", (user_id,)).fetchall()
+        return conn.execute(q + " ORDER BY job_id").fetchall()
+    return conn.execute(q + " AND user_id=? ORDER BY job_id", (user_id,)).fetchall()
 
 
 def set_dive_relay(conn: sqlite3.Connection, job_id: int, relay_pid: int, node: str) -> None:
-    conn.execute("UPDATE dives SET relay_pid=?, node=? WHERE job_id=?", (relay_pid, node, job_id))
+    conn.execute("UPDATE dives SET relay_pid=?, relay_node=? WHERE job_id=?", (relay_pid, node, job_id))
     conn.commit()
 
 

@@ -1,4 +1,4 @@
-"""`cuttle karma` — read standings, Override a Balance, Queue-bump a Spawn.
+"""`cuttle karma` — read standings, Override a Balance, Queue-bump a Dive.
 
 Three commands, and they deliberately do NOT all travel the same road:
 
@@ -7,7 +7,7 @@ Three commands, and they deliberately do NOT all travel the same road:
 - `karma override` is a **Head-box command**: the Head API exposes no admin writes at all, so a
   stolen Session can't mint Karma. Gate is *where you must be*, not what you may do.
 - `karma bump` is a **Head-box operator command**, like `arm authorize`/`arm remove`. A bump is a
-  *negative* nice, which Slurm only grants to an operator — every Spawn and API scontrol call runs
+  *negative* nice, which Slurm only grants to an operator — every Dive and API scontrol call runs
   as the one `ccc` uid, so routing through the API would hand operator rights to the LAN-facing web
   process. Only the CLI on the Head, via sudo, has that. (ROADMAP Phase 2's privileged admin sidecar
   will make this family reachable from the Dashboard.)
@@ -64,7 +64,7 @@ def tide(days: int = 7, as_json: bool = False) -> None:
 
     def render():
         if not series:
-            ui.say("no demand recorded yet — the Tide fills in as Spawns contend for cards")
+            ui.say("no demand recorded yet — the Tide fills in as Dives contend for cards")
             return
         by_node: dict[str, list] = {}
         for r in series:
@@ -86,45 +86,45 @@ def override(username: str, amount: float, note: str | None = None) -> None:
     auth._admin(["override", username, str(amount), *(["--note", note] if note else [])])
 
 
-def _pending_nice(spawn_id: int) -> int:
-    """The Spawn's current nice — and a refusal if a bump could not possibly do anything to it.
+def _pending_nice(dive_id: int) -> int:
+    """The Dive's current nice — and a refusal if a bump could not possibly do anything to it.
 
-    A bump only means something to a **PENDING** Spawn: nice feeds the priority that decides who runs
-    *next*, and a Spawn already holding a card is past that decision. So "is it in the queue" is the
+    A bump only means something to a **PENDING** Dive: nice feeds the priority that decides who runs
+    *next*, and a Dive already holding a card is past that decision. So "is it in the queue" is the
     wrong question — `squeue` lists RUNNING jobs too, and asking only that would let a bump on a
-    running Spawn succeed, change nothing, and report success. "Is it still waiting" is the question.
+    running Dive succeed, change nothing, and report success. "Is it still waiting" is the question.
     """
-    r = subprocess.run(["squeue", "-h", "-j", str(spawn_id), "-o", "%T %y"],
+    r = subprocess.run(["squeue", "-h", "-j", str(dive_id), "-o", "%T %y"],
                        capture_output=True, text=True)
     fields = r.stdout.split()
     # A bump refusal is runtime queue state, not a bad argument — ui.abort, not BadParameter's
     # "Try --help" box (which would tell the operator to check syntax that was never wrong).
     if not fields:
         raise ui.abort(
-            f"Spawn {spawn_id} is not in the queue (finished, cancelled, or never existed)")
+            f"Dive {dive_id} is not in the queue (finished, cancelled, or never existed)")
     state, nice = fields[0], int(fields[1])
     if state != "PENDING":
-        raise ui.abort(f"Spawn {spawn_id} is {state.lower()}, not waiting — a bump only "
-                       f"reorders the queue, and this Spawn is already past that")
+        raise ui.abort(f"Dive {dive_id} is {state.lower()}, not waiting — a bump only "
+                       f"reorders the queue, and this Dive is already past that")
     return nice
 
 
-def bump(spawn_id: int, clear: bool = False) -> None:
-    """Shove one queued Spawn up the queue — or hand it back to the economy with --clear.
+def bump(dive_id: int, clear: bool = False) -> None:
+    """Shove one queued Dive up the queue — or hand it back to the economy with --clear.
 
     A bump **bypasses** the economy rather than participating in it: no Karma moves, and it leaves no
     ledger row. That is deliberate. A bump bought with Karma would go on winning every *other* race for
-    a month; this moves one Spawn, once.
+    a month; this moves one Dive, once.
 
     The negative nice IS the bookkeeping. The Karma tick skips any job with nice < 0 precisely because
-    only an operator could have set one — so a bumped Spawn is left alone until it runs or is cleared,
+    only an operator could have set one — so a bumped Dive is left alone until it runs or is cleared,
     with no bump table and no coordination state anywhere. Bump again to shove it further.
     """
-    current = _pending_nice(spawn_id)  # both paths are meaningless on a Spawn that is not waiting
+    current = _pending_nice(dive_id)  # both paths are meaningless on a Dive that is not waiting
     if clear:
-        run(["scontrol", "update", f"JobId={spawn_id}", "Nice=0"], sudo=True)
-        ui.ok(f"spawn {spawn_id} returned to the economy (next tick re-ranks it)")
+        run(["scontrol", "update", f"JobId={dive_id}", "Nice=0"], sudo=True)
+        ui.ok(f"Dive {dive_id} returned to the economy (next tick re-ranks it)")
         return
     nice = min(0, current) - config.BUMP_STEP
-    run(["scontrol", "update", f"JobId={spawn_id}", f"Nice={nice}"], sudo=True)
-    ui.ok(f"spawn {spawn_id} bumped (nice {nice})")
+    run(["scontrol", "update", f"JobId={dive_id}", f"Nice={nice}"], sudo=True)
+    ui.ok(f"Dive {dive_id} bumped (nice {nice})")

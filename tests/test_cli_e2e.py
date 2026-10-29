@@ -17,12 +17,11 @@ from cuttle import dive as dive_mod
 from conftest import USERS
 
 
-def _seed_spawn(username: str = "alice") -> int:
-    """A Spawn attributed to `username`, written straight into the ledger — nothing submits in 2.0."""
+def _seed_dive(username: str = "alice") -> int:
+    """A Dive owned by `username`, written straight into head.db."""
     with db.connect() as conn:
         uid = db.get_user(conn, username)["id"]
-        db.record_spawn(conn, 4201, uid, "", minutes=60, gpus=1, vram_gb=24, tidepool=True)
-        db.create_dive(conn, 4201, "ab" * 16, "proj", [], 31000)
+        db.create_dive(conn, 4201, uid, "ab" * 16, "proj", [], 31000, minutes=60, gpus=1, vram_gb=24)
     return 4201
 
 
@@ -150,21 +149,21 @@ class TestDiveEnd:
     def test_you_may_end_your_own(self, head, signed_in, fake_slurm, monkeypatch):
         killed = []
         monkeypatch.setattr(slurm, "cancel", lambda jid: killed.append(jid))
-        dive = _seed_spawn()
+        dive = _seed_dive()
         result = signed_in("dive", "end", dive, "--yes")
         assert result.exit_code == 0, result.output
         assert killed == [dive]
 
     def test_the_confirmation_can_be_declined(self, head, signed_in, fake_slurm, monkeypatch):
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
-        dive = _seed_spawn()
+        dive = _seed_dive()
         assert signed_in("dive", "end", dive, input="n\n").exit_code != 0
 
     def test_you_may_not_end_someone_elses(self, head, cli, fake_slurm, monkeypatch):
         monkeypatch.setattr(menu, "is_head", lambda: False)
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("must not scancel"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
-        dive = _seed_spawn()
+        dive = _seed_dive()
         config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         result = cli("dive", "end", dive, "--yes")
@@ -175,21 +174,20 @@ class TestDiveEnd:
                                                                monkeypatch):
         monkeypatch.setattr(slurm, "cancel", lambda jid: pytest.fail("the API route must not run"))
         cli("login", input=f"alice\n{USERS['alice']}\n")
-        dive = _seed_spawn()
+        dive = _seed_dive()
         config.SESSION_FILE.unlink()
         cli("login", input=f"root\n{USERS['root']}\n")
         monkeypatch.setattr(menu, "is_head", lambda: True)
         ran = []
-        monkeypatch.setattr(dive_mod, "run", lambda cmd, **kw: ran.append(cmd))
+        monkeypatch.setattr(dive_mod.auth, "_admin", lambda args, **kw: ran.append(args))
         result = cli("dive", "end", dive, "--yes")
         assert result.exit_code == 0, result.output
-        assert ran[0] == ["scancel", str(dive)]
-        assert ran[1][:2] == ["-u", config.HEAD_API_USER] and ran[1][2] == "touch"
+        assert ran == [["end", str(dive)]]
         assert "Head operator" in result.output
 
     def test_an_unknown_id_is_not_escalated(self, signed_in, monkeypatch):
         monkeypatch.setattr(menu, "is_head", lambda: True)
-        monkeypatch.setattr(dive_mod, "run", lambda *a, **kw: pytest.fail("must not scancel"))
+        monkeypatch.setattr(dive_mod.auth, "_admin", lambda *a, **kw: pytest.fail("must not scancel"))
         assert signed_in("dive", "end", "424242", "--yes").exit_code != 0
 
 class TestArmRetraction:
@@ -260,22 +258,22 @@ class TestArmRetraction:
 
 class TestQueue:
     """`cuttle queue` — the shared live queue, with the ledger's attribution (Slurm's own user is
-    `ccc` for every Spawn). The queue rows are faked at `slurm.spawns` so the route's real
+    a Guise for every Dive). The queue rows are faked at `slurm.dives` so the route's real
     attribution enrichment (head.db) is what's under test, not squeue's JSON."""
 
     def test_the_empty_queue_says_so(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [])
+        monkeypatch.setattr(slurm, "dives", lambda: [])
         r = signed_in("queue")
         assert r.exit_code == 0, r.output
         assert "queue is empty" in r.output
 
-    def test_the_queue_lists_a_spawn_and_who_submitted_it(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [
-            {"id": 4207, "name": "ccc-spawn", "state": "running", "node": "gpu-box",
+    def test_the_queue_lists_a_dive_and_who_started_it(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "dives", lambda: [
+            {"id": 4207, "name": "ccc-dive", "state": "running", "node": "gpu-box",
              "gpus": 1, "user": "ccc", "time_limit": 60, "submit_time": 0, "start_time": 0}])
         with db.connect() as conn:
             alice = db.get_user(conn, "alice")
-            db.record_spawn(conn, 4207, alice["id"], "train.py", 60, 1, 24, None)
+            db.create_dive(conn, 4207, alice["id"], "c" * 32, "train", [], 31000, 60, 1, 24)
         r = signed_in("queue")
         assert r.exit_code == 0, r.output
         # The **Attribution** comes from head.db rather than from Slurm — `ccc` (Slurm's user) must
@@ -283,7 +281,7 @@ class TestQueue:
         assert "4207" in r.output and "alice" in r.output
 
     def test_queue_json_is_the_raw_rows(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [
+        monkeypatch.setattr(slurm, "dives", lambda: [
             {"id": 4207, "name": "train.py", "state": "running", "node": "gpu-box",
              "gpus": 1, "user": "ccc", "time_limit": 60, "submit_time": 0, "start_time": 0}])
         r = signed_in("queue", "--json")
@@ -299,11 +297,13 @@ class TestHistory:
     finished rows are seeded straight into head.db (the tick's stamping is covered in test_history.py);
     the live squeue is faked so the exclusion is what's exercised."""
 
-    def _finished(self, job_id, user_id, exit_code, cost=None, owner_id=None):
+    def _finished(self, job_id, user_id, cancelled=True, cost=None, owner_id=None, main="train"):
         with db.connect() as conn:
-            db.record_spawn(conn, job_id, user_id, "train.py", 60, 1, 24, "gpu-box",
-                            hold=5.0)
-            db.mark_finished(conn, job_id, exit_code, "2026-07-26T12:00:00Z")
+            db.create_dive(conn, job_id, user_id, f"{job_id:032x}", main, [], 31000, 60, 1, 24,
+                           hold=5.0)
+            if cancelled:
+                db.mark_cancelled(conn, job_id)
+            db.mark_finished(conn, job_id, "2026-07-26T12:00:00Z")
             if cost is not None:
                 db.record_karma(conn, "settle", cost, user_id, owner_id, job_id=job_id)
 
@@ -312,46 +312,44 @@ class TestHistory:
             return db.get_user(conn, "alice")["id"]
 
     def test_empty_history_says_so(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [])
+        monkeypatch.setattr(slurm, "dives", lambda: [])
         r = signed_in("history")
         assert r.exit_code == 0, r.output
-        assert "no Spawns in the last 30 days" in r.output
+        assert "no Dives in the last 30 days" in r.output
 
-    def test_history_shows_cost_and_a_done_outcome(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [])
-        self._finished(4207, self._alice(), exit_code=0, cost=3.4, owner_id=self._alice())
+    def test_history_shows_cost_and_an_ended_outcome(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "dives", lambda: [])
+        self._finished(4207, self._alice(), cost=3.4, owner_id=self._alice())
         r = signed_in("history")
         assert r.exit_code == 0, r.output
         assert "4207" in r.output and "alice" in r.output
-        assert "done" in r.output and "3.4" in r.output
+        assert "ended" in r.output and "3.4" in r.output
 
     def test_the_archive_shows_the_main_folder(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [])
-        self._finished(4209, self._alice(), exit_code=0)
-        with db.connect() as conn:
-            db.create_dive(conn, 4209, "cd" * 16, "proj/train", [], 31000)
+        monkeypatch.setattr(slurm, "dives", lambda: [])
+        self._finished(4209, self._alice(), main="proj/train")
         assert "~/proj/train" in signed_in("history").output
 
-    def test_a_nonzero_exit_reads_as_failed(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [])
-        self._finished(4208, self._alice(), exit_code=1, cost=1.0, owner_id=self._alice())
-        assert "failed (1)" in signed_in("history").output
+    def test_a_dive_nobody_ended_that_died_early_reads_as_lost(self, signed_in, monkeypatch):
+        monkeypatch.setattr(slurm, "dives", lambda: [])
+        self._finished(4208, self._alice(), cancelled=False, cost=1.0, owner_id=self._alice())
+        assert "lost" in signed_in("history").output
 
     def test_history_excludes_the_currently_queued(self, signed_in, monkeypatch):
-        """A Spawn still in squeue belongs to `queue`, not `history` — the two views are disjoint."""
+        """A Dive still in squeue belongs to `queue`, not `history` — the two views are disjoint."""
         with db.connect() as conn:
-            db.record_spawn(conn, 4207, self._alice(), "train.py", 60, 1, 24, "gpu-box",
-                            hold=5.0)
-        monkeypatch.setattr(slurm, "spawns", lambda: [
+            db.create_dive(conn, 4207, self._alice(), "c" * 32, "train", [], 31000, 60, 1, 24,
+                           hold=5.0)
+        monkeypatch.setattr(slurm, "dives", lambda: [
             {"id": 4207, "name": "train.py", "state": "running", "node": "gpu-box",
              "gpus": 1, "user": "ccc", "time_limit": 60, "submit_time": 0, "start_time": 0}])
         assert "4207" not in signed_in("history").output
 
     def test_history_json_carries_cost_and_outcome(self, signed_in, monkeypatch):
-        monkeypatch.setattr(slurm, "spawns", lambda: [])
-        self._finished(4207, self._alice(), exit_code=0, cost=3.4, owner_id=self._alice())
+        monkeypatch.setattr(slurm, "dives", lambda: [])
+        self._finished(4207, self._alice(), cost=3.4, owner_id=self._alice())
         row = json.loads(signed_in("history", "--json").output)[0]
-        assert row["job_id"] == 4207 and row["cost"] == 3.4 and row["exit_code"] == 0
+        assert row["job_id"] == 4207 and row["cost"] == 3.4 and row["outcome"] == "ended"
 
     def test_history_without_a_session_is_refused(self, cli):
         r = cli("history")

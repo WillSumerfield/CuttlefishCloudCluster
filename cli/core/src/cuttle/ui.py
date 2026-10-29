@@ -272,7 +272,7 @@ def table(columns: list[str], rows: list[list], title: str | None = None) -> Non
 
 
 def kv(pairs: list[tuple[str, object]], title: str | None = None) -> None:
-    """A detail block — one subject, several facts. `cuttle account`, a Spawn's detail."""
+    """A detail block — one subject, several facts. `cuttle account`, a Dive's detail."""
     if title:
         out.print(f"[head]{title}[/head]")
     width = max((len(k) for k, _ in pairs), default=0)
@@ -871,7 +871,7 @@ def ask_typed(message: str, expected: str) -> bool:
     """Confirmation for something irreversible: the operator types the target's name.
 
     A y/N cannot protect `teardown` — it sits one arrow key from `setup` in the menu, and the same
-    keystroke that confirms a Spawn cancellation would wipe the cluster. Typing a hostname is not
+    keystroke that confirms a Dive cancellation would wipe the cluster. Typing a hostname is not
     something a hand does by reflex, which is the entire point.
     """
     return ask_text(f"{message} (type {expected!r} to confirm)").strip() == expected
@@ -908,15 +908,15 @@ _LOOSE: list = []
 # handed back. `_LOOSE` itself cannot be replayed: `step` and the progress bars park LIVE renderables
 # in it and mutate them in place, so by the end it holds spinners rather than the lines that were
 # read. Each entry is the markup as it was said, paired with the offset into captured stdout it was
-# said at — the two streams interleave (`run` prints its preview and the Spawn id to stdout, its
+# said at — the two streams interleave (`run` prints its preview and the Dive id to stdout, its
 # confirmation to stderr), and replaying either one whole reorders it against the other.
 _REPLAY: list[tuple[int, str]] = []
 _HELD = None
 _TICK = None
 _TICK_STOP = None
 
-# `--follow` tails a running Spawn: its whole purpose is output arriving *as it happens*. The
-# alternate screen holds stdout back until the flow ends, which for a follow is when the Spawn ends —
+# `--follow` tails a running Dive: its whole purpose is output arriving *as it happens*. The
+# alternate screen holds stdout back until the flow ends, which for a follow is when the Dive ends —
 # so the one command whose output must be live would show nothing at all until it was over. These
 # runs stay inline. Read off argv rather than the parsed flag because the screen is claimed before
 # any command function is entered.
@@ -1560,7 +1560,7 @@ def _panel(title: str | None, facts: list[tuple[str, str]]) -> None:
 # --- errors -----------------------------------------------------------------
 
 def abort(message: str, code: int = 1, next_step: str | None = None):
-    """Report an *expected* failure and stop: the Head refused us, the Head is unreachable, the Spawn
+    """Report an *expected* failure and stop: the Head refused us, the Head is unreachable, the Dive
     isn't yours. Returns the exception so callers can `raise ui.abort(...)` and keep control flow
     obvious to a reader (and to a type checker).
 

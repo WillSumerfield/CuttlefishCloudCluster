@@ -36,7 +36,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from . import db, guises, karma, slurm, spawns as spawns_mod, tidepool as tp_mod
+from . import db, guises, karma, slurm, tidepool as tp_mod
 from . import features as features_mod
 
 log = logging.getLogger("ccc.api")
@@ -310,7 +310,7 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
                                  f"mirrored to the Head")
             exclude = ",".join(sorted(db.retracted_nodes(conn)))
             constraint = constraint_for(s)
-            need = {"node": None, "vram_gb": s["vram"], "gpus": s["gpus"]}
+            need = {"vram_gb": s["vram"], "gpus": s["gpus"]}
             hold = karma.quote_hold(conn, slurm.arms(), need, s["minutes"], s["gpus"], user["is_admin"])
             guise = guises.name(db.allocate_guise(conn, user["id"]))
             port = reserve_port(conn)
@@ -333,9 +333,8 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
             raise HTTPException(422, f"sbatch refused this Dive: {said}") from None
         job_id = int(r.stdout.strip().split(";")[0])
         with db.connect() as conn:
-            db.record_spawn(conn, job_id, user["id"], "", minutes=s["minutes"], gpus=s["gpus"],
-                            vram_gb=s["vram"], hold=hold, tidepool=True)
-            db.create_dive(conn, job_id, tok, main, deps, port)
+            db.create_dive(conn, job_id, user["id"], tok, main, deps, port, minutes=s["minutes"],
+                           gpus=s["gpus"], vram_gb=s["vram"], hold=hold)
     except BaseException:
         if job_id is not None:
             try:
@@ -367,9 +366,21 @@ def where(node: str | None, arms: list[dict] | None = None) -> str | None:
     return tp_mod.cluster_name() if node and node in heads else node
 
 
+def queue(limit: int | None = None) -> list[dict]:
+    """The live queue — every pending/running job in the CCC partition, with who started it (Slurm
+    names a Guise). `limit` caps to the front (running + next-to-run first)."""
+    rows = slurm.dives()[:limit] if limit else slurm.dives()
+    ids = [r["id"] for r in rows if r["id"] is not None]
+    with db.connect() as conn:
+        starters, mains = db.dive_starters(conn, ids), db.dive_mains(conn, ids)
+    for r in rows:
+        r["started_by"], r["main"] = starters.get(r["id"]), mains.get(r["id"])
+    return rows
+
+
 def rows(user_id: int | None = None) -> list[dict]:
     """Open Dives with Slurm's view of each (state, node, times)."""
-    live = {j["id"]: j for j in slurm.spawns()}
+    live = {j["id"]: j for j in slurm.dives()}
     arms = slurm.arms() if live else []
     with db.connect() as conn:
         out = []
@@ -382,45 +393,83 @@ def rows(user_id: int | None = None) -> list[dict]:
     return out
 
 
-def connection(user: dict, job_id: int) -> dict:
-    """What `ssh <name>-<id>` needs, once the Dive can take it: `ready` means an sshd answered."""
+def outcome(r) -> str:
+    """How a finished Dive ended: `ended` (someone ended it), `timed out` (ran its --time), or `lost`
+    (its job died first — the Arm dropped, the node rebooted). Slurm keeps no accounting, so the last
+    two are told apart by run length alone."""
+    if r["cancelled"]:
+        return "ended"
+    if r["started_at"] and r["minutes"] and _secs(r["finished_at"]) - _secs(r["started_at"]) >= \
+            r["minutes"] * 60 - 60:
+        return "timed out"
+    return "lost"
+
+
+def _secs(ts: str) -> float:
+    return time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+
+
+def archive(r) -> dict:
+    """A history row as served: the archive columns plus its `outcome` (None while unfinished)."""
+    out = {k: r[k] for k in r.keys() if k not in ("cancelled", "started_at")}
+    out["deps"] = json.loads(r["deps"])
+    out["outcome"] = outcome(r) if r["finished_at"] else None
+    return out
+
+
+def history(days: int, limit: int | None) -> list[dict]:
+    """Every Dive started within `days` that the live queue has forgotten, newest first. Everyone's:
+    what ran on the shared cluster is not private."""
+    live = [r["id"] for r in slurm.dives() if r["id"] is not None]
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
     with db.connect() as conn:
-        row, d = db.get_spawn(conn, job_id), db.get_dive(conn, job_id)
-    if row is None or d is None:
+        return [archive(r) for r in db.dive_history(conn, since, live, limit)]
+
+
+def detail(user: dict, job_id: int) -> dict:
+    """One Dive, whole: state + archive for anyone; for its owner also what `ssh <name>-<id>` needs
+    (`ready` = an sshd answered; polling it brings an Arm Dive's relay up)."""
+    with db.connect() as conn:
+        row, d = db.dive_detail(conn, job_id), db.get_dive(conn, job_id)
+    if row is None:
         raise HTTPException(404, f"no Dive {job_id}")
-    if row["user_id"] != user["id"]:
-        raise HTTPException(403, "you can only attach to your own Dives")
-    base = {"id": job_id, "user": user["username"], "host_key": tp_mod.host_key(user["username"]),
-            "main": d["main"], "alias": f"{tp_mod.cluster_name()}-{job_id}"}
-    if d["closed"]:
-        return {**base, "ready": False, "state": "ended", "port": None}
-    state = spawns_mod.active_state(job_id)
+    out = archive(row)
+    state = slurm.state(job_id)
+    if state is not None:
+        out["state"] = state.lower()
+    else:
+        out["state"] = out["outcome"] or "ending"
+    out["done"] = state is None and d["closed"] == 1
+    if d["user_id"] != user["id"]:
+        return out
+    out |= {"user": user["username"], "host_key": tp_mod.host_key(user["username"]),
+            "alias": f"{tp_mod.cluster_name()}-{job_id}", "ready": False, "port": None}
     if state != "RUNNING":
-        return {**base, "ready": False, "state": (state or "ending").lower(), "port": None}
-    node = next((s["node"] for s in slurm.spawns() if s["id"] == job_id), None)
+        return out
+    node = next((s["node"] for s in slurm.dives() if s["id"] == job_id), None)
     arm = next((a for a in slurm.arms() if a["name"] == node), None) if node else None
     if arm is None or not arm.get("mesh_ip"):
-        return {**base, "ready": False, "state": "running", "port": None}
+        return out
     if arm.get("head"):
         up = True   # the container publishes the port here itself (a relay would take the same one)
     else:
         with db.connect() as conn:
             up = ensure_relay(conn, job_id, arm["mesh_ip"], node)
-    return {**base, "ready": up and _banner(d["port"]), "state": "running",
-            "node": where(node, [arm]), "port": d["port"]}
+    return out | {"ready": up and _banner(d["port"]), "node": where(node, [arm]), "port": d["port"]}
 
 
 def end(user: dict, job_id: int) -> None:
     """scancel as the User's Guise: Slurm TERMs the job, the shell stops, the final mirror runs inside
-    KillWait, and the tick closes it once the job is gone."""
+    KillWait, and the tick closes it once the job is gone. Only your own: ending someone else's is
+    the operator's, on the Head (`cuttle dive end` takes the 403 as its cue)."""
     with db.connect() as conn:
-        row, d = db.get_spawn(conn, job_id), db.get_dive(conn, job_id)
-    if row is None or d is None:
-        raise HTTPException(404, f"no Dive {job_id}")
-    if row["user_id"] != user["id"]:
-        raise HTTPException(403, "you can only end your own Dives")
-    slurm.cancel(job_id)
-    spawns_mod.mark_cancelled(job_id)
+        d = db.get_dive(conn, job_id)
+        if d is None:
+            raise HTTPException(404, f"no Dive {job_id}")
+        if d["user_id"] != user["id"]:
+            raise HTTPException(403, "you can only end your own Dives")
+        slurm.cancel(job_id)
+        db.mark_cancelled(conn, job_id)
 
 
 # --- relay --------------------------------------------------------------------------

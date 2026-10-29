@@ -1,4 +1,4 @@
-"""Per-Spawn **Environment** declaration and build-command rendering (docs/elements/environments.md).
+"""Per-Dive **Environment** declaration and build-command rendering (docs/elements/environments.md).
 
 Uncalled since 2.0 (nothing declares an Environment until Dives), but still the one tested place that
 says what a manifest means. Pure functions with remote consequences (CONTRIBUTING.md): nothing here
@@ -91,10 +91,10 @@ def test_an_unclassifiable_manifest_says_what_is_accepted(tmp_path):
 # --- the submit-time echo --------------------------------------------------
 
 def test_echo_names_the_no_environment_case(tmp_path):
-    """Reachable only by a **Tide Pool** now — the one Spawn that may decline to declare. The echo
+    """Reachable only by a **Dive** now — the one Dive that may decline to declare. The echo
     still says so out loud rather than staying blank, because after the image slims there is no Python
     at all in that shell and a User meeting it should know why."""
-    assert "Tide Pool" in env.describe(None)
+    assert "Dive" in env.describe(None)
 
 
 def test_echo_names_the_manifest_and_the_tool(tmp_path):
@@ -121,7 +121,7 @@ def test_every_build_targets_the_one_fixed_mount(tmp_path):
 def test_no_env_inherits_anything_from_the_image(tmp_path):
     """The property the restructure exists for. `--system-site-packages` is a RUNTIME flag, not a set of
     per-package links, so an env that used it held whatever the image happened to hold on the day the
-    Spawn ran — which is not a freeze."""
+    Dive ran — which is not a freeze."""
     for name in ("uv.lock", "requirements.txt", "environment.yml"):
         m = env.detect(_project(tmp_path / name, **{name: ""}), name)
         cmds = env.render_build(m)
@@ -165,7 +165,7 @@ class TestTheInterpreterIsChosenNotInherited:
 
 
 def test_every_uv_env_is_seeded_with_pip_without_overriding_a_declared_version(tmp_path):
-    """A package no manifest asked for: `pip`, because uv does not seed one and a **Tide Pool**
+    """A package no manifest asked for: `pip`, because uv does not seed one and a **Dive**
     promises `pip install` at the shell works.
 
     UNPINNED: an already-satisfied requirement is a no-op, so a User who declared their own version
@@ -186,7 +186,7 @@ def test_pip_is_seeded_with_uv_not_with_pip(tmp_path):
 
 @pytest.mark.parametrize("kind", ["uv-project", "uv-requirements", "conda"])
 def test_the_interpreter_is_under_the_mount(kind):
-    """What the job script names as `$py`. It has to resolve inside the Pod, against the bind —
+    """What the job script names as `$py`. It has to resolve inside the container, against the bind —
     not against whatever path the env happened to be built in on the Head. Per-SHAPE now rather than one
     constant: micromamba owns ENV_MOUNT outright, while a uv env keeps its venv one level down."""
     m = env.Manifest(kind, "m")
@@ -203,8 +203,8 @@ def test_the_two_shapes_do_not_share_a_path():
 
 # --- a Head that cannot build ----------------------------------------------
 # TOOLS_DIR is populated by `cuttle setup --head`. A Head with an empty one now REFUSES rather than
-# degrading: the degradation existed so Spawns that worked before Environments existed kept working,
-# and there is no such Spawn left — every one declares, so falling back to the base image would mean
+# degrading: the degradation existed so Dives that worked before Environments existed kept working,
+# and there is no such Dive left — every one declares, so falling back to the base image would mean
 # running the User's work against something they did not ask for and cannot see.
 
 @pytest.fixture
@@ -254,7 +254,7 @@ def test_an_equipped_head_refuses_nothing(with_tools, tmp_path):
 
 
 def test_a_spawn_installing_its_dependencies_is_simply_running(monkeypatch):
-    """squeue is the whole truth again. A Spawn used to be held while the Head built for it, reported
+    """squeue is the whole truth again. A Dive used to be held while the Head built for it, reported
     as PENDING, and CCC had to keep a `build_state` to tell that apart from waiting for a card. The
     build happens inside the allocation now, so Slurm can see it and there is nothing left to override."""
     from ccc_head_api import slurm
@@ -262,7 +262,7 @@ def test_a_spawn_installing_its_dependencies_is_simply_running(monkeypatch):
         {"job_id": 4242, "partition": slurm.PARTITION, "job_state": ["RUNNING"], "name": "t",
          "nodes": "arm1", "user_name": "ccc-u60002", "time_limit": 60},
     ]})
-    assert slurm.spawns()[0]["state"] == "running"
+    assert slurm.dives()[0]["state"] == "running"
     assert slurm.queue()[0]["state"] == "RUNNING"
 
 
@@ -304,8 +304,8 @@ def test_an_ordinary_project_declares_nothing_supplied(tmp_path):
 
 
 def test_declaring_a_features_package_without_the_feature_is_refused(tmp_path):
-    """The Spawn would build cleanly, place on any Arm, and die at `import` — after the User paid to
-    hold a GPU. Everything needed to know that is on the Head before the Spawn exists."""
+    """The Dive would build cleanly, place on any Arm, and die at `import` — after the User paid to
+    hold a GPU. Everything needed to know that is on the Head before the Dive exists."""
     proj = _sourced(tmp_path)
     m = env.Manifest(kind="uv-project", path="pyproject.toml")
     with pytest.raises(env.BuildError) as e:
@@ -315,9 +315,9 @@ def test_declaring_a_features_package_without_the_feature_is_refused(tmp_path):
 
 
 def test_a_path_source_may_not_reach_out_of_the_spawns_own_scratch(tmp_path):
-    """The stub is BOUND at `$proj/<pod_rel>`, and `$proj`'s parent is the Spawn's node-local scratch.
+    """The stub is BOUND at `$proj/<pod_rel>`, and `$proj`'s parent is the Dive's node-local scratch.
     One `..` reaches that scratch; without this rule a `path` of `../../../etc` would name a directory
-    outside the Spawn altogether as the mountpoint."""
+    outside the Dive altogether as the mountpoint."""
     proj = _sourced(tmp_path, path="../../../../etc/vlearn-0.3.9-py3-none-any.whl")
     with pytest.raises(env.BuildError) as e:
         env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
@@ -412,7 +412,7 @@ class TestTheStubIsNotAWorkingPackage:
 
     def test_a_wheel_outside_the_project_is_bound_in_at_the_path_the_declaration_names(self, tmp_path):
         """PROJECT-RELATIVE, because only the Arm knows where the project landed on its own disk — and
-        `$proj/../wheels` is the Spawn's own scratch on both branches. The old form recorded the HEAD's
+        `$proj/../wheels` is the Dive's own scratch on both branches. The old form recorded the HEAD's
         resolved path, which named a directory no Arm has."""
         _, _, binds, _, wheel = self._built(tmp_path)
         assert [(b.src, b.dest, b.over_project) for b in binds] == [("src0", "../wheels", False)]
@@ -477,7 +477,7 @@ def test_a_lock_that_names_no_supplied_package_is_left_alone(tmp_path):
 
 # --- the Feature's own system libraries -------------------------------------
 # `libgym.so` links SDL2, assimp, zeromq, czmq, GLU and libcudart, resolved at LOAD time. These used to
-# come from the submitter's `environment.yml` — which is WHY a vlearn Spawn had to be a conda Spawn.
+# come from the submitter's `environment.yml` — which is WHY a vlearn Dive had to be a conda Dive.
 # Now that an Environment carries its own interpreter, the manifest can be anything, and uv has no way
 # to install libassimp.so.5. So CCC builds them itself, into a prefix of its own.
 

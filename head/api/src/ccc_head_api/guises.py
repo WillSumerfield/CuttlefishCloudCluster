@@ -1,8 +1,8 @@
-"""**Guises** — who a Spawn is on the machine that runs it.
+"""**Guises** — who a Dive is on the machine that runs it.
 
-Every Spawn runs as a Guise, not the **Mantle** (`ccc`, which owns head.db, head.key, every Spawn's
+Every Dive runs as a Guise, not the **Mantle** (`ccc`, which owns head.db, head.key, every Dive's
 output) — Apptainer's "user inside is user outside" means containment flags alone
-can't keep a Spawn from touching those. One Guise per User, the same one wherever the cluster places
+can't keep a Dive from touching those. One Guise per User, the same one wherever the cluster places
 their work.
 
 A Guise is `ccc-u<uid>` and nothing else, because of where the name has to be formed: the Prolog creates
@@ -25,14 +25,14 @@ MANTLE = os.environ.get("CCC_MANTLE_USER", "ccc")
 
 
 def name(uid: int) -> str:
-    """The Unix account a Spawn owned by this uid runs as. The ONLY place the name is formed."""
+    """The Unix account a Dive owned by this uid runs as. The ONLY place the name is formed."""
     return f"{PREFIX}{uid}"
 
 
 def as_owner(argv: list[str], owner: str | None) -> list[str]:
-    """`argv`, wrapped so it runs as the Spawn's own owner.
+    """`argv`, wrapped so it runs as the Dive's own owner.
 
-    Every Slurm operation CCC performs on a Spawn — re-nicing it for Karma, cancelling it, signalling
+    Every Slurm operation CCC performs on a Dive — re-nicing it for Karma, cancelling it, signalling
     it on a Retract — is one the job's OWNER may perform with no privilege at all; the Head asks sudo to
     become them. The grant is `(%ccc-guises)`, never root (templates._SUDOERS_CCC_SLURM).
 

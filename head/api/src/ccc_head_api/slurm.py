@@ -2,7 +2,7 @@
 
 Shared by the dashboard app (⑥). Shells out to the CLI's `--json` rather than running slurmrestd —
 identical data model, no daemon/JWT/bind (slurmrestd deferred to Phase 3 with job submission). Every
-response is a hand-picked projection: Slurm job -> Spawn, node -> Arm, so the SPA never couples to
+response is a hand-picked projection: Slurm job -> Dive, node -> Arm, so the SPA never couples to
 Slurm's ~120-field, versioned schema. Read-only and safe as the unprivileged `nobody` dashboard user;
 nothing here touches secrets or the Head user's home.
 """
@@ -30,9 +30,9 @@ PARTITION = os.environ.get("CCC_PARTITION", "ccc")
 FEATURE_NAMES = ("vlearn", "isaaclab")
 
 # squeue keeps a finished job around (in a terminal state: COMPLETED, FAILED, CANCELLED, TIMEOUT, ...)
-# for MinJobAge (slurm.conf, default 300s) after it ends — spawns() must not hand those back, or a Spawn
+# for MinJobAge (slurm.conf, default 300s) after it ends — dives() must not hand those back, or a Dive
 # that just finished briefly reappears in the live queue as "waiting" (LiveQueue.tsx's isRunning() has no
-# terminal-state case; the Dashboard trusts /spawns to already be queue-only, per spawns_history()'s
+# terminal-state case; the Dashboard trusts /dives to already be queue-only, per dive.history()'s
 # "queue is now, history is done").
 LIVE_JOB_STATES = {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED"}
 
@@ -86,20 +86,20 @@ def _gpu_count(gres: str) -> int:
 
 
 def _gpu_indices(gres_detail: list[str] | None) -> list[int]:
-    """Which of the node's GPUs a RUNNING Spawn actually holds — the **Devices** Settlement prices.
+    """Which of the node's GPUs a RUNNING Dive actually holds — the **Devices** Settlement prices.
 
     Slurm's `gres_detail` is one string per allocated node, `gpu:2(IDX:0-1)`. `IDX` is a bitmap of the
     node's GRES indices, and a node's GRES are indexed in the order its gres.conf `File=` records were
     read — the same order templates.render_gres_conf writes them in. So index i here is the i'th entry
     of that Arm's registry `gpu_devices`, and therefore its `powers`: the whole mechanism by which a
-    Spawn is billed for the card it held rather than a node average.
+    Dive is billed for the card it held rather than a node average.
 
-    `squeue --json` must set `detail_flag` (SHOW_DETAIL) or slurmctld packs this empty and every Spawn
-    looks device-less. Also empty by construction for a job not yet started. Every Spawn requests GRES
+    `squeue --json` must set `detail_flag` (SHOW_DETAIL) or slurmctld packs this empty and every Dive
+    looks device-less. Also empty by construction for a job not yet started. Every Dive requests GRES
     (there is no Device-less work here), so an empty list on a RUNNING one is always a failure to
-    report, never a Spawn that asked for nothing.
+    report, never a Dive that asked for nothing.
 
-    CCC Spawns are single-node, so the list is flattened rather than kept per-node.
+    CCC Dives are single-node, so the list is flattened rather than kept per-node.
     """
     out = []
     for span in re.findall(r"IDX:([\d,\-]+)", ",".join(gres_detail or [])):
@@ -137,10 +137,10 @@ def arms() -> list[dict]:
                 "mesh_ip": e.get("mesh_ip"),
                 "admitted": e.get("admitted", True),
                 # The Head's OWN co-located Arm (enroll.register_head_arm). Same box as the Head, which
-                # is why a Tide Pool there needs no relay — tidepool.ensure_relay.
+                # is why a Dive there needs no relay — tidepool.ensure_relay.
                 "head": bool(e.get("head")),
                 # The hardware profile Karma prices from: what each card can DO (**Power**, measured
-                # at enroll by a benchmark Spawn — one number per **Device**) and how much it can HOLD
+                # at enroll by a benchmark Dive — one number per **Device**) and how much it can HOLD
                 # (the thing --vram matches; one number for the node, since a mixed-GPU box is refused
                 # at enrollment).
                 "gpu": e.get("gpu"),
@@ -177,7 +177,7 @@ def card_gb(vram_mb: int) -> int:
     Mirrors `cuttle.config.card_gb`, which is what an Arm advertises its Slurm feature with; the two
     packages do not import each other (same reason FEATURE_NAMES is duplicated) and MUST agree. This
     side selects, that side advertises: a card the Head calls 16 GB and the Arm labels `vram15` is one
-    no eligible Spawn can ever be placed on.
+    no eligible Dive can ever be placed on.
 
     Up rather than nearest, because a card almost never reports the number it is sold as — ECC and
     virtualization both take a bite, so a 16 GB card can report under 15.5 and be advertised `vram15`,
@@ -201,9 +201,9 @@ def vram_constraint(vram_gb: int, gpus: int = 1) -> str:
     node is therefore the same size.
 
     The two needs are one **joint** question, which is why the registry is narrowed to Arms with enough
-    Devices *first* and the card sizes are drawn only from that set. Asked separately they pass a Spawn
+    Devices *first* and the card sizes are drawn only from that set. Asked separately they pass a Dive
     nothing can run: a 2×40GB box satisfies `--gpus 2` and a 1×96GB box satisfies the 90GB per-card
-    need, and neither box can host the Spawn.
+    need, and neither box can host the Dive.
     """
     admitted = [e for e in load_registry().values() if e.get("admitted") and e.get("vram_mb")]
     roomy = [e for e in admitted if _devices(e) >= gpus]
@@ -237,7 +237,7 @@ def feature_catalog() -> list[str]:
 
 
 def feature_constraint(features: list[str]) -> str:
-    """Turn a Spawn's declared Arm Features into the AND-clause of a Slurm constraint: `vsim&isaacsim`.
+    """Turn a Dive's declared Arm Features into the AND-clause of a Slurm constraint: `vsim&isaacsim`.
 
     Unlike VRAM (set-membership OR over size buckets an exact number rarely matches), a Feature is an
     exact name a node either has or doesn't — so requiring several is a plain conjunction, no catalog
@@ -267,17 +267,17 @@ def all_feature_names() -> list[str]:
 
 
 def queue() -> list[dict]:
-    """Every live Spawn — PENDING and RUNNING — and the Karma tick's whole view of Slurm. One poll per
+    """Every live Dive — PENDING and RUNNING — and the Karma tick's whole view of Slurm. One poll per
     pass, because the tick needs both halves and they must agree with each other:
 
-    * **PENDING** Spawns are what it re-ranks (by `nice`) and what generates queued **Demand**.
-    * **RUNNING** Spawns are what it meters — `node` says which Arm's Demand to bill, `devices` says
+    * **PENDING** Dives are what it re-ranks (by `nice`) and what generates queued **Demand**.
+    * **RUNNING** Dives are what it meters — `node` says which Arm's Demand to bill, `devices` says
       which of that Arm's cards it holds (and so which **Power**s it is priced at), and `start_time`
-      is where the very first accrual bills *from* (a Spawn that started between two ticks still owes
+      is where the very first accrual bills *from* (a Dive that started between two ticks still owes
       for the seconds before the tick noticed).
 
-    Absence from a *successful* poll is the only signal a Spawn has **ended** — it triggers Settlement.
-    There is no other: a killed Spawn writes no end-time, Slurm forgets jobs after `MinJobAge`, and
+    Absence from a *successful* poll is the only signal a Dive has **ended** — it triggers Settlement.
+    There is no other: a killed Dive writes no end-time, Slurm forgets jobs after `MinJobAge`, and
     `sacct` would need the slurmdbd we deliberately don't run. If slurmctld is down `_slurm_json` raises,
     the tick logs and skips, and nothing settles — which is the point.
 
@@ -285,14 +285,14 @@ def queue() -> list[dict]:
     A **negative** nice is a Queue bump — only an operator can set one (Slurm refuses a negative nice
     from a job's own owner), so its mere presence is the flag. No bump table, no coordination state.
 
-    `user` is the Spawn's **Guise**, riding along because it's who the tick has to become to re-nice the
+    `user` is the Dive's **Guise**, riding along because it's who the tick has to become to re-nice the
     job — taken from this same poll rather than looked up per job, to avoid a `squeue` subprocess per
-    pending Spawn per pass.
+    pending Dive per pass.
     """
-    # This poll is the whole truth again. There used to be one thing it could not see — a Spawn
+    # This poll is the whole truth again. There used to be one thing it could not see — a Dive
     # `sbatch --hold`ed while the Head built its **Environment**, reported by squeue as plain PENDING —
     # which is why the Head kept a `build_state` of its own. The Arm builds its Environment inside its
-    # own allocation now, so a building Spawn is a RUNNING one and Slurm knows it.
+    # own allocation now, so a building Dive is a RUNNING one and Slurm knows it.
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         state = j.get("job_state") or []
@@ -312,7 +312,7 @@ def queue() -> list[dict]:
             "user": j.get("user_name"),
             "node": (j.get("nodes") or None) if live == "RUNNING" else None,
             "gpus": _gpu_count(gres),
-            # Empty until the Spawn starts — a PENDING Spawn holds no Device, which is exactly why the
+            # Empty until the Dive starts — a PENDING Dive holds no Device, which is exactly why the
             # Escrow is a forecast over eligible cards and the Meter is not.
             "devices": _gpu_indices(j.get("gres_detail")),
             "start_time": _num(j.get("start_time")),
@@ -321,14 +321,14 @@ def queue() -> list[dict]:
 
 
 def owner_of(job_id: int) -> str | None:
-    """Which account Slurm says owns this Spawn, or None if it no longer knows the job.
+    """Which account Slurm says owns this Dive, or None if it no longer knows the job.
 
     Ground truth for `guises.as_owner`, deliberately squeue rather than the Attribution row: it's what
     `sudo -u` has to MATCH. Also naturally covers the enrollment benchmark (no row at all) and an
     already-ended job (None, and the command below is a no-op anyway).
 
     One extra squeue per call, which is why the tick does NOT use it: `queue()` already carries `user`
-    for every live Spawn. This is for one-shot paths (cancel, signal) where the caller has only an id.
+    for every live Dive. This is for one-shot paths (cancel, signal) where the caller has only an id.
     """
     r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%u"],
                        capture_output=True, text=True, timeout=15)
@@ -336,21 +336,28 @@ def owner_of(job_id: int) -> str | None:
 
 
 def set_nice(job_id: int, nice: int, owner: str | None = None) -> None:
-    """Lower a queued Spawn's priority — as the **Guise** that owns it, which is what makes this need
+    """Lower a queued Dive's priority — as the **Guise** that owns it, which is what makes this need
     no privilege beyond `sudo -u` (a job's owner may always nice their own job; only a NEGATIVE nice, a
     boost, needs a Slurm operator, which is exactly what keeps the admin Queue bump unforgeable).
 
     `owner` comes from the caller because it already has it: the Karma tick re-nices from the same
-    `queue()` poll that reported who owns each job. None means the Mantle — a Spawn from before Guises,
+    `queue()` poll that reported who owns each job. None means the Mantle — a Dive from before Guises,
     run plain exactly as it always was."""
     subprocess.run(guises.as_owner(["scontrol", "update", f"JobId={job_id}", f"Nice={nice}"], owner),
                    capture_output=True, text=True, timeout=15, check=True)
 
 
-def spawns() -> list[dict]:
-    """The live Spawn queue — pending/running jobs in the CCC partition. Finished ones are dropped here
+def state(job_id: int) -> str | None:
+    """Slurm state if the job is still known to squeue, else None. Slurm's answer, unedited."""
+    r = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%T"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() or None
+
+
+def dives() -> list[dict]:
+    """The live Dive queue — pending/running jobs in the CCC partition. Finished ones are dropped here
     (LIVE_JOB_STATES) rather than left to squeue's own MinJobAge aging-out, which lags well behind a
-    Spawn actually ending; durable history waits for Phase 3 slurmdbd (see module docstring)."""
+    Dive actually ending; durable history waits for Phase 3 slurmdbd (see module docstring)."""
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         if j.get("partition") != PARTITION:
@@ -358,7 +365,7 @@ def spawns() -> list[dict]:
         if not LIVE_JOB_STATES.intersection(j.get("job_state") or []):
             continue  # squeue hasn't aged it out yet, but it's already done — history's job now
         # gres_detail when running (names the exact cards); tres_per_node ('gres/gpu:1') otherwise —
-        # slurmctld only packs gres_detail for a started job, so a pending Spawn falls through to what
+        # slurmctld only packs gres_detail for a started job, so a pending Dive falls through to what
         # it asked for. See _gpu_indices.
         gres = ",".join(j.get("gres_detail") or []) or j.get("tres_per_node", "")
         state = "+".join(s.lower() for s in j.get("job_state", []))
@@ -369,7 +376,7 @@ def spawns() -> list[dict]:
             "node": j.get("nodes") or None,
             "gpus": _gpu_count(gres),
             "user": j.get("user_name"),
-            # The declared duration (`--time`), in minutes — what a waiting Spawn is priced against and
+            # The declared duration (`--time`), in minutes — what a waiting Dive is priced against and
             # the one declared need squeue carries cleanly. `--vram` becomes a Slurm *constraint*
             # string, which is not worth parsing back out here.
             "time_limit": _num(j.get("time_limit")),
@@ -380,10 +387,10 @@ def spawns() -> list[dict]:
 
 
 def cancel(job_id: int) -> None:
-    """End a live Spawn now, as the **Guise** that owns it — `scancel` from a job's own owner needs no
+    """End a live Dive now, as the **Guise** that owns it — `scancel` from a job's own owner needs no
     privilege, which is why this is a `sudo -u` and not a root grant.
 
-    Settlement is NOT done here: the Karma tick settles a Spawn on its *disappearance from squeue*
+    Settlement is NOT done here: the Karma tick settles a Dive on its *disappearance from squeue*
     (slurm.queue()), which is exactly what this causes, so a cancel bills for the seconds actually held
     with no second code path. Idempotent — a job squeue no longer lists has already ended, so there
     is nothing to cancel (scancel as anyone but its owner is refused while Slurm still remembers it)."""
@@ -394,7 +401,7 @@ def cancel(job_id: int) -> None:
 
 
 def signal(job_id: int, sig: str) -> None:
-    """Send a signal to a live Spawn, without ending it the way `cancel` does. As its owner, for the
+    """Send a signal to a live Dive, without ending it the way `cancel` does. As its owner, for the
     same reason. Used by a Retract's initial nudge (TERM, so the job's own EXIT trap can stage out what
     it can) and by the Karma tick's force-kill once its grace period has passed (KILL)."""
     if (owner := owner_of(job_id)) is None:              # already ended: nothing to signal

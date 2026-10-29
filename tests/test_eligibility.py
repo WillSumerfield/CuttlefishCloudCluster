@@ -1,7 +1,7 @@
-"""Eligibility: which devices a Spawn may run on.
+"""Eligibility: which devices a Dive may run on.
 
 Users declare what they *need*; only the Admin names a machine. That distinction is load-bearing for
-the economy, not just for ergonomics: a queued Spawn adds Demand to every device it is eligible for,
+the economy, not just for ergonomics: a queued Dive adds Demand to every device it is eligible for,
 so pinning to a machine would sidestep the Demand it should have created everywhere else.
 """
 
@@ -72,7 +72,7 @@ class TestVramConstraint:
 
     def test_unadmitted_arms_do_not_count(self, monkeypatch):
         """An authorized-but-not-yet-admitted Arm has a registry row and no node in Slurm. Offering its
-        VRAM would render a constraint that matches nothing, and the Spawn would queue forever."""
+        VRAM would render a constraint that matches nothing, and the Dive would queue forever."""
         registry(monkeypatch, {"live": arm(24576), "pending": arm(81920, admitted=False)})
         assert slurm.vram_constraint(24) == "vram24"
 
@@ -114,7 +114,7 @@ class TestMultiDevice:
 
     def test_the_two_needs_are_asked_of_one_arm_together(self, monkeypatch):
         """The trap the joint check exists for. A 2×40 box satisfies "two cards"; a 1×96 box satisfies
-        "90GB each". Asked separately both pass and the Spawn queues forever, because neither box can
+        "90GB each". Asked separately both pass and the Dive queues forever, because neither box can
         host it."""
         registry(monkeypatch, {"pair": arm(40960, devices=2), "big": arm(98304, devices=1)})
         with pytest.raises(HTTPException) as e:

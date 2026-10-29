@@ -223,20 +223,20 @@ def write_slurm_config(mesh_ip: str, features: list[dict] | None = None) -> None
     # not state, exactly as it does Weight above, so every later caller (arm authorize/admit/remove)
     # must re-state them or silently drop the Head out of Eligibility for every Feature it offers.
     head_features = sorted(f["name"] for f in (features or head_row.get("features") or []))
-    # Guises (temp/spawn-isolation.md): `Prolog=` goes in only once every admitted Arm has reported
+    # Guises: `Prolog=` goes in only once every admitted Arm has reported
     # having the script, named out loud since the fix is re-running `setup --arm` on those boxes — a
-    # silently-absent Prolog would mean every Spawn quietly keeps running as the Mantle.
+    # silently-absent Prolog would mean every Dive quietly keeps running as the Mantle.
     missing = enroll.arms_missing(config.ARM_CAP_PROLOG)
     if missing:
         # ui.warn, not ui.say: lands in the end-of-run trouble summary, or an operator misses it and
-        # believes Guises are live when every Spawn still runs as the Mantle.
+        # believes Guises are live when every Dive still runs as the Mantle.
         ui.warn(f"Guises are held back — these Arms have no prolog yet: {', '.join(missing)}. "
                 f"Re-run `cuttle setup --arm` on each, then re-run this.")
     # Same gate for job_container/tmpfs, asked separately: an Arm may report only the prolog, and
     # holding both lines back over that would take working Guises from a box that has them.
     missing_tmpfs = enroll.arms_missing(config.ARM_CAP_TMPFS)
     if missing_tmpfs:
-        ui.warn(f"Private per-Spawn /tmp is held back — these Arms have no job_container.conf yet: "
+        ui.warn(f"Private per-Dive /tmp is held back — these Arms have no job_container.conf yet: "
                 f"{', '.join(missing_tmpfs)}. Re-run `cuttle setup --arm` on each, then re-run this.")
     _write_root_file(
         config.SLURM_CONF,
@@ -251,7 +251,7 @@ def write_slurm_config(mesh_ip: str, features: list[dict] | None = None) -> None
     # What task/cgroup enforces. Configless serves it to every Arm with slurm.conf, so it is written
     # here only — an Arm never authors one.
     _write_root_file(config.CGROUP_CONF, templates.render_cgroup_conf())
-    # The Head's own slurmd (its co-located Arm) runs Spawns too, so the per-node files its slurm.conf
+    # The Head's own slurmd (its co-located Arm) runs Dives too, so the per-node files its slurm.conf
     # references must exist here as well as on every Arm (setup_arm writes them there). The Head is
     # never in `missing` — it has no /enroll POST to report in, and this run is what writes its files.
     _write_root_file(config.SLURM_EPILOG, templates.render_epilog(), mode="755")
@@ -296,10 +296,10 @@ def provision_licence_home(path: str) -> None:
     and ignores $HOME, so the identity that activates decides where the licence lives. Give an account
     this directory as its home, activate as that account, and the files appear here at whatever names
     the installed release uses — nobody ever has to find, name or copy them.
-    The Spawn job script then binds this directory at the Guise's home inside the Pod, which
+    The Dive job script then binds this directory at the Guise's home inside the container, which
     is where the same getpwuid call looks from in there.
 
-    Group-owned by GUISE_GROUP and 2770, because a Spawn runs as a **Guise** — a different uid — and
+    Group-owned by GUISE_GROUP and 2770, because a Dive runs as a **Guise** — a different uid — and
     still has to WRITE here: the activation record is rewritten on periodic online re-validation, and a
     read-only licence would eventually go stale. setgid so files the re-validation creates inherit the
     group rather than the Guise's own private one, which no other Guise could then read.
@@ -318,17 +318,17 @@ def provision_licence_home(path: str) -> None:
     run(["install", "-d", "-m", "2770", "-o", config.LICENCE_USER, "-g", config.GUISE_GROUP, path],
         sudo=True)
     # Empty is normal here: CCC fills this directory itself via an activation job (dropped in 2.0,
-    # rebuilt in phase 2) — a **Guise** does the activating, inside a Pod, with this bound at its home.
+    # rebuilt in phase 2) — a **Guise** does the activating, inside a container, with this bound at its home.
 
 
 def provision_mantle() -> None:
-    """Create the **Mantle** — the one identity every Spawn executes as — on THIS node, Head or Arm.
+    """Create the **Mantle** — the one identity every Dive executes as — on THIS node, Head or Arm.
 
     The uid is pinned (config.CCC_UID), not distro-allocated, and that is the whole point: Slurm runs a
     job as the *submitting* uid, so slurmctld records the Head API's uid at sbatch and every slurmd
-    setuid()s to it. A dynamically-allocated `ccc` would get a different uid on each box and a Spawn
+    setuid()s to it. A dynamically-allocated `ccc` would get a different uid on each box and a Dive
     scheduled onto a remote Arm would setuid() to a user that doesn't exist there. One pinned uid,
-    cluster-wide, is what makes a Spawn the same Spawn on any node.
+    cluster-wide, is what makes a Dive the same Dive on any node.
 
     Home-less on purpose: the Mantle owns no per-node state anywhere, so a donor box is left with
     nothing. `nologin` is fine — slurmd execs the batch script by its shebang, not a shell.
@@ -341,25 +341,21 @@ def provision_mantle() -> None:
          "--no-create-home", "--shell", "/usr/sbin/nologin", config.HEAD_API_USER],
         sudo=True, check=False)  # non-fatal if the account already exists
     # useradd's failure is non-fatal above (re-run), so verify the uid we actually ended up with —
-    # a pre-existing `ccc` at some OTHER uid would silently break remote Spawns.
+    # a pre-existing `ccc` at some OTHER uid would silently break remote Dives.
     uid = run(["id", "-u", config.HEAD_API_USER], capture_output=True, text=True).stdout.strip()
     assert uid == str(config.CCC_UID), (
         f"the `{config.HEAD_API_USER}` account on this box has uid {uid}, but CCC pins it to "
-        f"{config.CCC_UID}. Every node must agree or Slurm cannot run a Spawn here. Remove the "
+        f"{config.CCC_UID}. Every node must agree or Slurm cannot run a Dive here. Remove the "
         f"conflicting account (`sudo userdel {config.HEAD_API_USER}`) and re-run setup.")
 
 
 def provision_head_auth() -> None:
     """Head-side identity spine: the Mantle's Head state + auth store (head.db). On the Head the Mantle
-    also runs the Head API and owns head.db plus the submission dirs (Spawn results, scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
+    also runs the Head API and owns head.db plus the submission dirs (Dive results, scratch). Called after the API venv is built (seeding the admin runs from it) and before the Head
     API unit and rsyncd start (both need User=ccc + these dirs). Idempotent on re-run."""
     provision_mantle()
-    # 0711 — traverse, never list (see temp/spawn-isolation.md). A **Guise** has to reach its own
-    # `spawns/<jid>` and `scratch/<jid>`, and a 0700 parent stops it at the door. It
-    # is `--x` on purpose: reaching a directory whose exact name you already have is all a Spawn needs,
-    # and it is the whole difference from `r-x`, which would let any Spawn enumerate every other User's
-    # results. head.db stays 0600 ccc, so what these parents contain is still unreadable.
-    for d in (config.HEAD_STATE_DIR, config.HEAD_SPAWNS_DIR, config.HEAD_SCRATCH_DIR):
+    # 0711 — traverse, never list. head.db stays 0600 ccc, so what it contains is still unreadable.
+    for d in (config.HEAD_STATE_DIR, config.HEAD_BENCH_DIR):
         run(["install", "-d", "-m", "0711", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
              str(d)], sudo=True)
     # Returned, not printed — see `auth.seed_admin`. The caller spends it at the end of setup, on the
@@ -439,7 +435,7 @@ def ensure_bench_secret() -> None:
     """Mint the [bench] module's rsync secret if this Head has none.
 
     Cluster-lifetime rather than per-run: the enrollment benchmark never goes through the Head API, so
-    there is no **Siphon** to hand it (see temp/spawn-isolation.md). Root-owned 0600 — `enroll`
+    there is no **Siphon** to hand it. Root-owned 0600 — `enroll`
     reads it with sudo when it renders the benchmark's sbatch, and rsyncd (running as root) reads it to
     check the login, which is what lets [bench] keep `strict modes = true` where a Siphon cannot.
 
@@ -455,13 +451,8 @@ def install_rsyncd(mesh_ip: str) -> None:
     started on every Head so admitting the first Arm needs no reconfigure. Runs as root (873 is
     privileged) but serves each module as `ccc`, so files stay ccc-owned.
 
-    The conf itself defines no per-Spawn module — it `&include`s RSYNCD_DIR, which the Head API mints
-    **Siphon**s into as `ccc`. That directory is 0700 ccc: rsyncd reads it as root, and
-    nothing else on the box has any business seeing one Spawn's stage-out credential. The module roots
-    a Siphon points at (spawns) are created ccc-owned by provision_head_auth, which must run
-    first."""
-    run(["install", "-d", "-m", "0700", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
-         str(config.RSYNCD_DIR)], sudo=True)
+    The conf itself defines no per-Dive module — it `&include`s DIVE_RSYNCD, which ccc-tidepool
+    writes. [bench]'s root (HEAD_BENCH_DIR) is created by provision_head_auth, which must run first."""
     # Dives' modules: root's (ccc-tidepool writes them — they run as a User's uid and lock folders).
     run(["install", "-d", "-m", "0700", str(config.DIVE_RSYNCD)], sudo=True)
     ensure_bench_secret()
@@ -473,7 +464,7 @@ def install_rsyncd(mesh_ip: str) -> None:
 
 
 def install_env_tools() -> None:
-    """Install the pinned uv + micromamba that build a Spawn's declared **Environment**
+    """Install the pinned uv + micromamba that build a Dive's declared **Environment**
     (ccc_head_api.environments), into config.ENV_TOOLS_DIR. **Every node**, Head and Arm alike.
 
     On an Arm because an Arm now builds every Environment it runs, at job start, out of its own
@@ -483,7 +474,7 @@ def install_env_tools() -> None:
     The base image COPYs the uv from here at build time (podman.build_images), so this runs first.
 
     Verified against the sha256 pinned in config, then installed 0755 into a root-owned tree: the build
-    runs as a **Guise** inside a Pod with this directory bound read-only, so the binaries must be
+    runs as a **Guise** inside a container with this directory bound read-only, so the binaries must be
     readable and executable by a uid that is not the Mantle and must not be writable by one either.
 
     Re-runs re-verify and re-install: bumping the pin in config and re-running `setup` is the whole
@@ -516,8 +507,8 @@ def provision_env_cache() -> None:
     """The parent of every per-**Guise** package download cache on this box
     (config.NODE_ENV_CACHE_DIR). **Every node**, for the same reason as `install_env_tools`.
 
-    Those caches are what make building per-Spawn affordable rather than merely possible: uv and
-    micromamba hard-link out of them, so the second Spawn from one User to declare a given torch pays
+    Those caches are what make building per-Dive affordable rather than merely possible: uv and
+    micromamba hard-link out of them, so the second Dive from one User to declare a given torch pays
     no download. Without them an Arm re-fetches several GB every time.
 
     Only the PARENT is made here, and only so a Guise can mkdir inside it — one shared cache does not
@@ -682,8 +673,8 @@ def build_spa() -> None:
     run(["cp", "-r", str(web_src / "dist"), str(config.HEAD_API_WEB_DIR)], sudo=True)
     run(["chmod", "-R", "a+rX", str(config.HEAD_API_WEB_DIR.parent)], sudo=True)
     system.allow_tcp_port(config.HEAD_API_PORT, "ccc head api (LAN+mesh)")
-    # Tide Pool's (docs/TODO.md) per-Spawn relay ports — one whole range, opened once, not one ufw rule
-    # per Spawn. Same LAN+mesh reachability as the Head API itself: a Tide Pool's `ssh` connects here.
+    # Dive's (docs/TODO.md) per-Dive relay ports — one whole range, opened once, not one ufw rule
+    # per Dive. Same LAN+mesh reachability as the Head API itself: a Dive's `ssh` connects here.
     system.allow_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE,
                                 "ccc tide pool relay (LAN+mesh)")
     print(f"cuttle: Dashboard SPA built → {config.HEAD_API_WEB_DIR}")
@@ -890,7 +881,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         #
         # Prepared BEFORE the env file is rendered: render_features_env exports where the packages
         # and the mirrored install landed, and a file promising a directory that does not exist yet
-        # is a Spawn that fails on an Arm whose setup said it succeeded.
+        # is a Dive that fails on an Arm whose setup said it succeeded.
         if head_features:
             ensure_guise_group()   # the mirrored licence key is group-owned by it, and this is early
         feature_profiles.prepare(head_features)
@@ -917,7 +908,7 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         # Every User's Unix identity on this box, including the reserved cluster one the enrollment
         # benchmark runs as. Back-fills on an upgrade, and needs the auth store above to exist first.
         auth.ensure_guise_accounts()
-        headapi.install_slurm_sudoers(_write_root_file)  # act on a Spawn as its Guise — never as root
+        headapi.install_slurm_sudoers(_write_root_file)  # act on a Dive as its Guise — never as root
     with ui.step("Installing stage-in/out"):
         install_rsyncd(mesh_ip)                  # mesh-bound; needs ccc + its dirs first
     with ui.step("Building the Dashboard"):
@@ -1161,7 +1152,7 @@ def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
     mistyped path on the way past is a Feature that silently resolves to nothing.
 
     Off-terminal (`--no-input`, a scripted setup) keeps `existing` rather than declaring none: a re-run
-    that silently dropped this box's Features would take it out of Eligibility for every Spawn that
+    that silently dropped this box's Features would take it out of Eligibility for every Dive that
     needs them, which is not a safe default. A first setup still has nothing to keep.
     """
     existing = existing or []
@@ -1174,7 +1165,7 @@ def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
             return existing
     ui.say(f"  [muted]Which of these does THIS box have installed? "
            f"({', '.join(config.FEATURE_NAMES)})[/muted]")
-    ui.hint("Yes only for what is really here — a Spawn asking for it can be sent nowhere else.")
+    ui.hint("Yes only for what is really here — a Dive asking for it can be sent nowhere else.")
     prior = {f["name"]: f["path"] for f in existing}
     prior_keys = {f["name"]: f.get("key") for f in existing}
     features = []
@@ -1182,10 +1173,10 @@ def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
         if not ui.ask_confirm(f"Does this Arm have {name!r}?", name in prior):
             continue
         # Absolute, because the answer is read back on an Arm from /etc/ccc/features.env by a job
-        # script whose working directory is the Spawn's staging dir — a relative path resolves
+        # script whose working directory is the Dive's staging dir — a relative path resolves
         # against something the operator answering here cannot see.
         var = re.sub(r"[^A-Za-z0-9]", "_", name).upper() + "_PATH"
-        ui.hint(f"Where {name} lives on this box — absolute, e.g. /opt/{name}. Spawns see it as "
+        ui.hint(f"Where {name} lives on this box — absolute, e.g. /opt/{name}. Dives see it as "
                 f"${var}. Brought by the submitter instead? Point it at what this box does supply, "
                 f"such as the licence directory below; the Head will not take an empty path.")
         # Re-asked here rather than left to the Head: /enroll rejects an empty path (enroll.py, "needs
@@ -1198,7 +1189,7 @@ def _prompt_arm_features(existing: list[dict] | None = None) -> list[dict]:
                 continue
             # Checked against what the Feature's runtime actually opens (cuttle.features), not just for
             # non-emptiness. A path missing the vendor's assets or wheels is a Feature this box
-            # advertises and cannot serve, and left to run time it surfaces as a stranger's Spawn dying
+            # advertises and cannot serve, and left to run time it surfaces as a stranger's Dive dying
             # inside libgym.so — hours later, on a box its owner is not watching.
             missing = feature_profiles.check_install(name, path)
             if not missing:
@@ -1277,7 +1268,7 @@ def _prompt_licence_home(features: list[dict], existing: str = "") -> str:
     """Where this box keeps the machine-locked **Licence** state for its Feature software.
 
     ONE directory per Arm, not one per Feature: a licence is locked to hardware, and an Arm is one
-    machine. Bound at a Spawn's Guise home inside the Pod (the Spawn job script) because that
+    machine. Bound at a Dive's Guise home inside the container (the Dive job script) because that
     is where a licence manager looks: TurboActivate resolves its state directory through
     getpwuid()->pw_dir and cannot be redirected by any env var.
 
@@ -1290,8 +1281,8 @@ def _prompt_licence_home(features: list[dict], existing: str = "") -> str:
     be looked up, and a version bump renames every one of them — a stale copy would go unnoticed
     because the bind guard only tests that the directory exists.
 
-    Must NOT be the operator's real home — it is bound into a Pod wholesale, so anything else living
-    there is handed to the Spawn along with it. Giving it to a CCC-owned account makes that structural
+    Must NOT be the operator's real home — it is bound into a container wholesale, so anything else living
+    there is handed to the Dive along with it. Giving it to a CCC-owned account makes that structural
     rather than advisory.
     """
     if not ui.interactive():
@@ -1299,7 +1290,7 @@ def _prompt_licence_home(features: list[dict], existing: str = "") -> str:
     ui.say("  [muted]Some of that software is licensed to the machine, and looks for its activation "
            "files in the home directory of whoever runs it — never at $HOME, always at the home in "
            "/etc/passwd. So CCC gives the licence its own account, and mounts that account's home "
-           "into a Spawn.[/muted]")
+           "into a Dive.[/muted]")
     # A Feature with a product key IS machine-licensed, so there is nothing to ask. The yes/no used to be
     # asked regardless, defaulting to no — and Enter on it left a vlearn Arm with no Licence directory,
     # whose activation then landed in a tmpfs home and was thrown away.
@@ -1310,7 +1301,7 @@ def _prompt_licence_home(features: list[dict], existing: str = "") -> str:
     ui.hint(f"Name a directory that does not exist yet — CCC creates it as {config.LICENCE_USER}'s "
             f"home. You then activate the software ONCE as that account and the files land there; you "
             f"never have to find or copy them. Not your own home: all of it is mounted into every "
-            f"Spawn that asks for a Feature.")
+            f"Dive that asks for a Feature.")
     while True:
         path = ui.ask_text("Licence directory for CCC to create (absolute, e.g. /opt/ccc/licence)",
                            existing).strip()
@@ -1436,14 +1427,14 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     data["head"] = headapi.head_url(config.domain())
     settings.save(data)
 
-    # The Mantle must exist here BEFORE slurmd can accept a Spawn: slurmd setuid()s to the submitting
-    # uid, which is the Head API's pinned CCC_UID. Without this account a Spawn scheduled onto this Arm
-    # would run as an unknown numeric uid. Its Pod image must be readable by it, at the same path the
+    # The Mantle must exist here BEFORE slurmd can accept a Dive: slurmd setuid()s to the submitting
+    # uid, which is the Head API's pinned CCC_UID. Without this account a Dive scheduled onto this Arm
+    # would run as an unknown numeric uid. Its container image must be readable by it, at the same path the
     # Head renders into the job script.
     with ui.step("Provisioning the Mantle"):
         provision_mantle()
         # The cluster's own **Guise**, which the enrollment benchmark below runs as. Created here
-        # rather than left to the prolog because the benchmark is the FIRST Spawn this box ever runs,
+        # rather than left to the prolog because the benchmark is the FIRST Dive this box ever runs,
         # and `Prolog=` may still be held back fleet-wide at that moment (enroll.arms_missing). Every
         # other Guise on this box is created lazily, by the prolog, when that User's work first lands.
         auth.provision_guise(config.GUISE_CLUSTER_UID)
@@ -1466,9 +1457,9 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         provision_env_cache()
     with ui.step("Recording Arm Features"):
         # World-readable like the other rendered configs here: install paths aren't secret, and a
-        # Spawn's payload (running as the home-less Mantle) needs to read this on every node. The
+        # Dive's payload (running as the home-less Mantle) needs to read this on every node. The
         # Licence PATH is likewise not secret — what is secret lives inside that directory, and is
-        # bound only into Spawns that asked for a Feature (the Spawn job script).
+        # bound only into Dives that asked for a Feature (the Dive job script).
         #
         # Unconditional, as on the Head: an empty declaration on a re-run must erase the mirror and
         # rewrite the env file, not skip both and leave the old one standing.
@@ -1530,7 +1521,7 @@ def _arm_first_login() -> None:
     if auth.have_session():
         return
     with ui.section("Your account", lambda: "ready"):
-        ui.say("This box can submit Spawns too.")
+        ui.say("This box can submit Dives too.")
         if not ui.ask_confirm("Log in to the cluster on this box?", True):
             ui.hint("`cuttle login` whenever you want to submit from here")
             return
@@ -1542,7 +1533,7 @@ def _start_slurmd(node_name: str, ctld_addr: str, feature_names: list[str] | Non
     for d, owner in ((config.SLURM_LOG_DIR, "slurm"), (config.SLURMD_SPOOL_DIR, "root")):
         run(["install", "-d", "-o", owner, "-g", owner, str(d)], sudo=True)
     # Configless serves the conf (which names Epilog=/Prolog=/JobContainerType=) but NOT the per-node
-    # files it points at — those must be on the node, written before slurmd starts, or the first Spawn's
+    # files it points at — those must be on the node, written before slurmd starts, or the first Dive's
     # hook fails and drains this Arm. The prolog creates a **Guise** here; job_container.conf is what
     # the private-/tmp plugin refuses to start without. Both written unconditionally, ahead of the Head
     # ever naming them — harmless on a node whose slurm.conf still says nothing about them.

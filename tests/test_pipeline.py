@@ -1,14 +1,14 @@
 """The Fake Cluster: the real economy across simulated weeks.
 
 Claims that only exist *over time*, unreachable by a unit test — need a scheduler, a clock, and
-hundreds of Spawns interacting. The economy here is **real** code (`tick.once`, `karma`, `db`, a
+hundreds of Dives interacting. The economy here is **real** code (`tick.once`, `karma`, `db`, a
 real temp ledger); only Slurm is modelled (see tests/fake_cluster.py). Each test states a promise
 the whole design makes:
 
   * **Karma ranks, it never gates** — poor standing loses contention and NOTHING on an idle cluster.
   * **Σ balances ≡ 0** — every settlement is a transfer; the ledger conserves Karma.
   * A **queue-flooder tanks their own Share** — the Escrow lands at submit, so flooding is self-punishing.
-  * A **cancel settles at zero** — retracting a Spawn that did no work costs and earns nothing.
+  * A **cancel settles at zero** — retracting a Dive that did no work costs and earns nothing.
   * The bound on hogging is **economic, not scheduler-side** — spending Karma is what makes you wait.
   * A **commons burn** is the one settlement that doesn't conserve — and it drifts Σ by exactly itself.
 """
@@ -53,7 +53,7 @@ def total_balance(conn, now):
 class TestKarmaNeverGates:
     def test_worst_standing_still_runs_immediately_on_an_idle_cluster(self, conn, monkeypatch):
         """The model's first promise. A User with a ruinous Balance loses *contention* and nothing else:
-        with the card free, their Spawn starts at the very next opportunity, nice notwithstanding."""
+        with the card free, their Dive starts at the very next opportunity, nice notwithstanding."""
         bob = user(conn, "bob")
         pariah = user(conn, "pariah")
         karma.override(conn, "pariah", -500_000)  # about as poor as standing gets
@@ -66,7 +66,7 @@ class TestKarmaNeverGates:
 
     def test_standing_only_orders_under_contention(self, conn, monkeypatch):
         """With ONE card and two waiters, the better-standing User goes first. Same nice mechanism as
-        above — but now it decides an order instead of gating a Spawn."""
+        above — but now it decides an order instead of gating a Dive."""
         rich = user(conn, "rich")
         poor = user(conn, "poor")
         karma.override(conn, "poor", -400_000)
@@ -75,7 +75,7 @@ class TestKarmaNeverGates:
         poor_job = fc.submit(poor, vram_gb=8, minutes=30)
         rich_job = fc.submit(rich, vram_gb=8, minutes=30)  # queued behind, but better standing
         fc.advance(1)
-        assert fc.state(rich_job) == "RUNNING"     # the fresh, better-standing Spawn wins the card
+        assert fc.state(rich_job) == "RUNNING"     # the fresh, better-standing Dive wins the card
         assert fc.state(poor_job) == "PENDING"
 
 
@@ -120,9 +120,9 @@ class TestTheLedgerConserves:
 
 class TestFloodingIsSelfPunishing:
     def test_a_flooder_tanks_their_own_share(self, conn, monkeypatch):
-        """The Escrow lands the instant a Spawn is queued, and it suppresses Share immediately — so a
-        User who floods the queue tanks their OWN standing before a single flooded Spawn has run. This
-        is what makes settle-at-end ungameable: 500 queued Spawns cannot buy top-of-queue for hours."""
+        """The Escrow lands the instant a Dive is queued, and it suppresses Share immediately — so a
+        User who floods the queue tanks their OWN standing before a single flooded Dive has run. This
+        is what makes settle-at-end ungameable: 500 queued Dives cannot buy top-of-queue for hours."""
         flooder = user(conn, "flooder")
         quiet = user(conn, "quiet")
         # A single small Arm, so the flood mostly sits PENDING — holds outstanding, none settled yet.
@@ -140,12 +140,12 @@ class TestFloodingIsSelfPunishing:
 
 class TestCancel:
     def test_a_pending_cancel_settles_at_zero(self, conn, monkeypatch):
-        """A Spawn cancelled before it runs did no work: it settles for zero, its hold is released, and
+        """A Dive cancelled before it runs did no work: it settles for zero, its hold is released, and
         its would-be Arm owner earns nothing. This closes the farm — run 55 min, retract, bank the
         Karma, victim pays for destroyed work — by making the retract worth exactly nothing."""
         a = user(conn, "a")
         b = user(conn, "b")
-        # One card, kept busy by b, so a's Spawn never starts.
+        # One card, kept busy by b, so a's Dive never starts.
         fc = FakeCluster(conn, [arm("box", 50.0, owner="b")]).install(monkeypatch)
         fc.submit(b, vram_gb=8, minutes=600)               # b hogs the only card
         fc.advance(1)
@@ -175,7 +175,7 @@ class TestTheBoundIsEconomic:
 
         hog_share_start = [s for s in karma.standings(conn, fc.now)
                            if s["username"] == "hog"][0]["share"]
-        # The hog submits back-to-back long Spawns; the waiter has one modest Spawn queued throughout.
+        # The hog submits back-to-back long Dives; the waiter has one modest Dive queued throughout.
         fc.submit(waiter, vram_gb=8, minutes=30)
         completed_by_waiter = 0
         for k in range(120):                               # ~2.5 simulated days at 30-min steps
@@ -190,4 +190,4 @@ class TestTheBoundIsEconomic:
         waiter_now = [s for s in karma.standings(conn, fc.now) if s["username"] == "waiter"][0]
         assert hog_now["share"] < hog_share_start          # the hog paid, and it shows
         assert hog_now["share"] < waiter_now["share"]      # the waiter now out-ranks the hog
-        assert completed_by_waiter == 1                    # and was not starved: their Spawn ran
+        assert completed_by_waiter == 1                    # and was not starved: their Dive ran

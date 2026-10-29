@@ -1,7 +1,7 @@
 """The two numbers that price a device: what it can HOLD and what it can DO.
 
 `Price = Power x Demand`. These cover the Power half, which is intrinsic to the card and fixed at
-enroll, plus the VRAM feature that decides which cards a Spawn is even eligible for.
+enroll, plus the VRAM feature that decides which cards a Dive is even eligible for.
 
 Also the **Registration** those numbers are collected by: how many **Device**s a box actually offers,
 and the refusal of a box whose GPUs are not all alike (which no single `vramN` Feature could describe).
@@ -19,7 +19,7 @@ from cuttle import config, system
 
 class TestVramFeature:
     """VRAM -> the Slurm feature a card advertises. Slurm constraints are string set-membership, so
-    this string is the *only* thing a Spawn's `--vram` can be matched against."""
+    this string is the *only* thing a Dive's `--vram` can be matched against."""
 
     def test_round_numbers(self):
         assert config.vram_feature(8192) == "vram8"
@@ -40,7 +40,7 @@ class TestVramFeature:
 
     def test_a_card_that_really_is_smaller_is_not_inflated(self):
         """Ceil rounds up to the next whole GB, it does not add one. An exactly-15 GiB card is a 15 GB
-        card, and a Spawn asking for 16 must still be refused it."""
+        card, and a Dive asking for 16 must still be refused it."""
         assert config.vram_feature(15360) == "vram15"   # exactly 15.00 GiB
         assert config.vram_feature(81920) == "vram80"   # exactly 80.00 GiB
 
@@ -57,7 +57,7 @@ class TestVramFeature:
         """The Arm ADVERTISES with `cuttle.config.card_gb` and the Head SELECTS with
         `ccc_head_api.slurm.card_gb`. The two packages cannot import each other, so the rule is written
         twice — and a card the Head calls 16 GB while the Arm labels it `vram15` is one no eligible
-        Spawn can ever be placed on."""
+        Dive can ever be placed on."""
         for mb in (0, 1, 1023, 8000, 8192, 15360, 15753, 16303, 16384, 24564, 49140, 81920):
             assert config.card_gb(mb) == slurm.card_gb(mb), mb
 
@@ -90,7 +90,7 @@ class TestNodeWeight:
         assert config.node_weight([40.0, 60.0]) == config.node_weight([50.0])
 
     def test_the_reduction_never_reaches_a_bill(self):
-        """The guard on the paragraph above. Two Spawns on the same box, one on each card, must cost
+        """The guard on the paragraph above. Two Dives on the same box, one on each card, must cost
         differently — the node's mean Weight has no say in what either of them pays."""
         assert karma.cost(3600, [40.0], 1.0) != karma.cost(3600, [60.0], 1.0)
 
@@ -122,8 +122,8 @@ class TestDeviceEnumeration:
         assert system.gpu_devices() == [f"/dev/nvidia{i}" for i in range(4)]
 
     def test_devices_are_ordered_numerically_not_lexically(self, monkeypatch):
-        """This order IS the map from a Slurm GRES index to a card, and so to the Power a Spawn is
-        settled at. Sorted as strings, `/dev/nvidia10` lands second and every Spawn on a ten-card box
+        """This order IS the map from a Slurm GRES index to a card, and so to the Power a Dive is
+        settled at. Sorted as strings, `/dev/nvidia10` lands second and every Dive on a ten-card box
         past index 1 is billed at another card's rate."""
         fake_dev(monkeypatch, ["nvidia10", "nvidia2", "nvidia0", "nvidia1"])
         assert system.gpu_devices() == ["/dev/nvidia0", "/dev/nvidia1", "/dev/nvidia2",
@@ -142,7 +142,7 @@ class TestMixedGpusAreRefused:
     """A Slurm node **Feature** is per-node: one box advertises exactly one `vramN`, and that string
     is the only thing `--vram` can be matched against. A box holding a 24 GB card and an 80 GB one
     cannot describe itself honestly, so enrollment refuses it rather than pick a side and misprice
-    every Spawn that lands on the other card."""
+    every Dive that lands on the other card."""
 
     def test_identical_cards_are_fine(self, monkeypatch):
         fake_smi(monkeypatch, [("NVIDIA GeForce RTX 4090", 24564)] * 4)
@@ -186,8 +186,8 @@ class TestMixedGpusAreRefused:
 
 
 class TestAnAbandonedBenchmarkIsCancelled:
-    """`arm admit` blocks for minutes waiting for the benchmark Spawn to write its Power file, and an
-    operator who gives up presses Ctrl-C. That Spawn takes EVERY card on the Arm being admitted — so
+    """`arm admit` blocks for minutes waiting for the benchmark Dive to write its Power file, and an
+    operator who gives up presses Ctrl-C. That Dive takes EVERY card on the Arm being admitted — so
     left running with nobody holding its job id, it wastes the whole box until it finishes on its own,
     which is the one thing an admit is trying to make available."""
 
@@ -202,7 +202,7 @@ class TestAnAbandonedBenchmarkIsCancelled:
         monkeypatch.setattr(enroll.podman, "load_images", lambda: {"bench": "img"})
         monkeypatch.setattr(enroll.templates, "render_bench_sbatch",
                             lambda *a, **kw: "#!/bin/bash\ntrue\n")
-        monkeypatch.setattr(config, "HEAD_SPAWNS_DIR", tmp_path / "spawns")
+        monkeypatch.setattr(config, "HEAD_BENCH_DIR", tmp_path / "bench")
         monkeypatch.setattr(config, "BENCH_TIMEOUT_S", 30)
         calls = []
 

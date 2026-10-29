@@ -1,11 +1,11 @@
-"""**Guises** — a per-User Unix identity, and the end of every Spawn running as the Mantle.
+"""**Guises** — a per-User Unix identity, and the end of every Dive running as the Mantle.
 
 The failures guarded here are the quiet ones. A uid handed out twice does not raise; it silently gives
 one User another's leftover files on every Arm they ever ran on. A `sudo -u` that resolves to the wrong
-account does not raise either; it either fails a Spawn nobody can explain, or acts on a job that is not
+account does not raise either; it either fails a Dive nobody can explain, or acts on a job that is not
 ours. Both are exactly what Guises exist to prevent, so both are pinned here.
 
-See temp/spawn-isolation.md.
+
 """
 
 import stat
@@ -81,7 +81,7 @@ class TestAllocation:
         assert db.allocate_guise(conn, alice) == db.allocate_guise(conn, alice)
 
     def test_the_reserved_cluster_uid_is_never_allocated_to_a_user(self, conn):
-        """60001 belongs to the enrollment benchmark — the one Spawn no User submits."""
+        """60001 belongs to the enrollment benchmark — the one Dive no User submits."""
         uids = [db.guise_uid(conn, _user(conn, n)) for n in ("a", "b", "c")]
         assert guises.CLUSTER_UID not in uids
         assert all(u > guises.CLUSTER_UID for u in uids)
@@ -99,7 +99,7 @@ class TestAllocation:
 
 
 class TestActingAsTheOwner:
-    """Every Slurm operation CCC performs on a Spawn is one the job's OWNER may perform with no
+    """Every Slurm operation CCC performs on a Dive is one the job's OWNER may perform with no
     privilege. That was free while the Head owned every job; now it has to ask sudo to become them."""
 
     def test_it_becomes_the_guise(self):
@@ -112,7 +112,7 @@ class TestActingAsTheOwner:
         assert "-n" in guises.as_owner(["scancel", "5"], "ccc-u60002")
 
     def test_a_mantle_owned_spawn_runs_plain(self):
-        """The transitional path: a Spawn queued before Guises existed is owned by `ccc`, and the
+        """The transitional path: a Dive queued before Guises existed is owned by `ccc`, and the
         Head is still `ccc`, so it needs no sudo at all. Same for the enrollment benchmark,
         which predates this too."""
         assert guises.as_owner(["scancel", "5"], "ccc") == ["scancel", "5"]
@@ -129,8 +129,8 @@ class TestActingAsTheOwner:
 
 
 class TestTheSlurmOpsBecomeTheOwner:
-    """Every op the Head performs on a live Spawn. Each is zero-privilege *for the owner* and refused
-    for anyone else, so getting the account wrong does not fail loudly — it fails as a Spawn that
+    """Every op the Head performs on a live Dive. Each is zero-privilege *for the owner* and refused
+    for anyone else, so getting the account wrong does not fail loudly — it fails as a Dive that
     cannot be cancelled, or a Karma ranking that silently stops reaching the queue."""
 
     @pytest.fixture
@@ -193,7 +193,7 @@ class TestTheSlurmOpsBecomeTheOwner:
 
     def test_the_owner_comes_from_squeue_not_the_ledger(self, ran):
         """squeue is what `sudo -u` has to MATCH, so it's ground truth by construction. It also gets
-        three cases right the Attribution row gets wrong: a Spawn queued before Guises existed
+        three cases right the Attribution row gets wrong: a Dive queued before Guises existed
         (row present, owned by the Mantle), the enrollment benchmark (no row at all), and a job
         that has already ended."""
         from ccc_head_api import slurm
@@ -204,7 +204,7 @@ class TestTheSlurmOpsBecomeTheOwner:
 class TestAGuiseIsAlwaysInTheSharedGroup:
     """GUISE_GROUP is the Runas list on the Head's one sudoers rule
     (headapi._SUDOERS_CCC_SLURM: `ccc ALL=(%ccc-guises) NOPASSWD: sbatch, scancel, scontrol`). A Guise
-    outside it cannot be sudo'd into at all, so every Spawn that User owns dies at submission with
+    outside it cannot be sudo'd into at all, so every Dive that User owns dies at submission with
     "sudo: a password is required" — naming a command that is not the problem, on a box where every
     other User works fine.
     """
@@ -223,7 +223,7 @@ class TestAGuiseIsAlwaysInTheSharedGroup:
 
     def test_the_membership_is_re_asserted_even_so(self, monkeypatch):
         """`useradd --groups` applies only when useradd CREATES the account. On a re-run — or on an
-        account that outlived a teardown because a Spawn was still running as it — useradd does
+        account that outlived a teardown because a Dive was still running as it — useradd does
         nothing and exits non-zero, which provision_guise deliberately tolerates. Without a separate
         usermod the Guise never rejoins the group that a fresh teardown+setup just re-made."""
         usermod = [c for c in self.calls(monkeypatch) if c[0] == "usermod"]
@@ -244,7 +244,7 @@ class TestAGuiseIsAlwaysInTheSharedGroup:
         """The one call on this path that is NOT tolerated. Every other step is check=False because
         "already there" is the normal case; a Guise that cannot be put in the group is not a re-run,
         it is a User who will be unable to run anything, and the failure has to land here rather than
-        at their first Spawn."""
+        at their first Dive."""
         from cuttle import auth
         import subprocess as sp
 
@@ -266,7 +266,7 @@ class TestAGuiseIsAlwaysInTheSharedGroup:
 
 class TestATeardownLeavesNoSpawnRunning:
     """Stopping slurmd does NOT end a running batch step — its process tree detaches and survives, so
-    a Tide Pool's sshd was still listening on its port hours after the cluster was torn down. That
+    a Dive's sshd was still listening on its port hours after the cluster was torn down. That
     orphan then blocked `userdel` on its **Guise**, whose failure is swallowed, and the next setup
     found the account already there and left it out of the re-created GUISE_GROUP. One silent failure
     at teardown surfacing days later as one User who cannot submit.
@@ -289,7 +289,7 @@ class TestATeardownLeavesNoSpawnRunning:
         """scancel asks slurmctld, so once stop_daemons has run there is nothing left to ask."""
         from cuttle import teardown
         calls = self.teardown_calls(monkeypatch)
-        teardown.cancel_spawns()
+        teardown.cancel_dives()
         assert calls == [["scancel", "--all"]]
 
     def test_stragglers_are_signalled_before_userdel(self, monkeypatch):
@@ -302,7 +302,7 @@ class TestATeardownLeavesNoSpawnRunning:
         assert names.index("pkill") < names.index("userdel")
 
     def test_term_comes_before_kill(self, monkeypatch):
-        """apptainer's own children (squashfuse, fuse-overlayfs) need a moment to unmount the Pod;
+        """apptainer's own children (squashfuse, fuse-overlayfs) need a moment to unmount the container;
         killed outright they leave mounts behind under /var/lib/apptainer."""
         from cuttle import teardown
         calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002"))
@@ -335,7 +335,7 @@ class TestATeardownLeavesNoSpawnRunning:
 
     def test_the_guise_sweep_is_local_not_cluster_wide(self, monkeypatch):
         """This is the whole of an Arm teardown's job-ending, and it must stay that way: scancel asks
-        the CONTROLLER, so a donor taking their own box back would end Spawns running on everyone
+        the CONTROLLER, so a donor taking their own box back would end Dives running on everyone
         else's machines too. It ends the ones running here; the Head marks the node down like any
         other that went away."""
         from cuttle import teardown

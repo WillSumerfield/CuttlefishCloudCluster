@@ -1,7 +1,7 @@
-"""Per-Spawn Python **Environment**s — declared by the User, built by the Arm that runs them, kept by
+"""Per-Dive Python **Environment**s — declared by the User, built by the Arm that runs them, kept by
 nobody.
 
-**Uncalled since 2.0.** Batch Spawns were the only thing that declared one, and the job-script block
+**Uncalled since 2.0.** Batch Dives were the only thing that declared one, and the job-script block
 that ran these commands went with them; Dives bring an optional Environment back. Kept, and tested, as
 the meaning of a manifest.
 
@@ -10,24 +10,24 @@ that declaration MEANS — which file, which shape, which commands build it — 
 commands at job start.
 
 **Built on the Arm, because a built env cannot be moved cheaply.** It used to be built here and shipped
-inside the uploaded project. That is several GB across the mesh on every Spawn, and the mesh is not a
+inside the uploaded project. That is several GB across the mesh on every Dive, and the mesh is not a
 LAN: measured Head→remote Arm at 2.82 MB/s, so a 4.6 GB torch env is ~29 minutes of transfer before the
 payload's first line. The manifest is kilobytes and every donor box has its own link to PyPI, so the
 declaration travels and the download does not.
 
 **Decided here, executed there.** `detect`, `require_tool`, `check_supplied` and `render_build` all still
-run on the Head, at submit, and every refusal they can raise is still a 4xx with no Spawn in existence.
+run on the Head, at submit, and every refusal they can raise is still a 4xx with no Dive in existence.
 Only the *running* moved: `render_build` returns argv, the job script splices it in,
-and the Arm executes it inside the Pod. One tested place still says what a manifest means.
+and the Arm executes it inside the container. One tested place still says what a manifest means.
 
-**What that costs, stated plainly.** A build failure is now a failed **Spawn** rather than a refused
+**What that costs, stated plainly.** A build failure is now a failed **Dive** rather than a refused
 submission — it happens after the queue place and inside the Escrow, and the Escrow is not refunded (it
-is not refunded for any other failed Spawn either). In exchange every Spawn can actually start.
+is not refunded for any other failed Dive either). In exchange every Dive can actually start.
 
-**In a Pod, as the submitter's Guise.** A manifest is code: build backends, sdist `setup.py`, conda
+**In a container, as the submitter's Guise.** A manifest is code: build backends, sdist `setup.py`, conda
 post-link scripts all execute. So the build gets the same walls the payload gets — `base.sif`, entered as
 that User's Guise, `--contain --pid` — rather than a second, weaker isolation invented for it. On the Arm
-that is the same Pod flags the payload uses, one step earlier in the same job script.
+that is the same container flags the payload uses, one step earlier in the same job script.
 
 **One fixed path, so nothing needs relocating.** A venv bakes its own prefix into `pyvenv.cfg` and every
 console-script shebang; a conda prefix bakes it into hundreds of files and is famously not relocatable.
@@ -42,26 +42,26 @@ install, and `UV_PYTHON_INSTALL_DIR` puts the one it downloads INSIDE the shippe
 invariant above already covers them.
 
 That is what makes a `requires-python` pin mean anything: `uv sync` reads it, fetches that exact
-standalone CPython, and builds against it — a version the Pod image neither has nor needs to have.
+standalone CPython, and builds against it — a version the container image neither has nor needs to have.
 Inheriting was the alternative, and it cannot be frozen: `--system-site-packages` is a runtime flag, not
-a set of per-package links, so an inherited torch is whatever the image holds on the day the Spawn runs.
+a set of per-package links, so an inherited torch is whatever the image holds on the day the Dive runs.
 
 **One package is seeded into every uv env that its manifest did not ask for**: `pip`, which uv does
-not install into a venv on its own and whose absence would break a **Tide Pool**'s promise that
+not install into a venv on its own and whose absence would break a **Dive**'s promise that
 `pip install` at the shell works. Unpinned, because an already-satisfied requirement is a no-op: a User
 who declared their own version keeps it, exactly as they used to when the image supplied one.
 
-**Nothing is cached except downloads.** The built env lives in the Spawn's node-local scratch and dies
+**Nothing is cached except downloads.** The built env lives in the Dive's node-local scratch and dies
 with it, like the working directory around it — no box grows a permanent env store. The package
 *download* cache on each Arm persists: node-local, size-capped, never staged, shared by every Guise on
-the box — the only reason "rebuild every time" is affordable. The second Spawn to want a given torch
+the box — the only reason "rebuild every time" is affordable. The second Dive to want a given torch
 hard-links it out of that cache instead of fetching it.
 
-**Nothing is detected, because detection is a guess.** Every Spawn NAMES the file it declares, and
+**Nothing is detected, because detection is a guess.** Every Dive NAMES the file it declares, and
 `detect` only checks that the named file is there and is inside the project. There is no auto-detection
 order to learn and no way to decline: a `pyproject.toml` in a vendored repo is not an instruction to the
 cluster, and an Environment is too load-bearing to be inferred from a file someone happened to commit.
-A **Tide Pool** is the sole exception — it is a shell, not a run, and may decline to declare.
+A **Dive** is the sole exception — it is a shell, not a run, and may decline to declare.
 """
 
 import hashlib
@@ -76,7 +76,7 @@ from pathlib import Path
 
 from . import features
 
-# Where the env is built and run, INSIDE the Pod, on every machine. Absolute paths baked into the env
+# Where the env is built and run, INSIDE the container, on every machine. Absolute paths baked into the env
 # resolve against this and only this — see the module docstring.
 ENV_MOUNT = "/opt/ccc/env"
 
@@ -94,7 +94,7 @@ PY_INSTALL_DIR = f"{ENV_MOUNT}/py"
 DEFAULT_PYTHON = "3.12"
 
 # Where the stub wheels an **Arm Feature** substitutes for a submitter's declared path source are
-# written: the Spawn's own node-local scratch, NEVER inside the project. The bytes ride the job script
+# written: the Dive's own node-local scratch, NEVER inside the project. The bytes ride the job script
 # (kilobytes — each is an empty wheel of the right name and version), the Arm writes them out before the
 # build, and each is BOUND over whatever the declaration points at.
 #
@@ -103,7 +103,7 @@ DEFAULT_PYTHON = "3.12"
 STUB_ROOT = "stubs"
 
 # uv and micromamba are single static binaries, installed on EVERY node (cuttle.setup.install_env_tools)
-# and bound into the build Pod read-only. Deliberately not baked into BASE_DEF_TMPL: `base.sif` is built
+# and bound into the build container read-only. Deliberately not baked into BASE_DEF_TMPL: `base.sif` is built
 # per node and skipped when it already exists, so a tool pinned inside the image could only be bumped by
 # a full teardown of every enrolled box.
 TOOLS_DIR = Path(os.environ.get("CCC_TOOLS_DIR", "/opt/ccc/tools"))
@@ -120,20 +120,20 @@ MICROMAMBA_BIN = TOOLS_DIR / "micromamba"
 CACHE_DIR = Path(os.environ.get("CCC_ENV_CACHE", "/var/lib/ccc/envcache"))
 CACHE_MAX_GB = int(os.environ.get("CCC_ENV_CACHE_MAX_GB", 20))
 
-# Where the build tools put scratch, INSIDE the Pod. `--contain` gives the Pod a /tmp carved from
+# Where the build tools put scratch, INSIDE the container. `--contain` gives the container a /tmp carved from
 # Apptainer's session directory, a RAM tmpfs capped by `sessiondir max size` in apptainer.conf (64 MB on
 # this fleet). uv is pointed at the cache above, but pip (what an environment.yml's `pip:` section runs)
 # writes downloads to TMPDIR, so any wheel bigger than what is left of that 64 MB dies — nvidia-cudnn-cu13
 # alone is 366 MB, and pip reports the resulting ENOSPC as "This is an issue with network connectivity,
 # not pip", which misdirects debugging toward the network instead of the disk.
 #
-# The job script binds the Spawn's own node-local scratch here, so it is per-Spawn and the EXIT trap
+# The job script binds the Dive's own node-local scratch here, so it is per-Dive and the EXIT trap
 # already destroys it. Deliberately NOT inside the cache: the prune empties the whole cache at the cap,
-# and one Spawn's prune must not delete another's half-downloaded wheel.
+# and one Dive's prune must not delete another's half-downloaded wheel.
 POD_TMP = "/ccc-tmp"
 POD_CACHE = "/ccc-cache"
 
-# The build Pod's environment, identical on every node because the Pod's own paths are. Rendered into
+# The build container's environment, identical on every node because the container's own paths are. Rendered into
 # the job script; nothing here reads it at build time any more.
 #
 #   UV_PROJECT_ENVIRONMENT  points `uv sync` at VENV_DIR instead of the `.venv` it would otherwise create
@@ -143,9 +143,9 @@ POD_CACHE = "/ccc-cache"
 #                           picks up whatever system python the image or the box happens to have, and the
 #                           env stops being self-contained (module docstring).
 #   UV_PYTHON_INSTALL_DIR   the interpreter it downloads lands INSIDE the env tree rather than under
-#                           $HOME (which a Guise has not got) or on the Pod's 64MB /tmp.
+#                           $HOME (which a Guise has not got) or on the container's 64MB /tmp.
 #   TMPDIR                  every tool's scratch onto disk — see POD_TMP.
-#   PIP_CACHE_DIR           with the OTHER caches, not the per-Spawn scratch, or pip re-fetches every
+#   PIP_CACHE_DIR           with the OTHER caches, not the per-Dive scratch, or pip re-fetches every
 #                           wheel on every build.
 BUILD_POD_ENV = (f"UV_CACHE_DIR={POD_CACHE}/uv,UV_PROJECT_ENVIRONMENT={VENV_DIR},"
                  f"UV_PYTHON_PREFERENCE=only-managed,UV_PYTHON_INSTALL_DIR={PY_INSTALL_DIR},"
@@ -157,11 +157,11 @@ class BuildError(ValueError):
     """The declared environment cannot be built, decided at SUBMIT.
 
     Only ever a *rejection* now — from `detect`, `require_tool` or `check_supplied`: bad input or an
-    unequipped node, decided in microseconds and turned into a 4xx before any Spawn exists, so nothing is
+    unequipped node, decided in microseconds and turned into a 4xx before any Dive exists, so nothing is
     Escrowed and nothing queues.
 
     A build that FAILS is a different thing entirely and does not come through here: it happens on the
-    Arm, inside the job, and it ends that Spawn the way every other failed Spawn ends — the build's own
+    Arm, inside the job, and it ends that Dive the way every other failed Dive ends — the build's own
     output in `err`, a non-zero `exit`, and no refund of the Escrow.
     """
 
@@ -179,13 +179,13 @@ class Manifest:
 
     @property
     def bin_dir(self) -> str:
-        """Where this env's executables live inside the Pod. Depends on the SHAPE, not on the Head: a
+        """Where this env's executables live inside the container. Depends on the SHAPE, not on the Head: a
         conda prefix is ENV_MOUNT itself, a uv env keeps its venv one level down (see VENV_DIR)."""
         return f"{ENV_MOUNT}/bin" if self.kind == "conda" else f"{VENV_DIR}/bin"
 
     @property
     def interpreter(self) -> str:
-        """What the payload runs, and what `uv pip` is pointed at. A per-Spawn value rather than the
+        """What the payload runs, and what `uv pip` is pointed at. A per-Dive value rather than the
         module constant it used to be — the two shapes no longer share a path."""
         return f"{self.bin_dir}/python"
 
@@ -201,14 +201,11 @@ _SUFFIX_KINDS = (
 )
 
 # What a User is told when they named nothing. Long, because "required" is the one thing they already
-# know by the time they are reading it. The same explanation the CLI refuses with (cuttle.spawns
-# NO_MANIFEST/NO_MANIFEST_WHY) and the Dashboard's field help carries — three surfaces, one account of
-# why, because whichever one a person meets is the only one they will read. Kept in step by hand:
-# nothing is shared between a Head, a client and a browser bundle.
+# know by the time they are reading it.
 NOTHING_DECLARED = (
-    "this Spawn declares no Environment — name the dependency file to build it from, e.g. "
-    "--manifest pyproject.toml (also uv.lock, requirements.txt, environment.yml). The Pod carries no "
-    "Python of its own, so a Spawn that declares nothing has no interpreter to run your script with "
+    "this Dive declares no Environment — name the dependency file to build it from, e.g. "
+    "--manifest pyproject.toml (also uv.lock, requirements.txt, environment.yml). The container carries no "
+    "Python of its own, so a Dive that declares nothing has no interpreter to run your script with "
     "at all. CCC does not guess which file is the instruction: a dependency file in a repo is not "
     "always the one describing this work. If yours needs no packages, an empty requirements.txt is a "
     "complete declaration — it builds Python 3.12, or whatever a .python-version beside it names"
@@ -216,7 +213,7 @@ NOTHING_DECLARED = (
 
 
 def detect(project: Path, manifest: str | None) -> Manifest:
-    """Which declaration this Spawn makes. Pure — reads the tree, decides nothing else.
+    """Which declaration this Dive makes. Pure — reads the tree, decides nothing else.
 
     **Naming one is mandatory** (CONTEXT.md, **Environment**). There is no auto-detection and no
     default: CCC infers nothing about an Environment, because a `pyproject.toml` in a repo may belong
@@ -246,17 +243,17 @@ def _classify(rel: str) -> str:
 
 
 def require_tool(m: Manifest, feature_names: list[str] | None = None) -> None:
-    """Refuse now if this Head has not got a binary this Spawn's build needs. Raises BuildError.
+    """Refuse now if this Head has not got a binary this Dive's build needs. Raises BuildError.
 
     `feature_names` matters because a Feature's system libraries are a conda prefix whatever the
-    manifest is (`build_feature_libs`) — so a uv Spawn asking for one still needs micromamba, and
+    manifest is (`build_feature_libs`) — so a uv Dive asking for one still needs micromamba, and
     finding that out at build time would cost the User an Escrow for a Head problem.
 
     A REJECTION, not a degradation. It used to be the latter — a Head provisioned before Environments
-    existed ran the cluster base rather than refusing Spawns that had worked for months. There is no
-    such Spawn left: every one names a manifest, so degrading would mean running the User's work
+    existed ran the cluster base rather than refusing Dives that had worked for months. There is no
+    such Dive left: every one names a manifest, so degrading would mean running the User's work
     against an Environment they did not ask for and cannot see. Better to say the Head is misconfigured
-    and name the one command that fixes it. Nothing is Escrowed — this is decided before any Spawn
+    and name the one command that fixes it. Nothing is Escrowed — this is decided before any Dive
     exists.
     """
     needs = [MICROMAMBA_BIN if m.kind == "conda" else UV_BIN]
@@ -271,18 +268,18 @@ def require_tool(m: Manifest, feature_names: list[str] | None = None) -> None:
 
 
 def describe(m: Manifest | None) -> str:
-    """The submit-time echo. Said BEFORE the Spawn is accepted, because the worst case — a manifest one
+    """The submit-time echo. Said BEFORE the Dive is accepted, because the worst case — a manifest one
     directory too deep — is not a build failure at all, so nothing else would ever mention it and the
     User discovers it as an ImportError after paying for a GPU.
 
-    `None` only ever reaches here from a **Tide Pool**, the one Spawn that may decline to declare."""
-    return f"environment: {m.summary}" if m else "environment: none declared (Tide Pool)"
+    `None` only ever reaches here from a **Dive**, the one Dive that may decline to declare."""
+    return f"environment: {m.summary}" if m else "environment: none declared (Dive)"
 
 
 def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
     """The commands that build `m` at ENV_MOUNT, in order. Pure — runs nothing, so it is testable.
 
-    Each is argv as run INSIDE the build Pod, with the project as cwd and ENV_MOUNT bound writable.
+    Each is argv as run INSIDE the build container, with the project as cwd and ENV_MOUNT bound writable.
     `project` is read for one thing only — whether a `.python-version` sits beside the manifest — and
     only the `requirements.txt` path consults it.
     """
@@ -293,8 +290,8 @@ def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
         ]
     # The one package every uv env gets that its manifest did not ask for: `pip`, because uv does not
     # seed one and the env's own interpreter would otherwise answer "No module named pip" — which breaks
-    # a **Tide Pool**'s promise that `pip install` at the shell works. ~10MB,
-    # shipped on every Spawn; the alternative was putting uv itself in every Arm's image. A conda prefix
+    # a **Dive**'s promise that `pip install` at the shell works. ~10MB,
+    # shipped on every Dive; the alternative was putting uv itself in every Arm's image. A conda prefix
     # already has one.
     #
     # UNPINNED, and `uv pip` rather than `python -m pip` — which could not run before pip is there. An
@@ -316,12 +313,12 @@ def render_build(m: Manifest, project: Path | None = None) -> list[list[str]]:
     # Plain `uv sync` — NOT --no-install-project. uv already treats a project with no [build-system]
     # (or `package = false`) as *virtual* and installs only its dependencies, while a real src-layout
     # package gets installed, which is the only way its imports resolve.
-    # NOT --active: that only means "use $VIRTUAL_ENV", and nothing in a build Pod sets it, so uv falls
+    # NOT --active: that only means "use $VIRTUAL_ENV", and nothing in a build container sets it, so uv falls
     # back to its default `.venv` beside the manifest — inside the Mantle-owned project the Guise cannot
-    # write, which fails every pyproject.toml/uv.lock Spawn with "Permission denied". UV_PROJECT_ENVIRONMENT
+    # write, which fails every pyproject.toml/uv.lock Dive with "Permission denied". UV_PROJECT_ENVIRONMENT
     # (set in `build`'s --env) names the path outright instead, same as the `uv pip` branch's --python.
-    # `uv sync` still writes `uv.lock` into the project itself, unavoidably — see spawns._lend_project
-    # for why the Guise may. --inexact keeps the seeded pip below from being pruned away by a later sync.
+    # `uv sync` still writes `uv.lock` into the project itself, unavoidably.
+    # --inexact keeps the seeded pip below from being pruned away by a later sync.
     return [[uv, "sync", "--inexact", "--no-dev"], seed]
 
 
@@ -332,7 +329,7 @@ class Supplied:
     `declared` is the path exactly as written in `[tool.uv.sources]`. `pod_rel` is the same file
     expressed relative to the PROJECT ROOT — the only form that means anything on the Arm, since the
     project lands in node-local scratch under a name no Head path predicts. It may begin `../`, which is
-    the ordinary `../my-wheels/x.whl` layout and resolves into the Spawn's own scratch beside `$proj`.
+    the ordinary `../my-wheels/x.whl` layout and resolves into the Dive's own scratch beside `$proj`.
 
     `inside_project` says only where the stub is bound — over a file the project carries, or into a
     directory beside it. Neither one is written into the project any more.
@@ -354,7 +351,7 @@ class StubFile:
 
 @dataclass(frozen=True)
 class StubBind:
-    """One bind into the build Pod: `$scratch/STUB_ROOT/<src>` over `$proj/<dest>`.
+    """One bind into the build container: `$scratch/STUB_ROOT/<src>` over `$proj/<dest>`.
 
     `dest` is project-relative and may begin `../`. `over_project` marks a bind that covers a file the
     project itself carries — which is also why that file need not ride the transfer at all, since the
@@ -431,19 +428,19 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
     """Validate every Feature-supplied dependency at SUBMIT time, and return them. Raises BuildError.
 
     Every check is a refusal rather than a build failure, and that is the point of doing them here:
-    each one is certain before the Spawn exists, and each would otherwise surface as an ImportError
+    each one is certain before the Dive exists, and each would otherwise surface as an ImportError
     after the User has paid Karma to hold a GPU.
     """
     found = supplied(project, m)
     for s in found:
         # Asking for the package without asking for the Feature is always a mistake, never a choice:
         # CCC is about to replace the wheel with an empty stub (licensing — see features.VLEARN_SETUP),
-        # and only the Feature puts the Arm's real one back. Without it the Spawn would build cleanly,
+        # and only the Feature puts the Arm's real one back. Without it the Dive would build cleanly,
         # place anywhere, and die at `import`.
         if s.feature not in requested:
             raise BuildError(
                 f"{m.path} declares '{s.package}', which comes from the '{s.feature}' Arm Feature, but "
-                f"this Spawn did not request it. Add --feature {s.feature}, or drop the dependency — "
+                f"this Dive did not request it. Add --feature {s.feature}, or drop the dependency — "
                 f"CCC replaces a Feature's package with a placeholder and only the Feature puts the "
                 f"Arm's own licensed build back."
             )
@@ -466,10 +463,10 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
                 f"build's own mounts, and anything else there could not be told from an instruction."
             )
         # The same containment rule `detect` applies to the manifest itself, stated against what the
-        # USER WROTE rather than against a path on the Head. The stub is bound into the build Pod at
-        # `$proj/<pod_rel>`, and `$proj`'s parent is the Spawn's own node-local scratch: one `..`
+        # USER WROTE rather than against a path on the Head. The stub is bound into the build container at
+        # `$proj/<pod_rel>`, and `$proj`'s parent is the Dive's own node-local scratch: one `..`
         # reaches that scratch, which is what the ordinary `../my-wheels/x.whl` layout needs, and two
-        # would name a directory outside the Spawn altogether. Saying it this way makes it mean the
+        # would name a directory outside the Dive altogether. Saying it this way makes it mean the
         # same thing on the Head and on the Arm.
         if os.path.isabs(s.declared) or s.pod_rel.startswith("../../"):
             raise BuildError(
@@ -485,7 +482,7 @@ def _stub_wheel(package: str, filename: str) -> bytes:
     compatibility tag, and a package directory with nothing in it.
 
     Bytes rather than a file, because there is nowhere on the Head this belongs. It is written by the
-    ARM, into that Spawn's own scratch, out of the job script it already received.
+    ARM, into that Dive's own scratch, out of the job script it already received.
 
     Name, version and tag are read out of the FILENAME the User declared, never out of the real wheel —
     the Head has never seen that file. It is on the submitter's own machine (`../vlearn-main/...`) and
@@ -558,10 +555,10 @@ def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], lis
 
     * **A wheel outside the project** (`../vlearn-main/...`, the ordinary layout) — never uploaded, and
       never on the Head at all. Its stubs go in one directory per destination, bound at `$proj/../…`,
-      which resolves into the Spawn's own scratch. Apptainer creates that mountpoint even though its
+      which resolves into the Dive's own scratch. Apptainer creates that mountpoint even though its
       parent is not itself bound, which is what makes it work under `--contain`.
     * **A wheel inside it** — bound over as a single FILE. The project's own copy is untouched on the
-      host, and a Spawn need not
+      host, and a Dive need not
       transfer a licensed wheel to a donor at all (`StubBind.over_project`).
     * **`uv.lock`** — rewritten in memory and bound over, when it records a hash for one of them. uv
       verifies that hash on EVERY sync, so a stub the lock does not know about fails the build outright.
@@ -615,7 +612,7 @@ def render_featlib_build(specs: dict[str, list[str]]) -> list[list[str]]:
 
     Conda, and only conda, because these are not Python packages: `libassimp.so.5` and `libSDL2` have no
     wheel and no manifest a submitter could put them in. They used to arrive inside the submitter's own
-    `environment.yml` — which is why a vlearn Spawn had to be a conda Spawn. Now that an Environment
+    `environment.yml` — which is why a vlearn Dive had to be a conda Dive. Now that an Environment
     carries its own interpreter, the manifest can be anything, and these have to come from somewhere
     that does not care.
 

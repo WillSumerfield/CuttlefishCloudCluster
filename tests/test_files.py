@@ -55,8 +55,7 @@ def api(monkeypatch, tmp_path):
     with db.connect() as conn:
         conn.execute("INSERT INTO users (id, username, is_admin, pw_hash) VALUES (1,'alice',0,'x')")
         conn.commit()
-        db.record_spawn(conn, 77, 1, "", minutes=60, gpus=1, tidepool=True)
-        db.create_dive(conn, 77, "a" * 32, "proj", [], 31000)
+        db.create_dive(conn, 77, 1, "a" * 32, "proj", [], 31000, minutes=60, gpus=1)
     calls = []
     files = {"proj": "d d", "data": "d d", "notes.txt": "f f", "proj/x": "f f"}
 

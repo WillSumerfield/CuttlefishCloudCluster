@@ -3,27 +3,27 @@
 Every 30s, one pass, in this order:
 
 1. **Sample Demand** on every Arm (running + queued claims spread over eligible cards).
-2. **Accrue** onto every RUNNING Spawn: seconds held per card, at that card's Power (Slurm reports which
+2. **Accrue** onto every RUNNING Dive: seconds held per card, at that card's Power (Slurm reports which
    GPU it holds) and the Demand it held them under.
-3. **Force-kill** any Spawn a Retract caught whose grace period expired and is still running — Retract
+3. **Force-kill** any Dive a Retract caught whose grace period expired and is still running — Retract
    itself only sends TERM (ccc_head_api.retraction); this is the deadline behind it.
-4. **Settle** every Spawn that has vanished from the queue: one ledger row, claim released. One caught by
+4. **Settle** every Dive that has vanished from the queue: one ledger row, claim released. One caught by
    a Retract settles at ZERO regardless of what it accrued.
-5. **Reap** any Tide Pool whose Spawn just vanished: kill its relay, forget its port/keypair
-   (dive.reap_dead) — a live Dive holds a Device like any RUNNING Spawn, so steps 1-4 already
+5. **Reap** any Dive whose Dive just vanished: kill its relay, forget its port/keypair
+   (dive.reap_dead) — a live Dive holds a Device like any RUNNING Dive, so steps 1-4 already
    meter/settle it with no branch of their own.
-6. **Re-rank** the queue: turn each pending Spawn's submitter's standing into a `nice` and push it.
+6. **Re-rank** the queue: turn each pending Dive's submitter's standing into a `nice` and push it.
 
 Runs as the **Mantle**, which owns every job in the cluster, so it re-ranks the whole queue with no
 privilege — no sudo, no root helper. Its own service, not a task inside the Head API: the economy must
 not be able to wedge the API, nor the API the economy.
 
-Settlement is **poll-based** — there's no alternative. A Spawn that ends writes us no end-time; Slurm
+Settlement is **poll-based** — there's no alternative. A Dive that ends writes us no end-time; Slurm
 forgets it after `MinJobAge`; `sacct` would need the slurmdbd we deliberately don't run. So *absence
 from a successful poll* is the end-of-life signal — if slurmctld is down the poll raises and the pass is
 skipped, and nothing settles, which is why "successful" is load-bearing.
 
-Three kinds of pending Spawn are skipped by re-rank:
+Three kinds of pending Dive are skipped by re-rank:
 - **nice < 0** — an admin has Queue-bumped it (Slurm refuses a negative nice from a job's own owner).
 - **no attribution row** — the enrollment benchmark, sbatched outside the API.
 - **submitted by an Admin** — outside the economy, no standing to rank by.
@@ -35,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import db, dive, karma, siphons, slurm, spawns, tidepool
+from . import db, dive, karma, slurm, tidepool
 
 log = logging.getLogger("ccc.karma")
 
@@ -51,16 +51,16 @@ def _parse(ts: str) -> datetime:
 
 
 def _held_powers(job: dict, arm: dict | None) -> list[float] | None:
-    """The Power of every **Device** this RUNNING Spawn holds — the prices Settlement multiplies out.
+    """The Power of every **Device** this RUNNING Dive holds — the prices Settlement multiplies out.
 
     Slurm reports the GRES indices a job holds (slurm._gpu_indices), which index straight into the Arm's
-    registry `powers` since gres.conf's `File=` lines were written in the same order — so a Spawn on a
+    registry `powers` since gres.conf's `File=` lines were written in the same order — so a Dive on a
     throttled second card is billed at that card's number, not an average.
 
     Returns **None** — not a guess — when the answer can't be had: an unpriced Arm, a card count that
-    disagrees with the priced list, or a Spawn with no reported indices. Averaging Powers would settle
-    those silently at a price nobody could check. Every Spawn holds at least one Device, so an empty
-    index list is always Slurm failing to say WHICH — never a Spawn that wanted none.
+    disagrees with the priced list, or a Dive with no reported indices. Averaging Powers would settle
+    those silently at a price nobody could check. Every Dive holds at least one Device, so an empty
+    index list is always Slurm failing to say WHICH — never a Dive that wanted none.
     """
     powers = (arm or {}).get("powers")
     if not powers:
@@ -75,25 +75,28 @@ def _held_powers(job: dict, arm: dict | None) -> list[float] | None:
 
 def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, float],
            now: datetime) -> None:
-    """Bill every RUNNING Spawn for the time it has held its cards since we last looked.
+    """Bill every RUNNING Dive for the time it has held its cards since we last looked.
 
     Elapsed *time*, not tick count: an hour of service downtime is still an hour owed. First accrual
     bills from Slurm's `start_time`, so the gap before the tick notices isn't free either.
 
-    **Several Devices are several separate purchases** (glossary, Settlement): a Spawn on two cards is
+    **Several Devices are several separate purchases** (glossary, Settlement): a Dive on two cards is
     billed each card's own Power, summed — never a count times an average.
     """
     live = {e["job_id"]: e for e in db.live_escrows(conn)}
     for job in jobs:
         if job["state"] != "RUNNING":
             continue
-        # WHERE it ran, recorded before WHAT it costs — placement is a fact about the Spawn, not the
-        # billing. An Admin's Spawn has no Escrow, so tying this to the meter left their History always
+        # WHERE it ran, recorded before WHAT it costs — placement is a fact about the Dive, not the
+        # billing. An Admin's Dive has no Escrow, so tying this to the meter left their History always
         # saying "arm unrecorded". Write-once, in db.record_placement.
-        db.record_placement(conn, job["id"], job["node"])
+        started = job.get("start_time")
+        db.record_placement(conn, job["id"], job["node"],
+                            datetime.fromtimestamp(started, timezone.utc).strftime(_TS) if started
+                            else now.strftime(_TS))
         esc = live.get(job["id"])
         if esc is None:
-            continue  # the benchmark, or an Admin's Spawn: nobody is charged for it
+            continue  # the benchmark, or an Admin's Dive: nobody is charged for it
         node = job["node"]
         powers = _held_powers(job, arms.get(node))
         if powers is None:
@@ -101,7 +104,7 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
             # benchmark it), so this means a benchmark flaked or the hardware changed under us — a free
             # GPU until someone reads this line. `last_at` still advances, so free seconds aren't billed
             # retroactively once the Arm is priced again.
-            log.error("cannot price spawn %s on arm %s (devices=%s, gpus=%s) — it runs FREE. "
+            log.error("cannot price Dive %s on arm %s (devices=%s, gpus=%s) — it runs FREE. "
                       "Fix: cuttle arm benchmark %s",
                       job["id"], node, job["devices"], job["gpus"], node)
             db.accrue(conn, job["id"], node, esc["accrued"], now.strftime(_TS))
@@ -114,7 +117,7 @@ def _meter(conn, jobs: list[dict], arms: dict[str, dict], demand: dict[str, floa
 
 
 def _force_expired_retractions(conn, live_ids: set[int], now: datetime) -> None:
-    """Force-kill any Spawn a Retract caught whose grace period has passed and is still running.
+    """Force-kill any Dive a Retract caught whose grace period has passed and is still running.
 
     Retract only sends TERM (retraction.retract), so the EXIT trap gets a chance to stage out first. A
     job already absent from `live_ids` has ended on its own — `_settle` below zero-bills it."""
@@ -126,7 +129,7 @@ def _force_expired_retractions(conn, live_ids: set[int], now: datetime) -> None:
 
 
 def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> int:
-    """Move the Karma of every Spawn that has ended, and release its claim.
+    """Move the Karma of every Dive that has ended, and release its claim.
 
     One ledger row, `amount = accrued` — what it really cost, never the hold. The counterparty is the
     whole of the economy's politics:
@@ -136,10 +139,10 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> i
     * an Arm owned by the **Admin** -> a **Commons Arm**: the Karma is **destroyed** (`to` NULL). The
       Admin is outside the economy and earns nothing; Decay reabsorbs the drift.
 
-    A Spawn cancelled while still PENDING accrued nothing and settles at 0 — its hold is simply
-    released. The row is written anyway, so the ledger is a complete record of every Spawn's ending.
+    A Dive cancelled while still PENDING accrued nothing and settles at 0 — its hold is simply
+    released. The row is written anyway, so the ledger is a complete record of every Dive's ending.
 
-    A Spawn a Retract caught (db.retracting_jobs) settles at **ZERO regardless of what it accrued** —
+    A Dive a Retract caught (db.retracting_jobs) settles at **ZERO regardless of what it accrued** —
     Retract must never be a way to farm Karma by donating a card and yanking it back mid-run — and its
     `retracted_jobs` row is cleared here, the moment it settles.
     """
@@ -165,24 +168,16 @@ def _settle(conn, live_ids: set[int], arms: dict[str, dict], now: datetime) -> i
 
 
 def _record_endings(conn, live_ids: set[int], now: datetime) -> None:
-    """Stamp the durable outcome of every Spawn that has left the queue but has no ending recorded yet.
-
-    Its own step, not folded into `_settle`: settlement only walks ESCROWED Spawns, so an Admin's Spawn
-    (no hold) would never be stamped and `GET /spawns/history` would show it open forever. Exit file is
-    read here, the moment we know the job ended and stage-out landed. A missing file means it ended
-    recording no code (killed, OOM, Arm dropped) and is stamped NULL, which history reads as failed."""
-    for job_id in db.unfinished_spawns(conn):
-        if job_id in live_ids:
-            continue
-        try:
-            code = spawns.exit_code(job_id)
-        except OSError:
-            code = None            # unreadable exit dir == no code recorded (failed); never wedge the pass
-        db.mark_finished(conn, job_id, code, now.strftime(_TS))
+    """Stamp the end of every Dive that has left the queue. Its own step, not folded into `_settle`:
+    settlement only walks ESCROWED Dives, so an Admin's (no hold) would never be stamped and History
+    would show it open forever."""
+    for job_id in db.unfinished_dives(conn):
+        if job_id not in live_ids:
+            db.mark_finished(conn, job_id, now.strftime(_TS))
 
 
 def once(now: datetime | None = None) -> tuple[int, int]:
-    """One pass. Returns (Spawns re-niced, Spawns settled).
+    """One pass. Returns (Dives re-niced, Dives settled).
 
     `now` is the pass's clock — injected by the Fake Cluster to run this function across simulated weeks,
     None on the real service. Flows into every timestamp this pass writes and every Balance it decays,
@@ -193,7 +188,7 @@ def once(now: datetime | None = None) -> tuple[int, int]:
     ids = [j["id"] for j in jobs]
 
     with db.connect() as conn:
-        needs = db.spawn_needs(conn, ids)
+        needs = db.dive_needs(conn, ids)
         demand = karma.demand_by_arm(list(arms.values()), jobs, needs)
         db.record_demand(conn, now.strftime(_TS), demand)
         db.prune_demand(conn, karma.DEMAND_RETENTION_DAYS, now)
@@ -205,7 +200,7 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         db.prune_ledger(conn, karma.KARMA_LEDGER_RETENTION_DAYS, now)
 
         # `needs` is the queue's *declared* GPU count, feeds Demand only — the meter bills the Devices
-        # Slurm actually gave a Spawn, not what it asked for.
+        # Slurm actually gave a Dive, not what it asked for.
         _meter(conn, jobs, arms, demand, now)
         _force_expired_retractions(conn, set(ids), now)
         settled = _settle(conn, set(ids), arms, now)
@@ -215,13 +210,11 @@ def once(now: datetime | None = None) -> tuple[int, int]:
         dive.reap_dead(conn, set(ids))
         # Each Tidepool's ambient session: re-minted after a start (the helper deleted it) or near expiry.
         tidepool.sync_sessions(conn)
-        # Close the rsync grant of every Spawn whose grace window has passed.
-        siphons.sweep(conn, now)
 
         # AFTER metering and settling: an accrual that overtook its hold raises the submitter's claim,
         # and a settlement moves their Balance. Both change the nice we are about to push, and pushing
         # a stale one would leave the queue a tick behind the economy that ranks it.
-        owners = db.spawn_owners(conn, ids)
+        owners = db.dive_owners(conn, ids)
         nice = karma.nice_by_user(conn, now)
 
     changed = 0
@@ -247,9 +240,9 @@ def main() -> None:
         try:
             changed, settled = once()
             if changed or settled:
-                log.info("re-ranked %d spawn(s), settled %d", changed, settled)
+                log.info("re-ranked %d Dive(s), settled %d", changed, settled)
         except Exception as e:
-            # slurmctld restarting, a Spawn ending between squeue and scontrol — the next tick is 30s
+            # slurmctld restarting, a Dive ending between squeue and scontrol — the next tick is 30s
             # away and re-reads the world from scratch, so there is nothing here worth dying over.
             log.warning("tick failed: %s", e)
         time.sleep(karma.TICK_SECONDS)

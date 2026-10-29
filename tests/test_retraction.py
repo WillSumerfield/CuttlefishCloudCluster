@@ -2,7 +2,7 @@
 
 App-layer, not real Slurm DRAIN (see ccc_head_api.retraction's module docstring): a head.db flag
 steers NEW placement away from a node, plus signals whatever is RUNNING right now. Covers what
-`retraction.retract` catches/signals, and that Return never reprieves a caught Spawn.
+`retraction.retract` catches/signals, and that Return never reprieves a caught Dive.
 """
 
 
@@ -27,7 +27,7 @@ class TestRetractionState:
         assert db.retracted_nodes(conn) == set()
 
     def test_a_caught_job_survives_return(self, conn):
-        """The whole reason this is two tables. Return only clears the ARM-level flag; a Spawn the
+        """The whole reason this is two tables. Return only clears the ARM-level flag; a Dive the
         Retract already caught stays caught — it is doomed regardless of an early Return."""
         db.mark_arm_retracted(conn, "gpu-box")
         db.catch_retracting_job(conn, 501, "gpu-box", "2020-01-01T00:00:00Z")

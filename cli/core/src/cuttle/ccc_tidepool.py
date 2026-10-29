@@ -785,7 +785,7 @@ def started(user: str) -> None:
         if d["locked"]:
             apply_lock(d)
     if (APT_PENDING / user).is_dir() and any((APT_PENDING / user).iterdir()):
-        spawn_replay(user, "start")
+        launch_replay(user, "start")
 
 
 # --- fs: the Dashboard's file browser, as the User inside their own container -----------------
@@ -1062,7 +1062,7 @@ def replay(user: str) -> None:
                 shutil.rmtree(items[0], ignore_errors=True)
 
 
-def spawn_replay(user: str, tag: str) -> None:
+def launch_replay(user: str, tag: str) -> None:
     sh("systemd-run", "--no-block", "--collect", "--quiet", f"--unit=ccc-apt-replay-{user}-{tag}",
        HELPER, "replay", user, check=False, capture_output=True)
 
@@ -1081,7 +1081,7 @@ def queue_dive_replay(d: dict) -> None:
     shutil.rmtree(q, ignore_errors=True)
     shutil.move(str(back), str(q))
     (q / "meta.json").write_text(json.dumps({"kind": "dive", "job": int(job), "offsets": off}))
-    spawn_replay(d["user"], tok[:8])
+    launch_replay(d["user"], tok[:8])
 
 
 def queue_rebuild(user: str) -> None:

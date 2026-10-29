@@ -1,10 +1,10 @@
-"""A raw TCP forwarder, one per live Tide Pool — `python -m ccc_head_api.relay <listen_port>
+"""A raw TCP forwarder, one per live Dive — `python -m ccc_head_api.relay <listen_port>
 <target_host> <target_port>`. Started and killed by ccc_head_api.dive, never run standalone.
 
 This is the whole answer to "Users are not Mesh members and cannot reach an Arm's mesh address": it
 listens on the Head (which every client already reaches, for the Dashboard/API) and forwards bytes,
-unmodified, to one Arm:port for the life of one Spawn. Nothing here understands SSH — that is the
-point. The real ssh client and the Pod's real sshd negotiate everything (host keys, ciphers, auth)
+unmodified, to one Arm:port for the life of one Dive. Nothing here understands SSH — that is the
+point. The real ssh client and the container's real sshd negotiate everything (host keys, ciphers, auth)
 straight through this pipe; it would work identically forwarding any other TCP protocol.
 
 Its own process, its own asyncio loop — not a task inside the Head API (an ASGI app whose event loop is

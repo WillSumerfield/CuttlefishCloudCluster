@@ -187,16 +187,16 @@ def nvidia_smi() -> str:
 
 
 def gpu_devices() -> list[str]:
-    """Every GPU **Device** node this box can hand to a Spawn, in Slurm's GRES index order.
+    """Every GPU **Device** node this box can hand to a Dive, in Slurm's GRES index order.
 
     Sorted NUMERICALLY, not lexically. This order is the mapping from a Slurm GRES index to a device
-    (see templates.render_gres_conf) and therefore from a Spawn's held index to the Power it is billed
+    (see templates.render_gres_conf) and therefore from a Dive's held index to the Power it is billed
     at — and `/dev/nvidia10` sorts before `/dev/nvidia2` as a string.
     """
     if is_wsl():   # one /dev/dxg fronts every GPU; preflight holds a WSL box to one card
         return [config.WSL_GPU_DEVICE] if Path(config.WSL_GPU_DEVICE).exists() else []
     # `nvidia[0-9]*` and not `nvidia*`: /dev/nvidiactl, /dev/nvidia-uvm and /dev/nvidia-caps are
-    # control nodes, not cards, and a Spawn holds none of them.
+    # control nodes, not cards, and a Dive holds none of them.
     return sorted((str(p) for p in Path("/dev").glob("nvidia[0-9]*")),
                   key=lambda p: int(p.removeprefix("/dev/nvidia")))
 
@@ -214,10 +214,10 @@ def gpu_profile() -> tuple[str, int]:
     """The ONE (model, VRAM MiB) this box may advertise — or a refusal, if its GPUs disagree.
 
     A Slurm node **Feature** is per-node: a box advertises exactly one `vramN`
-    (config.vram_feature), and that string is the only thing a Spawn's `--vram` can be matched
+    (config.vram_feature), and that string is the only thing a Dive's `--vram` can be matched
     against. A machine holding a 24 GB card and an 80 GB one cannot honestly advertise either — one
     choice starves the big jobs, the other sends them to a card that cannot hold them. So CCC refuses
-    such a box outright rather than pick a side and misprice every Spawn that lands on the wrong card.
+    such a box outright rather than pick a side and misprice every Dive that lands on the wrong card.
 
     Compared on model AND memory because they answer different questions: the model is what **Power**
     tracks, the memory is what **Eligibility** matches. A difference in either is disqualifying.
@@ -238,7 +238,7 @@ def gpu_profile() -> tuple[str, int]:
 
 
 def gpu_vram_mb() -> int:
-    """This box's GPU memory, in MiB. Becomes the node's `vramN` Slurm feature — the thing a Spawn's
+    """This box's GPU memory, in MiB. Becomes the node's `vramN` Slurm feature — the thing a Dive's
     `--vram` is matched against.
 
     Reads EVERY card and takes the agreed value, rather than card 0's. They agree because
@@ -246,9 +246,9 @@ def gpu_vram_mb() -> int:
     this cannot silently describe a 4-card box by whichever card the driver happened to enumerate
     first.
 
-    From nvidia-smi on the host, NOT from the Pod-side Power benchmark, even though that measures VRAM
+    From nvidia-smi on the host, NOT from the container-side Power benchmark, even though that measures VRAM
     too: a dynamic Arm's features must be baked into its `slurmd -Z --conf` at registration, and the
-    benchmark cannot run until the node is already registered. Host and Pod agree on this number
+    benchmark cannot run until the node is already registered. Host and container agree on this number
     anyway (unlike throughput, which is exactly why Power is measured and VRAM is merely read).
     """
     return gpu_profile()[1]
@@ -589,8 +589,8 @@ def allow_tcp_port(port: int, comment: str) -> None:
 
 
 def allow_tcp_port_range(base: int, count: int, comment: str) -> None:
-    """Like `allow_tcp_port`, for a whole range at once — Tide Pool's relay ports, opened ONCE at
-    `setup --head` rather than per-Spawn: a ufw rule added and removed on every submit/end would be
+    """Like `allow_tcp_port`, for a whole range at once — Dive's relay ports, opened ONCE at
+    `setup --head` rather than per-Dive: a ufw rule added and removed on every submit/end would be
     firewall churn for no benefit, since the range itself is a fixed, harmless-when-idle constant."""
     if not ufw_active():
         print(f"ufw inactive or absent — leaving the host firewall alone (nothing blocks "

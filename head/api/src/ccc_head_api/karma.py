@@ -1,7 +1,7 @@
 """The Karma economy — Balance, Decay, Share, and the nice a Share implies.
 
-**Karma ranks Users; it never gates them.** Nothing here can refuse, hold, or kill a Spawn. The entire
-output of this module is one integer per queued Spawn — its Slurm `nice` — so a User in poor standing
+**Karma ranks Users; it never gates them.** Nothing here can refuse, hold, or kill a Dive. The entire
+output of this module is one integer per queued Dive — its Slurm `nice` — so a User in poor standing
 loses *contention*, and loses nothing at all when nobody is competing.
 
 The arithmetic, end to end:
@@ -16,8 +16,8 @@ be *wrong*: `decay` is a stretched exponential and is not memoryless, so decayin
 not the same arithmetic as decaying each contribution. See db._SCHEMA.
 
 **Escrow suppresses Share immediately**, which is what makes queue-flooding self-punishing: 500 queued
-Spawns move no Balance until they finish, so settle-at-end alone would let a burst hold the top of the
-queue for hours. The hold lands the moment the Spawn is queued.
+Dives move no Balance until they finish, so settle-at-end alone would let a burst hold the top of the
+queue for hours. The hold lands the moment the Dive is queued.
 
 **KARMA_SHARE_SCALE cannot reorder anyone.** σ is monotonic, so for *any* scale the User order by nice
 is the User order by Balance. What it tunes is **resolution** — how hard Karma competes with age. Too
@@ -56,14 +56,14 @@ KARMA_LEDGER_RETENTION_DAYS = 30
 KARMA_SHARE_SCALE = 10_000.0
 
 # The nice range Karma spends. MUST equal cuttle.config.NICE_MAX — the CLI writes PriorityWeightAge from
-# it, and the two ranges being equal is what makes poor standing cost a Spawn at most one day of apparent
+# it, and the two ranges being equal is what makes poor standing cost a Dive at most one day of apparent
 # queue age. This package never imports the CLI, so the two are pinned together by a test on the seam.
 NICE_MAX = 2**16
 
 TICK_SECONDS = 30
 
 # Ceiling on Demand. Demand is set by whoever is *queuing* but paid by whoever is *running* — without a
-# cap, queuing 500 Spawns then cancelling inflates everyone's bill for free (Escrow released, nothing
+# cap, queuing 500 Dives then cancelling inflates everyone's bill for free (Escrow released, nothing
 # settled). Also, Balance drives nice until the decay curve reaches the floor at ~30 days, so an
 # unbounded spike could bench a User for a month — a **gate**, which this model must never have. Past ~8x the signal is saturated anyway (the
 # card is plainly scarce); this just bounds the runaway billing consequence.
@@ -91,14 +91,14 @@ def tides(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, di
 def tide(tides: dict[str, dict[int, float]], node: str, hour: int) -> float:
     """One Arm's forecast Demand at one hour. An unseen Arm or empty bucket forecasts **1.0** — the
     honest cold-start value (no history means no basis but "ordinary", and 1.0 is what a card running
-    exactly one Spawn reads). With a flat Tide, `hold_for` reduces exactly to `minutes/60 × gpus ×
+    exactly one Dive reads). With a flat Tide, `hold_for` reduces exactly to `minutes/60 × gpus ×
     max(Power over eligible)`.
     """
     return tides.get(node, {}).get(hour, 1.0)
 
 
 def _up(arm: dict) -> bool:
-    """Can Slurm actually place work here? A drained or downed Arm takes nothing, so no queued Spawn is
+    """Can Slurm actually place work here? A drained or downed Arm takes nothing, so no queued Dive is
     eligible for it and none of their Demand lands on it — which correctly makes every *remaining* card
     scarcer the moment one goes away."""
     state = arm.get("state") or ""
@@ -106,25 +106,20 @@ def _up(arm: dict) -> bool:
 
 
 def eligible(arms: list[dict], need) -> list[dict]:
-    """The Arms a Spawn could run on — recomputed from the LIVE registry every pass, never frozen at
-    submit, so an Arm admitted after this Spawn queued joins its eligible set (and a drained one drops
+    """The Arms a Dive could run on — recomputed from the LIVE registry every pass, never frozen at
+    submit, so an Arm admitted after this Dive queued joins its eligible set (and a drained one drops
     out).
-
-    An Admin-pinned Spawn (`--node`) is eligible for exactly one Arm, concentrating all of its Demand
-    there — the honest price of naming a machine instead of declaring a need.
 
     Both declared needs are applied **together**, exactly as `slurm.vram_constraint` applies them at
     submit: enough Devices on the one Arm, each holding the per-card share of the total `--vram`. Were
     the count left out, Demand — and therefore price — would land on Arms too small to ever host the
-    Spawn.
+    Dive.
     """
-    if need["node"]:
-        return [a for a in arms if a["name"] == need["node"]]
     gpus = max(1, need["gpus"] or 1)
     per_card = -(-(need["vram_gb"] or 0) // gpus)  # ceil; --vram is the total across the Devices
-    # `slurm.card_gb`, not a rounding of its own: this decides which Arms a queued Spawn adds Demand
+    # `slurm.card_gb`, not a rounding of its own: this decides which Arms a queued Dive adds Demand
     # to, and Slurm decides which it may actually land on. Two different answers to "is this card big
-    # enough" would price a Spawn against Arms it can never reach, and vice versa.
+    # enough" would price a Dive against Arms it can never reach, and vice versa.
     return [a for a in arms if _up(a) and a["vram_mb"] and (a["gpus"] or 0) >= gpus
             and slurm.card_gb(a["vram_mb"]) >= per_card]
 
@@ -132,16 +127,16 @@ def eligible(arms: list[dict], need) -> list[dict]:
 def demand_by_arm(arms: list[dict], jobs: list[dict], needs: dict) -> dict[str, float]:
     """How badly each Arm is wanted, right now: device-claims on it over the devices it has — a
     **per-card** figure, comparable across Arms with different card counts (`cost` relies on this:
-    Demand multiplies a Spawn's Power sum once, never per Device held).
+    Demand multiplies a Dive's Power sum once, never per Device held).
 
-    A **running** Spawn claims the card it holds, so a single-card Arm running anything reads ≥1.0 — a
-    second Spawn is never sold below its Power. On a multi-card Arm the same claim only pushes the
-    *average* toward 1.0. A **queued** Spawn spreads one claim evenly across every Arm it's eligible
+    A **running** Dive claims the card it holds, so a single-card Arm running anything reads ≥1.0 — a
+    second Dive is never sold below its Power. On a multi-card Arm the same claim only pushes the
+    *average* toward 1.0. A **queued** Dive spreads one claim evenly across every Arm it's eligible
     for, so its total contribution to the fleet is 1.0 wherever it lands — scarce big-VRAM cards
     accumulate the most. An idle Arm nobody wants reads 0, charged to nobody.
 
-    A queued Spawn with no `spawns` row (the enrollment benchmark) adds no queued Demand — we can't know
-    what it's eligible for. Pinned to one node and short-lived, so the undercount is negligible.
+    A queued job with no `dives` row (the enrollment benchmark) adds no queued Demand — we can't know
+    what it's eligible for. Short-lived, so the undercount is negligible.
     """
     d = {a["name"]: 0.0 for a in arms}
     devices = {a["name"]: len(a["powers"]) if a["powers"] else 1 for a in arms}
@@ -164,12 +159,12 @@ def cost(seconds: float, powers: list[float], demand: float) -> float:
     """What a slice of held device-time is worth. **1 Karma = 1 TFLOP-hour**; Power is already TFLOP/s,
     so no reference constant is needed — the unit falls out of the measurement.
 
-    Seconds **held**, not busy: a Spawn buys exclusive access to a card, so idling is expensive and
+    Seconds **held**, not busy: a Dive buys exclusive access to a card, so idling is expensive and
     finishing early is cheap.
 
     `powers` is one entry per Device **held**, summed (not averaged) — several Devices are several
-    separate purchases, so a Spawn on a slow card costs less than one on a fast card on the same node.
-    Empty only for a Spawn Slurm hasn't placed yet; every Spawn holds at least one Device.
+    separate purchases, so a Dive on a slow card costs less than one on a fast card on the same node.
+    Empty only for a Dive Slurm hasn't placed yet; every Dive holds at least one Device.
 
     Demand is per-card and shared by the whole node, so it multiplies the sum once rather than per
     Device — how a node is divided can never move its scarcity.
@@ -179,19 +174,19 @@ def cost(seconds: float, powers: list[float], demand: float) -> float:
 
 def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None = None,
              tides: dict[str, dict[int, float]] | None = None) -> float:
-    """The Escrow quoted at submit: what this Spawn would cost on the priciest Arm it could land on, at
+    """The Escrow quoted at submit: what this Dive would cost on the priciest Arm it could land on, at
     the Demand its hours usually see.
 
     **Max**, not mean, over the eligible set: node `Weight ∝ 1/Power`, so Slurm actively prefers the
     fastest free eligible card — quoting from the cheapest card would under-hold the common case, and
     under-holding is the gameable direction.
 
-    **Mean**, not max, over the *hours* the Spawn would span — otherwise a 24h Spawn touches every hour
+    **Mean**, not max, over the *hours* the Dive would span — otherwise a 24h Dive touches every hour
     and gets quoted at the daily peak purely for being long. Over-holding costs a User nothing but queue
     position; it's refunded in full at Settlement, since what actually moves is `accrued`, never this
     number.
 
-    **Max over an Arm's own Devices too**, same reasoning: on a two-card box the Spawn is more likely to
+    **Max over an Arm's own Devices too**, same reasoning: on a two-card box the Dive is more likely to
     land on the faster card, so the hold is a floor that only ratchets up — the one reduction of a
     node's Powers that cannot underquote.
     """
@@ -203,20 +198,20 @@ def hold_for(minutes: int, gpus: int, elig: list[dict], hours: list[int] | None 
 
 
 def span_hours(minutes: int, start_hour: int) -> list[int]:
-    """The hours-of-day a Spawn starting at `start_hour` and running `minutes` would touch, capped at 24
-    (a Spawn longer than a day already spans every bucket, so the Tide's mean is the whole day)."""
+    """The hours-of-day a Dive starting at `start_hour` and running `minutes` would touch, capped at 24
+    (a Dive longer than a day already spans every bucket, so the Tide's mean is the whole day)."""
     return [(start_hour + h) % 24 for h in range(min(24, minutes // 60 + 1))]
 
 
 def quote_hold(conn: sqlite3.Connection, arms: list[dict], need: dict, minutes: int, gpus: int,
                is_admin: bool, now: datetime | None = None) -> float | None:
-    """The Escrow to place on a Spawn at submit — the pricing decision, in one place.
+    """The Escrow to place on a Dive at submit — the pricing decision, in one place.
 
-    Extracted so submission and the Fake Cluster quote a Spawn through the SAME code — a quote re-derived
+    Extracted so submission and the Fake Cluster quote a Dive through the SAME code — a quote re-derived
     independently in the simulation harness could hide a pricing bug that runs in production.
 
     Returns **None** for an Admin: outside the economy, never held. Otherwise the hold over the eligible
-    set, at the Tide of the hours the Spawn would span.
+    set, at the Tide of the hours the Dive would span.
     """
     if is_admin:
         return None
@@ -352,7 +347,7 @@ def share(balance: float, escrow: float = 0.0) -> float:
 
 def nice_for(share_value: float) -> int:
     """The one number this whole module exists to produce. Best standing → nice 0 (Slurm's default, so
-    a Spawn we have never touched is treated as *good* standing, not bad); worst → NICE_MAX."""
+    a Dive we have never touched is treated as *good* standing, not bad); worst → NICE_MAX."""
     return round((1.0 - share_value) * NICE_MAX)
 
 
@@ -367,7 +362,7 @@ def standings(conn: sqlite3.Connection, now: datetime | None = None) -> list[dic
     """
     bal = balances(conn, now)
     esc = db.escrow_totals(conn)
-    # The claims behind each total, so a User reading "−140 escrow" sees which Spawns hold it — public
+    # The claims behind each total, so a User reading "−140 escrow" sees which Dives hold it — public
     # on the same terms as the queue: what's running and what it costs is not private here.
     esc_rows = db.escrow_breakdown(conn)
     # Admins are not economic actors — a role for RUNNING the cluster, not using it. They earn no Karma
@@ -381,8 +376,8 @@ def standings(conn: sqlite3.Connection, now: datetime | None = None) -> list[dic
         s = share(b, e)
         out.append({"user_id": r["id"], "username": r["username"], "balance": round(b, 2),
                     "escrow": round(e, 2), "share": round(s, 4), "nice": nice_for(s),
-                    "escrow_spawns": [
-                        {"job_id": x["job_id"], "script": x["script"], "node": x["node"],
+                    "escrow_dives": [
+                        {"job_id": x["job_id"], "main": x["main"], "node": x["node"],
                          "amount": round(x["amount"], 2)}
                         for x in esc_rows.get(r["id"], [])
                     ]})
@@ -398,7 +393,7 @@ def override(conn: sqlite3.Connection, username: str, amount: float, note: str |
     destroys it); Decay absorbs the imbalance, so it needs no counterparty. Returns the User's new
     Balance.
 
-    Distinct from a **Queue bump**, which moves one Spawn once and touches no Balance — an Override
+    Distinct from a **Queue bump**, which moves one Dive once and touches no Balance — an Override
     bought to win one race would go on winning every *other* race for a month.
     """
     user = conn.execute("SELECT id, is_admin FROM users WHERE username=?", (username,)).fetchone()

@@ -1,17 +1,17 @@
 """What an Arm must have on disk for a **Feature** it declares, and what CCC prepares from it.
 
 The Arm's half of temp/FEATURES_BUILTIN.md; `ccc_head_api.features` holds the Head half (the bash a
-Spawn's job script runs). Head knows what a Feature's runtime *needs*, this knows what the box *has*.
+Dive's job script runs). Head knows what a Feature's runtime *needs*, this knows what the box *has*.
 
 Split is forced: `cuttle setup --arm` asks these questions before the box has enrolled, i.e. before
 it can reach a Head — so everything here must be answerable offline.
 
-Validation happens at the prompt, not at the Spawn — a missing path is re-asked immediately, naming
+Validation happens at the prompt, not at the Dive — a missing path is re-asked immediately, naming
 what's absent, rather than surfacing hours later as a mystery failure in someone else's payload.
 
-Preparation happens once at setup, not per Spawn: wheels + runtime data are copied into CCC-owned
-state (`/var/lib/ccc/features/<name>/`), and a Spawn's Pod binds those read-only — never the owner's
-directory, since a Pod runs as a **Guise** with no relationship to the donor and can't traverse a
+Preparation happens once at setup, not per Dive: wheels + runtime data are copied into CCC-owned
+state (`/var/lib/ccc/features/<name>/`), and a Dive's container binds those read-only — never the owner's
+directory, since a container runs as a **Guise** with no relationship to the donor and can't traverse a
 0750 home. See `mirror_install`.
 """
 
@@ -32,7 +32,7 @@ class ArmProfile:
     vendor's own words. `wheels`: glob for binary wheels to unpack (empty if none). `env`: extra
     `export` lines this Feature contributes to /etc/ccc/features.env beyond the standard `<NAME>_PATH`.
     `licence_key`: default filename of the product key this Feature was activated with, if any —
-    mirrored into CCC's own state (mirror_licence_key), never leaves the Arm, no other Spawn sees it.
+    mirrored into CCC's own state (mirror_licence_key), never leaves the Arm, no other Dive sees it.
     """
 
     name: str
@@ -53,8 +53,8 @@ VLEARN = ArmProfile(
         "cache": "the asset cache vlearn seeds a run from",
         "TurboActivate.dat": "the licensing descriptor that pairs with this machine's activation",
     },
-    # Linux only, and every ABI this checkout ships: an Arm can serve Spawns on any Python it holds a
-    # wheel for, and which one a given Spawn needs is not known until that Spawn arrives.
+    # Linux only, and every ABI this checkout ships: an Arm can serve Dives on any Python it holds a
+    # wheel for, and which one a given Dive needs is not known until that Dive arrives.
     wheels="vlearn-*-linux_x86_64.whl",
     # A box with vlearn installed was activated by whoever installed it, so it already has this — the
     # vendor's README says to put it at the checkout root, which is the default offered.
@@ -75,11 +75,11 @@ FEATURE_PKG_DIR = config.CCC_LIB / "features"
 INSTALL_DIRNAME = "install"
 
 # The **Licence** key, mirrored the same way but NOT world-readable. Deliberately not in the Licence
-# directory, which the job script binds as `$HOME` into every Spawn that asked for the Feature — the key is
-# the credential that PRODUCED that directory's contents, and only the activation Spawn may see it.
+# directory, which the job script binds as `$HOME` into every Dive that asked for the Feature — the key is
+# the credential that PRODUCED that directory's contents, and only the activation Dive may see it.
 LICENCE_KEY_NAME = "licence.key"
 
-# Wheel filenames encode their ABI as `...-cp311-cp311-linux_x86_64.whl`. That tag is what a Spawn's
+# Wheel filenames encode their ABI as `...-cp311-cp311-linux_x86_64.whl`. That tag is what a Dive's
 # job script matches its own interpreter against, so it is the directory name too — the comparison is
 # then a `[ -d ]`, with no parsing on the Arm at run time.
 _ABI_RE = re.compile(r"-(cp\d{2,3})-\1[-.]")
@@ -190,7 +190,7 @@ def forget_undeclared(features: list[dict]) -> None:
 def mirror_install(f: dict) -> None:
     """Copy the paths a Feature's runtime opens out of the owner's install and into CCC's own state.
 
-    A Pod runs as a **Guise** with no relationship to the donor, and a home dir is 0750 on every distro
+    A container runs as a **Guise** with no relationship to the donor, and a home dir is 0750 on every distro
     — one un-traversable ancestor makes apptainer fail the whole bind as "permission denied", reading
     as a CCC bug. ACLing the ancestors was rejected (would make the owner's whole home traversable by
     every Guise on the cluster); refusing installs under a home was rejected too (donor would have to
@@ -212,11 +212,11 @@ def mirror_install(f: dict) -> None:
 def mirror_licence_key(f: dict) -> None:
     """Copy this Feature's **Licence** key into CCC's state, readable by the cluster's accounts only.
 
-    Same reason as `mirror_install`: the activation Spawn is a Pod, can't reach a key under the owner's
+    Same reason as `mirror_install`: the activation Dive is a container, can't reach a key under the owner's
     home. Mode 0640 root:ccc-guises, not the a+rX everything else here gets — real gate is that no
-    ordinary Spawn ever binds it, but the mode is cheap insurance against a bind mistake. Not stored in
-    the Licence directory (the job script binds that as `$HOME` into every Spawn that asked for the
-    Feature, which would expose the key to exactly the Spawns that must never see it).
+    ordinary Dive ever binds it, but the mode is cheap insurance against a bind mistake. Not stored in
+    the Licence directory (the job script binds that as `$HOME` into every Dive that asked for the
+    Feature, which would expose the key to exactly the Dives that must never see it).
     """
     p = ARM_PROFILES.get(f["name"])
     if not p or not p.licence_key or not f.get("key"):
@@ -240,7 +240,7 @@ def features_env_extras(features: list[dict]) -> list[str]:
     """The extra `export` lines a declared Feature contributes to /etc/ccc/features.env, beyond the
     `<NAME>_PATH` every Feature gets.
 
-    This file is the ONE channel from an Arm's setup to a Spawn running on it. The Head renders a
+    This file is the ONE channel from an Arm's setup to a Dive running on it. The Head renders a
     single job script for the whole fleet and cannot know where a donor put anything, so anything
     machine-specific has to arrive this way — `ccc_head_api.features`' snippets read exactly these
     names.
@@ -254,11 +254,11 @@ def features_env_extras(features: list[dict]) -> list[str]:
         if p.wheels:
             lines.append(f"export {stem}_PKG_ROOT={FEATURE_PKG_DIR / p.name}")
         # The PATH of the key, never the key — and CCC's copy of it, not the owner's original, which a
-        # Pod cannot reach (mirror_licence_key). This file is world-readable; the file it names is not,
-        # and it is bound read-only into the activation Spawn and nothing else.
+        # container cannot reach (mirror_licence_key). This file is world-readable; the file it names is not,
+        # and it is bound read-only into the activation Dive and nothing else.
         if p.licence_key and f.get("key"):
             lines.append(f"export {stem}_LICENCE_KEY={FEATURE_PKG_DIR / p.name / LICENCE_KEY_NAME}")
-            # Source path (no Spawn reads it) — features.env is the only durable record of Arm-local
+            # Source path (no Dive reads it) — features.env is the only durable record of Arm-local
             # state, so a re-setup (setup._head_arm_features) recovers it from here rather than
             # offering CCC's own mirror back as the source and pinning a since-rotated key forever.
             lines.append(f"export {stem}_LICENCE_KEY_SRC={f['key']}")
@@ -271,7 +271,7 @@ def runtime_summary(name: str) -> str:
     The one thing here that is not offline, and deliberately not local: the list of system libraries a
     Feature's software links against belongs next to the code that builds against it, which is
     `ccc_head_api.features`. A second copy in the CLI would be a second copy to forget when a release
-    adds a library, and the symptom of forgetting is an `ImportError` in someone else's Spawn.
+    adds a library, and the symptom of forgetting is an `ImportError` in someone else's Dive.
     """
     from . import api, auth
     client = auth._client()
@@ -293,5 +293,5 @@ def report(name: str, path: str) -> None:
     """
     tags = abi_tags(name, path)
     if tags:
-        ui.say(f"  [muted]{name}: wheels for {', '.join(tags)} — Spawns must declare a matching "
+        ui.say(f"  [muted]{name}: wheels for {', '.join(tags)} — Dives must declare a matching "
                f"Python[/muted]")

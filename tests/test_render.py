@@ -45,13 +45,13 @@ class TestSlurmConf:
     def test_priority_is_multifactor(self, fake_host):
         """The single setting without which Karma cannot exist. Slurm's default is `priority/basic` —
         pure FIFO, which IGNORES nice entirely. Karma reaches the queue only by lowering the nice of a
-        poor-standing User's pending Spawns, so on the default plugin every ranking decision we make
+        poor-standing User's pending Dives, so on the default plugin every ranking decision we make
         would be computed correctly, pushed to Slurm successfully, and have no effect whatsoever."""
         assert directives(templates.render_slurm_conf("100.99.0.1"))["PriorityType"] \
             == "priority/multifactor"
 
     def test_poor_standing_costs_at_most_one_ramp_of_queue_age(self, fake_host):
-        """Nice and age must span the SAME range, so the worst standing in the cluster costs a Spawn at
+        """Nice and age must span the SAME range, so the worst standing in the cluster costs a Dive at
         most one PriorityMaxAge of apparent queue age — Slurm treats it as though it arrived a day later
         than it did. If the nice range outgrew the age weight, waiting could no longer buy back what
         standing took, and poor standing would become a gate rather than a handicap.
@@ -67,13 +67,13 @@ class TestSlurmConf:
     def test_a_fresh_spawn_never_hits_the_priority_floor(self, fake_host):
         """The bug that would have silently killed the whole economy.
 
-        Slurm's priority is a `uint32_t` and it clamps at 0. The weighted sum of a *fresh* Spawn has
-        age_factor 0, so without a flat base it computes `-nice` — and every fresh Spawn from every
+        Slurm's priority is a `uint32_t` and it clamps at 0. The weighted sum of a *fresh* Dive has
+        age_factor 0, so without a flat base it computes `-nice` — and every fresh Dive from every
         User below perfect standing would underflow onto the floor, all tied. Karma would have ranked
         correctly, pushed the nice successfully, and changed nothing: the same silent death as
         priority/basic ignoring nice.
 
-        So the worst case the economy can produce — brand new Spawn, worst possible standing — must
+        So the worst case the economy can produce — brand new Dive, worst possible standing — must
         still land clear of zero.
         """
         d = directives(templates.render_slurm_conf("100.99.0.1"))
@@ -84,7 +84,7 @@ class TestSlurmConf:
     def test_a_bump_outranks_anything_the_economy_can_do(self, fake_host):
         """An admin Queue bump is one negative step of nice, and it has to actually win.
 
-        Worst case for the bumped Spawn: it was submitted a second ago, so age gives it nothing. Best
+        Worst case for the bumped Dive: it was submitted a second ago, so age gives it nothing. Best
         case for its rival: perfect standing (nice 0) and fully aged. Nice can only ever *lower* a
         rival, so beating that one is beating all of them — which makes the whole requirement
         `BUMP_STEP > PriorityWeightAge`.
@@ -131,7 +131,7 @@ def gres_lines(conf: str) -> list[str]:
 
 class TestGresConf:
     """The file that maps a Slurm GRES to a real device node — and, since the Devices are indexed in
-    the order these lines are read, the file that decides which **Power** a running Spawn is settled
+    the order these lines are read, the file that decides which **Power** a running Dive is settled
     at. A wrong line here is not a crash: it is a bill quietly charged at the other card's rate."""
 
     def test_a_single_card_arm_gets_one_line(self, fake_host):
@@ -188,7 +188,7 @@ class TestCgroupIsolation:
         assert directives(templates.render_cgroup_conf())["ConstrainDevices"] == "yes"
 
     def test_nothing_else_is_constrained(self):
-        """Deliberately devices-only. A Spawn declares --time and --vram — never a RAM or core budget —
+        """Deliberately devices-only. A Dive declares --time and --vram — never a RAM or core budget —
         so a memory/CPU limit would be a number nobody set, enforced by an OOM kill."""
         d = directives(templates.render_cgroup_conf())
         assert "ConstrainRAMSpace" not in d
@@ -201,7 +201,7 @@ class TestCgroupIsolation:
 
 
 class TestScratchEpilog:
-    """slurmd reclaims a Spawn's node-local scratch after it ends, HOWEVER it ended — the reclaim the
+    """slurmd reclaims a Dive's node-local scratch after it ends, HOWEVER it ended — the reclaim the
     job script's own `trap ... EXIT` can't do, since SIGKILL (OOM, `scancel -9`, a Phase-2 Retract)
     bypasses the trap. The conf names the epilog; the node holds the script."""
 
@@ -209,12 +209,8 @@ class TestScratchEpilog:
         assert directives(templates.render_slurm_conf("100.99.0.1"))["Epilog"] \
             == str(config.SLURM_EPILOG)
 
-    def test_epilog_removes_the_jobs_scratch_in_both_branches(self):
-        """Both job-script branches: a remote Arm scratches in /tmp; the Head's co-located Arm under its
-        state dir. One epilog runs on every node, so it targets both, keyed by the job id."""
-        script = templates.render_epilog()
-        assert 'rm -rf "/tmp/ccc-$SLURM_JOB_ID"' in script
-        assert f'"{config.HEAD_SCRATCH_DIR}/$SLURM_JOB_ID"' in script
+    def test_epilog_removes_the_jobs_scratch(self):
+        assert 'rm -rf "/tmp/ccc-$SLURM_JOB_ID"' in templates.render_epilog()
 
     def test_epilog_always_exits_zero(self):
         """A non-zero epilog DRAINS the node. A stale or already-gone scratch dir must never do that, so
@@ -225,22 +221,21 @@ class TestScratchEpilog:
         """The job script's own `trap ... EXIT` already reaps its empty sbatch sink — but that trap
         misses SIGKILL just like the scratch dir does (docs/TODO.md, sbatch wrapper litters /tmp).
         The epilog is the catch-all, so it must apply the same 'keep only if non-empty' rule to both
-        the Spawn's and the benchmark's sink."""
+        the Dive's and the benchmark's sink."""
         script = templates.render_epilog()
         assert '[ -s "$s" ] || rm -f "$s"' in script
         assert '[ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"' in script
 
     def test_the_sink_sweep_matches_the_tag_the_epilog_cannot_derive(self):
-        """A Spawn's sink carries a per-submission tag (ccc_head_api.spawns, `sink=`) precisely because
+        """A Dive's sink carries a per-submission tag (the job script's `--output`) precisely because
         a job id is not unique across teardowns. The epilog knows only the job id, so it has to glob —
-        and must also match the untagged name older Spawns used."""
+        and must also match the untagged name older Dives used."""
         script = templates.render_epilog()
         assert '"/tmp/ccc-$SLURM_JOB_ID.slurm" "/tmp/ccc-$SLURM_JOB_ID-"*.slurm' in script
 
 
 class TestGuiseProlog:
-    """The Slurm prolog: where a **Guise** comes into existence on a machine (see
-    temp/spawn-isolation.md). It runs as root, on a donor's box, with `SLURM_JOB_UID` as its only
+    """The Slurm prolog: where a **Guise** comes into existence on a machine. It runs as root, on a donor's box, with `SLURM_JOB_UID` as its only
     input — so every failure here is a `useradd` running on someone else's machine with the
     wrong argument, or a node drained for a job it had no opinion about."""
 
@@ -261,7 +256,7 @@ class TestGuiseProlog:
         assert config.CCC_UID < config.GUISE_CLUSTER_UID   # the Mantle is below the block
 
     def test_a_uid_held_by_a_stranger_fails_the_job(self):
-        """The one case the prolog refuses. Running a Spawn as an account CCC did not create is worse
+        """The one case the prolog refuses. Running a Dive as an account CCC did not create is worse
         than draining the node, because it would run a User's payload as a donor's own login."""
         script = templates.render_prolog()
         assert 'elif [ "$existing" != "$guise" ]; then' in script
@@ -282,38 +277,21 @@ class TestGuiseProlog:
         (useradd failed, the uid is a stranger's) may do that."""
         assert templates.render_prolog().rstrip().endswith("exit 0")
 
-    def test_the_head_only_lending_is_guarded_by_the_directory(self):
-        """The Spawn/scratch dirs exist only on the Head's co-located Arm. On a donor Arm both branches
-        must no-op rather than create a directory tree CCC has no business making there."""
-        script = templates.render_prolog()
-        assert f'if [ -d "{config.HEAD_SPAWNS_DIR}" ]; then' in script
-        assert f'if [ -d "{config.HEAD_SCRATCH_DIR}" ]; then' in script
-
-    def test_the_epilog_gives_the_spawn_dir_back(self):
-        """Prolog lends, epilog returns — so the grant lasts exactly the job, and survives a SIGKILL
-        that the job script's own trap does not. Without this a User's LATER Spawn could rewrite an
-        earlier one's recorded exit code, since both run as the same Guise."""
-        epilog = templates.render_epilog()
-        assert f'chown -R {config.HEAD_API_USER}:{config.HEAD_API_USER} ' \
-               f'"{config.HEAD_SPAWNS_DIR}/$SLURM_JOB_ID"' in epilog
-        # ...and still never drains the node over a failed give-back.
-        assert epilog.rstrip().endswith("exit 0")
-
 
 class TestMigHooks:
     """A MIG-mode card's resting state is ONE full-size instance, because CCC prices whole cards and
-    has no **Beak** to carve for placement (CONTEXT.md, "Slice"). The prolog hands a Spawn that state;
-    the epilog puts it back after whatever the Spawn did to it.
+    has no **Beak** to carve for placement (CONTEXT.md, "Slice"). The prolog hands a Dive that state;
+    the epilog puts it back after whatever the Dive did to it.
 
     Measured on hardware: MIG mode `Enabled` with nothing carved is a GPU with *no CUDA device at all*,
-    which is what dex's benchmark died of — an assert in the Pod, five seconds in, with the traceback
+    which is what dex's benchmark died of — an assert in the container, five seconds in, with the traceback
     destroyed alongside the job's private /tmp.
     """
 
     def test_the_epilog_resets_and_the_prolog_only_repairs(self):
         """Two different jobs. Resetting at the end is what keeps an *idle* box honest about what it
         holds; repairing at the start is only for the times the epilog never ran — a rebooted node, a
-        killed slurmd — and for the first Spawn onto a card whose owner enabled MIG and never carved."""
+        killed slurmd — and for the first Dive onto a card whose owner enabled MIG and never carved."""
         prolog, epilog = templates.render_prolog(), templates.render_epilog()
         assert '[ "$(ccc_mig_count "$uuid")" = 1 ] || ccc_mig_reset "$uuid"' in prolog
         assert 'ccc_mig_enabled "$uuid" && ccc_mig_reset "$uuid"' in epilog
@@ -321,7 +299,7 @@ class TestMigHooks:
     def test_the_caps_are_opened_for_the_held_cards_and_closed_again(self):
         """Creating an instance as root leaves its capability node 0400 root — so a **Guise** cannot
         open the MIG device Slurm just allocated it. Opening these is not the carving feature, it is
-        what makes MIG work at all. Held cards only, and given back at the end like the Spawn dir."""
+        what makes MIG work at all. Held cards only, and given back at the end like the Dive dir."""
         assert 'ccc_mig_caps "$minor" 0440' in templates.render_prolog()
         assert 'ccc_mig_caps "$minor" 0400' in templates.render_epilog()
         for script in (templates.render_prolog(), templates.render_epilog()):
@@ -329,11 +307,11 @@ class TestMigHooks:
             assert f'CCC_GUISE_GROUP={config.GUISE_GROUP}' in script
 
     def test_the_global_config_cap_is_opened_but_never_closed(self):
-        """`nvidia-cap1` is ONE node for the whole box, not one per card. Closing it when a Spawn ends
-        would take carving away from a concurrent Spawn still running on the other card — a bug two
+        """`nvidia-cap1` is ONE node for the whole box, not one per card. Closing it when a Dive ends
+        would take carving away from a concurrent Dive still running on the other card — a bug two
         cards make reachable and a one-card box hides. Safe to leave: config alone reaches no card,
         since the per-GPU access caps are what a MIG device is opened through and ConstrainDevices
-        still decides which /dev/nvidiaN a Pod may touch."""
+        still decides which /dev/nvidiaN a container may touch."""
         assert "ccc_mig_cap_config" in templates.render_prolog()
         epilog = templates.render_epilog()
         # Defined (it rides the shared block) but never CALLED there.
@@ -451,8 +429,8 @@ class TestNothingIsLeftInTmp:
 
 
 class TestPrivateTmpRollout:
-    """`job_container/tmpfs` is what contains the WRAPPER around a Spawn's payload — without it a
-    remote Spawn's scratch sits in the host's shared /tmp beside every concurrent Spawn's. It
+    """`job_container/tmpfs` is what contains the WRAPPER around a Dive's payload — without it a
+    remote Dive's scratch sits in the host's shared /tmp beside every concurrent Dive's. It
     carries the same drain-the-node hazard as the prolog, and the same gate, with its OWN capability."""
 
     def test_both_lines_are_absent_while_any_arm_is_missing_the_conf(self, fake_host):
@@ -474,7 +452,7 @@ class TestPrivateTmpRollout:
     def test_an_arm_without_the_conf_does_not_cost_the_fleet_its_guises(self, fake_host):
         """The reason tmpfs has a capability of its own: an Arm that only ever reported
         `provides: ["prolog"]` would lose its working Guises the moment a shared gate started
-        requiring tmpfs too — silently putting every Spawn back to running as the Mantle."""
+        requiring tmpfs too — silently putting every Dive back to running as the Mantle."""
         d = directives(templates.render_slurm_conf("100.99.0.1", missing_tmpfs=["oldarm"]))
         assert d["Prolog"] == str(config.SLURM_PROLOG)
         assert "JobContainerType" not in d
@@ -633,8 +611,8 @@ class TestSlurmSudoers:
 
     def test_it_grants_exactly_the_three_slurm_clients_and_nothing_else(self):
         """Slurm's verbs and nothing else. `apptainer` used to be a fourth, granted while the Head built
-        each Spawn's **Environment** inside base.sif as the submitter's Guise; the Arm builds it now, in
-        its own job, so the Head API runs no User's code and needs no way into a Pod.
+        each Dive's **Environment** inside base.sif as the submitter's Guise; the Arm builds it now, in
+        its own job, so the Head API runs no User's code and needs no way into a container.
 
         No shell, no root, and Runas is still the Guise group — widening this set is exactly what this
         test exists to notice."""
@@ -682,10 +660,10 @@ class TestSlurmdDropin:
             enroll.slurmd_dropin("donor-box", "h:1", 81920, 4)
 
     def test_arm_features_join_the_vram_bucket(self):
-        """Arm Features (docs/TODO.md) ride the SAME Feature= a Spawn's --vram already matches against
+        """Arm Features (docs/TODO.md) ride the SAME Feature= a Dive's --vram already matches against
         — a Slurm Feature is a flat per-node set, so there is no structural difference between them
         once rendered. Without this, a re-registration (this string is re-sent every time) would drop
-        whatever the donor declared at `setup --arm` and every requiring Spawn would stop matching."""
+        whatever the donor declared at `setup --arm` and every requiring Dive would stop matching."""
         unit = enroll.slurmd_dropin("donor-box", "h:1", 24564, 1, ["vsim", "isaacsim"])
         assert "Feature=vram24,isaacsim,vsim" in unit  # sorted, so re-registration is deterministic
 
@@ -744,7 +722,7 @@ class TestBenchmarkSbatch:
     def test_it_authenticates_to_the_bench_module(self):
         job = bench()
         assert "export RSYNC_PASSWORD=b3nch" in job
-        assert str(config.HEAD_SPAWNS_DIR) not in job   # the bench tree only
+        assert str(config.HEAD_BENCH_DIR) not in job   # the module, never a Head path
 
 
 class TestBenchPy:
@@ -777,15 +755,15 @@ class TestBenchPy:
 
 
 class TestFeaturesEnv:
-    """`/etc/ccc/features.env` — what an Arm tells its own Spawns about the software it carries.
+    """`/etc/ccc/features.env` — what an Arm tells its own Dives about the software it carries.
 
     The Head cannot bake any of this into the job script it renders for the whole fleet: every value
-    here is Arm-local, chosen by that box's owner. So the Head renders the *decision* (may this Spawn
+    here is Arm-local, chosen by that box's owner. So the Head renders the *decision* (may this Dive
     see a licence?) and the Arm supplies the *paths*.
     """
 
     def test_a_feature_becomes_an_exported_path(self):
-        """`isaacsim` has no profile, so nothing is mirrored and the owner's own path is what a Spawn
+        """`isaacsim` has no profile, so nothing is mirrored and the owner's own path is what a Dive
         is told. A Feature CCC does mirror gets CCC's copy instead — see tests/test_features.py, which
         is where that half lives."""
         out = enroll.render_features_env([{"name": "isaacsim", "path": "/opt/isaacsim"}])
@@ -793,7 +771,7 @@ class TestFeaturesEnv:
 
     def test_a_dotted_or_hyphenated_name_becomes_a_legal_identifier(self):
         """FEATURE_NAME_RE allows `.` and `-`; a shell identifier does not, so `vsim-pro` has to become
-        VSIM_PRO_PATH or sourcing this file is a syntax error that breaks every Spawn on the node."""
+        VSIM_PRO_PATH or sourcing this file is a syntax error that breaks every Dive on the node."""
         out = enroll.render_features_env([{"name": "vsim-pro.2", "path": "/opt/v"}])
         assert "export VSIM_PRO_2_PATH=/opt/v" in out
 
@@ -814,7 +792,7 @@ class TestFeaturesEnv:
 
     def test_everything_is_exported_not_merely_assigned(self):
         """The job script sources this with no `set -a`, and apptainer passes the calling environment in
-        (no --cleanenv) — so a bare assignment would reach the wrapper and stop at the Pod wall."""
+        (no --cleanenv) — so a bare assignment would reach the wrapper and stop at the container wall."""
         out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}],
                                          licence_home="/opt/ccc/licence")
         assert all(ln.startswith("export ") for ln in out.splitlines() if ln and not ln.startswith("#"))

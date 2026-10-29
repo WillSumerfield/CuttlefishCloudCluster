@@ -133,7 +133,7 @@ def dirs(monkeypatch, tmp_path):
         monkeypatch.setattr(H, name, d)
     (H.RECORDS / "bob.json").write_text(json.dumps({"uid": 60003}))
     spawned = []
-    monkeypatch.setattr(H, "spawn_replay", lambda u, t: spawned.append(u))
+    monkeypatch.setattr(H, "launch_replay", lambda u, t: spawned.append(u))
     return spawned
 
 

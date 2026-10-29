@@ -6,12 +6,12 @@ economy depends on, and only that behaviour. The short list it encodes matches r
 
   * an owner may not set a negative nice (the tick only ever lowers to >= 0; a negative nice is the
     operator-only Bump flag, which the tick must never touch and never forge);
-  * a Spawn's priority is `PriorityWeightPartition + PriorityWeightAge·age_factor − nice`, and nothing
+  * a Dive's priority is `PriorityWeightPartition + PriorityWeightAge·age_factor − nice`, and nothing
     else (fairshare/QOS/jobsize are weighted 0 in our slurm.conf);
   * age_factor ramps linearly to 1.0 over PRIORITY_MAX_AGE (1 day) and then saturates;
-  * a free eligible card goes to the highest-priority waiting Spawn; ties break by node Weight
+  * a free eligible card goes to the highest-priority waiting Dive; ties break by node Weight
     (∝ 1/Power), so the fastest free card wins;
-  * a Spawn ends at its `--time` limit, or when cancelled — and a cancelled/ended Spawn simply vanishes
+  * a Dive ends at its `--time` limit, or when cancelled — and a cancelled/ended Dive simply vanishes
     from `squeue`, which is the *only* signal the economy gets that it is over.
 
 It does NOT model backfill, real placement latency, or any factor our conf zeroes. Modelling only the
@@ -51,7 +51,7 @@ class FakeCluster:
     def install(self, monkeypatch) -> "FakeCluster":
         """Wire this cluster in as the tick's Slurm. Without it, tick.once() shells out to the real
         `squeue`/`sinfo` — which on a live Head sees the real cluster's jobs, not the simulation's, and
-        would settle every simulated Spawn as 'ended' on the first pass."""
+        would settle every simulated Dive as 'ended' on the first pass."""
         monkeypatch.setattr(tick.slurm, "queue", self.queue)
         monkeypatch.setattr(tick.slurm, "arms", self.arms)
         monkeypatch.setattr(tick.slurm, "set_nice", self.set_nice)
@@ -72,7 +72,7 @@ class FakeCluster:
                 # datetime.fromtimestamp on it); None while PENDING.
                 st = j["start_time"].timestamp() if j["start_time"] else None
                 # `devices` are the GRES indices Slurm reports for a RUNNING job (slurm._gpu_indices).
-                # A fake Arm holds one card, so a placed Spawn holds index 0; a PENDING one holds none.
+                # A fake Arm holds one card, so a placed Dive holds index 0; a PENDING one holds none.
                 devices = list(range(j["gpus"])) if j["state"] == "RUNNING" else []
                 out.append({"id": j["id"], "state": j["state"], "nice": j["nice"],
                             "node": j["node"], "gpus": j["gpus"], "devices": devices,
@@ -81,29 +81,28 @@ class FakeCluster:
 
     def set_nice(self, job_id: int, nice: int, owner: str | None = None) -> None:
         # Real Slurm refuses a negative nice from the job's owner, and the tick acts AS the owner (the
-        # Spawn's Guise). If the economy ever tried to push one, hardware would have rejected it here.
+        # Dive's Guise). If the economy ever tried to push one, hardware would have rejected it here.
         assert nice >= 0, "the economy must never push a negative nice — that is the operator's Bump"
         self.jobs[job_id]["nice"] = nice
 
     # --- submission, through the SAME quote production uses ---------------------------------------
 
-    def submit(self, user: dict, vram_gb: int, minutes: int, gpus: int = 1,
-               node: str | None = None) -> int:
-        """Enqueue a Spawn. The hold is quoted by karma.quote_hold — the identical code a real
-        submission runs — so the simulation cannot price a Spawn differently from production."""
+    def submit(self, user: dict, vram_gb: int, minutes: int, gpus: int = 1) -> int:
+        """Enqueue a Dive. The hold is quoted by karma.quote_hold — the identical code a real
+        submission runs — so the simulation cannot price a Dive differently from production."""
         jid = self._next_id
         self._next_id += 1
-        need = {"node": node, "vram_gb": vram_gb, "gpus": gpus}
+        need = {"vram_gb": vram_gb, "gpus": gpus}
         hold = karma.quote_hold(self.conn, self.arms(), need, minutes, gpus, user["is_admin"], now=self.now)
-        db.record_spawn(self.conn, jid, user["id"], "sim.py",
-                        minutes=minutes, gpus=gpus, vram_gb=vram_gb, node=node, hold=hold)
+        db.create_dive(self.conn, jid, user["id"], f"{jid:032x}", "sim", [], 31000,
+                       minutes=minutes, gpus=gpus, vram_gb=vram_gb, hold=hold)
         self.jobs[jid] = {"id": jid, "user": user, "need": need, "minutes": minutes, "gpus": gpus,
                           "nice": 0, "state": "PENDING", "node": None, "start_time": None,
                           "submitted": self.now}
         return jid
 
     def cancel(self, job_id: int) -> None:
-        """Retract/scancel: the Spawn vanishes from the queue. If it had not started, it accrued nothing
+        """Retract/scancel: the Dive vanishes from the queue. If it had not started, it accrued nothing
         and settles at zero; if it was running, it settles on what it accrued."""
         self.jobs[job_id]["state"] = "GONE"
 
@@ -143,11 +142,11 @@ class FakeCluster:
             finish what is done  ->  run ONE real tick.once  ->  place what now fits
 
         The tick runs **before** placement on purpose. Slurm ranks by `nice`, and `nice` is the tick's
-        output — so a scheduler that placed Spawns before the tick had pushed their standing would decide
-        the first contention of every Spawn's life on a stale nice of 0, letting a poor-standing Spawn win
+        output — so a scheduler that placed Dives before the tick had pushed their standing would decide
+        the first contention of every Dive's life on a stale nice of 0, letting a poor-standing Dive win
         a card purely by being submitted a moment earlier. On real Slurm the two run continuously; putting
         the rerank first is the faithful order for a discrete step. (`_finish` precedes the tick so an
-        ended Spawn settles the same step; a freshly *placed* Spawn is metered from the next step, its
+        ended Dive settles the same step; a freshly *placed* Dive is metered from the next step, its
         first interval billed in full.)
 
         Returns the tick's (re-ranked, settled) counts, so a test can watch the economy react."""

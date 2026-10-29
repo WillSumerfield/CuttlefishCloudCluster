@@ -204,7 +204,7 @@ def enter() -> None:
     with transfer.Forward(name) as fwd:
         ui.ok(f"Tidepool {tp['user']}@{name} — {tp['used_gb']:.1f} / {tp['size_gb']} GB used")
         ui.hint("no GPU in the Tidepool: GPU work runs in a Dive (`cuttle dive`)")
-        for line in open_dive_lines(auth._api("GET", "/dives") or []):
+        for line in open_dive_lines(auth._api("GET", "/dives/mine") or []):
             ui.caution(line)
         ui.hint(f"`cuttle download <path>` sends to {fwd.root}")
         ui.hint(f"`cuttle upload <path>` fetches from {fwd.root}")

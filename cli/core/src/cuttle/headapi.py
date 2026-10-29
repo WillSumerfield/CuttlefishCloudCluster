@@ -98,16 +98,16 @@ def install_enroll_sudoers(write_unit) -> None:
 
 
 # --- the Mantle's one sudo grant ---------------------------------------------
-# A Spawn belongs to a **Guise**, not the Head/Mantle, so submit/re-nice/cancel/signal (each normally
+# A Dive belongs to a **Guise**, not the Head/Mantle, so submit/re-nice/cancel/signal (each normally
 # free to the job's owner) need the Head to act as that Guise to touch its own cluster's queue.
 #
-# `(%ccc-guises)`, never `(root)`: lets `ccc` act as an account owning nothing but one Spawn's working
+# `(%ccc-guises)`, never `(root)`: lets `ccc` act as an account owning nothing but one Dive's working
 # files — it can't read head.db, head.key, or another User's results, same as any Guise. Root would
 # undo that isolation. This is the only unattended sudo grant here; `cuttle user add`'s useradd runs
 # under the operator's own sudo at a tty.
 _SUDOERS_CCC_SLURM = f"""\
 # Managed by `cuttle setup --head` — do not hand-edit, re-run setup instead.
-# The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Spawns as the Guise that owns
+# The Head API and the Karma tick (User={config.HEAD_API_USER}) act on Dives as the Guise that owns
 # them: submit, re-nice, cancel, signal. Runas is the Guise group — NOT root.
 # The Head API runs no User's code and starts no container; Slurm's verbs are the whole grant.
 {config.HEAD_API_USER} ALL=(%{config.GUISE_GROUP}) NOPASSWD: /usr/bin/sbatch, /usr/bin/scancel, \
@@ -146,8 +146,8 @@ Environment=CCC_HEAD_DB={config.HEAD_DB}
 # Served open at GET /ca.pem: the public half of the CA, so a box can trust this Head instead of
 # clicking through a warning. The key beside it is 0600 {config.HEAD_API_USER}-owned and stays here.
 Environment=CCC_CA_CERT={config.HEAD_CA_CERT}
-# The Head's mesh IP (so a remote Arm can rsync home; unread until Dives) and the state dir (spawns,
-# siphons). Paths match cuttle.config defaults.
+# The Head's mesh IP (a remote Arm's Dive rsyncs home to it) and the state dir. Paths match
+# cuttle.config defaults.
 Environment=CCC_MESH_IP={mesh_ip}
 Environment=CCC_HEAD_STATE={config.HEAD_STATE_DIR}
 # --no-access-log: the app's own middleware logs one enriched line per request (with the authed user
@@ -193,7 +193,7 @@ def head_url(host: str) -> str:
 def _karma_unit() -> str:
     return f"""\
 [Unit]
-Description=CCC Karma (ranks the Spawn queue by each submitter's standing)
+Description=CCC Karma (ranks the Dive queue by each submitter's standing)
 # scontrol/squeue need munge to authenticate and slurmctld to answer. Neither being up is fatal — the
 # tick logs the failure and re-reads the world on the next pass — but don't race them at boot.
 After=munge.service slurmctld.service {config.HEAD_API_SERVICE}.service

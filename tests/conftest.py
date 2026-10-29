@@ -24,9 +24,7 @@ from typer.testing import CliRunner
 from ccc_head_api import db
 from ccc_head_api import main as head_main
 from ccc_head_api import ratelimit
-from ccc_head_api import siphons
 from ccc_head_api import slurm
-from ccc_head_api import spawns as head_spawns
 from ccc_head_api import tidepool as head_tidepool
 from cuttle import api, auth, config, settings, ui
 from cuttle import ccc_tidepool as cli_tidepool
@@ -146,33 +144,12 @@ def cli(monkeypatch, head, ccc_home):
 
 
 @pytest.fixture(autouse=True)
-def _siphon_dir(monkeypatch, tmp_path_factory):
-    """Every **Siphon** a test opens lands in a throwaway directory.
-
-    Autouse, and deliberately not opt-in: a test that reaches `siphons.open` would otherwise write rsync
-    module files into the live /var/lib/ccc of whatever box the suite is running on. A test that wants to inspect them just re-patches this.
-    """
-    monkeypatch.setattr(siphons, "RSYNCD_DIR", tmp_path_factory.mktemp("rsyncd.d"))
-
-
-@pytest.fixture(autouse=True)
 def _head_state(monkeypatch, tmp_path_factory):
-    """No test touches the live Head state dir, for the same reason as `_siphon_dir` above.
+    """No test touches the live Head state.
 
     Autouse and unconditional: `tick.once` walks Head state on its own, so a test that never mentions
-    a directory can still reach one. On a box that is also a real Head, a simulated Spawn whose id
-    collides with a real one could read or delete that real Spawn's files (the Fake Cluster counts
-    ids from 1, so this is not hypothetical).
-
-    `fake_slurm` sets the same three attributes to its own tmp dir; a test using it simply overrides
-    this, and both are undone at teardown."""
-    state = tmp_path_factory.mktemp("head-state")
-    for name in ("spawns", "scratch"):
-        (state / name).mkdir()
-    monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
-    monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
-    monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
-    # Tidepool keys too: `tick.once` syncs ambient sessions into every User dir it finds there, so on a
+    it can still reach it."""
+    # Tidepool keys: `tick.once` syncs ambient sessions into every User dir it finds there, so on a
     # real Head the suite would write into the live admin's keys dir.
     keys = tmp_path_factory.mktemp("tidepool-keys")
     for mod, attr in ((head_tidepool, "KEYS_ROOT"), (cli_tidepool, "KEYS_ROOT"),
@@ -185,21 +162,16 @@ def fake_slurm(monkeypatch, tmp_path):
     """Stand in for Slurm with throwaway executables on PATH (`squeue`, and a pass-through `sudo`), plus
     one admitted Arm."""
     state = tmp_path / "head-state"
-    for name in ("spawns", "scratch"):
-        (state / name).mkdir(parents=True)
-    monkeypatch.setattr(head_spawns, "HEAD_STATE_DIR", state)
-    monkeypatch.setattr(head_spawns, "SPAWNS_DIR", state / "spawns")
-    monkeypatch.setattr(head_spawns, "SCRATCH_DIR", state / "scratch")
+    state.mkdir()
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    # Two call shapes share this one stub: `squeue -h -j <id> -o %T` (spawns.active_state — no
-    # matching job prints NOTHING, which is how the Head decides a Spawn is finished) and
-    # `squeue --json` (slurm.queue/spawns — the Karma tick and the live queue, which still need valid
-    # empty JSON, not silence).
+    # Two call shapes share this one stub: `squeue -h -j <id> -o %T` (slurm.state — no matching job
+    # prints NOTHING, which is how the Head decides a Dive has left the queue) and `squeue --json`
+    # (slurm.queue/dives — the Karma tick and the live queue, which still need valid empty JSON).
     (bin_dir / "squeue").write_text(
         '#!/bin/sh\ncase "$*" in\n  *--json*) echo \'{"jobs": []}\' ;;\n  *) exit 0 ;;\nesac\n')
-    # A **Guise** owns every Spawn, so the Head reaches Slurm through `sudo -n -u ccc-u<uid>`.
+    # A **Guise** owns every Dive, so the Head reaches Slurm through `sudo -n -u ccc-u<uid>`.
     (bin_dir / "sudo").write_text(
         '#!/bin/sh\nwhile [ "$1" = "-n" ]; do shift; done\n'
         'if [ "$1" = "-u" ]; then shift 2; fi\nexec "$@"\n')

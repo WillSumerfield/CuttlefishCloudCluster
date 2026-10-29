@@ -83,7 +83,7 @@ class ApiError(Exception):
 
     def user_message(self) -> str:
         """What a command should actually print. `str(self)` leads with the internal API route path
-        (`/spawns/58: ...`) — noise to a user — and a 5xx carries only a generic phrase like "Internal
+        (`/dives/58: ...`) — noise to a user — and a 5xx carries only a generic phrase like "Internal
         Server Error". A 4xx `detail`, by contrast, is the Head's own human-readable reason (a policy
         violation, a bad name) and must reach the user intact. So: verbatim `detail` for a refusal or
         a transport failure (status None), a framed line for a server-side crash.

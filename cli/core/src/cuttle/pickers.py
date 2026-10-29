@@ -42,14 +42,12 @@ def pick_backup(message: str = "Which backup?") -> str:
     return _pick(message, [(str(p), p.name) for p in paths], "backup")
 
 
-def pick_spawn(message: str = "Which Spawn?", mine_only: bool = True) -> int:
-    """The live queue. `status`/`logs`/`cancel` all point at a Spawn, and nobody remembers job ids."""
+def pick_dive(message: str = "Which Dive?", mine_only: bool = True) -> int:
+    """The live queue — nobody remembers job ids."""
     try:
-        rows = auth._api("GET", "/spawns") or []
+        rows = auth._api("GET", "/dives") or []
     except Exception:
         rows = []
-    if isinstance(rows, dict):
-        rows = rows.get("spawns", [])
     me = None
     if mine_only:
         try:
@@ -58,13 +56,13 @@ def pick_spawn(message: str = "Which Spawn?", mine_only: bool = True) -> int:
             me = None
     entries = []
     for s in rows:
-        if me and mine_only and s.get("user") not in (None, me):
+        if me and s.get("started_by") not in (None, me):
             continue
-        sid = str(s.get("id") or s.get("job_id") or "")
-        if sid:
-            entries.append((sid, f"{s.get('state', '?')}  {s.get('script') or ''}".strip()))
-    picked = _pick(message, entries, "Spawn")
+        if s.get("id"):
+            main = f"~/{s['main']}" if s.get("main") else ""
+            entries.append((str(s["id"]), f"{s.get('state', '?')}  {s.get('started_by') or '-'}  {main}".strip()))
+    picked = _pick(message, entries, "Dive")
     try:
         return int(str(picked).strip())
     except ValueError:
-        raise ui.abort(f"{picked!r} is not a Spawn id")
+        raise ui.abort(f"{picked!r} is not a Dive id")

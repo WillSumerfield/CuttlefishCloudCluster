@@ -159,6 +159,20 @@ def _return(node: str) -> int:
     return 0
 
 
+def _end(job_id: int) -> int:
+    """`cuttle dive end <id>` on someone else's Dive — the operator, on the Head. scancel as its Guise
+    (as the network route does, minus the owner check) and record that it was ended."""
+    from . import slurm
+    with db.connect() as conn:
+        if db.get_dive(conn, job_id) is None:
+            print(f"no Dive {job_id}", file=sys.stderr)
+            return 1
+        slurm.cancel(job_id)
+        db.mark_cancelled(conn, job_id)
+    print(f"ended Dive {job_id}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="ccc_head_api.admin", description="Head auth user admin.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -182,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     rt.add_argument("node")
     rn = sub.add_parser("return", help="return an Arm on its owner's behalf (--any escape hatch).")
     rn.add_argument("node")
+    en = sub.add_parser("end", help="end anyone's Dive (the operator's road; the API ends only your own).")
+    en.add_argument("job_id", type=int)
 
     args = p.parse_args(argv)
     if args.cmd == "add":
@@ -202,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         return _retract(args.node)
     if args.cmd == "return":
         return _return(args.node)
+    if args.cmd == "end":
+        return _end(args.job_id)
     return 2
 
 

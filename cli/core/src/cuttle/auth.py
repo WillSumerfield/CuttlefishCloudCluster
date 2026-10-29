@@ -308,7 +308,7 @@ def ensure_guise_accounts() -> None:
     same call provisions a User created seconds ago and any older User with no account yet. A
     `setup --head` re-run is the upgrade path.
 
-    Head-only. On an Arm the accounts are created lazily by the Prolog, as root, at the moment a Spawn
+    Head-only. On an Arm the accounts are created lazily by the Prolog, as root, at the moment a Dive
     lands there — the only mechanism that can reach a donor's box that is powered off today and
     enrolled tomorrow.
     """
@@ -321,18 +321,18 @@ def provision_guise(uid: int) -> None:
     """One Guise account, at exactly `uid`, in GUISE_GROUP. Non-fatal if it is already there (a re-run).
 
     The same account the Slurm prolog creates on a donor's Arm, by the same rules — this is just the
-    path for the two boxes where an account is needed BEFORE any Spawn has landed: the Head (which
+    path for the two boxes where an account is needed BEFORE any Dive has landed: the Head (which
     submits, and so must be able to `sudo -u` into every Guise) and an Arm at `setup --arm` (whose
     enrollment benchmark runs as the cluster Guise before `Prolog=` may even be switched on).
 
     Home-less (`-M`) for the same reason the Mantle is: nothing on any node reads a Guise's home — the
-    Pod makes its own inside the `--writable-tmpfs` overlay — so a donor's box is left with an empty
+    container makes its own inside the `--writable-tmpfs` overlay — so a donor's box is left with an empty
     account and no directory. `nologin` because nothing should ever log into a Guise on a host, and
     nothing can: no password, no authorized_keys, and slurmd execs a batch script by its shebang.
 
-    That shell does NOT stay behind in the Pod, though — apptainer patches the Pod's /etc/passwd with
-    this entry verbatim, shell field included, so a Tide Pool's sshd would exec nologin and refuse the
-    session ("This account is currently not available") unless repaired by the Tide Pool payload. Its private group (gid == uid) keeps the shared group from ever owning a
+    That shell does NOT stay behind in the container, though — apptainer patches the container's /etc/passwd with
+    this entry verbatim, shell field included, so a Dive's sshd would exec nologin and refuse the
+    session ("This account is currently not available") unless repaired by the Dive payload. Its private group (gid == uid) keeps the shared group from ever owning a
     file — that group exists only to be the Runas list on the Head's sudoers rule.
     """
     name = config.guise_name(uid)
@@ -343,12 +343,12 @@ def provision_guise(uid: int) -> None:
         sudo=True, check=False)
     # The shared group, asserted separately and every run, because `--groups` above applies only when
     # useradd CREATES the account: on one that already exists useradd does nothing at all and exits
-    # non-zero, which the check=False swallows. An account can survive a teardown (a Spawn still
+    # non-zero, which the check=False swallows. An account can survive a teardown (a Dive still
     # running holds `userdel` off — see teardown.end_guise_processes), and the next setup then rebuilds
     # GUISE_GROUP without it.
     #
     # `check=True`, alone on this path: GUISE_GROUP is the Runas list on the Head's one sudoers rule
-    # (headapi._SUDOERS_CCC_SLURM), so a Guise outside it cannot be sudo'd into at all and every Spawn
+    # (headapi._SUDOERS_CCC_SLURM), so a Guise outside it cannot be sudo'd into at all and every Dive
     # it owns dies at sbatch with "sudo: a password is required" — a failure that surfaces nowhere near
     # here, and only for the User unlucky enough to own that uid.
     run(["usermod", "--append", "--groups", config.GUISE_GROUP, name], sudo=True, check=True)

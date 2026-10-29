@@ -129,7 +129,7 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     inside the mesh — which is exactly why the munge key is safe to send here and nowhere else.
 
     Reports every **Device** this box has (system.gpu_devices), because the Head authors gres.conf
-    for the whole fleet and a card it was never told about is a card no Spawn can ever be placed on.
+    for the whole fleet and a card it was never told about is a card no Dive can ever be placed on.
 
     `features` = the Arm Features this box's owner picked at `setup --arm`, as
     `[{"name", "path"}, ...]` — the Head validates each name against its catalog and re-sends this on
@@ -262,7 +262,7 @@ def slurmd_dropin(node_name: str, ctld_addr: str, vram_mb: int, gpus: int,
 
     `Feature=vramN[,feature,...]` rides along, and `--conf` is the only durable place for it: a dynamic
     node's config is re-sent from `--conf` at *every* registration, so a feature set any other way
-    (`scontrol update`) would silently vanish the next time this slurmd restarted — and a Spawn's
+    (`scontrol update`) would silently vanish the next time this slurmd restarted — and a Dive's
     `--vram`/Arm-Feature constraint would then match nothing. `feature_names` are this Arm's declared
     Arm Features, comma-joined onto the one vram bucket exactly
     like it: Slurm Features are a flat per-node set, so there is no structural difference between the
@@ -320,7 +320,7 @@ def save_registry(reg: dict) -> None:
 # --- Arm Features -----------------------------------------------------------
 # The catalog is config.FEATURE_NAMES, a constant — there is nothing to load, save or curate. See that
 # constant for why: CCC ships the runtime for each Feature, so a name it does not know is not a Feature
-# CCC can place a Spawn on. What remains Arm-local is which of them THIS box has, and where.
+# CCC can place a Dive on. What remains Arm-local is which of them THIS box has, and where.
 
 def list_features(as_json: bool = False) -> None:
     names = list(config.FEATURE_NAMES)
@@ -335,9 +335,9 @@ def list_features(as_json: bool = False) -> None:
 
 def render_features_env(features: list[dict], licence_home: str = "") -> str:
     """One `export <NAME>_PATH=<path>` line per declared Arm Feature, written to config.ARM_FEATURES_ENV
-    by `setup --arm`. `export`, not a bare assignment: the Spawn job script sources this file
+    by `setup --arm`. `export`, not a bare assignment: the Dive job script sources this file
     with no `set -a`, and Apptainer's default (non `--cleanenv`) behaviour is to pass the WHOLE calling
-    environment into the Pod — so only an exported var actually reaches a Spawn's payload.
+    environment into the container — so only an exported var actually reaches a Dive's payload.
 
     A feature name may contain `.`/`-` (config.FEATURE_NAME_RE) which a shell identifier cannot, hence
     the substitution — `vsim-pro` becomes `VSIM_PRO_PATH`, not a syntax error.
@@ -346,10 +346,10 @@ def render_features_env(features: list[dict], licence_home: str = "") -> str:
     per Feature, because a licence is locked to hardware and an Arm is one machine. It rides this same
     file for the same reason a Feature's path does: the value is Arm-local, so the Head cannot bake it
     into a job script it renders for the whole fleet. The Arm supplies it; the job script decides whether
-    this Spawn may see it.
+    this Dive may see it.
     """
     # `install_path`, not `f['path']`: for a Feature CCC mirrors, the owner's own directory is not
-    # reachable from a Pod (cuttle.features.mirror_install), so what a Spawn is told is CCC's copy.
+    # reachable from a container (cuttle.features.mirror_install), so what a Dive is told is CCC's copy.
     lines = [f"export {re.sub(r'[^A-Za-z0-9]', '_', f['name']).upper()}_PATH="
              f"{features_mod.install_path(f)}" for f in features]
     # Whatever else a Feature's runtime needs from THIS box — for one that ships binary wheels, where
@@ -414,7 +414,7 @@ def reapply_features(reg: dict) -> None:
     a dynamic node, so `scontrol reconfigure` leaves slurmctld with nothing to restore them from. The
     registry row is untouched by that, so the Dashboard and `slurm.arms_with_features` keep reporting
     a Feature the node can no longer be selected for: the request is judged feasible, the constraint
-    is built, and the Spawn then waits on a node Slurm no longer believes carries it.
+    is built, and the Dive then waits on a node Slurm no longer believes carries it.
 
     Both halves of the set go, because `scontrol update` takes it whole — `config.node_features` is
     why that is stated in one place. The Arm's own `--conf` still carries the same set, so this
@@ -514,12 +514,12 @@ def _wait_for_node(name: str, timeout_s: int = 300) -> None:
 def benchmark_arm(name: str) -> dict:
     """Submit the Power benchmark to one Arm and record what it measures.
 
-    The result comes home the way every remote Spawn's does — rsync'd into the Head's [spawns] module —
+    The result comes home the way every remote Dive's does — rsync'd into the Head's [bench] module —
     so there is one code path for a donor's box and for the Head's own co-located Arm (which simply
     rsyncs to itself over the mesh). The Head pre-creates the landing directory because rsync will not
     invent one.
 
-    Its own box when run as `cuttle arm benchmark` — it waits on Slurm and then on a Spawn, minutes
+    Its own box when run as `cuttle arm benchmark` — it waits on Slurm and then on a Dive, minutes
     with nothing to show otherwise. Reached from `_admit` a box is already open, and a nested
     `section` is transparent (no second frame, and the outer one releases the results).
     """
@@ -567,7 +567,7 @@ def ensure_priced(name: str) -> None:
 def _bench_secret() -> str:
     """The [bench] rsync module's password, read off the root-owned secrets file `setup --head` minted.
 
-    A benchmark stages its Power file home over rsync like any remote Spawn, but it never goes through
+    A benchmark stages its Power file home over rsync like any remote Dive, but it never goes through
     the Head API, so there is no **Siphon** for it — it uses the one cluster-lifetime credential
     instead. Read at render time rather than held anywhere: this runs
     on the Head, with an operator at a tty who has already primed sudo."""
@@ -579,10 +579,10 @@ def _benchmark_arm(name: str) -> dict:
     _wait_for_node(name)
     head_ip = mesh.tailscale_ip()
     reg = load_registry()
-    # The job takes every card this Arm registered, so one Spawn returns one Power per **Device**.
+    # The job takes every card this Arm registered, so one Dive returns one Power per **Device**.
     # Read from the registry rather than counted on the Head: these are the donor's cards.
     gpus = len(reg[name]["gpu_devices"])
-    dest = config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME / name
+    dest = config.HEAD_BENCH_DIR / name
     run(["install", "-d", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER, str(dest)],
         sudo=True)
     run(["rm", "-f", str(dest / "power")], sudo=True)  # a re-benchmark must not read the old numbers
@@ -598,8 +598,8 @@ def _benchmark_arm(name: str) -> dict:
         # it is one /tmp/tmp*.sbatch per benchmark, forever.
         #
         # As the **cluster's own Guise**, not as the Mantle. This is
-        # the one Spawn no User submits, and it was the last thing still running as `ccc` — which would
-        # have made "a Spawn owned by the Mantle is a bug" a rule with an exception, and an exception is
+        # the one Dive no User submits, and it was the last thing still running as `ccc` — which would
+        # have made "a Dive owned by the Mantle is a bug" a rule with an exception, and an exception is
         # not a rule you can test. Its uid is reserved, so it collides with no User's.
         try:
             sub = run(["-u", config.guise_name(config.GUISE_CLUSTER_UID), "sbatch", "--parsable",
@@ -608,7 +608,7 @@ def _benchmark_arm(name: str) -> dict:
             Path(job_file).unlink(missing_ok=True)
         bench_job = sub.stdout.strip()
         # The wait below can run for minutes, and an operator who gives up on it presses Ctrl-C. Without
-        # this the benchmark Spawn keeps running — holding every card on the Arm being admitted, with
+        # this the benchmark Dive keeps running — holding every card on the Arm being admitted, with
         # nothing left that knows its job id — until it finishes on its own. It self-heals, but it wastes
         # the whole Arm meanwhile, which is the one thing an admit is trying to make available.
         try:
@@ -652,7 +652,7 @@ def _benchmark_arm(name: str) -> dict:
 def apply_weight(name: str, powers: list[float], check: bool = True) -> None:
     """Weight ∝ 1/Power, so Slurm hands out the fastest *free* eligible card first.
 
-    Not a reservation: Slurm won't hold a Spawn back waiting for a better GPU to free up — it takes the
+    Not a reservation: Slurm won't hold a Dive back waiting for a better GPU to free up — it takes the
     best one available now, which is what "the first one that fits, else queue" means.
 
     A node has ONE Weight however many cards it holds, so config.node_weight reduces the list — see
@@ -820,7 +820,7 @@ def register_head_arm(mesh_ip: str, features: list[dict] | None = None) -> None:
     # Dashboard read one row shape for every Arm — the Head's box is an Arm like any other, and its
     # Features are what setup.write_slurm_config re-reads to keep its Feature= line across reconfigures.
     # MERGED over whatever is already there, not written fresh. This runs on every `setup --head`,
-    # and the row is also where the Head's own Arm keeps what only a real Spawn could learn: `powers`
+    # and the row is also where the Head's own Arm keeps what only a real Dive could learn: `powers`
     # and `gpu` from the benchmark. Replacing the row wholesale reset both to unmeasured on every
     # re-setup — so the box was re-benchmarked each time.
     prior = reg.get(name) or {}
@@ -917,7 +917,7 @@ def rotate_munge_key() -> None:
         run(["chown", "munge:munge", str(config.MUNGE_KEY)], sudo=True)
         run(["chmod", "0400", str(config.MUNGE_KEY)], sudo=True)
         # Both authenticate every RPC via munged; a munged that kept its old credential cached (or a
-        # slurmctld that did) is exactly the state a plain restart avoids finding out about mid-Spawn.
+        # slurmctld that did) is exactly the state a plain restart avoids finding out about mid-Dive.
         run(["systemctl", "restart", "munge"], sudo=True)
         run(["systemctl", "restart", "slurmctld"], sudo=True)
         stale = [name for name, e in sorted(load_registry().items())
@@ -944,16 +944,16 @@ def rotate_munge_key() -> None:
 # command.
 
 def retract_arm(name: str, any_owner: bool = False) -> None:
-    """Pause an Arm: it stops taking new Spawns and whatever is running on it now is ended (TERM now, a
+    """Pause an Arm: it stops taking new Dives and whatever is running on it now is ended (TERM now, a
     3-minute grace, then force-killed by the Karma tick). Settles at zero either way."""
     _owner_road("retract", name, any_owner)
     print(f"cuttle: {name} retracted — running work has 3 minutes to end gracefully")
 
 
 def return_arm(name: str, any_owner: bool = False) -> None:
-    """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught."""
+    """Reopen a retracted Arm for new Dives. Does not save a Dive the Retract already caught."""
     _owner_road("return", name, any_owner)
-    print(f"cuttle: {name} returned — accepting new Spawns again")
+    print(f"cuttle: {name} returned — accepting new Dives again")
 
 
 def _owner_road(verb: str, name: str, any_owner: bool) -> None:

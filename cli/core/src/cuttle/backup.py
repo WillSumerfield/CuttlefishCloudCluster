@@ -11,12 +11,6 @@ Restore is the disruptive half: every service that can write one of the three fi
 writes arms.json; the Head API + Karma tick write head.db; Headscale writes its own db) is stopped,
 the archive's copies replace them at the right owner/perms, and everything restarts. All-or-nothing —
 there is no selective single-store restore.
-
-**`secret.key` is deliberately NOT in the archive.** It decrypts the Tide Pool private keys head.db
-holds (ccc_head_api/atrest.py), and leaving it out is the entire value of encrypting them: the tarball
-stays strictly *less* sensitive than the Head itself, which is the one thing at-rest encryption can buy
-on a box that must decrypt unattended. This costs nothing to a restore — a Tide Pool row belongs to a
-Spawn that was in the queue when the snapshot was taken and is long gone by the time anyone restores it.
 """
 
 from pathlib import Path
@@ -54,7 +48,6 @@ def create(head_db, arms_json, headscale_db, backup_dir, retain):
         _sqlite_backup(head_db, tmp / "head.db")
         _sqlite_backup(headscale_db, tmp / "headscale.sqlite")
         shutil.copy(arms_json, tmp / "arms.json")
-        # Three files, and secret.key is pointedly not one of them — see cuttle/backup.py's docstring.
         with tarfile.open(tmp / name, "w:gz") as tf:
             for f in ("head.db", "arms.json", "headscale.sqlite"):
                 tf.add(tmp / f, arcname=f)

@@ -47,9 +47,9 @@ class TestApiErrorUserMessage:
     a 5xx, carries only a generic phrase — noise. `user_message()` is the presentable form."""
 
     def test_a_server_error_is_framed_not_leaked(self):
-        e = api.ApiError("/spawns/58", "Internal Server Error", status=500)
+        e = api.ApiError("/dives/58", "Internal Server Error", status=500)
         msg = e.user_message()
-        assert "/spawns/58" not in msg             # no route path
+        assert "/dives/58" not in msg             # no route path
         assert "Internal Server Error" not in msg  # no bare phrase
         assert "internal error" in msg and "try again" in msg
 

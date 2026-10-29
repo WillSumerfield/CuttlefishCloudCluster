@@ -1,6 +1,6 @@
 """CCC Head enrollment API.
 
-Stays **enrollment-only**: the read/Spawn views the SPA consumes live in a separate Head API app
+Stays **enrollment-only**: the read/Dive views the SPA consumes live in a separate Head API app
 (`ccc_head_api.main`), because they have opposite exposure needs — enrollment hands out the munge key
 and must stay mesh-only, while the Head API must reach the LAN. Splitting them keeps the secret
 physically off every non-mesh interface.
@@ -95,7 +95,7 @@ class FeatureDecl(BaseModel):
 
 class EnrollRequest(BaseModel):
     node_name: str
-    # Every GPU **Device** the Arm can hand to a Spawn, in the order its gres.conf lines must be
+    # Every GPU **Device** the Arm can hand to a Dive, in the order its gres.conf lines must be
     # written — one /dev/nvidiaN per card.
     gpu_devices: list[str]
     mesh_ip: str

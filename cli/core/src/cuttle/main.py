@@ -19,7 +19,7 @@ from . import menu as menu_mod
 from . import pickers
 from . import settings
 from . import setup as setup_mod
-from . import spawns as spawns_mod
+from . import queue as queue_mod
 from . import system
 from . import teardown as teardown_mod
 from . import tidepool as tidepool_mod
@@ -165,7 +165,7 @@ def setup(
             choices = [
                 ui.choice("The Head — control plane, and donates its own GPU", "head"),
                 ui.choice("An Arm — donates a GPU to someone else's Head", "arm"),
-                ui.choice("A client — just submit Spawns from here", "client"),
+                ui.choice("A client — just submit Dives from here", "client"),
             ]
             # Pre-selected with what this box ALREADY is, when it is anything. On a re-run the answer
             # is almost never "make it something else", and the alternative — always landing on "the
@@ -278,7 +278,7 @@ def arm_admit(name: str = typer.Argument(None, help="The Arm's node name.")):
 @arm_app.command("benchmark")
 def arm_benchmark(name: str = typer.Argument(None, help="The Arm's node name.")):
     """Re-measure an Arm's **Power** (throughput) and re-price it. Runs the matmul benchmark inside
-    the Pod, on that node, and sets its Slurm Weight — so the fastest free card wins.
+    the container, on that node, and sets its Slurm Weight — so the fastest free card wins.
 
     Normally part of `arm authorize`; run it by hand after a driver/GPU change, or if the benchmark
     timed out because the donor's box wasn't ready.
@@ -309,7 +309,7 @@ def arm_retract(
              "API has no owner row for. Head-only. On the Head, retracting someone else's "
              "Arm needs no flag."),
 ):
-    """Pause an Arm: stop it taking new Spawns and end whatever is running on it now (TERM right
+    """Pause an Arm: stop it taking new Dives and end whatever is running on it now (TERM right
     away, a 3-minute grace, then force-killed). Settles at zero either way — Retract must never be a
     way to farm Karma by yanking a card back mid-run. Your own from anywhere; anyone's on the Head."""
     name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to retract?"))
@@ -325,7 +325,7 @@ def arm_return(
              "API has no owner row for. Head-only. On the Head, returning someone else's "
              "Arm needs no flag."),
 ):
-    """Reopen a retracted Arm for new Spawns. Does not save a Spawn the Retract already caught.
+    """Reopen a retracted Arm for new Dives. Does not save a Dive the Retract already caught.
     Your own from anywhere; anyone's on the Head."""
     name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to return?"))
     enroll_mod.return_arm(name, any_owner)
@@ -485,7 +485,7 @@ def karma_override(
     note: str = typer.Option(None, "--note", help="Why — recorded in the ledger."),
 ):
     """ADMIN: add/remove Karma from a User's Balance. Changes *standing*, so it is felt in every future
-    contention (and Decay absorbs it over ~a month). To speed up one Spawn once, use `karma bump`."""
+    contention (and Decay absorbs it over ~a month). To speed up one Dive once, use `karma bump`."""
     wizard = username is None
     with ui.section("Adjust a Balance", lambda: f"{username} {amount:+g}"):
         username = ui.need(username, "the username", lambda: pickers.pick_user("Whose Balance?"))
@@ -498,18 +498,18 @@ def karma_override(
 
 @karma_app.command("bump")
 def karma_bump(
-    spawn_id: int = typer.Argument(None, help="Spawn (Slurm job) id — must still be queued."),
+    dive_id: int = typer.Argument(None, help="Dive (Slurm job) id — must still be queued."),
     clear: bool = typer.Option(False, "--clear", help="Undo the bump; the economy takes it back."),
 ):
-    """ADMIN, ON THE HEAD: shove one queued Spawn up the queue. Touches no one's Karma and leaves no
+    """ADMIN, ON THE HEAD: shove one queued Dive up the queue. Touches no one's Karma and leaves no
     ledger row — it bypasses the economy rather than participating in it. Bump again to go further.
 
     Runs here rather than over the API because a bump is a negative nice, and Slurm grants those only
     to an operator — an authority the LAN-facing API deliberately does not have.
     """
-    spawn_id = ui.need(spawn_id, "the Spawn id",
-                       lambda: pickers.pick_spawn("Bump which Spawn?", mine_only=False))
-    karma_mod.bump(spawn_id, clear=clear)
+    dive_id = ui.need(dive_id, "the Dive id",
+                       lambda: pickers.pick_dive("Bump which Dive?", mine_only=False))
+    karma_mod.bump(dive_id, clear=clear)
 
 
 @karma_app.command("ledger")
@@ -539,7 +539,7 @@ def backup_restore(
     """ON THE HEAD: restore head.db, arms.json, and Headscale's db from a backup tarball. Stops the
     Enroll API, Head API, Karma tick, and Headscale; replaces all three files; restarts everything.
 
-    All-or-nothing — overwrites every Spawn/Karma/session/Arm-enrollment change made since the
+    All-or-nothing — overwrites every Dive/Karma/session/Arm-enrollment change made since the
     backup. There is no undo short of another restore.
     """
     archive = ui.need(archive, "the archive path", lambda: pickers.pick_backup())
@@ -829,8 +829,8 @@ def queue(
     limit: int = typer.Option(-1, "--limit", show_default=False,
                               help="Cap rows (0 = all). Default 50, uncapped for --json."),
 ):
-    """Show the live Spawn queue — every pending/running Spawn on the cluster, and who submitted it."""
-    spawns_mod.queue(as_json=as_json, limit=_resolve_limit(limit, as_json))
+    """Show the live Dive queue — every pending/running Dive on the cluster, and who submitted it."""
+    queue_mod.queue(as_json=as_json, limit=_resolve_limit(limit, as_json))
 
 
 @app.command()
@@ -840,8 +840,8 @@ def history(
     limit: int = typer.Option(-1, "--limit", show_default=False,
                               help="Cap rows (0 = all). Default 50, uncapped for --json."),
 ):
-    """Show past Spawns — everything the live queue has forgotten — with their cost and outcome."""
-    spawns_mod.history(days=days, as_json=as_json, limit=_resolve_limit(limit, as_json))
+    """Show past Dives — everything the live queue has forgotten — with their cost and outcome."""
+    queue_mod.history(days=days, as_json=as_json, limit=_resolve_limit(limit, as_json))
 
 
 @app.command()

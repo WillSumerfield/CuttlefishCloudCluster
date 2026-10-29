@@ -27,14 +27,14 @@ AuthType=auth/munge
 # (task/cgroup needs cgroup-based process tracking, not linuxproc's pid-scanning). See cgroup.conf.
 ProctrackType=proctrack/cgroup
 TaskPlugin=task/cgroup
-# How long a Spawn has between the TERM that ends it and the KILL that enforces it — the window its own
-# EXIT trap uses to send work home (ccc_head_api.spawns). 600 was sized for the (since-dropped) Recovery
+# How long a Dive has between the TERM that ends it and the KILL that enforces it — the window its own
+# EXIT trap uses to send work home. 600 was sized for the (since-dropped) Recovery
 # Window's cold rsync; kept until the Dive mirror-back decides its own grace (2.0 phase 4).
 #
 # A CEILING, not a wait: the job leaves COMPLETING the moment its trap returns, which is seconds in the
 # ordinary case.
 #
-# It is paid for in queue latency, not Karma: a COMPLETING Spawn still holds its node and card but
+# It is paid for in queue latency, not Karma: a COMPLETING Dive still holds its node and card but
 # accrues nothing (the tick only bills RUNNING ones), so a slow copy stalls the next placement. Accepted
 # — the stall needs a multi-GB scratch AND a User who let the clock run out, and this is a handful of
 # boxes rather than a contended facility.
@@ -48,9 +48,9 @@ ReturnToService=2
 
 SlurmUser=slurm
 SlurmdUser=root
-# Reclaim a Spawn's node-local scratch after it ends, HOWEVER it ended (the job's own trap misses
+# Reclaim a Dive's node-local scratch after it ends, HOWEVER it ended (the job's own trap misses
 # SIGKILL). Served configless like the rest of this file; the script itself is written on every node by
-# `cuttle setup`. Runs as root (SlurmdUser), at job end, on the node that ran the Spawn.
+# `cuttle setup`. Runs as root (SlurmdUser), at job end, on the node that ran the Dive.
 Epilog={epilog}
 {prolog}
 {tmpfs}
@@ -66,25 +66,25 @@ SelectType=select/cons_tres
 SelectTypeParameters=CR_Core
 
 # --- priority ---
-# Karma ranks Spawns by lowering the *nice* of the queued jobs of Users in poor standing, and only the
-# job's OWNER may do that — which the Head is, for every Spawn in the queue (they all run as the
+# Karma ranks Dives by lowering the *nice* of the queued jobs of Users in poor standing, and only the
+# job's OWNER may do that — which the Head is, for every Dive in the queue (they all run as the
 # Mantle). But nice is only *read* by priority/multifactor: the default priority/basic is pure FIFO and
 # ignores it entirely, so without this line Karma would have no effect on the queue at all.
 #
 # priority = PriorityWeightPartition*1.0 + PriorityWeightAge*age_factor - nice, and NOTHING else:
 #
 #   PriorityWeightPartition is a FLAT BASE, not a factor. Slurm's priority is a uint32_t and it clamps
-#   at zero, so without a base a *fresh* Spawn (age_factor 0) computes -nice and lands on the floor —
-#   as would every other fresh Spawn from every User below perfect standing, all tied. With one
+#   at zero, so without a base a *fresh* Dive (age_factor 0) computes -nice and lands on the floor —
+#   as would every other fresh Dive from every User below perfect standing, all tied. With one
 #   partition Slurm normalizes the partition factor to exactly 1.0 for every job, so this adds a
 #   constant, reorders nobody, and exists only to keep the subtraction off the rail. (It is therefore
 #   load-bearing on there being exactly ONE partition — a second one with a higher PriorityJobFactor
 #   would silently scale the base down. Guarded by a test.)
 #
 #   PriorityWeightAge == NICE_MAX means nice and age span the same range, so poor standing makes Slurm
-#   treat a Spawn as though it ARRIVED UP TO A DAY LATER than it did. That is the whole handicap, and
+#   treat a Dive as though it ARRIVED UP TO A DAY LATER than it did. That is the whole handicap, and
 #   it is bounded. It is NOT a starvation bound: age saturates at PriorityMaxAge, so past the cap a
-#   maximally-niced Spawn ties a brand-new best-standing rival but loses to one that has waited a
+#   maximally-niced Dive ties a brand-new best-standing rival but loses to one that has waited a
 #   minute. The bound on starvation is ECONOMIC — spending Karma is what makes you poor, so nobody can
 #   hog the cluster and stay ahead of the queue. Deliberate; see temp/KARMA.md "the priority floor".
 #
@@ -131,33 +131,33 @@ PartitionName={partition} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 #   * Separate lines need no bracket parsing, describe a gappy set (`nvidia0`, `nvidia2`) exactly, and
 #     keep the per-path validation as narrow as it is today.
 # Slurm gives each of a node's GRES an index in the order its File records are read, so **line order
-# here is the index order** a running Spawn's `gres_detail` (IDX:n) reports back — which is what
+# here is the index order** a running Dive's `gres_detail` (IDX:n) reports back — which is what
 # Settlement maps to a Power. system.gpu_devices() sorts numerically to make that order stable.
 GRES_CONF_LINE = "NodeName={node} Name=gpu File={device}\n"
 
 # Served to Arms over configless alongside slurm.conf, so the Head authors it and every node gets the
 # SAME file — configless has no per-node override, which is why this is deliberately minimal.
 #
-# ConstrainDevices is the entire point: it puts each Spawn in a device cgroup holding exactly the GPUs
+# ConstrainDevices is the entire point: it puts each Dive in a device cgroup holding exactly the GPUs
 # Slurm allocated it, and denying the rest is what finally makes `SLURM_JOB_GPUS` and
 # CUDA_VISIBLE_DEVICES mean something. It is also the prerequisite for ever subdividing a card
 # (docs/TODO.md, automatic GPU partitioning): you cannot safely share what you cannot constrain.
 #
-# ConstrainRAMSpace/ConstrainCores stay OFF (their default). Nothing drives them yet — a Spawn declares
+# ConstrainRAMSpace/ConstrainCores stay OFF (their default). Nothing drives them yet — a Dive declares
 # --time and --vram, not a RAM or core budget — and turning on a limit no one sets would OOM-kill jobs
 # for hitting a number they never asked for.
 CGROUP_CONF_TMPL = """\
 # Rendered by `cuttle setup --head`. Do not hand-edit.
 # Detect cgroup v1 vs v2 rather than pinning either — this one file serves every node.
 CgroupPlugin=autodetect
-# Confine a Spawn to the GPUs it was allocated, and no others.
+# Confine a Dive to the GPUs it was allocated, and no others.
 ConstrainDevices=yes
 """
 
 # --- the Power benchmark ------------------------------------------------------
-# What a device can *do*, measured — never a spec sheet. It runs **inside the Pod**, submitted by the
+# What a device can *do*, measured — never a spec sheet. It runs **inside the container**, submitted by the
 # Head down the ordinary Slurm path and pinned to the node, so the number reflects the machine as
-# Spawns will really meet it: a laptop card that thermally throttles, a stale driver, a starved PCIe
+# Dives will really meet it: a laptop card that thermally throttles, a stale driver, a starved PCIe
 # link. None of that is on a spec sheet, and all of it is
 # what an hour on the card is actually worth.
 #
@@ -166,9 +166,9 @@ ConstrainDevices=yes
 # which is precisely backwards from what Karma exists to encourage.
 #
 # **One number per Device, not one per node.** Identical models genuinely differ in practice — an x4
-# slot, a card that throttles because it sits under another — and a Spawn holds a *card*, not a box.
+# slot, a card that throttles because it sits under another — and a Dive holds a *card*, not a box.
 # So every card is measured, in one job holding all of them: N sbatch jobs would queue behind each
-# other, each pay Slurm scheduling latency, and could land while another Spawn holds a sibling card.
+# other, each pay Slurm scheduling latency, and could land while another Dive holds a sibling card.
 #
 # Device i here IS GRES index i. Slurm sets CUDA_VISIBLE_DEVICES to the allocated GRES indices in
 # ascending order, so the CUDA device i is the i'th card of this node's gres.conf lines — the same
@@ -685,20 +685,18 @@ def render_tidepool_zshrc() -> str:
 # service account that owns the Head state), so files are read/written as ccc. `use chroot = no`: no
 # root chroot (simpler; a module's own root is the boundary now).
 #
-# This file defines NO per-Spawn module. It sets the globals every module inherits and `&include`s the
-# directory the Head API mints **Siphon**s into — an &include'd file
-# starts parsing with the parent's defaults, so `hosts allow`, the drop to `ccc`, and read-only-by-
-# default all apply to a Siphon without the Head API having to know any of them. rsyncd re-reads this
-# file, and re-scans that directory, on EVERY connection, so a Siphon opens and closes with no reload.
+# This file defines NO per-Dive module. It sets the globals every module inherits and `&include`s
+# DIVE_RSYNCD, where ccc-tidepool writes each Dive's modules — an &include'd file starts parsing with
+# the parent's defaults. rsyncd re-reads both on EVERY connection, so a Dive's modules open and close
+# with no reload.
 #
-# `hosts allow` is now defence in depth rather than the authorization: the mesh is flat, so it cannot
-# tell one Spawn from another on the same Arm. What isolates a Spawn is its module's root plus its own
-# secret. `list = false` keeps the live Siphon names out of a bare `rsync rsync://<head>/`.
+# `hosts allow` is defence in depth rather than the authorization: the mesh is flat, so it cannot tell
+# one Dive from another on the same Arm. What isolates a Dive is its module's root plus its own secret.
+# `list = false` keeps the live module names out of a bare `rsync rsync://<head>/`.
 #
-# [bench] is the one module here that is not per-Spawn: the enrollment benchmark stages its Power file
-# home and never touches the Head API, so it cannot be handed a Siphon. Rooted at the bench subtree, so
-# it reaches the Power files and nothing else. `strict modes` stays TRUE — its secrets file is
-# root-owned, unlike a Siphon's, which must be writable by the Head API.
+# [bench] is the one module here that is not per-Dive: the enrollment benchmark stages its Power file
+# home and never touches the Head API. Rooted at HEAD_BENCH_DIR, so it reaches the Power files and
+# nothing else. `strict modes` stays TRUE — its secrets file is root-owned.
 #
 # It is WRITABLE (it is where a Power file lands) and every Arm holds the one secret, so nothing that
 # must not be overwritten may live under it.
@@ -719,7 +717,6 @@ strict modes = false
     auth users = {bench_user}
     secrets file = {bench_secrets}
     strict modes = true
-&include {rsyncd_dir}
 &include {dive_dir}
 """
 
@@ -745,9 +742,9 @@ def render_rsyncd_conf(mesh_ip: str) -> str:
         mesh_ip=mesh_ip, port=config.RSYNCD_PORT,
         user=config.HEAD_API_USER, group=config.HEAD_API_USER,
         bench_mod=config.RSYNC_MODULE_BENCH,
-        bench_dir=config.HEAD_SPAWNS_DIR / config.BENCH_DIR_NAME,
+        bench_dir=config.HEAD_BENCH_DIR,
         bench_user=config.RSYNC_BENCH_USER, bench_secrets=config.RSYNCD_BENCH_SECRETS,
-        rsyncd_dir=config.RSYNCD_DIR, dive_dir=config.DIVE_RSYNCD,
+        dive_dir=config.DIVE_RSYNCD,
         v4=config.MESH_V4_PREFIX, v6=config.MESH_V6_PREFIX,
     )
 
@@ -761,7 +758,7 @@ def render_rsyncd_unit() -> str:
 # Arm named by it without the script drains, and stays drained across a slurmd restart. So the Head
 # states, in the file itself, that it is deliberately absent and what would turn it on.
 _PROLOG_LINE = """\
-# Creates the **Guise** each Spawn runs as, on whatever node Slurm picked, before the job step. Runs as
+# Creates the **Guise** each Dive runs as, on whatever node Slurm picked, before the job step. Runs as
 # root (SlurmdUser). Written on every node by `cuttle setup`, exactly like the epilog above.
 Prolog={prolog}"""
 _PROLOG_HELD = """\
@@ -769,9 +766,9 @@ _PROLOG_HELD = """\
 # Naming it here would fail their jobs and DRAIN them, and a drained node stays drained across a slurmd
 # restart. Re-run `cuttle setup --arm` on each, then `cuttle setup --head` here."""
 
-# A private /tmp and /dev/shm per job (temp/spawn-isolation.md Phase 4) — the wall that contains the
-# WRAPPER, not just the container inside it. Without it a remote Spawn's scratch sits in the
-# host's shared /tmp beside every concurrent Spawn's.
+# A private /tmp and /dev/shm per job — the wall that contains the
+# WRAPPER, not just the container inside it. Without it a remote Dive's scratch sits in the
+# host's shared /tmp beside every concurrent Dive's.
 #
 # The two lines are one setting: "'PrologFlags=Contain' must be set to use this plugin" (man 5
 # slurm.conf), so they are held back together and there is no state where one is on without the other.
@@ -850,7 +847,7 @@ def render_slurm_conf(mesh_ip: str, weight: int = 1, features: list[str] | None 
 #
 # **CCC never carves for placement.** There is no Beak (CONTEXT.md, "Slice"): Slurm is told about whole
 # cards, priced per whole card, and the resting state of a MIG-mode card is therefore ONE full-size
-# instance, so that a Spawn asking for a card gets a card. What a Spawn does to the card it already
+# instance, so that a Dive asking for a card gets a card. What a Dive does to the card it already
 # holds is its own business, and the epilog puts it back.
 MIG_ADMIN_SH = """\
 # `4g.96gb` on an RTX PRO 6000 — the whole card. `nvidia-smi mig -lgip` lists the profiles and their IDs;
@@ -874,7 +871,7 @@ ccc_mig_enabled() {
 # How many MIG devices this card currently offers. The resting state is exactly 1. Zero means MIG mode
 # was switched on and nothing was ever carved, or a GPU instance exists with no compute instance under
 # it — which is what an interrupted `-cgi` leaves, and is indistinguishable from "no GPU" to CUDA.
-# Several means a Spawn carved the card and died before the epilog put it back.
+# Several means a Dive carved the card and died before the epilog put it back.
 ccc_mig_count() {
     nvidia-smi -L | awk -v g="$1" '
         /^GPU /      { u = $NF; gsub(/[()]/, "", u); cur = (u == g); next }
@@ -895,19 +892,19 @@ ccc_mig_reset() {
 #
 # **This is not the carving feature — it is what makes MIG work at all.** Creating an instance as root
 # leaves its capability node 0400 root, so a Guise cannot open the very MIG device Slurm allocated it,
-# and every Spawn on a MIG-mode Arm dies with no CUDA device. Measured: as a non-root uid with
+# and every Dive on a MIG-mode Arm dies with no CUDA device. Measured: as a non-root uid with
 # nvidia-cap1 readable, `-cgi` succeeds and `-C` fails "Insufficient Permissions", leaving a GPU instance
 # nothing can use.
 #
 # `/proc/driver/nvidia-caps/mig-minors` is a STATIC, complete map — gpu0..31 / gi0..14 / ci0..7, all
 # present on a box with MIG switched off entirely — so every node this card could ever need is knowable
-# before any instance exists. All of them are created, which is what lets a Spawn re-carve its own card
+# before any instance exists. All of them are created, which is what lets a Dive re-carve its own card
 # and still open what it made.
 #
-# ⚠ The per-GPU gi/ci caps are the only per-card gate here. `nvidia-cap1` (config) is global, so a Spawn
+# ⚠ The per-GPU gi/ci caps are the only per-card gate here. `nvidia-cap1` (config) is global, so a Dive
 # holding one card can still ISSUE config calls against another card on the same box. What actually
-# stops it is ConstrainDevices=yes denying the Pod that card's /dev/nvidiaN, so NVML never finds it to
-# name. UNVERIFIED on hardware: confirm `nvidia-smi -L` inside a one-card Pod on a two-card MIG Arm
+# stops it is ConstrainDevices=yes denying the container that card's /dev/nvidiaN, so NVML never finds it to
+# name. UNVERIFIED on hardware: confirm `nvidia-smi -L` inside a one-card container on a two-card MIG Arm
 # lists only the allocated card.
 ccc_mig_cap_node() {
     local m="$1" mode="$2" major
@@ -920,17 +917,17 @@ ccc_mig_cap_node() {
 }
 
 # `nvidia-cap1` is the *config* capability, and it is GLOBAL — one node for the whole box, not one per
-# card. So it is opened and never closed: closing it when one Spawn ends would take carving away from a
-# CONCURRENT Spawn still running on the box's other card, which is a bug two cards make reachable and a
+# card. So it is opened and never closed: closing it when one Dive ends would take carving away from a
+# CONCURRENT Dive still running on the box's other card, which is a bug two cards make reachable and a
 # one-card box hides completely.
 #
 # Safe to leave open because config alone reaches no card. A MIG device is opened through the per-GPU
 # access caps below, which ARE closed per job, and ConstrainDevices still decides which /dev/nvidiaN a
-# Pod may touch at all — so a process holding only this cannot find a card to name.
+# container may touch at all — so a process holding only this cannot find a card to name.
 ccc_mig_cap_config() { ccc_mig_cap_node 1 0440; }
 
 # The per-GPU access caps: what a MIG device on THIS card is actually opened through, and the only
-# per-card gate there is. Held for exactly the life of the Spawn that was allocated the card.
+# per-card gate there is. Held for exactly the life of the Dive that was allocated the card.
 ccc_mig_caps() {
     local minor="$1" mode="$2" m
     for m in $(awk -v g="^gpu$minor/" '$1 ~ g { print $2 }' /proc/driver/nvidia-caps/mig-minors); do
@@ -955,14 +952,10 @@ ccc_held_minors() {
 
 EPILOG_TMPL = """\
 #!/bin/bash
-# CCC Spawn epilog. Rendered by `cuttle setup`; slurm.conf's Epilog= points here on every node.
-# Reclaims a Spawn's node-local scratch after it ends, HOWEVER it ended. The job script's own
-# `trap ... EXIT` fires on normal exit and ordinary signals, but NOT SIGKILL (OOM-killer, `scancel -9`,
-# a Phase-2 Retract) — which would otherwise orphan the scratch until reboot. slurmd runs this at job
-# end regardless. The two roots cover both branches of the job script (a remote Arm scratches in /tmp;
-# the Head's co-located Arm under its state dir); the absent one is a harmless no-op on the other node.
-# ALWAYS exit 0: a non-zero epilog drains the node, and a stale/missing dir must never do that.
-rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
+# CCC Dive epilog. Rendered by `cuttle setup`; slurm.conf's Epilog= points here on every node.
+# Reclaims a job's node-local leftovers after it ends, HOWEVER it ended — slurmd runs this even after a
+# SIGKILL (OOM-killer, `scancel -9`, a Retract's force-kill). ALWAYS exit 0: a non-zero epilog drains the node, and a stale/missing dir must never do that.
+rm -rf "/tmp/ccc-$SLURM_JOB_ID"
 # THE kill for a ccc-launch container: Slurm never signals it (its cgroup is Podman's, not a task's),
 # so after scancel / time limit it is still running here, holding its GPU. slurmd hands the node on only
 # after this epilog, so the next job never shares the card. Host mount ns, as ccc-launch ran it.
@@ -978,24 +971,17 @@ done
 # hard-killed job leaves one behind forever without this. Same "keep only if non-empty" rule as the
 # trap: a sink that caught real stderr (the shell died before out/err existed) is worth keeping.
 # A glob, because the name carries a per-submission tag the epilog cannot derive (job id alone is not
-# unique across teardowns — see ccc_head_api.spawns' `sink=` line). A glob that matches nothing expands
+# unique across teardowns — see the job script's `--output`). A glob that matches nothing expands
 # to itself, and `rm -f` on a path that does not exist is a no-op, so the loop is safe either way.
 for s in "/tmp/ccc-$SLURM_JOB_ID.slurm" "/tmp/ccc-$SLURM_JOB_ID-"*.slurm; do
     [ -s "$s" ] || rm -f "$s"
 done
 [ -s "/tmp/ccc-bench-$SLURM_JOB_ID.log" ] || rm -f "/tmp/ccc-bench-$SLURM_JOB_ID.log"
-# Take the Spawn dir back off the **Guise** the prolog lent it to.
-# The prolog takes, the epilog returns, so the loan lasts exactly the job's lifetime — and unlike the
-# job script's own EXIT trap, this still runs after a SIGKILL. Without it a User's LATER Spawn could
-# rewrite an earlier one's recorded `exit` code and outputs, since both run as the same Guise.
-# Head's co-located Arm only; the directory does not exist on a donor Arm, so this no-ops there.
-[ -d "{head_spawns}/$SLURM_JOB_ID" ] && chown -R {mantle}:{mantle} "{head_spawns}/$SLURM_JOB_ID"
-
 CCC_GUISE_GROUP={guise_group}
 {mig_admin}
-# Put every MIG-mode card this Spawn held back to one full-size instance. THE reset point: the prolog
+# Put every MIG-mode card this Dive held back to one full-size instance. THE reset point: the prolog
 # only repairs what this never got to (a rebooted node, a killed slurmd), so a card is normally correct
-# from the moment a Spawn ends rather than from the moment the next one starts — which is what keeps an
+# from the moment a Dive ends rather than from the moment the next one starts — which is what keeps an
 # idle box honest about what it holds.
 #
 # Caps are closed FIRST, so nothing left running can carve the card while it is being put back. Like
@@ -1011,10 +997,7 @@ exit 0
 
 
 def render_epilog() -> str:
-    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR,
-                              job_ctr=config.JOB_CONTAINER_PREFIX, jobs_dir=config.JOBS_DIR,
-                              head_spawns=config.HEAD_SPAWNS_DIR,
-                              mantle=config.HEAD_API_USER,
+    return EPILOG_TMPL.format(job_ctr=config.JOB_CONTAINER_PREFIX, jobs_dir=config.JOBS_DIR,
                               guise_group=config.GUISE_GROUP,
                               mig_admin=MIG_ADMIN_SH)
 
@@ -1033,9 +1016,9 @@ def render_epilog() -> str:
 # the rollout gate in enroll.fleet_is_prolog_ready.
 PROLOG_TMPL = """\
 #!/bin/bash
-# CCC Spawn prolog. Rendered by `cuttle setup`; slurm.conf's Prolog= points here on every node.
-# Creates the **Guise** this Spawn runs as, if this node has never run one of that User's Spawns
-# before, and lends it the two directories it needs to work in. Runs as root, before the job step.
+# CCC Dive prolog. Rendered by `cuttle setup`; slurm.conf's Prolog= points here on every node.
+# Creates the **Guise** this Dive runs as, if this node has never run one of that User's Dives
+# before. Runs as root, before the job step.
 uid="$SLURM_JOB_UID"
 jid="$SLURM_JOB_ID"
 guise="{prefix}$uid"
@@ -1046,49 +1029,33 @@ guise="{prefix}$uid"
 if [ "$uid" -lt {uid_min} ] || [ "$uid" -gt {uid_max} ]; then exit 0; fi
 existing=$(getent passwd "$uid" | cut -d: -f1)
 if [ -z "$existing" ]; then
-    # First Spawn of this User's ever to land on this box. The shared group exists only so the HEAD's
+    # First Dive of this User's ever to land on this box. The shared group exists only so the HEAD's
     # sudoers rule has a Runas list (sudo never runs on an Arm); created here too so a Guise is the
-    # same account everywhere. Home-less: nothing reads it, and the Pod makes its own in its overlay.
+    # same account everywhere. Home-less: nothing reads it, and the container makes its own in its overlay.
     groupadd --gid "$uid" "$guise" 2>/dev/null
     groupadd --gid {group_gid} {group} 2>/dev/null
     useradd --uid "$uid" --gid "$uid" --groups {group} --no-create-home \\
             --shell /usr/sbin/nologin --comment "{gecos}" "$guise" || exit 1
 elif [ "$existing" != "$guise" ]; then
     # The uid is taken by an account CCC did not create. Refusing is the whole point: running a
-    # stranger's Spawn as a donor's own login account is worse than draining this node, which is what
+    # stranger's Dive as a donor's own login account is worse than draining this node, which is what
     # this exit does. Loud, and in the node's slurmd log.
-    echo "ccc-prolog: uid $uid is '$existing' on this node, not '$guise' — refusing to run a Spawn" \\
+    echo "ccc-prolog: uid $uid is '$existing' on this node, not '$guise' — refusing to run a Dive" \\
          "as an account CCC does not own" >&2
     exit 1
 fi
 
-# Head's co-located Arm ONLY: the two directories a Spawn writes in are under the Head's state dir, and
-# they are ccc-owned. Lend them to the Guise for exactly this job; the epilog takes them back. Both are
-# keyed by the JOB ID, which is why this needs nothing the prolog cannot already see. Absent on a donor
-# Arm (a remote Spawn scratches in /tmp and rsyncs its results home), so both branches no-op there.
-#
-# `install -d` rather than mkdir+chown: it is idempotent and it applies the ownership either way, so it
-# does not matter whether this or the API's own mkdir got here first.
-if [ -d "{head_spawns}" ]; then
-    # group {mantle}: the Head API still reads out/err back and rsyncd still stages results in as the
-    # Mantle. 0770 gives both sides everything they need and everyone else nothing.
-    install -d -o "$guise" -g {mantle} -m 0770 "{head_spawns}/$jid" "{head_spawns}/$jid/outputs"
-fi
-if [ -d "{head_scratch}" ]; then
-    install -d -o "$guise" -g "$guise" -m 0700 "{head_scratch}/$jid"
-fi
-
 CCC_GUISE_GROUP={group}
 {mig_admin}
-# Hand this Spawn the MIG-mode cards it was allocated, in a state it can actually use.
+# Hand this Dive the MIG-mode cards it was allocated, in a state it can actually use.
 #
 # REPAIR, not reset — the epilog is what normally restores a card. This catches the cases it never ran
-# for (a rebooted node, a hard-killed slurmd) and the first Spawn ever to land on a card whose owner
+# for (a rebooted node, a hard-killed slurmd) and the first Dive ever to land on a card whose owner
 # switched MIG mode on and never carved it, which is exactly the state that produces "CUDA not visible
-# in Pod" with a perfectly healthy GPU sitting there.
+# in container" with a perfectly healthy GPU sitting there.
 #
 # The caps are opened for the allocated cards only, and the epilog closes them again, so a Guise holds
-# this for precisely the life of its own Spawn.
+# this for precisely the life of its own Dive.
 for minor in $(ccc_held_minors); do
     uuid=$(ccc_gpu_uuid "$minor")
     ccc_mig_enabled "$uuid" || continue
@@ -1112,7 +1079,7 @@ exit 0
 # RAM-backed filesystem. Only /tmp is a bind mount off BasePath's disk.
 JOB_CONTAINER_CONF_TMPL = """\
 # Rendered by `cuttle setup`. Do not hand-edit.
-# A private /tmp and /dev/shm per Spawn. slurmd creates BasePath itself (AutoBasePath) and holds it
+# A private /tmp and /dev/shm per Dive. slurmd creates BasePath itself (AutoBasePath) and holds it
 # mounted `private` from start to shutdown; it does NOT remove it, so teardown does.
 AutoBasePath=true
 BasePath={base}
@@ -1133,8 +1100,6 @@ def render_prolog() -> str:
         group=config.GUISE_GROUP,
         group_gid=config.GUISE_GROUP_GID,
         gecos=config.GUISE_GECOS,
-        head_spawns=config.HEAD_SPAWNS_DIR,
-        head_scratch=config.HEAD_SCRATCH_DIR,
         mig_admin=MIG_ADMIN_SH,
     )
 

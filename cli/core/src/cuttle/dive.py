@@ -84,7 +84,7 @@ def _minutes(m: int) -> str:
 
 
 def _pick(message: str) -> int:
-    rows = auth._api("GET", "/dives") or []
+    rows = auth._api("GET", "/dives/mine") or []
     if not rows:
         raise ui.abort("you have no open Dives — start one with `cuttle dive <folder>`")
     if len(rows) == 1:
@@ -101,7 +101,7 @@ def _wait_ready(dive_id: int) -> dict:
                 info = auth._api("GET", f"/dives/{dive_id}")
                 if info["ready"]:
                     return info
-                if info["state"] == "ended":
+                if info["done"] or info.get("finished_at"):
                     raise ui.abort(f"Dive {dive_id} has ended")
                 if hasattr(st, "update"):
                     st.update(f"Dive {dive_id}: {_state_words(info['state'])}")
@@ -118,7 +118,7 @@ def _state_words(state: str) -> str:
 
 def _live_ids() -> set[int] | None:
     try:
-        return {r["id"] for r in auth._api("GET", "/dives")}
+        return {r["id"] for r in auth._api("GET", "/dives/mine")}
     except (Exception, SystemExit):
         return None
 
@@ -300,7 +300,7 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
 
 def _deadline(dive_id: int) -> float | None:
     try:
-        row = next((r for r in auth._api("GET", "/dives") if r["id"] == dive_id), None)
+        row = next((r for r in auth._api("GET", "/dives/mine") if r["id"] == dive_id), None)
     except (Exception, SystemExit):
         return None
     if not row or not row.get("time_limit") or not row.get("start_time"):
@@ -332,7 +332,7 @@ def _warn_thread(dive_id: int, deadline: float | None, stop: threading.Event) ->
 def _report_ending(dive_id: int) -> None:
     """Left the shell: still running (and billing), ending (hit --time / ended), or gone."""
     try:
-        state = next((r["state"] for r in auth._api("GET", "/dives") if r["id"] == dive_id), None)
+        state = next((r["state"] for r in auth._api("GET", "/dives/mine") if r["id"] == dive_id), None)
     except (Exception, SystemExit):
         state = "running"
     if state is None or state in ("ending",) or state.startswith("completing"):
@@ -354,15 +354,13 @@ def end(dive_id: int | None = None, yes: bool = False) -> None:
             raise ui.abort("you can only end your own Dives",
                            next_step="someone else's can only be ended by the operator on the Head")
         ui.say(f"  [muted]Dive {dive_id} isn't yours — ending it as the Head operator[/muted]")
-        run(["scancel", str(dive_id)], sudo=True)
-        run(["-u", config.HEAD_API_USER, "touch",
-             str(config.HEAD_SPAWNS_DIR / str(dive_id) / "cancelled")], sudo=True, check=False)
+        auth._admin(["end", str(dive_id)])
     sshconfig.forget(dive_id)
     ui.ok(f"Dive {dive_id} ending")
 
 
 def status(as_json: bool = False) -> None:
-    rows = auth._api("GET", "/dives") or []
+    rows = auth._api("GET", "/dives/mine") or []
 
     def render():
         if not rows:
