@@ -15,6 +15,7 @@ warning once. The session cookie is therefore Secure.
 """
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -48,6 +49,10 @@ WIKI_DIR = Path(os.environ.get("CCC_WIKI_DIR", "/opt/ccc/head-api/wiki"))
 # the only account that can read it, which is exactly the asymmetry that makes serving this one safe.
 # Mirrors cuttle.config.HEAD_CA_CERT.
 CA_CERT = Path(os.environ.get("CCC_CA_CERT", "/opt/ccc/tls/ccc-ca.crt"))
+
+# The Head's own `cuttle` build (cuttle.dist), which every laptop converges on. Mirrors
+# cuttle.config.CUTTLE_DIST_DIR.
+CUTTLE_DIST = Path(os.environ.get("CCC_CUTTLE_DIST", "/opt/ccc/cuttle-dist"))
 
 # Session cookie: HttpOnly + SameSite=Lax + Secure (the Head is HTTPS now — see module docstring).
 _COOKIE_NAME = "ccc_session"
@@ -262,6 +267,27 @@ def readyz(response: Response) -> dict:
     if "unreachable" in dep.values():
         response.status_code = 503
     return dep
+
+
+def _cuttle_build() -> dict:
+    try:
+        return json.loads((CUTTLE_DIST / "build.json").read_text())
+    except FileNotFoundError:
+        raise HTTPException(503, "this Head has not built cuttle yet — its Admin must run `cuttle update`")
+
+
+@api.get("/build")
+def build() -> dict:
+    """Which `cuttle` build this Head serves. Asked by every cuttle before its first call (no sign-in
+    needed, so even `cuttle login` can tell it is out of date)."""
+    return {"build": _cuttle_build()["build"]}
+
+
+@api.get("/cuttle/wheel")
+def cuttle_wheel(user: dict = Depends(current_user)) -> FileResponse:
+    """The wheel for that build, which an out-of-date cuttle installs over itself."""
+    name = _cuttle_build()["wheel"]
+    return FileResponse(CUTTLE_DIST / name, filename=name)
 
 
 @api.get("/arms")

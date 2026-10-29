@@ -112,6 +112,7 @@ class Api:
         # Starlette's TestClient is an httpx.Client that runs the app in-process, where a wall-clock
         # timeout is meaningless — it warns if handed one. The in-process test rig sets this False.
         self._per_request_timeout = per_request_timeout
+        self._build_checked = False   # selfupdate.check, once per process, before the first call
 
     # --- token ---------------------------------------------------------------
 
@@ -157,6 +158,10 @@ class Api:
 
     def _send(self, method: str, path: str, headers: dict, content: bytes | None = None,
               timeout: float = TIMEOUT_JSON) -> httpx.Response:
+        if not self._build_checked:
+            self._build_checked = True
+            from . import selfupdate
+            selfupdate.check(self._client, timeout if self._per_request_timeout else None)
         extra = {"timeout": timeout} if self._per_request_timeout else {}
         try:
             r = self._client.request(method, path, content=content, headers=headers, **extra)
