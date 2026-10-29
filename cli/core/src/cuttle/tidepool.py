@@ -122,10 +122,20 @@ def remove_user(name: str) -> None:
     _helper("remove", name, check=False)
 
 
+def drop_kept_images() -> None:
+    """The images an earlier teardown kept (config.TIDEPOOL_KEPT lists exact paths), then the list."""
+    imgs = json.loads(config.TIDEPOOL_KEPT.read_text())
+    if imgs:
+        run(["rm", "-f", *imgs], sudo=True, check=False)
+    run(["rm", "-f", str(config.TIDEPOOL_KEPT)], sudo=True, check=False)
+
+
 def teardown(all_: bool) -> None:
     """Every Tidepool stopped and unmounted (images kept unless `all_`), then CCC's shared pieces."""
     if config.TIDEPOOL_HELPER_BIN.exists():
         _helper("teardown", *(["--all"] if all_ else []), check=False)
+    elif all_ and config.TIDEPOOL_KEPT.exists():    # an earlier teardown kept them, helper and all gone
+        drop_kept_images()
     system.deny_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count())
     system.deny_dns_from(config.TIDEPOOL_BRIDGE_SUBNETS)
     run(["systemctl", "stop", config.TIDEPOOL_SLICE], sudo=True, check=False)

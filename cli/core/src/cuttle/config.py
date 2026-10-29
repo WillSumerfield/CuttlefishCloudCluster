@@ -592,6 +592,9 @@ TIDEPOOL_HELPER_BIN = Path("/usr/local/sbin/ccc-tidepool")
 SUDOERS_CCC_TIDEPOOL = Path("/etc/sudoers.d/ccc-tidepool")
 TIDEPOOL_SETTINGS = Path("/etc/ccc/tidepools.json")   # setup --head's answers, 0644 (API reads size)
 TIDEPOOL_RECORDS = Path("/etc/ccc/tidepools.d")       # <user>.json {uid}, root
+# Written by a teardown that KEPT the images: their paths (JSON list), 0644. Outside /etc/ccc so it
+# outlives the teardown; it marks the box as a torn-down Head, so a later `teardown --all` deletes them.
+TIDEPOOL_KEPT = Path("/etc/ccc-tidepools-kept.json")
 TIDEPOOL_MNT_ROOT = CCC_LIB / "tidepools"              # <user>/ = the loop-mounted image
 TIDEPOOL_KEYS_ROOT = HEAD_STATE_DIR / "tidepool-keys"  # <user>/authorized_keys (ccc) + host key .pub
 TIDEPOOL_FILES_DIR = Path("/usr/local/lib/ccc/tidepool")  # init, sshd_config, zshrc → /etc/ccc/tidepool

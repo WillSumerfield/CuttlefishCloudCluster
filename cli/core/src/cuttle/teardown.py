@@ -19,8 +19,9 @@ from .system import run
 def detect_role() -> str:
     """What this box is, for a flagless `teardown` (and the uninstaller). "local" for a Head, "arm"
     for a donor node, else "client". Head is the API venv (same predicate the menu uses); an Arm is
-    marked by its saved settings or its slurmd drop-in."""
-    if menu.is_head():
+    marked by its saved settings or its slurmd drop-in. A Head an earlier teardown left images on is
+    still "local", so `teardown --all` there finishes the job."""
+    if menu.is_head() or config.TIDEPOOL_KEPT.exists():
         return "local"
     if settings.load().get("arm") or config.SLURMD_DROPIN.exists():
         return "arm"

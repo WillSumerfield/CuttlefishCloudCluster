@@ -50,6 +50,7 @@ FILES_DIR = Path("/usr/local/lib/ccc/tidepool")  # config.TIDEPOOL_FILES_DIR
 CUTTLE_ENV = Path("/usr/local/lib/ccc/cuttle")    # config.CONTAINER_CUTTLE
 MESH_IFACE = "ccc0"                               # config.CCC_TS_TUN
 RECORDS = Path("/etc/ccc/tidepools.d")          # config.TIDEPOOL_RECORDS
+KEPT = Path("/etc/ccc-tidepools-kept.json")     # config.TIDEPOOL_KEPT
 UNIT_DIR = Path("/etc/systemd/system")
 MAIN_STORE = "/var/lib/containers/storage"
 SLICE = "ccc-tidepools.slice"                   # config.TIDEPOOL_SLICE
@@ -358,13 +359,25 @@ def users() -> list[str]:
 
 
 def teardown(all_: bool) -> None:
-    """Every Tidepool down and unmounted. Images kept unless `all_` — head.db goes with the teardown,
-    so a kept image is an orphan only an operator can recover by hand."""
+    """Every Tidepool down and unmounted. Images kept unless `all_`; kept ones are listed in KEPT
+    (added to any earlier list), which a later `teardown --all` deletes even once this helper is gone."""
     s = settings() if SETTINGS.exists() else None
+    kept = json.loads(KEPT.read_text()) if KEPT.exists() else []
     for user in users():
         _stop(user, drop_container=all_)   # a kept image keeps its container + apt layer too
-        if all_ and s and not os.path.ismount(mnt(user)):
-            image_path(s, user).unlink(missing_ok=True)
+        if s and not os.path.ismount(mnt(user)):
+            img = str(image_path(s, user))
+            if all_:
+                Path(img).unlink(missing_ok=True)
+            elif img not in kept:
+                kept.append(img)
+    if all_:
+        for img in kept:
+            Path(img).unlink(missing_ok=True)
+        KEPT.unlink(missing_ok=True)
+    elif kept:
+        KEPT.write_text(json.dumps(kept))
+        KEPT.chmod(0o644)
     for d in (DIVE_RECORDS, DIVE_RSYNCD, DIVE_STATE):
         shutil.rmtree(d, ignore_errors=True)
     sh("systemctl", "daemon-reload", check=False)

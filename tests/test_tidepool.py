@@ -27,6 +27,7 @@ class TestConstantsAgree:
         assert (H.SETTINGS, H.IMAGES_RECORD, H.MNT_ROOT, H.KEYS_ROOT, H.FILES_DIR, H.RECORDS) == (
             config.TIDEPOOL_SETTINGS, config.IMAGES_RECORD, config.TIDEPOOL_MNT_ROOT,
             config.TIDEPOOL_KEYS_ROOT, config.TIDEPOOL_FILES_DIR, config.TIDEPOOL_RECORDS)
+        assert H.KEPT == config.TIDEPOOL_KEPT
         assert (H.SLICE, H.SERVICE, H.API_USER) == (config.TIDEPOOL_SLICE, config.TIDEPOOL_SERVICE,
                                                      config.HEAD_API_USER)
         assert (H.UID_FLOOR, H.UID_CEIL, H.SSH_PORT_BASE) == (config.CCC_UID, config.GUISE_UID_MAX,
@@ -432,3 +433,61 @@ class TestEnter:
         with pytest.raises(Exception):
             cli_tp.enter()
         assert "isn't running (activating)" in capsys.readouterr().err
+
+
+class TestKeptImagesLeaveLater:
+    """A plain teardown keeps the images and lists them in KEPT; a later `teardown --all` (helper,
+    API and all already gone) still finds this box a Head and deletes exactly those files."""
+
+    @pytest.fixture
+    def head(self, tmp_path, monkeypatch):
+        imgs = tmp_path / "imgs"
+        imgs.mkdir()
+        for u in ("alice", "bob"):
+            (imgs / f"{u}.img").write_bytes(b"x")
+        (imgs / "other.img").write_bytes(b"not ours")
+        monkeypatch.setattr(H, "KEPT", tmp_path / "kept.json")
+        monkeypatch.setattr(H, "SETTINGS", tmp_path / "tidepools.json")
+        H.SETTINGS.write_text("{}")
+        monkeypatch.setattr(H, "settings", lambda: {"image_dir": str(imgs)})
+        monkeypatch.setattr(H, "users", lambda: ["alice", "bob"])
+        monkeypatch.setattr(H, "_stop", lambda u, drop_container: None)
+        monkeypatch.setattr(H, "mnt", lambda u: tmp_path / "mnt" / u)
+        monkeypatch.setattr(H, "sh", lambda *a, **k: None)
+        for d in ("DIVE_RECORDS", "DIVE_RSYNCD", "DIVE_STATE"):
+            monkeypatch.setattr(H, d, tmp_path / d)
+        return imgs
+
+    def test_a_plain_teardown_lists_what_it_kept(self, head):
+        H.teardown(False)
+        assert sorted(json.loads(H.KEPT.read_text())) == [str(head / "alice.img"), str(head / "bob.img")]
+        assert (head / "alice.img").exists()
+
+    def test_the_helper_with_all_drops_them_and_the_list(self, head):
+        H.KEPT.write_text(json.dumps([str(head / "carol.img")]))
+        (head / "carol.img").write_bytes(b"x")
+        H.teardown(True)
+        assert sorted(p.name for p in head.iterdir()) == ["other.img"]
+        assert not H.KEPT.exists()
+
+    def test_with_the_helper_gone_the_cli_drops_the_listed_files(self, tmp_path, monkeypatch):
+        kept = tmp_path / "kept.json"
+        kept.write_text(json.dumps(["/x/alice.img"]))
+        monkeypatch.setattr(config, "TIDEPOOL_KEPT", kept)
+        monkeypatch.setattr(config, "TIDEPOOL_HELPER_BIN", tmp_path / "gone")
+        ran = []
+        monkeypatch.setattr(cli_tp, "run", lambda argv, **k: ran.append(argv))
+        monkeypatch.setattr(cli_tp.system, "deny_tcp_port_range", lambda *a: None)
+        monkeypatch.setattr(cli_tp.system, "deny_dns_from", lambda *a: None)
+        cli_tp.teardown(True)
+        assert ["rm", "-f", "/x/alice.img"] in ran and ["rm", "-f", str(kept)] in ran
+
+    def test_the_list_keeps_a_torn_down_head_a_head(self, tmp_path, monkeypatch):
+        from cuttle import menu, teardown
+        monkeypatch.setattr(menu, "is_head", lambda: False)
+        monkeypatch.setattr(config, "TIDEPOOL_KEPT", tmp_path / "kept.json")
+        monkeypatch.setattr(teardown.settings, "load", lambda: {})
+        monkeypatch.setattr(config, "SLURMD_DROPIN", tmp_path / "none")
+        assert teardown.detect_role() == "client"
+        config.TIDEPOOL_KEPT.write_text("[]")
+        assert teardown.detect_role() == "local"
