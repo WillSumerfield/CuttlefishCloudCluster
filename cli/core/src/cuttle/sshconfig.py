@@ -166,12 +166,11 @@ def wsl_route(appdata: Path | None = None, profile: Path | None = None) -> bool:
     bat.write_text(f"@wsl.exe -d {os.environ['WSL_DISTRO_NAME']} -e ssh %*\r\n")
     win_bat = subprocess.run(["wslpath", "-w", str(bat)], capture_output=True, text=True).stdout.strip()
     settings = appdata / "Code" / "User" / "settings.json"
+    text = settings.read_text() if settings.exists() else ""
     try:
-        cur = json.loads(settings.read_text() or "{}") if settings.exists() else {}
-    except ValueError:   # JSONC (comments): not rewritten, so nothing of yours is lost
-        ui.warn(f"VS Code's settings.json has comments, so cuttle won't rewrite it. Add "
-                f'"remote.SSH.path": {json.dumps(win_bat)} to it yourself')
-        return False
+        cur = json.loads(text or "{}")
+    except ValueError:   # JSONC (comments): one line inserted after the `{`, the rest kept byte for byte
+        return _jsonc_insert(settings, text, win_bat)
     have = cur.get("remote.SSH.path")
     if have == win_bat:
         return True
@@ -182,6 +181,20 @@ def wsl_route(appdata: Path | None = None, profile: Path | None = None) -> bool:
     cur["remote.SSH.path"] = win_bat
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text(json.dumps(cur, indent=4) + "\n")
+    ui.ok("VS Code (Windows) now uses WSL's ssh for Remote-SSH, so it can reach Dives")
+    return True
+
+
+def _jsonc_insert(settings: Path, text: str, win_bat: str) -> bool:
+    if json.dumps(win_bat) in text:
+        return True
+    i = text.find("{")
+    if '"remote.SSH.path"' in text or i < 0:
+        ui.warn(f"VS Code's settings.json already sets remote.SSH.path (or isn't an object) — left "
+                f'alone; set it to {json.dumps(win_bat)} for VS Code to use WSL\'s ssh')
+        return False
+    # A trailing comma before `}` is fine in VS Code's JSONC.
+    settings.write_text(text[:i + 1] + f'\n    "remote.SSH.path": {json.dumps(win_bat)},' + text[i + 1:])
     ui.ok("VS Code (Windows) now uses WSL's ssh for Remote-SSH, so it can reach Dives")
     return True
 

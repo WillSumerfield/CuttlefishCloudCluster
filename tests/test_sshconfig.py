@@ -244,12 +244,22 @@ class TestWslRoute:
         assert json.loads(settings.read_text()) == {
             "editor.fontSize": 14, "remote.SSH.path": "C:\\Users\\u\\.ccc\\ccc-wsl-ssh.bat"}
 
-    def test_a_settings_file_with_comments_is_not_rewritten(self, win):
+    def test_a_settings_file_with_comments_gets_one_line_and_keeps_the_rest(self, win):
         appdata, profile, settings = win
         settings.parent.mkdir(parents=True)
         settings.write_text('{\n  // mine\n  "a": 1\n}')
+        assert sshconfig.wsl_route(appdata, profile)
+        assert settings.read_text() == ('{\n    "remote.SSH.path": "C:\\\\Users\\\\u\\\\.ccc\\\\ccc-wsl-ssh.bat",'
+                                        '\n  // mine\n  "a": 1\n}')
+        assert sshconfig.wsl_route(appdata, profile)   # already there: untouched
+        assert settings.read_text().count("remote.SSH.path") == 1
+
+    def test_a_commented_file_with_another_ssh_path_is_left_alone(self, win):
+        appdata, profile, settings = win
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{\n  // mine\n  "remote.SSH.path": "x"\n}')
         assert not sshconfig.wsl_route(appdata, profile)
-        assert "// mine" in settings.read_text()
+        assert settings.read_text() == '{\n  // mine\n  "remote.SSH.path": "x"\n}'
 
     def test_someone_elses_ssh_path_is_left_alone(self, win):
         appdata, profile, settings = win
