@@ -112,12 +112,25 @@ export function CloudDrift({ config }: { config?: CloudConfig } = {}) {
 
     // Random first delay is a PHASE offset only — spread across a full cloud cycle (crossing + gap) so
     // every card starts at a genuinely different point in the stream, while the pace stays identical.
-    const period = cfgRef.current.cross + cfgRef.current.gap;
-    timer = window.setTimeout(emit, Math.random() * period);
+    const start = () => {
+      const period = cfgRef.current.cross + cfgRef.current.gap;
+      timer = window.setTimeout(emit, Math.random() * period);
+    };
+
+    // Hidden tab: timers keep firing (throttled) but animations don't advance, so bands pile up and all
+    // cross at once on return. Stop the emitter and drop the backlog; resume fresh when visible.
+    const onVis = () => {
+      clearTimeout(timer);
+      layer.replaceChildren();
+      if (!document.hidden) start();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    if (!document.hidden) start();
 
     return () => {
       alive = false;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
       layer.replaceChildren();
     };
   }, [reduced]);
