@@ -2,39 +2,43 @@
 title: CCC Wiki
 tags: [node]
 ---
-## Summary
-How to use, donate to, run and build the Cuttlefish Cloud Cluster (CCC): Tidepools, Dives, Arms and the Head.
+The Cuttlefish Cloud Cluster (CCC) is a shared pool of GPUs. People in the group lend it their machines,
+and everyone takes turns using them, fairly. This wiki covers how to use it, how to lend it a machine,
+how to run it, and how it's built.
 
-## Details
-CCC pools GPUs that people lend it, and lets everyone in the group share them fairly. You get a home on
-the cluster that's always on, and when you need a GPU you borrow one for a while.
+## What you need to know
 
-### The main words
-You'll see these everywhere. Each one is one or two sentences here, and the glossary has the rest.
+CCC is one central machine, the **Head**, plus any number of lent machines, the **Arms**.
 
-- **Head**: the one machine that runs the cluster. It holds everyone's files, the queue and the
-  Dashboard. It can have GPUs of its own too.
-- **Arm**: a machine someone has lent to the cluster for its GPUs. Arms come and go; your files never
-  live on one.
-- **Tidepool**: your own space on the Head. Your files live here, and there's a small always-on
-  computer (no GPU) you can SSH into any time.
-- **Dive**: a GPU session. You pick a folder from your Tidepool, CCC copies it to a free GPU, and you
-  work there. Changes come back to your Tidepool as you go. It ends when you end it or its time runs
-  out.
-- **Karma**: how the cluster keeps sharing fair. Using GPUs costs Karma, lending a machine earns it,
-  and people who've used less get to go first in the queue.
-- **Dashboard**: the website on the Head, where you can see the queue, your files, your Karma and the
-  machines.
-- **`cuttle`**: the command-line tool. You use it to start Dives, attach to them and move files
-  around.
+The Head is always on. It keeps your files and runs the queue and the website. Each person gets their
+own space on it, called a **Tidepool**: a folder for your work and a small always-on computer you can
+SSH into. That computer has no GPU, so it's for editing, organising and quick jobs.
 
-### Using this wiki
-Pages are grouped into the Sections below. In the graph, colour shows the Section, bigger dots group
-other pages, and the ringed dot is the page you're on.
+When you need a GPU, you start a **Dive**. You pick a folder from your Tidepool, and CCC copies it to
+a free GPU on one of the Arms. You work there, and your changes flow back to your Tidepool as you go.
+When the Dive ends, the GPU goes back to the pool. Your files are still safe on the Head.
 
-## Contains
-- [[Start/index|Start]]: what CCC is, getting set up, and the glossary
-- [[Using CCC/index|Using CCC]]: working in your Tidepool and Dives: files, Karma, environments, the CLI and Dashboard
-- [[Donating/index|Donating]]: lending a machine to the cluster as an Arm
-- [[Admin/index|Admin]]: running the Head: setup, users, mesh, alerts, backup, security
-- [[Contributing/index|Contributing]]: how CCC is built, for people changing it
+Who goes next is decided by **Karma**. Using GPUs costs it and lending a machine earns it. If the queue
+is busy, people who've used less go first.
+
+### Quick reference
+
+| Word | What it means |
+| --- | --- |
+| **Head** | The central machine. It holds everyone's files, the queue and the Dashboard. |
+| **Arm** | A machine someone has lent to the cluster for its GPUs. Arms come and go, and your files never live on one. |
+| **Tidepool** | Your own space on the Head: your files, plus a small always-on computer you can SSH into. |
+| **Dive** | A GPU session. A folder from your Tidepool runs on a free GPU until you end it or its time runs out. |
+| **Karma** | How CCC keeps things fair. Using GPUs costs Karma, lending a machine earns it. |
+| **Dashboard** | The website on the Head. Shows the queue, your files, your Karma and the machines. |
+| **`cuttle`** | The command-line tool. Starts Dives, attaches to them and moves files around. |
+
+The Glossary (under Start) explains these and every other term in more detail.
+
+## Where to go next
+
+- [[Start/index|Start]]: new here? Begin with what CCC is, getting set up, and the glossary.
+- [[Using CCC/index|Using CCC]]: day-to-day work in your Tidepool and Dives: files, Karma, environments, the CLI and Dashboard.
+- [[Donating/index|Donating]]: lending your machine to the cluster as an Arm.
+- [[Admin/index|Admin]]: running the Head: setup, users, mesh, alerts, backup, security.
+- [[Contributing/index|Contributing]]: how CCC is built, for people changing it.
