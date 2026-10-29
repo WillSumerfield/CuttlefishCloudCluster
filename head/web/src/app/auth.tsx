@@ -39,6 +39,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (me) setSession(me);
   }, [me]);
 
+  // Sent here from the wiki to sign in (the Head redirects with ?next=/wiki/...): go back once in.
+  useEffect(() => {
+    const next = new URLSearchParams(window.location.search).get("next");
+    if (me && !me.must_change_password && next?.startsWith("/wiki/")) window.location.replace(next);
+  }, [me]);
+
   const logout = async () => {
     await apiLogout();
     setSignInPw(null);

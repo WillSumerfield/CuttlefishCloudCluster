@@ -1,6 +1,7 @@
 import { useAuth } from "./auth";
 import { Link, usePath } from "./router";
 import { session } from "./session";
+import { WIKI } from "./wiki";
 
 /**
  * The left rail. Labels floating on the abyss — no panel, no border, no rule. There is nothing here
@@ -88,6 +89,15 @@ export function Rail() {
           </Link>
         );
       })}
+
+      {/* The wiki: its own site, so a plain link that leaves the Dashboard (its footer links back). */}
+      <a
+        href={WIKI}
+        className="rail-link shrink-0 rounded-[10px] px-3 py-2 text-[15px] outline-none transition-[color,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-[var(--gold)]"
+        style={{ color: "var(--ink-mute)", transitionTimingFunction: "var(--ease-swim)" }}
+      >
+        Wiki
+      </a>
 
       {/* Who you are, and the way out. Pinned to the bottom on desktop; just the last item on mobile.
           Sign out proper lives on Account too (once built) — this is the always-reachable copy. */}

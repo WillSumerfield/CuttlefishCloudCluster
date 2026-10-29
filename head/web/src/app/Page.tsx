@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { usePath } from "./router";
+import { wikiFor } from "./wiki";
 
 /**
  * Every page's frame. The `density` prop is the whole point of it.
@@ -31,6 +33,7 @@ export function Page({
   children: ReactNode;
 }) {
   const hero = density === "hero";
+  const help = wikiFor(usePath());
 
   return (
     <main
@@ -53,6 +56,16 @@ export function Page({
           }}
         >
           {title}
+          {/* The wiki page that explains this one — a separate site, so a plain link. */}
+          <a
+            href={help}
+            aria-label="Help for this page, in the wiki"
+            title="What's this? (opens the wiki)"
+            className="ml-3 align-middle text-[15px] text-ink-mute hover:text-ink"
+            style={{ fontWeight: 400, letterSpacing: 0 }}
+          >
+            ?
+          </a>
         </h1>
         {actions}
       </header>
