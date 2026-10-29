@@ -26,3 +26,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cuttle"]
+
+# Stamps cuttle/BUILD into every wheel (see hatch_build.py).
+[tool.hatch.build.targets.wheel.hooks.custom]
