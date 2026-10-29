@@ -231,15 +231,16 @@ class TestAttach:
         r = _client(monkeypatch).get("/api/dives/77").json()
         assert (r["ready"], r["state"]) == (False, "pending")
 
-    def test_a_head_dive_is_the_tidepool_port(self, conn_db, monkeypatch):
+    def test_a_head_dive_is_its_own_port_with_no_relay(self, conn_db, monkeypatch):
         _seed()
         monkeypatch.setattr(head_spawns, "active_state", lambda j: "RUNNING")
         monkeypatch.setattr(slurm, "spawns", lambda: [{"id": 77, "node": "dex"}])
         monkeypatch.setattr(slurm, "arms", lambda: [{"name": "dex", "mesh_ip": "100.99.0.1", "head": True}])
+        monkeypatch.setattr(D, "ensure_relay", lambda *a: pytest.fail("no relay on the Head"))
+        monkeypatch.setattr(D, "_banner", lambda p: True)
+        monkeypatch.setattr(D.tp_mod, "cluster_name", lambda: "glados")
         r = _client(monkeypatch).get("/api/dives/77").json()
-        with db.connect() as conn:
-            uid = db.guise_uid(conn, 1)
-        assert r["ready"] and r["head"] and r["port"] == head_tp.ssh_port(uid)
+        assert r["ready"] and r["port"] == 31000 and r["node"] == "glados"
 
     def test_an_arm_dive_is_ready_only_when_sshd_answers(self, conn_db, monkeypatch):
         _seed()
@@ -252,7 +253,7 @@ class TestAttach:
         assert c.get("/api/dives/77").json()["ready"] is False   # relay up, still staging
         monkeypatch.setattr(D, "_banner", lambda p: True)
         r = c.get("/api/dives/77").json()
-        assert r["ready"] and not r["head"] and r["port"] == 31000 and r["user"] == "alice"
+        assert r["ready"] and r["port"] == 31000 and r["user"] == "alice" and r["node"] == "arm1"
 
     def test_end_is_yours_only(self, conn_db, monkeypatch, tmp_path):
         _seed()

@@ -7,8 +7,8 @@ Installed root-owned at /usr/local/sbin/ccc-tidepool on the Head by `cuttle setu
   or the operator for anyone.
 - `remove <user>`, `teardown [--all]`: the operator (`cuttle user remove`, `cuttle teardown`).
 - `dive-prep|dive-snap|dive-open <user> <token>`, `dive-close <token>`: the Head API, for a **Dive**
-  (see the Dives section below). `dive-lock <token>`: rsyncd (pre-xfer exec). `dive-gpu`: ccc-launch on
-  the Head. `started <user>`: the unit's ExecStartPost.
+  (see the Dives section below). `dive-lock <token>`: rsyncd (pre-xfer exec). `started <user>`: the
+  unit's ExecStartPost.
 
 A Tidepool is:
 - **one fixed-size ext4 image** `<image_dir>/<user>.img` (fallocate — the space is taken up front),
@@ -32,7 +32,6 @@ import os
 import pwd
 import re
 import shutil
-import signal
 import ssl
 import subprocess
 import sys
@@ -68,8 +67,7 @@ USER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")  # ccc_head_api.admin.USERNAME_
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 # Bumped when create_argv changes in a way an existing container must be recreated for (home kept).
-SPEC_VERSION = "3"
-CDI_SPEC = Path("/var/run/cdi/nvidia.yaml")      # config.CDI_SPEC
+SPEC_VERSION = "4"
 
 
 class Refused(Exception):
@@ -131,11 +129,6 @@ def render_mount(user: str, image: Path) -> str:
             f"[Mount]\nWhat={image}\nWhere={mnt(user)}\nType=ext4\nOptions=loop\n")
 
 
-def head_gpus() -> bool:
-    """The Head is also an Arm with GPUs: every Tidepool gets them via CDI, denied until a Dive."""
-    return CDI_SPEC.exists() and any(Path("/dev").glob("nvidia[0-9]*"))
-
-
 def mesh_ip() -> str:
     """The Head's mesh address: what `ccc.<name>` means inside a Tidepool (the API listens on all)."""
     out = subprocess.run(["/usr/sbin/ip", "-4", "-o", "addr", "show", "dev", MESH_IFACE],
@@ -146,12 +139,10 @@ def mesh_ip() -> str:
     return m[1]
 
 
-def create_argv(user: str, uid: int, s: dict, base_ref: str, head_ip: str,
-                gpus: bool = False) -> list[str]:
+def create_argv(user: str, uid: int, s: dict, base_ref: str, head_ip: str) -> list[str]:
     b = id_base(uid)
     m = mnt(user)
     return [*podman(user), "create", "--pull=never", "--name", container(user), "--hostname", "tidepool",
-            *(["--device", "nvidia.com/gpu=all"] if gpus else []),
             "--label", f"ccc.tidepool.spec={SPEC_VERSION}",
             "--init", "--uidmap", f"0:{b}:{ID_COUNT}", "--gidmap", f"0:{b}:{ID_COUNT}",
             "--network", network(user), "-p", f"{ssh_port(uid)}:22",
@@ -289,7 +280,7 @@ def ensure_container(user: str, uid: int, s: dict) -> None:
     # once into the main store (layers already there — only the manifest moves). Never into the User's.
     if not ok("podman", "image", "exists", base):
         sh("podman", "pull", "-q", "--authfile", AUTH_FILE, base, capture_output=True)
-    sh(*create_argv(user, uid, s, base, mesh_ip(), gpus=head_gpus()), capture_output=True)
+    sh(*create_argv(user, uid, s, base, mesh_ip()), capture_output=True)
 
 
 def create(user: str, uid: int) -> None:
@@ -307,21 +298,14 @@ def create(user: str, uid: int) -> None:
     print(f"tidepool {user}: {service(user)} up, ssh port {ssh_port(uid)}")
 
 
-def _no_head_dive(user: str) -> None:
-    if any(d.get("head") for d in dives(user)):
-        raise Refused(f"a Dive is using {user}'s Tidepool for its GPU — end it first (`cuttle dive end`)")
-
-
 def restart(user: str) -> None:
     record(check_user(user))
-    _no_head_dive(user)
     sh("systemctl", "restart", service(user))
 
 
 def reset(user: str) -> None:
     """A fresh container from the base: the apt layer goes, home stays."""
     uid = record(check_user(user))["uid"]
-    _no_head_dive(user)
     sh("systemctl", "stop", service(user))
     sh(*podman(user), "rm", "-f", "-t", "5", container(user), check=False, capture_output=True)
     ensure_container(user, uid, settings())   # nothing there now → created from the current base
@@ -397,9 +381,7 @@ def teardown(all_: bool) -> None:
 # - `dive-lock <tok>`: the main module's pre-xfer exec (rsyncd runs it as root) — the first stage-in
 #   makes the main folder read-only inside the Tidepool container (a bind over itself; the host path
 #   stays writable for the mirror). Soft: `sudo umount` inside undoes it, deliberately.
-# - `dive-gpu grant|revoke <tok> …`: ccc-launch when the Dive landed on the Head — the Tidepool
-#   container itself gets the GPU (live device allow on its scope) and the job's CPU/RAM.
-# - `dive-close <tok>`: the Head API's tick once the job has left the queue — unlock, revoke, modules
+# - `dive-close <tok>`: the Head API's tick once the job has left the queue — unlock, modules
 #   gone, the pushed snapshot's manifest deleted (the nightly registry-gc frees its blobs).
 
 DIVE_RECORDS = Path("/etc/ccc/dives")             # config.DIVE_RECORDS — one <tok>.json per Dive
@@ -633,7 +615,7 @@ def dive_open(user: str, tok: str, req: dict) -> None:
     os.chmod(sysd / "session", 0o400)
     os.chown(sysd / "session", b + INNER_UID, b + INNER_UID)
     d = {"token": tok, "user": user, "uid": uid, "main": main, "deps": deps, "image": req["image"],
-         "locked": False, "head": None}
+         "locked": False}
     save_dive(tok, d)
     DIVE_RSYNCD.mkdir(parents=True, exist_ok=True, mode=0o700)
     sec = DIVE_RSYNCD / f"{tok}.secrets"
@@ -690,111 +672,13 @@ def dive_lock(tok: str) -> None:
     apply_lock(d)
 
 
-# --- the Head's own GPU, handed to a Tidepool -------------------------------------
-
-def scope(user: str) -> str:
-    cid = sh(*podman(user), "container", "inspect", "--format", "{{.Id}}", container(user),
-             capture_output=True, text=True).stdout.strip()
-    return f"libpod-{cid}.scope"
-
-
-# What a Tidepool may open while no Dive grants it the GPU: the pseudo devices `closed` already
-# allows, plus terminals. The container was created with every GPU (CDI), so granting is one more
-# DeviceAllow, live.
-BASE_DEVICES = ("char-pts rw", "/dev/ptmx rw", "/dev/tty rw", "/dev/console rw", "/dev/fuse rw")
-GPU_SHARED = ("/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools")
-
-
-def device_policy(user: str, minors: list[int]) -> None:
-    allow = [*BASE_DEVICES, *(f"{n} rw" for n in GPU_SHARED if minors),
-             *(f"/dev/nvidia{m} rw" for m in minors)]
-    sh("systemctl", "set-property", "--runtime", scope(user), "DevicePolicy=closed", "DeviceAllow=",
-       *(f"DeviceAllow={a}" for a in allow), capture_output=True)
-
-
-def _cgroup_pids(user: str) -> list[int]:
-    cg = sh("systemctl", "show", "-p", "ControlGroup", "--value", scope(user), capture_output=True,
-            text=True).stdout.strip()
-    pids = []
-    for procs in Path(f"/sys/fs/cgroup{cg}").rglob("cgroup.procs"):
-        pids += [int(x) for x in procs.read_text().split()]
-    return pids
-
-
-def kill_gpu_holders(user: str) -> int:
-    n = 0
-    for pid in _cgroup_pids(user):
-        try:
-            if any(os.readlink(f).startswith("/dev/nvidia") for f in Path(f"/proc/{pid}/fd").iterdir()):
-                os.kill(pid, signal.SIGKILL)
-                n += 1
-        except OSError:
-            pass
-    return n
-
-
-def _resize(user: str) -> None:
-    """Container caps = the Tidepool cap, or the live Head Dives' allocation if larger; the slice
-    grows by every live Head Dive's allocation (Slurm gave those CPUs/RAM; the slice must not hold
-    them back)."""
-    s = settings()
-    held = [d["head"] for d in dives() if d.get("head")]
-    mine = [h for d in dives(user) if (h := d.get("head"))]
-    cpus = max([s["cpus"], *(h["cpus"] for h in mine)])
-    mem_mb = max([s["mem_gb"] * 1024, *(h["mem_mb"] for h in mine)])
-    sh(*podman(user), "update", "--cpus", str(cpus), "--memory", f"{mem_mb}m", "--memory-swap",
-       f"{mem_mb}m", container(user), check=False, capture_output=True)
-    sh("systemctl", "set-property", "--runtime", SLICE,
-       f"CPUQuota={(s['total_cpus'] + sum(h['cpus'] for h in held)) * 100}%",
-       f"MemoryMax={s['total_mem_gb'] * 1024 + sum(h['mem_mb'] for h in held)}M",
-       check=False, capture_output=True)
-
-
-def _minors_held(user: str) -> list[int]:
-    return sorted({m for d in dives(user) if d.get("head") for m in d["head"]["minors"]})
-
-
-def dive_gpu_grant(tok: str, jid: str, minors: list[int], cpus: int, mem_mb: int) -> None:
-    d = dive_record(tok)
-    d["head"] = {"jid": jid, "minors": minors, "cpus": cpus, "mem_mb": mem_mb}
-    save_dive(tok, d)
-    if d["locked"]:                       # a lock is for a copy; the Head Dive works on the live folder
-        release_lock(d)
-        d["locked"] = False
-        save_dive(tok, d)
-    _resize(d["user"])
-    device_policy(d["user"], _minors_held(d["user"]))
-
-
-def dive_gpu_revoke(tok: str) -> None:
-    d = dive_record(tok)
-    if not d.get("head"):
-        return
-    d["head"] = None
-    save_dive(tok, d)
-    device_policy(d["user"], _minors_held(d["user"]))   # new opens fail from here…
-    if not _minors_held(d["user"]):
-        kill_gpu_holders(d["user"])                      # …and what still holds one is killed
-    _resize(d["user"])
-
-
-def dive_gpu_revoke_job(jid: str) -> None:
-    """The epilog's backstop, by job id: ccc-launch may have been killed before it revoked."""
-    for d in dives():
-        if (d.get("head") or {}).get("jid") == jid:
-            dive_gpu_revoke(d["token"])
-
-
 def started(user: str) -> None:
-    """ExecStartPost: a (re)started container has a fresh scope — deny the GPU again (or grant what
-    live Head Dives hold) and put the main-folder locks back. Its ambient session is rotated."""
+    """ExecStartPost: put the main-folder locks back. Its ambient session is rotated."""
     check_user(user)
     # A fresh start rotates the ambient session: the Head API's tick mints the next one.
     (KEYS_ROOT / user / "session").unlink(missing_ok=True)
     if not _ctr_pid(user, wait_s=60):
         return
-    if head_gpus():
-        device_policy(user, _minors_held(user))
     for d in dives(user):
         if d["locked"]:
             apply_lock(d)
@@ -861,8 +745,6 @@ def dive_close(tok: str) -> None:
     p = dive_record_path(tok)
     if p.exists():
         d = json.loads(p.read_text())
-        if d.get("head"):
-            dive_gpu_revoke(tok)
         if d["locked"]:
             release_lock(d)
         try:
@@ -916,13 +798,6 @@ def main(argv: list[str]) -> int:
             dive_close(check_token(argv[1]))
         elif len(argv) == 2 and argv[0] == "dive-lock":
             dive_lock(argv[1])
-        elif len(argv) == 7 and argv[:2] == ["dive-gpu", "grant"]:
-            dive_gpu_grant(argv[2], str(int(argv[3])), [int(m) for m in argv[4].split(",") if m],
-                           int(argv[5]), int(argv[6]))
-        elif len(argv) == 3 and argv[:2] == ["dive-gpu", "revoke"]:
-            dive_gpu_revoke(argv[2])
-        elif len(argv) == 3 and argv[:2] == ["dive-gpu", "revoke-job"]:
-            dive_gpu_revoke_job(str(int(argv[2])))
         elif len(argv) == 2 and argv[0] == "started":
             started(argv[1])
         elif argv == ["registry-gc"]:
@@ -932,7 +807,7 @@ def main(argv: list[str]) -> int:
         else:
             raise Refused("usage: ccc-tidepool create <user> <uid> | restart|reset|remove <user> | "
                           "teardown [--all] | dive-prep|dive-snap|dive-open <user> <token> | "
-                          "dive-close|dive-lock <token> | dive-gpu grant|revoke … | started <user> | "
+                          "dive-close|dive-lock <token> | started <user> | "
                           "registry-gc | fs <user> <op> <path> [<path>]")
     except (Refused, ValueError) as e:
         print(f"ccc-tidepool: {e}", file=sys.stderr)

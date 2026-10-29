@@ -3,8 +3,8 @@
 `ssh <name>-58` — reaches it without anyone handling a port.
 
 A Dive answers with the Tidepool's own host key and takes the User's own keys, so every alias pins
-the same known_hosts entry and uses the same `~/.ssh/ccc_ed25519`; only HostName/Port differ (an Arm
-Dive is reached through the Head's relay port, a Head Dive is the Tidepool itself).
+the same known_hosts entry and uses the same `~/.ssh/ccc_ed25519`; only HostName/Port differ (every
+Dive is reached at its own port on the Head: a relay for an Arm Dive, the container itself on the Head).
 
 **Generated wholly, every time, from the Dives this box knows of** (DIVE_DIR). A Dive the Head no
 longer lists as live is not reproduced, so the file stays bounded, and cuttle needs exactly one line

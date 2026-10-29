@@ -64,10 +64,9 @@ class TestHelperArgv:
         for bad in ("--privileged", "--device", "nvidia", "--network host", "--pid", "--ipc"):
             assert bad not in a
 
-    def test_a_gpu_head_gives_every_gpu_via_cdi(self):
-        a = H.create_argv("bob", 60003, self.S, self.BASE, "100.99.0.1", gpus=True)
-        assert a[a.index("--device") + 1] == "nvidia.com/gpu=all"
-        assert f"ccc.tidepool.spec={H.SPEC_VERSION}" in a
+    def test_no_gpu_ever(self):
+        a = self.argv()
+        assert "--device" not in a and f"ccc.tidepool.spec={H.SPEC_VERSION}" in a
 
     def test_caps_port_network_and_slice(self):
         a = " ".join(self.argv())
@@ -491,3 +490,12 @@ class TestKeptImagesLeaveLater:
         assert teardown.detect_role() == "client"
         config.TIDEPOOL_KEPT.write_text("[]")
         assert teardown.detect_role() == "local"
+
+
+def test_entry_lists_open_dives():
+    from cuttle import tidepool as T
+    rows = [{"id": 4, "state": "RUNNING", "node": "glados", "main": "Fractals"},
+            {"id": 5, "state": "PENDING", "node": None, "main": "x"}]
+    assert T.open_dive_lines(rows) == [
+        "Dive 4 on glados · ~/Fractals read-only here until it ends · `cuttle dive attach 4`",
+        "Dive 5 pending · ~/x"]

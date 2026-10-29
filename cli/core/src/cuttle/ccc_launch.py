@@ -24,13 +24,13 @@ replaces the job's, so the GPU fence is the `--device` list built here from the 
 scancel never signals the container. `--init` + Podman's sig-proxy pass scancel's SIGTERM in (a chance
 to checkpoint); the epilog's `podman rm -f` is the kill, before the node is handed to the next job.
 
-**A Dive** (spec key `dive`) is a shell, not a script, and runs one of two ways:
-- **on an Arm**: the User's folders are pulled from the Head's per-Dive rsync modules into the job dir
-  (`--numeric-ids`: same id_base everywhere, so they are uid 1000 inside with no chown), the User's
-  snapshot image runs sshd on this Arm's mesh address, the main folder is mirrored back every
-  MIRROR_S and once more at the end (Slurm's TERM → the container stops → final mirror, inside KillWait).
-- **on the Head** (ccc-tidepool holds a record of the Dive): nothing is copied — the User's own
-  Tidepool container is lent the allocated GPU and the job's CPU/RAM until the job ends.
+**A Dive** (spec key `dive`) is a shell, not a script, and runs the same way on every node, the Head
+included: the User's folders are pulled from the Head's per-Dive rsync modules into the job dir
+(`--numeric-ids`: same id_base everywhere, so they are uid 1000 inside with no chown), the User's
+snapshot image runs sshd, the main folder is mirrored back every MIRROR_S and once more at the end
+(Slurm's TERM → the container stops → final mirror, inside KillWait). On an Arm sshd listens on the
+mesh address (the Head relays to it); on the Head, where a relay would take the same port, on every
+address — clients reach it directly.
 
 Stdlib only, no CCC imports: it runs under the system python as root.
 """
@@ -44,6 +44,7 @@ import signal
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 CLUSTER_NAME_FILE = Path("/etc/ccc/cluster-name")   # config.CLUSTER_NAME_FILE
@@ -55,7 +56,6 @@ CONTAINER_PREFIX = "ccc-job-"
 SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir", "dive"}
 DIVE_KEYS = {"token", "user", "secret", "head", "main", "deps", "port"}
 TIDEPOOL_HELPER = "/usr/local/sbin/ccc-tidepool"   # Head only (config.TIDEPOOL_HELPER_BIN)
-DIVE_RECORDS = Path("/etc/ccc/dives")               # config.DIVE_RECORDS
 ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR — shared uv cache
 MESH_IFACE = "ccc0"                                 # config.CCC_TS_TUN
 CUTTLE_ENV = "/usr/local/lib/ccc/cuttle"            # config.CONTAINER_CUTTLE
@@ -126,6 +126,7 @@ def parse_job(text: str) -> dict:
             "state": fields.get("JobState"),
             "gres_idx": parse_idx(gres["idx"]) if gres else [],
             "cpus": int(fields.get("NumCPUs", "1").split("-")[0]),
+            "node": fields.get("NodeList", ""), "end": fields.get("EndTime", ""),
             "mem_mb": int(float(mem["n"]) * mult[mem["u"]]) if mem else 0}
 
 
@@ -275,25 +276,45 @@ def podman_argv(spec: dict, jid: str, base: int, step: str, gpus: list[str], job
 
 # --- Dives -----------------------------------------------------------------------
 
-def head_dive(tok: str) -> bool:
-    """The Head keeps a record of every open Dive; a job that lands here works in the Tidepool."""
-    return Path(TIDEPOOL_HELPER).exists() and (DIVE_RECORDS / f"{tok}.json").exists()
+def on_head() -> bool:
+    return Path(TIDEPOOL_HELPER).exists()
 
 
-def run_head_dive(d: dict, jid: str, job: dict) -> int:
-    """Lend the Tidepool the allocated GPU and the job's CPU/RAM until Slurm ends the job."""
-    minors = [_device_minors()[i] for i in job["gres_idx"]]
-    stop = threading.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, lambda *_: stop.set())
-    subprocess.run([TIDEPOOL_HELPER, "dive-gpu", "grant", d["token"], jid, ",".join(map(str, minors)),
-                    str(job["cpus"]), str(job["mem_mb"])], check=True)
+def dive_where(node: str) -> str:
+    """The machine a Dive runs on, as Users name it: the cluster name on the Head, else the node."""
+    return CLUSTER_NAME_FILE.read_text().strip() if on_head() else node
+
+
+def _clock(end: str, now: datetime | None = None) -> str:
+    """Slurm's EndTime → `14:30`, or `Oct 31 14:30` when not today."""
     try:
-        while not stop.wait(3600):
-            pass
-    finally:
-        subprocess.run([TIDEPOOL_HELPER, "dive-gpu", "revoke", d["token"]])
-    return 0
+        t = datetime.fromisoformat(end)
+    except ValueError:
+        return "?"
+    return t.strftime("%H:%M" if t.date() == (now or datetime.now()).date() else "%b %d %H:%M")
+
+
+def gpu_names(uuids: list[str]) -> list[str]:
+    out = subprocess.run([nvidia_smi(), "--query-gpu=uuid,name", "--format=csv,noheader"],
+                         capture_output=True, text=True).stdout
+    names = dict(ln.split(", ", 1) for ln in out.splitlines() if ", " in ln)
+    return [names.get(u, "GPU").removeprefix("NVIDIA ") for u in uuids]
+
+
+def dive_banner(jid: str, where: str, idx: list[int], names: list[str], end: str, main: str,
+                now: datetime | None = None) -> str:
+    gpus = ", ".join(f"GPU {i} ({n})" for i, n in zip(idx, names)) or "no GPU"
+    return (f"Dive {jid} on {where} · {gpus} · ends {_clock(end, now)} · "
+            f"~/{main} mirrors back to your Tidepool every minute")
+
+
+def write_shell_info(sysdir: Path, where: str, main: str, banner: str) -> None:
+    """/etc/ccc/dive/{where,main,banner} inside: what the shell's zshrc reads for its prompt
+    (`in a dive · <user>@<where>`), its start folder and its login line. Files, not `-e`: an ssh login
+    shell never sees the container's environment."""
+    for name, text in (("where", where), ("main", main), ("banner", banner)):
+        (sysdir / name).write_text(text + "\n")
+        (sysdir / name).chmod(0o644)
 
 
 def module(d: dict, name: str) -> str:
@@ -365,6 +386,7 @@ def mesh_ip() -> str:
 
 def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: list[str], jobdir: Path,
               home: Path, deps: list[str], addr: str) -> list[str]:
+    """`addr` "" = publish sshd on every address (the Head: no relay in front of it)."""
     d = spec["dive"]
     u = d["user"]
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
@@ -376,7 +398,7 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
             "--name", f"{CONTAINER_PREFIX}{jid}", "--cgroup-parent", step, "--hostname", f"dive-{jid}",
             "--uidmap", f"0:{base}:{ID_COUNT}", "--gidmap", f"0:{base}:{ID_COUNT}",
             "--pull=missing", "--authfile", AUTH_FILE,
-            "--network", "private", "-p", f"{addr}:{d['port']}:22",
+            "--network", "private", "-p", f"{addr}:{d['port']}:22" if addr else f"{d['port']}:22",
             "-v", f"{home}:/home/{u}", "-v", f"{jobdir}/sys:/etc/ccc/dive:ro",
             "-v", f"{ENV_CACHE}:/ccc-cache:idmap",
             # `cuttle` inside, reaching the Head with the Dive's ambient session (sys/session)
@@ -402,7 +424,7 @@ def drop_image(ref: str) -> None:
                    capture_output=True)
 
 
-def run_arm_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
+def run_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
     d = spec["dive"]
     os.environ["RSYNC_PASSWORD"] = d["secret"]
     JOBS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -412,8 +434,11 @@ def run_arm_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
     home = stage_in(d, jobdir, base + INNER_UID)
     gpus = gpu_ids(job["gres_idx"])
     wsl = WSL_DXG.exists() and not _device_minors()
+    where = dive_where(job["node"])
+    write_shell_info(jobdir / "sys", where, d["main"],
+                     dive_banner(jid, where, job["gres_idx"], gpu_names(gpus), job["end"], d["main"]))
     proc = subprocess.Popen(dive_argv(spec, jid, base, step, cdi_names(gpus, wsl), gpus, jobdir, home,
-                                      d["deps"], mesh_ip()))
+                                      d["deps"], "" if on_head() else mesh_ip()))
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: proc.send_signal(signal.SIGTERM))
 
@@ -461,9 +486,7 @@ def main(argv: list[str]) -> int:
     spec = validate_spec(read_spec(script))
     base = id_base(caller)
     if "dive" in spec:
-        if head_dive(spec["dive"]["token"]):
-            return run_head_dive(spec["dive"], jid, job)
-        return run_arm_dive(spec, jid, job, step, base)
+        return run_dive(spec, jid, job, step, base)
     gid = pwd.getpwuid(caller).pw_gid
 
     JOBS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)

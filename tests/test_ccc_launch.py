@@ -48,10 +48,10 @@ def test_step_cgroup_refuses(cg, jid):
 
 def test_parse_job():
     text = ("JobId=42 JobName=ccc-bench UserId=ccc-u60001(60001) GroupId=ccc-u60001(60001) "
-            "JobState=RUNNING Reason=None JOB_GRES=gpu:2 Nodes=dex CPU_IDs=0-1 Mem=0 "
-            "GRES=gpu:2(IDX:0-1) TresPerNode=gres/gpu:2")
+            "JobState=RUNNING Reason=None EndTime=2026-10-29T14:30:00 NodeList=dex JOB_GRES=gpu:2 "
+            "Nodes=dex CPU_IDs=0-1 Mem=0 GRES=gpu:2(IDX:0-1) TresPerNode=gres/gpu:2")
     assert L.parse_job(text) == {"uid": 60001, "state": "RUNNING", "gres_idx": [0, 1], "cpus": 1,
-                                 "mem_mb": 0}
+                                 "mem_mb": 0, "node": "dex", "end": "2026-10-29T14:30:00"}
 
 
 def test_parse_job_cpus_and_memory():

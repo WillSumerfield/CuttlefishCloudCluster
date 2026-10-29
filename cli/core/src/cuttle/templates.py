@@ -601,6 +601,22 @@ SAVEHIST=50000
 plugins=(git sudo zsh-syntax-highlighting zsh-autosuggestions you-should-use colored-man-pages extract)
 source $ZSH/oh-my-zsh.sh
 source /etc/zsh/ccc-p10k.zsh
+# Where this shell is, always shown: a Dive (ccc-launch writes /etc/ccc/dive/{{where,main,banner}}) or
+# the Tidepool. Files, not env: an ssh login shell never sees the container's environment.
+if [[ -r /etc/ccc/dive/where ]]; then
+  _ccc_where="in a dive · %n@$(</etc/ccc/dive/where)"
+else
+  _ccc_where="in a tidepool · %n@$(</etc/ccc/cluster-name)"
+fi
+typeset -g POWERLEVEL9K_CONTEXT_{{,SUDO_,ROOT_,REMOTE_,REMOTE_SUDO_}}TEMPLATE=$_ccc_where
+unset POWERLEVEL9K_CONTEXT_{{DEFAULT,SUDO}}_{{CONTENT,VISUAL_IDENTIFIER}}_EXPANSION
+typeset -g POWERLEVEL9K_CONTEXT_PREFIX=
+if [[ -r /etc/ccc/dive/banner && -o interactive ]]; then
+  print -r -- "$(</etc/ccc/dive/banner)"
+  # start where the work is (VS Code terminals already open there, so only from ~)
+  _ccc_main=$HOME/$(</etc/ccc/dive/main)
+  [[ $PWD == $HOME && -d $_ccc_main ]] && cd -- "$_ccc_main"
+fi
 """
 
 
@@ -948,9 +964,6 @@ rm -rf "/tmp/ccc-$SLURM_JOB_ID" "{head_scratch}/$SLURM_JOB_ID"
 # so after scancel / time limit it is still running here, holding its GPU. slurmd hands the node on only
 # after this epilog, so the next job never shares the card. Host mount ns, as ccc-launch ran it.
 timeout 60 nsenter --mount=/proc/1/ns/mnt -- podman rm -f -t 0 "{job_ctr}$SLURM_JOB_ID" >/dev/null 2>&1
-# A Dive on the Head's own GPU lent it to the User's Tidepool; ccc-launch takes it back at the end, and
-# this is the backstop if ccc-launch was killed first. No-op on an Arm (no helper) or any other job.
-[ -x {helper} ] && timeout 60 {helper} dive-gpu revoke-job "$SLURM_JOB_ID" >/dev/null 2>&1
 rm -rf "{jobs_dir}/$SLURM_JOB_ID"
 # Podman's cgroup dirs (libpod-*, conmon) block Slurm's own rmdir of the job's cgroup tree. rmdir only
 # takes empty dirs, so anything still in use is left alone.
@@ -995,7 +1008,7 @@ exit 0
 
 
 def render_epilog() -> str:
-    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR, helper=config.TIDEPOOL_HELPER_BIN,
+    return EPILOG_TMPL.format(head_scratch=config.HEAD_SCRATCH_DIR,
                               job_ctr=config.JOB_CONTAINER_PREFIX, jobs_dir=config.JOBS_DIR,
                               head_spawns=config.HEAD_SPAWNS_DIR,
                               mantle=config.HEAD_API_USER,

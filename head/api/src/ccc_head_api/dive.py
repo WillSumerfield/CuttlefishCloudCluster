@@ -9,15 +9,15 @@ as `ccc` and cannot read Tidepool files, so every step that touches them is the 
    hold, single-writer on the main folder.
 3. `dive-snap` — the User's system layer committed + pushed (only that layer uploads).
 4. `dive-open` — cuttle.toml written back, the per-Dive rsync modules opened.
-5. sbatch as the User's Guise; the job is one `ccc-launch`, which either copies onto an Arm or lends
-   the Head's GPU to the Tidepool itself (ccc_launch.py).
+5. sbatch as the User's Guise; the job is one `ccc-launch`, which copies the folders onto whichever
+   node Slurm picked — the Head included — and runs the Dive's container there (ccc_launch.py).
 
 Attach: the User's own keys + the Tidepool's host key (staged into the Dive), so `ssh <name>-<id>`
 pins the same host key as `ssh <name>`. An Arm Dive is reached through a Head-side relay (Users are
-not Mesh members); a Head Dive *is* the Tidepool, at its usual port.
+not Mesh members); a Head Dive's container publishes the same port on the Head itself, no relay.
 
 End: the tick sees the job leave the queue (final mirror done inside KillWait) and runs `dive-close`:
-lock lifted, GPU revoked (backstop), modules gone, snapshot manifest deleted.
+lock lifted, modules gone, snapshot manifest deleted.
 """
 
 import base64
@@ -361,15 +361,22 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
 
 # --- attach -----------------------------------------------------------------------
 
+def where(node: str | None, arms: list[dict] | None = None) -> str | None:
+    """A node as Users name it: the Head is the cluster name, an Arm its node name."""
+    heads = {a["name"] for a in (slurm.arms() if arms is None else arms) if a.get("head")}
+    return tp_mod.cluster_name() if node and node in heads else node
+
+
 def rows(user_id: int | None = None) -> list[dict]:
     """Open Dives with Slurm's view of each (state, node, times)."""
     live = {j["id"]: j for j in slurm.spawns()}
+    arms = slurm.arms() if live else []
     with db.connect() as conn:
         out = []
         for d in db.open_dives(conn, user_id):
             j = live.get(d["job_id"]) or {}
             out.append({"id": d["job_id"], "main": d["main"], "deps": json.loads(d["deps"]),
-                        "state": j.get("state") or "ending", "node": j.get("node"),
+                        "state": j.get("state") or "ending", "node": where(j.get("node"), arms),
                         "gpus": d["gpus"], "minutes": d["minutes"], "start_time": j.get("start_time"),
                         "time_limit": j.get("time_limit"), "user_id": d["user_id"]})
     return out
@@ -379,7 +386,6 @@ def connection(user: dict, job_id: int) -> dict:
     """What `ssh <name>-<id>` needs, once the Dive can take it: `ready` means an sshd answered."""
     with db.connect() as conn:
         row, d = db.get_spawn(conn, job_id), db.get_dive(conn, job_id)
-        uid = db.guise_uid(conn, user["id"])
     if row is None or d is None:
         raise HTTPException(404, f"no Dive {job_id}")
     if row["user_id"] != user["id"]:
@@ -387,22 +393,21 @@ def connection(user: dict, job_id: int) -> dict:
     base = {"id": job_id, "user": user["username"], "host_key": tp_mod.host_key(user["username"]),
             "main": d["main"], "alias": f"{tp_mod.cluster_name()}-{job_id}"}
     if d["closed"]:
-        return {**base, "ready": False, "state": "ended", "head": False, "port": None}
+        return {**base, "ready": False, "state": "ended", "port": None}
     state = spawns_mod.active_state(job_id)
     if state != "RUNNING":
-        return {**base, "ready": False, "state": (state or "ending").lower(), "head": False, "port": None}
+        return {**base, "ready": False, "state": (state or "ending").lower(), "port": None}
     node = next((s["node"] for s in slurm.spawns() if s["id"] == job_id), None)
     arm = next((a for a in slurm.arms() if a["name"] == node), None) if node else None
     if arm is None or not arm.get("mesh_ip"):
-        return {**base, "ready": False, "state": "running", "head": False, "port": None}
+        return {**base, "ready": False, "state": "running", "port": None}
     if arm.get("head"):
-        # the Tidepool itself, at its usual port, now holding the GPU
-        return {**base, "ready": True, "state": "running", "head": True, "node": node,
-                "port": tp_mod.ssh_port(uid)}
-    with db.connect() as conn:
-        up = ensure_relay(conn, job_id, arm["mesh_ip"], node)
-    return {**base, "ready": up and _banner(d["port"]), "state": "running", "head": False, "node": node,
-            "port": d["port"]}
+        up = True   # the container publishes the port here itself (a relay would take the same one)
+    else:
+        with db.connect() as conn:
+            up = ensure_relay(conn, job_id, arm["mesh_ip"], node)
+    return {**base, "ready": up and _banner(d["port"]), "state": "running",
+            "node": where(node, [arm]), "port": d["port"]}
 
 
 def end(user: dict, job_id: int) -> None:

@@ -181,6 +181,18 @@ def connect() -> dict:
     return tp
 
 
+def open_dive_lines(rows: list[dict]) -> list[str]:
+    """One line per open Dive, for the Tidepool's entry: where it is and what it holds."""
+    out = []
+    for r in rows:
+        if r["state"].lower() == "running":
+            out.append(f"Dive {r['id']} on {r.get('node') or '?'} · ~/{r['main']} read-only here until it "
+                       f"ends · `cuttle dive attach {r['id']}`")
+        else:
+            out.append(f"Dive {r['id']} {r['state'].lower()} · ~/{r['main']}")
+    return out
+
+
 def enter() -> None:
     """Refresh the alias (port/host key may have changed at a reset or re-setup), then ssh in, with
     this folder forwarded for `cuttle upload/download` inside (transfer.Forward)."""
@@ -191,7 +203,9 @@ def enter() -> None:
     name = config.cluster_name()
     with transfer.Forward(name) as fwd:
         ui.ok(f"Tidepool {tp['user']}@{name} — {tp['used_gb']:.1f} / {tp['size_gb']} GB used")
-        ui.hint("no GPU here: run GPU work in a Dive (`cuttle dive`)")
+        ui.hint("no GPU in the Tidepool: GPU work runs in a Dive (`cuttle dive`)")
+        for line in open_dive_lines(auth._api("GET", "/dives") or []):
+            ui.caution(line)
         ui.hint(f"`cuttle download <path>` sends to {fwd.root}")
         ui.hint(f"`cuttle upload <path>` fetches from {fwd.root}")
         ui.hint("type `exit` to leave — the Tidepool keeps running either way")

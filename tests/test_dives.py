@@ -33,7 +33,6 @@ class TestConstantsAgree:
         assert H.registry() == config.registry() == "ccc.lab:5000"
         assert H.CA_CERT == str(config.HEAD_CA_CERT)
         assert H.HELPER == str(config.TIDEPOOL_HELPER_BIN)
-        assert H.CDI_SPEC == config.CDI_SPEC
 
 
 class TestFolderPaths:
@@ -210,59 +209,6 @@ class TestOpenAndClose:
         assert H.main(argv) == 2
 
 
-class TestHeadGpu:
-    S = {"cpus": 4, "mem_gb": 16, "total_cpus": 32, "total_mem_gb": 128}
-
-    @pytest.fixture
-    def ran(self, helper_dirs, monkeypatch):
-        calls = []
-        monkeypatch.setattr(H, "sh", lambda *a, **k: calls.append(a) or subprocess.CompletedProcess(
-            a, 0, "", ""))
-        monkeypatch.setattr(H, "settings", lambda: self.S)
-        monkeypatch.setattr(H, "scope", lambda u: "libpod-x.scope")
-        monkeypatch.setattr(H, "kill_gpu_holders", lambda u: calls.append(("killed", u)) or 1)
-        H.save_dive(TOK, {"token": TOK, "user": "bob", "uid": 60003, "main": "proj", "deps": [],
-                          "locked": False, "head": None, "image": "i"})
-        return calls
-
-    def _allow(self, calls):
-        c = [c for c in calls if "set-property" in c and "libpod-x.scope" in c][-1]
-        return [a.split("=", 1)[1] for a in c if a.startswith("DeviceAllow=") and a != "DeviceAllow="]
-
-    def test_grant_allows_only_the_allocated_card_and_raises_caps(self, ran):
-        H.dive_gpu_grant(TOK, "77", [1], 16, 65536)
-        allow = self._allow(ran)
-        assert "/dev/nvidia1 rw" in allow and "/dev/nvidiactl rw" in allow
-        assert "/dev/nvidia0 rw" not in allow
-        upd = next(c for c in ran if "update" in c)
-        assert upd[upd.index("--cpus") + 1] == "16" and upd[upd.index("--memory") + 1] == "65536m"
-        sl = next(c for c in ran if config.TIDEPOOL_SLICE in c)
-        assert "CPUQuota=4800%" in sl and f"MemoryMax={128 * 1024 + 65536}M" in sl
-
-    def test_revoke_denies_kills_holders_and_restores(self, ran):
-        H.dive_gpu_grant(TOK, "77", [1], 16, 65536)
-        ran.clear()
-        H.dive_gpu_revoke(TOK)
-        assert not any("nvidia" in a for a in self._allow(ran))
-        assert ("killed", "bob") in ran
-        upd = next(c for c in ran if "update" in c)
-        assert upd[upd.index("--cpus") + 1] == "4" and upd[upd.index("--memory") + 1] == "16384m"
-        assert H.dive_record(TOK)["head"] is None
-
-    def test_epilog_backstop_finds_the_dive_by_job_id(self, ran):
-        H.dive_gpu_grant(TOK, "77", [0], 4, 1024)
-        H.dive_gpu_revoke_job("78")
-        assert H.dive_record(TOK)["head"]
-        H.dive_gpu_revoke_job("77")
-        assert H.dive_record(TOK)["head"] is None
-
-    def test_restart_and_reset_refused_while_a_head_dive_holds_the_gpu(self, ran):
-        H.dive_gpu_grant(TOK, "77", [0], 4, 1024)
-        assert H.main(["restart", "bob"]) == 2
-        assert H.main(["reset", "bob"]) == 2
-
-    def test_epilog_calls_the_backstop(self):
-        assert "dive-gpu revoke-job \"$SLURM_JOB_ID\"" in templates.render_epilog()
 
 
 class TestRegistry:
@@ -289,7 +235,7 @@ class TestLaunchSpec:
     def test_constants_agree_with_the_helper(self):
         assert L.DIVE_FILTERS == H.FILTER_ARGS
         assert L.REL_RE.pattern == H.REL_RE.pattern and L.TOKEN_RE.pattern == H.TOKEN_RE.pattern
-        assert L.TIDEPOOL_HELPER == H.HELPER and L.DIVE_RECORDS == H.DIVE_RECORDS
+        assert L.TIDEPOOL_HELPER == H.HELPER
         assert L.ENV_CACHE == config.NODE_ENV_CACHE_DIR and L.MESH_IFACE == config.CCC_TS_TUN
 
     def test_a_good_dive_spec_passes(self):
@@ -370,10 +316,14 @@ class TestArmDive:
         monkeypatch.setattr(L, "gpu_ids", lambda g: ["GPU-1"])
         monkeypatch.setattr(L, "mesh_ip", lambda: "100.99.0.7")
         monkeypatch.setattr(L, "dive_argv", lambda *a: ["true"])
+        monkeypatch.setattr(L, "gpu_names", lambda u: ["RTX"])
+        monkeypatch.setattr(L, "write_shell_info", lambda *a: None)
+        monkeypatch.setattr(L, "on_head", lambda: False)
         monkeypatch.setattr(L, "mirror", lambda d, h: order.append("mirror") or True)
         monkeypatch.setattr(L.subprocess, "run", lambda a, **k: order.append(a))
         monkeypatch.setattr(L.signal, "signal", lambda *a: None)
-        assert L.run_arm_dive(spec, "77", {"gres_idx": "0"}, "/s", 2**31) == 0
+        job = {"gres_idx": [0], "node": "arm1", "end": "2026-10-29T14:30:00"}
+        assert L.run_dive(spec, "77", job, "/s", 2**31) == 0
         assert order[-2:] == ["mirror", ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
                                          "/usr/bin/podman", "rmi", spec["image"]]]
 
@@ -384,29 +334,45 @@ class TestArmDive:
         assert [d for _, d in L.dotfile_binds(home, "bob", [".work"])] == ["/home/bob/.bashrc"]
 
 
-class TestHeadDive:
-    def test_detected_by_the_helpers_record(self, tmp_path, monkeypatch):
-        helper = tmp_path / "helper"
-        helper.write_text("")
-        monkeypatch.setattr(L, "TIDEPOOL_HELPER", str(helper))
-        monkeypatch.setattr(L, "DIVE_RECORDS", tmp_path)
-        assert not L.head_dive(TOK)
-        (tmp_path / f"{TOK}.json").write_text("{}")
-        assert L.head_dive(TOK)
+class TestOneDivePath:
+    """A Dive on the Head is the same container as on an Arm; only its port and its name differ."""
 
-    def test_grant_then_revoke_on_the_way_out(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(L.subprocess, "run", lambda a, **k: calls.append(a))
-        monkeypatch.setattr(L, "_device_minors", lambda: [0, 1, 2])
-        monkeypatch.setattr(L.signal, "signal", lambda *a: None)
+    def test_the_head_publishes_on_every_address(self, tmp_path):
+        spec = {"image": "x", "dive": DIVE}
+        (tmp_path / "home").mkdir()
+        a = L.dive_argv(spec, "77", 2**31, "/s", [], [], tmp_path, tmp_path / "home", [], "")
+        assert a[a.index("-p") + 1] == "31005:22"
 
-        class Ev:
-            def set(self): pass
-            def wait(self, t): return True
-        monkeypatch.setattr(L.threading, "Event", Ev)
-        L.run_head_dive(DIVE, "77", {"gres_idx": [1], "cpus": 8, "mem_mb": 32768})
-        assert calls == [[L.TIDEPOOL_HELPER, "dive-gpu", "grant", TOK, "77", "1", "8", "32768"],
-                         [L.TIDEPOOL_HELPER, "dive-gpu", "revoke", TOK]]
+    def test_where_is_the_cluster_name_on_the_head_else_the_node(self, tmp_path, monkeypatch):
+        (tmp_path / "name").write_text("glados\n")
+        monkeypatch.setattr(L, "CLUSTER_NAME_FILE", tmp_path / "name")
+        monkeypatch.setattr(L, "on_head", lambda: True)
+        assert L.dive_where("dex") == "glados"
+        monkeypatch.setattr(L, "on_head", lambda: False)
+        assert L.dive_where("willpc") == "willpc"
+
+    def test_banner(self):
+        from datetime import datetime
+        now = datetime(2026, 10, 29, 12, 0)
+        b = L.dive_banner("4", "glados", [0], ["RTX PRO 6000"], "2026-10-29T14:30:00", "Fractals", now)
+        assert b == ("Dive 4 on glados · GPU 0 (RTX PRO 6000) · ends 14:30 · "
+                     "~/Fractals mirrors back to your Tidepool every minute")
+        assert "ends Oct 30 09:00" in L.dive_banner("4", "x", [], [], "2026-10-30T09:00:00", "m", now)
+
+    def test_shell_info_files_are_readable_inside(self, tmp_path):
+        L.write_shell_info(tmp_path, "willpc", "proj/a", "Dive 4")
+        assert [(tmp_path / n).read_text() for n in ("where", "main", "banner")] == \
+            ["willpc\n", "proj/a\n", "Dive 4\n"]
+        assert all((tmp_path / n).stat().st_mode & 0o777 == 0o644 for n in ("where", "main", "banner"))
+
+    def test_the_epilog_has_no_gpu_lend_backstop(self):
+        assert "dive-gpu" not in templates.render_epilog()
+
+    def test_the_shell_says_where_it_is(self):
+        z = templates.render_tidepool_zshrc()
+        assert "in a dive · %n@$(</etc/ccc/dive/where)" in z
+        assert "in a tidepool · %n@$(</etc/ccc/cluster-name)" in z
+        assert 'cd -- "$_ccc_main"' in z
 
 
 class TestMainLockNamespaces:

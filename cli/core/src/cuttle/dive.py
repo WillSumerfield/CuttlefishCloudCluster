@@ -2,8 +2,9 @@
 `cuttle dive attach|end|status [id]` for the rest.
 
 A Dive's shell is reached as `ssh <name>-<id>` — the same key and pinned host key as `ssh <name>`
-(sshconfig.py). On an Arm the main folder is a copy, mirrored back to the Tidepool every minute and
-read-only there meanwhile; on the Head the Dive *is* your Tidepool, with the GPU lent to it.
+(sshconfig.py). It is its own container on whichever node Slurm picked — the Head included: the main
+folder is a copy, mirrored back to the Tidepool every minute and read-only there meanwhile, and the
+GPU is never in the Tidepool.
 Run inside a Tidepool you entered with `cuttle tidepool`, it closes that session and your machine
 attaches to the Dive (transfer.DIVE_OPS); `--vscode` opens it in VS Code there instead.
 
@@ -235,9 +236,6 @@ def warn_holders(main: str, found: list[str]) -> None:
 def _attach_inside(dive_id: int, vscode: bool) -> None:
     """No key or alias in here: the shell is reached from your own machine, over $CCC_FWD."""
     info = _wait_ready(dive_id)
-    if info["head"]:
-        ui.ok(f"Dive {dive_id} is on the Head: this Tidepool now has the GPU")
-        return
     folder = f"/home/{info['user']}/{info['main']}"
     if vscode and transfer.notify("vscode", dive_id):
         warn_holders(info["main"], holders(folder))
@@ -275,12 +273,9 @@ def attach(dive_id: int | None = None, vscode: bool = False) -> None:
         return _attach_inside(dive_id, vscode)
     name, info = ensure_alias(dive_id)
     folder = f"/home/{info['user']}/{info['main']}"
-    if info["head"]:
-        ui.ok(f"Dive {dive_id} is on the Head: your Tidepool itself now has the GPU")
-    else:
-        ui.ok(f"Dive {dive_id} on {info.get('node')}: ~/{info['main']} is mirrored back to your Tidepool "
-              f"every minute (read-only there until the Dive ends)")
-        warn_holders(info["main"], _remote_holders(folder))
+    ui.ok(f"Dive {dive_id} on {info.get('node')}: ~/{info['main']} is mirrored back to your Tidepool "
+          f"every minute (read-only there until the Dive ends)")
+    warn_holders(info["main"], _remote_holders(folder))
     ui.warn(f"the GPU is yours until `cuttle dive end {dive_id}` or --time runs out — disconnecting "
             f"does not free it")
     if vscode:

@@ -96,16 +96,12 @@ class TestInside:
         assert inside[1] == []
         assert "cuttle dive attach 7" in capsys.readouterr().err
 
-    def test_a_head_dive_stays_put(self, inside, monkeypatch):
-        monkeypatch.setattr(dive, "_wait_ready", lambda i: {"head": True})
-        dive.attach(7)
-        assert inside == ([], [])
-
 
 def test_enter_attaches_after_a_handoff(ccc_home, monkeypatch):
     monkeypatch.setattr(tidepool, "connect",
                         lambda: {"state": "active", "user": "will", "used_gb": 1, "size_gb": 25})
     monkeypatch.setattr(tidepool.config, "cluster_name", lambda: "lab")
+    monkeypatch.setattr(tidepool.auth, "_api", lambda *a, **k: [])
 
     def ssh(argv):   # the inner cuttle, over the forwarded socket, then the session closes
         monkeypatch.setenv(transfer.FWD_ENV, argv[argv.index("-R") + 1].split(":", 1)[1])
