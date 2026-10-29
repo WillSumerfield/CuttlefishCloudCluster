@@ -162,6 +162,7 @@ class TestEnsureContainer:
         monkeypatch.setattr(H, "IMAGES_RECORD", rec)
         self.exists = False     # does `container exists` say yes (images always do)
         monkeypatch.setattr(H, "ok", lambda *a: self.exists if "container" in a else True)
+        monkeypatch.setattr(H, "mesh_ip", lambda: "100.99.0.1")   # not this box's live ccc0
         calls = []
         monkeypatch.setattr(H, "sh", lambda *a, **k: calls.append(a))
         return calls
