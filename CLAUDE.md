@@ -8,7 +8,8 @@
 
 The wiki is the project's documentation — for Users, donors, Admins and contributors alike. It lives in
 `wiki/`, with pages in `wiki/content/`. The Head serves it at `/wiki/` to signed-in Users (built by
-`cuttle setup --head` / `cuttle update`); the Dashboard's `?` links come from `head/web/src/app/wiki.ts`.
+`cuttle setup --head` / `cuttle update`). The Dashboard links to it once, under the name in the rail; the wiki
+links back from its sidebar, and from pages that describe a Dashboard page.
 
 - **Read first.** Before starting a task, read the relevant Section Node and pages.
 - **View it.** `cd wiki && ./setup.sh` once (fetches Quartz), then `npx quartz build --serve` →
@@ -40,12 +41,16 @@ The wiki is the project's documentation — for Users, donors, Admins and contri
 4. **Keep the glossaries in step.** CONTEXT.md is the authority on what a term means; the wiki's `Start/Glossary`
    says the same in plain language, and the home page's "main words" in one or two sentences. When a definition
    changes, update all of them in the same task.
-5. **Keep Dashboard help links in step.** Renaming or moving a page that `head/web/src/app/wiki.ts` points at
-   means updating that file too.
+5. **Link to the Dashboard where it helps.** A page about something you see in the Dashboard (Karma, Arms,
+   Files, a Dive, Users) gives a plain link to it, e.g. `[Open Karma in the Dashboard](/karma)`. The link
+   checker doesn't see these: if a Dashboard route moves, grep the wiki for it.
 6. **Commits.** Commit wiki changes yourself, in small commits of their own, separate from code changes. Never
    delete a page unasked.
 
 ### Page template
+
+A default, not a rule: use the headings that suit the page. A guide or the home page reads better as plain
+prose ("CCC is…") than under `## Summary`. Keep the frontmatter, and on Nodes a list of children.
 
 ```markdown
 ---

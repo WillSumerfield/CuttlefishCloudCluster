@@ -51,3 +51,49 @@ $rightPanelWidth: 370px;
     }
   }
 }
+
+// ── "Back to the Dashboard", under the wiki title ──
+// The footer plugin, moved to the left sidebar (quartz.config.yaml); only its link is kept.
+.page > #quartz-body .sidebar.left > footer {
+  min-width: 0;
+  max-width: none;
+  margin: -0.5rem 0 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  opacity: 1;
+  text-align: left;
+
+  & > p {
+    display: none;
+  }
+
+  & ul {
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    background: none;
+  }
+
+  & li {
+    padding: 0;
+    background: none;
+  }
+
+  & ul,
+  & li,
+  & a {
+    margin: 0;
+    padding: 0;
+  }
+
+  & a {
+    font-size: 0.9rem;
+    color: var(--darkgray);
+  }
+
+  & a:hover {
+    color: var(--secondary);
+  }
+}

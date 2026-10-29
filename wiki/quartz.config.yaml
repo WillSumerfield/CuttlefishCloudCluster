@@ -228,8 +228,8 @@ plugins:
       links:
         Back to the Dashboard: /
     layout:
-      position: footer
-      priority: 50
+      position: left
+      priority: 15
   - source: "@quartz-community/recent-notes"
     enabled: false
   - source: "@quartz-community/spacer"
