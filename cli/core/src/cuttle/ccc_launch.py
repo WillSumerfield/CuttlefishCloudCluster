@@ -418,7 +418,9 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
     d = spec["dive"]
     u = d["user"]
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
-            "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--rm", "--init",
+            # No --rm: ccc-launch copies the apt changes out after exit, then removes it (the epilog's
+            # `podman rm -f` covers a killed job).
+            "/usr/bin/podman", "--cgroup-manager=cgroupfs", "run", "--init",
             # Also kept in the journal (`journalctl CONTAINER_NAME=ccc-job-<id>`): the Slurm log is in
             # the job's private /tmp, gone at job end — with it, why a Dive died. Dives only: a
             # Spawn's output is the User's own, and can be large.
@@ -443,6 +445,26 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
     for k, v in spec.get("env", {}).items():
         argv += ["-e", f"{k}={v}"]
     return argv + [spec["image"], *spec.get("argv", [])]
+
+
+# What a Dive's apt changes are read from, copied back to the Head for the replay into the Tidepool.
+APT_BACK = ("/var/log/apt/history.log", "/var/log/dpkg.log", "/etc/apt/sources.list.d",
+            "/etc/apt/keyrings", "/usr/share/keyrings")
+
+
+PODMAN = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--", "/usr/bin/podman"]
+
+
+def send_back(d: dict, jid: str, jobdir: Path) -> None:
+    """Copy the exited container's apt log + sources out, ship them to the Head's `back` module.
+    Best effort: a failure only means nothing comes back."""
+    back = jobdir / "back"
+    back.mkdir(mode=0o700, exist_ok=True)
+    for src in APT_BACK:
+        subprocess.run([*PODMAN, "cp", f"{CONTAINER_PREFIX}{jid}:{src}", str(back / src.strip("/").replace("/", "_"))],
+                       capture_output=True)
+    (back / "job").write_text(f"{jid}\n")
+    subprocess.run(rsync_argv(f"{back}/", module(d, "back"), filters=False))
 
 
 def drop_image(ref: str) -> None:
@@ -487,6 +509,8 @@ def run_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
         for _ in range(3):
             if mirror(d, home):
                 break
+        send_back(d, jid, jobdir)
+        subprocess.run([*PODMAN, "rm", "-f", f"{CONTAINER_PREFIX}{jid}"], capture_output=True)
         drop_image(spec["image"])
     return rc
 

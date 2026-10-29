@@ -140,7 +140,7 @@ class TestModules:
             elif cur is not None and "=" in line:
                 k, v = line.split("=", 1)
                 cur[k.strip()] = v.strip()
-        assert set(mods) == {f"d{TOK}-main", f"d{TOK}-dep0", f"d{TOK}-dot", f"d{TOK}-sys"}
+        assert set(mods) == {f"d{TOK}-main", f"d{TOK}-dep0", f"d{TOK}-dot", f"d{TOK}-sys", f"d{TOK}-back"}
         main, dep, sysm = mods[f"d{TOK}-main"], mods[f"d{TOK}-dep0"], mods[f"d{TOK}-sys"]
         dot = mods[f"d{TOK}-dot"]
         assert main["read only"] == "false" and dep["read only"] == sysm["read only"] == "true"
@@ -153,6 +153,9 @@ class TestModules:
         assert "pre-xfer exec" not in dep
         assert sysm["path"] == str(H.DIVE_STATE / TOK / "sys")
         assert dot["path"] == str(H.DIVE_STATE / TOK / "home")
+        back = mods[f"d{TOK}-back"]
+        assert back["path"] == str(H.DIVE_STATE / TOK / "back")
+        assert back["read only"] == "false" and back["uid"] == str(u)
         assert {m["auth users"] for m in mods.values()} == {f"d{TOK}"}
 
     def test_rsyncd_includes_the_root_owned_dir(self):
@@ -411,7 +414,7 @@ class TestArmDive:
             L.main(["ccc-launch"])
         assert went == ["/"]
 
-    def test_the_snapshot_image_goes_after_the_final_mirror(self, tmp_path, monkeypatch):
+    def test_apt_changes_sent_then_container_and_snapshot_go(self, tmp_path, monkeypatch):
         order = []
         spec = {"image": "ccc.lab:5000/ccc/u-bob@sha256:" + "a" * 64, "dive": DIVE}
         monkeypatch.setattr(L, "JOBS_DIR", tmp_path / "jobs")
@@ -429,8 +432,14 @@ class TestArmDive:
         monkeypatch.setattr(L.signal, "signal", lambda *a: None)
         job = {"gres_idx": [0], "node": "arm1", "end": "2026-10-29T14:30:00"}
         assert L.run_dive(spec, "77", job, "/s", 2**31) == 0
-        assert order[-2:] == ["mirror", ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
-                                         "/usr/bin/podman", "rmi", spec["image"]]]
+        pod = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--", "/usr/bin/podman"]
+        i = order.index("mirror")
+        cps = [a for a in order[i + 1:] if a[:5] == pod + ["cp"]]
+        assert [a[5] for a in cps] == [f"ccc-job-77:{p}" for p in L.APT_BACK]
+        # apt changes out, then sent, then the container and the snapshot go
+        assert order[i + 1 + len(cps)][0] == "/usr/bin/rsync"
+        assert order[i + 1 + len(cps)][-1].endswith(f"/d{DIVE['token']}-back/")
+        assert order[-2:] == [pod + ["rm", "-f", "ccc-job-77"], pod + ["rmi", spec["image"]]]
 
     def test_a_dot_main_folder_is_never_bound_read_only(self, tmp_path):
         home = tmp_path / "home"
