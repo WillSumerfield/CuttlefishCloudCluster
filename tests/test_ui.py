@@ -452,3 +452,20 @@ class TestHandover:
         monkeypatch.setattr(ui, "_tick_stop", lambda: pytest.fail("touched the tick"))
         with ui.handover():
             pass
+
+
+def test_a_refused_step_says_why_once(capsys):
+    from cuttle import ui
+    with pytest.raises(BaseException):
+        with ui.step("queueing the Dive"):
+            raise ui.abort("vlearn needs an environment")
+    err = capsys.readouterr().err
+    assert "vlearn needs an environment" in err and "queueing the Dive" not in err
+
+
+def test_an_unexpected_failure_still_names_the_step(capsys):
+    from cuttle import ui
+    with pytest.raises(RuntimeError):
+        with ui.step("queueing the Dive"):
+            raise RuntimeError("boom")
+    assert "queueing the Dive" in capsys.readouterr().err

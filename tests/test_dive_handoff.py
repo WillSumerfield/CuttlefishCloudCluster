@@ -184,3 +184,4 @@ def test_from_your_machine_it_asks_the_tidepool(monkeypatch):
                         type("R", (), {"returncode": 0, "stdout": "10 zsh\n"})())
     assert dive._remote_holders("/home/u/m") == ["10 zsh"]
     assert ran == [["ssh", "-o", "BatchMode=yes", "lab", "cuttle", "dive", "holders", "/home/u/m"]]
+

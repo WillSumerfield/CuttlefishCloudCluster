@@ -352,8 +352,9 @@ def step(label: str):
         with err.status(f"{label}…", spinner="dots"):
             try:
                 yield
-            except BaseException:
-                fail(label)
+            except BaseException as e:
+                if not getattr(e, "reported", False):   # `abort` already printed the ✗ and its reason
+                    fail(label)
                 raise
         ok(label)
         return
@@ -1573,7 +1574,9 @@ def abort(message: str, code: int = 1, next_step: str | None = None):
     fail(message)
     if next_step:
         hint(next_step)
-    return typer.Exit(code)
+    e = typer.Exit(code)
+    e.reported = True
+    return e
 
 
 def report(exc: BaseException) -> int:
