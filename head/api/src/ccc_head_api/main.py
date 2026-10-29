@@ -681,7 +681,8 @@ def dive_end(job_id: int, user: dict = Depends(ambient_user)) -> Response:
 @api.get("/files")
 def files_list(path: str = ".", user: dict = Depends(current_user)) -> dict:
     rel = files_mod.check(path)
-    return {"path": rel, "entries": files_mod.listing(user, rel)}
+    held = files_mod.locked_by(rel, files_mod.locks(user["id"]))
+    return {"path": rel, "entries": files_mod.listing(user, rel), "locked": held}
 
 
 @api.get("/files/download")

@@ -378,7 +378,7 @@ export type FileEntry = {
   locked: boolean
 }
 export const listFiles = (path: string) =>
-  json<{ path: string; entries: FileEntry[] }>(`/files?path=${encodeURIComponent(path)}`)
+  json<{ path: string; entries: FileEntry[]; locked: string | null }>(`/files?path=${encodeURIComponent(path)}`)
 export const downloadUrl = (path: string) => `${API}/files/download?path=${encodeURIComponent(path)}`
 const jsonPost = (path: string, body: unknown) =>
   req(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })

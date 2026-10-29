@@ -50,6 +50,7 @@ export function FilesPage() {
   const { logout } = useAuth();
   const [dir, setDir] = useState(".");
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
+  const [held, setHeld] = useState<string | null>(null);  // the locked main this folder is in
   const [tp, setTp] = useState<Tidepool | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -68,7 +69,7 @@ export function FilesPage() {
   }, [logout]);
 
   const load = useCallback(() => {
-    listFiles(dir).then((r) => setEntries(r.entries)).catch(fail);
+    listFiles(dir).then((r) => { setEntries(r.entries); setHeld(r.locked); }).catch(fail);
     getTidepool().then(setTp).catch(fail);
   }, [dir, fail]);
   useEffect(load, [load]);
@@ -97,6 +98,7 @@ export function FilesPage() {
   const dropped = async (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
+    if (held) return;
     const roots = Array.from(e.dataTransfer.items).map((i) => i.webkitGetAsEntry()).filter(Boolean);
     upload((await Promise.all(roots.map((r) => walk(r as FileSystemEntry, "")))).flat());
   };
@@ -110,9 +112,9 @@ export function FilesPage() {
       title="Files"
       actions={
         <span className="flex items-center gap-2">
-          <button className="btn-ghost" disabled={busy !== null} onClick={() => setMaking(true)}>New folder</button>
-          <button className="btn-ghost" disabled={busy !== null} onClick={() => fileInput.current?.click()}>Upload files</button>
-          <button className="btn-ghost" disabled={busy !== null} onClick={() => folderInput.current?.click()}>Upload a folder</button>
+          <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => setMaking(true)}>New folder</button>
+          <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => fileInput.current?.click()}>Upload files</button>
+          <button className="btn-ghost" disabled={busy !== null || !!held} onClick={() => folderInput.current?.click()}>Upload a folder</button>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { picked(e.target.files); e.target.value = ""; }} />
           <input ref={folderInput} type="file" hidden
             {...({ webkitdirectory: "" } as Record<string, string>)}
@@ -137,6 +139,11 @@ export function FilesPage() {
         ))}
       </nav>
 
+      {held && (
+        <p className="mb-4 text-[13px] text-ink-soft">
+          ~/{held} is held by a running Dive — read-only here until it ends (its changes mirror back every minute).
+        </p>
+      )}
       {error && <p className="mb-4 text-[13px]" style={{ color: "var(--alarm)" }}>{error}</p>}
       {busy && <p className="mb-4 text-[13px] text-ink-soft">{busy}…</p>}
 
@@ -220,7 +227,7 @@ export function FilesPage() {
                   ) : (
                     <>
                       <a className="btn-ghost" href={downloadUrl(f.path)} download>{f.type === "dir" ? ".zip" : "Download"}</a>
-                      {!f.locked && (
+                      {!f.locked && !held && (
                         <>
                           <button className="btn-ghost" onClick={() => { setRenaming(f.path); setNewName(f.name); }}>Rename</button>
                           <button className="btn-ghost" onClick={() => setDeleting(f.path)}>Delete</button>

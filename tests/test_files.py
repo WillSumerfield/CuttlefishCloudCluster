@@ -82,6 +82,11 @@ class TestTheRoutes:
         r = c.get("/api/files").json()
         assert [(e["name"], e["type"], e["locked"], e["size"]) for e in r["entries"]] == \
             [("proj", "dir", True, None), ("notes.txt", "file", False, 3)]
+        assert r["locked"] is None
+
+    def test_listing_inside_a_locked_main_names_it(self, api):
+        c, _ = api
+        assert c.get("/api/files", params={"path": "proj/sub"}).json()["locked"] == "proj"
 
     def test_writes_into_a_locked_main_are_refused(self, api):
         c, calls = api
