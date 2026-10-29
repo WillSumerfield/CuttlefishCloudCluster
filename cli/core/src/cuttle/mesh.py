@@ -466,15 +466,31 @@ def current_coordinator() -> str | None:
     return prefs.get("ControlURL") if prefs else None
 
 
+# tailscaled's states on the way up after a (re)start. Setup restarts the daemon just before asking
+# `joined_to`, so these mean "not settled yet", not "not joined".
+_TS_SETTLING = (None, "NoState", "Starting")
+_TS_SETTLE_S = 30
+
+
 def joined_to(coordinator: str) -> bool:
-    """Is this node already on the mesh, registered against *this* coordinator?"""
+    """Is this node already on the mesh, registered against *this* coordinator?
+
+    Waits for a just-restarted daemon to settle. Answering "no" too early sends `up_arm` down its
+    wipe-then-join path, which costs an enrolled Arm its mesh identity. If it never settles (say the
+    coordinator is restarting too) the on-disk state decides: a registered, logged-in node counts as
+    joined, since wiping it on a guess is the worse mistake."""
     prefs = _state_prefs()
-    status = _ts_json("status", "--json")
-    if prefs is None or status is None:
+    if prefs is None or prefs.get("ControlURL") != coordinator or prefs.get("LoggedOut", False):
         return False
-    return (prefs.get("ControlURL") == coordinator
-            and not prefs.get("LoggedOut", False)
-            and status.get("BackendState") == "Running")
+    deadline = time.monotonic() + _TS_SETTLE_S
+    while True:
+        status = _ts_json("status", "--json")
+        state = status.get("BackendState") if status else None
+        if state not in _TS_SETTLING:
+            return state == "Running"
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(1)
 
 
 def _wipe_local_state() -> None:
@@ -852,6 +868,13 @@ def up_arm(coordinator: str, node_name: str, authkey: str, write_unit,
         ip = tailscale_ip()
         ui.say(f"  [muted]already on the mesh at {ip} via {coordinator} — skipping join[/muted]")
         return ip
+
+    # No key (a re-setup of an enrolled Arm): wiping would leave nothing to rejoin with.
+    if not authkey:
+        raise ui.abort(
+            f"{node_name} is not on the mesh at {coordinator}, and rejoining needs a fresh token.\n"
+            f"  On the Head:  cuttle arm authorize {node_name} --user <owner>\n"
+            f"  then here:    cuttle setup --arm --re-enroll --token <token>")
 
     # Unconditional: `rm -f` of an absent state file is a no-op, and testing for it would depend on
     # the root-owned state dir staying world-readable.

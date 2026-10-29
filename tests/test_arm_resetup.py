@@ -105,3 +105,49 @@ class TestTheFlagsCannotContradictEachOther:
         with pytest.raises(typer.BadParameter) as caught:
             self._setup()
         assert "arm authorize" in str(caught.value) and "--enrolled" in str(caught.value)
+
+
+class TestAJustRestartedDaemonIsNotMistakenForAnUnjoinedOne:
+    """Setup restarts tailscaled-ccc, then asks `joined_to`. Reading the daemon's first seconds as
+    "not joined" wiped an enrolled Arm's identity during an automatic update."""
+
+    @pytest.fixture
+    def prefs(self, monkeypatch):
+        monkeypatch.setattr(mesh, "_state_prefs",
+                            lambda: {"ControlURL": COORDINATOR, "LoggedOut": False})
+        monkeypatch.setattr(mesh.time, "sleep", lambda s: None)
+
+    def _states(self, monkeypatch, *states):
+        it = iter(states)
+        monkeypatch.setattr(mesh, "_ts_json",
+                            lambda *a: (lambda s: s and {"BackendState": s})(next(it)))
+
+    def test_it_waits_for_the_daemon_to_settle(self, prefs, monkeypatch):
+        self._states(monkeypatch, None, "NoState", "Starting", "Running")
+        assert mesh.joined_to(COORDINATOR)
+
+    def test_a_settled_logout_is_not_joined(self, prefs, monkeypatch):
+        self._states(monkeypatch, "Starting", "NeedsLogin")
+        assert not mesh.joined_to(COORDINATOR)
+
+    def test_never_settling_keeps_the_identity(self, prefs, monkeypatch):
+        monkeypatch.setattr(mesh, "_ts_json", lambda *a: {"BackendState": "Starting"})
+        monkeypatch.setattr(mesh, "_TS_SETTLE_S", 0)
+        assert mesh.joined_to(COORDINATOR)
+
+    def test_another_coordinator_is_not_joined(self, monkeypatch):
+        monkeypatch.setattr(mesh, "_state_prefs",
+                            lambda: {"ControlURL": "https://elsewhere:8080", "LoggedOut": False})
+        monkeypatch.setattr(mesh, "_ts_json", lambda *a: pytest.fail("no need to ask the daemon"))
+        assert not mesh.joined_to(COORDINATOR)
+
+
+def test_an_arm_off_the_mesh_with_no_key_is_not_wiped(monkeypatch):
+    """A re-setup has no key. Wiping first would leave the box with no identity and no way back."""
+    monkeypatch.setattr(mesh, "ensure_headscale_trusted", lambda c: None)
+    monkeypatch.setattr(mesh, "install_tailscale", lambda: None)
+    monkeypatch.setattr(mesh, "start_ccc_tailscaled", lambda w: None)
+    monkeypatch.setattr(mesh, "joined_to", lambda c: False)
+    monkeypatch.setattr(mesh, "_wipe_local_state", lambda: pytest.fail("wiped with no key"))
+    with pytest.raises(typer.Exit):
+        mesh.up_arm(COORDINATOR, "willpc", "", lambda *a: None)
