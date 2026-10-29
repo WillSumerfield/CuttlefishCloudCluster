@@ -73,11 +73,11 @@ You can do the same from the Account page in the Dashboard.
 ## Limits
 
 - **No GPU.** None at all, not even a small one. GPU work runs in a [[Dives|Dive]].
-- **A fixed size.** Every User gets the same size, set by your Admin (200 GB unless they changed it).
+- **A fixed size.** Every User gets the same size, set by your Admin.
   Run `cuttle tidepool status` or look at the Account or Files page to see how full yours is. When
   it's full, writes fail. Nothing else breaks, but you'll need to delete something.
-- **A CPU and memory cap.** Your Tidepool can use a few CPUs and some memory (4 CPUs and 16 GB unless
-  your Admin changed it). Going over the memory cap kills your own processes, not anyone else's.
+- **A CPU and memory cap.** Your Tidepool can use a few CPUs and some memory, set by your
+  Admin. Going over the memory cap kills your own processes, not anyone else's.
 - **Folders a Dive is using are read-only.** While a Dive holds a folder, you can read it in your
   Tidepool but not change it. It unlocks when the Dive ends. See [[Dives]].
 

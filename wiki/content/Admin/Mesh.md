@@ -136,7 +136,8 @@ one, not to CCC's.
 Common causes:
 
 - **A new Arm hangs at setup.** It can't reach the coordinator address. Check it from the donor's
-  machine. If `ufw` is on, make sure port 8080 is allowed in on the Head (`sudo ufw allow 8080/tcp`).
+  machine. A Head set up before setup opened port 8080 needs `cuttle update` (or
+  `sudo ufw allow 8080/tcp`) if `ufw` is on.
 - **"authkey already used" or an expired token.** Each token works once, for an hour. Run
   `cuttle arm authorize` again for a new one.
 - **An Arm is enrolled but never admitted.** `cuttle arm admit <name>`.

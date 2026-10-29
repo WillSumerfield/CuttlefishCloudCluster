@@ -14,8 +14,8 @@ coordinator. You set it up once with `cuttle setup --head`. It also lends its ow
   they must all be the same model.
 - `sudo`, and internet access during setup. It pulls packages from Ubuntu, NodeSource and NVIDIA, and a
   few pinned downloads from GitHub (Headscale, uv, micromamba, and Quartz for this wiki).
-- Disk for the Tidepools. Every User gets the same fixed size (200 GB by default), reserved in full
-  when they're added. 10 Users at 200 GB is 2 TB, so pick a folder on a disk that can hold that.
+- Disk for the Tidepools. Every User gets the same fixed size, reserved in full when they're added,
+  so pick a folder on a disk that can hold that size times the number of Users.
 - An address that Arms can reach this box at **before** they're on the Mesh: its LAN IP if every
   donor is on your network, or a public IP or hostname if some aren't. See [[Mesh]].
 
@@ -43,8 +43,8 @@ Setup asks its questions first, then works through the steps without stopping:
 1. **Arm Features**: which of CCC's built-in Features this box has, and where each is installed.
    See [[Arm features]].
 2. **Tidepools**: the folder for the Tidepool images (default `/var/lib/ccc-tidepools`; it must be
-   outside `/var/lib/ccc`), the size per User (200 GB), the CPU and memory cap per User (4 CPUs,
-   16 GB), and the CPUs and memory for all Tidepools together (a quarter of the box). That total is
+   outside `/var/lib/ccc`), the size per User, the CPU and memory cap per User, and the CPUs and
+   memory for all Tidepools together. Each question offers a default. That total is
    taken away from what this box offers to Dives.
 3. **Cluster name**: lowercase letters, digits and `-`, default from the hostname. The Dashboard
    lives at `https://ccc.<name>` and each User's Tidepool SSH alias is `<name>`. It goes into the
@@ -110,7 +110,8 @@ Where things live:
 | `/var/backups/ccc/` | Backups |
 
 If `ufw` is already on, setup opens the ports Users need (443, the Dive relay ports from 31000, and
-the Tidepool SSH ports from 32001) and lets Mesh traffic in. It never turns a firewall on for you.
+the Tidepool SSH ports from 32001), the Mesh coordinator's port (8080) for Arms, and lets Mesh traffic
+in. It never turns a firewall on for you.
 
 ## Changing a setting
 
