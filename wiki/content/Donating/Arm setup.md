@@ -78,15 +78,23 @@ Setup checks all of this before it changes anything, and tells you which line is
 read **idle** once it's ready, or **benchmarking** for a minute first. If it says **awaiting admit**,
 ask the Admin to finish the job with `cuttle arm admit <name>`.
 
-## Update it
+## Updates
 
-When the Admin tells you CCC has been upgraded, run this on the Arm:
+You don't need to do anything when the Admin upgrades CCC: the Head updates your Arm for you. It
+waits until your Arm is free, so a running Dive is never cut short, and your Arm takes no new Dives
+until it's done. The [Arms page](dashboard:/arms) says **Updating after its current Dive** meanwhile.
+
+If an update fails, the Arm stays out of service and the Arms page says **Update failed** (hover it
+for the reason). The Admin gets an email too. Fix what it names, then ask them to retry.
+
+You can always update by hand, on the Arm:
 
 ```bash
 cuttle update
 ```
 
-It asks no questions and keeps your settings. It also clears out old images you no longer need.
+It asks no questions and keeps your settings. An Arm set up before automatic updates needs this once,
+so the Head learns where its `cuttle` is installed.
 
 If the Admin rotates the cluster key, they'll ask you to run:
 

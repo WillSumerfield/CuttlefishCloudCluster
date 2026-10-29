@@ -35,6 +35,10 @@ certificate, so your browser opens the Dashboard without a warning.
 If `cuttle` isn't found afterwards, open a new terminal (the installer prints the line to add if that
 doesn't help).
 
+You only need the bundle once. When your Admin upgrades CCC, `cuttle` notices the next time you run
+it, says `Updating cuttle to the Head's build…`, installs the new version and carries on with your
+command. You don't have to do anything.
+
 ## 3. Log in
 
 What you run next depends on what the installer printed at the end.

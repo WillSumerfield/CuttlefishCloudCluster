@@ -91,6 +91,7 @@ Services, all systemd units:
 | `ccc-monitor.timer` | Health check every 5 minutes. See [[Alerts and email]] |
 | `ccc-mesh-firewall.timer` | Keeps the Mesh working next to a personal Tailscale. See [[Mesh]] |
 | `ccc-registry-gc.timer` | Nightly cleanup of finished Dives' image layers |
+| `ccc-arm-rollout.timer` | Updates out-of-date Arms to the Head's `cuttle`, every 5 minutes |
 
 Where things live:
 
@@ -103,6 +104,7 @@ Where things live:
 | `/var/lib/ccc/tidepools/<user>/` | Where each User's image is mounted |
 | `/opt/ccc/api/.venv` | The Head API's Python environment |
 | `/opt/ccc/head-api/web`, `/opt/ccc/head-api/wiki` | The built Dashboard and wiki |
+| `/opt/ccc/cuttle-dist/` | The `cuttle` build laptops and Arms update to |
 | `/opt/ccc/tls/` | The cluster's certificate authority and the Head's certificate |
 | `/etc/ccc/cluster-name`, `/etc/ccc/tidepools.json` | Your answers to setup |
 | `/etc/slurm/` | Slurm config, written by setup |
@@ -129,8 +131,26 @@ cuttle update
 
 `cuttle update` re-does the install half of setup without asking anything: it rebuilds the Head API
 environment, the Dashboard and the wiki, rewrites the unit files and Slurm config, and reissues the
-certificate if needed. It never changes what you decided at setup. Run `cuttle update` on each Arm
-too when a release changes something on their side.
+certificate if needed. It never changes what you decided at setup.
+
+It also builds `cuttle` itself from the checkout, and everyone else picks that build up:
+
+- **Laptops** update themselves. The next time someone runs `cuttle`, it sees the Head has a
+  different build, installs it and carries on. Nobody needs a new installer.
+- **Arms** are updated by the Head. Each out-of-date Arm stops taking new Dives, finishes the ones it's
+  running, then runs an update job and comes back. `cuttle update` ends by listing the Arms it's
+  updating; `cuttle arm list` shows where each one stands.
+
+A failed Arm update is retried twice. After that the Arm stays out of service, the Arms page says
+**Update failed**, and you get an email (if [[Alerts and email|email]] is set up). Once the cause is
+fixed:
+
+```bash
+cuttle arm update <name>      # or --all
+```
+
+An Arm set up before automatic updates fails its first one, saying its owner must run `cuttle update`
+on it once.
 
 ## Tearing down
 
