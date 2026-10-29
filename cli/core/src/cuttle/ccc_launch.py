@@ -311,11 +311,22 @@ def _clock(end: str, now: datetime | None = None) -> str:
     return t.strftime("%H:%M" if t.date() == (now or datetime.now()).date() else "%b %d %H:%M")
 
 
+def smi_names(smi_list: str) -> dict[str, str]:
+    """UUID → banner name from `nvidia-smi -L`; a MIG instance (what a MIG-mode card is handed out
+    as) is its card's name + profile."""
+    names, card = {}, ""
+    for ln in smi_list.splitlines():
+        if m := re.match(r"GPU \d+: (.+) \(UUID: (GPU-[^)]+)\)", ln):
+            card = m[1].removeprefix("NVIDIA ")
+            names[m[2]] = card
+        elif m := re.match(r"\s+MIG (\S+)\s+Device\s+\d+: \(UUID: (MIG-[^)]+)\)", ln):
+            names[m[2]] = f"{card} · MIG {m[1]}"
+    return names
+
+
 def gpu_names(uuids: list[str]) -> list[str]:
-    out = subprocess.run([nvidia_smi(), "--query-gpu=uuid,name", "--format=csv,noheader"],
-                         capture_output=True, text=True).stdout
-    names = dict(ln.split(", ", 1) for ln in out.splitlines() if ", " in ln)
-    return [names.get(u, "GPU").removeprefix("NVIDIA ") for u in uuids]
+    names = smi_names(subprocess.run([nvidia_smi(), "-L"], capture_output=True, text=True).stdout)
+    return [names.get(u, "GPU") for u in uuids]
 
 
 def dive_banner(jid: str, where: str, idx: list[int], names: list[str], end: str, main: str,

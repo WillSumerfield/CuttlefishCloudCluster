@@ -77,6 +77,14 @@ class TestLaunch:
         assert L.cdi_names([], wsl=True) == []
         assert L.cdi_names(["GPU-aaa"], wsl=False) == ["GPU-aaa"]
 
+    def test_banner_names_a_mig_instance_by_card_and_profile(self):
+        """dex Dive 21 printed `GPU 1 (GPU)` for the MIG card: --query-gpu has no MIG UUIDs."""
+        smi = ("GPU 0: NVIDIA RTX PRO 6000 Blackwell (UUID: GPU-aaa)\n"
+               "GPU 1: NVIDIA RTX PRO 6000 Blackwell (UUID: GPU-bbb)\n"
+               "  MIG 4g.96gb     Device  0: (UUID: MIG-ccc)\n")
+        assert L.smi_names(smi) == {"GPU-aaa": "RTX PRO 6000 Blackwell", "GPU-bbb": "RTX PRO 6000 Blackwell",
+                                    "MIG-ccc": "RTX PRO 6000 Blackwell · MIG 4g.96gb"}
+
     def test_a_name_missing_from_the_cdi_spec_regenerates_it(self, tmp_path, monkeypatch):
         """nvidia-cdi-refresh runs at boot / driver change only: MIG switched on later left the
         instance's UUID unresolvable (dex Dive 20)."""
