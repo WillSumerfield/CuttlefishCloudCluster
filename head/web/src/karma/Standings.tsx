@@ -488,8 +488,8 @@ export function Standings({ members, youId }: { members: Member[]; youId: number
                   color: p.m.balance >= 0 ? "var(--gold-hi)" : "var(--bronze)",
                 }}
               >
-                {p.m.balance >= 0 ? "+" : "−"}
-                {Math.abs(p.m.balance)}
+                {Math.round(p.m.balance) >= 0 ? "+" : "−"}
+                {Math.abs(Math.round(p.m.balance))}
               </div>
             )}
           </div>
