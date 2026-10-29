@@ -148,7 +148,7 @@ export function FilesPage() {
       {busy && <p className="mb-4 text-[13px] text-ink-soft">{busy}…</p>}
 
       {clashes.length > 0 && (
-        <div className="surface mb-4 space-y-2" style={{ padding: "calc(var(--pad) + 6px)" }}>
+        <div className="surface [--sink:35%] mb-4 space-y-2" style={{ padding: "calc(var(--pad) + 6px)" }}>
           <p className="text-[13px] text-ink-soft">
             {clashes.length} already there: {clashes.slice(0, 5).map((c) => c.path).join(", ")}
             {clashes.length > 5 ? ", …" : ""}
@@ -174,7 +174,7 @@ export function FilesPage() {
       )}
 
       <div
-        className="surface"
+        className="surface [--sink:35%]"
         style={{ padding: "calc(var(--pad) + 14px)", outline: dragging ? "1px dashed var(--irid-mid)" : undefined }}
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}

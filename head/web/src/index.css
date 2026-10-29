@@ -133,9 +133,13 @@
    * TUNING — override per-card, e.g. `[--fade-x:120px]`:
    *   --fade-x  left/right depth, default 50px (visible ramp is 2× this).
    *   --fade-y  top/bottom depth, default 50px. Short wide cards usually want this smaller than --fade-x.
+   *   Both are capped at 7% of the panel's size.
    */
-  --fx: var(--fade-x, 50px);
-  --fy: var(--fade-y, 50px);
+  /* Capped at 7% of the panel (the % resolves inside the gradient, against its length): a fixed px ramp
+   * swallows a short panel whole, so its rows sit in the fade. 7% keeps most of any panel solid;
+   * panels over ~700px never hit the cap. */
+  --fx: min(var(--fade-x, 50px), 7%);
+  --fy: min(var(--fade-y, 50px), 7%);
   --fade-mask:
     linear-gradient(to right,
       transparent 0,
