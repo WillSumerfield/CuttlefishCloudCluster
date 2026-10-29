@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useReducedMotion } from "../app/useReducedMotion";
 
 /**
- * THE PASSING CLOUD — a working Spawn. Dark bands drifting across the skin, meaning only THIS MACHINE IS
+ * THE PASSING CLOUD — a working Dive. Dark bands drifting across the skin, meaning only THIS MACHINE IS
  * WORKING. Distinct from the bloom (cool, waiting).
  *
  * DISCRETE bands, not a texture: each is one `.cloud-band` element, appended by a JS timer, drifted the

@@ -1,7 +1,7 @@
 import { AbyssBackground } from "./AbyssBackground";
 import { AuthGate } from "./auth";
 import { Rail } from "./Rail";
-import { spawnIdFrom, usePath } from "./router";
+import { diveIdFrom, usePath } from "./router";
 import { session } from "./session";
 
 import { KarmaPage } from "../karma/KarmaPage";
@@ -12,7 +12,7 @@ import { TidePage } from "../pages/TidePage";
 import { AccountPage } from "../pages/AccountPage";
 import { FilesPage } from "../pages/FilesPage";
 import { UsersPage } from "../pages/UsersPage";
-import { SpawnPage } from "../pages/SpawnPage";
+import { DivePage } from "../pages/DivePage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 
 /**
@@ -24,8 +24,8 @@ import { NotFoundPage } from "../pages/NotFoundPage";
 function Route() {
   const path = usePath();
 
-  const spawnId = spawnIdFrom(path);
-  if (spawnId) return <SpawnPage id={spawnId} />;
+  const diveId = diveIdFrom(path);
+  if (diveId) return <DivePage id={diveId} />;
 
   switch (path) {
     case "/":

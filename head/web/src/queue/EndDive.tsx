@@ -1,19 +1,19 @@
 import { useState } from "react";
-import { cancelSpawn, errMessage } from "../api";
+import { endDive, errMessage } from "../api";
 
 /**
- * Cancel one outstanding Spawn. The confirmation is INLINE, never a browser dialog, and it names the
+ * Cancel one outstanding Dive. The confirmation is INLINE, never a browser dialog, and it names the
  * consequence rather than asking "are you sure?" — a Cancel settles for the seconds actually held.
  *
- * Shared by the queue row and the Spawn page, which is why `confirming` is CONTROLLED: the row suppresses
- * its own stretched link while a confirmation is open (a stray click would otherwise navigate to the Spawn
+ * Shared by the queue row and the Dive page, which is why `confirming` is CONTROLLED: the row suppresses
+ * its own stretched link while a confirmation is open (a stray click would otherwise navigate to the Dive
  * and silently discard it), so the one flag with two readers lives with the caller that has them. `busy`
  * and `error` are nobody else's business and stay here.
  *
- * It resets itself on success. The queue row unmounts the instant its Spawn leaves the list and would
- * never notice; the Spawn page stays mounted and would otherwise sit on "Cancelling…" for good.
+ * It resets itself on success. The queue row unmounts the instant its Dive leaves the list and would
+ * never notice; the Dive page stays mounted and would otherwise sit on "Cancelling…" for good.
  */
-export function CancelSpawn({
+export function EndDive({
   id,
   confirming,
   setConfirming,
@@ -33,7 +33,7 @@ export function CancelSpawn({
     setBusy(true);
     setError(null);
     try {
-      await cancelSpawn(id);
+      await endDive(id);
       onCancelled(id);
     } catch (e) {
       setError(errMessage(e));

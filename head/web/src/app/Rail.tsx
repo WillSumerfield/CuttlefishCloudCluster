@@ -27,9 +27,9 @@ const DESTINATIONS: Dest[] = [
   { to: "/users", label: "Users", admin: true },
 ];
 
-/** Spawn detail hangs off Queue/History, so it lights Queue rather than nothing. */
+/** Dive detail hangs off Queue/History, so it lights Queue rather than nothing. */
 function isCurrent(path: string, to: string): boolean {
-  if (to === "/") return path === "/" || path.startsWith("/spawn/");
+  if (to === "/") return path === "/" || path.startsWith("/dive/");
   return path === to || path.startsWith(to + "/");
 }
 

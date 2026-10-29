@@ -11,8 +11,8 @@ import type { Ledger as LedgerData, LedgerRow } from "../api";
  * continuously BETWEEN rows, not a transaction; a "drifted toward zero" row would imply a stored Balance
  * to drift, and there is none (Balance is summed on read). Curve draws the sag, rows sit on it as marks.
  *
- * No Arm column: the ledger records who paid whom for which Spawn, not which card it ran on — that
- * belongs to the Spawn, which each row links to.
+ * No Arm column: the ledger records who paid whom for which Dive, not which card it ran on — that
+ * belongs to the Dive, which each row links to.
  */
 
 const VB_W = 640, VB_H = 96, PAD = 8;
@@ -163,7 +163,7 @@ export function Ledger({ data }: { data: LedgerData }) {
                       <span className="text-[15px] text-ink">
                         {row.counterparty === null ? (
                           // No counterparty is not a missing name — it is the point. An Override
-                          // conjures Karma from nowhere; a Spawn on a commons Arm destroys what it pays.
+                          // conjures Karma from nowhere; a Dive on a commons Arm destroys what it pays.
                           <Tip
                             className="text-ink-mute"
                             text={
@@ -196,7 +196,7 @@ export function Ledger({ data }: { data: LedgerData }) {
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
                         {row.job_id !== null && (
                           <Link
-                            to={`/spawn/${row.job_id}`}
+                            to={`/dive/${row.job_id}`}
                             className="num text-ink-soft"
                             style={{ letterSpacing: "0.02em" }}
                           >

@@ -1,4 +1,4 @@
-// THE CHROMATIC BLOOM — a waiting Spawn, no known end. Rendered per-card (own center, own seed),
+// THE CHROMATIC BLOOM — a waiting Dive, no known end. Rendered per-card (own center, own seed),
 // screen-blended on the card's black plate, so only lit currents glow through and troughs add nothing.
 // `noise.glsl` is prepended.
 //

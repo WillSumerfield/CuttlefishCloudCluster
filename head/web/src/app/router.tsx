@@ -60,8 +60,8 @@ export function Link({
   );
 }
 
-/** `/spawn/:id` is the only dynamic route; this pulls the id back out. */
-export function spawnIdFrom(path: string): string | null {
-  const m = /^\/spawn\/([^/]+)\/?$/.exec(path);
+/** `/dive/:id` is the only dynamic route; this pulls the id back out. */
+export function diveIdFrom(path: string): string | null {
+  const m = /^\/dive\/([^/]+)\/?$/.exec(path);
   return m ? decodeURIComponent(m[1]) : null;
 }

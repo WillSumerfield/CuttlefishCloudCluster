@@ -1,4 +1,4 @@
-import type { ArchivedSpawn } from "../api";
+import type { ArchivedDive } from "../api";
 import { HistoryRow } from "./HistoryRow";
 
 /**
@@ -7,10 +7,10 @@ import { HistoryRow } from "./HistoryRow";
  * in it yet vs. a filter that matched nothing.
  */
 export function ArchiveList({
-  spawns,
+  dives,
   total,
 }: {
-  spawns: ArchivedSpawn[];
+  dives: ArchivedDive[];
   /** Rows before filtering — tells "nothing has finished" apart from "nothing matches". */
   total: number;
 }) {
@@ -21,14 +21,14 @@ export function ArchiveList({
         <span className="flex-1" />
       </div>
 
-      {spawns.length === 0 ? (
+      {dives.length === 0 ? (
         <p className="px-2 pt-2 text-[13px] text-ink-mute">
           {total === 0 ? "No dives have finished yet." : "No dives match these filters."}
         </p>
       ) : (
         <ul>
-          {spawns.map((s, i) => (
-            <HistoryRow key={s.id} spawn={s} depth={spawns.length > 1 ? i / (spawns.length - 1) : 0} />
+          {dives.map((s, i) => (
+            <HistoryRow key={s.id} dive={s} depth={dives.length > 1 ? i / (dives.length - 1) : 0} />
           ))}
         </ul>
       )}

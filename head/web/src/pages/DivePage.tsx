@@ -1,28 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
-import {
-  getDiveConn,
-  getSpawn,
-  Unauthorized,
-  errMessage,
-  type DiveConn,
-  type SpawnDetail,
-} from "../api";
+import { getDive, Unauthorized, errMessage, type DiveDetail } from "../api";
 import { useAuth } from "../app/auth";
 import { session } from "../app/session";
 import { Tip } from "../app/Tip";
-import { CancelSpawn } from "../queue/CancelSpawn";
+import { EndDive } from "../queue/EndDive";
 import { duration, armLabel, placedLabel } from "../queue/format";
 
-/** How a Spawn's state should read, and whether it is worth colour. Only a real failure is loud — a
- *  cancelled Spawn is a decision somebody made, not a fault, and drawing it in alarm would say otherwise. */
-function verdict(d: SpawnDetail): { word: string; color: string; live: boolean } {
-  if (!d.done) return { word: d.state, color: "var(--irid-dim)", live: /run|complet/i.test(d.state) };
-  const rc = d.exit ?? d.exit_code;
-  if (d.state === "cancelled") return { word: "cancelled", color: "var(--ink-mute)", live: false };
-  if (d.state === "failed") return { word: "failed", color: "var(--alarm)", live: false };
-  if (rc === 0) return { word: "done", color: "var(--ink-soft)", live: false };
-  return { word: `failed · exit ${rc}`, color: "var(--alarm)", live: false };
+/** How a Dive's state should read, and whether it is worth colour. Only `lost` is loud — an ended or
+ *  timed-out Dive is a decision or a limit, not a fault. */
+function verdict(d: DiveDetail): { word: string; color: string; live: boolean } {
+  if (d.state === "lost") return { word: "lost", color: "var(--alarm)", live: false };
+  if (d.outcome) return { word: d.outcome, color: "var(--ink-mute)", live: false };
+  return { word: d.state, color: "var(--irid-dim)", live: /run|complet/i.test(d.state) };
 }
 
 /** A fact and its name, in the column of them. `—` for what the Head does not know rather than a gap:
@@ -38,29 +28,27 @@ function Fact({ label, value, help }: { label: string; value: React.ReactNode; h
 
 /**
  * How to reach your own live Dive: `cuttle dive attach`, once an sshd answers (editors: the alias).
- * Queued or still staging says so; a Head Dive is the Tidepool itself, holding the GPU.
+ * Queued or still staging says so. Absent for anyone else's Dive (the Head sends no connection).
  */
-function Connect({ conn }: { conn: DiveConn | null }) {
-  if (!conn) return null;
+function Connect({ d }: { d: DiveDetail }) {
+  if (d.ready === undefined || d.outcome || d.state === "ending") return null;
   return (
     <div className="surface space-y-3" style={{ padding: "calc(var(--pad) + 12px)" }}>
-      <Tip className="label" text={`Your own keys and your Tidepool's host key, so \`cuttle login\` already set this box up. VS Code: Remote-SSH, host ${conn.alias}.`}>
+      <Tip className="label" text={`Your own keys and your Tidepool's host key, so \`cuttle login\` already set this box up. VS Code: Remote-SSH, host ${d.alias}.`}>
         Connect
       </Tip>
-      {conn.ready ? (
+      {d.ready ? (
         <>
           <pre className="field num text-[13px]" style={{ padding: "12px 18px", color: "var(--ink)" }}>
-            {`cuttle dive attach ${conn.id}`}
+            {`cuttle dive attach ${d.id}`}
           </pre>
           <p className="text-[13px] text-ink-soft">
-            {conn.head
-              ? "On the Head: your Tidepool itself has the GPU until this Dive ends."
-              : `On ${conn.node}: ~/${conn.main} is mirrored back to your Tidepool every minute, and is read-only there until the Dive ends.`}
+            {`On ${d.node}: ~/${d.main} is mirrored back to your Tidepool every minute, and is read-only there until the Dive ends.`}
           </p>
         </>
       ) : (
         <p className="text-[13px] text-ink-soft">
-          {conn.state === "pending" ? "Queued — waiting for a GPU." : conn.state === "running" ? "Staging your folders…" : conn.state}
+          {d.state === "pending" ? "Queued — waiting for a GPU." : d.state === "running" ? "Staging your folders…" : d.state}
         </p>
       )}
     </div>
@@ -68,27 +56,26 @@ function Connect({ conn }: { conn: DiveConn | null }) {
 }
 
 /**
- * One Spawn, reached from Queue, History, Karma or the Ledger. Not a rail destination.
+ * One Dive, reached from Queue, History, Karma or the Ledger. Not a rail destination.
  *
- * One fetch answers the whole page — `GET /spawns/{id}` carries the live verdict AND the archive row —
+ * One fetch answers the whole page — `GET /dives/{id}` carries the live state, the archive row and,
+ * for its owner, the connection —
  * so it never has to know whether its subject is queued, running or a year old. Polls only while
  * unfinished: an archive page hitting the Head every few seconds would be asking a question whose answer
  * cannot change.
  */
-export function SpawnPage({ id }: { id: string }) {
+export function DivePage({ id }: { id: string }) {
   const jobId = Number(id);
   const { logout } = useAuth();
-  const [detail, setDetail] = useState<SpawnDetail | null>(null);
+  const [detail, setDetail] = useState<DiveDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [conn, setConn] = useState<DiveConn | null>(null);
   const [confirming, setConfirming] = useState(false);
   const timer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const d = await getSpawn(jobId);
+      const d = await getDive(jobId);
       setDetail(d);
-      setConn(!d.done && d.submitted_by === session.username ? await getDiveConn(jobId) : null);
       return d.done;
     } catch (e) {
       if (e instanceof Unauthorized) logout();
@@ -102,7 +89,7 @@ export function SpawnPage({ id }: { id: string }) {
     let alive = true;
     const tick = async () => {
       const done = await refresh();
-      // Re-armed each pass rather than set on an interval, so a Spawn that finishes stops the polling
+      // Re-armed each pass rather than set on an interval, so a Dive that finishes stops the polling
       // on the very next tick instead of one interval later.
       if (alive && !done) timer.current = window.setTimeout(tick, 3000);
     };
@@ -119,7 +106,7 @@ export function SpawnPage({ id }: { id: string }) {
   // ownership test is unconditional and gets no admin branch (docs/Security.md). The row you clicked in
   // from can still be stopped from here.
   const canCancel =
-    !!detail && !detail.done && detail.submitted_by === session.username;
+    !!detail && !detail.outcome && detail.state !== "ending" && detail.started_by === session.username;
 
   return (
     <Page
@@ -143,7 +130,7 @@ export function SpawnPage({ id }: { id: string }) {
             {/* No optimistic state here: the page is already polling itself, so one extra read is enough
                 to turn the verdict to "cancelled" and take this away with it. */}
             {canCancel && (
-              <CancelSpawn
+              <EndDive
                 id={jobId}
                 confirming={confirming}
                 setConfirming={setConfirming}
@@ -166,18 +153,13 @@ export function SpawnPage({ id }: { id: string }) {
             className="surface [--sink:35%] [--fade-x:18px] [--fade-y:18px] lg:sticky lg:top-6"
             style={{ padding: "calc(var(--pad) + 18px)" }}
           >
-            <Fact label="Submitted by" value={detail.submitted_by} />
+            <Fact label="Started by" value={detail.started_by} />
             <Fact label="Main folder" help="Mirrored back to its owner's Tidepool; read-only there while the Dive holds it." value={detail.main ? `~/${detail.main}` : null} />
-            {/* Where it RAN once there is such a thing, falling back to the Admin's demand — and the
-                two words for "we don't know" are different on purpose: a queued Spawn is genuinely
-                unplaced, a finished one was placed and simply ended too fast to be metered. */}
+            {/* Where it RAN — and the two words for "we don't know" differ on purpose: a queued Dive is
+                genuinely unplaced, a finished one was placed and simply ended too fast to be metered. */}
             <Fact
               label="Arm"
-              value={
-                detail.done
-                  ? placedLabel(detail.placed_node ?? detail.node ?? null)
-                  : armLabel(detail.placed_node ?? detail.node ?? null)
-              }
+              value={detail.outcome ? placedLabel(detail.placed_node) : armLabel(detail.placed_node)}
             />
             <Fact label="GPUs" help="Cards held at once, always on the one machine." value={detail.gpus} />
             <Fact
@@ -187,32 +169,30 @@ export function SpawnPage({ id }: { id: string }) {
             />
             <Fact label="Time limit" help="What was asked for (--time), not how long it actually ran." value={duration(detail.minutes ?? null)} />
             <Fact
-              label="Submitted"
+              label="Started"
               value={detail.submitted_at ? new Date(detail.submitted_at).toLocaleString() : null}
             />
-            {detail.done && (
+            {detail.outcome && (
               <Fact
                 label="Finished"
                 value={detail.finished_at ? new Date(detail.finished_at).toLocaleString() : null}
               />
             )}
-            {/* Cost is the last row and the only one that can still change after the Spawn ends: it is
-                null until Settlement writes the ledger row, and an unsettled Spawn says so rather than
-                showing a zero it would later contradict. Plain ink, never pigment — pigment means
-                standing, and what a Spawn cost is not a judgement of who ran it. */}
+            {/* Cost is the only row that can still change after the Dive ends: null until Settlement
+                writes the ledger row. Plain ink, never pigment — pigment means standing. */}
             <Fact
               label="Cost"
               help="What this run actually settled at: the seconds it held the card, priced by what that card can do and how badly it was wanted at the time. You pay for holding it, not for keeping it busy."
               value={
                 detail.cost === null || detail.cost === undefined
-                  ? detail.done ? "not settled" : "still metering"
+                  ? detail.outcome ? "not settled" : "still metering"
                   : `${Math.round(detail.cost)} karma`
               }
             />
           </section>
 
           <section className="min-w-0 space-y-8">
-            <Connect conn={conn} />
+            <Connect d={detail} />
           </section>
         </div>
       )}

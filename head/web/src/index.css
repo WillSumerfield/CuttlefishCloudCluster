@@ -66,7 +66,7 @@
   --irid-mid: oklch(0.78 0.12 210); /* cyan   — Demand: contended */
   --irid-high: oklch(0.62 0.17 285); /* violet — Demand: fought over, High Tide */
 
-  /* Failed Spawns, Retract, rogue-actor flag. NOTHING else may ever be red. */
+  /* Failed Dives, Retract, rogue-actor flag. NOTHING else may ever be red. */
   --alarm: oklch(0.62 0.2 28);
 
   /* Colour an input takes when ACTIVE (focused, or Select open). Not the card colour: focus must LIFT
@@ -577,7 +577,7 @@
   &:hover::before { opacity: 1; }
 }
 
-/* The one loud control per view (Submit spawn). Warm because it acts on the cluster, but not pigment's
+/* The one loud control per view (End dive). Warm because it acts on the cluster, but not pigment's
  * meaning (that's karma) — it's the "live, pressable thing" gold, same as the rail's current-page light. */
 @utility btn-primary {
   display: inline-flex;

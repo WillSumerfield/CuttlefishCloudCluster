@@ -9,13 +9,13 @@ export function duration(minutes: number | null): string {
 }
 
 /** The Arm's bare name, dropped of any "arm-" prefix noise is NOT done — the name is the name. But a
- *  null node (a Spawn not yet placed) reads as "unplaced", never as blank. */
+ *  null node (a Dive not yet placed) reads as "unplaced", never as blank. */
 export function armLabel(node: string | null): string {
   return node ?? "unplaced";
 }
 
-/** The same, for a Spawn that has already ENDED — where "unplaced" would be a lie. A finished Spawn
- *  was placed; we simply may not have caught it. The meter records the placement, and a Spawn that
+/** The same, for a Dive that has already ENDED — where "unplaced" would be a lie. A finished Dive
+ *  was placed; we simply may not have caught it. The meter records the placement, and a Dive that
  *  started and ended between two 30s passes was never metered, so nothing wrote it down. Say that,
  *  rather than claiming it never ran anywhere. */
 export function placedLabel(node: string | null): string {

@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
  * belongs on the page, not here.
  *
  * Panel is portalled and fixed-positioned: half the targets sit inside a `.surface` (fade mask) or the
- * Tide Pool modal, and an in-flow absolute panel gets clipped by both. Positioned from the trigger's rect
+ * Dive modal, and an in-flow absolute panel gets clipped by both. Positioned from the trigger's rect
  * on open, flipped to the other side when it would leave the viewport.
  *
  * Leaving the trigger always closes it, even if the pointer lands on the panel itself — a tip is a quick

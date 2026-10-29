@@ -1,13 +1,13 @@
 import { useState } from "react";
-import type { Spawn } from "../api";
+import type { Dive } from "../api";
 import { Link } from "../app/router";
 import { duration, armLabel } from "./format";
 import { IridBloom } from "./IridBloom";
 import { CloudDrift } from "./CloudDrift";
-import { CancelSpawn } from "./CancelSpawn";
+import { EndDive } from "./EndDive";
 
 /**
- * One Spawn in the live queue. Two variants, and the difference between them is the whole point of the
+ * One Dive in the live queue. Two variants, and the difference between them is the whole point of the
  * page — it is carried by STRUCTURE and MOTION, never by a status pill:
  *
  *   running — the passing cloud drifts across it (dark bands = this machine is working). It shows the
@@ -17,7 +17,7 @@ import { CancelSpawn } from "./CancelSpawn";
  *
  * Attribution (who submitted) is plain ink, never pigment — pigment means karma and nothing else.
  *
- * The whole row opens the Spawn (docs/Dashboard.md: "Click a Spawn anywhere"), which History has always
+ * The whole row opens the Dive (docs/Dashboard.md: "Click a Dive anywhere"), which History has always
  * honoured and this did not. It is a STRETCHED `<a>` — absolutely positioned over the row — rather than a
  * wrapper, because this row has a button in it and History does not. A wrapper would nest a `<button>`
  * inside an `<a>` (invalid, and one click would both cancel and navigate); an onClick on the `<li>` would
@@ -32,17 +32,17 @@ import { CancelSpawn } from "./CancelSpawn";
  * in the `<li>`'s context, where 30 genuinely beats 20.
  *
  * The overlay is also dropped entirely while a confirmation is open, so a click that misses Keep/Cancel
- * spawn does nothing rather than navigating away and discarding the question.
+ * does nothing rather than navigating away and discarding the question.
  */
 
-export function SpawnRow({
-  spawn,
+export function DiveRow({
+  dive,
   variant,
   position,
   canCancel,
   onCancelled,
 }: {
-  spawn: Spawn;
+  dive: Dive;
   variant: "running" | "waiting";
   position?: number;
   canCancel: boolean;
@@ -63,9 +63,9 @@ export function SpawnRow({
           because it has no text of its own — the row's name is painted by the div beside it. */}
       {!confirming && (
         <Link
-          to={`/spawn/${spawn.id}`}
+          to={`/dive/${dive.id}`}
           className="absolute inset-0 z-20"
-          aria-label={`Open dive ${spawn.id}`}
+          aria-label={`Open dive ${dive.id}`}
         />
       )}
       <div className="relative z-10 flex min-w-0 flex-1 items-center gap-4">
@@ -94,27 +94,23 @@ export function SpawnRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="num truncate text-[15px] text-ink">{spawn.main ? `~/${spawn.main}` : `dive ${spawn.id}`}</span>
-          <span className="num shrink-0 text-[12px] text-ink-mute">#{spawn.id}</span>
+          <span className="num truncate text-[15px] text-ink">{dive.main ? `~/${dive.main}` : `dive ${dive.id}`}</span>
+          <span className="num shrink-0 text-[12px] text-ink-mute">#{dive.id}</span>
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-ink-mute">
-          {spawn.submitted_by && <span className="text-ink-soft">{spawn.submitted_by}</span>}
+          {dive.started_by && <span className="text-ink-soft">{dive.started_by}</span>}
           <span>
-            {spawn.gpus} GPU{spawn.gpus === 1 ? "" : "s"}
+            {dive.gpus} GPU{dive.gpus === 1 ? "" : "s"}
           </span>
           {variant === "running" ? (
             <>
               <span aria-hidden>·</span>
-              <span className="num">{armLabel(spawn.node)}</span>
+              <span className="num">{armLabel(dive.node)}</span>
             </>
           ) : (
             <>
               <span aria-hidden>·</span>
-              <span className="num">{duration(spawn.time_limit)}</span>
-              {/* No "building environment" here any more. A Spawn used to sit in Waiting while the Head
-                  built its Python — not running, but not waiting for a machine either — and this said
-                  so. The Arm builds it inside its own allocation now, so such a Spawn is Running and
-                  the queue has nothing left to explain. */}
+              <span className="num">{duration(dive.time_limit)}</span>
             </>
           )}
         </div>
@@ -123,8 +119,8 @@ export function SpawnRow({
 
       {/* Sibling of the overlay, not of the content — see the note above. */}
       {canCancel && (
-        <CancelSpawn
-          id={spawn.id}
+        <EndDive
+          id={dive.id}
           confirming={confirming}
           setConfirming={setConfirming}
           onCancelled={onCancelled}

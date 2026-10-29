@@ -8,15 +8,15 @@ function formatSigned(n: number) {
 }
 
 /**
- * Your own two numbers: what you hold, and what your live Spawns are holding of it.
+ * Your own two numbers: what you hold, and what your live Dives are holding of it.
  *
  * The Escrow list is the whole reason the total is worth showing — "−140" is a fact you can do nothing
  * with, and "the sweep on arm-mantle-01 is holding 90 of it" is one you can. Each claim links to its
- * Spawn, since cancelling it is the action the number implies.
+ * Dive, since cancelling it is the action the number implies.
  */
 export function StandingCard({ standing }: { standing: Standing }) {
-  const { balance, escrow, escrow_spawns: escrowSpawns } = standing;
-  const n = escrowSpawns.length;
+  const { balance, escrow, escrow_dives: escrowDives } = standing;
+  const n = escrowDives.length;
 
   return (
     <section className="surface [--sink:40%] px-12 py-8 pb-10 md:px-20 md:py-10 md:pb-20">
@@ -56,17 +56,17 @@ export function StandingCard({ standing }: { standing: Standing }) {
             >
               −{escrow.toFixed(0)}
             </span>
-            <Tip className="text-sm text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Spawn ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">
+            <Tip className="text-sm text-ink-mute" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Dive ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">
               ESCROW, {n} Dive{n === 1 ? "" : "s"}
             </Tip>
 
           </div>
 
           <ul className="mt-2.5 space-y-2.5">
-            {escrowSpawns.map((s) => (
+            {escrowDives.map((s) => (
               <Link
                 key={s.job_id}
-                to={`/spawn/${s.job_id}`}
+                to={`/dive/${s.job_id}`}
                 className="relative flex items-center justify-between rounded-[10px] px-3 py-2.5"
               >
                 {/*
@@ -103,7 +103,7 @@ export function StandingCard({ standing }: { standing: Standing }) {
                     {s.job_id}
                   </span>
                   <span className="truncate text-[12px] text-ink-mute">
-                    {[s.script, s.node].filter(Boolean).join(" · ")}
+                    {[s.main && `~/${s.main}`, s.node].filter(Boolean).join(" · ")}
                   </span>
                 </div>
                 <span className="num relative text-ink-soft" style={{ fontSize: 13 }}>

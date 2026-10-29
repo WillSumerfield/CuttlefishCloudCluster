@@ -3,7 +3,7 @@ import { levelOf, LEVEL_LABEL, tideOklch } from "./fold";
 import { Tip } from "../app/Tip";
 
 /**
- * The now-reading — the Tide page's StandingCard. One number: what a Spawn costs THIS hour against a
+ * The now-reading — the Tide page's StandingCard. One number: what a Dive costs THIS hour against a
  * typical hour, as a multiplier (cost ∝ Demand, so the ratio is the price story without ever being a
  * price). Coloured by the tide it names — teal at Low, violet at High. It states the shape; it never
  * warns, gates, or asks you to confirm. Karma ranks, it never gates.
@@ -27,7 +27,7 @@ export function NowCard({ fold }: { fold: Fold }) {
             where it was. Tight to the ink deliberately — the trigger covers the horizon's own hover. */}
         <Tip
           className="mx-auto py-3 -my-3"
-          text="An estimate of the karma cost multiplier based on previous demand. The multiplier is the ratio of the current hour's demand to a typical hour's demand. Real spawns may cost more or less than this estimate, and the multiplier is not a quote or a guarantee."
+          text="An estimate of the karma cost multiplier based on previous demand. The multiplier is the ratio of the current hour's demand to a typical hour's demand. Real dives may cost more or less than this estimate, and the multiplier is not a quote or a guarantee."
         >
           <span
             className="num"

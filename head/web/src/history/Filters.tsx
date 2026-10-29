@@ -23,10 +23,9 @@ export type Filter = {
 
 export const EMPTY_FILTER: Filter = { query: "", who: "everyone", outcomes: new Set(), arm: "" };
 
-// Two rows of two: the quiet outcomes (done, cancelled) on top, the loud ones (failed, retracted) below.
-// `settling` is deliberately NOT offered: it is a ≤30s transient (api.ts's outcomeOf), so a facet for it
-// would be a filter whose results emptied while you looked at them.
-const OUTCOMES: Outcome[] = ["done", "cancelled", "failed", "retracted"];
+// `settling` is deliberately NOT offered: it is a ≤30s transient, so a facet for it would be a filter
+// whose results emptied while you looked at them.
+const OUTCOMES: Outcome[] = ["ended", "timed out", "lost"];
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -77,9 +76,7 @@ export function Filters({
       </Group>
 
       <Group label="Outcome">
-        {/* Two content-width columns → done / cancelled on row one, failed / retracted on row two, packed
-            together (grid-cols-2 would stretch each column to 50% and leave a big gap between the pair). */}
-        <div className="grid grid-cols-[max-content_max-content] gap-1">
+        <div className="flex flex-wrap gap-1">
           {OUTCOMES.map((o) => (
             <Chip key={o} on={value.outcomes.has(o)} onClick={() => toggleOutcome(o)}>
               {o}

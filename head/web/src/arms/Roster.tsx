@@ -28,7 +28,7 @@ export function Roster({ arms, isAdmin }: { arms: Arm[]; isAdmin: boolean }) {
             <Tip text="Who donated this machine. They earn the Karma its work is billed for — the Admin names the owner when they authorize the machine, so a donor never declares it themselves.">Owner</Tip>
             <span>State</span>
             <span className="text-right">GPUs</span>
-            <Tip className="text-right" text="The card's memory. A Spawn is eligible for every card holding at least what it asked for.">VRAM</Tip>
+            <Tip className="text-right" text="The card's memory. A Dive is eligible for every card holding at least what it asked for.">VRAM</Tip>
             <Tip className="text-right" text="What a card can actually do, measured by running a benchmark on it when its Arm joined — not read off a spec sheet. It's what stops a slower machine earning more for being slow.">Power</Tip>
             <Tip className="text-right" text="The machine's address on the cluster's own private network. Nothing outside the cluster can reach it there.">Mesh</Tip>
           </div>

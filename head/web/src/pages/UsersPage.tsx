@@ -73,7 +73,7 @@ export function UsersPage() {
             <div className="label grid items-center gap-3 px-5 pb-4" style={{ gridTemplateColumns: COLS }}>
               <span>User</span>
               <Tip className="text-right" text="Your standing in the cluster — earned by donating hardware, spent by running work. It only ever decides who goes first when two people want the cluster at once; there is no balance at which your work is refused, and on an idle cluster it does nothing at all.">Karma</Tip>
-              <Tip className="text-right" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Spawn ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">Escrow</Tip>
+              <Tip className="text-right" text="Karma held against work you have outstanding. It isn't a charge — it's released when the Dive ends and the real cost is taken instead. While it's held it lowers your standing, so flooding the queue costs you your own place in it.">Escrow</Tip>
               <Tip className="text-right" text="How much a Balance actually buys, squashed between &quot;always loses&quot; and &quot;always wins&quot;. Hoarding has diminishing returns and debt has diminishing punishment, so neither end runs away.">Share</Tip>
               <Tip text="Machines this person donated. Removing them leaves the machines without an owner to pay.">Arms donated</Tip>
             </div>

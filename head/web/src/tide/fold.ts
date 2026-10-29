@@ -6,7 +6,7 @@
 // per Arm and meaned across Arms, and read the current hour against the day's own average.
 //
 // The multiplier is the whole point: cost ∝ Demand (karma.cost = seconds·gpus·power·demand/3600), so
-// "this hour's Demand ÷ the day's mean Demand" is exactly how much a Spawn costs now versus a typical
+// "this hour's Demand ÷ the day's mean Demand" is exactly how much a Dive costs now versus a typical
 // hour. It is a ratio, never a price — the model never quotes, it only ranks.
 
 import type { DemandSample } from "../api";

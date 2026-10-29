@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
-import { getArms, getSpawns, Unauthorized, type Arm, type Spawn } from "../api";
+import { getArms, getDives, Unauthorized, type Arm, type Dive } from "../api";
 import { LiveQueue } from "../queue/LiveQueue";
 
 /** The landing page: what the cluster is doing right now. Live only. */
 export function QueuePage() {
   const { logout } = useAuth();
-  const [spawns, setSpawns] = useState<Spawn[]>([]);
+  const [dives, setDives] = useState<Dive[]>([]);
   const [arms, setArms] = useState<Arm[]>([]);
   const [loaded, setLoaded] = useState(false);
   const timer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, a] = await Promise.all([getSpawns(), getArms()]);
-      setSpawns(s);
+      const [s, a] = await Promise.all([getDives(), getArms()]);
+      setDives(s);
       setArms(a);
     } catch (e) {
       // The session can expire while the board is open. Fall the whole app back to sign-in rather than
@@ -35,12 +35,12 @@ export function QueuePage() {
     };
   }, [refresh]);
 
-  // Optimistic: drop a cancelled Spawn immediately, then let the next poll confirm it's gone.
+  // Optimistic: drop a cancelled Dive immediately, then let the next poll confirm it's gone.
   const onCancelled = useCallback((id: number) => {
-    setSpawns((prev) => prev.filter((s) => s.id !== id));
+    setDives((prev) => prev.filter((s) => s.id !== id));
   }, []);
 
-  const busyGpus = spawns
+  const busyGpus = dives
     .filter((s) => /running|completing/.test(s.state))
     .reduce((n, s) => n + s.gpus, 0);
   const totalGpus = arms.reduce((n, a) => n + (a.gpus || 0), 0);
@@ -57,7 +57,7 @@ export function QueuePage() {
         ) : null
       }
     >
-      <LiveQueue spawns={spawns} onCancelled={onCancelled} />
+      <LiveQueue dives={dives} onCancelled={onCancelled} />
     </Page>
   );
 }
