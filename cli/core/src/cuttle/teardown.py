@@ -158,6 +158,16 @@ def remove_monitor() -> None:
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
+def remove_rollout() -> None:
+    """The Head's served cuttle build and the timer that pushes it to Arms (dist.py, rollout.py). Its
+    state lives under CCC_LIB, which `remove_enroll_api` takes wholesale."""
+    run(["systemctl", "disable", "--now", f"{config.ROLLOUT_SERVICE}.timer"], sudo=True, check=False)
+    run(["rm", "-f", str(config.ROLLOUT_SERVICE_UNIT), str(config.ROLLOUT_TIMER_UNIT),
+         str(config.ROLLOUT_SCRIPT)], sudo=True, check=False)
+    run(["rm", "-rf", str(config.CUTTLE_DIST_DIR)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
 def remove_head_services() -> None:
     """Every unit `setup --head` installs. ONE list, because there were two — `_teardown_local` and
     `teardown_full` each hand-listed the Head's services, and they had already drifted: the backup
@@ -167,6 +177,7 @@ def remove_head_services() -> None:
     remove_karma()
     remove_backup()
     remove_monitor()
+    remove_rollout()
     remove_rsyncd()
 
 
@@ -343,7 +354,8 @@ def untrust_and_unname() -> None:
     """
     guest.withdraw()
     system.remove_hosts_entry()
-    system.run(["rm", "-f", str(config.CLUSTER_NAME_FILE)], sudo=True, check=False)
+    system.run(["rm", "-f", str(config.CLUSTER_NAME_FILE), str(config.ARM_UPDATER_RECORD)], sudo=True,
+               check=False)
     system.untrust_ccc_ca()
 
 

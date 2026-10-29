@@ -84,7 +84,7 @@ class TestVersion:
         for flag in ("--version", "-V"):
             r = cli(flag)
             assert r.exit_code == 0, r.output
-            assert r.output.strip() == "cuttle 0.0.1"
+            assert r.output.strip().startswith("cuttle 0.0.1 (build ")
 
 
 class TestPasswordPolicy:

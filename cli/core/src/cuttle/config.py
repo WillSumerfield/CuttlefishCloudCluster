@@ -551,6 +551,24 @@ HEAD_DB = HEAD_STATE_DIR / "head.db"
 HEAD_BENCH_DIR = HEAD_STATE_DIR / "bench"
 CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; teardown rmdirs it last
 
+# --- Updates from the Head (dist.py, rollout.py) ---
+# The Head builds the `cuttle` wheel from its checkout at every setup/update and serves it: to laptops
+# through the Head API (they update themselves), to Arms through the Enroll API (the Head pushes the
+# update as a root Slurm job). build.json = {"build": <hash>, "wheel": <filename>}. World-readable:
+# the code is not secret, and both APIs run as service users.
+CUTTLE_DIST_DIR = CCC_OPT / "cuttle-dist"
+CUTTLE_DIST_META = CUTTLE_DIST_DIR / "build.json"
+# Written on each Arm at setup, as its owner: where their cuttle and uv live, so the root update job
+# can reinstall and re-run cuttle as they would.
+ARM_UPDATER_RECORD = Path("/etc/ccc/arm-updater.json")
+ROLLOUT_SCRIPT = CCC_OPT / "bin" / "ccc-arm-rollout.py"   # standalone, root, on a timer
+ROLLOUT_STATE = CCC_LIB / "arm-updates.json"              # {arm: {target, attempts, status, error}}, 0644
+ROLLOUT_SERVICE = "ccc-arm-rollout"
+ROLLOUT_SERVICE_UNIT = Path("/etc/systemd/system/ccc-arm-rollout.service")
+ROLLOUT_TIMER_UNIT = Path("/etc/systemd/system/ccc-arm-rollout.timer")
+ROLLOUT_ATTEMPTS = 3          # the first try plus two retries
+ROLLOUT_PREFIX = "ccc-update-"   # each Arm's reservation and job are named this + the Arm
+
 # --- Podman (podman.py) ---
 REGISTRY_PORT = 5000
 

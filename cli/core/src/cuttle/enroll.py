@@ -124,7 +124,8 @@ def enrollment_from_state() -> dict:
 
 def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
                      features: list[dict] | None = None,
-                     provides: list[str] | None = None, bench: dict | None = None) -> dict:
+                     provides: list[str] | None = None, bench: dict | None = None,
+                     build: str = "") -> dict:
     """Record this Arm with the Head and pull the munge key + ctld address. Only routable from
     inside the mesh — which is exactly why the munge key is safe to send here and nowhere else.
 
@@ -140,6 +141,9 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     disk yet, and claiming otherwise is exactly the lie that drains a node. `report_capabilities`
     re-POSTs once it is.
 
+    `build` = this cuttle's build hash, sent only by the last call of a setup/update: it tells the Head
+    this build finished setting the Arm up (cuttle.rollout waits for it).
+
     `bench` = this Arm's own Power measurement (`bench_locally`), sent once measured. Omitted, the
     Head keeps whatever Power it already holds for this Arm.
     """
@@ -149,7 +153,7 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
     reported = [{"name": f["name"], "path": f["path"]} for f in (features or [])]
     body = json.dumps({"node_name": node_name, "gpu_devices": system.gpu_devices(),
                        "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb(),
-                       "features": reported, "provides": provides or [],
+                       "features": reported, "provides": provides or [], "build": build,
                        **({"powers": bench["powers"], "gpu": bench["gpu"]} if bench else {})}).encode()
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
                                  headers={"Content-Type": "application/json"}, method="POST")
@@ -856,11 +860,26 @@ def list_arms(as_json: bool = False) -> None:
     # POWER lists every Device, never a node average: two 4090s in one box measure differently (an x4
     # slot, the one that throttles under the other) and the operator is the person who wants to see it.
     ui.table(
-        ["NAME", "OWNER", "MESH IP", "GPU", "VRAM", "POWER", "STATE"],
+        ["NAME", "OWNER", "MESH IP", "GPU", "VRAM", "POWER", "STATE", "CUTTLE"],
         [[a["name"], a.get("owner") or "-", a.get("mesh_ip") or "-", _gpu_label(a),
           f"{round(a['vram_mb'] / 1024)}G" if a.get("vram_mb") else "-",
           "/".join(str(p) for p in a["powers"]) + " TF" if a.get("powers") else "-",
-          a["state"]] for a in payload])
+          a["state"], _update_label(a)] for a in payload])
+
+
+def _update_label(a: dict) -> str:
+    """Where this Arm's cuttle stands against the Head's build (rollout.py)."""
+    from . import dist, rollout
+    if a.get("head"):
+        return "-"
+    pushing = rollout.status().get(a["name"])
+    if pushing:
+        return {"waiting": "updating after current Dive", "updating": "updating",
+                "failed": "update failed"}.get(pushing["status"], pushing["status"])
+    served = dist.served()
+    if not served or not a.get("build"):
+        return "-"
+    return "up to date" if a["build"] == served["build"] else "out of date"
 
 
 def _gpu_label(a: dict) -> str:

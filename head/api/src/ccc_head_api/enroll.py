@@ -41,6 +41,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # stdlib logging -> stdout -> journald, same shape as the Head API and the Karma tick. Targeted event
@@ -64,6 +65,9 @@ REGISTRY_CREDS = Path(os.environ.get("CCC_REGISTRY_CREDS", "/var/lib/ccc/registr
 # This cluster's CA (public half), handed to an Arm as part of enrolling. Mirrors
 # cuttle.config.HEAD_CA_CERT and ccc_head_api.main.CA_CERT.
 CA_CERT = Path(os.environ.get("CCC_CA_CERT", "/opt/ccc/tls/ccc-ca.crt"))
+# The Head's own cuttle build, which the Head pushes to every Arm (cuttle.rollout). Mirrors
+# cuttle.config.CUTTLE_DIST_DIR.
+CUTTLE_DIST = Path(os.environ.get("CCC_CUTTLE_DIST", "/opt/ccc/cuttle-dist"))
 SLURMD_PORT = 6818  # mirrors cuttle.config.SLURMD_PORT
 # The catalog of Arm Features. Built into CCC, not curated and not state — CCC ships the runtime for
 # each one, so a name outside it could only ever be a Slurm token with nothing behind it. A donor's
@@ -116,6 +120,14 @@ class EnrollRequest(BaseModel):
     # the benchmark itself (before its slurmd starts). Absent, the stored Power is left alone.
     powers: list[float] = []
     gpu: str = ""
+    # The cuttle build this Arm runs. Sent only by the LAST call of a setup/update, so it means "this
+    # build finished setting this Arm up" — what the Head's update push waits for.
+    build: str = ""
+
+
+class UpdateFailure(BaseModel):
+    build: str
+    error: str
 
 
 def _load() -> dict:
@@ -190,6 +202,39 @@ def _pull_password(node_name: str) -> str:
         raise HTTPException(503, f"no registry credential for {node_name!r} — the Head's operator "
                                  f"must re-run `cuttle arm authorize`")
     return creds[node_name]
+
+
+def _cuttle_build() -> dict:
+    try:
+        return json.loads((CUTTLE_DIST / "build.json").read_text())
+    except FileNotFoundError:
+        raise HTTPException(503, "this Head has not built cuttle yet — its Admin must run `cuttle update`")
+
+
+@app.get("/cuttle")
+def cuttle_build() -> dict:
+    """The Head's cuttle build: `{build, wheel}`. Read by an Arm's update job."""
+    return _cuttle_build()
+
+
+@app.get("/cuttle/wheel")
+def cuttle_wheel() -> FileResponse:
+    name = _cuttle_build()["wheel"]
+    return FileResponse(CUTTLE_DIST / name, filename=name)
+
+
+@app.post("/arms/{name}/update-failed", status_code=204)
+def update_failed(name: str, req: UpdateFailure, request: Request) -> None:
+    """An Arm's update job reporting why it failed, for the Arms page and the Admin's alert. Same
+    identity check as /enroll: only the Arm itself may report on itself."""
+    reg = _load()
+    if name not in reg:
+        raise HTTPException(404, f"no Arm named {name!r}")
+    if _node_named_at(request.client.host) != name:
+        raise HTTPException(403, f"{request.client.host} is not registered to {name!r} on the mesh")
+    reg[name]["update_error"] = {"build": req.build, "error": req.error[-4000:]}
+    _save(reg)
+    log.warning("update of %r to %s failed: %s", name, req.build, req.error[-300:])
 
 
 @app.get("/arms/{name}")
@@ -294,6 +339,9 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
     # An UPDATE for the same reason, and load-bearing: this is what the Head gates `Prolog=` on. A stale
     # "yes, I have the prolog" surviving a downgrade is precisely the claim that would drain a node.
     entry["provides"] = list(req.provides)
+    if req.build:
+        entry["build"] = req.build
+        entry.pop("update_error", None)
     # Re-enrolling an already-admitted Arm (e.g. after the Head's mesh IP moved) stays admitted.
     entry.setdefault("admitted", False)
     _save(reg)

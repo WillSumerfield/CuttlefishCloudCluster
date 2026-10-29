@@ -11,6 +11,7 @@ Drives apt+sudo directly. Intended path only — no fallbacks (test box; failure
 
 import hashlib
 import ipaddress
+import json
 import os
 import platform
 import re
@@ -22,8 +23,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import (api, auth, backup, config, enroll, guest, headapi, incontainer, menu, mesh, monitor,
-               podman, settings, system, templates, tidepool, tls, ui)
+from . import (api, auth, backup, buildid, config, dist, enroll, guest, headapi, incontainer, menu,
+               mesh, monitor, podman, rollout, settings, system, templates, tidepool, tls, ui)
 from . import features as feature_profiles   # `features` is a local name throughout this module
 from .system import run, sh
 
@@ -939,6 +940,8 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         install_rsyncd(mesh_ip)                  # mesh-bound; needs ccc + its dirs first
     with ui.step("Building the Dashboard"):
         build_spa()                              # build + stage the Dashboard SPA (Node, Head-only)
+    with ui.step("Building cuttle for laptops and Arms"):
+        dist.build(_write_root_file)             # served by both APIs; see dist.py
     with ui.step("Issuing the Head certificate"):
         install_tls(mesh_ip)                     # must exist before uvicorn starts
         trust_own_ca()                           # so this box's own browser trusts the Dashboard
@@ -976,6 +979,15 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     # the answer: a benchmark costs ten minutes and a card, not something a re-run should spend.
     enroll.ensure_priced(system.hostname())
     verify()
+    # Last: every out-of-date Arm is reserved and gets a root update job (rollout.py). The timer
+    # carries it on from here — retries, reopening each Arm as it finishes.
+    with ui.step("Pushing this build to the Arms"):
+        rollout.install(_write_root_file, mesh_ip)
+        pushing = rollout.push(mesh_ip)
+    for arm, state, err in pushing:
+        ui.result(f"arm {arm}", {"waiting": "updating after its current Dive",
+                                 "updating": "updating", "failed": f"update failed: {err}"}
+                  .get(state, state))
     if not update:
         _head_first_login(temp_pw)
     lan = system.primary_ip()
@@ -1524,6 +1536,12 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     with ui.step("Checking the Head can reach us"):
         # Only now is there something on 6818 to reach. Raises if the Head can't get back to us.
         enroll.check_head_can_reach_us(t["mesh_ip"])
+    with ui.step("Recording this cuttle for updates from the Head"):
+        record_arm_updater()
+        # Last: the build only counts as installed once everything above worked (rollout.py).
+        enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features,
+                                provides=[config.ARM_CAP_PROLOG, config.ARM_CAP_TMPFS],
+                                build=buildid.current())
 
     if not update:
         _arm_first_login()
@@ -1533,6 +1551,20 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     ui.result("check it", "run `sinfo` on the Head")
     if system.is_wsl():
         ui.result("keep it up", f"in an admin Command Prompt (cmd): {system.wsl_keepalive_cmds()[0]}")
+
+
+def record_arm_updater() -> None:
+    """Where this Arm's owner keeps cuttle and uv, so the Head's root update job can reinstall cuttle
+    as them and re-run `cuttle update` against their ~/.ccc. Skipped when that job is what is running
+    (as root): the record already names the owner, and root is not them."""
+    if os.geteuid() == 0:
+        return
+    import getpass
+    import shutil
+    record = {"user": getpass.getuser(), "home": str(Path.home()), "ccc_home": str(config.CCC_HOME),
+              "uv": shutil.which("uv"), "cuttle": shutil.which("cuttle"),
+              "path": os.environ.get("PATH", "")}
+    _write_root_file(config.ARM_UPDATER_RECORD, json.dumps(record, indent=2) + "\n")
 
 
 def _arm_first_login() -> None:

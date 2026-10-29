@@ -370,7 +370,7 @@ class TestTeardownUndoesTheHostMutations:
         monkeypatch.setattr(teardown.system, "run", lambda argv, **kw: done.append(argv))
         monkeypatch.setattr(teardown.system, "untrust_ccc_ca", lambda: done.append("ca"))
         teardown.untrust_and_unname()
-        assert done == ["hosts", ["rm", "-f", str(config.CLUSTER_NAME_FILE)], "ca"]
+        assert done == ["hosts", ["rm", "-f", str(config.CLUSTER_NAME_FILE), str(config.ARM_UPDATER_RECORD)], "ca"]
 
     def test_it_runs_before_packages_are_purged(self):
         """`untrust_ccc_ca` needs `certutil`, which lives in libnss3-tools — and the purge takes that

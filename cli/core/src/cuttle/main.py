@@ -73,7 +73,8 @@ def _version(value: bool) -> None:
     # answers on a box that is not set up or logged in, which is exactly when you ask what you installed.
     if value:
         from importlib.metadata import version
-        ui.data(f"cuttle {version('cuttle')}")
+        from . import buildid
+        ui.data(f"cuttle {version('cuttle')} (build {buildid.current()})")
         raise typer.Exit()
 
 
@@ -273,6 +274,25 @@ def arm_admit(name: str = typer.Argument(None, help="The Arm's node name.")):
     up waiting because the donor hadn't run setup yet — this finishes the job."""
     name = ui.need(name, "the Arm's name", lambda: pickers.pick_arm("Which Arm to admit?"))
     enroll_mod.admit_arm(name, setup_mod._write_root_file)
+
+
+@arm_app.command("update")
+def arm_update(
+    name: str = typer.Argument(None, help="The Arm's node name."),
+    every: bool = typer.Option(False, "--all", help="Every Arm."),
+):
+    """Push the Head's cuttle to an Arm again, starting its tries over. `cuttle update` on the Head
+    already does this for every out-of-date Arm; use this to retry one whose update failed."""
+    from . import mesh, rollout
+    names = [] if every else [ui.need(name, "the Arm's name",
+                                      lambda: pickers.pick_arm("Which Arm to update?"))]
+    if every:
+        names = [n for n, e in enroll_mod.load_registry().items() if not e.get("head")]
+    rows = rollout.push(mesh.tailscale_ip(), restart=names)
+    for arm, state, err in rows:
+        ui.say(f"{arm}: {state}{': ' + err if err else ''}")
+    if not rows:
+        ui.say("every Arm is on the Head's build")
 
 
 @arm_app.command("benchmark")

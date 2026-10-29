@@ -24,6 +24,14 @@ log = logging.getLogger("ccc.api")
 
 REGISTRY = Path(os.environ.get("CCC_ARMS_REGISTRY", "/var/lib/ccc/arms.json"))
 PARTITION = os.environ.get("CCC_PARTITION", "ccc")
+# Arm update rollout state, and the name its root update jobs carry (mirror cuttle.config.ROLLOUT_STATE
+# and ROLLOUT_PREFIX). Those jobs are the Head's own maintenance, not Dives: never listed, never metered.
+UPDATES = Path(os.environ.get("CCC_ARM_UPDATES", "/var/lib/ccc/arm-updates.json"))
+UPDATE_JOB_PREFIX = "ccc-update-"
+
+
+def _is_update_job(j: dict) -> bool:
+    return (j.get("name") or "").startswith(UPDATE_JOB_PREFIX) and j.get("user_name") == "root"
 # The catalog of Arm Features — mirrors the same constant in ccc_head_api.enroll and cuttle.config
 # (neither app can import the others). All three must agree. Built into CCC rather than curated, since
 # CCC ships the runtime for each Feature — there is nothing here for an operator to mutate.
@@ -53,6 +61,11 @@ def load_registry() -> dict:
     """The enrollment registry (written by the enroll app). World-readable (0644), so the dashboard's
     `nobody` user reads it for the mesh_ip/admitted facts Slurm never sees."""
     return json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
+
+
+def load_updates() -> dict:
+    """The Head's Arm update rollout state (cuttle.rollout writes it, 0644)."""
+    return json.loads(UPDATES.read_text()) if UPDATES.exists() else {}
 
 
 def _slurm_json(*cmd: str) -> dict:
@@ -121,6 +134,7 @@ def arms() -> list[dict]:
     authoritative node list; the Head's own co-located Arm is in it and carries an admin-owned
     registry row despite never enrolling."""
     reg = load_registry()
+    updates = load_updates()
     # Per node: sinfo groups nodes sharing a state into one record whose gres is the group's, not each
     # node's (dex's 2 GPUs were shown on a 1-GPU Arm).
     gres = {n["name"]: n.get("gres", "") for n in _slurm_json("scontrol", "show", "nodes", "--json").get("nodes", [])}
@@ -155,6 +169,10 @@ def arms() -> list[dict]:
                 # and nothing prices from it (tick._meter bills each held Device at its own Power).
                 "power": _mean(e.get("powers")),
                 "gpu_device": ", ".join(e.get("gpu_devices") or []) or None,
+                # The cuttle build this Arm last finished setup/update on, and where the Head's push
+                # of a newer one stands (cuttle.rollout): waiting / updating / failed, or None.
+                "build": e.get("build"),
+                "update": updates.get(name),
             })
     return sorted(out, key=lambda a: a["name"])
 
@@ -296,7 +314,7 @@ def queue() -> list[dict]:
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
         state = j.get("job_state") or []
-        if j.get("partition") != PARTITION:
+        if j.get("partition") != PARTITION or _is_update_job(j):
             continue
         if "PENDING" in state:
             live = "PENDING"
@@ -360,7 +378,7 @@ def dives() -> list[dict]:
     Dive actually ending; durable history waits for Phase 3 slurmdbd (see module docstring)."""
     out = []
     for j in _slurm_json("squeue", "--json").get("jobs", []):
-        if j.get("partition") != PARTITION:
+        if j.get("partition") != PARTITION or _is_update_job(j):
             continue
         if not LIVE_JOB_STATES.intersection(j.get("job_state") or []):
             continue  # squeue hasn't aged it out yet, but it's already done — history's job now
