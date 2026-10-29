@@ -180,6 +180,17 @@ class TestTheSlurmOpsBecomeTheOwner:
         assert deleted == ["ccc-u60002", "ccc-u60007"]
         assert not any("--remove" in c or "-r" in c for c in calls)
 
+    def test_an_ended_job_is_not_cancelled_or_signalled(self, monkeypatch):
+        """squeue has dropped it but Slurm still remembers it: scancel as anyone else is refused
+        (exit 210), which used to 500 `cuttle dive end` on a Dive whose time had just run out."""
+        from ccc_head_api import slurm
+        calls = []
+        monkeypatch.setattr(slurm.subprocess, "run", lambda argv, **kw: calls.append(list(argv)) or
+                            type("R", (), {"stdout": "", "returncode": 0})())
+        slurm.cancel(7)
+        slurm.signal(7, "KILL")
+        assert [c[0] for c in calls] == ["squeue", "squeue"]
+
     def test_the_owner_comes_from_squeue_not_the_ledger(self, ran):
         """squeue is what `sudo -u` has to MATCH, so it's ground truth by construction. It also gets
         three cases right the Attribution row gets wrong: a Spawn queued before Guises existed

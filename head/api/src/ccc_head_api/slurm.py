@@ -383,9 +383,11 @@ def cancel(job_id: int) -> None:
 
     Settlement is NOT done here: the Karma tick settles a Spawn on its *disappearance from squeue*
     (slurm.queue()), which is exactly what this causes, so a cancel bills for the seconds actually held
-    with no second code path. Idempotent — scancel on an already-gone job is a no-op, not an error, and
-    a job squeue has already forgotten reports no owner and takes the plain path below."""
-    subprocess.run(guises.as_owner(["scancel", str(job_id)], owner_of(job_id)),
+    with no second code path. Idempotent — a job squeue no longer lists has already ended, so there
+    is nothing to cancel (scancel as anyone but its owner is refused while Slurm still remembers it)."""
+    if (owner := owner_of(job_id)) is None:
+        return
+    subprocess.run(guises.as_owner(["scancel", str(job_id)], owner),
                    capture_output=True, text=True, timeout=15, check=True)
 
 
@@ -393,5 +395,7 @@ def signal(job_id: int, sig: str) -> None:
     """Send a signal to a live Spawn, without ending it the way `cancel` does. As its owner, for the
     same reason. Used by a Retract's initial nudge (TERM, so the job's own EXIT trap can stage out what
     it can) and by the Karma tick's force-kill once its grace period has passed (KILL)."""
-    subprocess.run(guises.as_owner(["scancel", f"--signal={sig}", str(job_id)], owner_of(job_id)),
+    if (owner := owner_of(job_id)) is None:              # already ended: nothing to signal
+        return
+    subprocess.run(guises.as_owner(["scancel", f"--signal={sig}", str(job_id)], owner),
                    capture_output=True, text=True, timeout=15, check=True)
