@@ -50,11 +50,22 @@ export function Rail() {
         md:gap-1 md:overflow-visible md:px-8 md:py-10 md:backdrop-blur-none
       "
     >
-      <span className="label mb-6 hidden text-left leading-tight md:block" style={{ color: "var(--ink-mute)" }}>
-        Cuttlefish<br />
-        Cloud<br />
-        Cluster
-      </span>
+      {/* The name, and under it the wiki — it explains CCC as a whole, so it belongs with the name, not
+          among the Dashboard's pages. A separate site, so a plain link. Desktop only (Account has it on
+          mobile, where the name is hidden). */}
+      <div className="mb-6 hidden md:block">
+        <span className="label block text-left leading-tight" style={{ color: "var(--ink-mute)" }}>
+          Cuttlefish<br />
+          Cloud<br />
+          Cluster
+        </span>
+        <a
+          href={WIKI}
+          className="mt-1.5 inline-block rounded-[6px] text-[13px] text-ink-soft outline-none transition-colors duration-200 hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--gold)]"
+        >
+          Wiki
+        </a>
+      </div>
 
       {dests.map((d) => {
         const here = isCurrent(path, d.to);
@@ -90,14 +101,6 @@ export function Rail() {
         );
       })}
 
-      {/* The wiki: its own site, so a plain link that leaves the Dashboard (its footer links back). */}
-      <a
-        href={WIKI}
-        className="rail-link shrink-0 rounded-[10px] px-3 py-2 text-[15px] outline-none transition-[color,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-[var(--gold)]"
-        style={{ color: "var(--ink-mute)", transitionTimingFunction: "var(--ease-swim)" }}
-      >
-        Wiki
-      </a>
 
       {/* Who you are, and the way out. Pinned to the bottom on desktop; just the last item on mobile.
           Sign out proper lives on Account too (once built) — this is the always-reachable copy. */}

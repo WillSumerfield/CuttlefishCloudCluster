@@ -7,6 +7,7 @@ import { Tip } from "../app/Tip";
 import { FleshCell } from "../account/FleshCell";
 import { PasswordForm } from "../account/PasswordForm";
 import { TidepoolCard } from "../account/TidepoolCard";
+import { WIKI } from "../app/wiki";
 
 /**
  * Account — yourself. The identity sits bold on the right with your pigment bloom (you, as the cluster sees
@@ -84,10 +85,14 @@ export function AccountPage() {
 
             <PasswordForm onUnauthorized={logout} />
 
-            <div>
+            <div className="flex flex-wrap gap-3">
               <button className="btn-ghost" onClick={() => logout()}>
                 Sign out
               </button>
+              {/* The rail's wiki link sits under the name, which phones hide — so it's here too. */}
+              <a href={WIKI} className="btn-ghost md:hidden">
+                Wiki
+              </a>
             </div>
           </div>
         </section>
