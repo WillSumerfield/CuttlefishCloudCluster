@@ -242,7 +242,7 @@ plugins:
     enabled: true
     options:
       links:
-        Back to the Dashboard: /
+        Back to the Dashboard: "dashboard:/"   # see setup.dashboard_links
     layout:
       position: left
       priority: 15

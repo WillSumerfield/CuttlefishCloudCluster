@@ -695,11 +695,13 @@ def build_wiki() -> None:
 
 def dashboard_links(public: Path) -> None:
     """Wiki pages link to the Dashboard as `dashboard:/karma`: Quartz rewrites any plain `/karma` into a
-    wiki link, but leaves a link with a scheme alone. Turn them back into Dashboard paths."""
+    wiki link, but leaves a link with a scheme alone. Turn them back into Dashboard paths, marked
+    `data-router-ignore` so Quartz's in-page navigation loads the Dashboard properly instead of swapping
+    its empty shell in."""
     for page in public.rglob("*.html"):
         html = page.read_text()
         if 'href="dashboard:' in html:
-            page.write_text(html.replace('href="dashboard:', 'href="'))
+            page.write_text(html.replace('href="dashboard:', 'data-router-ignore href="'))
 
 
 def make_user_dirs() -> None:

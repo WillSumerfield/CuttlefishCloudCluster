@@ -8,4 +8,4 @@ def test_dashboard_links_become_dashboard_paths(tmp_path):
     page = tmp_path / "using-ccc" / "karma.html"
     page.write_text('<a href="dashboard:/karma" class="external">Open Karma</a> <a href="../dives">Dives</a>')
     setup.dashboard_links(tmp_path)
-    assert page.read_text() == '<a href="/karma" class="external">Open Karma</a> <a href="../dives">Dives</a>'
+    assert page.read_text() == '<a data-router-ignore href="/karma" class="external">Open Karma</a> <a href="../dives">Dives</a>'
