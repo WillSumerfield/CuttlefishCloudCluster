@@ -338,10 +338,13 @@ def step(label: str):
             _paint()
             try:
                 yield
-            except BaseException:
-                _log(f"FAIL {label}")
-                _TROUBLE.append(f"[err]✗[/err] {label}")
-                _LOOSE[i] = Text.from_markup(f"[err]✗[/err] {label}")
+            except BaseException as e:
+                if getattr(e, "reported", False):   # `abort` already put the ✗ and its reason below
+                    _LOOSE.pop(i)
+                else:
+                    _log(f"FAIL {label}")
+                    _TROUBLE.append(f"[err]✗[/err] {label}")
+                    _LOOSE[i] = Text.from_markup(f"[err]✗[/err] {label}")
                 _paint()
                 raise
             _log(f"OK   {label}")
@@ -363,10 +366,13 @@ def step(label: str):
     i = _FRAME.add(Spinner("dots", text=Text(f"{label}…")))
     try:
         yield
-    except BaseException:
-        _log(f"FAIL {label}")
-        _TROUBLE.append(f"[err]✗[/err] {label}")
-        _FRAME.replace(i, Text.from_markup(f"[err]✗[/err] {label}"))
+    except BaseException as e:
+        if getattr(e, "reported", False):
+            _FRAME.remove(i)
+        else:
+            _log(f"FAIL {label}")
+            _TROUBLE.append(f"[err]✗[/err] {label}")
+            _FRAME.replace(i, Text.from_markup(f"[err]✗[/err] {label}"))
         raise
     _log(f"OK   {label}")
     _FRAME.replace(i, Text.from_markup(f"[ok]✓[/ok] {label}"))
@@ -1429,6 +1435,10 @@ class _Frame:
 
     def replace(self, i: int, renderable, height: int = 1) -> None:
         self.rows[i] = (renderable, height)
+        self._refresh()
+
+    def remove(self, i: int) -> None:
+        del self.rows[i]
         self._refresh()
 
 

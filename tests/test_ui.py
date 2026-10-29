@@ -469,3 +469,19 @@ def test_an_unexpected_failure_still_names_the_step(capsys):
         with ui.step("queueing the Dive"):
             raise RuntimeError("boom")
     assert "queueing the Dive" in capsys.readouterr().err
+
+
+def test_on_the_canvas_a_reported_abort_leaves_only_its_reason(monkeypatch):
+    import io
+    from rich.console import Console
+    monkeypatch.setattr(ui, "err", Console(file=io.StringIO(), width=100, force_terminal=True))
+    monkeypatch.setattr(ui, "_SCREEN", object())
+    monkeypatch.setattr(ui, "_FRAME", None)
+    monkeypatch.setattr(ui, "_LOOSE", [])
+    monkeypatch.setattr(ui, "_TROUBLE", [])
+    monkeypatch.setattr(ui, "_paint", lambda **k: None)
+    with pytest.raises(BaseException):
+        with ui.step("waiting for Dive 33"):
+            raise ui.abort("Dive 33 has ended")
+    assert ui._TROUBLE == ["[err]✗[/err] Dive 33 has ended"]
+    assert [str(r) for r in ui._LOOSE] == ["✗ Dive 33 has ended"]
