@@ -165,10 +165,11 @@ class TestEnsureContainer:
         monkeypatch.setattr(H, "mesh_ip", lambda: "100.99.0.1")   # not this box's live ccc0
         calls = []
         monkeypatch.setattr(H, "sh", lambda *a, **k: calls.append(a))
+        monkeypatch.setattr(H, "queue_rebuild", lambda u: calls.append(("queue_rebuild",)))
         return calls
 
     def verbs(self, calls):
-        return [next(x for x in c if x in ("update", "rm", "create", "stop")) for c in calls]
+        return [next(x for x in c if x in ("update", "rm", "create", "stop", "queue_rebuild")) for c in calls]
 
     def test_same_base_only_recaps(self, ran, monkeypatch):
         monkeypatch.setattr(H, "_container_image", lambda u: f"{self.BASE} {H.SPEC_VERSION}")
@@ -178,12 +179,12 @@ class TestEnsureContainer:
     def test_new_release_base_recreates(self, ran, monkeypatch):
         monkeypatch.setattr(H, "_container_image", lambda u: f"old@sha256:{'b' * 64} {H.SPEC_VERSION}")
         H.ensure_container("bob", 60003, TestHelperArgv.S)
-        assert self.verbs(ran) == ["stop", "rm", "create"]
+        assert self.verbs(ran) == ["stop", "queue_rebuild", "rm", "create"]
 
     def test_new_create_spec_recreates(self, ran, monkeypatch):
         monkeypatch.setattr(H, "_container_image", lambda u: f"{self.BASE} 1")
         H.ensure_container("bob", 60003, TestHelperArgv.S)
-        assert self.verbs(ran) == ["stop", "rm", "create"]
+        assert self.verbs(ran) == ["stop", "queue_rebuild", "rm", "create"]
 
     def test_none_yet_creates(self, ran, monkeypatch):
         monkeypatch.setattr(H, "_container_image", lambda u: None)
@@ -195,7 +196,7 @@ class TestEnsureContainer:
         monkeypatch.setattr(H, "_container_image", lambda u: None)
         self.exists = True
         H.ensure_container("bob", 60003, TestHelperArgv.S)
-        assert self.verbs(ran) == ["stop", "rm", "create"]
+        assert self.verbs(ran) == ["stop", "queue_rebuild", "rm", "create"]
 
 
 class TestTemplates:

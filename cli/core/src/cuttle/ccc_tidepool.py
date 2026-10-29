@@ -8,7 +8,7 @@ Installed root-owned at /usr/local/sbin/ccc-tidepool on the Head by `cuttle setu
 - `remove <user>`, `teardown [--all]`: the operator (`cuttle user remove`, `cuttle teardown`).
 - `dive-prep|dive-snap|dive-open <user> <token>`, `dive-close <token>`: the Head API, for a **Dive**
   (see the Dives section below). `dive-lock <token>`: rsyncd (pre-xfer exec). `started <user>`: the
-  unit's ExecStartPost.
+  unit's ExecStartPost. `replay <user>`: systemd-run, after a Dive's end or a rebuild (apt replay).
 
 A Tidepool is:
 - **one fixed-size ext4 image** `<image_dir>/<user>.img` (fallocate — the space is taken up front),
@@ -27,6 +27,7 @@ Stdlib only, no CCC imports: it runs under the system python as root.
 """
 
 import base64
+import fcntl
 import gzip
 import hashlib
 import json
@@ -279,6 +280,7 @@ def ensure_container(user: str, uid: int, s: dict) -> None:
         # a new release's base (setup --head wiped the old one), or a new create spec: the old layer
         # cannot outlive it — recreated, home kept, like a reset
         sh("systemctl", "stop", service(user), check=False, capture_output=True)
+        queue_rebuild(user)
         sh(*podman(user), "rm", "-f", "-t", "5", container(user), check=False, capture_output=True)
     # The digest ref is the pushed manifest's; a locally built image may not answer to it until pulled
     # once into the main store (layers already there — only the manifest moves). Never into the User's.
@@ -308,9 +310,10 @@ def restart(user: str) -> None:
 
 
 def reset(user: str) -> None:
-    """A fresh container from the base: the apt layer goes, home stays."""
+    """A fresh container from the base: the apt layer goes (its replay list too), home stays."""
     uid = record(check_user(user))["uid"]
     sh("systemctl", "stop", service(user))
+    shutil.rmtree(APT_PENDING / user / "rebuild", ignore_errors=True)
     sh(*podman(user), "rm", "-f", "-t", "5", container(user), check=False, capture_output=True)
     ensure_container(user, uid, settings())   # nothing there now → created from the current base
     sh("systemctl", "start", service(user))
@@ -325,6 +328,7 @@ def _stop(user: str, drop_container: bool) -> None:
     (UNIT_DIR / mount_unit(user)).unlink(missing_ok=True)
     shutil.rmtree(KEYS_ROOT / user, ignore_errors=True)
     shutil.rmtree(f"/run/ccc-tidepools/{user}", ignore_errors=True)
+    shutil.rmtree(APT_PENDING / user, ignore_errors=True)
     (RECORDS / f"{user}.json").unlink(missing_ok=True)
     if mnt(user).is_dir() and not os.path.ismount(mnt(user)):
         mnt(user).rmdir()
@@ -552,6 +556,9 @@ def dive_snap(user: str, tok: str) -> dict:
     ref = f"{registry()}/ccc/u-{user}:{tok}"
     digest_file = DIVE_STATE / f"{tok}.digest"
     DIVE_STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The Dive's own apt entries start where the Tidepool's logs end now (taken before the commit: an
+    # install racing it is replayed twice, never missed).
+    (DIVE_STATE / tok / "apt-offsets.json").write_text(json.dumps(apt_offsets(user)))
     sh(*podman(user), "commit", "-q", container(user), ref, capture_output=True)
     try:
         sh(*podman(user), "push", "-q", "--authfile", AUTH_FILE, "--digestfile", str(digest_file), ref,
@@ -664,6 +671,8 @@ def render_modules(tok: str, d: dict) -> str:
     for i, dep in enumerate(d["deps"]):
         out += f"[d{tok}-dep{i}]\n    path = {host_dir(d['user'], dep)}\n    read only = true\n{user}{common}"
     out += f"[d{tok}-dot]\n    path = {DIVE_STATE / tok / 'home'}\n    read only = true\n{user}{common}"
+    # the Dive's apt log + sources, sent at its end (ccc-launch send_back), replayed into the Tidepool
+    out += f"[d{tok}-back]\n    path = {DIVE_STATE / tok / 'back'}\n    read only = false\n{user}{common}"
     out += (f"[d{tok}-sys]\n    path = {DIVE_STATE / tok / 'sys'}\n    read only = true\n"
             f"    uid = root\n    gid = root\n{common}")
     return out
@@ -689,6 +698,8 @@ def dive_open(user: str, tok: str, req: dict) -> None:
     sysd = bundle / "sys"
     sysd.mkdir(mode=0o700, exist_ok=True)
     b = id_base(uid)
+    (bundle / "back").mkdir(mode=0o700, exist_ok=True)
+    os.chown(bundle / "back", b + INNER_UID, b + INNER_UID)
     for f in ("ssh_host_ed25519_key", "ssh_host_ed25519_key.pub"):
         shutil.copyfile(mnt(user) / "ssh" / f, sysd / f)
         os.chmod(sysd / f, 0o600 if not f.endswith(".pub") else 0o644)
@@ -773,6 +784,8 @@ def started(user: str) -> None:
     for d in dives(user):
         if d["locked"]:
             apply_lock(d)
+    if (APT_PENDING / user).is_dir() and any((APT_PENDING / user).iterdir()):
+        spawn_replay(user, "start")
 
 
 # --- fs: the Dashboard's file browser, as the User inside their own container -----------------
@@ -839,6 +852,10 @@ def dive_close(tok: str) -> None:
         if d["locked"]:
             release_lock(d)
         try:
+            queue_dive_replay(d)
+        except Exception as e:
+            print(f"ccc-tidepool: Dive {tok}'s apt changes not queued ({e})", file=sys.stderr)
+        try:
             delete_manifest(d["image"])
         except Exception as e:
             print(f"ccc-tidepool: snapshot of Dive {tok} not deleted ({e}) — registry-gc keeps it",
@@ -847,6 +864,233 @@ def dive_close(tok: str) -> None:
     (DIVE_RSYNCD / f"{tok}.secrets").unlink(missing_ok=True)
     shutil.rmtree(DIVE_STATE / tok, ignore_errors=True)
     p.unlink(missing_ok=True)
+
+
+# --- apt replay: a Dive's installs (and a rebuilt Tidepool's own) come back ------------------
+# A Dive's container layer goes at its end; ccc-launch sends its apt log + sources back (`-back`
+# module). `dive-close` queues them under APT_PENDING/<user>/<token>; `replay <user>` (systemd-run, one
+# at a time per User) replays them into the Tidepool pinned (`x=ver`). A rebuild (new base/spec) queues
+# the old container's own installs as APT_PENDING/<user>/rebuild, replayed by name after the start.
+# The result: one line on the next shell (~/.ccc/installs/*.msg), the full log beside it.
+
+APT_PENDING = Path("/var/lib/ccc/apt-pending")
+APT_LOGS = ("/var/log/apt/history.log", "/var/log/dpkg.log")
+SOURCE_DIRS = {"etc_apt_sources.list.d": "/etc/apt/sources.list.d", "etc_apt_keyrings": "/etc/apt/keyrings",
+               "usr_share_keyrings": "/usr/share/keyrings"}
+INSTALL_OPS = ("Install", "Upgrade", "Downgrade", "Reinstall")
+REMOVE_OPS = ("Remove", "Purge")
+_ENTRY_RE = re.compile(r"(?<![^\s,])([a-z0-9][a-z0-9+.-]*(?::[a-z0-9-]+)?) \(([A-Za-z0-9.+~:, -]*)\)")
+# SUDO_UID: apt logs it as Requested-By, which is how a rebuild tells the User's installs from the base's.
+APT = ["env", "DEBIAN_FRONTEND=noninteractive", "SUDO_UID=1000", "apt-get", "-y", "-q",
+       "-o", "DPkg::Lock::Timeout=900", "--no-install-recommends", "--allow-downgrades"]
+
+
+def apt_offsets(user: str) -> dict:
+    r = subprocess.run([*podman(user), "exec", container(user), "sh", "-c",
+                        'for f; do stat -c %s "$f" 2>/dev/null || echo 0; done', "_", *APT_LOGS],
+                       capture_output=True, text=True)
+    n = [int(x) for x in r.stdout.split()] if r.returncode == 0 else []
+    return dict(zip(("history", "dpkg"), n)) if len(n) == 2 else {"history": 0, "dpkg": 0}
+
+
+def parse_history(text: str, requested_only: bool = False) -> dict[str, dict]:
+    """Net effect of apt's history, in log order: pkg -> {op: install|remove|purge, ver, auto}.
+    auto: True/False for an Install, else what it was before (None = unknown, leave as is)."""
+    out: dict[str, dict] = {}
+    for block in text.split("\n\n"):
+        fields = dict(ln.split(": ", 1) for ln in block.strip().splitlines() if ": " in ln)
+        if requested_only and "Requested-By" not in fields:
+            continue
+        for op, val in fields.items():
+            for name, vers in _ENTRY_RE.findall(val) if op in INSTALL_OPS + REMOVE_OPS else []:
+                if op in REMOVE_OPS:
+                    out[name] = {"op": op.lower()}
+                    continue
+                parts = [v.strip() for v in vers.split(",")]
+                auto = "automatic" in parts if op == "Install" else out.get(name, {}).get("auto")
+                out[name] = {"op": "install", "ver": [v for v in parts if v != "automatic"][-1], "auto": auto}
+    return out
+
+
+def dpkg_only(text: str, apt_names: set[str]) -> list[str]:
+    """Packages dpkg installed that apt never logged — `dpkg -i`."""
+    seen = []
+    for ln in text.splitlines():
+        f = ln.split()
+        if len(f) >= 4 and f[2] in ("install", "upgrade"):
+            n = f[3].split(":")[0]
+            if n not in apt_names and n not in seen:
+                seen.append(n)
+    return seen
+
+
+def _short(name: str) -> str:
+    return name.split(":")[0]
+
+
+def _tail(path: Path, offset: int) -> str:
+    if not path.is_file() or path.is_symlink():
+        return ""
+    b = path.read_bytes()
+    return (b[offset:] if offset <= len(b) else b).decode(errors="replace")
+
+
+def _exec(user: str, *argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run([*podman(user), "exec", "-u", "0", container(user), *argv],
+                          capture_output=True, text=True)
+
+
+def _apt(user: str, args: list[str], log: list[str]) -> bool:
+    r = _exec(user, *APT, *args)
+    log += [f"$ apt-get {' '.join(args)}", r.stdout + r.stderr]
+    return r.returncode == 0
+
+
+def _batch(user: str, verb: str, args: list[str], log: list[str]) -> tuple[list[str], list[str]]:
+    """All at once; on failure one by one, to name the ones that fail."""
+    if not args or _apt(user, [verb, *args], log):
+        return args, []
+    ok, bad = [], []
+    for a in args:
+        (ok if _apt(user, [verb, a], log) else bad).append(a)
+    return ok, bad
+
+
+def copy_sources(user: str, src: Path, log: list[str]) -> list[str]:
+    """apt sources + keyrings the Dive added — never over a file the Tidepool has."""
+    out = []
+    for key, dest in SOURCE_DIRS.items():
+        d = src / key
+        if d.is_symlink() or not d.is_dir():
+            continue
+        for f in sorted(d.iterdir()):
+            target = f"{dest}/{f.name}"
+            if f.is_symlink() or not f.is_file() or _exec(user, "test", "-e", target).returncode == 0:
+                continue
+            sh(*podman(user), "cp", "--archive=false", str(f), f"{container(user)}:{target}", check=False,
+               capture_output=True)
+            log.append(f"copied {target}")
+            out.append(f.name)
+    return out
+
+
+def replay_changes(user: str, changes: dict[str, dict], pinned: bool, log: list[str]) -> dict:
+    res = {"back": [], "removed": [], "failed": [], "changed": []}
+    if not changes:
+        return res
+    was_auto = set(_exec(user, "apt-mark", "showauto").stdout.split())
+    _apt(user, ["update"], log)
+    for verb in ("remove", "purge"):
+        ok, bad = _batch(user, verb, [n for n, c in changes.items() if c["op"] == verb], log)
+        res["removed"] += [_short(n) for n in ok]
+        res["failed"] += [f"{verb} {_short(n)}" for n in bad]
+    inst = {n: c for n, c in changes.items() if c["op"] == "install"}
+    ok, bad = _batch(user, "install", [f"{n}={c['ver']}" if pinned else n for n, c in inst.items()], log)
+    ok_names = [a.split("=")[0] for a in ok]
+    res["failed"] += [_short(a) for a in bad]
+    auto = [n for n in ok_names if inst[n]["auto"] or (inst[n]["auto"] is None and _short(n) in was_auto)]
+    if auto:
+        _exec(user, "apt-mark", "auto", *auto)
+    manual = [n for n in ok_names if n not in auto]
+    res["back"] = [_short(n) for n in manual]
+    if not pinned and manual:
+        r = _exec(user, "dpkg-query", "-W", "-f=${Package} ${Version}\n", *[_short(n) for n in manual])
+        now = dict(ln.split(" ", 1) for ln in r.stdout.splitlines() if " " in ln)
+        res["changed"] = [f"{_short(n)} {inst[n]['ver']} → {now[_short(n)]}" for n in manual
+                          if now.get(_short(n), inst[n]["ver"]) != inst[n]["ver"]]
+    return res
+
+
+def summary(head: str, res: dict) -> str | None:
+    parts = [f"{k}: {', '.join(res[key])}" for key, k in
+             (("back", "brought back" if head.startswith("Dive") else "reinstalled"), ("removed", "removed"),
+              ("sources", "apt sources"), ("changed", "new versions"), ("failed", "failed"),
+              ("skipped", "not replayed (dpkg -i)")) if res.get(key)]
+    return f"{head} {' · '.join(parts)}" if parts else None
+
+
+def write_home(user: str, rel: str, text: str) -> None:
+    """As the User (never root into their tree)."""
+    uid = record(user)["uid"]
+    sh(*as_user(uid), "sh", "-c", 'mkdir -p "$(dirname "$1")" && cat > "$1"', "_",
+       str(mnt(user) / "home" / rel), input=text, text=True, capture_output=True, check=False)
+
+
+def replay_item(user: str, item: Path) -> None:
+    meta = json.loads((item / "meta.json").read_text())
+    log: list[str] = []
+    if meta["kind"] == "rebuild":
+        res = replay_changes(user, meta["changes"], pinned=False, log=log)
+        head, name = "Tidepool rebuilt —", "rebuild"
+    else:
+        off = meta["offsets"]
+        hist = _tail(item / "var_log_apt_history.log", off["history"])
+        changes = parse_history(hist)
+        sources = copy_sources(user, item, log)
+        if sources and not changes:
+            _apt(user, ["update"], log)
+        res = replay_changes(user, changes, pinned=True, log=log)
+        res["sources"] = sources
+        res["skipped"] = dpkg_only(_tail(item / "var_log_dpkg.log", off["dpkg"]), {_short(n) for n in changes})
+        head, name = f"Dive {meta['job']}", f"dive-{meta['job']}"
+    line = summary(head, res)
+    if line:
+        write_home(user, f".ccc/{name}-installs.log", "\n".join(log) + "\n")
+        write_home(user, f".ccc/installs/{name}.msg", f"{line} (log: ~/.ccc/{name}-installs.log)\n")
+
+
+def replay(user: str) -> None:
+    """Every queued item, oldest first (a rebuild before any Dive); stops while the Tidepool is down —
+    `started` runs it again."""
+    check_user(user)
+    APT_PENDING.mkdir(mode=0o700, parents=True, exist_ok=True)
+    q = APT_PENDING / user
+    with open(APT_PENDING / f"{user}.lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        while q.is_dir() and _ctr_pid(user):
+            items = sorted(q.iterdir(), key=lambda p: (p.name != "rebuild", p.stat().st_mtime))
+            if not items:
+                return
+            try:
+                replay_item(user, items[0])
+            finally:
+                shutil.rmtree(items[0], ignore_errors=True)
+
+
+def spawn_replay(user: str, tag: str) -> None:
+    sh("systemd-run", "--no-block", "--collect", "--quiet", f"--unit=ccc-apt-replay-{user}-{tag}",
+       HELPER, "replay", user, check=False, capture_output=True)
+
+
+def queue_dive_replay(d: dict) -> None:
+    tok = d["token"]
+    back = DIVE_STATE / tok / "back"
+    job = (back / "job").read_text().strip() if (back / "job").is_file() else ""
+    if not job.isdigit():
+        return
+    offp = DIVE_STATE / tok / "apt-offsets.json"
+    off = json.loads(offp.read_text()) if offp.is_file() else {"history": 0, "dpkg": 0}
+    q = APT_PENDING / d["user"] / tok
+    q.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    APT_PENDING.chmod(0o700)
+    shutil.rmtree(q, ignore_errors=True)
+    shutil.move(str(back), str(q))
+    (q / "meta.json").write_text(json.dumps({"kind": "dive", "job": int(job), "offsets": off}))
+    spawn_replay(d["user"], tok[:8])
+
+
+def queue_rebuild(user: str) -> None:
+    """Before the old container goes: its own (sudo) apt history, kept for the replay after the start."""
+    with tempfile.TemporaryDirectory() as t:
+        sh(*podman(user), "cp", f"{container(user)}:{APT_LOGS[0]}", f"{t}/h", check=False, capture_output=True)
+        p = Path(t) / "h"
+        changes = parse_history(p.read_text(errors="replace"), requested_only=True) if p.is_file() else {}
+    q = APT_PENDING / user / "rebuild"
+    old = json.loads((q / "meta.json").read_text())["changes"] if (q / "meta.json").is_file() else {}
+    if not (changes or old):
+        return
+    q.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (q / "meta.json").write_text(json.dumps({"kind": "rebuild", "changes": {**old, **changes}}))
 
 
 def registry_gc() -> None:
@@ -891,6 +1135,8 @@ def main(argv: list[str]) -> int:
             dive_lock(argv[1])
         elif len(argv) == 2 and argv[0] == "started":
             started(argv[1])
+        elif len(argv) == 2 and argv[0] == "replay":
+            replay(argv[1])
         elif argv == ["registry-gc"]:
             registry_gc()
         elif len(argv) in (4, 5) and argv[0] == "fs":
@@ -898,7 +1144,7 @@ def main(argv: list[str]) -> int:
         else:
             raise Refused("usage: ccc-tidepool create <user> <uid> | restart|reset|remove <user> | "
                           "teardown [--all] | dive-prep|dive-snap|dive-open <user> <token> | "
-                          "dive-close|dive-lock <token> | started <user> | "
+                          "dive-close|dive-lock <token> | started|replay <user> | "
                           "registry-gc | fs <user> <op> <path> [<path>]")
     except (Refused, ValueError) as e:
         print(f"ccc-tidepool: {e}", file=sys.stderr)

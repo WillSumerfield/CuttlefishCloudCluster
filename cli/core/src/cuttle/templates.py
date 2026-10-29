@@ -616,6 +616,9 @@ if [[ -r /etc/ccc/dive/banner && -o interactive ]]; then
   # start where the work is (VS Code terminals already open there, so only from ~)
   _ccc_main=$HOME/$(</etc/ccc/dive/main)
   [[ $PWD == $HOME && -d $_ccc_main ]] && cd -- "$_ccc_main"
+elif [[ -o interactive ]]; then
+  # what an ended Dive's (or a rebuild's) apt replay brought back — once (ccc-tidepool replay)
+  for _ccc_f in $HOME/.ccc/installs/*.msg(N); do print -r -- "$(<$_ccc_f)"; rm -f -- $_ccc_f; done
 fi
 """
 
