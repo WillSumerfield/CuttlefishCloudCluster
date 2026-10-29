@@ -687,9 +687,19 @@ def build_wiki() -> None:
     wiki_src = headapi.REPO_ROOT / "wiki"
     run(["./setup.sh"], cwd=str(wiki_src))
     run(["npx", "quartz", "build"], cwd=str(wiki_src))
+    dashboard_links(wiki_src / "public")
     run(["rm", "-rf", str(config.HEAD_API_WIKI_DIR)], sudo=True)
     run(["cp", "-r", str(wiki_src / "public"), str(config.HEAD_API_WIKI_DIR)], sudo=True)
     print(f"cuttle: wiki built → {config.HEAD_API_WIKI_DIR}")
+
+
+def dashboard_links(public: Path) -> None:
+    """Wiki pages link to the Dashboard as `dashboard:/karma`: Quartz rewrites any plain `/karma` into a
+    wiki link, but leaves a link with a scheme alone. Turn them back into Dashboard paths."""
+    for page in public.rglob("*.html"):
+        html = page.read_text()
+        if 'href="dashboard:' in html:
+            page.write_text(html.replace('href="dashboard:', 'href="'))
 
 
 def make_user_dirs() -> None:

@@ -42,7 +42,8 @@ links back from its sidebar, and from pages that describe a Dashboard page.
    says the same in plain language, and the home page's "main words" in one or two sentences. When a definition
    changes, update all of them in the same task.
 5. **Link to the Dashboard where it helps.** A page about something you see in the Dashboard (Karma, Arms,
-   Files, a Dive, Users) gives a plain link to it, e.g. `[Open Karma in the Dashboard](/karma)`. The link
+   Files, a Dive, Users) gives a plain link to it, e.g. `[Open Karma in the Dashboard](dashboard:/karma)`
+   (Quartz would turn a plain `/karma` into a wiki link; the Head's build rewrites `dashboard:`). The link
    checker doesn't see these: if a Dashboard route moves, grep the wiki for it.
 6. **Commits.** Commit wiki changes yourself, in small commits of their own, separate from code changes. Never
    delete a page unasked.
