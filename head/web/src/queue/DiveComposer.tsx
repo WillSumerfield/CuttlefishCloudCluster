@@ -137,7 +137,7 @@ export function DiveComposer() {
   };
 
   return (
-    <section className="surface p-7 min-w-0">
+    <section className="surface p-8 min-w-0">
       <h2 className="label mb-5">Start a Dive</h2>
       <p className="text-[13px] text-ink-soft mb-5">
         Choose a Tidepool folder to work on with a GPU. Changes mirror back
