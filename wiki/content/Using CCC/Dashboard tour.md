@@ -22,8 +22,8 @@ seconds.
 
 **Start a Dive** sits beside the Queue (above it on smaller screens). Browse your Tidepool or type
 your main folder, then choose a time limit and total VRAM in GB. Existing choices load from that
-folder's `cuttle.toml`; your changes are saved when you start. **More options** holds GPU count,
-read-only folders, an environment file and Features. After creating it, you go to the Dive page to
+folder's `cuttle.toml`; your changes are saved when you start. GPU count, read-only folders, an
+environment file and Features are shown in the same form. After creating it, you go to the Dive page to
 watch it become ready and find connection instructions.
 
 - **Running** Dives show who started them, their main folder, how many GPUs and which machine.

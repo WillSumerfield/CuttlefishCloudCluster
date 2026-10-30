@@ -196,6 +196,16 @@
   }
 }
 
+@utility no-spinner {
+  appearance: textfield;
+
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
 /* Opts a real element (not the ::before plate) into its surface's edge fade, for an overlay filling the
  * card that must dissolve at the rim instead of ending hard-edged. Needs the inherited --fade-mask, so
  * only works inside `.surface`. Used by the waiting-row bloom canvas. */

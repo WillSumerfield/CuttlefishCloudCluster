@@ -214,9 +214,10 @@ export function DiveComposer() {
             <label className="block space-y-2">
               <span className="label">Total VRAM (GB)</span>
               <input
-                className="field w-full"
+                className="field no-spinner w-full"
                 required
                 type="number"
+                inputMode="numeric"
                 min="1"
                 step="1"
                 aria-label="Total VRAM (GB)"
@@ -225,156 +226,143 @@ export function DiveComposer() {
                 onChange={(e) => setVram(e.target.value)}
               />
             </label>
-            <details className="space-y-4">
-              <summary className="cursor-pointer text-[13px] text-ink-soft">
-                More options{" "}
-                <span className="text-ink-mute">
-                  · {gpus} GPU{gpus === "1" ? "" : "s"}
-                  {deps.length ? ` · ${deps.length} input folders` : ""}
-                  {env ? " · environment" : ""}
-                  {features.length ? ` · ${features.length} Features` : ""}
-                </span>
-              </summary>
-              <label className="block space-y-2">
-                <span className="label">GPUs</span>
+            <label className="block space-y-2">
+              <span className="label">GPUs</span>
+              <input
+                className="field no-spinner w-full"
+                required
+                type="number"
+                inputMode="numeric"
+                min="1"
+                step="1"
+                aria-label="GPUs"
+                value={gpus}
+                onChange={(e) => setGpus(e.target.value)}
+              />
+            </label>
+            <div className="space-y-2">
+              <span className="label">Read-only folders</span>
+              <p className="text-[12px] text-ink-mute">
+                Extra Tidepool folders to bring along. Changes do not mirror
+                back.
+              </p>
+              {deps.map((d) => (
+                <div key={d} className="flex items-center gap-2 text-[13px]">
+                  <span className="break-all">~/{d}</span>
+                  <button
+                    type="button"
+                    className="btn-ghost ml-auto"
+                    aria-label={`Remove ${d}`}
+                    onClick={() => setDeps(deps.filter((p) => p !== d))}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <div className="flex gap-2">
                 <input
-                  className="field w-full"
-                  required
-                  type="number"
-                  min="1"
-                  step="1"
-                  aria-label="GPUs"
-                  value={gpus}
-                  onChange={(e) => setGpus(e.target.value)}
+                  className="field w-full min-w-0"
+                  aria-label="Read-only folder"
+                  placeholder="datasets/mnist"
+                  value={depPath}
+                  onChange={(e) => setDepPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addDep(depPath);
+                    }
+                  }}
                 />
-              </label>
-              <div className="space-y-2">
-                <span className="label">Read-only folders</span>
-                <p className="text-[12px] text-ink-mute">
-                  Extra Tidepool folders to bring along. Changes do not mirror
-                  back.
-                </p>
-                {deps.map((d) => (
-                  <div key={d} className="flex items-center gap-2 text-[13px]">
-                    <span className="break-all">~/{d}</span>
-                    <button
-                      type="button"
-                      className="btn-ghost ml-auto"
-                      aria-label={`Remove ${d}`}
-                      onClick={() => setDeps(deps.filter((p) => p !== d))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <div className="flex gap-2">
-                  <input
-                    className="field w-full min-w-0"
-                    aria-label="Read-only folder"
-                    placeholder="datasets/mnist"
-                    value={depPath}
-                    onChange={(e) => setDepPath(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addDep(depPath);
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    disabled={!depPath.trim()}
-                    onClick={() => addDep(depPath)}
-                  >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    onClick={() => setPicker(picker === "deps" ? null : "deps")}
-                  >
-                    Browse
-                  </button>
-                </div>
-                {picker === "deps" && (
-                  <TidepoolPicker
-                    onClose={() => setPicker(null)}
-                    onPick={(p) => {
-                      addDep(p);
-                      setPicker(null);
-                    }}
-                  />
-                )}
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={!depPath.trim()}
+                  onClick={() => addDep(depPath)}
+                >
+                  Add
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => setPicker(picker === "deps" ? null : "deps")}
+                >
+                  Browse
+                </button>
               </div>
-              <label className="block space-y-2">
-                <span className="label">Environment file</span>
-                <p className="text-[12px] text-ink-mute">
-                  A dependency file inside the main folder, such as
-                  pyproject.toml.
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    className="field w-full min-w-0"
-                    aria-label="Environment file"
-                    placeholder="pyproject.toml"
-                    value={env}
-                    onChange={(e) => setEnv(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    onClick={() => setPicker(picker === "env" ? null : "env")}
-                  >
-                    Browse
-                  </button>
-                </div>
-              </label>
-              {picker === "env" && (
+              {picker === "deps" && (
                 <TidepoolPicker
-                  key={loaded}
-                  root={loaded!}
-                  files
                   onClose={() => setPicker(null)}
                   onPick={(p) => {
-                    setEnv(p.slice(loaded!.length + 1));
+                    addDep(p);
                     setPicker(null);
                   }}
                 />
               )}
-              <div className="space-y-2">
-                <span className="label">Features</span>
-                {catalogError && (
-                  <p role="alert" className="text-[13px] text-alarm">
-                    Could not load Features. {catalogError}
-                  </p>
-                )}
-                {[...new Set([...catalog, ...features])].map((f) => (
-                  <label
-                    key={f}
-                    className="flex items-center gap-2 text-[13px]"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={features.includes(f)}
-                      onChange={(e) =>
-                        setFeatures(
-                          e.target.checked
-                            ? [...features, f]
-                            : features.filter((v) => v !== f),
-                        )
-                      }
-                    />
-                    {f}
-                  </label>
-                ))}
-                {!catalogError && !catalog.length && (
-                  <p className="text-[12px] text-ink-mute">
-                    No Features available.
-                  </p>
-                )}
+            </div>
+            <label className="block space-y-2">
+              <span className="label">Environment file</span>
+              <p className="text-[12px] text-ink-mute">
+                A dependency file inside the main folder, such as
+                pyproject.toml.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  className="field w-full min-w-0"
+                  aria-label="Environment file"
+                  placeholder="pyproject.toml"
+                  value={env}
+                  onChange={(e) => setEnv(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => setPicker(picker === "env" ? null : "env")}
+                >
+                  Browse
+                </button>
               </div>
-            </details>
+            </label>
+            {picker === "env" && (
+              <TidepoolPicker
+                key={loaded}
+                root={loaded!}
+                files
+                onClose={() => setPicker(null)}
+                onPick={(p) => {
+                  setEnv(p.slice(loaded!.length + 1));
+                  setPicker(null);
+                }}
+              />
+            )}
+            <div className="space-y-2">
+              <span className="label">Features</span>
+              {catalogError && (
+                <p role="alert" className="text-[13px] text-alarm">
+                  Could not load Features. {catalogError}
+                </p>
+              )}
+              {[...new Set([...catalog, ...features])].map((f) => (
+                <label key={f} className="flex items-center gap-2 text-[13px]">
+                  <input
+                    type="checkbox"
+                    checked={features.includes(f)}
+                    onChange={(e) =>
+                      setFeatures(
+                        e.target.checked
+                          ? [...features, f]
+                          : features.filter((v) => v !== f),
+                      )
+                    }
+                  />
+                  {f}
+                </label>
+              ))}
+              {!catalogError && !catalog.length && (
+                <p className="text-[12px] text-ink-mute">
+                  No Features available.
+                </p>
+              )}
+            </div>
           </fieldset>
           {busy && (
             <p role="status" className="text-[13px] text-ink-soft">

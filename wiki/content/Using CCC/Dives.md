@@ -41,8 +41,8 @@ folder you're in, and `cuttle` moves you over to the Dive once it's ready.
 
 You can also [start a Dive from the Queue](dashboard:/). In **Start a Dive**, browse or type your
 Tidepool folder. Its saved settings load automatically for you to review and edit. For a new folder,
-you must choose a time limit and total VRAM; GPU count starts at one. **More options** holds GPU count,
-read-only folders, an environment file and Features. Starting saves your choices to `cuttle.toml`,
+you must choose a time limit and total VRAM; GPU count starts at one. GPU count, read-only folders,
+an environment file and Features are all visible in the form. Starting saves your choices to `cuttle.toml`,
 just like the CLI, and opens the Dive page with progress and connection instructions. You connect
 from your terminal or editor; the Dashboard does not open a browser shell.
 
