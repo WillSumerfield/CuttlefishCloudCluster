@@ -12,13 +12,19 @@ cuttle dashboard
 Sign in with the same username and password as `cuttle login`. The pages are listed down the left
 (along the bottom on a phone). The **Wiki** link under the CCC name brings you here.
 
-Starting a Dive is done with `cuttle`, not the Dashboard (see [[Dives]]). Everything else you do day
-to day is here too.
+Start a Dive from the Queue page or with `cuttle` (see [[Dives]]). Connect to it from your terminal
+or editor using the instructions on its Dive page.
 
 ## Queue
 
 [Open the Queue](dashboard:/). The landing page: what the cluster is doing right now. It updates every few
 seconds.
+
+**Start a Dive** sits beside the Queue (above it on smaller screens). Browse your Tidepool or type
+your main folder, then choose a time limit and total VRAM in GB. Existing choices load from that
+folder's `cuttle.toml`; your changes are saved when you start. **More options** holds GPU count,
+read-only folders, an environment file and Features. After creating it, you go to the Dive page to
+watch it become ready and find connection instructions.
 
 - **Running** Dives show who started them, their main folder, how many GPUs and which machine.
 - **Waiting** Dives are numbered in the order they'll start, with how long each asked for.
