@@ -161,7 +161,7 @@ export function paintFlesh(ctx: CanvasRenderingContext2D, w: number, h: number, 
 }
 
 /** Balances run roughly ±1000. The ramp works in −1..1, so normalise before mapping to colour. */
-export const KARMA_RANGE = 1000;
+export const KARMA_RANGE = 10000;
 
 // pigment colour for a member: umber (debt) → bronze (neutral) → gold (creditor)
 export function pigment(balance: number, jitter: number): [number, number, number] {
