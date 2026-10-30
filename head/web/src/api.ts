@@ -92,6 +92,9 @@ export type DiveDetail = {
 }
 
 export class Unauthorized extends Error {}
+export class ApiError extends Error {
+  constructor(message: string, public status: number) { super(message) }
+}
 
 // Every endpoint lives under /api so no API path collides with a client-side route the SPA owns.
 // Paths below stay bare; this prepends it.
@@ -124,8 +127,8 @@ async function req(path: string, init?: RequestInit): Promise<Response> {
   // A 4xx with a real `detail` is the Head's own human reason (a policy violation, a bad name) and
   // reaches the user verbatim. A 5xx, or any response with no JSON detail, has nothing worth showing
   // raw — frame it rather than leaking a bare status number.
-  if (detail !== null && r.status < 500) throw new Error(detail)
-  throw new Error(HEAD_ERROR)
+  if (detail !== null && r.status < 500) throw new ApiError(detail, r.status)
+  throw new ApiError(HEAD_ERROR, r.status)
 }
 
 /** The user-facing message from a caught API error. Everything `req` throws is an `Error` whose
@@ -140,6 +143,23 @@ const json = <T,>(path: string, init?: RequestInit) =>
 
 export const getArms = () => json<Arm[]>('/arms')
 export const getDives = () => json<Dive[]>('/dives')
+
+export type DiveSettings = {
+  deps?: string[]
+  gpus?: number
+  vram?: number
+  time?: string | number
+  features?: string[]
+  env?: string
+}
+export type DiveRequest = Required<Omit<DiveSettings, 'time'>> & { main: string; time: string }
+export const getDiveSettings = (main: string) =>
+  json<{ main: string; settings: DiveSettings }>(`/dives/settings?main=${encodeURIComponent(main)}`)
+export const getFeatures = () => json<string[]>('/features')
+export const createDive = (body: DiveRequest) =>
+  json<{ id: number; notes: string[] }>('/dives', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
 
 // The wire shape GET /dives/history answers with (ccc_head_api.dive.archive) — adapted below into
 // ArchivedDive.

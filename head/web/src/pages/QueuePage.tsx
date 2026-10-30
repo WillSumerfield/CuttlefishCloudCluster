@@ -3,8 +3,9 @@ import { Page } from "../app/Page";
 import { useAuth } from "../app/auth";
 import { getArms, getDives, Unauthorized, type Arm, type Dive } from "../api";
 import { LiveQueue } from "../queue/LiveQueue";
+import { DiveComposer } from "../queue/DiveComposer";
 
-/** The landing page: what the cluster is doing right now. Live only. */
+/** Start a Dive beside the live cluster queue. */
 export function QueuePage() {
   const { logout } = useAuth();
   const [dives, setDives] = useState<Dive[]>([]);
@@ -57,7 +58,10 @@ export function QueuePage() {
         ) : null
       }
     >
-      <LiveQueue dives={dives} onCancelled={onCancelled} />
+      <div className="grid gap-8 xl:grid-cols-[minmax(320px,400px)_minmax(0,1fr)] xl:items-start">
+        <DiveComposer />
+        <div className="min-w-0"><LiveQueue dives={dives} onCancelled={onCancelled} /></div>
+      </div>
     </Page>
   );
 }

@@ -69,6 +69,9 @@ export function DivePage({ id }: { id: string }) {
   const { logout } = useAuth();
   const [detail, setDetail] = useState<DiveDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const incomingNotes = window.history.state?.diveNotes;
+  const notes: string[] = Array.isArray(incomingNotes)
+    ? incomingNotes.filter((v): v is string => typeof v === "string") : [];
   const [confirming, setConfirming] = useState(false);
   const timer = useRef<number | null>(null);
 
@@ -142,6 +145,7 @@ export function DivePage({ id }: { id: string }) {
       }
     >
       {error && <p className="mb-6 text-[13px]" style={{ color: "var(--alarm)" }}>{error}</p>}
+      {notes.map((note, i) => <p key={i} role="status" className="mb-4 text-[13px] text-ink-soft">{note}</p>)}
 
 
       {detail && (

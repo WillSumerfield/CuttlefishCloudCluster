@@ -8,9 +8,9 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
  * on /arms lands here and not on a 404.
  */
 
-export function navigate(to: string) {
+export function navigate(to: string, state: unknown = null) {
   if (to === window.location.pathname) return;
-  window.history.pushState(null, "", to);
+  window.history.pushState(state, "", to);
   // pushState fires no event of its own; this is what tells every usePath() to re-read.
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
