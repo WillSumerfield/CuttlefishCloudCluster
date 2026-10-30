@@ -501,3 +501,44 @@ class TestMainLockNamespaces:
         monkeypatch.setattr(H, "sh", lambda *a, **k: ran.append(a))
         getattr(H, fn)({"user": "bob"})
         assert ran[0][:5] == ("nsenter", "-t", "4242", "-a", "--")
+
+
+class TestSettingsReader:
+    def test_missing_file_does_not_prepare_a_dive(self, helper_dirs):
+        """Opening a new folder in the Dashboard must not leave per-Dive state behind."""
+        (H.MNT_ROOT / "bob" / "home" / "proj").mkdir()
+        assert H.dive_settings("bob", "proj/") == {"main": "proj", "toml": None}
+        assert list(H.DIVE_STATE.iterdir()) == []
+        assert list(H.DIVE_RECORDS.iterdir()) == []
+
+    def test_reads_as_the_tidepool_user_and_preserves_the_file(self, helper_dirs, monkeypatch):
+        """Reading saved settings must not gain host-root file access or prepare an allocation."""
+        folder = H.MNT_ROOT / "bob" / "home" / "proj"
+        folder.mkdir()
+        p = folder / "cuttle.toml"
+        p.write_text('time = "4h"\nvram = 16\n')
+        monkeypatch.setattr(H, "as_user", lambda uid: ["as-user", str(uid)])
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, p.read_text(), "")
+
+        monkeypatch.setattr(H.subprocess, "run", run)
+        assert H.dive_settings("bob", "proj")["toml"] == p.read_text()
+        assert calls == [["as-user", "60003", "head", "-c", "65537", str(p)]]
+        assert list(H.DIVE_STATE.iterdir()) == []
+
+    @pytest.mark.parametrize("path", ["../alice/proj", "/etc", "missing"])
+    def test_paths_are_confined_to_the_selected_user(self, helper_dirs, path):
+        """A settings request must not escape the authenticated User's Tidepool."""
+        with pytest.raises(H.Refused):
+            H.dive_settings("bob", path)
+
+    def test_symlinked_config_is_refused(self, helper_dirs):
+        """A redirected settings file must not disclose host files through the helper."""
+        folder = H.MNT_ROOT / "bob" / "home" / "proj"
+        folder.mkdir()
+        (folder / "cuttle.toml").symlink_to("/etc/passwd")
+        with pytest.raises(H.Refused, match="symlink"):
+            H.dive_settings("bob", "proj")

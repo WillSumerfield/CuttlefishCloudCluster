@@ -340,3 +340,69 @@ def test_env_build_refuses_unknown(tmp_path):
 
 def test_conda_prefix_activates_with_micromamba():
     assert 'micromamba activate "$CCC_DIVE_VENV"' in D.DIVE_INIT
+
+
+class TestDashboardSettings:
+    def test_settings_use_the_signed_in_users_tidepool_without_preparing(self, conn_db, monkeypatch):
+        """Browsing saved choices must not queue work or read another User's settings."""
+        calls = []
+
+        def helper(*args, **kw):
+            calls.append((args, kw))
+            return {"main": "proj", "toml": 'time = "4h"\nvram = 16\ndeps = ["data"]\n'}
+
+        monkeypatch.setattr(D, "helper", helper)
+        c = _client(monkeypatch)
+        r = c.get("/api/dives/settings?main=proj&user=bob")
+        assert r.status_code == 200
+        assert r.json() == {"main": "proj", "settings": {"time": "4h", "vram": 16, "deps": ["data"]}}
+        assert calls == [(("dive-settings", "alice", "proj"), {})]
+        with db.connect() as conn:
+            assert db.open_dives(conn) == []
+
+    def test_no_saved_settings_leaves_required_choices_absent(self, conn_db, monkeypatch):
+        """A new folder must not silently reserve a guessed duration or amount of VRAM."""
+        monkeypatch.setattr(D, "helper", lambda *a, **kw: {"main": "new", "toml": None})
+        r = _client(monkeypatch).get("/api/dives/settings?main=new")
+        assert r.status_code == 200 and r.json() == {"main": "new", "settings": {}}
+
+    @pytest.mark.parametrize("toml", ['time = ', 'vram = "sixteen"', 'gpus = true',
+                                      'deps = "data"', 'features = [7]', 'time = "15d"',
+                                      'time = false', 'env = 1'])
+    def test_invalid_saved_settings_are_explained(self, conn_db, monkeypatch, toml):
+        """Bad saved choices must not be replaced by defaults and then persisted over the original."""
+        monkeypatch.setattr(D, "helper", lambda *a, **kw: {"main": "proj", "toml": toml})
+        r = _client(monkeypatch).get("/api/dives/settings?main=proj")
+        assert r.status_code == 422
+
+    def test_locked_folder_is_explained(self, conn_db, monkeypatch):
+        """An active main folder must not offer a second writer through the creation form."""
+        _seed()
+        monkeypatch.setattr(D, "helper", lambda *a, **kw: {"main": "proj", "toml": None})
+        r = _client(monkeypatch).get("/api/dives/settings?main=proj")
+        assert r.status_code == 409 and "held by Dive 77" in r.json()["detail"]
+
+    def test_helper_refusal_reaches_the_form(self, conn_db, monkeypatch):
+        """A refused folder must not become a fresh configuration and be submitted accidentally."""
+        monkeypatch.setattr(D.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(
+            a, 2, "", "ccc-tidepool: not a folder in your Tidepool"))
+        r = _client(monkeypatch).get("/api/dives/settings?main=missing")
+        assert r.status_code == 422 and "not a folder" in r.json()["detail"]
+
+    def test_browser_changes_and_cleared_options_are_saved(self, conn_db, monkeypatch):
+        """Removing saved options must not retain an expensive GPU or software requirement."""
+        h = FakeHead(monkeypatch, prep={**PREP, "toml": D.dump_toml({
+            "time": "4h", "vram": 16, "gpus": 2, "deps": ["data"],
+            "env": "pyproject.toml", "features": ["vsim"],
+        })})
+        r = _client(monkeypatch).post("/api/dives", json={"main": "proj", "time": "90m",
+            "vram": 8, "gpus": 1, "deps": [], "env": "", "features": []})
+        assert r.status_code == 200 and r.json()["id"] == 77
+        opened = next(body for verb, body in h.calls if verb == "dive-open")
+        assert D.load_toml(opened["toml"]) == {"time": "90m", "vram": 8, "gpus": 1}
+
+    def test_settings_require_authentication(self, conn_db, monkeypatch):
+        """Private folder configuration must not be exposed to an unsigned browser."""
+        monkeypatch.setattr(D, "helper", lambda *a, **kw: pytest.fail("unauthenticated helper call"))
+        r = TestClient(head_main.app).get("/api/dives/settings?main=proj")
+        assert r.status_code == 401

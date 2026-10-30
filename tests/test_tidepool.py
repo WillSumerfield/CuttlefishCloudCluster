@@ -206,6 +206,7 @@ class TestTemplates:
         assert rules == ["^(restart|reset) [a-z][a-z0-9_-]{0,31}$",
                          "^dive-(prep|snap|open) [a-z][a-z0-9_-]{0,31} [0-9a-f]{32}$",
                          "^dive-close [0-9a-f]{32}$",
+                         "^dive-settings [a-z][a-z0-9_-]{0,31} .+$",
                          "^fs [a-z][a-z0-9_-]{0,31} (list|stat|get|zip|put|mkdir|delete|rename) .+$"]
         # the root-only verbs never reach the API
         for verb in ("dive-lock", "dive-gpu", "started", "registry-gc", "create", "remove", "teardown"):

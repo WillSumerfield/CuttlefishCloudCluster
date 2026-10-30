@@ -523,6 +523,27 @@ def read_toml(uid: int, main_dir: Path) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def dive_settings(user: str, main: str) -> dict:
+    """Read only: no bundle, snapshot, lock or settings write while browsing the Dashboard."""
+    uid = record(check_user(user))["uid"]
+    main = check_rel(main)
+    folder = host_dir(user, main)
+    path = folder / "cuttle.toml"
+    if path.is_symlink():
+        raise Refused("cuttle.toml must be a regular file, not a symlink")
+    if not path.exists():
+        return {"main": main, "toml": None}
+    if not path.is_file() or path.stat().st_size > 65536:
+        raise Refused("cuttle.toml must be a regular file of at most 64 KB")
+    r = subprocess.run([*as_user(uid), "head", "-c", "65537", str(path)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Refused("could not read cuttle.toml — check its permissions in your Tidepool")
+    if len(r.stdout.encode()) > 65536:
+        raise Refused("cuttle.toml must be at most 64 KB")
+    return {"main": main, "toml": r.stdout}
+
+
 def dive_prep(user: str, tok: str, req: dict) -> dict:
     uid = record(check_user(user))["uid"]
     main, deps = check_folders(req["main"], req.get("deps") or [])
@@ -1125,6 +1146,8 @@ def main(argv: list[str]) -> int:
             {"restart": restart, "reset": reset, "remove": remove}[argv[0]](argv[1])
         elif argv[:1] == ["teardown"] and argv[1:] in ([], ["--all"]):
             teardown(argv[1:] == ["--all"])
+        elif len(argv) == 3 and argv[0] == "dive-settings":
+            print(json.dumps(dive_settings(argv[1], argv[2])))
         elif len(argv) == 3 and argv[0] in ("dive-prep", "dive-snap", "dive-open") and not (
                 check_user(argv[1]) and check_token(argv[2])):
             pass
@@ -1148,7 +1171,8 @@ def main(argv: list[str]) -> int:
             fs(argv[1], argv[2], argv[3:])
         else:
             raise Refused("usage: ccc-tidepool create <user> <uid> | restart|reset|remove <user> | "
-                          "teardown [--all] | dive-prep|dive-snap|dive-open <user> <token> | "
+                          "teardown [--all] | dive-settings <user> <main> | "
+                          "dive-prep|dive-snap|dive-open <user> <token> | "
                           "dive-close|dive-lock <token> | started|replay <user> | "
                           "registry-gc | fs <user> <op> <path> [<path>]")
     except (Refused, ValueError) as e:

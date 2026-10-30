@@ -528,6 +528,7 @@ TIDEPOOL_SUDOERS_TMPL = """\
 {user} ALL=(root) NOPASSWD: {bin} ^(restart|reset) [a-z][a-z0-9_-]{{0,31}}$
 {user} ALL=(root) NOPASSWD: {bin} ^dive-(prep|snap|open) [a-z][a-z0-9_-]{{0,31}} [0-9a-f]{{32}}$
 {user} ALL=(root) NOPASSWD: {bin} ^dive-close [0-9a-f]{{32}}$
+{user} ALL=(root) NOPASSWD: {bin} ^dive-settings [a-z][a-z0-9_-]{{0,31}} .+$
 {user} ALL=(root) NOPASSWD: {bin} ^fs [a-z][a-z0-9_-]{{0,31}} (list|stat|get|zip|put|mkdir|delete|rename) .+$
 """
 

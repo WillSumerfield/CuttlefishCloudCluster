@@ -541,6 +541,12 @@ def dive_request(req: DiveRequest, user: dict = Depends(ambient_user)) -> dict:
     return dive_mod.request(user, req.main, req.deps, args)
 
 
+@api.get("/dives/settings")
+def dive_settings(main: str, user: dict = Depends(current_user)) -> dict:
+    """Read the caller's saved choices without preparing or submitting a Dive."""
+    return dive_mod.saved_settings(user, main)
+
+
 @api.get("/dives")
 def dives(limit: int | None = None, user: dict = Depends(current_user)) -> list[dict]:
     """The live queue — everyone's pending/running Dives, with who started each. `limit` caps to the

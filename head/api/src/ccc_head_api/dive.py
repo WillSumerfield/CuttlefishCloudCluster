@@ -84,6 +84,30 @@ def load_toml(text: str | None) -> dict:
     return {k: t[k] for k in TOML_KEYS if k in t}
 
 
+def saved_settings(user: dict, main: str) -> dict:
+    read = helper("dive-settings", user["username"], main)
+    with db.connect() as conn:
+        for d in db.open_dives(conn, user["id"]):
+            if d["main"] == read["main"]:
+                raise HTTPException(409, f"~/{d['main']} is held by Dive {d['job_id']} — end it first")
+    try:
+        saved = load_toml(read["toml"])
+        for key, value in saved.items():
+            if key in ("gpus", "vram"):
+                valid = type(value) is int and value >= 1
+            elif key == "time":
+                valid = type(value) in (int, str) and 1 <= parse_time(value) <= MAX_MINUTES
+            elif key in ("deps", "features"):
+                valid = isinstance(value, list) and all(isinstance(v, str) for v in value)
+            else:
+                valid = isinstance(value, str)
+            if not valid:
+                raise ValueError(f"cuttle.toml: invalid {key}")
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    return {"main": read["main"], "settings": saved}
+
+
 def _val(v) -> str:
     return json.dumps(v)   # str / int / list[str]: JSON spelling is valid TOML here
 
