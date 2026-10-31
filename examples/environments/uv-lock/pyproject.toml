@@ -1,0 +1,11 @@
+# Identical to ../uv-project, but with a uv.lock beside it. Detection prefers the lock, so this is
+# the case where what the Spawn gets is decided by bytes in the repo rather than by a resolve at
+# build time.
+[project]
+name = "ccc-env-uv-lock"
+version = "0"
+requires-python = ">=3.11"
+dependencies = ["pyfiglet==1.0.4"]
+
+[tool.uv]
+package = false

@@ -1,0 +1,64 @@
+import { useEffect, useMemo, useState } from "react";
+import { Page } from "../app/Page";
+import { getDemand, getUsage, type DemandSample, type UsageUser } from "../api";
+import { fold } from "../tide/fold";
+import { NowCard } from "../tide/NowCard";
+import { TideHorizon } from "../tide/TideHorizon";
+import { SEAM } from "../tide/seam";
+import { Usage } from "../tide/Usage";
+
+/**
+ * The Tide — when to run. The now-card states this hour's cost against a typical one; the horizon draws
+ * the day it's read from; the usage band is who's been spending. Tool density, like Karma: the page
+ * recedes so the water is what you see.
+ *
+ * Two calls over the same 30 days, and they are counterparts: /karma/demand is card-shaped (how badly
+ * each was wanted, hour by hour) and /karma/usage is people-shaped (who spent it). A month of high water
+ * up top is explained by whoever's band swallows the plot below. A cluster with no history returns
+ * nothing from both, which folds to a flat 1.0 Tide and an absent band — honest, not broken.
+ */
+export function TidePage() {
+  const [samples, setSamples] = useState<DemandSample[] | null>(null);
+  const [usage, setUsage] = useState<UsageUser[]>([]);
+
+  useEffect(() => {
+    // An empty series is the correct cold-start read, so a failed/empty fetch degrades to a flat Tide.
+    getDemand(30).then(setSamples).catch(() => setSamples([]));
+    getUsage(30).then(setUsage).catch(() => setUsage([]));
+  }, []);
+
+  const folded = useMemo(() => fold(samples ?? []), [samples]);
+
+  return (
+    <Page title="Tide">
+      {/* pointer-events-none: this full-width z-10 wrapper sits over the pulled-up horizon, so it must let
+          the pointer fall through to the water's hover — the card is mostly empty space, and a User aiming
+          at an Arm line shouldn't hit an invisible box instead. Its two Tip triggers claim their own hits
+          back (Tip.tsx), which is what the wrapper must NOT be read as overriding: hovering the number
+          explains the number, and the water's readout clears while you're on it. */}
+      <div className="relative z-10 pointer-events-none">
+        <NowCard fold={folded} />
+      </div>
+
+      {/* The horizon carries no heading — like Standings, it says what it is by being it. The offset is
+          the base pull (-12rem) + TIDE.headroom (10rem): the box grew upward, so pull it up to match and
+          keep the waterline where it was. Keep in sync with TIDE.headroom / wrapRef height.
+          The Usage bands hang from the horizon's foot, overlapping it by SEAM (seam.ts): the Tide sits above
+          (z-10) and fades out over the gold, so the two melt into one seam. md:-mb-24 cancels Page's
+          md:pb-24 — the page wants no trailing blank under the bands. */}
+      <section className="-mt-[22rem] relative z-0 mb-16 md:-mb-24">
+        <div className="relative z-10">
+          <TideHorizon fold={folded} />
+        </div>
+        {/* Absent, not empty, on a cluster nobody has spent on yet. The top five carry the shape — past
+            that the bands are too thin to read and the legend stops fitting. No z-index here, so the
+            legend's own z-20 can rise above the Tide's canvas. */}
+        {usage.length > 0 && (
+          <div className="relative" style={{ marginTop: -SEAM }}>
+            <Usage data={usage.slice(0, 5)} />
+          </div>
+        )}
+      </section>
+    </Page>
+  );
+}

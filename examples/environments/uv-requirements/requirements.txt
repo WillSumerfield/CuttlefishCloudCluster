@@ -1,0 +1,7 @@
+# Pure-python and not in the base image — so its presence in the Spawn's output proves the Environment
+# was built rather than inherited. Pinned so the check is the same every run, and at a version
+# conda-forge ships too, so ../conda declares the same package and only the build differs.
+#
+# No `.python-version` beside it, deliberately: a requirements.txt names no interpreter, so this is the
+# case that gets CCC's pinned default (environments.DEFAULT_PYTHON). Add one and uv reads it instead.
+pyfiglet==1.0.4

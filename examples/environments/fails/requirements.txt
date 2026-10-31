@@ -1,0 +1,2 @@
+# The failure case. No such package exists on PyPI, so the resolve fails and the build fails with it.
+ccc-no-such-package-9f3a==9.9.9

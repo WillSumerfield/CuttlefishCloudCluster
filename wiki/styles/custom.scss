@@ -1,0 +1,127 @@
+@use "./variables.scss" as *;
+
+// Wiki styles. This file is committed at wiki/styles/custom.scss;
+// setup.sh copies it over Quartz's empty quartz/styles/custom.scss.
+
+// ── Wider right sidebar (desktop only; left sidebar keeps $sidePanelWidth) ──
+$rightPanelWidth: 370px;
+
+.page > #quartz-body {
+  @media all and ($desktop) {
+    grid-template-columns: #{$sidePanelWidth} auto #{$rightPanelWidth};
+  }
+}
+
+// ── Sidebar panels never clip their own headers ──
+// Upstream hides a collapsed TOC / Explorer by squeezing the panel to ~1.4rem
+// with overflow hidden, and lets open panels shrink. In a full sidebar that
+// cuts off headers and the panels below. Instead: panels keep their natural
+// height, collapsed lists are hidden outright, long lists are capped and
+// scroll inside, and the right sidebar scrolls as a whole if still too tall.
+@media all and ($desktop) {
+  .page > #quartz-body .sidebar.right {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media all and not ($mobile) {
+  .sidebar {
+    & .graph,
+    & .toc,
+    & .backlinks {
+      display: flex;
+      flex-direction: column;
+      flex: 0 0 auto;
+      min-height: auto;
+    }
+
+    & .explorer.collapsed {
+      flex: 0 0 auto;
+    }
+
+    & .toc-content.collapsed,
+    & .explorer.collapsed > .explorer-content {
+      display: none;
+    }
+
+    & .toc > .toc-content,
+    & .backlinks > .overflow {
+      max-height: 40vh;
+    }
+  }
+}
+
+// ── "Back to the Dashboard", under the wiki title ──
+// The footer plugin, moved to the left sidebar (quartz.config.yaml); only its link is kept.
+.page > #quartz-body .sidebar.left > footer {
+  min-width: 0;
+  max-width: none;
+  margin: -0.5rem 0 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  opacity: 1;
+  text-align: left;
+
+  & > p {
+    display: none;
+  }
+
+  & ul {
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    background: none;
+  }
+
+  & li {
+    padding: 0;
+    background: none;
+  }
+
+  & ul,
+  & li,
+  & a {
+    margin: 0;
+    padding: 0;
+  }
+
+  & a {
+    font-size: 0.9rem;
+    color: var(--darkgray);
+  }
+
+  & a:hover {
+    color: var(--secondary);
+  }
+}
+
+// ── Search: solid panels over a dimmed page ──
+// Out of the box the search overlay is see-through, so the page behind shows through the results and
+// makes them hard to read.
+.search > .search-container {
+  background: color-mix(in srgb, var(--dark) 35%, transparent);
+
+  & > .search-space > input,
+  & > .search-space > .search-layout {
+    background: var(--light);
+    border: 1px solid var(--lightgray);
+    border-radius: 7px;
+    box-shadow: 0 14px 50px rgba(27, 33, 48, 0.12), 0 5.5px 16px rgba(0, 0, 0, 0.04);
+  }
+
+  & > .search-space > .search-layout {
+    margin-top: 0.5rem;
+  }
+
+  // The query and the result titles sat flush against the panel's left edge.
+  & > .search-space > input {
+    padding: 0.5rem 1rem;
+  }
+
+  .results-container .result-card {
+    padding: 0.4rem 1rem;
+  }
+}

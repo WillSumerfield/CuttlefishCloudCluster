@@ -1,0 +1,65 @@
+# Elements
+
+What CCC does, one paragraph each. Rows marked **admin** are things only the operator does, and
+only while sitting on the Head.
+
+## Using the cluster
+
+### [Spawns](elements/spawns.md)
+
+A Spawn is one job on the cluster: a GPU held on some machine, for a declared time. Batch (script)
+Spawns are gone in 2.0; the one kind left is the Tide Pool. A Spawn runs *once*: if the machine it
+was on is reclaimed, it does not quietly start again somewhere else. It can hold several cards at a
+time, but always on one machine — never spread across two donors.
+
+### [Environments](elements/environments.md)
+
+The Python your code runs against, built from a dependency file you name. Nothing declares one in 2.0
+until Dives bring them back.
+
+### [Karma](elements/karma.md)
+
+Standing, not currency. You earn it by donating a machine and spend it by running work — but it never
+gates anything. There is no balance at which CCC refuses your job; low standing only means you lose to
+someone else when you both want the cluster at the same time. On an idle cluster it does nothing at
+all. **admin:** `override`, `bump`.
+
+## Donating a machine
+
+### [Arms](elements/arms.md)
+
+An Arm is a machine donated to the cluster. Its owner earns the Karma that work on it costs, and can
+take it back instantly at any time — a Retract stops new work and ends what is running, and the Spawn
+it killed settles at zero, so nobody pays for work someone else stopped. **admin:** `authorize`,
+`admit`, `benchmark`, `chown`, `remove`.
+
+### [Arm Features](elements/arm-features.md)
+
+Some software is too heavy to put everywhere, or is licensed to one machine rather than to you. An
+Arm's owner declares which of these their box has, and a Spawn asks for one the same way it asks for
+VRAM — as a need, never as a machine name.
+
+## How it holds together
+
+### [Users & access](elements/users-and-access.md)
+
+Accounts, logging in, sessions, and what makes an Admin different (they are outside the economy
+entirely). **admin:** `user add/list/remove/reset`.
+
+### [Isolation](elements/isolation.md)
+
+What stops one User's Spawn from reading, killing or interfering with another's — Pods, Guises and
+Siphons, enforced by the operating system rather than agreed to by convention.
+
+### [Mesh](elements/mesh.md)
+
+The private encrypted network every Head and Arm sits on, how a machine is admitted to it, and why
+enrollment tokens are secret and short-lived. **admin:** `munge rotate`.
+
+### [Telemetry](elements/telemetry.md)
+
+The Head-side watch for work running outside the scheduler. **admin:** the alert mailer.
+
+### [Backup & recovery](elements/backup-and-recovery.md)
+
+**admin, entirely.** Snapshotting and restoring the Head's state: accounts, Karma, Arms, mesh.

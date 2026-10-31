@@ -1,0 +1,1652 @@
+"""Everything `cuttle` shows a human goes through here.
+
+One module, so the CLI reads as one tool rather than a pile of commands that each invented their own
+formatting. Three jobs:
+
+**Say things consistently.** `ok` / `warn` / `fail` / `say` / `hint`, with a single accent colour and
+status glyphs. Restrained on purpose: it has to stay readable on a light terminal, a dark one, and in
+a log file with the colour stripped out.
+
+**Keep provisioning legible.** `setup` runs dozens of shell commands, and echoing each one buries the
+one line that matters. `step()` shows what is happening now and hides the command stream — unless
+`--verbose`, or unless the step fails, in which case the captured output is exactly what you need and
+is printed in full.
+
+**Never show a traceback to a user.** A stack trace is a bug report, not an error message. `report()`
+turns an exception into one line; `--debug` (or `CUTTLE_DEBUG=1`) puts the traceback back for the
+person who actually wants it.
+
+Scripting is not an afterthought: `emit()` gives every read command a `--json` form, so the pretty
+output can stay pretty without anyone having to parse it.
+"""
+
+import contextlib
+import io
+import base64
+import json
+import os
+import select
+import shutil
+import subprocess
+import sys
+import termios
+import threading
+import time
+from contextlib import contextmanager
+
+import typer
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.segment import Segment
+from rich.spinner import Spinner
+from rich.table import Table
+from rich.text import Text
+from rich.theme import Theme
+
+# One accent, plus the three states. Named rather than inlined so a future re-theme is one edit.
+THEME = Theme({
+    "accent": "cyan",
+    "ok": "bold green",
+    "warn": "yellow",
+    "err": "bold red",
+    "head": "bold",
+    "muted": "dim",
+})
+
+out = Console(theme=THEME, highlight=False)
+# Progress, status and diagnostics go to stderr so that a command whose stdout is DATA stays pipeable.
+err = Console(theme=THEME, highlight=False, stderr=True)
+
+DEBUG = os.environ.get("CUTTLE_DEBUG", "") not in ("", "0")
+VERBOSE = False
+NO_INPUT = False
+
+
+def configure(debug: bool = False, verbose: bool = False, no_input: bool = False) -> None:
+    """Called once from the root callback. The env var is a floor, not a default: CUTTLE_DEBUG=1 in a
+    shell stays on for every command in it without repeating the flag."""
+    global DEBUG, VERBOSE, NO_INPUT
+    DEBUG = DEBUG or debug
+    VERBOSE = VERBOSE or verbose
+    NO_INPUT = NO_INPUT or no_input
+
+
+def _tty() -> bool:
+    """A real terminal on both ends. Separate from `interactive()` because *drawing* (boxes, cursor
+    escapes) needs a genuine terminal, while *asking* is also satisfied by a scripted test human."""
+    try:
+        return sys.stdin.isatty() and sys.stderr.isatty()
+    except (AttributeError, ValueError):   # a closed or replaced stream
+        return False
+
+
+def interactive() -> bool:
+    """May we stop and ask a human?
+
+    **Only when there is one.** A missing argument in CI, a pipe or a cron job stays a usage error;
+    prompting there hangs the job forever, which is the worst failure available — worse than any
+    error message, because nothing is printed and nothing ever returns.
+
+    Both streams are checked: stdin because that is where an answer would come from, stderr because
+    that is where the question is drawn. `cuttle cancel < /dev/null` and `cuttle cancel 2>log` are both
+    non-interactive, and neither should block.
+    """
+    if NO_INPUT:
+        return False
+    return _ANSWERS is not None or _tty()
+
+
+# --- the run log ------------------------------------------------------------
+#
+# The frame is live: rows scroll up and out as work proceeds, and the whole box is erased when it
+# closes. That is deliberate — progress is not a transcript — but it means the screen can no longer
+# be the record. Every line the CLI produces is also written here, plain, and the path is offered at
+# the end of any run that had something to say.
+
+_LOG = None                     # the open log file, if a run has started one
+_LOG_PATH = None
+_TROUBLE: list[str] = []        # warnings and failures, in order — surfaced at the end
+
+
+# argv positions that hold a secret rather than an argument. These logs are the ONE place a CCC
+# secret was landing in cleartext: everything else under ~/.ccc that holds one is explicitly 0600 and
+# holds it deliberately, while this file was simply the transcript nobody thought of as secret-bearing.
+# Note the limit: this scrubs the CLI's OWN run log and nothing else. A secret typed as a positional
+# is still visible to `ps` while the command runs and still lands in shell history, neither of which
+# this file can reach.
+_SECRET_FLAGS = {"--token"}                 # `cuttle setup --arm --token <blob>`
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    """`argv` with every secret value replaced."""
+    out = list(argv)
+    for i, a in enumerate(out[:-1]):
+        if a in _SECRET_FLAGS:
+            out[i + 1] = "<redacted>"
+    return out
+
+
+def _prune_logs(log_dir) -> None:
+    """Cap the run logs at MAX_LOGS, oldest first. The CLI is built to be scripted — anything polling
+    `cuttle status` in a loop writes one file per call — and no entry here is an obligation, so plain
+    age is the whole rule."""
+    from . import config
+    logs = sorted(log_dir.glob("cuttle-*.log"))
+    for old in logs[:max(0, len(logs) - config.MAX_LOGS)]:
+        old.unlink(missing_ok=True)
+
+
+def _open_log():
+    """One file per run, opened lazily so a command that says nothing leaves nothing behind."""
+    global _LOG, _LOG_PATH
+    if _LOG is None:
+        import datetime
+        from . import config
+        try:
+            # Explicit modes, like every other sensitive path under ~/.ccc: this file records what the
+            # CLI said, and some of that is a token or a key.
+            config.ensure_ccc_home()
+            config.LOG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _prune_logs(config.LOG_DIR)
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            _LOG_PATH = config.LOG_DIR / f"cuttle-{stamp}.log"
+            _LOG = _LOG_PATH.open("a")
+            _LOG_PATH.chmod(0o600)
+            _LOG.write(f"$ {' '.join(_redact_argv(sys.argv))}\n")
+        except OSError:
+            # An unwritable home is not a reason to refuse to run. The screen still works.
+            _LOG, _LOG_PATH = False, None
+    return _LOG
+
+
+def _log(markup: str) -> None:
+    f = _open_log()
+    if f:
+        f.write(Text.from_markup(markup).plain + "\n")
+        f.flush()   # a run that dies mid-step must still have its log
+
+
+# --- saying things ----------------------------------------------------------
+
+def say(message: str) -> None:
+    _log(message)
+    _emit(message)
+
+
+def secret(message: str) -> None:
+    """Say something the run log must not keep — a minted token, and nothing else so far.
+
+    `arm authorize` prints the enrollment token it mints, and every printed line goes through `_log`,
+    so an admin's log directory otherwise accumulated every token the cluster had ever issued. They
+    are single-use and expire in an hour, but a permanent cleartext record of them buys nothing."""
+    _emit(message)
+
+
+def ok(message: str) -> None:
+    _log(f"OK   {message}")
+    _emit(f"[ok]✓[/ok] {message}")
+
+
+def warn(message: str) -> None:
+    _log(f"WARN {message}")
+    _TROUBLE.append(f"[warn]![/warn] {message}")
+    _emit(f"[warn]![/warn] {message}")
+
+
+def caution(message: str) -> None:
+    """What a destructive command is about to do, said *before* the confirmation that authorizes it.
+
+    Looks exactly like `warn` and is deliberately NOT one: a warning is trouble, and `_TROUBLE` is
+    replayed by `_closing` as the reason a run went wrong. A caution is the contract of the thing you
+    are being asked to say yes to, so recording it made a clean `teardown` sign off with "1 warning",
+    and a `teardown` that hit any error at all re-served "this removes head.db" as a *cause*.
+    """
+    _log(f"CAUTION {message}")
+    _emit(f"[warn]![/warn] {message}")
+
+
+def fail(message: str) -> None:
+    _log(f"FAIL {message}")
+    _TROUBLE.append(f"[err]✗[/err] {message}")
+    _emit(f"[err]✗[/err] {message}")
+
+
+def hint(message: str) -> None:
+    """The 'what to do next' line under an error or a result. Dim: it is guidance, not the outcome."""
+    _emit(f"  [muted]{message}[/muted]")
+
+
+def data(text: str = "", log: bool = True) -> None:
+    """Command *output* — the thing a caller might pipe. stdout, unstyled, no glyph.
+
+    Inside a box this lands in the section's stdout capture rather than on screen — see `section`.
+
+    `log=False` for output that is itself a secret: a caller piping it decides where it lands, but
+    the run log keeping its own permanent copy is nobody's decision. See `secret`.
+    """
+    if log:
+        _log(text)
+    out.print(text, markup=False, soft_wrap=True)
+
+
+def result(key: str, value: object) -> None:
+    """A fact worth keeping from a long operation — shown in a panel after the box collapses.
+
+    Progress is transient and gets erased; results are the reason the command was run. Kept apart so
+    the one line you needed is not the one that scrolled past.
+    """
+    _FACTS.append((key, str(value)))
+
+
+# --- structured output ------------------------------------------------------
+
+def _numeric(values: list) -> bool:
+    """Should this column be right-aligned? Only if every value in it reads as a figure.
+
+    Inferred from the data rather than declared by each caller: alignment is a property of what is in
+    the column, and asking every caller to say so is how one of them ends up disagreeing. Text
+    right-aligned against a ragged left edge is the single thing that makes a table look broken.
+    """
+    seen = False
+    for v in values:
+        if v is None or v == "" or v == "-":
+            continue
+        seen = True
+        try:
+            float(str(v).rstrip("%").replace(",", ""))
+        except ValueError:
+            return False
+    return seen
+
+
+def table(columns: list[str], rows: list[list], title: str | None = None) -> None:
+    t = Table(title=title, header_style="head", box=None, pad_edge=False, title_justify="left")
+    for i, c in enumerate(columns):
+        column = [r[i] for r in rows if i < len(r)]
+        t.add_column(c, justify="right" if _numeric(column) else "left",
+                     style="accent" if i == 0 else None)
+    for row in rows:
+        t.add_row(*("" if v is None else str(v) for v in row))
+    out.print(t)
+
+
+def kv(pairs: list[tuple[str, object]], title: str | None = None) -> None:
+    """A detail block — one subject, several facts. `cuttle account`, a Dive's detail."""
+    if title:
+        out.print(f"[head]{title}[/head]")
+    width = max((len(k) for k, _ in pairs), default=0)
+    for key, value in pairs:
+        out.print(f"  [muted]{key.ljust(width)}[/muted]  {value}")
+
+
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list) -> str:
+    """A one-line glyph plot — the *shape* of a series in a single table cell. `cuttle tide` draws one
+    per Arm so a User can read the quiet hours off the curve.
+
+    Scaled to the series' own min..max, so what reads is the shape rather than the absolute level (the
+    level is printed alongside — the shape alone cannot be compared across rows, and is not meant to
+    be). A flat or single-value series is all baseline; a `None` is a gap."""
+    nums = [v for v in values if v is not None]
+    if not nums:
+        return ""
+    lo, hi = min(nums), max(nums)
+    span = hi - lo
+    if span == 0:
+        return _SPARK[0] * len(values)
+    return "".join(" " if v is None else _SPARK[round((v - lo) / span * (len(_SPARK) - 1))]
+                   for v in values)
+
+
+def emit(payload, as_json: bool, render) -> None:
+    """Either the machine form or the human one — never both, and never a half-styled hybrid.
+
+    `--json` prints exactly `payload` and nothing else, so a script gets a stable contract while the
+    human rendering stays free to change.
+    """
+    if as_json:
+        # Never through `out` — Rich's Console honours FORCE_COLOR from the environment even when
+        # stdout isn't a tty, so a colourised Console would ANSI-wrap this and break every parser.
+        print(json.dumps(payload, default=str))
+    else:
+        render()
+
+
+# --- progress ---------------------------------------------------------------
+
+@contextmanager
+def step(label: str):
+    """One phase of a long operation. Quiet while it works, loud only if it breaks.
+
+    Under `--verbose` the spinner is skipped entirely: a live spinner and a command's own output
+    fight over the same lines, and the output is the reason you asked for verbose.
+    """
+    if VERBOSE:
+        err.print(f"[accent]→[/accent] {label}")
+        yield
+        ok(label)
+        return
+    if _FRAME is None:
+        if _SCREEN is not None:
+            # On the canvas but outside a box: a loose spinner row, animated by the tick. Not
+            # err.status — its own Live would draw under the canvas and the tick would paint over it.
+            _LOOSE.append(Spinner("dots", text=Text(f"{label}…")))
+            i = len(_LOOSE) - 1
+            _paint()
+            try:
+                yield
+            except BaseException as e:
+                if getattr(e, "reported", False):   # `abort` already put the ✗ and its reason below
+                    _LOOSE.pop(i)
+                else:
+                    _log(f"FAIL {label}")
+                    _TROUBLE.append(f"[err]✗[/err] {label}")
+                    _LOOSE[i] = Text.from_markup(f"[err]✗[/err] {label}")
+                _paint()
+                raise
+            _log(f"OK   {label}")
+            _LOOSE[i] = Text.from_markup(f"[ok]✓[/ok] {label}")
+            _paint()
+            return
+        # No box and no canvas (a streaming command): Rich's own transient status line, on its own.
+        with err.status(f"{label}…", spinner="dots"):
+            try:
+                yield
+            except BaseException as e:
+                if not getattr(e, "reported", False):   # `abort` already printed the ✗ and its reason
+                    fail(label)
+                raise
+        ok(label)
+        return
+    # Inside a box the spinner is a *row of the frame*, not a line Rich owns beside it. The Spinner
+    # renderable animates off the frame's own refresh clock, so it stays within the borders.
+    i = _FRAME.add(Spinner("dots", text=Text(f"{label}…")))
+    try:
+        yield
+    except BaseException as e:
+        if getattr(e, "reported", False):
+            _FRAME.remove(i)
+        else:
+            _log(f"FAIL {label}")
+            _TROUBLE.append(f"[err]✗[/err] {label}")
+            _FRAME.replace(i, Text.from_markup(f"[err]✗[/err] {label}"))
+        raise
+    _log(f"OK   {label}")
+    _FRAME.replace(i, Text.from_markup(f"[ok]✓[/ok] {label}"))
+
+
+def human_bytes(n: float) -> str:
+    """Bytes → "4.0 GiB". Deliberately one shape: a size
+    inside a progress line and a size in a listing sit next to each other often enough to notice."""
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size} B"  # unreachable
+
+
+_BAR_WIDTH = 24
+_REPAINT_S = 0.1        # a repaint per chunk would spend more time drawing than downloading
+
+
+@contextmanager
+def progress(label: str, total: int | None = None):
+    """`step`, for a phase that knows how far along it is. Yields `update(done, total=None)` — bytes SO
+    FAR, not a delta, so a caller that recomputes rather than accumulates cannot drift.
+
+    A `total` gets a bar and a percentage; without one the line is bytes and a rate, which stays the
+    honest rendering whenever nobody knows the denominator.
+
+    **The total may arrive late, and usually does.** A download learns what it is fetching from the
+    `X-CCC-Bytes` header on the response, which is not read until the stream is already open — by then
+    the caller has drawn its first line. So `update` takes an optional second argument and latches it:
+    the line starts as bytes-and-rate and becomes a bar the moment the size is known. Latched, not
+    tracked, because it is one fact about one transfer; a second value would be a Head changing its
+    mind mid-stream, and the first answer is the one the bar was drawn against.
+
+    Why this exists at all: a 3GB result is minutes of silence, and silence is exactly what a User
+    reads as a hang. It is also what made the timeout that motivated all this indistinguishable from an
+    unreachable Head — from the outside, "working" and "wedged" looked the same.
+
+    Drawn through `_Surface`, so it lands in whichever of the three places is live: a row of the open
+    box, a loose row on the canvas, or a transient Live of its own. Under `--verbose` there is no live
+    region at all — the same rule `step` follows, for the same reason.
+    """
+    if VERBOSE:
+        err.print(f"[accent]→[/accent] {label}")
+        yield lambda done, total=None: None
+        ok(label)
+        return
+    started = time.monotonic()
+    last = [0.0]
+    seen = [0]
+    cap = [total]
+
+    def render(done: int) -> Text:
+        elapsed = max(time.monotonic() - started, 1e-6)
+        rate = f"{human_bytes(done / elapsed)}/s"
+        whole = cap[0]
+        if whole:
+            frac = min(done / whole, 1.0)
+            filled = round(frac * _BAR_WIDTH)
+            bar = "━" * filled + "─" * (_BAR_WIDTH - filled)
+            # Both numbers, not just the percentage: "82%" of an unnamed quantity says nothing about
+            # whether the wait left is seconds or an hour, and that is the question being asked.
+            return Text.from_markup(
+                f"{label}  [accent]{bar}[/accent] {frac * 100:3.0f}%  "
+                f"{human_bytes(min(done, whole))}/{human_bytes(whole)}  [muted]{rate}[/muted]")
+        return Text.from_markup(f"{label}  {human_bytes(done)}  [muted]{rate}[/muted]")
+
+    with _Surface() as surface:
+        surface.show(render(0))
+
+        def update(done: int, total: int | None = None) -> None:
+            seen[0] = done
+            if total and not cap[0]:
+                cap[0] = total
+                last[0] = 0.0   # the bar appearing is worth a repaint the throttle would swallow
+            now = time.monotonic()
+            if now - last[0] < _REPAINT_S:
+                return
+            last[0] = now
+            surface.show(render(done))
+
+        try:
+            yield update
+        except BaseException:
+            _log(f"FAIL {label}")
+            _TROUBLE.append(f"[err]✗[/err] {label}")
+            surface.settle(Text.from_markup(f"[err]✗[/err] {label}"))
+            raise
+        _log(f"OK   {label}")
+        surface.settle(Text.from_markup(f"[ok]✓[/ok] {label} [muted]({human_bytes(seen[0])})[/muted]"))
+
+
+# --- asking -----------------------------------------------------------------
+#
+# Every prompt in `cuttle` goes through `_ask`. Three reasons, and the last is the important one:
+#
+# **Prompts are commentary, so they must draw on stderr.** A prompt on stdout would land in the
+# middle of the data stream `$(cuttle queue --json)` is capturing.
+#
+# **It is the test seam.** Prompts block on a real keyboard, so tests install a scripted `Answers`
+# here and never reach the terminal at all. One pty smoke test covers the wiring the seam bypasses.
+#
+# **The prompts are ours.** A library that owns its own screen region (questionary/prompt_toolkit)
+# can only draw beside a box, never inside it, leaving the border open at the bottom. Rendering the
+# prompt as rows of the frame (see `_Frame`) is the only arrangement where the border closes — hence
+# a hand-rolled key reader and four prompt types instead. No widget tree, no event loop: a prompt is
+# a function that reads keys and returns a value.
+
+_ANSWERS = None   # set by tests, via install_answers()
+
+
+class Answers:
+    """A scripted queue standing in for a human. Ordered by default; `keyed` matches on a substring
+    of the prompt, for flows where the order is what is under test."""
+
+    def __init__(self, *ordered, **keyed):
+        self.ordered = list(ordered)
+        self.keyed = keyed
+        self.asked: list[str] = []
+
+    def take(self, message: str):
+        self.asked.append(message)
+        for key, value in self.keyed.items():
+            if key.replace("_", " ").lower() in message.lower():
+                return self.keyed.pop(key)
+        if not self.ordered:
+            raise AssertionError(f"prompt with no scripted answer: {message!r} "
+                                 f"(already asked: {self.asked})")
+        return self.ordered.pop(0)
+
+    @property
+    def unused(self) -> list:
+        return self.ordered + list(self.keyed.values())
+
+
+def install_answers(answers: "Answers | None") -> None:
+    global _ANSWERS
+    _ANSWERS = answers
+
+
+# One entry per escape sequence we act on. Anything unlisted decodes to "" and is ignored, which is
+# the right default: an unknown sequence must never be mistaken for text and typed into the answer.
+_SEQS = {
+    b"\x1b[A": "up", b"\x1b[B": "down", b"\x1b[C": "right", b"\x1b[D": "left",
+    b"\x1b[H": "home", b"\x1b[F": "end", b"\x1b[3~": "delete",
+    b"\x1bOA": "up", b"\x1bOB": "down", b"\x1bOC": "right", b"\x1bOD": "left",
+}
+
+
+@contextmanager
+def _raw():
+    """stdin unbuffered and unechoed for the life of one prompt.
+
+    Set once around the whole prompt rather than per keystroke: toggling the terminal discipline
+    between keys is how a held-down arrow key ends up echoing raw escape bytes into the box.
+
+    **Deliberately not `tty.setraw`.** Raw mode also clears `OPOST` on the output side, and on a
+    terminal stdin and stderr are the same device — so it turns off `ONLCR` for everything Rich
+    writes. Every `\\n` then feeds the line without returning the carriage, and the frame repaints
+    as a staircase marching off the right edge. Only the input-side flags belong here.
+
+    Clearing `ISIG` means ^C arrives as a byte rather than a signal; `_key`'s callers turn it back
+    into KeyboardInterrupt, so a prompt is interruptible in the one way the rest of the CLI handles.
+    """
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    mode = termios.tcgetattr(fd)     # a second read: mutating `saved` would lose the restore
+    mode[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
+    mode[6][termios.VMIN] = 1        # one byte is enough to return
+    mode[6][termios.VTIME] = 0
+    termios.tcsetattr(fd, termios.TCSADRAIN, mode)
+    try:
+        yield fd
+    finally:
+        # TCSADRAIN, not TCSANOW: restore only once our own output has been written, or the frame's
+        # last repaint races the restore and lands on a terminal in the wrong mode.
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def _key(fd) -> str:
+    """One keypress: a character, a name from `_SEQS`, or "" for something we do not handle.
+
+    ESC is ambiguous — it is both a key and the first byte of every arrow — so it is resolved by
+    waiting a few milliseconds for more bytes. That is the standard ambiguity, and the short timeout
+    is why a lone Escape is not confused with an arrow that arrived slowly.
+    """
+    data = os.read(fd, 1)
+    if not data:
+        raise KeyboardInterrupt          # stdin closed under us
+    if data == b"\x1b":
+        while select.select([fd], [], [], 0.03)[0]:
+            data += os.read(fd, 1)
+            if data[-1:].isalpha() or data[-1:] == b"~":
+                break
+        return _SEQS.get(data, "")
+    # A multi-byte character arrives one byte at a time; assemble it before decoding, or a pasted
+    # non-ASCII path turns into replacement characters.
+    need_more = 4 if data[0] >= 0xF0 else 3 if data[0] >= 0xE0 else 2 if data[0] >= 0xC0 else 1
+    while len(data) < need_more:
+        data += os.read(fd, 1)
+    return data.decode("utf8", "replace")
+
+
+class _Surface:
+    """Where a prompt draws. Either the open frame's rows, or — with no box — a transient Live of
+    its own, so a bare prompt still repaints in place instead of scrolling a copy per keystroke."""
+
+    def __init__(self):
+        # Three places a prompt can draw: a row of the open box; a loose row on the canvas (a prompt
+        # with no box open, but under fullscreen); or its own transient Live (no canvas at all — a
+        # streaming command, or a test). `.slot` indexes the frame's rows or `_LOOSE`.
+        self.live = None
+        self.canvas = False
+        self.slot = None
+        if _FRAME is None:
+            if _SCREEN is not None:
+                self.canvas = True
+            else:
+                self.live = Live(Text(""), console=err, transient=True, refresh_per_second=12)
+
+    def __enter__(self):
+        if self.live:
+            self.live.start()
+        return self
+
+    def show(self, renderable, height: int = 1) -> None:
+        if self.live:
+            self.live.update(renderable, refresh=True)
+        elif self.canvas:
+            if self.slot is None:
+                _LOOSE.append(renderable)
+                self.slot = len(_LOOSE) - 1
+            else:
+                _LOOSE[self.slot] = renderable
+            _paint()
+        elif self.slot is None:
+            self.slot = _FRAME.add(renderable, height)
+        else:
+            _FRAME.replace(self.slot, renderable, height)
+
+    def room(self) -> int:
+        """How many lines this prompt may draw, at the place it actually lands.
+
+        Inside a box that is the frame's budget — NOT the terminal height. The box fills the alternate
+        screen but still has borders, and a transient Live (a section opened in a test, or a streaming
+        command) is not full height at all, so a prompt sized to the terminal draws a row taller than
+        the box can hold. Loose on the canvas or in a transient Live, the terminal is the limit, less
+        a margin for what sits around it.
+        """
+        if _FRAME is not None and not self.canvas and self.live is None:
+            return _FRAME.budget()
+        return max(4, err.height - 7)
+
+    def settle(self, line: Text) -> None:
+        """Replace the live prompt with the one-line record of what was answered."""
+        if self.live:
+            self.live.stop()
+            self.live = None
+            err.print(line)
+        elif self.canvas:
+            _LOOSE[self.slot] = line
+            _paint()
+        else:
+            _FRAME.replace(self.slot, line, 1)
+
+    def __exit__(self, *exc):
+        if self.live:
+            self.live.stop()
+
+
+def _answered(message: str, shown: str) -> Text:
+    return Text.assemble(("? ", "accent"), (message, ""), ("  ", ""), (shown, "bold"))
+
+
+def _select_window(room: int, count: int) -> int:
+    """How many entries a select shows at once. One line of `room` goes to the question itself; the
+    rest is a scrolling window that pages around the cursor rather than growing with the list — a
+    row taller than the surface it draws on is a row that gets trimmed away entirely."""
+    return max(3, min(count, room - 1))
+
+
+def _prompt_select(surface, message: str, choices: list, default=None):
+    idx = next((i for i, c in enumerate(choices) if c.value == default), 0)
+    window = _select_window(surface.room(), len(choices))
+    with _raw() as fd:
+        while True:
+            top = max(0, min(idx - window // 2, len(choices) - window))
+            rows = [Text.assemble(("? ", "accent"), (message, "bold"))]
+            for i in range(top, min(top + window, len(choices))):
+                rows.append(Text.assemble(("❯ " if i == idx else "  ", "accent"),
+                                          (str(choices[i].title),
+                                           "accent" if i == idx else "")))
+            surface.show(Group(*rows), len(rows))
+            key = _key(fd)
+            if key == "up":
+                idx = (idx - 1) % len(choices)
+            elif key == "down":
+                idx = (idx + 1) % len(choices)
+            elif key in ("\r", "\n"):
+                return choices[idx].value
+            elif key in ("\x03", "\x04"):
+                raise KeyboardInterrupt
+
+
+def _prompt_line(surface, message: str, default: str = "", secret: bool = False) -> str:
+    buf = list(default)
+    pos = len(buf)
+    with _raw() as fd:
+        while True:
+            shown = "•" * len(buf) if secret else "".join(buf)
+            line = Text.assemble(("? ", "accent"), (message, "bold"), ("  ", ""))
+            line.append(shown[:pos])
+            line.append("▏", style="accent")     # the cursor: Live owns the real one
+            line.append(shown[pos:])
+            surface.show(line)
+            key = _key(fd)
+            if key in ("\r", "\n"):
+                return "".join(buf)
+            elif key in ("\x03", "\x04"):
+                raise KeyboardInterrupt
+            elif key == "\x7f":                  # backspace
+                if pos:
+                    del buf[pos - 1]
+                    pos -= 1
+            elif key == "delete":
+                if pos < len(buf):
+                    del buf[pos]
+            elif key == "left":
+                pos = max(0, pos - 1)
+            elif key == "right":
+                pos = min(len(buf), pos + 1)
+            elif key == "home":
+                pos = 0
+            elif key == "end":
+                pos = len(buf)
+            elif key == "\x15":                  # ^U — clear, the one editing shortcut worth having
+                buf, pos = [], 0
+            elif len(key) == 1 and key.isprintable():
+                buf.insert(pos, key)
+                pos += 1
+
+
+def _prompt_confirm(surface, message: str, default: bool = True) -> bool:
+    hint_text = "(Y/n)" if default else "(y/N)"
+    surface.show(Text.assemble(("? ", "accent"), (message, "bold"), (f" {hint_text}", "dim")))
+    with _raw() as fd:
+        while True:
+            key = _key(fd)
+            if key in ("\r", "\n"):
+                return default
+            if key in ("\x03", "\x04"):
+                raise KeyboardInterrupt
+            if key.lower() == "y":
+                return True
+            if key.lower() == "n":
+                return False
+
+
+# Set while a caller has promised its whole flow asks nothing (`no_prompting`). Checked ahead of the
+# scripted human as well as the real one: a test that answers the question would hide exactly the
+# regression this exists to catch.
+_REFUSE = None
+
+
+@contextlib.contextmanager
+def no_prompting(what: str):
+    """Refuse every prompt raised inside this block, loudly, naming `what` promised not to ask.
+
+    For a flow whose *contract* is that it asks nothing — `cuttle update`, which exists precisely
+    because `setup` asks ten questions this box has already answered. Guarding each call site is what
+    makes that true today; this is what keeps it true, because the way it breaks is somebody adding a
+    prompt to a shared step months from now and no one noticing that a silent duty started talking.
+
+    Deliberately an abort and not a skipped question: a prompt reached here means the flow needs an
+    answer it was supposed to already have, and guessing one is how a re-provision quietly changes
+    what a box is.
+    """
+    global _REFUSE
+    before, _REFUSE = _REFUSE, what
+    try:
+        yield
+    finally:
+        _REFUSE = before
+
+
+def _ask(kind: str, message: str, **kw):
+    """One prompt, through the seam. The scripted human and the real one must agree on *every*
+    rule, including that a None answer means ^C — a fake that is merely permissive lets a caller
+    ship a None-valued menu entry that dies the moment a human touches it."""
+    # `permission` is sudo's password: asking leave to act, not for an answer, so a flow that
+    # promised to ask nothing (`no_prompting`) still has to be able to ask it.
+    permission = kw.pop("permission", False)
+    if _REFUSE is not None and not permission:
+        raise abort(f"{_REFUSE} asks nothing, but something tried to ask {message!r}",
+                    next_step=f"this is a bug in CCC — run `cuttle setup` to answer it for now")
+    if _ANSWERS is not None:
+        answer = _ANSWERS.take(message)
+        if answer is None:        # ^C / ^D inside a prompt
+            raise KeyboardInterrupt
+        if kind == "confirm" and isinstance(answer, str):
+            # The scripted human answers in keystrokes, so "n" has to mean *no* — as a bare string
+            # it is truthy, and a declined confirmation would read as an accepted one. The seam is
+            # only worth having while it agrees with the real prompt on every rule.
+            return answer.strip().lower() in ("y", "yes") if answer.strip() \
+                else kw.get("default", True)
+        return answer
+    if not _tty():
+        raise abort(f"cannot ask {message!r} — no terminal to prompt on")
+    with _Surface() as surface:
+        if kind == "select":
+            choices = [c if isinstance(c, Choice) else Choice(str(c)) for c in kw["choices"]]
+            answer = _prompt_select(surface, message, choices, kw.get("default"))
+            kw = {"choices": choices}
+        elif kind == "confirm":
+            answer = _prompt_confirm(surface, message, kw.get("default", True))
+        else:
+            answer = _prompt_line(surface, message, kw.get("default", "") or "",
+                                  secret=kind == "password")
+        surface.settle(_answered(message, _shown(kind, answer, kw)))
+    return answer
+
+
+def _shown(kind: str, answer, kw: dict) -> str:
+    """How an answer reads once the prompt is gone.
+
+    A select yields its *value* (`"head"`), but the human chose a *label* ("The Head — control
+    plane…"); echoing the value back would show them something they never picked. Passwords are
+    never echoed at all.
+    """
+    if kind == "password":
+        return "••••••••"
+    if kind == "confirm":
+        return "yes" if answer else "no"
+    for choice in kw.get("choices", []):
+        if getattr(choice, "value", object()) == answer:
+            return str(choice.title)
+    return str(answer)
+
+
+def ask_text(message: str, default: str = "") -> str:
+    return _ask("text", message, default=default)
+
+
+def ask_int(message: str, default: str = "") -> int:
+    """Prompt for a whole number, re-asking on anything that isn't one — wrapping raw `ask_text` in
+    `int()` would surface a Python `invalid literal for int()` error straight at the user."""
+    while True:
+        raw = ask_text(message, default=default).strip()
+        try:
+            return int(raw)
+        except ValueError:
+            warn(f"{raw!r} isn't a whole number — enter digits only (e.g. 60)")
+
+
+def ask_float(message: str, default: str = "") -> float:
+    """Like `ask_int`, for a value that may be fractional or negative (a Karma adjustment)."""
+    while True:
+        raw = ask_text(message, default=default).strip()
+        try:
+            return float(raw)
+        except ValueError:
+            warn(f"{raw!r} isn't a number — enter a number (e.g. -50)")
+
+
+def ask_password(message: str, permission: bool = False) -> str:
+    return _ask("password", message, permission=permission)
+
+
+def ask_confirm(message: str, default: bool = False) -> bool:
+    return _ask("confirm", message, default=default)
+
+
+class Choice:
+    """A menu entry whose display text differs from the value it yields."""
+
+    __slots__ = ("title", "value")
+
+    def __init__(self, title: str, value=None):
+        self.title = title
+        self.value = title if value is None else value
+
+
+def choice(label: str, value):
+    """Built here so no command module renders its own menu entries — and so the scripted human in
+    tests sees the same pair the real prompt does."""
+    return Choice(label, value)
+
+
+def ask_select(message: str, choices: list, default=None):
+    """`choices` are `Choice` objects or plain strings."""
+    return _ask("select", message, choices=choices, default=default)
+
+
+def ask_typed(message: str, expected: str) -> bool:
+    """Confirmation for something irreversible: the operator types the target's name.
+
+    A y/N cannot protect `teardown` — it sits one arrow key from `setup` in the menu, and the same
+    keystroke that confirms a Dive cancellation would wipe the cluster. Typing a hostname is not
+    something a hand does by reflex, which is the entire point.
+    """
+    return ask_text(f"{message} (type {expected!r} to confirm)").strip() == expected
+
+
+def need(value, flag: str, ask):
+    """Return `value`, or ask for it — the one place the interactive/unattended split is decided.
+
+    A supplied flag always wins, so scripts and the installer never see a prompt. When nothing was
+    supplied and nobody can be asked, the error names the flag that would have fixed it rather than
+    complaining that a terminal is missing.
+    """
+    if value is not None:
+        return value
+    if not interactive():
+        raise abort(f"missing {flag} — pass it explicitly (no terminal to prompt on)")
+    return ask()
+
+
+# --- the alternate screen ---------------------------------------------------
+
+_ALT = False
+_DEFERRED: list[tuple[str | None, list[tuple[str, str]]]] = []
+
+# The single alternate-screen canvas (a `Console.screen()`), redrawn absolutely — home + full screen
+# — on every paint. That absoluteness is the point: there is no cursor-relative repaint to fall out
+# of sync, so scrolling the viewport or typing can never leave a stale frame stacked behind the live
+# one. `_LOOSE` is what the canvas shows when no section box is open; `_LOCK` serialises paints
+# between the main thread and the tick that animates the spinner.
+_SCREEN = None
+_LOCK = threading.Lock()
+_LOOSE: list = []
+# What was said on the canvas, kept so it can be said again on the real terminal once the buffer is
+# handed back. `_LOOSE` itself cannot be replayed: `step` and the progress bars park LIVE renderables
+# in it and mutate them in place, so by the end it holds spinners rather than the lines that were
+# read. Each entry is the markup as it was said, paired with the offset into captured stdout it was
+# said at — the two streams interleave (`run` prints its preview and the Dive id to stdout, its
+# confirmation to stderr), and replaying either one whole reorders it against the other.
+_REPLAY: list[tuple[int, str]] = []
+_HELD = None
+_TICK = None
+_TICK_STOP = None
+
+# `--follow` tails a running Dive: its whole purpose is output arriving *as it happens*. The
+# alternate screen holds stdout back until the flow ends, which for a follow is when the Dive ends —
+# so the one command whose output must be live would show nothing at all until it was over. These
+# runs stay inline. Read off argv rather than the parsed flag because the screen is claimed before
+# any command function is entered.
+STREAMING = False
+
+# Flags that mark a command as streaming.
+_STREAMING_FLAGS = ("--follow", "-f")
+
+
+def _detect_streaming() -> bool:
+    return any(a in _STREAMING_FLAGS for a in sys.argv[1:])
+
+
+@contextmanager
+def fullscreen():
+    """Take the whole terminal for an interactive flow, and hand it back exactly as it was.
+
+    The alternate screen buffer (`?1049h`), which is what a pager or an editor uses: on exit the
+    shell's scrollback is restored untouched, with none of the flow's own drawing left behind.
+
+    No widgets, no navigable screens, no event loop — just the same boxes and prompts on a scratch
+    buffer. What it buys is that removing a box becomes a screen clear rather than anything to compute.
+
+    **Anything worth keeping must outlive the buffer.** On exit the screen is discarded, so results
+    are deferred and printed to the real terminal afterwards, and stdout is captured and replayed —
+    otherwise `cuttle setup --head` would restore the terminal and take the one-time admin password
+    with it.
+    """
+    global _ALT, _SCREEN, _PREV, _HELD
+    if not _tty() or _ALT or STREAMING:
+        # Already on it (the outer frame owns the screen), or there is no terminal to take, or this
+        # command streams — see STREAMING.
+        yield
+        return
+    held = io.StringIO()
+    capture = contextlib.redirect_stdout(held)
+    # One canvas for the whole command, redrawn absolutely on every paint (see the `_SCREEN` note).
+    _SCREEN = err.screen()
+    _SCREEN.__enter__()
+    _ALT = True
+    _LOOSE.clear()
+    _REPLAY.clear()
+    _HELD = held
+    _PREV = None        # a fresh buffer holds nothing to diff against — this paint writes it whole
+    _paint()
+    _tick_start()                # animates the step spinner, and re-asserts the screen ~12×/s
+    capture.__enter__()
+    broke = False
+    try:
+        yield
+    except BaseException:
+        broke = True
+        raise
+    finally:
+        _tick_stop()             # stop painting before we tear the canvas down
+        capture.__exit__(None, None, None)
+        _ALT = False
+        _SCREEN.__exit__(None, None, None)
+        _SCREEN = None
+        _PREV = None    # the buffer is gone; nothing on it is a baseline for the next flow
+        _HELD = None
+        _replay(held.getvalue())
+        for title, facts in _DEFERRED:
+            _panel(title, facts)
+        _DEFERRED.clear()
+        _closing(broke)
+
+
+@contextlib.contextmanager
+def handover():
+    """Give the real terminal to an interactive child (ssh) for the duration: no repaint tick, off the
+    alternate screen. Otherwise the tick draws over the child ~12×/s and the session looks blank, with
+    the cursor pinned to the bottom. The canvas comes back after, for whatever the flow does next.
+    Lines said so far are printed on the real terminal first, above the child's output."""
+    global _SCREEN, _PREV
+    if not _ALT:
+        yield
+        return
+    _tick_stop()
+    _SCREEN.__exit__(None, None, None)
+    # What the flow said before the child (where it is, how to leave, files) would otherwise only
+    # reappear after it exits — so it goes to the real terminal now, once.
+    for _, markup in _REPLAY:
+        err.print(markup)
+    _REPLAY.clear()
+    _LOOSE.clear()
+    try:
+        yield
+    finally:
+        _SCREEN = err.screen()
+        _SCREEN.__enter__()
+        _PREV = None
+        _paint()
+        _tick_start()
+
+
+def _replay(held: str) -> None:
+    """Say again, on the real terminal, everything the canvas showed outside a box.
+
+    The alternate screen is discarded on exit, so a command whose whole result is a line of
+    commentary — `cuttle cancel`'s confirmation — left nothing
+    behind at all. Box rows are deliberately not here: those are progress, and progress is meant to
+    be transient. Loose rows are the outcome.
+
+    Interleaved rather than concatenated: stdout is replayed up to the offset each line was said at,
+    then the line, so the transcript reads in the order it happened.
+    """
+    pos = 0
+    for at, markup in _REPLAY:
+        if at > pos:
+            sys.stdout.write(held[pos:at])
+            pos = at
+        sys.stdout.flush()      # the two streams are one terminal; order only holds if we flush
+        err.print(markup)
+    if pos < len(held):
+        sys.stdout.write(held[pos:])
+    sys.stdout.flush()
+    _REPLAY.clear()
+
+
+def _closing(broke: bool) -> None:
+    """The last thing on screen once the terminal is back.
+
+    Progress scrolled past inside a box that no longer exists, so this is the only chance to say
+    that something went wrong and where to read about it. A clean run says nothing — a CLI that
+    reports its own log file on every success has trained you to ignore the line that matters.
+    """
+    # A failure (✗) is shown in full even when nothing propagated: `raise ui.abort(...)` becomes a
+    # `typer.Exit` that Click *returns* as an exit code under standalone_mode=False, so `broke` stays
+    # False — but "sudo authentication failed" is exactly the line the user needs, not a count of it.
+    failed = broke or any("✗" in line for line in _TROUBLE)
+    if failed and _TROUBLE:
+        # A run that stopped: the warnings and errors are the reason, so they are shown in full
+        # rather than pointed at.
+        body = Text()
+        for i, line in enumerate(_TROUBLE):
+            body.append("\n" if i else "")
+            body.append_text(Text.from_markup(line))
+        if _LOG_PATH:
+            body.append("\n\n")
+            body.append(f"full log  {_LOG_PATH}", style="muted")
+        err.print(Panel(body, title="[head]Warnings[/head]", title_align="left",
+                        border_style="err", padding=(0, 2), width=_width()))
+    elif _TROUBLE and _LOG_PATH:
+        n = len(_TROUBLE)
+        _emit(f"[warn]![/warn] {n} warning{'s' if n > 1 else ''} — full log: {_LOG_PATH}")
+
+
+def _canvas_render():
+    """The whole screen right now: completed sections (and any loose commentary) as collapsed rows,
+    then the open section's box beneath them.
+
+    Sections do NOT clear each other. The point of the box is to show the flow, so what is finished
+    stays on screen above what is happening now — moving from the `Set up this box` wizard into
+    `Setting up the Head` leaves the wizard's ✓ line in place rather than wiping it. Trimmed to the
+    last screenful, the box included, so nothing renders past the top edge."""
+    box = _FRAME._render() if _FRAME is not None else None
+    room = err.height
+    if box is not None:
+        room -= _height() or room          # the rows the box itself will occupy
+    loose = _LOOSE[-room:] if room > 0 else []
+    parts = [*loose, *([box] if box is not None else [])]
+    return Group(*parts) if parts else Text("")
+
+
+# DEC private mode 2026, "synchronized output": between BSU and ESU a terminal buffers what arrives
+# and presents it in one go, so a frame is never shown half-drawn. Kept, because it is what makes the
+# full repaints below atomic on terminals that honour it, where a torn frame is otherwise *visible* —
+# the box blinks and rows appear to jump.
+#
+# It is NOT a general answer, and this is why the diff below exists. gnome-terminal answers the
+# DECRQM query for 2026 with status 4, "permanently reset": VTE knows the mode and will never honour
+# it. There, and on anything else that ignores the sequence, the only thing that keeps a frame whole
+# is not writing much.
+_BSU, _ESU = "\x1b[?2026h", "\x1b[?2026l"
+
+# How long a canvas may go untouched before it is rewritten whole regardless of the diff. This is the
+# re-assertion `_tick_start` describes — the repair for a canvas something else wiped — kept as a
+# real mechanism but at 1/24th the rate it used to run at.
+_REASSERT_S = 2.0
+_PREV: list | None = None      # the lines currently ON the screen, to diff the next frame against
+_PREV_SIZE = (0, 0)
+_REASSERT_AT = 0.0
+
+
+def _frame_lines() -> list:
+    """The canvas as exactly `height` lines of exactly `width` cells — what Rich's own `Screen`
+    renderable produces, built here so the lines can be compared before any of them is written."""
+    width, height = err.width, err.height
+    options = err.options.update(width=width, height=height)
+    lines = err.render_lines(_canvas_render(), options, pad=True)
+    return Segment.set_shape(lines, width, height)
+
+
+def _changed_runs(lines: list, prev: list) -> list:
+    """The contiguous stretches of rows that differ, as `(y, lines)`. Contiguous rather than one
+    entry per row because a run is one `move_to` for the whole stretch instead of one per line, and
+    the common change — a box redrawn — is contiguous by construction."""
+    runs, start = [], None
+    for y, (new, old) in enumerate(zip(lines, prev)):
+        if new != old:
+            if start is None:
+                start = y
+        elif start is not None:
+            runs.append((start, lines[start:y]))
+            start = None
+    if start is not None:
+        runs.append((start, lines[start:]))
+    return runs
+
+
+def _paint(full: bool = False) -> None:
+    """Bring the screen up to date — locked, because the tick thread paints too.
+
+    **Only the rows that changed are written.** Rich has no incremental screen diff: printing a
+    `Screen` rewrites every cell, padding included, so a spinner turning cost a full 10KB frame on a
+    200x50 terminal, twelve times a second — over 100 KiB/s of unbuffered output into a terminal that
+    renders bytes as they arrive. That is what tore. Diffed, the same spinner costs ~200 B/frame and
+    an idle canvas costs nothing at all.
+
+    The periodic full re-assert is not a tearing risk of its own: it rewrites the cells that are
+    already there, so a terminal presenting it half-done shows exactly what it showed before.
+
+    A full rewrite still happens on a resize (every row moved), on the first paint, and every
+    `_REASSERT_S` — see `_tick_start` for why re-assertion cannot simply be dropped.
+
+    A no-op when there is no canvas: a streaming command (fullscreen is skipped), or a section opened
+    in a test. In those cases a frame draws itself through its own transient `Live` instead."""
+    global _PREV, _PREV_SIZE, _REASSERT_AT
+    if _SCREEN is None:
+        return
+    with _LOCK:
+        if not err.is_alt_screen:
+            # A canvas was claimed but the console underneath is not a real terminal — a test that
+            # forces one onto a buffer, a run whose stderr is a pipe. Rich refuses cursor-addressed
+            # updates there (NoAltScreen), and there is nothing to tear anyway, so this is the whole
+            # frame printed exactly as it was before the diff existed.
+            _PREV = None
+            _SCREEN.update(_canvas_render())
+            return
+        size = (err.width, err.height)
+        lines = _frame_lines()
+        now = time.monotonic()
+        full = full or _PREV is None or size != _PREV_SIZE or now >= _REASSERT_AT
+        runs = [(0, lines)] if full else _changed_runs(lines, _PREV)
+        _PREV, _PREV_SIZE = lines, size
+        if full:
+            _REASSERT_AT = now + _REASSERT_S
+        if not runs:
+            return          # nothing moved: the cheapest frame is the one nobody writes
+        sync = err.is_terminal
+        if sync:
+            err.file.write(_BSU)
+        for y, run in runs:
+            err.update_screen_lines(run, 0, y)   # absolute `move_to` per row; writes and flushes
+        if sync:
+            err.file.write(_ESU)
+            err.file.flush()
+
+
+
+
+def _tick_start() -> None:
+    """A background repaint ~12×/s. Two jobs: animate the step spinner (the main thread is busy inside
+    the step and cannot), and re-assert the absolute screen so a scroll or resize self-corrects.
+
+    **The tick is unconditional; the writing is not.** Whatever wipes the canvas — ConPTY racing the
+    alt-buffer switch, a stray write, a resize we did not notice — is exactly the case where nothing
+    has changed on OUR side, so a repaint that fired only on a visible change would never repair it
+    and the box would sit there empty. Re-assertion IS the mechanism, and it stays. What changed is
+    its cost: `_paint` writes only the rows that differ, and re-asserts the whole screen every
+    `_REASSERT_S` rather than 12 times a second.
+    """
+    global _TICK, _TICK_STOP
+    _TICK_STOP = threading.Event()
+    stop = _TICK_STOP
+    def _loop():
+        while not stop.wait(1 / 12):
+            _paint()
+    _TICK = threading.Thread(target=_loop, daemon=True)
+    _TICK.start()
+
+
+# Ordered by how well each fits the box we are on: Wayland, then X11.
+_CLIPBOARD_CMDS = (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"])
+
+
+def _clipboard_cmd() -> list[str] | None:
+    """The first clipboard tool this box actually has, or None. Headless servers have none, which is
+    why the offer is conditional rather than a keystroke that silently does nothing."""
+    return next((cmd for cmd in _CLIPBOARD_CMDS if shutil.which(cmd[0])), None)
+
+
+def _osc52(text: str) -> None:
+    """Hand `text` to the TERMINAL's clipboard, not this box's.
+
+    OSC 52 is a request the terminal emulator itself answers, so the bytes travel back up the ssh
+    connection and land on the clipboard of the machine the operator is sitting at. That is the whole
+    reason it is here: a Head is a server, administered over ssh, with no X server, no Wayland and no
+    clipboard tool — and `xclip` on such a box would copy to a selection nobody is looking at.
+
+    Written straight to stderr rather than through Rich: this is a control sequence, not a cell, and
+    the canvas would otherwise repaint over it 12×/s.
+
+    Multiplexers eat unknown sequences, so both are asked to pass it through (ESC doubled inside a DCS
+    string, which is how tmux and screen quote it). tmux additionally needs `set -g set-clipboard on`
+    — nothing here can check that, which is why the caller's wording never promises a copy landed.
+    """
+    seq = f"\033]52;c;{base64.b64encode(text.encode()).decode()}\a"
+    if os.environ.get("TMUX"):
+        seq = "\033Ptmux;" + seq.replace("\033", "\033\033") + "\033\\"
+    elif os.environ.get("TERM", "").startswith("screen"):
+        seq = "\033P" + seq.replace("\033", "\033\033") + "\033\\"
+    sys.stderr.write(seq)
+    sys.stderr.flush()
+
+
+def _copy_to_clipboard(text: str) -> str:
+    """Put `text` on a clipboard by whatever route this box has. Returns which one was taken:
+    `"clipboard"` (a local tool confirmed it), `"terminal"` (asked the terminal over OSC 52, which
+    answers nothing), or `""` (a tool was there and refused).
+
+    A local tool is preferred where one exists because its exit code is *evidence*. OSC 52 is the
+    fallback rather than the default for the same reason — it is fire-and-forget, and a terminal that
+    ignores it looks exactly like one that obeyed.
+
+    DEVNULL, never a pipe — capturing this output DEADLOCKS the caller.
+
+    An X11/Wayland selection is owned by a live process, so xclip/wl-copy fork a background copy that
+    holds the clipboard and keeps whatever fds it inherited. Given pipes, that copy holds the read
+    ends open for as long as the clipboard holds the text, `communicate()` waits for an EOF that
+    never comes, and the command hangs forever — e.g. freezing `arm authorize` inside its poll loop.
+
+    Their output is not worth a pipe anyway — the exit code says whether the copy landed.
+    """
+    cmd = _clipboard_cmd()
+    if cmd is None:
+        _osc52(text)
+        return "terminal"
+    try:
+        ok = subprocess.run(cmd, input=text.encode(),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    except OSError:
+        ok = False
+    if ok:
+        return "clipboard"
+    # The tool was there and failed — an X11 tool with no display, typically, which is exactly the
+    # remote case. The terminal is still worth asking; it is a different machine's clipboard.
+    _osc52(text)
+    return "terminal"
+
+
+@contextmanager
+def copy_hotkey(text: str):
+    """Arm `c` to copy `text` to the clipboard for the duration of a wait, stopping nothing.
+
+    Yields a `wait(seconds)` that replaces `time.sleep` inside a polling loop: it sleeps, but wakes
+    the instant a key arrives. So the hotkey is live throughout without a thread, and the loop it
+    wraps runs exactly as it did.
+
+    **Why not freeze the screen instead.** A paint rewrites every cell and the tick fires ~12×/s, so
+    a mouse selection is destroyed within 80ms of being made — text on a live canvas is physically
+    uncopyable, and the only way to allow selection is to stop the tick and make the operator press a
+    key to resume. That pause bought nothing here: the wait it preceded was itself the pause, and it
+    interrupted a flow that has somewhere to be. A programmatic copy needs no static screen, so `c`
+    works on a live one and the interruption goes away. The cost is that selecting the token with a
+    mouse is no longer possible — `c` is the way to take it.
+
+    Not automatic: the caller is handing over a *secret*, and a secret that lands on the clipboard
+    because a command decided to put it there is a surprise, not a convenience.
+
+    Inert with no terminal and no human — `wait` is then plain `time.sleep`, and a script's polling
+    loop is untouched.
+
+    A missing clipboard tool is NOT one of those conditions, though it used to be. A Head is a server
+    reached over ssh: it has no clipboard tool, the offer therefore never appeared, and the operator
+    was left with a secret on an alternate screen that the terminal discards on exit — unselectable
+    while it repaints, absent from scrollback afterwards, and deliberately absent from the run log.
+    `_copy_to_clipboard` falls back to OSC 52, which the operator's OWN terminal answers, so the
+    hotkey is offered wherever there is a terminal at all.
+    """
+    if not _tty() or NO_INPUT or _ANSWERS is not None or _SCREEN is None:
+        yield time.sleep
+        return
+    _emit("  [muted]press c to copy it to the clipboard[/muted]")
+    with _raw() as fd:
+        def wait(seconds: float) -> None:
+            deadline = time.monotonic() + seconds
+            while True:
+                left = deadline - time.monotonic()
+                # Draining on a zero timeout as well would spin; select's own timeout IS the sleep.
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    return
+                key = _key(fd)
+                # `_raw` clears ISIG, so ^C arrives as a byte. Handled here rather than at the end of
+                # the poll interval, or interrupting a five-minute wait would take up to two seconds.
+                if key in ("\x03", "\x04"):
+                    raise KeyboardInterrupt
+                if key in ("c", "C"):
+                    # Three outcomes, three sentences: a confirmed copy, a copy this box CANNOT
+                    # confirm (the terminal never answers OSC 52), and a refusal. Saying "copied" for
+                    # the middle one would send the operator to paste something that may not be there.
+                    _emit({"clipboard": "  [ok]✓[/ok] copied to the clipboard",
+                           "terminal": "  [ok]✓[/ok] sent to your terminal's clipboard — paste to "
+                                       "check; if it is empty your terminal ignores OSC 52",
+                           "": "  [warn]![/warn] the clipboard tool refused it — copy it by hand",
+                           }[_copy_to_clipboard(text)])
+        yield wait
+
+
+def _tick_stop() -> None:
+    global _TICK
+    if _TICK_STOP is not None:
+        _TICK_STOP.set()
+    if _TICK is not None:
+        _TICK.join(timeout=1)
+        _TICK = None
+
+
+# --- sections ---------------------------------------------------------------
+
+BOX_MAX = 120  # a box wider than this is harder to read, not more informative — but 96 clipped the
+               # seven-column tables (`arm list`, `queue`, `history`) that this tool prints most
+
+
+_FRAME = None                          # the open _Frame, if any
+_FACTS: list[tuple[str, str]] = []     # what `result()` collected for the current section
+
+
+def _width() -> int:
+    """Capped everywhere. Taking the terminal and filling it are separate things: the alternate
+    screen is what stops the flow scrolling away, and a box stretched to 200 columns to match is
+    harder to read, not more informative."""
+    return min(err.width, BOX_MAX)
+
+
+def _height() -> int | None:
+    """The whole alternate screen; natural height inline.
+
+    Fixed rather than content-sized, because the box owns the screen there — a frame that grew and
+    shrank with each step would jitter. It was also *capped*, at 28 rows, which spent the rest of a
+    tall terminal on nothing: the box scrolls its oldest rows away, so every row it is not given is a
+    step or a menu entry you cannot see. Inline, None lets the Panel size to its content, which is
+    what a box printed into scrollback should do."""
+    return err.height if _ALT else None
+
+
+class _Frame:
+    """A titled box that *owns* its region of the screen for as long as it is open.
+
+    The box is a single Rich `Live` rendering a `Panel`, and every line of it — commentary, spinner,
+    the live prompt — is a row inside that Panel. Rich repaints the whole thing in place and knows
+    exactly how tall it drew, so there is no counting of rows and no cursor arithmetic anywhere.
+
+    This is what closes the bottom border: printing the box line by line would mean the closing
+    border can only be written once content is finished, and anything painting its own region (a
+    prompt library, a spinner) would draw *outside* the walls. A frame has no such gap: content and
+    border render together, every refresh.
+    """
+
+    def __init__(self, title: str):
+        self.title = title
+        self.rows: list[tuple[object, int]] = []
+        # Normally the frame is painted onto the shared canvas (absolute redraw, no per-frame Live).
+        # Without a canvas — a streaming command like `logs --follow`, where `fullscreen` is a no-op,
+        # or a section opened in a test — fall back to a private transient `Live`, an in-place box
+        # that erases itself on close.
+        # redirect_stdout/stderr=False: Live otherwise swaps `sys.stdout` for a proxy and restores it
+        # on stop, which doesn't nest with `section`'s own stdout capture — Live would restore the
+        # *capture buffer* as stdout after the capture had been released, so every `ui.data` after a
+        # box (a temp password, an enrolment token) would go to a dead StringIO. One owner of
+        # stdout: `section`.
+        self.live = None if _SCREEN is not None else Live(
+            self._render(), console=err, transient=True, refresh_per_second=12,
+            auto_refresh=True, redirect_stdout=False, redirect_stderr=False)
+
+    def budget(self) -> int:
+        """Rows available inside the borders. A prompt asks for this before it sizes itself — the box
+        is the terminal less its own borders, so a prompt that measured the *terminal* would draw a
+        row this trim then throws away (see `_render`)."""
+        return max(3, (_height() or err.height) - 2)
+
+    def _render(self):
+        rows = self.rows
+        # Finished work scrolls up and out of the box as new rows arrive — the frame shows what is
+        # happening now, not a transcript. `setup` runs far more steps than a screen has rows, and
+        # every one of them is in the log (see `_log`), which is where detail belongs.
+        budget = self.budget()
+        if sum(h for _, h in rows) > budget:
+            kept, used = [], 0
+            for renderable, height in reversed(rows):
+                # The newest row is kept even when it alone overflows: the Panel has a fixed height
+                # and crops it, showing the top of an oversized prompt. Dropping it instead renders
+                # an *empty box* — no rows, no reason, nothing to act on (a 19-entry menu with 18
+                # rows of budget hits exactly this) — so the trim degrades rather than blanks.
+                if used + height > budget and kept:
+                    break
+                kept.append((renderable, height))
+                used += height
+            rows = list(reversed(kept))
+        body = Group(*(r for r, _ in rows)) if rows else Text("")
+        return Panel(body, title=f"[head]{self.title}[/head]", title_align="left",
+                     border_style="accent", padding=(0, 1),
+                     width=_width(), height=_height())
+
+    def _refresh(self) -> None:
+        if self.live is not None:
+            self.live.update(self._render(), refresh=True)
+        else:
+            _paint()
+
+    def add(self, renderable, height: int = 1) -> int:
+        self.rows.append((renderable, height))
+        self._refresh()
+        return len(self.rows) - 1
+
+    def replace(self, i: int, renderable, height: int = 1) -> None:
+        self.rows[i] = (renderable, height)
+        self._refresh()
+
+    def remove(self, i: int) -> None:
+        del self.rows[i]
+        self._refresh()
+
+
+def _emit(markup: str) -> None:
+    """One line of commentary — a row of the open box, a loose row on the canvas, or a plain line."""
+    if _FRAME is not None:
+        body = Text.from_markup(markup)
+        # Rich wraps inside the Panel, so a long line stays within the borders on its own. We only need
+        # the height so an overlong box trims by what was actually drawn.
+        inner = _width() - 4
+        _FRAME.add(body, max(1, len(body.wrap(err, inner))))
+        return
+    if _SCREEN is not None:
+        # On the canvas, but between or outside boxes: a loose row, redrawn with the screen. NOT
+        # err.print — that writes under the canvas and is wiped by the next paint.
+        _LOOSE.append(Text.from_markup(markup))
+        _REPLAY.append((_HELD.tell() if _HELD is not None else 0, markup))
+        _paint()
+        return
+    err.print(markup)
+
+
+@contextmanager
+def section(title: str, summary=None):
+    """A titled box for one action or phase. Collapses to a single line when it closes.
+
+    `summary` (a callable, evaluated at exit) is what survives: enough to reconstruct what you
+    answered when a later step fails. Nesting keeps the outermost box only — two frames repainting
+    the same region would fight, and Rich permits one Live at a time regardless.
+    """
+    global _FRAME, _FACTS
+    # Boxes are interactive furniture. Piped or redirected there is nothing to repaint and no
+    # prompts to frame, so the box is skipped entirely and the output stays append-only — which also
+    # keeps a non-interactive *failure* from being wrapped in an empty box.
+    nested = _FRAME is not None
+    if not (_tty() and not nested and not VERBOSE):
+        try:
+            yield
+        finally:
+            if not nested:
+                line = summary() if callable(summary) else summary
+                ok(f"{title}{'  ' + str(line) if line else ''}")
+                _release(title)
+        return
+
+    _FACTS = []
+    # NB: `_LOOSE` is NOT cleared here. A new section does not wipe the screen — the sections before
+    # it stay on as collapsed ✓ rows above this box (see `_canvas_render`). Cleared only per command,
+    # at `fullscreen` entry.
+    frame = _Frame(title)
+    _FRAME = frame
+    # **Capture stdout for the life of the box.** stdout is the pipeable stream, so it can never
+    # carry borders — `cuttle setup > file` must get plain bytes — and a raw write into the middle
+    # of a repainting region would be overdrawn on the next refresh anyway. Rather than migrate ~50
+    # `print()` calls across setup/enroll/mesh/teardown and rely on nobody ever adding a 51st, the
+    # box takes stdout away for the duration: rich resolves `sys.stdout` on every write, so this
+    # catches `ui.data`, `ui.table`, `ui.kv` and bare `print` alike. Released verbatim afterwards.
+    held = io.StringIO()
+    capture = contextlib.redirect_stdout(held)
+    capture.__enter__()
+    if frame.live is not None:
+        frame.live.start()
+    else:
+        _paint()            # draw the (empty) box onto the canvas
+    try:
+        yield
+    except BaseException:
+        # Stop the frame *before* releasing stdout, so the two unwind in the order they were set up.
+        # The error speaks for itself; the half-finished box does not. Captured output is released
+        # either way — a failed command's output is the whole reason to have kept it.
+        if frame.live is not None:
+            frame.live.stop()
+        capture.__exit__(*sys.exc_info())
+        _FRAME = None
+        _paint()
+        _release(None, held.getvalue())
+        raise
+    if frame.live is not None:
+        frame.live.stop()
+    capture.__exit__(None, None, None)
+    _FRAME = None
+    line = summary() if callable(summary) else summary
+    ok(f"{title}{'  ' + str(line) if line else ''}")   # a loose ✓ on the canvas, or a plain line
+    _release(title, held.getvalue())
+
+
+def _release(title: str | None = None, held: str = "") -> None:
+    """Everything the box held back: captured stdout first, then the results panel.
+
+    Order matters. stdout is the pipeable stream and is replayed verbatim, so a redirected run gets
+    exactly the bytes it would have got without a box.
+    """
+    global _FACTS
+    if held:
+        sys.stdout.write(held)
+        sys.stdout.flush()
+    if _FACTS:
+        if _ALT:
+            # The alternate screen is discarded on exit; a result drawn on it would be destroyed
+            # along with the box. Hold it for the real terminal.
+            _DEFERRED.append((title, list(_FACTS)))
+        else:
+            _panel(title, _FACTS)
+    _FACTS = []
+
+
+def _panel(title: str | None, facts: list[tuple[str, str]]) -> None:
+    """The results block — what was worth keeping from a box that is now gone."""
+    width = max(len(k) for k, _ in facts)
+    body = Text()
+    for i, (key, value) in enumerate(facts):
+        body.append("\n" if i else "")
+        body.append(f"{key.ljust(width)}  ", style="muted")
+        body.append(value, style="head")
+    err.print(Panel(body, title=f"[head]{title}[/head]" if title else None, title_align="left",
+                    border_style="ok", padding=(0, 2), width=_width()))
+
+
+# --- errors -----------------------------------------------------------------
+
+def abort(message: str, code: int = 1, next_step: str | None = None):
+    """Report an *expected* failure and stop: the Head refused us, the Head is unreachable, the Dive
+    isn't yours. Returns the exception so callers can `raise ui.abort(...)` and keep control flow
+    obvious to a reader (and to a type checker).
+
+    `next_step`, when given, is printed as the dim guidance line under the error — the "how to fix it"
+    to the message's "what broke". Kept on `abort` so the two always render in the right order (the
+    ✗ line, then the hint), which a caller emitting `fail` + `hint` by hand can get wrong.
+
+    Printed here and exited via `typer.Exit`, rather than raised as a `ClickException` for the
+    framework to render:
+
+    * **Typer vendors its own click.** `typer._click.exceptions.ClickException` is a different class
+      from `click.exceptions.ClickException`, so a subclass of the latter sails straight through
+      Typer's handler and is never shown — an error that vanishes entirely.
+    * **`typer.BadParameter` is the wrong shape** — it is a *usage* error, so an unreachable Head
+      would print `Usage: cuttle status ...` and "Try --help", advice that could not possibly help.
+
+    Printing before raising also means the message survives `CliRunner`, which invokes commands
+    directly and never reaches `run_app`. The error layer is only worth trusting if the tests see
+    exactly what the user sees.
+    """
+    fail(message)
+    if next_step:
+        hint(next_step)
+    e = typer.Exit(code)
+    e.reported = True
+    return e
+
+
+def report(exc: BaseException) -> int:
+    """Turn an exception into something worth reading, and return the exit code.
+
+    Under `--debug` the traceback is printed instead: the person debugging the Head wants the stack,
+    and making them edit code to get it is how a "clean" CLI becomes an obstructive one.
+    """
+    if DEBUG:
+        import traceback
+        traceback.print_exception(exc)
+        return 1
+    # A messageless exception (a bare KeyError/IndexError from a malformed response) still names its
+    # type — a breadcrumb worth keeping — but framed in a sentence, not dumped as bare `KeyError`.
+    fail(str(exc) or f"something went wrong (unexpected {exc.__class__.__name__}, no details)")
+    hint("re-run with --debug for the full traceback")
+    return 1
+
+
+def run_app(app) -> None:
+    """The CLI's outermost frame: whatever escapes a command becomes a message, not a stack trace.
+
+    Typer's pretty-traceback rendering is off, and the parser runs `standalone_mode=False` so *usage*
+    errors come back here too — not cosmetic: standalone mode lets Click print its own error and
+    `sys.exit`, but that write lands inside `fullscreen`'s alternate screen and is torn down with it,
+    leaving a bare non-zero exit with no message. Catching the error and rendering it after
+    `fullscreen` restores the real screen fixes that. This also catches the rest — mostly `ApiError`
+    (an unreachable Head, a refused call) plus real bugs.
+    """
+    global STREAMING
+    STREAMING = _detect_streaming()
+    # Typer vendors its own click, so its exceptions are `typer._click.*`, not `click.*` — catching
+    # the stdlib classes would miss them entirely (see `abort`'s note). rich_utils.rich_format_error
+    # is the same renderer standalone mode would have used, so the panel is unchanged.
+    #
+    # `Abort` comes from the top-level export, not from `typer._click.exceptions`: typer moved that
+    # class between the two in 0.27.2 — a *patch* release — and every installed CLI started with an
+    # ImportError. `typer.Abort` has named the same class through all of it. `ClickException` has no
+    # such export, so it stays an internal import and is why the typer pin carries a ceiling.
+    from typer import Abort, rich_utils
+    from typer._click.exceptions import ClickException
+    try:
+        # Every command takes the terminal and gives it back — not just the bare-`cuttle` menu.
+        # `fullscreen` is a no-op off a terminal, so pipes, cron and `--json` are untouched.
+        with fullscreen():
+            # standalone_mode=False: usage errors raise (caught below), `--help`/`typer.Exit` come
+            # back as the return code instead of an internal sys.exit we can't frame.
+            code = typer.main.get_command(app).main(standalone_mode=False)
+        if isinstance(code, int) and code:
+            raise SystemExit(code)
+    except SystemExit:
+        raise
+    except ClickException as exc:
+        # A bad flag, unknown command, or missing argument. fullscreen has handed the real screen
+        # back, so this lands where it can be read.
+        rich_utils.rich_format_error(exc)
+        raise SystemExit(exc.exit_code)
+    except (KeyboardInterrupt, Abort):
+        err.print()
+        fail("interrupted")
+        raise SystemExit(130)
+    except BaseException as exc:  # noqa: BLE001 — the whole point is that nothing gets through raw
+        raise SystemExit(report(exc))

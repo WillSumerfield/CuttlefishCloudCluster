@@ -1,0 +1,57 @@
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+
+# --- Zsh compiled caches ---
+*.zwc
+
+# --- Go (cli/launcher) ---
+/cli/launcher/bin/
+*.exe
+*.test
+*.out
+
+# --- Python (cli/core, karma, telemetry daemons) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- uv ---
+# lockfile IS committed; caches are not
+.uv_cache/
+
+# --- Secrets / local state ---
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# --- Temp / scratch plans ---
+temp/
+
+# --- Built installer bundle (produced by `cuttle build-installer`) ---
+cuttle-installer.tar.gz
+
+# --- W&B run output ---
+wandb/
+
+# --- Leftover 1.x `cuttle outputs` downloads ---
+spawn-*-outputs/
+
+# --- Runtime / data ---
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sif
+*.log

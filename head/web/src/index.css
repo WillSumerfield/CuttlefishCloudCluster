@@ -1,0 +1,752 @@
+@import "tailwindcss";
+@import "./fonts.css";
+
+/*
+ * CCC — Cuttlefish Cloud Cluster
+ * Dark-only. No borders. Colour is signal.
+ *
+ * Ground palette:  abyss → body → shoal   (deep blue-green ink; never neutral grey)
+ * Pigment palette: umber → bronze → gold  (people & karma; the only saturation on the page)
+ */
+
+@theme inline {
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+
+  --color-abyss: var(--abyss);
+  --color-well: var(--well);
+  --color-body: var(--body);
+  --color-shoal: var(--shoal);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-mute: var(--ink-mute);
+
+  --color-umber: var(--umber);
+  --color-bronze: var(--bronze);
+  --color-gold: var(--gold);
+  --color-gold-hi: var(--gold-hi);
+
+  --color-irid-dim: var(--irid-dim);
+  --color-irid-low: var(--irid-low);
+  --color-irid-mid: var(--irid-mid);
+  --color-irid-high: var(--irid-high);
+
+  --color-alarm: var(--alarm);
+
+  --radius-surface: 14px;
+  --radius-control: 10px;
+
+  /* Muscular, never linear. */
+  --ease-swim: cubic-bezier(0.4, 0.14, 0.3, 1);
+}
+
+:root {
+  /* Deep water — every dark carries blue-green ink. Never a neutral grey. */
+  --abyss: oklch(0.14 0.03 205);
+  --deep: oklch(0.14 0.034 202); /* the bottom of a surface, sinking back toward the abyss */
+  --well: oklch(0.18 0.032 203); /* a recess: log panes, code, empty states */
+  --body: oklch(0.29 0.038 200);
+  --shoal: oklch(0.34 0.045 195);
+
+  --ink: oklch(0.94 0.01 90);
+  --ink-soft: oklch(0.78 0.015 90);
+  --ink-mute: oklch(0.55 0.02 95);
+
+  /* Pigment — karma. Warm yellow-brown. Never red. */
+  --umber: oklch(0.32 0.06 60);
+  --bronze: oklch(0.55 0.095 72);
+  --gold: oklch(0.8 0.145 82);
+  --gold-hi: oklch(0.9 0.16 88);
+
+  /* Iridescence — machines, never people. CHROMA IS THE AXIS: hue = "a machine", saturation = "how much" —
+   * lets one family carry both a barely-there chip and the Tide's loudest hour. --irid-dim is part of this
+   * ramp, not separate. */
+  --irid-dim: oklch(0.66 0.035 195); /* a machine is doing something. State, not Demand. */
+  --irid-low: oklch(0.68 0.1 180); /* teal   — Demand: quiet, Low Tide */
+  --irid-mid: oklch(0.78 0.12 210); /* cyan   — Demand: contended */
+  --irid-high: oklch(0.62 0.17 285); /* violet — Demand: fought over, High Tide */
+
+  /* Failed Dives, Retract, rogue-actor flag. NOTHING else may ever be red. */
+  --alarm: oklch(0.62 0.2 28);
+
+  /* Colour an input takes when ACTIVE (focused, or Select open). Not the card colour: focus must LIFT
+   * above the surface, not melt into it. Select control + menu share this colour so they read as one
+   * raised surface. */
+  --field-open: oklch(0.41 0.05 198);
+
+  /* THE feather: how far an edge ramps to transparent. One value for every control, because two widths
+   * don't read as "one edge softer than the other" — they read as two different WIDTHS, the eye putting
+   * the boundary where the ramp hits half. A Select whose fade grew when it opened looked like it resized.
+   *
+   * A surface may still override it deliberately (the log pane melts at 16, SpawnPage.tsx) — what must
+   * never happen again is two parts of ONE control disagreeing by accident.
+   *
+   * At :root rather than on `field` because a Select's menu is the control's SIBLING (Select.tsx), not
+   * its descendant — it cannot inherit a value declared on the field, and a `var()` that resolves to
+   * nothing takes every calc() in the mask down with it. */
+  --feather: 7px;
+}
+
+@layer base {
+  /* Ground colour on `html` only, never `body`: the abyss shader is a `fixed; z-index:-10` canvas, and
+   * negative-z-index descendants paint BEFORE in-flow backgrounds — an opaque `body` bg would cover it
+   * completely. `html` propagates to the viewport and paints behind everything instead. */
+  html {
+    background-color: var(--abyss);
+    /* Shoal canvas overhangs its box so its edge dissolves outside it; that overhang would open a
+     * horizontal scrollbar over empty pixels. `clip` (not `hidden`) discards it without creating a
+     * scroll container, so the fixed shader behind is unaffected. */
+    overflow-x: clip;
+  }
+  body {
+    background-color: transparent;
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.005em;
+  }
+  /* Anything clickable shows the pointer. Buttons don't get it from the browser by default; links do.
+     Disabled controls keep the default arrow (and btn utilities set not-allowed themselves). */
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* Surfaces have no edge — no border, no crisp silhouette. Plate is a separate `::before` layer behind
+ * the content so it can dissolve at the rim while text stays opaque (masking the section itself would
+ * eat the text too). `isolation: isolate` keeps the z-index:-1 plate in the card, not under the shader.
+ * No drop shadow: a plate with no edge can't cast one — depth is luminance alone. */
+@utility surface {
+  position: relative;
+  isolation: isolate;
+
+  /*
+   * Edge fade: two crossed ramps, intersected, so all edges and corners dissolve; ramp runs 2×(--fx) deep.
+   * Stops follow a smoothstep (0.156/0.5/0.844), not linear — linear meeting the flat interior creates a
+   * slope discontinuity that a bright overlay turns into a Mach-band crease, worst at corners. Not radial:
+   * a radial mask's ellipse overshoots on a wide card, so top/bottom never fade.
+   *
+   * Declared on the surface itself, not ::before, so the plate and any overlay filling the card share one
+   * mask and dissolve together (on ::before a sibling overlay can't see it and ends hard-edged). --fx/--fy
+   * sit beside --fade-mask so var()s resolve per-card in this scope, not baked in from :root.
+   *
+   * TUNING — override per-card, e.g. `[--fade-x:120px]`:
+   *   --fade-x  left/right depth, default 50px (visible ramp is 2× this).
+   *   --fade-y  top/bottom depth, default 50px. Short wide cards usually want this smaller than --fade-x.
+   *   Both are capped at 7% of the panel's size.
+   */
+  /* Capped at 7% of the panel (the % resolves inside the gradient, against its length): a fixed px ramp
+   * swallows a short panel whole, so its rows sit in the fade. 7% keeps most of any panel solid;
+   * panels over ~700px never hit the cap. */
+  --fx: min(var(--fade-x, 50px), 7%);
+  --fy: min(var(--fade-y, 50px), 7%);
+  --fade-mask:
+    linear-gradient(to right,
+      transparent 0,
+      rgba(0, 0, 0, 0.156) calc(var(--fx) * 0.5),
+      rgba(0, 0, 0, 0.5) var(--fx),
+      rgba(0, 0, 0, 0.844) calc(var(--fx) * 1.5),
+      black calc(var(--fx) * 2),
+      black calc(100% - var(--fx) * 2),
+      rgba(0, 0, 0, 0.844) calc(100% - var(--fx) * 1.5),
+      rgba(0, 0, 0, 0.5) calc(100% - var(--fx)),
+      rgba(0, 0, 0, 0.156) calc(100% - var(--fx) * 0.5),
+      transparent 100%),
+    linear-gradient(to bottom,
+      transparent 0,
+      rgba(0, 0, 0, 0.156) calc(var(--fy) * 0.5),
+      rgba(0, 0, 0, 0.5) var(--fy),
+      rgba(0, 0, 0, 0.844) calc(var(--fy) * 1.5),
+      black calc(var(--fy) * 2),
+      black calc(100% - var(--fy) * 2),
+      rgba(0, 0, 0, 0.844) calc(100% - var(--fy) * 1.5),
+      rgba(0, 0, 0, 0.5) calc(100% - var(--fy)),
+      rgba(0, 0, 0, 0.156) calc(100% - var(--fy) * 0.5),
+      transparent 100%);
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: var(--radius-surface);
+    /*
+     * Lit at the top edge, sinking toward --deep at the bottom. `--sink` sets how far: 100% reaches full
+     * --deep, 40% only partway — tall cards (the ledger) can sink further, short ones go murky too fast
+     * at the same setting.
+     *
+     * Read via `var(--sink, 100%)`, not declared directly: a bare `--sink: 100%` here would win over a
+     * card's own `[--sink:30%]` on the parent (direct declaration beats inheritance).
+     */
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--shoal) 35%, var(--body)) 0%,
+        var(--body) 25%,
+        color-mix(in oklab, var(--deep) var(--sink, 100%), var(--body)) 100%
+      );
+    /* Hair of translucency so the abyss reads through every surface (depth, not a flat plate); multiplies
+     * onto the edge-fade mask so the rim loses a touch more than the interior. `[--surface-alpha:…]` tunes
+     * per card; 1 = fully opaque. */
+    opacity: var(--surface-alpha, 0.8);
+    -webkit-mask-image: var(--fade-mask);
+    mask-image: var(--fade-mask);
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+  }
+}
+
+@utility no-spinner {
+  appearance: textfield;
+
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
+/* Opts a real element (not the ::before plate) into its surface's edge fade, for an overlay filling the
+ * card that must dissolve at the rim instead of ending hard-edged. Needs the inherited --fade-mask, so
+ * only works inside `.surface`. Used by the waiting-row bloom canvas. */
+@utility edge-fade {
+  -webkit-mask-image: var(--fade-mask);
+  mask-image: var(--fade-mask);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+/*
+ * A shard — the standard list-row card. `surface` is the raw plate primitive; a shard bakes in the row
+ * conventions (sink/fade/radius/padding) so every list page (queue, arms, history, users) gets one
+ * identical card from a class instead of re-picking values each time. Defaults match the queue row: short
+ * and wide, so fade-y is a PERCENTAGE (proportional, not a hard px sliver) while fade-x stays px. Override
+ * per-card with an inline style when a row genuinely differs.
+ *
+ * Content must be lifted above the padding with `relative z-10` (motion layers — cloud ::after, bloom
+ * canvas — fill the card behind it). CSS-only by choice: the z-lift stays a one-liner per page.
+ */
+@utility shard {
+  @apply surface;
+  --sink: 30%;
+  --fade-x: 18px;
+  --fade-y: 18px;
+  border-radius: var(--radius-surface);
+  padding: 1.4rem 2rem;
+}
+
+@utility label {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+/*
+ * `log` — DM Mono, the only place mono survives: a mono face on anything a PERSON reads looks like a
+ * terminal readout, which this app avoids. Log output is the exception — whitespace/column alignment
+ * carry real meaning there and a proportional face breaks them.
+ *
+ * `num` — Figtree with tabular figures, for everything else numeric (karma, escrow, ids, VRAM, exit
+ * codes). Columns align (tabular-nums) but shapes stay soft and humanist.
+ */
+@utility log {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0;
+  white-space: pre-wrap;
+  tab-size: 4;
+}
+
+@utility num {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Controls. No borders anywhere — a field is a RECESS (lower luminance, inverse of a surface), not an
+ * outlined box. Focus lifts it and lights a soft pigment ring; it never draws an outline. */
+@utility field {
+  width: 100%;
+  /* A field is a RECESS, not an outlined box. Tailwind's preflight already zeroes borders globally
+     (`border: 0 solid` on `*`), so this is a restatement of the rule where the rule matters — not the
+     thing holding an OS border off a native input. */
+  border: 0;
+  border-radius: var(--radius-control);
+  /* A solid pool with EDGES feathered to transparent by a mask (below), not a flat rounded rect — a hard
+   * luminance edge reads as a machine-drawn box. `--fill` is the pool colour, recoloured on hover/focus. */
+  --fill: color-mix(in oklab, var(--well) 78%, black);
+  background-color: var(--fill);
+  /*
+   * A feathered ROUNDED rectangle: fill has soft-melting edges AND round corners. Built as a 9-SLICE (4
+   * corner quadrants, 4 edge strips, 1 solid centre) that ABUT with zero overlap and union via
+   * mask-composite: add — overlapping pieces would double-sum feathers at the corners (source-over),
+   * pushing the opaque region out unevenly and making rounded ends read taller than straight edges.
+   *
+   * Only the FILL is masked; text sits in the solid centre (alpha 1) so glyphs stay crisp. Tune the
+   * corner radius with `--frad`; the edge feather is `--feather`, the root token, shared with the
+   * Select's open bar and menu so all three dissolve over the same distance.
+   */
+  --frad: 12px;
+  /* Tiles OVERLAP inside each other's opaque plateau rather than abutting: an exact abutment shows a
+     subpixel seam when the field's px size is odd (tiles land on a half-pixel, mask alpha dips <1).
+     Overlapping #000-over-#000 closes the gap with no alpha compounding — no seam, no corner bulge. */
+  --fo: 1.5px;
+  --fmid: calc(100% - var(--frad) * 2);
+  /* Centre grows by the overlap so it underlaps the edge strips' opaque plateau; only the centre overlaps.
+     If edges also grew lengthwise they'd reach into the corner tiles' feather, where source-over sums two
+     ramps (0.5+0.5→0.75) into a brighter sliver at each corner. */
+  --fmid-o: calc(var(--fmid) + var(--fo) * 2);
+  /* Corner quadrant = one quarter of a feathered disk whose centre sits at the quadrant's INNER corner. */
+  --fc-tl: radial-gradient(circle var(--frad) at bottom right, #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  --fc-tr: radial-gradient(circle var(--frad) at bottom left,  #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  --fc-bl: radial-gradient(circle var(--frad) at top right,    #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  --fc-br: radial-gradient(circle var(--frad) at top left,     #000 calc(var(--frad) - var(--feather)), transparent var(--frad));
+  /* Edge strips feather on the OUTER side only; the inner side abuts the opaque centre. */
+  --fe-t: linear-gradient(to bottom, transparent 0, #000 var(--feather), #000 100%);
+  --fe-b: linear-gradient(to top,    transparent 0, #000 var(--feather), #000 100%);
+  --fe-l: linear-gradient(to right,  transparent 0, #000 var(--feather), #000 100%);
+  --fe-r: linear-gradient(to left,   transparent 0, #000 var(--feather), #000 100%);
+  --fcenter: linear-gradient(#000, #000);
+  --field-mask:
+    var(--fc-tl) top left / var(--frad) var(--frad) no-repeat,
+    var(--fc-tr) top right / var(--frad) var(--frad) no-repeat,
+    var(--fc-bl) bottom left / var(--frad) var(--frad) no-repeat,
+    var(--fc-br) bottom right / var(--frad) var(--frad) no-repeat,
+    var(--fe-t) top center / var(--fmid) var(--frad) no-repeat,
+    var(--fe-b) bottom center / var(--fmid) var(--frad) no-repeat,
+    var(--fe-l) left center / var(--frad) var(--fmid) no-repeat,
+    var(--fe-r) right center / var(--frad) var(--fmid) no-repeat,
+    var(--fcenter) center / var(--fmid-o) var(--fmid-o) no-repeat;
+  -webkit-mask: var(--field-mask);
+  mask: var(--field-mask);
+  -webkit-mask-composite: source-over;
+  mask-composite: add;
+  /* Horizontal padding clears the feather and the corner radius: text/chevron start past the fade, not inside it. */
+  padding: 11px 28px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--ink);
+  outline: none;
+  transition: background-color 160ms var(--ease-swim), box-shadow 160ms var(--ease-swim);
+
+  &::placeholder { color: var(--ink-mute); }
+  /* Hover LIFTS toward the surface above (shoal), never toward the card body — otherwise it reads as
+     melting into the card instead of standing out. */
+  &:hover { --fill: color-mix(in oklab, var(--shoal) 65%, var(--body)); }
+  &:focus-visible {
+    --fill: var(--field-open);
+    /* The gold focus ring is a box-shadow, drawn outside the mask, so it stays crisp — the one deliberate
+       edge on a field, and only on keyboard focus. */
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--gold) 55%, transparent);
+  }
+  /* A Select button whose menu is open takes the menu's colour, so control + menu are one raised surface
+     (aria-expanded covers the mouse-open case, where :focus-visible doesn't fire). Its bottom corners go
+     square to butt flat against the menu's flat top — together they form one rounded outline. */
+  &[aria-expanded="true"] {
+    --fill: var(--field-open);
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    /* Bottom edge SOLID (only top fades) so control butts flat against the menu, forming one shape. Needs
+       its own full crossed-linear INTERSECT mask — a squared bottom can't reuse the base field's tiled
+       rounded-rect union. Different SHAPE, same WIDTH: the ramps run over --feather, exactly as the closed
+       field's do, so opening changes which edges dissolve and never how far. Padding is untouched for the
+       same reason — the value must not shift sideways when the menu appears. */
+    -webkit-mask:
+      linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%) center / 100% 100% no-repeat,
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 100%) center / 100% 100% no-repeat;
+    mask:
+      linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%) center / 100% 100% no-repeat,
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 100%) center / 100% 100% no-repeat;
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+  }
+}
+
+/* Open menu of the custom `Select` (never native <select>'s OS popup, unstyleable). Raised by LUMINANCE not
+ * a drop shadow; edges feather to transparent like a field, no border. Item padding insets text past the
+ * feather. */
+@utility menu {
+  position: absolute;
+  z-index: 30;
+  /* Butt directly against the control's (now-solid) bottom — solid meets solid, one flat seam. No overlap,
+     so the side fades don't double up into a pinch at the junction. */
+  top: 100%;
+  left: 0;
+  /* EXACTLY the control's width (not min-width, which lets a long arm name grow the menu wider so its
+     side fades sit further out than the control's). Long labels truncate per item instead. */
+  width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  /* No top padding: the menu butts the control at top:100%, so the first item is already one row below it
+     and shares the rhythm. Sides 8 + item 20 = 28, the same indent EVERY field uses — so an option sits in
+     the same column as the value above it, and as the text input above that. */
+  padding: 0 8px 8px;
+  /* Flat where it meets the control (top), rounded where it's free (bottom) — so bar + menu read as one
+     shape with a single rounded outline, not two stacked pills. */
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
+  /* One colour with the open control (--field-open), so the bar and its menu read as a single surface. */
+  background: var(--field-open);
+  /* Sides feather like a field; the TOP is solid (it butts the control) and only the BOTTOM fades. All of
+     them over --feather, the same distance the control above uses — a menu that dissolved further than its
+     control would read as a narrower panel hanging off a wider bar, not as a softer one. It also keeps the
+     bottom fade off the rows: this element is the scroll container (max-height above), and the mask is
+     anchored to the padding box, so whatever ramp is set here sits permanently over the last visible row. */
+  -webkit-mask-image:
+    linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%),
+    linear-gradient(to bottom, #000 0, #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%);
+  mask-image:
+    linear-gradient(to right, transparent 0, rgba(0,0,0,.156) calc(var(--feather)*.25), rgba(0,0,0,.5) calc(var(--feather)*.5), rgba(0,0,0,.844) calc(var(--feather)*.75), #000 var(--feather), #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%),
+    linear-gradient(to bottom, #000 0, #000 calc(100% - var(--feather)), rgba(0,0,0,.844) calc(100% - var(--feather)*.75), rgba(0,0,0,.5) calc(100% - var(--feather)*.5), rgba(0,0,0,.156) calc(100% - var(--feather)*.25), transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+@utility menu-item {
+  border-radius: 7px;
+  /* Vertical padding matches the control's (11px) so every row — control included — is the same height;
+     horizontal 20 + menu's 8 = 28, the base field's indent, so an option lines up under the control's
+     value AND under the text inputs stacked above it. */
+  padding: 11px 20px;
+  font-size: 14px;
+  color: var(--ink); /* white, like the value shown in the closed control */
+  cursor: pointer;
+  /* One line per row — a wrapped name would break the shared rhythm and the width lock. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Highlight follows keyboard (data-active) and mouse (hover) alike — one lit state, no colour spent. Its
+     top and bottom edges are a gradient, not hard bars: the fill swells in from the top and fades out at
+     the bottom, so the overlay has no crisp horizontal edge (the same no-hard-edges law as everything). */
+  &[data-active] {
+    background: linear-gradient(
+      to bottom,
+      transparent 0,
+      color-mix(in oklab, var(--shoal) 42%, transparent) 32%,
+      color-mix(in oklab, var(--shoal) 42%, transparent) 68%,
+      transparent 100%
+    );
+    color: var(--ink);
+  }
+}
+
+/* A row the cluster can't currently honour (a GPU count no Arm has). Dimmed and inert, never hidden —
+ * seeing the option greyed out says "this exists, but not here", which an absent row cannot. No
+ * strikethrough: the choice isn't wrong, it's unavailable. */
+@utility menu-item-off {
+  color: var(--ink-mute);
+  cursor: default;
+}
+
+/* History row: NOT a shard (no per-row plate/gaps) — the archive is one surface and rows sit straight on
+ * it, no per-row background (a per-row pool bands into stripes over the moving abyss). `--dim` is row
+ * opacity, falling off with depth so the list recedes. Hover (it's a link) lifts it onto a faint flat wash. */
+@utility history-row {
+  display: block;
+  border-radius: 10px;
+  opacity: var(--dim, 1);
+  transition: opacity 150ms var(--ease-swim), filter 150ms var(--ease-swim), background-color 150ms var(--ease-swim);
+
+  &:hover { opacity: 1; filter: brightness(1.14); background-color: color-mix(in oklab, var(--shoal) 14%, transparent); }
+}
+
+/* Queue row: a `shard` (its own plate) that is ALSO a link, so it borrows `history-row`'s hover and
+ * nothing else — the same 1.14 lift for the same meaning, so the live board and the archive teach one
+ * gesture. It lifts the row's motion canvas (CloudDrift/IridBloom) along with the plate, which brings
+ * the pattern forward under the pointer rather than altering it. */
+@utility queue-row {
+  transition: filter 150ms var(--ease-swim);
+
+  &:hover { filter: brightness(1.14); }
+}
+
+/* Roster row — Arms table's flush line, not a card (no own plate): lives inside the roster's single
+ * surface, lifting on hover via a faint shoal wash — no rule, no box. Passing cloud (on an allocated
+ * row) rides above this. */
+@utility arm-row {
+  position: relative;
+  border-radius: 10px;
+  transition: filter 150ms var(--ease-swim);
+
+  /*
+   * Hover highlight: flat shoal wash SOLID through the middle, feathering only at the edges — no hard
+   * rectangle. NOT a centre-bright radial (that dims the whole row toward its edges).
+   *
+   * Lives on ::before (behind z-10 content, so masking never touches text), with its OWN --fade-x/--fade-y
+   * (generous horizontal, light vertical) so long edges melt while the interior stays solid. Only alpha
+   * animates, so it fades rather than snaps.
+   */
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background: color-mix(in oklab, var(--shoal) 24%, transparent);
+    opacity: 0;
+    transition: opacity 150ms var(--ease-swim);
+    /* OWN feather, not the inherited --fade-mask: that resolves at the roster .surface's --fy (30px),
+     * deeper than half this row, swallowing the highlight into a top-to-bottom fade. Declared here so
+     * var()s resolve in this scope: generous horizontal, small vertical, crossed + intersected. */
+    --hx: 16px;
+    --hy: 10px;
+    -webkit-mask-image:
+      linear-gradient(to right, transparent 0, rgba(0,0,0,0.5) calc(var(--hx) * 0.5), black var(--hx), black calc(100% - var(--hx)), rgba(0,0,0,0.5) calc(100% - var(--hx) * 0.5), transparent 100%),
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.5) calc(var(--hy) * 0.5), black var(--hy), black calc(100% - var(--hy)), rgba(0,0,0,0.5) calc(100% - var(--hy) * 0.5), transparent 100%);
+    mask-image:
+      linear-gradient(to right, transparent 0, rgba(0,0,0,0.5) calc(var(--hx) * 0.5), black var(--hx), black calc(100% - var(--hx)), rgba(0,0,0,0.5) calc(100% - var(--hx) * 0.5), transparent 100%),
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.5) calc(var(--hy) * 0.5), black var(--hy), black calc(100% - var(--hy)), rgba(0,0,0,0.5) calc(100% - var(--hy) * 0.5), transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+    pointer-events: none;
+  }
+
+  &:hover::before { opacity: 1; }
+  &:hover { filter: brightness(1.04); }
+
+  /* Passing cloud on an allocated row: `.cloud-layer` would otherwise inherit the roster surface's
+   * --fade-mask (fade-y 30px), masking bands down to a thin sliver that reads as cut off. Gets its own
+   * feather here instead: a light rim so bands fill the row and only melt at the very edges. */
+  & .cloud-layer {
+    --cx: 50px;
+    --cy: 6px;
+    -webkit-mask-image:
+      linear-gradient(to right, transparent 0, black var(--cx), black calc(100% - var(--cx)), transparent 100%),
+      linear-gradient(to bottom, transparent 0, black var(--cy), black calc(100% - var(--cy)), transparent 100%);
+    mask-image:
+      linear-gradient(to right, transparent 0, black var(--cx), black calc(100% - var(--cx)), transparent 100%),
+      linear-gradient(to bottom, transparent 0, black var(--cy), black calc(100% - var(--cy)), transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+  }
+}
+
+/* Rail's ground is an ALPHA GRADIENT, not a flat panel: a flat fill would end on a crisp edge (a vertical
+ * band on desktop, a hard line on mobile). The gradient holds at the rail's outer edge and dissolves
+ * toward the content, so the rail blends into the abyss the way every surface does — light falling off,
+ * never a rule. */
+@utility rail-ground {
+  /* Mobile bottom bar: ground swells from the bottom edge and fades up into the content it floats over. */
+  background: linear-gradient(
+    to top,
+    color-mix(in oklab, var(--abyss) 82%, transparent) 0%,
+    color-mix(in oklab, var(--abyss) 64%, transparent) 55%,
+    transparent 100%
+  );
+
+  /* Desktop left rail: holds at the left edge and dissolves rightward into the page. */
+  @media (min-width: 768px) {
+    background: linear-gradient(
+      to right,
+      color-mix(in oklab, var(--abyss) 66%, transparent) 0%,
+      color-mix(in oklab, var(--abyss) 42%, transparent) 48%,
+      transparent 100%
+    );
+  }
+}
+
+/*
+ * Rail destination: same feathered-wash hover as an arm row (solid middle, feathered edges via own
+ * --hx/--hy mask), fading in on hover — no pill, no underline, no box.
+ *
+ * Wash is neutral shoal off the current page; on it (`data-active`) it switches to GOLD, so hovering
+ * where you already are deepens the pigment instead of layering a second colour. Rides above the active
+ * gold pool (::before paints before the gold child span, same negative-z group).
+ */
+@utility rail-link {
+  position: relative;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -10;
+    border-radius: inherit;
+    background: color-mix(in oklab, var(--shoal) 22%, transparent);
+    opacity: 0;
+    transition: opacity 150ms var(--ease-swim);
+    /* A generous horizontal feather, a small vertical one — the long edges melt, the interior stays solid. */
+    --hx: 26px;
+    --hy: 6px;
+    -webkit-mask-image:
+      linear-gradient(to right, transparent 0, rgba(0,0,0,0.5) calc(var(--hx) * 0.5), black var(--hx), black calc(100% - var(--hx)), rgba(0,0,0,0.5) calc(100% - var(--hx) * 0.5), transparent 100%),
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.5) calc(var(--hy) * 0.5), black var(--hy), black calc(100% - var(--hy)), rgba(0,0,0,0.5) calc(100% - var(--hy) * 0.5), transparent 100%);
+    mask-image:
+      linear-gradient(to right, transparent 0, rgba(0,0,0,0.5) calc(var(--hx) * 0.5), black var(--hx), black calc(100% - var(--hx)), rgba(0,0,0,0.5) calc(100% - var(--hx) * 0.5), transparent 100%),
+      linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.5) calc(var(--hy) * 0.5), black var(--hy), black calc(100% - var(--hy)), rgba(0,0,0,0.5) calc(100% - var(--hy) * 0.5), transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+    pointer-events: none;
+  }
+
+  /* On the page you're already on, the hover wash is gold — enhancing the active pigment, not a 2nd colour. */
+  &.is-active::before { background: color-mix(in oklab, var(--gold) 14%, transparent); }
+
+  &:hover::before { opacity: 1; }
+}
+
+/* The one loud control per view (End dive). Warm because it acts on the cluster, but not pigment's
+ * meaning (that's karma) — it's the "live, pressable thing" gold, same as the rail's current-page light. */
+@utility btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--radius-control);
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: oklch(0.2 0.04 70);
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold));
+  cursor: pointer;
+  transition: filter 160ms var(--ease-swim), box-shadow 160ms var(--ease-swim), opacity 160ms;
+
+  &:hover { filter: brightness(1.06); box-shadow: 0 0 24px color-mix(in oklab, var(--gold) 35%, transparent); }
+  &:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--abyss), 0 0 0 4px var(--gold-hi); }
+  &:disabled { opacity: 0.4; cursor: not-allowed; filter: none; box-shadow: none; }
+}
+
+/* The quiet control: cancel, keep, secondary verbs. A recess you can press, no colour spent. */
+@utility btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius-control);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: color-mix(in oklab, var(--shoal) 22%, transparent);
+  cursor: pointer;
+  transition: background 160ms var(--ease-swim), color 160ms var(--ease-swim);
+
+  &:hover { background: color-mix(in oklab, var(--shoal) 40%, transparent); color: var(--ink); }
+  &:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in oklab, var(--ink) 30%, transparent); }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+}
+
+/* Row of ghost controls belonging to ONE thing (e.g. actions on a stored secret). Same recess as btn-ghost
+ * so they read as pressable, but light GOLD on hover — this app's "live, pressable thing" colour, so a
+ * grey action row wouldn't match. */
+@utility btn-ghost-gold {
+  &:hover { color: var(--gold); text-shadow: 0 0 10px color-mix(in oklab, var(--gold) 55%, transparent); }
+}
+
+/* The destructive verb in such a row. Alarm on hover only — resting state stays quiet, so "Remove" does
+ * not shout at you every time you glance at your own account. Replaces an inline style. */
+@utility btn-ghost-alarm {
+  &:hover { color: var(--alarm); text-shadow: 0 0 10px color-mix(in oklab, var(--alarm) 45%, transparent); }
+}
+
+/*
+ * THE PASSING CLOUD — dark bands travelling across the skin, signalling a WORKING machine (real cuttlefish
+ * behaviour). These two utilities are the STATIC half; emission timer + left→right travel live in
+ * `queue/CloudDrift.tsx`, which appends `.cloud-band` elements to `.cloud-layer` and animates each via WAAPI.
+ *
+ * DISCRETE bands: each is one element, emitted on a random timer, drifts the full width once, removed on
+ * exit. Deliberately unlike a skeleton-loader shimmer: DARK not bright, a few crossing bands not one
+ * diagonal sweep. If it ever reads as "loading", it has failed.
+ *
+ * `.cloud-layer` — the per-card frame the bands live in. Reuses the surface's `--fade-mask` so bands
+ * dissolve at the rim like the plate does, and clips (overflow) so a band never spills past the card.
+ */
+@utility cloud-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  overflow: hidden; /* contain the travelling bands to the card box… */
+  /* …and dissolve them at the rim with the plate — the same mask the surface fades its plate with. */
+  -webkit-mask-image: var(--fade-mask);
+  mask-image: var(--fade-mask);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  pointer-events: none;
+  /* How dark a band is. --cloud-darkness is a percentage set per-card from CloudDrift's `darkness` dial: how
+   * far the ink pulls the plate toward the abyss. --cloud-ink holds it semi-transparent so a band reads as a
+   * passing shadow over the plate, not a hole punched in it. */
+  --cloud-darkness: 82%;
+  --cloud-ink: color-mix(in oklab, var(--abyss) var(--cloud-darkness), transparent);
+}
+
+/*
+ * `.cloud-band` — one dark streak: overshot top/bottom (tilt never exposes a corner), soft gradient core so
+ * left/right edges melt, vertical mask so ends melt too, blur for a cloud-soft silhouette. Per-band seed
+ * (--edge-l/--edge-r, set in JS) varies edges so bands aren't identical. `transform` is owned by the WAAPI
+ * travel animation (tilt baked in).
+ */
+@utility cloud-band {
+  position: absolute;
+  left: 0;
+  top: -12%;
+  height: 124%;
+  width: var(--w, 16%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--cloud-ink) var(--edge-l, 34%),
+    var(--cloud-ink) var(--edge-r, 66%),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 14%, black 86%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0%, black 14%, black 86%, transparent 100%);
+  filter: blur(7px);
+  will-change: transform;
+}
+
+/*
+ * THE CHROMATIC BLOOM (waiting, no known end) is NOT here — CSS gradients can only fake the organic current
+ * as sliding shapes, so it lives in `queue/IridBloom.tsx` as a screen-blended <canvas>. See that file. Cloud
+ * and bloom are different phenomena needing different tools: discrete countable bands vs. a continuous field.
+ */
+
+/*
+ * The Standings names surface after the skin does. `both` fill-mode holds them fully invisible
+ * through the delay (backwards fill) and holds them lit once done — so the field reads as colour
+ * alone for a beat, then the names rise onto it.
+ */
+@keyframes name-rise {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* A Tip's panel fades in where it lands. No travel: it is the page answering a question, not an object
+   arriving from somewhere. */
+@keyframes tip-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+/*
+ * Reduced motion: meaning is never carried by motion alone, so nothing is lost by stopping — every moving
+ * state also says what it is in words. Canvas-drawn motion (ground shader, chromatophore field) can't be
+ * reached from CSS; those read the same media query in JS and freeze on a single frame. This block is the
+ * declarative half.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

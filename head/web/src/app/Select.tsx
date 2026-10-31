@@ -1,0 +1,142 @@
+import { useEffect, useRef, useState } from "react";
+
+/**
+ * A dropdown that isn't a native <select>. A native select's OPEN menu is an OS widget — it can't be
+ * rounded, recoloured, or softened, so it shows up as a square system panel that breaks the whole
+ * "no borders, form from light" language. This renders the closed control as a `field` (the same
+ * feathered pool as a text input) and the open menu as our own soft, rounded panel.
+ *
+ * Keyboard: Enter/Space/↓ open; ↑/↓ move the highlight; Enter picks; Escape closes; click-outside closes.
+ */
+
+/** `disabled` renders the row muted and makes it unpickable by click or keyboard — for a choice that
+ *  is real but the cluster cannot currently honour (a GPU count no Arm has). Shown rather than hidden:
+ *  a list that silently shortens tells a User nothing about why. */
+export type Option = { value: string; label: string; disabled?: boolean };
+
+export function Select({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: Option[];
+  ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0); // highlighted index while open
+  const rootRef = useRef<HTMLDivElement>(null);
+  const current = options.find((o) => o.value === value) ?? options[0];
+
+  // Open with the current selection highlighted, so ↑/↓ start from where the user is.
+  const openMenu = () => {
+    setActive(Math.max(0, options.findIndex((o) => o.value === value)));
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const pick = (o: Option) => {
+    if (o.disabled) return;
+    onChange(o.value);
+    setOpen(false);
+  };
+
+  // Next pickable index in `dir`, skipping disabled rows. Stays put when there is none, so the
+  // highlight never lands somewhere Enter would do nothing.
+  const step = (from: number, dir: 1 | -1) => {
+    for (let i = from + dir; i >= 0 && i < options.length; i += dir) {
+      if (!options[i].disabled) return i;
+    }
+    return from;
+  };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (!open) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+        e.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+    if (e.key === "Escape") setOpen(false);
+    else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => step(i, 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => step(i, -1));
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      pick(options[active]);
+    }
+  };
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        className="field flex items-center justify-between gap-2 text-left"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        onKeyDown={onKey}
+      >
+        {/* No real placeholder here (this isn't a native input) — an empty value stands in for one, so
+            it gets the same muted color a real placeholder would. */}
+        <span className={`truncate ${value ? "text-ink" : "text-ink-mute"}`}>{current?.label}</span>
+        {/* Same chevron as the field's, rotating up when open. */}
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="var(--ink-mute)"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 160ms var(--ease-swim)", flexShrink: 0 }}
+        >
+          <path d="M2.5 4.5L6 8l3.5-3.5" />
+        </svg>
+      </button>
+
+      {open && (
+        <ul role="listbox" aria-label={ariaLabel} className="menu">
+          {options.map((o, i) => (
+            <li
+              key={o.value}
+              role="option"
+              aria-selected={o.value === value}
+              aria-disabled={o.disabled || undefined}
+              className={`menu-item${o.disabled ? " menu-item-off" : ""}`}
+              data-active={(i === active && !o.disabled) || undefined}
+              onMouseEnter={() => !o.disabled && setActive(i)}
+              // A field label may be a real <label> wrapping this control;
+              // this <li> is the label's descendant, not the toggle button's. Left alone, a click
+              // here bubbles to the <label>, which forwards a SECOND click onto the toggle button,
+              // reopening the menu pick() just closed. stopPropagation keeps it from reaching the <label>.
+              onClick={(e) => {
+                e.stopPropagation();
+                pick(o);
+              }}
+            >
+              {o.label}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

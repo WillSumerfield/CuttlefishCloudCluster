@@ -1,0 +1,32 @@
+# Repo-root test harness. NOT a package — CCC ships two independent Python distributions
+# (`cuttle`, the CLI; `ccc-head-api`, the two head-side FastAPI apps), each with its own pyproject and
+# its own venv, and that stays true. This exists only so one `uv run pytest` can import both at once:
+# the interesting behaviour of Phase 4 slice 0 lives on the SEAM between them (the CLI renders the
+# node's Feature; the Head API OR-expands a --vram request against it), and a test that can only see
+# one side of that seam cannot check it.
+[project]
+name = "ccc"
+version = "0.0.0"
+description = "Cuttlefish Cloud Cluster — repo-root test harness"
+requires-python = ">=3.12"
+dependencies = [
+    "cuttle",
+    "ccc-head-api",
+]
+
+[tool.uv]
+package = false  # a virtual root: nothing to build, nothing to install
+
+[tool.uv.sources]
+cuttle = { path = "cli/core", editable = true }
+ccc-head-api = { path = "head/api", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx2>=2",  # fastapi.testclient prefers httpx2; plain httpx still arrives via cuttle's runtime dep
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: drives a real pty; seconds rather than milliseconds"]
