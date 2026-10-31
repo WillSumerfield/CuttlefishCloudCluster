@@ -1,0 +1,10 @@
+Cuttlefish Cloud Cluster (CCC)
+Copyright 2026 Will Sumerfield
+
+Original CCC code and documentation are licensed under the Apache License,
+Version 2.0. See LICENSE.
+
+Bundled third-party components retain their own copyright notices and licenses.
+See the accompanying license files under cli/core/src/cuttle/zsh/oh-my-zsh/
+and wiki/plugins/graph/. In particular, the bundled gitstatus component is
+licensed under GPLv3; the Apache license does not replace its license.

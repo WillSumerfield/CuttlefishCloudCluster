@@ -98,3 +98,10 @@ cuttle logs <id> -f
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) — repo layout, Conventional Commits (scope = context),
 branch and rebase onto `main` directly (no PRs).
+
+## License
+
+Original CCC code and documentation are licensed under the [Apache License 2.0](LICENSE).
+Copyright 2026 Will Sumerfield.
+
+Bundled third-party components retain their existing licenses and notices; see [NOTICE](NOTICE).
