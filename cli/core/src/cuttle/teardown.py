@@ -80,6 +80,8 @@ def _leave_ccc_mesh() -> None:
     # rule inside the personal daemon's chain, on a box that may keep using that daemon long after CCC
     # is gone.
     mesh.remove_ts_exemption()
+    # The Dive/Tidepool egress fence (FORWARD DROPs + its timer) setup added on every node.
+    mesh.remove_dive_egress()
     run(["tailscale", f"--socket={config.CCC_TS_SOCKET}", "down"], sudo=True, check=False)
     run(["systemctl", "disable", "--now", config.CCC_TS_SERVICE], sudo=True, check=False)
     run(["rm", "-f", str(config.CCC_TS_UNIT)], sudo=True, check=False)

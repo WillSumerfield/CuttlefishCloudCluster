@@ -796,6 +796,26 @@ TS_INPUT_CHAIN = "ts-input"  # tailscaled's own chain name, on both its netfilte
 MESH_FW_INTERVAL_S = 60
 MESH_FW_BOOT_S = 5  # first tick after boot; tailscaled builds the chain asynchronously, so the
                     # interval — not this — is what actually catches it. See the timer unit.
+
+# --- fencing container egress off the mesh (white-hat F1 remediation) ---
+# A Dive/Tidepool NATs out as the box's mesh IP and so can dial enroll/slurm/registry on the mesh — or
+# the Head's push registry on loopback. DROP that at FORWARD on every node. Raw iptables (netavark owns
+# FORWARD, so ufw route rules fight it; iptables matches `mesh.allow_dnat_forward`'s own FORWARD rule).
+# A timer re-asserts after netavark rebuilds FORWARD. Full story in mesh.ensure_dive_egress.
+DIVE_EGRESS_SCRIPT = Path("/opt/ccc/bin/ccc-dive-egress.py")
+DIVE_EGRESS_SERVICE = "ccc-dive-egress"
+DIVE_EGRESS_SERVICE_UNIT = Path("/etc/systemd/system/ccc-dive-egress.service")
+DIVE_EGRESS_TIMER_UNIT = Path("/etc/systemd/system/ccc-dive-egress.timer")
+# Sources to fence: stock podman's base `podman` net (10.88/16) AND its created-net pool
+# (TIDEPOOL_BRIDGE_SUBNETS, 10.89/16 — every Tidepool's isolate net and the Dive `private` net draw
+# from it). Both /16 so the fence holds whatever /24 podman handed a given container.
+DIVE_EGRESS_SRC_SUBNETS = ("10.88.0.0/16", TIDEPOOL_BRIDGE_SUBNETS)
+# Destinations a container has no business reaching: the mesh, and the host's own loopback (the Head's
+# push registry binds 127.0.0.1). v4 only — matches the mesh FW; the v6 ULA carries no services.
+DIVE_EGRESS_DST_SUBNETS = (MESH_V4_PREFIX, "127.0.0.0/8")
+DIVE_EGRESS_INTERVAL_S = 60  # re-assert cadence after a netavark FORWARD rebuild (same math as MESH_FW)
+DIVE_EGRESS_BOOT_S = 5
+
 HEADSCALE_DB = HEADSCALE_LIB / "db.sqlite"  # node keys, preauth keys — never touched directly except
                                             # by cuttle backup (see backup.py); everywhere else goes
                                             # through the `headscale` binary.

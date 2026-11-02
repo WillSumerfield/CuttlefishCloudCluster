@@ -759,6 +759,128 @@ def remove_ts_exemption() -> None:
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 
 
+# --- fencing container egress off the mesh ---------------------------------
+# F1 (white-hat): a Dive/Tidepool reaches the mesh by NATing out as the box's own mesh IP — podman
+# masquerades container traffic to the default route, which on a mesh node forwards it straight at
+# enroll/slurm/registry (and at the Head's push registry on 127.0.0.1). The job runs as its Guise with
+# an ambient token scoped to that Guise, but the mesh services never meant to take a connection from a
+# container at all. Fence it at the FORWARD layer, where container egress lives (container->mesh is
+# forwarded, not INPUT, so ufw's INPUT rules never see it).
+#
+# iptables, not nft, and not ufw: netavark owns FORWARD and rebuilds it wholesale, so a ufw route rule
+# just loses the fight; `mesh.allow_dnat_forward` already reaches into FORWARD with plain iptables, and
+# this sits beside it. Insert at the TOP of FORWARD, above netavark's own accepts.
+#
+# The ESTABLISHED,RELATED ACCEPT is load-bearing and must stay ABOVE the DROPs. A published Dive sshd
+# takes its connection FROM the mesh (Head relay -> Arm mesh IP -> DNAT -> container:22); netavark
+# keeps the client IP, so the container's REPLIES are FORWARD src=container dst=mesh — exactly what the
+# DROPs match. The accept lets those replies (and the replies of a container's own outbound internet)
+# through, while a container-INITIATED dial to the mesh is still dropped: it is state NEW, so it never
+# matches the accept. Only a mesh-initiated flow ever reaches ESTABLISHED, because the first
+# container->mesh packet is always dropped.
+#
+# Coexists with `allow_dnat_forward` (which accepts the inbound NEW+DNAT packet, src = a mesh host, not
+# a container — disjoint from these DROPs). A timer re-asserts after netavark rebuilds FORWARD, same
+# rationale as the ts-exemption timer.
+_DIVE_EGRESS_SCRIPT = r'''"""Fence CCC container egress: a Dive/Tidepool must not reach the mesh or the host's loopback services.
+Installed by cuttle at this path and run by a timer; re-inserts the FORWARD rules netavark drops when
+it rebuilds the chain. Safe to run by hand (root) — prints only when it changes something. See
+cuttle/mesh.py for why this exists.
+Usage: sudo ccc-dive-egress.py <src1,src2,...> <dst1,dst2,...>"""
+import os, subprocess, sys
+
+
+def _run(cmd):
+    """None means iptables isn't installed — a different answer from "it ran and said no"."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return None
+
+
+def main(src_arg, dst_arg):
+    # Root-gated like the mesh FW script: unprivileged `iptables -C` exits non-zero exactly as it does
+    # for an absent rule, so a hand-run would report "nothing to do" on a box that is wide open.
+    if os.geteuid() != 0:
+        print("must run as root to set the firewall — try `sudo`", file=sys.stderr)
+        return 2
+    srcs = [s for s in src_arg.split(",") if s]
+    dsts = [d for d in dst_arg.split(",") if d]
+    # Desired FORWARD order, top-first: the established-accept, then every DROP. Insert bottom-first
+    # with `-I FORWARD 1` (each prepends) so the list ends up in this order. Only ever all-present
+    # (no-op) or all-absent (full re-insert in order) in practice — netavark rebuilds FORWARD wholesale.
+    rules = [["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]]
+    for s in srcs:
+        for d in dsts:
+            rules.append(["-s", s, "-d", d, "-j", "DROP"])
+    for rule in reversed(rules):
+        chk = _run(["iptables", "-C", "FORWARD", *rule])
+        if chk is None:
+            print("iptables not installed — cannot fence container egress", file=sys.stderr)
+            return 1
+        if chk.returncode != 0:
+            _run(["iptables", "-I", "FORWARD", "1", *rule])
+            print(f"inserted FORWARD {' '.join(rule)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(*sys.argv[1:3]))
+'''
+
+_DIVE_EGRESS_SERVICE_UNIT = f"""\
+[Unit]
+Description=CCC Dive/Tidepool egress fence (keep containers off the mesh and host loopback)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {config.DIVE_EGRESS_SCRIPT} {",".join(config.DIVE_EGRESS_SRC_SUBNETS)} {",".join(config.DIVE_EGRESS_DST_SUBNETS)}
+"""
+
+# Timer, not ordering after netavark: the FORWARD rules die on every netavark rebuild (a container
+# start/stop, `podman network reload`, a reboot), and systemd cannot order against those. Same shape
+# as the ts-exemption timer; a plain re-insert is harmless since the script diffs before touching.
+_DIVE_EGRESS_TIMER_UNIT = f"""\
+[Unit]
+Description=CCC Dive/Tidepool egress fence timer
+
+[Timer]
+OnBootSec={config.DIVE_EGRESS_BOOT_S}s
+OnUnitActiveSec={config.DIVE_EGRESS_INTERVAL_S}s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def ensure_dive_egress(write_unit) -> None:
+    """Install the egress fence and the timer that keeps it there. Every provisioned node (Head and
+    Arm both run Dives). Idempotent; `start` on the oneshot blocks so the rules are in place on return.
+    """
+    write_unit(config.DIVE_EGRESS_SCRIPT, _DIVE_EGRESS_SCRIPT, "755")
+    write_unit(config.DIVE_EGRESS_SERVICE_UNIT, _DIVE_EGRESS_SERVICE_UNIT, "644")
+    write_unit(config.DIVE_EGRESS_TIMER_UNIT, _DIVE_EGRESS_TIMER_UNIT, "644")
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "enable", "--now", f"{config.DIVE_EGRESS_SERVICE}.timer"], sudo=True)
+    run(["systemctl", "start", config.DIVE_EGRESS_SERVICE], sudo=True, check=False)
+
+
+def remove_dive_egress() -> None:
+    """Reverse of ensure_dive_egress. Kill the timer first, then the rules it would otherwise re-add.
+    Tolerant throughout — every step is a no-op on a box where the rule or chain was already gone."""
+    run(["systemctl", "disable", "--now", f"{config.DIVE_EGRESS_SERVICE}.timer"],
+        sudo=True, check=False)
+    run(["iptables", "-D", "FORWARD", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+         "-j", "ACCEPT"], sudo=True, check=False)
+    for s in config.DIVE_EGRESS_SRC_SUBNETS:
+        for d in config.DIVE_EGRESS_DST_SUBNETS:
+            run(["iptables", "-D", "FORWARD", "-s", s, "-d", d, "-j", "DROP"], sudo=True, check=False)
+    run(["rm", "-f", str(config.DIVE_EGRESS_SCRIPT), str(config.DIVE_EGRESS_SERVICE_UNIT),
+         str(config.DIVE_EGRESS_TIMER_UNIT)], sudo=True, check=False)
+    run(["systemctl", "daemon-reload"], sudo=True, check=False)
+
+
 # --- node removal (Head only) ----------------------------------------------
 
 def list_nodes() -> list[dict]:
