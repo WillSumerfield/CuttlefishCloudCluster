@@ -336,6 +336,29 @@ def keys_root(monkeypatch, tmp_path):
     return root
 
 
+class TestKeysCliRender:
+    """`cuttle tidepool keys` must not answer an empty key list with a bare table header — that reads
+    like a broken command, not 'you have none'. It says so, and points at how to add one."""
+
+    def test_no_keys_says_so_rather_than_an_empty_table(self, monkeypatch, capsys):
+        from cuttle import auth
+        monkeypatch.setattr(auth, "_api", lambda *a, **k: [])
+        cli_tp.keys()
+        cap = capsys.readouterr()
+        said = cap.out + cap.err      # `ui.say` is stderr, `ui.table` is stdout
+        assert "no SSH keys yet" in said
+        assert "keys add" in said          # the next step, not a dead end
+
+    def test_keys_present_render_as_a_table(self, monkeypatch, capsys):
+        from cuttle import auth
+        monkeypatch.setattr(auth, "_api",
+                            lambda *a, **k: [{"id": 1, "name": "laptop", "pubkey": "ssh-ed25519 AAAA"}])
+        cli_tp.keys()
+        cap = capsys.readouterr()
+        said = cap.out + cap.err
+        assert "laptop" in said and "no SSH keys yet" not in said
+
+
 class TestHeadApi:
     def test_status_is_the_callers_own(self, head, keys_root):
         r = head.get("/tidepool", headers=_login(head)).json()

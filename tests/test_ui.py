@@ -75,6 +75,17 @@ class TestNoTracebacks:
         ui.report(KeyError())
         assert "KeyError" in capsys.readouterr().err
 
+    def test_an_apierror_that_escapes_is_rendered_without_the_route_path(self, capsys):
+        """A command translates its own ApiError (auth._api aborts cleanly); one that slips through to
+        the outer frame must still read as a message, not a route dump. `report` uses `user_message()`,
+        so a 5xx is framed and the internal `/route` never shows — `str(exc)` would leak both."""
+        from cuttle import api
+        ui.report(api.ApiError("/dives/58", "Internal Server Error", status=500))
+        err = capsys.readouterr().err
+        assert "/dives/58" not in err              # no internal route path
+        assert "Internal Server Error" not in err  # no bare 5xx phrase
+        assert "internal error" in err
+
 
 class TestJsonOutput:
     def test_json_is_parseable_and_alone(self, capsys):

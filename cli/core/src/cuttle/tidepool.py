@@ -250,8 +250,15 @@ def status(as_json: bool = False) -> None:
 
 def keys(as_json: bool = False) -> None:
     rows = auth._api("GET", "/ssh-keys")
-    ui.emit(rows, as_json, lambda: ui.table(
-        ["id", "name", "key"], [[k["id"], k["name"] or "", k["pubkey"][:48] + "…"] for k in rows]))
+
+    def render():
+        if not rows:
+            ui.say("no SSH keys yet — add one with `cuttle tidepool keys add <path>`")
+            return
+        ui.table(["id", "name", "key"],
+                 [[k["id"], k["name"] or "", k["pubkey"][:48] + "…"] for k in rows])
+
+    ui.emit(rows, as_json, render)
 
 
 def key_add(path: Path, name: str | None) -> None:

@@ -1599,6 +1599,14 @@ def report(exc: BaseException) -> int:
         import traceback
         traceback.print_exception(exc)
         return 1
+    # An ApiError that reaches here escaped a command's own handling (auth._api aborts most of them
+    # cleanly). `str(exc)` would lead with the internal API route — `/dives/58: ...`, noise to a user;
+    # `user_message()` is the same line the command layer prints, minus the path and with 5xx/501
+    # framed. Render that, so a leak still reads as an error message rather than a route dump.
+    from . import api
+    if isinstance(exc, api.ApiError):
+        fail(exc.user_message())
+        return 1
     # A messageless exception (a bare KeyError/IndexError from a malformed response) still names its
     # type — a breadcrumb worth keeping — but framed in a sentence, not dumped as bare `KeyError`.
     fail(str(exc) or f"something went wrong (unexpected {exc.__class__.__name__}, no details)")
