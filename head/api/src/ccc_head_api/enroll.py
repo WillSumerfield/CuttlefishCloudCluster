@@ -258,6 +258,13 @@ def cuttle_wheel() -> FileResponse:
     return FileResponse(CUTTLE_DIST / name, filename=name)
 
 
+@app.get("/cuttle/wheel.sig")
+def cuttle_wheel_sig() -> FileResponse:
+    """The wheel's ed25519 signature (F3), verified in the Arm's update job before install."""
+    name = _cuttle_build()["wheel"] + ".sig"
+    return FileResponse(CUTTLE_DIST / name, filename=name)
+
+
 @app.post("/arms/{name}/update-failed", status_code=204)
 def update_failed(name: str, req: UpdateFailure, request: Request) -> None:
     """An Arm's update job reporting why it failed, for the Arms page and the Admin's alert. Same

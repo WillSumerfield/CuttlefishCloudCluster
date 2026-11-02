@@ -1453,6 +1453,10 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
     # gate, since a Dive can already forge the source IP by NATing as this Arm.
     if t.get("enroll_secret"):
         _write_root_file(config.ENROLL_KEY, t["enroll_secret"] + "\n", "600")
+    # Pin the Head's rollout-signing pubkey (F3): the update job verifies every pushed wheel against it.
+    # Token path only; a re-setup/Update reuses the file already on disk. 0644 root — public, root-owned.
+    if t.get("rollout_pubkey"):
+        _write_root_file(config.ROLLOUT_PUBKEY_ARM, t["rollout_pubkey"], "644")
 
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)

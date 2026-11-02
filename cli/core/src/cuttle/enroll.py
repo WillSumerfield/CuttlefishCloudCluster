@@ -66,7 +66,7 @@ def warn_if_coordinator_is_lan_only() -> None:
             "`cuttle setup --head --address=<addr>`, then authorize again.")
 
 
-def _mint_token(node_name: str, authkey: str, enroll_secret: str) -> str:
+def _mint_token(node_name: str, authkey: str, enroll_secret: str, rollout_pubkey: str) -> str:
     """Everything the donor's `setup --arm` needs, and nothing it can choose for itself.
 
     The coordinator is reachable BEFORE the mesh exists; the Head's mesh IP only AFTER. Both are read
@@ -76,6 +76,10 @@ def _mint_token(node_name: str, authkey: str, enroll_secret: str) -> str:
     `enroll_secret` is the per-Arm secret (F1): the token is the one private channel the Admin already
     uses to reach the donor, so it carries the secret to the Arm, which persists it to config.ENROLL_KEY
     (0600 root) and presents it on every /enroll. The Head keeps only its hash.
+
+    `rollout_pubkey` is the Head's ed25519 rollout-signing public key (F3), PEM. Same trusted channel,
+    same reason: the Arm pins it (config.ROLLOUT_PUBKEY_ARM) and verifies every pushed wheel against it,
+    so a Head impersonator on the mesh can't forge an install. Captured here, at the Admin's authorize.
     """
     payload = {
         "coordinator": settings.load()["mesh"]["coordinator"],
@@ -83,6 +87,7 @@ def _mint_token(node_name: str, authkey: str, enroll_secret: str) -> str:
         "node_name": node_name,   # the Admin names the Arm; the donor is not asked
         "authkey": authkey,       # the secret: one machine, one hour, one use
         "enroll_secret": enroll_secret,   # the per-Arm /enroll secret, persisted on the Arm (F1)
+        "rollout_pubkey": rollout_pubkey, # the Head's wheel-signing pubkey, pinned on the Arm (F3)
     }
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
@@ -753,6 +758,17 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     enroll_secret = secrets.token_urlsafe(32)
     enroll_hash = hashlib.sha256(enroll_secret.encode()).hexdigest()
 
+    # The Head's rollout-signing pubkey (F3), pinned into the token for the Arm to verify pushed wheels
+    # against. Built by `setup --head`/`update` (dist.ensure_sign_key); absent only on a Head that has
+    # not yet run either since F3 landed, which `cuttle update` fixes.
+    pub = run(["cat", str(config.ROLLOUT_SIGN_PUB)], sudo=True, capture_output=True, text=True,
+              check=False)
+    rollout_pubkey = pub.stdout
+    if pub.returncode != 0 or "PUBLIC KEY" not in rollout_pubkey:
+        raise ui.abort("this Head has no rollout-signing key yet, so it cannot authorize an Arm that "
+                       "will verify its updates.",
+                       next_step="run `cuttle update` on the Head, then authorize again")
+
     reg = load_registry()
     # gpu_devices + vram_mb arrive with the donor's /enroll; powers only after the benchmark, which
     # can't run until the node is live. All are named here so a row's shape never depends on how far
@@ -763,7 +779,7 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     # Its own registry pull credential, handed over at /enroll beside the munge key.
     podman.mint_pull_cred(write_root_file, name)
 
-    token = _mint_token(name, mesh.mint_preauthkey(), enroll_secret)
+    token = _mint_token(name, mesh.mint_preauthkey(), enroll_secret, rollout_pubkey)
     # The token has to be readable RIGHT NOW: the next line blocks for up to five minutes waiting for
     # the donor to redeem it, and they cannot redeem what they have not been sent. `ui.say` draws it
     # in the box immediately; `ui.data` puts it on stdout so `t=$(cuttle arm authorize …)` still

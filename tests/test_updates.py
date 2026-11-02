@@ -54,6 +54,7 @@ def dist(head, monkeypatch, tmp_path):
     d.mkdir()
     (d / "build.json").write_text(json.dumps({"build": "abc", "wheel": "cuttle-0.0.1-py3-none-any.whl"}))
     (d / "cuttle-0.0.1-py3-none-any.whl").write_bytes(b"wheel bytes")
+    (d / "cuttle-0.0.1-py3-none-any.whl.sig").write_bytes(b"sig bytes")
     monkeypatch.setattr(head_main, "CUTTLE_DIST", d)
     monkeypatch.setattr(enroll, "CUTTLE_DIST", d)
     return d
@@ -79,6 +80,12 @@ class TestTheHeadServesItsBuild:
         c = TestClient(app)
         assert c.get("/cuttle").json()["build"] == "abc"
         assert c.get("/cuttle/wheel").content == b"wheel bytes"
+
+    def test_arms_get_the_signature_from_the_enroll_api(self, app, dist):
+        """F3: the detached wheel signature, fetched + verified by the update job before install."""
+        r = TestClient(app).get("/cuttle/wheel.sig")
+        assert r.content == b"sig bytes"
+        assert "cuttle-0.0.1-py3-none-any.whl.sig" in r.headers["content-disposition"]
 
 
 # --- Arms report their build ---------------------------------------------------

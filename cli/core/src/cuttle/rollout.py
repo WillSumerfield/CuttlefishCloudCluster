@@ -36,6 +36,7 @@ UPDATER = "@UPDATER@"
 JOB = """#!/usr/bin/python3
 import json, os, pwd, shutil, subprocess, sys, tempfile, urllib.request
 HEAD, NAME, TARGET = %r, %r, %r
+PIN = "@PUBKEY@"   # the Head's rollout-signing pubkey, pinned on this Arm at authorize (F3)
 
 def fail(msg):
     body = json.dumps({"build": TARGET, "error": msg}).encode()
@@ -62,6 +63,23 @@ d = tempfile.mkdtemp(prefix=".ccc-update-", dir=rec["home"])
 wheel = os.path.join(d, meta["wheel"])
 with urllib.request.urlopen(HEAD + "/cuttle/wheel", timeout=300) as r, open(wheel, "wb") as f:
     f.write(r.read())
+# F3: verify the wheel's ed25519 signature against the pinned Head pubkey BEFORE anything runs it. The
+# signature is channel-independent, so a Head impersonator (or tampered mesh route) cannot forge an
+# install even over the same plain-HTTP enroll channel. Missing pin or bad signature: refuse, don't run.
+sig = wheel + ".sig"
+with urllib.request.urlopen(HEAD + "/cuttle/wheel.sig", timeout=60) as r, open(sig, "wb") as f:
+    f.write(r.read())
+if not os.path.exists(PIN):
+    shutil.rmtree(d, ignore_errors=True)
+    fail("this Arm has no pinned rollout-signing key, so it cannot verify the Head's cuttle. Its owner "
+         "must re-authorize it -- on the Head run\\n  cuttle arm authorize " + NAME +
+         " --user <owner>\\nthen re-run `cuttle setup --arm --token <token>` on the Arm.")
+v = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", PIN, "-rawin", "-in", wheel,
+                    "-sigfile", sig], capture_output=True, text=True)
+if v.returncode:
+    shutil.rmtree(d, ignore_errors=True)
+    fail("the Head's cuttle wheel FAILED signature verification -- refusing to install it. This is "
+         "either a corrupt download or an impostor Head. (" + (v.stdout + v.stderr).strip()[-500:] + ")")
 os.chown(d, pw.pw_uid, pw.pw_gid)
 os.chown(wheel, pw.pw_uid, pw.pw_gid)
 env = {"HOME": rec["home"], "PATH": rec["path"], "USER": rec["user"], "LOGNAME": rec["user"]}
@@ -199,7 +217,9 @@ def main(reg_path, meta_path, state_path, conf_path, head, *restart):
 if __name__ == "__main__":
     main(*sys.argv[1:])
 '''.replace("@PREFIX@", config.ROLLOUT_PREFIX).replace(
-    "@ATTEMPTS@", str(config.ROLLOUT_ATTEMPTS)).replace("@UPDATER@", str(config.ARM_UPDATER_RECORD))
+    "@ATTEMPTS@", str(config.ROLLOUT_ATTEMPTS)).replace(
+    "@UPDATER@", str(config.ARM_UPDATER_RECORD)).replace(
+    "@PUBKEY@", str(config.ROLLOUT_PUBKEY_ARM))
 
 _TIMER_UNIT = f"""\
 [Unit]

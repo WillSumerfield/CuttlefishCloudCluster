@@ -564,6 +564,17 @@ CCC_OPT = Path("/opt/ccc")              # every /opt path below hangs off this; 
 # the code is not secret, and both APIs run as service users.
 CUTTLE_DIST_DIR = CCC_OPT / "cuttle-dist"
 CUTTLE_DIST_META = CUTTLE_DIST_DIR / "build.json"
+# F3: the Head signs the served wheel with an ed25519 key, so a Head impersonator on the mesh cannot
+# push forged code to an Arm. The keypair lives in CCC_TLS_DIR beside the CA key, for the same reason
+# — an ordinary teardown KEEPS it (only `--all` wipes TLS), so a Head redeploy keeps the same key and
+# every Arm that pinned its public half stays valid. Private 0600 ccc; public PEM 0644.
+ROLLOUT_SIGN_KEY = CCC_TLS_DIR / "rollout-sign.key"
+ROLLOUT_SIGN_PUB = CCC_TLS_DIR / "rollout-sign.pub"
+# The wheel's detached signature sits beside the wheel in CUTTLE_DIST_DIR as `<wheel>.sig`, served at
+# /cuttle/wheel.sig. On an Arm, the Head's pubkey is PINNED here at `cuttle arm authorize` (carried in
+# the enrollment token like the F1 enroll secret) and checked in the update job before every install.
+# 0644 root — the pubkey is public, but only root writes it.
+ROLLOUT_PUBKEY_ARM = Path("/etc/ccc/rollout-sign.pub")
 # Written on each Arm at setup, as its owner: where their cuttle and uv live, so the root update job
 # can reinstall and re-run cuttle as they would.
 ARM_UPDATER_RECORD = Path("/etc/ccc/arm-updater.json")
