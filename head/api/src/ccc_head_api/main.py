@@ -175,6 +175,19 @@ def _token_from(request: Request) -> str | None:
     return request.cookies.get(_COOKIE_NAME)
 
 
+def _same_origin(request: Request) -> bool:
+    """Reject cross-site form posts (login CSRF): a browser attaches Origin (and/or Referer) naming the
+    page that drove the request — if that host:port is not our own, it was a third-party page. The CLI
+    sends neither header, so a tokenless same-origin check still lets `cuttle login` through. SameSite=Lax
+    already guards the authenticated routes; /login mints the session before one exists, so it needs this."""
+    host = request.headers.get("host", "")
+    for hdr in ("origin", "referer"):
+        val = request.headers.get(hdr)
+        if val:
+            return urllib.parse.urlsplit(val).netloc == host
+    return True
+
+
 def _resolve(request: Request) -> dict:
     token = _token_from(request)
     if not token:
@@ -395,6 +408,8 @@ def login(req: LoginRequest, request: Request, response: Response) -> dict:
     cookie (browser). A `must_change_password` user still gets a session so it can call /passwd.
 
     Throttled (see ratelimit.py) by source IP and by the attempted username."""
+    if not _same_origin(request):
+        raise HTTPException(403, "cross-site login refused")
     keys = _throttle(request, req.username)
     with db.connect() as conn:
         user = db.verify_password(conn, req.username, req.password)
