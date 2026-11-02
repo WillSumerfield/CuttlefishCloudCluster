@@ -391,6 +391,12 @@ FEATURE_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 # can find e.g. $VSIM_PATH without knowing whether this node has it — the
 # Dive job script sources this unconditionally (a no-op where it's absent).
 ARM_FEATURES_ENV = Path("/etc/ccc/features.env")
+# This Arm's per-Arm enrollment secret (F1): a high-entropy token minted at `cuttle arm authorize`,
+# carried to the Arm inside the enrollment token, and persisted here 0600 root. Presented as an
+# `Authorization: Bearer` on every /enroll, so being on the mesh (which a Dive can forge by NATing as
+# the Arm's IP) no longer buys the munge key — only a host that can read this 0600 file can. The Head
+# stores only its sha256; see head/api enroll.py.
+ENROLL_KEY = Path("/etc/ccc/enroll.key")
 # This Arm's **Licence** directory, exported into that same file. ONE per Arm regardless of how many
 # Features it offers: a licence is locked to the machine, and an Arm is one machine — so two Features
 # can never collide over it. The Dive job script binds it at the Guise's home inside the container

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from ccc_head_api import enroll as head_enroll
 from cuttle import ccc_launch, enroll
-from test_enroll_identity import BODY, _authorize, _fake_headscale, app  # noqa: F401 (fixture)
+from test_enroll_identity import BODY, HDR, _authorize, _fake_headscale, app  # noqa: F401 (fixture)
 
 
 def test_weight_rides_in_conf():
@@ -51,7 +51,7 @@ def test_bench_locally_argv(monkeypatch, wsl, dev):
 
 class TestHeadStoresPower:
     def _post(self, body):
-        return TestClient(head_enroll.app, client=("100.99.0.5", 9)).post("/enroll", json=body)
+        return TestClient(head_enroll.app, client=("100.99.0.5", 9)).post("/enroll", json=body, headers=HDR)
 
     @pytest.fixture(autouse=True)
     def _arm(self, app, monkeypatch):  # noqa: F811

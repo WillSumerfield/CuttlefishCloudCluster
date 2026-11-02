@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from ccc_head_api import enroll as head_enroll
 from cuttle import ccc_launch as L
 from cuttle import config, setup, system, templates
-from test_enroll_identity import BODY, _authorize, _fake_headscale, app  # noqa: F401 (fixture)
+from test_enroll_identity import BODY, HDR, _authorize, _fake_headscale, app  # noqa: F401 (fixture)
 
 
 class TestDevice:
@@ -62,7 +62,7 @@ class TestHeadEnroll:
         _authorize("arm1")
         _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
         r = TestClient(app, client=("100.99.0.5", 9)).post(
-            "/enroll", json={**BODY, "gpu_devices": ["/dev/dxg"]})
+            "/enroll", json={**BODY, "gpu_devices": ["/dev/dxg"]}, headers=HDR)
         assert r.status_code == 200
 
     def test_dxg_beside_another_device_is_refused(self, app):  # noqa: F811

@@ -22,8 +22,10 @@ Intended path only — no fallbacks (test box; failures decided live).
 """
 
 import base64
+import hashlib
 import json
 import re
+import secrets
 import tempfile
 import time
 import urllib.error
@@ -64,18 +66,23 @@ def warn_if_coordinator_is_lan_only() -> None:
             "`cuttle setup --head --address=<addr>`, then authorize again.")
 
 
-def _mint_token(node_name: str, authkey: str) -> str:
+def _mint_token(node_name: str, authkey: str, enroll_secret: str) -> str:
     """Everything the donor's `setup --arm` needs, and nothing it can choose for itself.
 
     The coordinator is reachable BEFORE the mesh exists; the Head's mesh IP only AFTER. Both are read
     live rather than from a persisted copy — the Head always knows its own current address, and a
     stale one would hand out tokens pointing at a Head that has moved.
+
+    `enroll_secret` is the per-Arm secret (F1): the token is the one private channel the Admin already
+    uses to reach the donor, so it carries the secret to the Arm, which persists it to config.ENROLL_KEY
+    (0600 root) and presents it on every /enroll. The Head keeps only its hash.
     """
     payload = {
         "coordinator": settings.load()["mesh"]["coordinator"],
         "mesh_ip": mesh.tailscale_ip(),
         "node_name": node_name,   # the Admin names the Arm; the donor is not asked
         "authkey": authkey,       # the secret: one machine, one hour, one use
+        "enroll_secret": enroll_secret,   # the per-Arm /enroll secret, persisted on the Arm (F1)
     }
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
@@ -122,6 +129,14 @@ def enrollment_from_state() -> dict:
 
 # --- /enroll ----------------------------------------------------------------
 
+def _read_enroll_secret() -> str:
+    """This Arm's per-Arm /enroll secret from config.ENROLL_KEY (0600 root), or "" if absent. `sudo`
+    because the file is root-only — read the same way podman reads its registry creds. Absent on an
+    Arm that enrolled before F1: the Head then refuses with a re-authorize hint."""
+    r = run(["cat", str(config.ENROLL_KEY)], sudo=True, capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
                      features: list[dict] | None = None,
                      provides: list[str] | None = None, bench: dict | None = None,
@@ -155,8 +170,15 @@ def fetch_enrollment(head_mesh_ip: str, node_name: str, my_mesh_ip: str,
                        "mesh_ip": my_mesh_ip, "vram_mb": system.gpu_vram_mb(),
                        "features": reported, "provides": provides or [], "build": build,
                        **({"powers": bench["powers"], "gpu": bench["gpu"]} if bench else {})}).encode()
+    headers = {"Content-Type": "application/json"}
+    # The per-Arm enrollment secret (F1), read from the 0600-root file only a host (never a Dive
+    # container) can reach. Sent as a bearer so the Head authenticates the HOST, not the source IP a
+    # Dive can NAT as. Absent (an Arm enrolled before this existed) → no header, and the Head refuses
+    # with a message telling the operator to re-run `cuttle arm authorize`.
+    if (secret := _read_enroll_secret()):
+        headers["Authorization"] = f"Bearer {secret}"
     req = urllib.request.Request(f"{headapi.enroll_url(head_mesh_ip)}/enroll", data=body,
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers=headers, method="POST")
     # The Head's refusals are WRITTEN TO BE READ — "'willPC' is not registered to … on the mesh",
     # "ask the Head's operator to run `cuttle arm authorize`" — and a bare urlopen throws every one of
     # them away, leaving the donor with urllib's "HTTP Error 403: Forbidden" and nothing to act on.
@@ -725,17 +747,23 @@ def _authorize_arm(name: str, owner: str, write_root_file) -> None:
     # admin who reads this and re-points the Head should not have burned one first.
     warn_if_coordinator_is_lan_only()
 
+    # The per-Arm /enroll secret (F1). Minted here beside the pull credential; the Head keeps only its
+    # sha256 in the registry row, the plaintext leaves only inside the token. Re-authorizing an Arm
+    # mints a fresh one, which is the only way to re-key an Arm (there is no standalone rotate).
+    enroll_secret = secrets.token_urlsafe(32)
+    enroll_hash = hashlib.sha256(enroll_secret.encode()).hexdigest()
+
     reg = load_registry()
     # gpu_devices + vram_mb arrive with the donor's /enroll; powers only after the benchmark, which
     # can't run until the node is live. All are named here so a row's shape never depends on how far
     # it got. `powers` is index-aligned with `gpu_devices` once both are filled.
     reg[name] = {"owner": owner, "gpu_devices": None, "mesh_ip": None, "admitted": False,
-                 "vram_mb": None, "powers": None, "gpu": None}
+                 "vram_mb": None, "powers": None, "gpu": None, "enroll_hash": enroll_hash}
     save_registry(reg)
     # Its own registry pull credential, handed over at /enroll beside the munge key.
     podman.mint_pull_cred(write_root_file, name)
 
-    token = _mint_token(name, mesh.mint_preauthkey())
+    token = _mint_token(name, mesh.mint_preauthkey(), enroll_secret)
     # The token has to be readable RIGHT NOW: the next line blocks for up to five minutes waiting for
     # the donor to redeem it, and they cannot redeem what they have not been sent. `ui.say` draws it
     # in the box immediately; `ui.data` puts it on stdout so `t=$(cuttle arm authorize …)` still

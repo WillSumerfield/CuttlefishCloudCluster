@@ -13,7 +13,7 @@ from ccc_head_api import main as head_main
 from ccc_head_api import slurm
 from conftest import USERS
 from cuttle import buildid, config, rollout, selfupdate
-from test_enroll_identity import BODY, _authorize, _fake_headscale, app  # noqa: F401 (fixture)
+from test_enroll_identity import BODY, HDR, _authorize, _fake_headscale, app  # noqa: F401 (fixture)
 
 
 # --- build hashes --------------------------------------------------------------
@@ -88,18 +88,18 @@ class TestArmsReport:
         _authorize("arm1")
         _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
         c = TestClient(app, client=("100.99.0.5", 9))
-        c.post("/enroll", json=BODY)
+        c.post("/enroll", json=BODY, headers=HDR)
         assert "build" not in enroll._load()["arm1"]
-        c.post("/enroll", json={**BODY, "build": "abc"})
+        c.post("/enroll", json={**BODY, "build": "abc"}, headers=HDR)
         assert enroll._load()["arm1"]["build"] == "abc"
 
     def test_only_the_arm_itself_can_report_a_failure(self, app, monkeypatch):
         _authorize("arm1")
         _fake_headscale({"arm1": ["100.99.0.5"], "arm2": ["100.99.0.6"]}, monkeypatch)
         body = {"build": "abc", "error": "boom"}
-        r = TestClient(app, client=("100.99.0.6", 9)).post("/arms/arm1/update-failed", json=body)
+        r = TestClient(app, client=("100.99.0.6", 9)).post("/arms/arm1/update-failed", json=body, headers=HDR)
         assert r.status_code == 403
-        r = TestClient(app, client=("100.99.0.5", 9)).post("/arms/arm1/update-failed", json=body)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/arms/arm1/update-failed", json=body, headers=HDR)
         assert r.status_code == 204
         assert enroll._load()["arm1"]["update_error"] == body
 
@@ -107,8 +107,8 @@ class TestArmsReport:
         _authorize("arm1")
         _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
         c = TestClient(app, client=("100.99.0.5", 9))
-        c.post("/arms/arm1/update-failed", json={"build": "abc", "error": "boom"})
-        c.post("/enroll", json={**BODY, "build": "abc"})
+        c.post("/arms/arm1/update-failed", json={"build": "abc", "error": "boom"}, headers=HDR)
+        c.post("/enroll", json={**BODY, "build": "abc"}, headers=HDR)
         assert "update_error" not in enroll._load()["arm1"]
 
 

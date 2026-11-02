@@ -1447,6 +1447,13 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         licence_home = _prompt_licence_home(features, licence_home) if features else ""
     licence_home = _require_licence_home(features, licence_home)
 
+    # Persist the per-Arm enrollment secret (F1) from the token, before the POST that presents it.
+    # Only the token path carries it; a re-setup/Update (enrollment_from_state, None token) reuses the
+    # file already on disk. 0600 root so no Dive container can ever read it — the whole point of the
+    # gate, since a Dive can already forge the source IP by NATing as this Arm.
+    if t.get("enroll_secret"):
+        _write_root_file(config.ENROLL_KEY, t["enroll_secret"] + "\n", "600")
+
     with ui.step("Enrolling with the Head"):
         info = enroll.fetch_enrollment(t["mesh_ip"], node_name, mesh_ip, features=features)
         _write_root_file(config.CLUSTER_NAME_FILE, info["cluster_name"] + "\n")

@@ -13,10 +13,17 @@ routability is the first gate, and only an enrollment token gets a machine onto 
 into the registry *before* its token is handed out, and `/enroll` refuses a name that isn't there —
 mesh membership alone no longer buys the munge key.
 
-**The two gates are tied together.** `/enroll` asks Headscale who is actually registered at
+**Third gate: a per-Arm secret.** `cuttle arm authorize` mints a high-entropy secret, stores its
+sha256 in the Arm's registry row, and carries the plaintext to the Arm inside the enrollment token;
+the Arm keeps it 0600 root and presents it as `Authorization: Bearer` on every `/enroll` — see
+`_check_enroll_secret`. This is the real gate (F1): a Dive container can NAT out as its Arm's own mesh
+IP and so satisfy the source-IP check below, but it cannot read the host's 0600 file, so it cannot
+mint the call. A row with no stored hash is refused — re-authorize to mint one.
+
+**The gates are tied together.** `/enroll` also asks Headscale who is actually registered at
 `request.client.host` (the one field a caller cannot forge) and refuses a mismatch — see
-`_node_named_at`. Without this, an admitted Arm's owner could claim a different, already-admitted
-node_name and be handed that node's key.
+`_node_named_at`. This stays as a secondary cross-check beneath the secret: without it, an admitted
+Arm's owner could claim a different, already-admitted node_name.
 
 **Unprivileged, with one narrow exception.** Runs as `User=munge` — able to read 0400 munge:munge
 /etc/munge/munge.key without loosening the file or running a network listener as root. It cannot write
@@ -25,12 +32,14 @@ created. Its one sudo grant (`headscale nodes list`, nothing else) takes no argu
 so no request body has a path to root even through it.
 
 Accepted consequence: an Arm, once admitted, holds the munge key on disk forever, and munge is
-cluster-wide and authenticates as any node or user. Only the *join token* is short-lived; per-Arm
-revocable credentials are still open. `cuttle munge rotate` + `cuttle arm sync-key` are the coarser,
-cluster-wide lever that exists today.
+cluster-wide and authenticates as any node or user. The per-Arm enrollment secret gates *fetching* the
+key, and re-authorizing an Arm re-keys it, but it does not expire a key already on an Arm's disk —
+`cuttle munge rotate` + `cuttle arm sync-key` remain the cluster-wide lever for that.
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import logging
@@ -187,6 +196,32 @@ def _node_named_at(peer: str) -> str | None:
     return None
 
 
+def _check_enroll_secret(entry: dict, request: Request, node_name: str) -> None:
+    """Gate the munge key on the per-Arm secret (F1), not the source IP.
+
+    The secret is minted at `cuttle arm authorize`, carried to the Arm in the enrollment token, and
+    kept 0600 root there — unreachable from a Dive container, which is the whole point: a Dive can NAT
+    out as its Arm's own mesh IP and so satisfy `_node_named_at`, but it cannot read the host file. The
+    IP match stays below as a *secondary* cross-check; it is no longer the gate.
+
+    Hard-require: a row with no stored hash (an Arm admitted before F1) is REFUSED, not waved through on
+    IP — there is deliberately no grace path. Re-authorize it (remove, `cuttle arm authorize`, re-enroll
+    with the new token) to mint a secret.
+    """
+    stored = entry.get("enroll_hash")
+    auth = request.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    ok = bool(stored) and bool(presented) and hmac.compare_digest(
+        hashlib.sha256(presented.encode()).hexdigest(), stored)
+    if not ok:
+        log.warning("enroll REFUSED node=%r from %s: %s", node_name, request.client.host,
+                    "no enrollment secret on record" if not stored else "bad/missing enrollment secret")
+        raise HTTPException(403, f"{node_name!r} did not present a valid enrollment secret — ask the "
+                                 f"Head's operator to re-authorize it (`cuttle arm remove {node_name}` "
+                                 f"if it is still on the mesh, then `cuttle arm authorize {node_name}`) "
+                                 f"and re-enroll with the new token")
+
+
 def _images() -> dict:
     """What every Arm pulls. Absent means `setup --head` never finished building them — a loud 503,
     since an Arm without the base image can run nothing."""
@@ -230,6 +265,7 @@ def update_failed(name: str, req: UpdateFailure, request: Request) -> None:
     reg = _load()
     if name not in reg:
         raise HTTPException(404, f"no Arm named {name!r}")
+    _check_enroll_secret(reg[name], request, name)   # F1: secret first, IP only as a cross-check
     if _node_named_at(request.client.host) != name:
         raise HTTPException(403, f"{request.client.host} is not registered to {name!r} on the mesh")
     reg[name]["update_error"] = {"build": req.build, "error": req.error[-4000:]}
@@ -312,6 +348,10 @@ def enroll(req: EnrollRequest, request: Request) -> dict:
         log.warning("enroll REFUSED undeclared node=%r from %s", req.node_name, request.client.host)
         raise HTTPException(403, f"{req.node_name!r} was not authorized to join this cluster — "
                                  f"ask the Head's operator to run `cuttle arm authorize`")
+
+    # F1: the per-Arm secret is the gate for the munge key. Checked before the source-IP match below,
+    # which stays only as a secondary cross-check (a Dive can forge the IP, never this secret).
+    _check_enroll_secret(reg[req.node_name], request, req.node_name)
 
     peer = request.client.host
     actual_name = _node_named_at(peer)

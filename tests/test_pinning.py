@@ -5,6 +5,7 @@ enrolled six months later gets a different base image, a rebuilt image gets a di
 `setup` dies at apt with an error that names neither the pin nor the file holding it.
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -189,6 +190,10 @@ class TestTheBaseImage:
 
 
 DONOR_IP = "100.99.0.2"  # where the fake "donor-box" node in `head_pin` is registered
+# Per-Arm enrollment secret (F1): the row carries its hash, every enroll POST carries the bearer.
+SECRET = "test-enroll-secret-xyz"
+_HASH = hashlib.sha256(SECRET.encode()).hexdigest()
+HDR = {"Authorization": f"Bearer {SECRET}"}
 
 
 IMAGES = {"base": "ccc.lab:5000/ccc/base@sha256:" + "b" * 64,
@@ -201,7 +206,8 @@ def head_pin(monkeypatch, tmp_path):
     registry = tmp_path / "arms.json"
     (tmp_path / "images.json").write_text(json.dumps(IMAGES))
     (tmp_path / "creds.json").write_text(json.dumps({"donor-box": "s3cret"}))
-    registry.write_text(json.dumps({"donor-box": {"owner": "alice", "admitted": True}}))
+    registry.write_text(json.dumps({"donor-box": {"owner": "alice", "admitted": True,
+                                                  "enroll_hash": _HASH}}))
 
     monkeypatch.setattr(enroll_api, "IMAGES_RECORD", tmp_path / "images.json")
     monkeypatch.setattr(enroll_api, "REGISTRY_CREDS", tmp_path / "creds.json")
@@ -223,7 +229,7 @@ def head_pin(monkeypatch, tmp_path):
 def _enroll(client_ip=DONOR_IP):
     return TestClient(enroll_api.app, client=(client_ip, 9)).post(
         "/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],
-                         "mesh_ip": "9.9.9.9", "vram_mb": 24564})
+                         "mesh_ip": "9.9.9.9", "vram_mb": 24564}, headers=HDR)
 
 
 class TestEnrollHandsOverImages:
@@ -252,7 +258,7 @@ class TestArmFeatureDeclaration:
     def _post(self, features):
         return TestClient(enroll_api.app, client=(DONOR_IP, 9)).post(
             "/enroll", json={"node_name": "donor-box", "gpu_devices": ["/dev/nvidia0"],
-                             "mesh_ip": "9.9.9.9", "vram_mb": 24564, "features": features})
+                             "mesh_ip": "9.9.9.9", "vram_mb": 24564, "features": features}, headers=HDR)
 
     def test_a_catalogued_feature_is_recorded(self, head_pin):
         r = self._post([{"name": "vlearn", "path": "/opt/vlearn"}])

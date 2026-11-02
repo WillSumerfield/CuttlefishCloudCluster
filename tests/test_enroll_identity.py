@@ -8,6 +8,7 @@ this service has (cuttle.headapi.install_enroll_sudoers). Real headscale isn't e
 only the trust decision this endpoint makes from its output.
 """
 
+import hashlib
 import json
 import subprocess
 
@@ -18,6 +19,12 @@ from ccc_head_api import enroll
 
 BODY = {"node_name": "arm1", "gpu_devices": ["/dev/nvidia0"], "mesh_ip": "9.9.9.9",  # ignored now
        "vram_mb": 24564}
+
+# The per-Arm enrollment secret (F1): a row carries its sha256, the POST carries the plaintext as a
+# bearer. `_authorize` seeds the hash; `HDR` is the matching header every legitimate enroll sends.
+SECRET = "test-enroll-secret-xyz"
+_HASH = hashlib.sha256(SECRET.encode()).hexdigest()
+HDR = {"Authorization": f"Bearer {SECRET}"}
 
 
 @pytest.fixture
@@ -38,7 +45,7 @@ def _authorize(name: str, owner: str = "admin") -> None:
     """What `cuttle arm authorize` writes before the token is ever handed out (enroll.py:463-464)."""
     reg = enroll._load()
     reg[name] = {"owner": owner, "gpu_devices": None, "mesh_ip": None, "admitted": False,
-                "vram_mb": None, "powers": None, "gpu": None}
+                "vram_mb": None, "powers": None, "gpu": None, "enroll_hash": _HASH}
     enroll._save(reg)
 
 
@@ -58,7 +65,7 @@ class TestIdentityCheck:
     def test_the_real_node_at_that_address_enrolls(self, app, monkeypatch):
         _authorize("arm1")
         _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
-        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY, headers=HDR)
         assert r.status_code == 200
         # The VERIFIED peer address is what lands in the registry, never the request body's claim.
         assert enroll._load()["arm1"]["mesh_ip"] == "100.99.0.5"
@@ -69,14 +76,14 @@ class TestIdentityCheck:
         _authorize("arm1")
         _authorize("arm2")
         _fake_headscale({"arm1": ["100.99.0.5"], "arm2": ["100.99.0.6"]}, monkeypatch)
-        r = TestClient(app, client=("100.99.0.6", 9)).post("/enroll", json=BODY)
+        r = TestClient(app, client=("100.99.0.6", 9)).post("/enroll", json=BODY, headers=HDR)
         assert r.status_code == 403
         assert enroll._load()["arm1"]["mesh_ip"] is None  # arm1's row is untouched
 
     def test_an_address_headscale_has_no_node_for_is_refused(self, app, monkeypatch):
         _authorize("arm1")
         _fake_headscale({}, monkeypatch)
-        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY, headers=HDR)
         assert r.status_code == 403
 
     def test_an_undeclared_name_is_refused_before_any_headscale_call(self, app, monkeypatch):
@@ -85,7 +92,7 @@ class TestIdentityCheck:
         calls = []
         _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch, calls)
         r = TestClient(app, client=("100.99.0.5", 9)).post(
-            "/enroll", json={**BODY, "node_name": "ghost"})
+            "/enroll", json={**BODY, "node_name": "ghost"}, headers=HDR)
         assert r.status_code == 403
         assert calls == []
 
@@ -98,7 +105,7 @@ class TestIdentityCheck:
         _authorize("willPC")
         _fake_headscale({"willpc": ["100.99.0.5"]}, monkeypatch, calls)
         r = TestClient(app, client=("100.99.0.5", 9)).post(
-            "/enroll", json={**BODY, "node_name": "willPC"})
+            "/enroll", json={**BODY, "node_name": "willPC"}, headers=HDR)
         assert r.status_code == 422
         assert "lowercase" in r.json()["detail"].lower()
         assert calls == []  # decided on the input alone; no sudo/headscale call spent
@@ -108,7 +115,7 @@ class TestIdentityCheck:
         _authorize("willpc")
         _fake_headscale({"willpc": ["100.99.0.5"]}, monkeypatch)
         r = TestClient(app, client=("100.99.0.5", 9)).post(
-            "/enroll", json={**BODY, "node_name": "willpc"})
+            "/enroll", json={**BODY, "node_name": "willpc"}, headers=HDR)
         assert r.status_code == 200
 
     def test_a_broken_sudoers_rule_fails_loud_not_silent(self, app, monkeypatch):
@@ -118,5 +125,44 @@ class TestIdentityCheck:
         monkeypatch.setattr(enroll.subprocess, "run",
                            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="",
                                                                          stderr="not permitted"))
-        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY, headers=HDR)
         assert r.status_code == 503
+
+
+class TestEnrollSecretGate:
+    """F1: the munge key is gated on a per-Arm secret (Authorization: Bearer), not the source IP a
+    Dive can NAT as. The IP match stays only as a secondary cross-check."""
+
+    def test_the_right_secret_enrolls(self, app, monkeypatch):
+        _authorize("arm1")
+        _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY, headers=HDR)
+        assert r.status_code == 200
+
+    def test_a_missing_secret_is_refused(self, app, monkeypatch):
+        """No bearer: the case of a Dive that reached the mesh but cannot read the Arm's 0600 key."""
+        calls = []
+        _authorize("arm1")
+        _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch, calls)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY)
+        assert r.status_code == 403
+        assert calls == []  # refused before the sudo/headscale (secondary) check is ever spent
+
+    def test_a_wrong_secret_is_refused(self, app, monkeypatch):
+        _authorize("arm1")
+        _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
+        r = TestClient(app, client=("100.99.0.5", 9)).post(
+            "/enroll", json=BODY, headers={"Authorization": "Bearer not-the-secret"})
+        assert r.status_code == 403
+
+    def test_a_row_with_no_hash_is_refused_even_with_no_header(self, app, monkeypatch):
+        """Hard-require: an Arm admitted before F1 (no stored hash) is refused until re-authorized —
+        there is no IP-only grace path."""
+        reg = enroll._load()
+        reg["arm1"] = {"owner": "admin", "gpu_devices": None, "mesh_ip": None, "admitted": False,
+                       "vram_mb": None, "powers": None, "gpu": None}  # legacy row, no enroll_hash
+        enroll._save(reg)
+        _fake_headscale({"arm1": ["100.99.0.5"]}, monkeypatch)
+        r = TestClient(app, client=("100.99.0.5", 9)).post("/enroll", json=BODY, headers=HDR)
+        assert r.status_code == 403
+        assert "authorize" in r.json()["detail"].lower()
