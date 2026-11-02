@@ -624,6 +624,11 @@ TIDEPOOL_SERVICE = "ccc-tidepool"                      # ccc-tidepool@<user>.ser
 TIDEPOOL_UNIT = Path("/etc/systemd/system/ccc-tidepool@.service")
 TIDEPOOL_SLICE = "ccc-tidepools.slice"
 TIDEPOOL_SLICE_UNIT = Path("/etc/systemd/system") / TIDEPOOL_SLICE
+# Head-side, User-triggered build work (Dive snapshot commit/push, apt replay) runs here, off the
+# Tidepool cgroup. CPUWeight-only (no quota): it yields to slurm jobs + Tidepools under load, uses
+# idle cores otherwise. A weight slice reserves nothing, so the Slurm node is not shrunk for it.
+BUILD_SLICE = "ccc-build.slice"
+BUILD_SLICE_UNIT = Path("/etc/systemd/system") / BUILD_SLICE
 # podman's default pool hands each new bridge network the next /24 of this range (the first 256 of
 # them) — every User's isolate=true network included. ufw lets it reach the host's DNS (allow_dns_from).
 TIDEPOOL_BRIDGE_SUBNETS = "10.89.0.0/16"

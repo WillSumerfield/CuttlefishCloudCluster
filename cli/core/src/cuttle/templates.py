@@ -521,6 +521,19 @@ CPUQuota={cpu_pct}%
 MemoryMax={mem_gb}G
 """
 
+# Head-side build work (Dive snapshot commit/push, apt replay). CPUWeight only — a low weight so it
+# yields to slurm jobs + Tidepools (default weight 100) under contention, but bursts on idle cores. No
+# quota/MemoryMax: no hard ceiling, and nothing to subtract from the Slurm node (unlike the Tidepool
+# slice above). See config.BUILD_SLICE.
+BUILD_SLICE_TMPL = """\
+# Rendered by `cuttle setup --head`. Do not hand-edit.
+[Unit]
+Description=CCC Head-side build work (all Users)
+
+[Slice]
+CPUWeight=10
+"""
+
 # The Head API may restart or reset a Tidepool by username — the API checks it is the caller's own —
 # and prepare/open/close a Dive (token = 32 hex the API minted).
 TIDEPOOL_SUDOERS_TMPL = """\

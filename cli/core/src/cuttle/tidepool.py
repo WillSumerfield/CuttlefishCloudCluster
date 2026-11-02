@@ -84,6 +84,7 @@ def install(write_root_file, s: dict) -> None:
     write_root_file(config.TIDEPOOL_UNIT, templates.render_tidepool_unit())
     write_root_file(config.TIDEPOOL_SLICE_UNIT,
                     templates.render_tidepool_slice(s["total_cpus"], s["total_mem_gb"]))
+    write_root_file(config.BUILD_SLICE_UNIT, templates.BUILD_SLICE_TMPL)
     run(["install", "-d", "-m", "0755", "-o", config.HEAD_API_USER, "-g", config.HEAD_API_USER,
          str(config.TIDEPOOL_KEYS_ROOT)], sudo=True)
     run(["install", "-d", "-m", "0755", str(config.TIDEPOOL_MNT_ROOT)], sudo=True)
@@ -94,6 +95,7 @@ def install(write_root_file, s: dict) -> None:
     write_root_file(config.REGISTRY_GC_TIMER, templates.REGISTRY_GC_TIMER_TMPL)
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "start", config.TIDEPOOL_SLICE], sudo=True)
+    run(["systemctl", "start", config.BUILD_SLICE], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.REGISTRY_GC_SERVICE}.timer"], sudo=True)
     system.allow_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count(),
                                 "ccc tidepool ssh (LAN+mesh)")
@@ -139,12 +141,14 @@ def teardown(all_: bool) -> None:
     system.deny_tcp_port_range(config.TIDEPOOL_SSH_PORT_BASE + 1, _port_count())
     system.deny_dns_from(config.TIDEPOOL_BRIDGE_SUBNETS)
     run(["systemctl", "stop", config.TIDEPOOL_SLICE], sudo=True, check=False)
+    run(["systemctl", "stop", config.BUILD_SLICE], sudo=True, check=False)
     run(["systemctl", "disable", "--now", f"{config.REGISTRY_GC_SERVICE}.timer"], sudo=True, check=False)
     run(["rm", "-rf", str(config.REGISTRY_GC_UNIT), str(config.REGISTRY_GC_TIMER),
          str(config.DIVE_RECORDS), str(config.DIVE_RSYNCD), str(config.DIVE_STATE)], sudo=True,
         check=False)
     run(["rm", "-rf", str(config.TIDEPOOL_HELPER_BIN), str(config.SUDOERS_CCC_TIDEPOOL),
          str(config.TIDEPOOL_FILES_DIR), str(config.TIDEPOOL_UNIT), str(config.TIDEPOOL_SLICE_UNIT),
+         str(config.BUILD_SLICE_UNIT),
          str(config.TIDEPOOL_RECORDS), str(config.TIDEPOOL_SETTINGS)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
 

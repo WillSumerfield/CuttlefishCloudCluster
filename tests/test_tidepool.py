@@ -216,6 +216,12 @@ class TestTemplates:
         s = templates.render_tidepool_slice(32, 128)
         assert "CPUQuota=3200%" in s and "MemoryMax=128G" in s
 
+    def test_build_slice_is_weight_only_no_ceiling(self):
+        # F7: a fair-share weight, no CPUQuota/MemoryMax (so nothing to subtract from the Slurm node).
+        s = templates.BUILD_SLICE_TMPL
+        assert "CPUWeight=" in s
+        assert "CPUQuota" not in s and "MemoryMax" not in s
+
     def test_unit_starts_the_created_container(self):
         u = templates.render_tidepool_unit()
         assert "start --attach tp-%i" in u and "Restart=always" in u
