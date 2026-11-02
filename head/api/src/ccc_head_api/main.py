@@ -455,6 +455,9 @@ def passwd(req: PasswdRequest, request: Request, user: dict = Depends(current_us
         if reason is not None:
             raise HTTPException(422, reason)
         db.set_password(conn, user["username"], req.new_password)
+        # A password change is a security act: evict every other session (a stolen token, a forgotten
+        # login), keeping only the caller's own so the client stays signed in.
+        db.revoke_other_sessions(conn, user["id"], _token_from(request))
     return {"ok": True}
 
 

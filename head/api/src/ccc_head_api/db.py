@@ -421,6 +421,17 @@ def delete_session(conn: sqlite3.Connection, token: str) -> None:
     conn.commit()
 
 
+def revoke_other_sessions(conn: sqlite3.Connection, user_id: int, keep_token: str) -> int:
+    """Kill every session for this User except the caller's own `keep_token` — all scopes, so a changed
+    password also evicts a thief's full/tidepool/dive sessions. Returns the count removed. Used by
+    /passwd: a password change is only a security act if the old credential's sessions die with it."""
+    cur = conn.execute(
+        "DELETE FROM sessions WHERE user_id=? AND token_sha256<>?", (user_id, _sha256(keep_token)),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def purge_expired(conn: sqlite3.Connection) -> int:
     cur = conn.execute(
         "DELETE FROM sessions WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')"
