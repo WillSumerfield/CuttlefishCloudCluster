@@ -71,6 +71,11 @@ def _leave_ccc_mesh() -> None:
     # Drop the ufw rule setup added, before ccc0 disappears. Inert afterwards, but setup's mutations
     # are reversed exactly, the same reason purge_packages works off a recorded manifest.
     system.deny_mesh_iface(config.CCC_TS_TUN)
+    # The container-DNS allow setup added for the podman pool — on BOTH roles now (Head's Tidepools +
+    # Dives, an Arm's Dives). No-op where ufw never enforced. ufw ITSELF is left as the operator found
+    # it: CCC only turns it on (Head only), and disabling a host firewall is a worse teardown failure
+    # than leaving one up, especially as the box is re-set-up in place.
+    system.deny_dns_from(config.TIDEPOOL_BRIDGE_SUBNETS)
     # Likewise the ts-input exemption and its timer — and this one is NOT merely inert if left: it is a
     # rule inside the personal daemon's chain, on a box that may keep using that daemon long after CCC
     # is gone.

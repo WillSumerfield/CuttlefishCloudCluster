@@ -549,6 +549,40 @@ def ufw_active() -> bool:
     return r.stdout.strip().startswith("Status: active")
 
 
+def enable_ufw_default_deny() -> None:
+    """Turn ufw ON with default-deny-incoming. The ONE helper that enables a firewall rather than just
+    adding a rule to one already enforcing — and it is called for the **Head only**, which is ours. A
+    donor Arm's firewall stays the owner's to enable (the reason every allow_*/deny_* helper no-ops when
+    ufw is inactive); enabling it fleet-wide is exactly the host-global mutation CCC avoids on donors.
+
+    Without this the Head's `allow_*` calls are all no-ops, so slurm/enroll/registry — bound broadly or
+    interface-scoped only — stay reachable on the public IP. Enabling default-deny drops everything not
+    explicitly allowed; the existing allows (22 here, 443/8080, relay + Tidepool ranges, `ccc0`, DNS)
+    are the whole public surface that remains.
+
+    Idempotent: a no-op once enforcing, so an Update re-runs it for free. Two lock-out guards before
+    the switch flips, and one thing deliberately left alone:
+      1. ssh (22) allowed on all interfaces BEFORE enable — covers both the public NIC and the personal
+         tailnet the Head is administered over, so default-deny never cuts off the admin mid-setup.
+      2. Container DNS to the bridge gateway MUST be allowed (allow_dns_from) — a container's query to
+         the gateway is INPUT, which default-deny drops; verified on a live box (container DNS dies the
+         moment the allow is absent). The caller adds it beside this.
+    The ufw default FORWARD policy (stock DROP) is left untouched: a container's *egress* still works
+    under it — netavark accepts forwarded container traffic regardless (verified on willpc: a container
+    reached the internet with FORWARD at DROP) — and leaving FORWARD locked down is the baseline that
+    ccc-dive-egress's dest-scoped mesh/loopback DROPs build on. We do NOT loosen it.
+    """
+    if not shutil.which("ufw"):
+        print("ufw not installed — not enabling a host firewall on the Head")
+        return
+    if ufw_active():
+        return
+    run(["ufw", "allow", "22/tcp", "comment", "ccc ssh admin (public + personal tailnet)"], sudo=True)
+    run(["ufw", "default", "deny", "incoming"], sudo=True)
+    run(["ufw", "default", "allow", "outgoing"], sudo=True)
+    run(["ufw", "--force", "enable"], sudo=True)
+
+
 def allow_mesh_iface(iface: str) -> None:
     """Open inbound on the mesh interface — required on BOTH roles, not just the Head: slurmctld
     dials each slurmd on 6818, so a firewalled Arm registers and then goes DOWN minutes later.

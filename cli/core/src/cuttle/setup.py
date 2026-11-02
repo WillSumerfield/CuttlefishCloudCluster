@@ -886,9 +886,17 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
     # rather than dying at `add-apt-repository`.
     with ui.step("Joining the mesh"):
         mesh_ip = mesh_up_head(address)
+        # The Head is ours, not a donor, so — unlike every other box — CCC turns ufw on here with
+        # default-deny-incoming. MUST precede the allow_* calls: each no-ops unless ufw is already
+        # enforcing, and without it slurm/enroll/registry stay reachable on the public IP.
+        system.enable_ufw_default_deny()
         system.allow_mesh_iface(config.CCC_TS_TUN)
         # Arms reach the coordinator BEFORE they're on the mesh, so its port must be open off-mesh too.
         system.allow_tcp_port(config.HEADSCALE_PORT, "ccc mesh coordinator (headscale)")
+        # Tidepools and Dives (podman's default pool) query this host's DNS at the bridge gateway — an
+        # INPUT packet default-deny would otherwise drop. Opened here independent of Tidepool lifecycle
+        # (tidepool.py reopens it per-Tidepool); the /16 covers the Dive `private` net in the same pool.
+        system.allow_dns_from(config.TIDEPOOL_BRIDGE_SUBNETS, "ccc container dns (tidepool + dive pool)")
         # Before anything dials this box over the mesh: a personal tailscaled — which the Head has, by
         # design, since it is administered over its own tailnet — drops ccc0 traffic until exempted.
         mesh.ensure_ts_exemption(_write_root_file)
