@@ -433,7 +433,12 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
             "--pull=missing", "--authfile", AUTH_FILE,
             "--network", "private", "-p", f"{addr}:{d['port']}:22" if addr else f"{d['port']}:22",
             "-v", f"{home}:/home/{u}", "-v", f"{jobdir}/sys:/etc/ccc/dive:ro",
-            "-v", f"{cache}:/ccc-cache:idmap",
+            # Plain bind, NOT :idmap — exactly like the home mount above. The cache is this Guise's
+            # own subtree, owned host-side by the Dive user (base+INNER_UID), so the container's userns
+            # already shows it as uid 1000. :idmap (a leftover from the old shared root-owned tree)
+            # would double-map that host uid out of range, so the Dive saw its own cache as `nobody`
+            # and could not write it.
+            "-v", f"{cache}:/ccc-cache",
             # `cuttle` inside, reaching the Head with the Dive's ambient session (sys/session)
             "-v", f"{CUTTLE_ENV}:{CUTTLE_ENV}:ro", "-v", f"{CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
             "-v", f"{HEAD_CA}:/etc/ccc/ca.crt:ro",
@@ -482,10 +487,11 @@ def run_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
     os.environ["RSYNC_PASSWORD"] = d["secret"]
     JOBS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
     ENV_CACHE.mkdir(mode=0o755, parents=True, exist_ok=True)
-    # This Guise's own cache subtree (F2): 0700 and owned by the Dive user (base+INNER_UID, which
-    # idmap maps to uid 1000 inside), so no other Guise's build can read or substitute its cached
-    # wheels — uv/micromamba hard-link cache hits in, trusted and unverified. Only this subtree is
-    # mounted into the Dive, never the shared parent. Keyed by the Guise uid (job["uid"]).
+    # This Guise's own cache subtree (F2): 0700 and owned host-side by the Dive user (base+INNER_UID),
+    # so the container's userns shows it as uid 1000 (bound plain, like home — see dive_argv) and no
+    # other Guise's build can read or substitute its cached wheels (uv/micromamba hard-link cache hits
+    # in, trusted and unverified). Only this subtree is mounted into the Dive, never the shared parent.
+    # Keyed by the Guise uid (job["uid"]).
     cache = ENV_CACHE / str(job["uid"])
     if not cache.exists():
         cache.mkdir(mode=0o700)

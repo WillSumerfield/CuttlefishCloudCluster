@@ -396,7 +396,7 @@ class TestArmDive:
         assert not any(v.startswith(f"{home}/proj") for v in vols)
         assert f"{tmp_path}/sys:/etc/ccc/dive:ro" in vols
         assert "--log-driver=journald" in a    # why a Dive died outlives the job's private /tmp
-        assert f"{cache}:/ccc-cache:idmap" in vols   # the Guise's own subtree, never the shared parent
+        assert f"{cache}:/ccc-cache" in vols   # the Guise's own subtree (plain bind, like home), not the shared parent
         assert {f"{config.CONTAINER_CUTTLE}:{config.CONTAINER_CUTTLE}:ro",
                 f"{config.CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
                 f"{config.HEAD_CA_TRUST_PATH}:{config.CONTAINER_CA}:ro"} <= set(vols)
