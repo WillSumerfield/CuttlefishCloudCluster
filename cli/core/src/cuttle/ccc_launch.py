@@ -56,7 +56,7 @@ CONTAINER_PREFIX = "ccc-job-"
 SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir", "dive"}
 DIVE_KEYS = {"token", "user", "secret", "head", "main", "deps", "port"}
 TIDEPOOL_HELPER = "/usr/local/sbin/ccc-tidepool"   # Head only (config.TIDEPOOL_HELPER_BIN)
-ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR — shared uv cache
+ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR — parent of per-Guise caches
 MESH_IFACE = "ccc0"                                 # config.CCC_TS_TUN
 CUTTLE_ENV = "/usr/local/lib/ccc/cuttle"            # config.CONTAINER_CUTTLE
 HEAD_CA = "/usr/local/share/ca-certificates/ccc-head.crt"   # config.HEAD_CA_TRUST_PATH
@@ -413,8 +413,11 @@ def mesh_ip() -> str:
 
 
 def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: list[str], jobdir: Path,
-              home: Path, deps: list[str], addr: str) -> list[str]:
-    """`addr` "" = publish sshd on every address (the Head: no relay in front of it)."""
+              home: Path, cache: Path, deps: list[str], addr: str) -> list[str]:
+    """`addr` "" = publish sshd on every address (the Head: no relay in front of it).
+
+    `cache` is this Guise's OWN cache subtree (run_dive), mounted alone at /ccc-cache — never the
+    shared parent, so one User's build cannot read or substitute another's cached wheels (F2)."""
     d = spec["dive"]
     u = d["user"]
     argv = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--",
@@ -430,7 +433,7 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
             "--pull=missing", "--authfile", AUTH_FILE,
             "--network", "private", "-p", f"{addr}:{d['port']}:22" if addr else f"{d['port']}:22",
             "-v", f"{home}:/home/{u}", "-v", f"{jobdir}/sys:/etc/ccc/dive:ro",
-            "-v", f"{ENV_CACHE}:/ccc-cache:idmap",
+            "-v", f"{cache}:/ccc-cache:idmap",
             # `cuttle` inside, reaching the Head with the Dive's ambient session (sys/session)
             "-v", f"{CUTTLE_ENV}:{CUTTLE_ENV}:ro", "-v", f"{CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
             "-v", f"{HEAD_CA}:/etc/ccc/ca.crt:ro",
@@ -479,6 +482,14 @@ def run_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
     os.environ["RSYNC_PASSWORD"] = d["secret"]
     JOBS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
     ENV_CACHE.mkdir(mode=0o755, parents=True, exist_ok=True)
+    # This Guise's own cache subtree (F2): 0700 and owned by the Dive user (base+INNER_UID, which
+    # idmap maps to uid 1000 inside), so no other Guise's build can read or substitute its cached
+    # wheels — uv/micromamba hard-link cache hits in, trusted and unverified. Only this subtree is
+    # mounted into the Dive, never the shared parent. Keyed by the Guise uid (job["uid"]).
+    cache = ENV_CACHE / str(job["uid"])
+    if not cache.exists():
+        cache.mkdir(mode=0o700)
+        os.chown(cache, base + INNER_UID, base + INNER_UID)
     jobdir = JOBS_DIR / jid
     jobdir.mkdir(mode=0o700, exist_ok=True)
     home = stage_in(d, jobdir, base + INNER_UID)
@@ -489,7 +500,7 @@ def run_dive(spec: dict, jid: str, job: dict, step: str, base: int) -> int:
                      dive_banner(jid, where, job["gres_idx"], gpu_names(gpus), job["end"], d["main"]))
     cdi = cdi_names(gpus, wsl)
     ensure_cdi(cdi)
-    proc = subprocess.Popen(dive_argv(spec, jid, base, step, cdi, gpus, jobdir, home,
+    proc = subprocess.Popen(dive_argv(spec, jid, base, step, cdi, gpus, jobdir, home, cache,
                                       d["deps"], "" if on_head() else mesh_ip()))
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: proc.send_signal(signal.SIGTERM))

@@ -384,8 +384,9 @@ class TestArmDive:
             (home / f).write_text("x")
         spec = {"image": "ccc.lab:5000/ccc/u-bob@sha256:" + "a" * 64, "argv": ["/bin/sh", "-c", "x"],
                 "env": {"CCC_USER": "bob"}, "network": True, "dive": DIVE}
+        cache = tmp_path / "cache"
         a = L.dive_argv(spec, "77", 2**31, "/s/job_77/step_batch", ["GPU-1"], ["GPU-1"], tmp_path, home,
-                        ["data"], "100.99.0.7")
+                        cache, ["data"], "100.99.0.7")
         j = " ".join(a)
         vols = [a[i + 1] for i, x in enumerate(a) if x == "-v"]
         assert f"{home}:/home/bob" in vols and f"{home}/data:/home/bob/data:ro" in vols
@@ -395,7 +396,7 @@ class TestArmDive:
         assert not any(v.startswith(f"{home}/proj") for v in vols)
         assert f"{tmp_path}/sys:/etc/ccc/dive:ro" in vols
         assert "--log-driver=journald" in a    # why a Dive died outlives the job's private /tmp
-        assert f"{L.ENV_CACHE}:/ccc-cache:idmap" in vols
+        assert f"{cache}:/ccc-cache:idmap" in vols   # the Guise's own subtree, never the shared parent
         assert {f"{config.CONTAINER_CUTTLE}:{config.CONTAINER_CUTTLE}:ro",
                 f"{config.CLUSTER_NAME_FILE}:/etc/ccc/cluster-name:ro",
                 f"{config.HEAD_CA_TRUST_PATH}:{config.CONTAINER_CA}:ro"} <= set(vols)
@@ -430,7 +431,8 @@ class TestArmDive:
         monkeypatch.setattr(L, "mirror", lambda d, h: order.append("mirror") or True)
         monkeypatch.setattr(L.subprocess, "run", lambda a, **k: order.append(a))
         monkeypatch.setattr(L.signal, "signal", lambda *a: None)
-        job = {"gres_idx": [0], "node": "arm1", "end": "2026-10-29T14:30:00"}
+        monkeypatch.setattr(L.os, "chown", lambda *a: None)   # per-Guise cache chown; no root in tests
+        job = {"gres_idx": [0], "node": "arm1", "end": "2026-10-29T14:30:00", "uid": 60003}
         assert L.run_dive(spec, "77", job, "/s", 2**31) == 0
         pod = ["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--", "/usr/bin/podman"]
         i = order.index("mirror")
@@ -454,7 +456,8 @@ class TestOneDivePath:
     def test_the_head_publishes_on_every_address(self, tmp_path):
         spec = {"image": "x", "dive": DIVE}
         (tmp_path / "home").mkdir()
-        a = L.dive_argv(spec, "77", 2**31, "/s", [], [], tmp_path, tmp_path / "home", [], "")
+        a = L.dive_argv(spec, "77", 2**31, "/s", [], [], tmp_path, tmp_path / "home",
+                        tmp_path / "cache", [], "")
         assert a[a.index("-p") + 1] == "31005:22"
 
     def test_where_is_the_cluster_name_on_the_head_else_the_node(self, tmp_path, monkeypatch):

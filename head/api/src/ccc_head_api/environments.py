@@ -53,9 +53,10 @@ who declared their own version keeps it, exactly as they used to when the image 
 
 **Nothing is cached except downloads.** The built env lives in the Dive's node-local scratch and dies
 with it, like the working directory around it — no box grows a permanent env store. The package
-*download* cache on each Arm persists: node-local, size-capped, never staged, shared by every Guise on
-the box — the only reason "rebuild every time" is affordable. The second Dive to want a given torch
-hard-links it out of that cache instead of fetching it.
+*download* cache on each Arm persists: node-local, size-capped, never staged, one 0700 subtree PER
+Guise (never shared — a shared writable cache is a supply chain between Users) — the only reason
+"rebuild every time" is affordable. The second Dive from one Guise to want a given torch hard-links it
+out of that Guise's own cache instead of fetching it.
 
 **Nothing is detected, because detection is a guess.** Every Dive NAMES the file it declares, and
 `detect` only checks that the named file is there and is inside the project. There is no auto-detection
@@ -112,8 +113,9 @@ MICROMAMBA_BIN = TOOLS_DIR / "micromamba"
 
 # The PARENT of the node-local package download caches — one subtree per **Guise**, never one shared
 # tree (cuttle.config.NODE_ENV_CACHE_DIR says why: ownership does not propagate, and a shared writable
-# cache is a supply chain between Users). Each is made by its own Guise in the job script, capped there,
-# and swept wholesale by teardown. The cap is PER GUISE.
+# cache is a supply chain between Users). The parent is 0755 root-owned; each Guise's subtree is made
+# 0700 by ccc-launch (which runs as root) and mounted alone into that Guise's Dive, and swept wholesale
+# by teardown. The cap is PER GUISE.
 #
 # Mirrors cuttle.config.NODE_ENV_CACHE_DIR — the same duplication TOOLS_DIR already carries across two
 # packages that do not import each other.

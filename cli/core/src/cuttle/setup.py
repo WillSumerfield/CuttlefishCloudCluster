@@ -512,16 +512,21 @@ def provision_env_cache() -> None:
     micromamba hard-link out of them, so the second Dive from one User to declare a given torch pays
     no download. Without them an Arm re-fetches several GB every time.
 
-    Only the PARENT is made here, and only so a Guise can mkdir inside it — one shared cache does not
-    work and should not be wanted; see config.NODE_ENV_CACHE_DIR for both reasons.
-
-    0777 and not sticky. A Guise creates its own subtree here on its first build and owns it outright,
-    so nothing in this directory is ever written by a uid that does not own it.
+    Only the PARENT is made here, 0755 root-owned — one shared cache does not work and must not be
+    wanted; see config.NODE_ENV_CACHE_DIR for both reasons. Each Guise's own subtree under it is
+    created on demand by ccc-launch (which runs as root), 0700 and owned by that Guise, and only that
+    subtree is mounted into the Guise's Dive — so nothing here is ever read or written by a uid that
+    does not own it.
 
     CCC_LIB is created without -o/-g so an existing munge-owned one on the Head keeps its owner.
     """
     run(["install", "-d", "-m", "0755", str(config.CCC_LIB)], sudo=True)
-    run(["install", "-d", "-m", "0777", str(config.NODE_ENV_CACHE_DIR)], sudo=True)
+    run(["install", "-d", "-m", "0755", str(config.NODE_ENV_CACHE_DIR)], sudo=True)
+    # F2 migration: the cache was once one flat 0777 tree shared by every Guise, with uv/pip/mamba
+    # directly under here. It is now one 0700 subtree per Guise. Remove the legacy flat roots once;
+    # new builds only ever write them under a per-Guise subdir, never at this level again.
+    for legacy in ("uv", "pip", "mamba"):
+        run(["rm", "-rf", str(config.NODE_ENV_CACHE_DIR / legacy)], sudo=True)
     ui.say(f"  [muted]environment build caches → {config.NODE_ENV_CACHE_DIR}/<guise> "
            f"(each pruned past {config.NODE_ENV_CACHE_MAX_GB}GB)[/muted]")
 
