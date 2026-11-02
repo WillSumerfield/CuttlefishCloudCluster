@@ -8,6 +8,7 @@ from typer.core import TyperGroup
 from . import auth as auth_mod
 from . import backup as backup_mod
 from . import config
+from .context import Ctx, require_now, requires
 from . import dashboard as dashboard_mod
 from . import dive as dive_mod
 from . import enroll as enroll_mod
@@ -123,6 +124,7 @@ def _no_command() -> None:
 
 
 @app.command()
+@requires(Ctx.ANY)
 def setup(
     head: bool = typer.Option(
         False, "--head", help="Provision this box as the Head (control plane + co-located Arm)."
@@ -232,6 +234,7 @@ def setup(
 
 
 @app.command()
+@requires(Ctx.PROVISIONED, Ctx.POINTED)
 def update():
     """Set this box up again with the settings it already has. Asks nothing.
 
@@ -247,12 +250,14 @@ def update():
 
 
 @arm_app.command("list")
+@requires(Ctx.HEAD)
 def arm_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Show Arms: who owns them, and whether they're authorized/enrolled/admitted."""
     enroll_mod.list_arms(as_json=as_json)
 
 
 @arm_app.command("authorize")
+@requires(Ctx.HEAD)
 def arm_authorize(
     name: str = typer.Argument(None, help="Name for the new Arm (its identity in Slurm + the mesh)."),
     user: str = typer.Option(None, "--user", help="The User who owns (donates) the machine."),
@@ -269,6 +274,7 @@ def arm_authorize(
 
 
 @arm_app.command("admit")
+@requires(Ctx.HEAD)
 def arm_admit(name: str = typer.Argument(None, help="The Arm's node name.")):
     """Give an enrolled Arm its GRES line and reconfigure Slurm. Only needed if `arm authorize` gave
     up waiting because the donor hadn't run setup yet — this finishes the job."""
@@ -277,6 +283,7 @@ def arm_admit(name: str = typer.Argument(None, help="The Arm's node name.")):
 
 
 @arm_app.command("update")
+@requires(Ctx.HEAD)
 def arm_update(
     name: str = typer.Argument(None, help="The Arm's node name."),
     every: bool = typer.Option(False, "--all", help="Every Arm."),
@@ -296,6 +303,7 @@ def arm_update(
 
 
 @arm_app.command("benchmark")
+@requires(Ctx.HEAD)
 def arm_benchmark(name: str = typer.Argument(None, help="The Arm's node name.")):
     """Re-measure an Arm's **Power** (throughput) and re-price it. Runs the matmul benchmark inside
     the container, on that node, and sets its Slurm Weight — so the fastest free card wins.
@@ -308,6 +316,7 @@ def arm_benchmark(name: str = typer.Argument(None, help="The Arm's node name."))
 
 
 @arm_app.command("chown")
+@requires(Ctx.HEAD)
 def arm_chown(
     name: str = typer.Argument(None, help="The Arm's node name."),
     user: str = typer.Option(None, "--user", help="The User who owns (donates) the machine."),
@@ -321,6 +330,7 @@ def arm_chown(
 
 
 @arm_app.command("retract")
+@requires(Ctx.HEAD, Ctx.USER)
 def arm_retract(
     name: str = typer.Argument(None, help="The Arm's node name."),
     any_owner: bool = typer.Option(
@@ -337,6 +347,7 @@ def arm_retract(
 
 
 @arm_app.command("return")
+@requires(Ctx.HEAD, Ctx.USER)
 def arm_return(
     name: str = typer.Argument(None, help="The Arm's node name."),
     any_owner: bool = typer.Option(
@@ -352,6 +363,7 @@ def arm_return(
 
 
 @arm_app.command("sync-key")
+@requires(Ctx.ARM)
 def arm_sync_key():
     """ON THIS ARM: re-fetch the cluster's current munge key from the Head. Run after an operator's
     `cuttle munge rotate` — nothing else changes (mesh identity, gres.conf, and slurmd's
@@ -360,6 +372,7 @@ def arm_sync_key():
 
 
 @arm_app.command("remove")
+@requires(Ctx.HEAD)
 def arm_remove(
     name: str = typer.Argument(None, help="The Arm's node name."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
@@ -377,6 +390,7 @@ def arm_remove(
 
 
 @app.command()
+@requires(Ctx.POINTED)
 def login(
     head: str = typer.Option(
         None, "--head", help="Head address or URL (e.g. ccc.<name>); saved for next time."),
@@ -404,12 +418,14 @@ def login(
 
 
 @app.command()
+@requires(Ctx.USER)
 def logout():
     """Revoke this box's session on the Head and delete the local token."""
     auth_mod.logout()
 
 
 @app.command()
+@requires(Ctx.POINTED)
 def dashboard(
     print_only: bool = typer.Option(False, "--print", help="Print the URL instead of opening it."),
 ):
@@ -419,12 +435,14 @@ def dashboard(
 
 
 @app.command()
+@requires(Ctx.USER)
 def whoami(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Print the currently logged-in user."""
     auth_mod.whoami(as_json=as_json)
 
 
 @app.command()
+@requires(Ctx.USER)
 def passwd():
     """Change your password."""
     with ui.section("Change password", lambda: "changed"):
@@ -432,6 +450,7 @@ def passwd():
 
 
 @user_app.command("add")
+@requires(Ctx.HEAD)
 def user_add(
     username: str = typer.Argument(None, help="New user's login name."),
     admin: bool = typer.Option(None, "--admin/--no-admin", help="Grant admin."),
@@ -449,12 +468,14 @@ def user_add(
 
 
 @user_app.command("list")
+@requires(Ctx.HEAD)
 def user_list():
     """List users."""
     auth_mod.user_list()
 
 
 @user_app.command("remove")
+@requires(Ctx.HEAD)
 def user_remove(
     username: str = typer.Argument(None, help="User to delete (and their sessions)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
@@ -470,6 +491,7 @@ def user_remove(
 
 
 @user_app.command("reset")
+@requires(Ctx.HEAD)
 def user_reset(
     username: str = typer.Argument(None, help="User whose password to reset."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
@@ -491,6 +513,7 @@ def karma(ctx: typer.Context,
     nothing. Karma never gates: poor standing loses contention, and loses nothing on an idle cluster.
     """
     if ctx.invoked_subcommand is None:
+        require_now(Ctx.USER)
         karma_mod.standings(as_json=ctx.params.get("as_json", False))
 
 
@@ -498,6 +521,7 @@ def karma(ctx: typer.Context,
 # otherwise dies with `No such option: -5` — click reads any leading `-` as a flag. Without this the
 # only spelling that works is `override --note x bob -- -50000`, which nobody will ever guess.
 @karma_app.command("override", context_settings={"ignore_unknown_options": True})
+@requires(Ctx.HEAD)
 def karma_override(
     username: str = typer.Argument(None, help="The User whose Balance to change."),
     amount: float = typer.Argument(None, help="Karma to add (or remove, if negative). 1 Karma = one "
@@ -517,6 +541,7 @@ def karma_override(
 
 
 @karma_app.command("bump")
+@requires(Ctx.HEAD)
 def karma_bump(
     dive_id: int = typer.Argument(None, help="Dive (Slurm job) id — must still be queued."),
     clear: bool = typer.Option(False, "--clear", help="Undo the bump; the economy takes it back."),
@@ -533,6 +558,7 @@ def karma_bump(
 
 
 @karma_app.command("ledger")
+@requires(Ctx.USER)
 def karma_ledger(
     days: int = typer.Option(30, "--days", help="How far back to read."),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
@@ -543,6 +569,7 @@ def karma_ledger(
 
 
 @backup_app.command("create")
+@requires(Ctx.HEAD)
 def backup_create():
     """ON THE HEAD: snapshot head.db, arms.json, and Headscale's own db into one tarball under
     /var/backups/ccc. No downtime — the Head API, Karma tick, and Headscale all keep running."""
@@ -552,6 +579,7 @@ def backup_create():
 
 
 @backup_app.command("restore")
+@requires(Ctx.HEAD)
 def backup_restore(
     archive: str = typer.Argument(None, help="Path to a backup tarball (see /var/backups/ccc)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
@@ -574,6 +602,7 @@ def backup_restore(
 
 
 @munge_app.command("rotate")
+@requires(Ctx.HEAD)
 def munge_rotate(yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation.")):
     """ON THE HEAD: mint a fresh cluster-wide munge key. Every already-admitted Arm's copy goes stale
     the instant this returns — each one needs `cuttle arm sync-key`, run by its owner, before it can
@@ -587,6 +616,7 @@ def munge_rotate(yes: bool = typer.Option(False, "--yes", "-y", help="Skip the c
 
 
 @feature_app.command("list")
+@requires(Ctx.ANY)
 def feature_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """List the Arm Features CCC supports. Built in, not configurable — the catalog is the set of names
     CCC knows the meaning of, not a list anyone curates. Run anywhere."""
@@ -594,6 +624,7 @@ def feature_list(as_json: bool = typer.Option(False, "--json", help="Machine-rea
 
 
 @feature_app.command("show")
+@requires(Ctx.ANY)
 def feature_show(name: str = typer.Argument(..., help="A Feature from `cuttle feature list`.")):
     """Describe what CCC arranges for a Feature — the system libraries it builds for you, and which
     Python your own Environment has to be.
@@ -612,28 +643,33 @@ _TP_USER = typer.Option(None, "--user", help="Act on this User's Tidepool (admin
 def tidepool(ctx: typer.Context):
     """Enter your Tidepool. (VS Code: Remote-SSH host `<cluster name>`.)"""
     if ctx.invoked_subcommand is None:
+        require_now(Ctx.USER)
         tidepool_mod.enter()
 
 
 @tidepool_app.command("enter")
+@requires(Ctx.USER)
 def tidepool_enter():
     """Enter your Tidepool (ssh) — what bare `cuttle tidepool` does."""
     tidepool_mod.enter()
 
 
 @tidepool_app.command("status")
+@requires(Ctx.USER)
 def tidepool_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """State, disk use against its size, and how to reach it."""
     tidepool_mod.status(as_json)
 
 
 @tidepool_app.command("restart")
+@requires(Ctx.USER)
 def tidepool_restart(user: str = _TP_USER):
     """Restart it: running processes die; installed packages and your files stay."""
     tidepool_mod.restart(user)
 
 
 @tidepool_app.command("reset")
+@requires(Ctx.USER)
 def tidepool_reset(user: str = _TP_USER,
                    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation.")):
     """Rebuild it from the base image: your home stays; everything installed outside it is lost."""
@@ -650,10 +686,12 @@ def tidepool_keys(ctx: typer.Context,
                   as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """List the keys (`cuttle login` adds this box's own)."""
     if ctx.invoked_subcommand is None:
+        require_now(Ctx.USER)
         tidepool_mod.keys(as_json)
 
 
 @keys_app.command("add")
+@requires(Ctx.USER)
 def tidepool_key_add(path: Path = typer.Argument(..., help="A public key file, e.g. ~/.ssh/id_ed25519.pub."),
                      name: str = typer.Option(None, "--name", help="A label (default: the file name).")):
     """Allow another key in."""
@@ -661,12 +699,14 @@ def tidepool_key_add(path: Path = typer.Argument(..., help="A public key file, e
 
 
 @keys_app.command("remove")
+@requires(Ctx.USER)
 def tidepool_key_remove(key_id: int = typer.Argument(..., help="Key id from `cuttle tidepool keys`.")):
     """Stop a key logging in."""
     tidepool_mod.key_remove(key_id)
 
 
 @dive_app.command("start")
+@requires(Ctx.USER)
 def dive_start(
     main: str = typer.Argument(None, help="Main folder, from your Tidepool home (inside the Tidepool: "
                                           "default the current folder). Mirrored back; read-only "
@@ -688,6 +728,7 @@ def dive_start(
 
 
 @dive_app.command("attach")
+@requires(Ctx.USER)
 def dive_attach(dive_id: int = typer.Argument(None, help="Dive id (default: your only one)."),
                 vscode: bool = typer.Option(False, "--vscode", help="Open it in VS Code.")):
     """Enter a running Dive (or wait for a queued one)."""
@@ -695,6 +736,7 @@ def dive_attach(dive_id: int = typer.Argument(None, help="Dive id (default: your
 
 
 @dive_app.command("end")
+@requires(Ctx.USER)
 def dive_end(dive_id: int = typer.Argument(None, help="Dive id (default: your only one)."),
              yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation.")):
     """End a Dive: the GPU is freed, the main folder gets a final mirror."""
@@ -709,6 +751,7 @@ def dive_holders(folder: str = typer.Argument(...)):
 
 
 @dive_app.command("status")
+@requires(Ctx.USER)
 def dive_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Your open Dives."""
     dive_mod.status(as_json)
@@ -720,6 +763,7 @@ _XFER_FORCE = typer.Option(False, "--force", help="Overwrite files already at th
 
 
 @app.command()
+@requires(Ctx.USER)
 def download(path: str = typer.Argument(..., help="File or folder. From your machine: from your Tidepool "
                                                   "home (`proj` = `~/proj`), absolute allowed. Inside: "
                                                   "from here."),
@@ -731,6 +775,7 @@ def download(path: str = typer.Argument(..., help="File or folder. From your mac
 
 
 @app.command()
+@requires(Ctx.USER)
 def upload(path: str = typer.Argument(..., help="File or folder on your machine (inside: from the "
                                                 "folder you entered from)."),
            dest: str = typer.Argument(None, help="Folder it lands in (default: your Tidepool home, or "
@@ -741,6 +786,7 @@ def upload(path: str = typer.Argument(..., help="File or folder on your machine 
 
 
 @app.command("build-installer")
+@requires(Ctx.HEAD)
 def build_installer(
     out: Path = typer.Option(
         None, "--out", help="Where to write the .tar.gz (default: ./cuttle-installer.tar.gz)."
@@ -772,6 +818,7 @@ def build_installer(
 
 
 @app.command()
+@requires(Ctx.PROVISIONED, Ctx.POINTED)
 def teardown(
     local: bool = typer.Option(
         False, "--local", help="This box's combined Head+Arm (reverse `setup --head`)."
@@ -844,6 +891,7 @@ def _resolve_limit(limit: int, as_json: bool) -> int:
 
 
 @app.command()
+@requires(Ctx.USER)
 def queue(
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
     limit: int = typer.Option(-1, "--limit", show_default=False,
@@ -854,6 +902,7 @@ def queue(
 
 
 @app.command()
+@requires(Ctx.USER)
 def history(
     days: int = typer.Option(30, "--days", help="How far back to read."),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
@@ -865,12 +914,14 @@ def history(
 
 
 @app.command()
+@requires(Ctx.USER)
 def account(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Show who you are and where you stand: identity, Balance, Escrow, Share, and your queue nice."""
     auth_mod.account(as_json=as_json)
 
 
 @app.command()
+@requires(Ctx.USER)
 def tide(
     days: int = typer.Option(7, "--days", help="How far back to draw."),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),

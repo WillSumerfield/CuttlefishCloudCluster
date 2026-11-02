@@ -53,6 +53,7 @@ class TestPromptingFillsTheGaps:
     def test_a_supplied_argument_is_never_re_asked(self, answers, monkeypatch):
         """A flag always wins. This is what keeps the installer and every scripted provisioning run
         from stopping to ask a question they already answered."""
+        monkeypatch.setattr("cuttle.menu.is_head", lambda: True)   # user_add is Head-only
         monkeypatch.setattr(main.auth_mod, "user_add", lambda u, admin: None)
         a = answers()                       # nothing scripted: any prompt raises
         main.user_add("bob", True)
@@ -62,6 +63,7 @@ class TestPromptingFillsTheGaps:
         """`cuttle user add bob` must not start interrogating you about --admin. Optional flags are
         prompted only when the required argument was missing too, i.e. when we are already a wizard."""
         seen = {}
+        monkeypatch.setattr("cuttle.menu.is_head", lambda: True)   # user_add is Head-only
         monkeypatch.setattr(main.auth_mod, "user_add", lambda u, admin: seen.update(admin=admin))
         answers()                            # any prompt would raise
         main.user_add("bob", None)
