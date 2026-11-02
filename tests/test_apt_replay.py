@@ -228,3 +228,46 @@ class TestSources:
 def test_tidepool_shell_prints_the_result_once():
     z = templates.render_tidepool_zshrc()
     assert "$HOME/.ccc/installs/*.msg(N)" in z and "rm -f -- $_ccc_f" in z
+
+
+class TestBuildSlice:
+    """F7: User-triggered Head-side build work runs in ccc-build.slice, not the uncapped API slice."""
+
+    def test_apt_replay_launches_in_the_build_slice(self, monkeypatch):
+        cmd = []
+        monkeypatch.setattr(H, "sh", lambda *a, **kw: cmd.extend(a))
+        H.launch_replay("bob", "deadbeef")
+        assert cmd[0] == "systemd-run"
+        assert f"--slice={H.BUILD_SLICE}" in cmd
+
+    def test_build_scope_wraps_argv_synchronously(self):
+        wrapped = H.build_scope("podman", "commit", "x")
+        assert wrapped[:4] == ["systemd-run", "--scope", "--quiet", f"--slice={H.BUILD_SLICE}"]
+        assert wrapped[4:] == ["podman", "commit", "x"]  # command preserved, run in the foreground
+
+    def test_dive_snapshot_commit_and_push_are_build_scoped(self, monkeypatch, tmp_path):
+        """The heavy commit+push (the F7 DoS vector) both go through ccc-build.slice."""
+        monkeypatch.setattr(H, "DIVE_STATE", tmp_path)
+        (tmp_path / ("ab" * 16)).mkdir()
+        monkeypatch.setattr(H, "check_user", lambda u: u)
+        monkeypatch.setattr(H, "check_token", lambda t: t)
+        monkeypatch.setattr(H, "record", lambda u: {"uid": 60003})
+        monkeypatch.setattr(H, "registry", lambda: "reg:5000")
+        monkeypatch.setattr(H, "podman", lambda u: ["podman"])
+        monkeypatch.setattr(H, "container", lambda u: f"tp-{u}")
+        monkeypatch.setattr(H, "apt_offsets", lambda u: {"history": 0, "dpkg": 0})
+        monkeypatch.setattr(H, "shift_snapshot", lambda *a: "img@sha256:deadbeef")
+
+        calls = []
+
+        def fake_sh(*a, **kw):
+            calls.append(list(a))
+            (tmp_path / f"{'ab' * 16}.digest").write_text("sha256:deadbeef")  # push writes the digestfile
+            return subprocess.CompletedProcess(a, 0)
+        monkeypatch.setattr(H, "sh", fake_sh)
+
+        H.dive_snap("bob", "ab" * 16)
+        verbs = {c[c.index("podman") + 1]: c for c in calls if "podman" in c}
+        assert verbs["commit"][:2] == ["systemd-run", "--scope"]   # build-scoped
+        assert verbs["push"][:2] == ["systemd-run", "--scope"]
+        assert "rmi" in verbs and verbs["rmi"][0] == "podman"       # cheap cleanup left un-scoped

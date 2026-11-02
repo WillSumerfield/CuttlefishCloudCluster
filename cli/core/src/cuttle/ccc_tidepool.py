@@ -58,6 +58,7 @@ KEPT = Path("/etc/ccc-tidepools-kept.json")     # config.TIDEPOOL_KEPT
 UNIT_DIR = Path("/etc/systemd/system")
 MAIN_STORE = "/var/lib/containers/storage"
 SLICE = "ccc-tidepools.slice"                   # config.TIDEPOOL_SLICE
+BUILD_SLICE = "ccc-build.slice"                 # config.BUILD_SLICE (CPUWeight-only; F7 CPU fence)
 SERVICE = "ccc-tidepool"                        # config.TIDEPOOL_SERVICE
 API_USER = "ccc"                                # config.HEAD_API_USER
 
@@ -170,6 +171,12 @@ def create_argv(user: str, uid: int, s: dict, base_ref: str, head_ip: str) -> li
 
 def sh(*argv, check: bool = True, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(list(argv), check=check, **kw)
+
+
+def build_scope(*argv) -> list[str]:
+    """Wrap CPU-heavy User-triggered build work in ccc-build.slice (F7). `--scope` is synchronous, so
+    the wrapped command's return/stdio is unchanged; `--quiet` drops systemd-run's own chatter."""
+    return ["systemd-run", "--scope", "--quiet", f"--slice={BUILD_SLICE}", *argv]
 
 
 def ok(*argv) -> bool:
@@ -580,10 +587,10 @@ def dive_snap(user: str, tok: str) -> dict:
     # The Dive's own apt entries start where the Tidepool's logs end now (taken before the commit: an
     # install racing it is replayed twice, never missed).
     (DIVE_STATE / tok / "apt-offsets.json").write_text(json.dumps(apt_offsets(user)))
-    sh(*podman(user), "commit", "-q", container(user), ref, capture_output=True)
+    sh(*build_scope(*podman(user), "commit", "-q", container(user), ref), capture_output=True)
     try:
-        sh(*podman(user), "push", "-q", "--authfile", AUTH_FILE, "--digestfile", str(digest_file), ref,
-           capture_output=True)
+        sh(*build_scope(*podman(user), "push", "-q", "--authfile", AUTH_FILE, "--digestfile",
+                        str(digest_file), ref), capture_output=True)
     finally:
         sh(*podman(user), "rmi", "-f", ref, check=False, capture_output=True)
     digest = digest_file.read_text().strip()
@@ -1084,8 +1091,8 @@ def replay(user: str) -> None:
 
 
 def launch_replay(user: str, tag: str) -> None:
-    sh("systemd-run", "--no-block", "--collect", "--quiet", f"--unit=ccc-apt-replay-{user}-{tag}",
-       HELPER, "replay", user, check=False, capture_output=True)
+    sh("systemd-run", "--no-block", "--collect", "--quiet", f"--slice={BUILD_SLICE}",
+       f"--unit=ccc-apt-replay-{user}-{tag}", HELPER, "replay", user, check=False, capture_output=True)
 
 
 def queue_dive_replay(d: dict) -> None:

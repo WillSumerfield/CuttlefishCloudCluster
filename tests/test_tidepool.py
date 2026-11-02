@@ -30,6 +30,7 @@ class TestConstantsAgree:
         assert H.KEPT == config.TIDEPOOL_KEPT
         assert (H.SLICE, H.SERVICE, H.API_USER) == (config.TIDEPOOL_SLICE, config.TIDEPOOL_SERVICE,
                                                      config.HEAD_API_USER)
+        assert H.BUILD_SLICE == config.BUILD_SLICE
         assert (H.UID_FLOOR, H.UID_CEIL, H.SSH_PORT_BASE) == (config.CCC_UID, config.GUISE_UID_MAX,
                                                                config.TIDEPOOL_SSH_PORT_BASE)
 
