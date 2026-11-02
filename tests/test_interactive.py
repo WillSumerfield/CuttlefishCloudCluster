@@ -276,10 +276,11 @@ class TestTheMenuGatesByState:
         assert "login" not in paths
 
     def test_every_command_that_needs_a_session_is_declared_as_needing_one(self):
-        """`_visible` DEFAULTS to True, so a new submitter command that nobody adds to LOGIN_REQUIRED
-        is not merely unsorted — it is offered to a logged-OUT user, whose first act is a 401. That is
-        how one command shipped. This is the invariant, rather than a test naming one command: anything
-        reaching the Head with a session bearer belongs in that set.
+        """A submitter command reaches the Head with a session bearer, so offering it to a logged-OUT
+        user buys them a 401 as their first act. `_visible` now derives that from each command's own
+        `@requires(Ctx.USER)` declaration, so the way to ship this bug is to forget the declaration —
+        and then the guard would wave the command through too. This is the invariant, not a test
+        naming one command: anything reaching the Head with a session bearer must declare USER.
 
         Checked at every level, not just the first: filing a command into a folder must not be a way
         to smuggle it past its own gate."""
@@ -354,11 +355,33 @@ class TestTheMenuGatesByState:
         assert "dashboard" not in self._paths(logged_in=True, provisioned=True, pointed=False,
                                               on_head=False)
 
-    def test_the_admin_family_is_the_heads_alone(self):
-        admin = {"user", "arm", "build-installer"}
-        assert admin.isdisjoint(self._paths(logged_in=True, provisioned=True, pointed=True,
-                                            on_head=False))
-        assert admin <= self._paths(logged_in=True, provisioned=True, pointed=True, on_head=True)
+    def test_the_head_local_operator_commands_are_the_heads_alone(self):
+        """The commands that write head.db or reconfigure Slurm directly never appear off the Head,
+        whatever session a client holds. `arm` is no longer in this set wholesale — its owner- and
+        Arm-side commands leak out by design (the two tests below) — but its *operator* subcommands
+        stay put."""
+        head_only = {"user", "build-installer", "backup", "munge",
+                     "arm list", "arm authorize", "arm admit", "arm benchmark",
+                     "arm chown", "arm update", "arm remove", "karma override", "karma bump"}
+        client = self._paths(logged_in=True, provisioned=False, pointed=True, on_head=False)
+        assert head_only.isdisjoint(client)
+        assert head_only <= self._paths(logged_in=True, provisioned=True, pointed=True, on_head=True)
+
+    def test_an_owner_reaches_retract_and_return_from_a_plain_client(self):
+        """Gap fixed. retract/return are an owner's own-arm commands ({HEAD, USER}), done over the API
+        from anywhere — so a logged-in client must reach them. They used to be hidden on a client with
+        the whole of `arm`, leaving `cuttle arm retract` typable but invisible."""
+        client = self._paths(logged_in=True, provisioned=False, pointed=True, on_head=False)
+        assert {"arm retract", "arm return"} <= client
+        assert client.isdisjoint({"arm list", "arm remove", "arm authorize"})  # not the operator's
+
+    def test_an_arm_box_reaches_sync_key(self):
+        """Gap fixed. `arm sync-key` is the one arm command that runs ON the Arm (ARM), re-fetching
+        the munge key from the Head. It used to be hidden there with the Head-only arm commands, so a
+        donor could not find the one recovery step their box actually offers."""
+        arm = self._paths(logged_in=False, provisioned=True, pointed=True, on_head=False)
+        assert "arm sync-key" in arm
+        assert arm.isdisjoint({"arm list", "arm retract"})  # Head-/owner-side, not here
 
     def test_karma_descends_to_standings_plus_ledger_and_never_hides_standings(self):
         """karma has a client-visible read now (ledger), so it is a group everywhere — but its own
@@ -803,6 +826,7 @@ def test_the_menu_actually_renders_on_a_real_terminal():
             pass
     text = out.decode("utf8", "replace")
     assert "What do you want to do?" in text, text[-500:]
-    # A throwaway CCC_HOME with no session: the menu shows the logged-out set, so `Log in` is the
-    # stable entry to look for (the submit suite is gated behind a session now).
-    assert "Log in" in text, text[-500:]
+    # A throwaway CCC_HOME: no session and, crucially, no Head pointed at — so even `Log in` is gone
+    # (it needs a cluster to log into). The one thing a bare box can always do is set itself up, so
+    # `This box` (the folder `setup` lives in) is the stable entry to look for.
+    assert "This box" in text, text[-500:]

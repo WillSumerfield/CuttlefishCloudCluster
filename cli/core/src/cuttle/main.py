@@ -8,12 +8,11 @@ from typer.core import TyperGroup
 from . import auth as auth_mod
 from . import backup as backup_mod
 from . import config
-from .context import Ctx, require_now, requires
+from .context import Ctx, declares, require_now, requires
 from . import dashboard as dashboard_mod
 from . import dive as dive_mod
 from . import enroll as enroll_mod
 from . import features as feature_profiles
-from . import headapi as headapi_mod
 from . import installer as installer_mod
 from . import karma as karma_mod
 from . import menu as menu_mod
@@ -390,30 +389,22 @@ def arm_remove(
 
 
 @app.command()
-@requires(Ctx.POINTED)
 def login(
     head: str = typer.Option(
         None, "--head", help="Head address or URL (e.g. ccc.<name>); saved for next time."),
 ):
     """Log in to the Head and store a session token (~/.ccc/session). Forces a password change on
     first login."""
-    # A box, so the URL/username/password prompts draw as rows *inside* the frame rather than loose
-    # lines below it. `who` carries the result out to the summary line the box collapses to.
+    # Pointing is the one precondition, but `--head` supplies it inline (`auth.login` records it), so
+    # only a bare `cuttle login` needs a box already pointed. On an unpointed box that bare form is
+    # sent to `setup --client` — which also writes the hosts entry and pins the cert that a login
+    # given a raw address would skip — rather than interrogating here for a URL it cannot verify.
+    if head is None:
+        require_now(Ctx.POINTED)
+    # A box, so the username/password prompts draw as rows *inside* the frame rather than loose lines
+    # below it. `who` carries the result out to the summary line the box collapses to.
     who: dict[str, str] = {}
     with ui.section("Log in", lambda: who.get("as", "")):
-        # Only asked when no Head is configured yet — `cuttle login` on a set-up box should not
-        # re-interrogate you about a URL it already knows.
-        if head is None and not settings.load().get("head") and ui.interactive():
-            # A default only when we ARE the Head — there the Cluster name resolves (setup wrote the
-            # hosts entry) and the cert covers it. On a client that name means nothing until
-            # `setup --client` writes its own entry, so never prefill it: accepted, it saves as an
-            # unresolvable name and wedges every login.
-            default = headapi_mod.head_url(config.domain()) if menu_mod.is_head() else ""
-            head = ui.ask_text("Head API URL?", default=default)
-            if not head.strip():
-                raise ui.abort("no Head URL given",
-                               next_step="`cuttle setup --client` — it asks for the address, then "
-                                         "points this box at the cluster by name")
         who["as"] = auth_mod.login(head)
 
 
@@ -505,6 +496,7 @@ def user_reset(
 
 
 @karma_app.callback()
+@declares(Ctx.USER)
 def karma(ctx: typer.Context,
           as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """Show every User's standing: Balance, Escrow, Share, and the queue nice it implies.
@@ -640,6 +632,7 @@ _TP_USER = typer.Option(None, "--user", help="Act on this User's Tidepool (admin
 
 
 @tidepool_app.callback()
+@declares(Ctx.USER)
 def tidepool(ctx: typer.Context):
     """Enter your Tidepool. (VS Code: Remote-SSH host `<cluster name>`.)"""
     if ctx.invoked_subcommand is None:
@@ -682,6 +675,7 @@ def tidepool_reset(user: str = _TP_USER,
 
 
 @keys_app.callback()
+@declares(Ctx.USER)
 def tidepool_keys(ctx: typer.Context,
                   as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
     """List the keys (`cuttle login` adds this box's own)."""

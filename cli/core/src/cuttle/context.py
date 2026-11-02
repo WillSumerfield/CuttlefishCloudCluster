@@ -109,3 +109,17 @@ def requires(*allowed: Ctx):
         return wrapper
 
     return deco
+
+
+def declares(*allowed: Ctx):
+    """Stamp `__ccc_requires__` without wrapping or enforcing. For a group callback whose own action
+    (`cuttle karma` → standings) guards itself with `require_now` inside its
+    `invoke_without_command` branch: it can't use `@requires` (that would gate its differently-scoped
+    subcommands too), but the menu still needs to read where its own-action row belongs."""
+    allowed_set = frozenset(allowed)
+
+    def deco(func):
+        func.__ccc_requires__ = allowed_set
+        return func
+
+    return deco

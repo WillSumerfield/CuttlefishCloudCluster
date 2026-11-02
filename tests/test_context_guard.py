@@ -87,6 +87,14 @@ def test_pointed_command_on_an_unpointed_box_runs_nothing(box, ran):
     assert "setup --client" in r.output
     assert "login" not in ran
 
+def test_login_with_an_explicit_head_points_the_unpointed_box_itself(box, ran):
+    """`--head` is the one thing that may precede pointing: `auth.login` records the address, so the
+    flag supplies the very precondition a bare `login` demands. The guard must let it through on a box
+    that is not pointed yet, or the only way to point a box becomes the wizard — and the flag is dead."""
+    box(pointed=False)
+    runner.invoke(app, ["login", "--head", "ccc.lab"])
+    assert "login" in ran
+
 
 # --- the guard does NOT over-reach: the right box still runs -----------------------
 

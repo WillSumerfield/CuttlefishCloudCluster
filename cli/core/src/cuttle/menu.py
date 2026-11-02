@@ -9,10 +9,17 @@ descends the tree. They differ on a group that already does something: `cuttle k
 standings and exits (a node with a default action is a leaf), while the menu can still walk into
 karma's subcommands.
 
-**Menu-only filtering.** Commands are hidden on a box that cannot run them *right now* — but only
-here. `--help` still lists everything, and an explicitly typed command still runs and fails with a
-real message. If a detection bug ever hides something wrongly, the command must still be reachable;
-silently vanishing is indistinguishable from "this version doesn't have it", and costs hours.
+**Menu-only filtering, from one source of truth.** Commands are hidden on a box that cannot run them
+*right now* — but only here. `--help` still lists everything, and an explicitly typed command still
+runs and fails with a real message. If a detection bug ever hides something wrongly, the command must
+still be reachable; silently vanishing is indistinguishable from "this version doesn't have it", and
+costs hours.
+
+A command is hidden precisely when the guard would refuse it: `_visible` reads the same
+`@requires(...)` declaration the guard enforces (`__ccc_requires__`, via `context.Ctx`), so the menu
+and the one-line refusal can never disagree about where a command belongs. The menu keeps only
+*display* overrides — `login` worth a row solely when logged out, `setup` always — plus its own,
+online session probe (`_session`), which is stricter than the guard's offline token-on-disk test.
 
 Four axes decide what shows (see `MenuState`): whether you are **logged in** (a live session on the
 Head — validated, not just a file on disk), whether the box is **provisioned** (it carries a role —
@@ -38,20 +45,7 @@ from dataclasses import dataclass
 import typer
 
 from . import api, config, settings, ui
-
-# Commands that only work on the Head, because they write head.db or reconfigure Slurm directly (or,
-# for build-installer, bake in this Head's address + cert). The Head API exposes zero admin-write
-# endpoints, so admin work happens on the Head as the operator, never over a session. `teardown` is
-# NOT here — it is gated by "is this box set up", because a client tears down its own `~/.ccc` too
-# (`teardown --client`).
-HEAD_ONLY = {"user", "arm", "karma override", "karma bump", "build-installer", "backup", "munge"}
-
-# Commands that reach the Head API with a session bearer, so they are useless without one. The whole
-# submitter surface plus the session's own housekeeping. `login` mints the token and so is pointedly
-# absent; `karma` (standings) is a read behind the session and belongs here.
-LOGIN_REQUIRED = {"queue", "history", "dive", "karma",
-                  "tide", "account", "logout", "whoami", "passwd", "tidepool",
-                  "upload", "download"}
+from .context import Ctx
 
 
 @dataclass
@@ -316,37 +310,44 @@ def _menu_children(node, root, prefix: str) -> list[tuple[str, object]]:
     return [(f"{prefix}{name}", cmd) for name, cmd in node.commands.items()]
 
 
-def _visible(path: str, st: MenuState) -> bool:
-    """Is this *leaf* command offered in state `st`? Menu-only — a typed command still runs (see the
-    module header). The order matters: a path's most specific gate wins (`karma override` is
-    Head-only even though `karma` itself is login-gated)."""
+def _satisfied(st: MenuState) -> set[Ctx]:
+    """The contexts this box meets — the menu's twin of `context.satisfied()`, fed from the probed
+    `MenuState` rather than from disk. The one real difference is USER: here it is the Head-validated
+    session (`logged_in`), not just a token file, so the menu hides the submit suite the instant the
+    Head says the session is dead, where the guard would let the stale token earn a clean 401."""
+    s = {Ctx.ANY}
+    if st.on_head:
+        s.add(Ctx.HEAD)
+    if st.provisioned:
+        s.add(Ctx.PROVISIONED)
+        if not st.on_head:
+            s.add(Ctx.ARM)        # provisioned and not the Head ⇒ an Arm
+    if st.pointed:
+        s.add(Ctx.POINTED)
+    if st.logged_in:
+        s.add(Ctx.USER)
+    return s
+
+
+def _visible(path: str, cmd, st: MenuState) -> bool:
+    """Is this *leaf* (or group own-action) offered in state `st`? Menu-only — a typed command still
+    runs (see the module header). Validity comes straight from the command's `@requires` declaration,
+    so the menu and the guard cannot drift; the only extras here are *display* choices the guard has
+    no opinion on."""
     top = path.split()[0]
-    if path in HEAD_ONLY or top in HEAD_ONLY:
-        return st.on_head
-    # `setup` is where an answer is MADE or CHANGED, so it never goes away: a provisioned box still
-    # has settings to change, and a merely *pointed* one is the promote-a-client-to-an-Arm path.
-    # (`setup --arm --re-enroll` on a live Arm is a typed recovery command; mesh.py prints it.)
+    # Display-only overrides — not about whether the command would run, about whether it earns a row.
+    # `setup` is where an answer is MADE or CHANGED, so it never goes away: a provisioned box still has
+    # settings to change, and a merely *pointed* one is the promote-a-client-to-an-Arm path.
     if top == "setup":
         return True
-    # `update` lays the recorded answers down again, so it needs there to BE recorded answers — a role,
-    # or a client's own pointing. Same gate as `teardown`, and for the same reason: both act on what
-    # setup left behind, and neither has anything to act on before it has run.
-    if top == "update":
-        return st.provisioned or st.pointed
-    # `teardown` goes when there is anything to remove — a role, or a client's own `~/.ccc`. A stray
-    # logs dir alone is not worth a menu entry.
-    if top == "teardown":
-        return st.provisioned or st.pointed
+    # `login` is valid on any pointed box (the guard's POINTED), but a row for it once you already hold
+    # a session is noise — so offer it only logged out. (It leads a freshly-installed box; see ORDER.)
     if top == "login":
-        return not st.logged_in
-    # Pointed, not logged in: the Dashboard does its own login, and a box that knows a Head can always
-    # open one. Deliberately not LOGIN_REQUIRED — that set is "needs a session bearer from here", and
-    # this command sends nothing anywhere; it hands an address to a browser.
-    if top == "dashboard":
-        return st.pointed
-    if path in LOGIN_REQUIRED or top in LOGIN_REQUIRED:
-        return st.logged_in
-    return True
+        return st.pointed and not st.logged_in
+    req = getattr(getattr(cmd, "callback", None), "__ccc_requires__", None)
+    if not req or Ctx.ANY in req:
+        return True
+    return bool(_satisfied(st) & req)
 
 
 def _shown_children(path: str, group, st: MenuState, root) -> list[tuple[str, object]]:
@@ -381,8 +382,8 @@ def _node_visible(path: str, cmd, st: MenuState, root=None) -> bool:
     entry (standings) while the Head sees a group it descends into (override/bump)."""
     if _is_group(cmd):
         return _visible_children(path, cmd, st, root) or (
-            getattr(cmd, "invoke_without_command", False) and _visible(path, st))
-    return _visible(path, st)
+            getattr(cmd, "invoke_without_command", False) and _visible(path, cmd, st))
+    return _visible(path, cmd, st)
 
 
 # One path whose menu label depends on the box, because the command's job genuinely differs there.
@@ -405,7 +406,7 @@ def _entries(group, st: MenuState, prefix: str = "", root=None) -> list[tuple[st
     root = root if root is not None else group
     rows = []
     own = prefix.strip()
-    if own and getattr(group, "invoke_without_command", False) and _visible(own, st):
+    if own and getattr(group, "invoke_without_command", False) and _visible(own, group, st):
         rows.append((own, group))
     rows += [(path, cmd) for path, cmd in _menu_children(group, root, prefix)
              if not getattr(cmd, "hidden", False) and _node_visible(path, cmd, st, root)]
