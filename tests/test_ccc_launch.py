@@ -173,6 +173,31 @@ def test_feature_binds_env_fences_the_descriptor(tmp_path, monkeypatch, desc):
         L.feature_binds_env(["vlearn"])
 
 
+def test_licence_home_binds_merges_the_activation_into_the_home(tmp_path, monkeypatch):
+    """A licensed Feature's descriptor names the Licence directory; its contents are bound WRITABLE into
+    /home/<user> (where TurboActivate reads the activation), per entry rather than replacing the home."""
+    lh = tmp_path / "licence"
+    lh.mkdir()
+    (lh / ".turbo-activation").write_text("activated")
+    (lh / "state").mkdir()
+    _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": [], "licence_home": str(lh)})
+    binds = L.licence_home_binds(["vlearn"], "alice")
+    assert (lh / ".turbo-activation", "/home/alice/.turbo-activation") in binds
+    assert (lh / "state", "/home/alice/state") in binds
+
+
+def test_licence_home_binds_is_empty_without_a_licence_directory(tmp_path, monkeypatch):
+    _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": []})   # no licence_home key
+    assert L.licence_home_binds(["vlearn"], "alice") == []
+
+
+@pytest.mark.parametrize("lh", ["relative/path", "/no/such/licence/dir"])
+def test_licence_home_binds_refuses_a_bad_licence_directory(tmp_path, monkeypatch, lh):
+    _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": [], "licence_home": lh})
+    with pytest.raises(L.Refused):
+        L.licence_home_binds(["vlearn"], "alice")
+
+
 SMI = """\
 GPU 0: NVIDIA RTX PRO 6000 (UUID: GPU-aaa)
 GPU 1: NVIDIA RTX PRO 6000 (UUID: GPU-bbb)

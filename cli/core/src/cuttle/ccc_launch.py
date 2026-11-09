@@ -494,6 +494,39 @@ def feature_binds_env(names: list[str]) -> tuple[list[tuple[Path, str, bool]], d
     return binds, env
 
 
+def licence_home_binds(names: list[str], user: str) -> list[tuple[Path, str]]:
+    """The Licence directory's contents, to merge into a Dive's home — `(src, dst)` per top-level entry,
+    bound WRITABLE at `/home/<user>/<entry>`.
+
+    A licensed Feature (vlearn) is activated per machine; TurboActivate reads the activation with
+    `getpwuid(getuid())->pw_dir`, which inside the container is `/home/<user>`, so the activation state
+    the Arm produced has to appear there. The directory can't simply replace the home (the home holds
+    the staged project), so its entries are merged in. Writable because the vendor rewrites the record
+    on periodic online re-validation.
+
+    The path comes from the Feature's root-written descriptor (`cuttle.features.write_descriptor`), the
+    same trusted channel as its binds. The Licence KEY is never here — it lives in the Feature state
+    tree, not the Licence directory (`feature_binds_env` refuses it there too)."""
+    out: list[tuple[Path, str]] = []
+    for name in names:
+        if not FEATURE_NAME_RE.match(name):
+            raise Refused(f"bad feature name {name!r}")
+        descf = FEATURE_STATE / name / FEATURE_DESC
+        if not descf.exists():
+            continue
+        try:
+            lh = json.loads(descf.read_text()).get("licence_home")
+        except (OSError, ValueError):
+            continue
+        if not lh:
+            continue
+        home = Path(str(lh))
+        if not home.is_absolute() or not home.is_dir():
+            raise Refused(f"'{name}' Feature Licence directory {lh!r} is not an absolute existing path")
+        out += [(entry, f"/home/{user}/{entry.name}") for entry in sorted(home.iterdir())]
+    return out
+
+
 def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: list[str], jobdir: Path,
               home: Path, cache: Path, deps: list[str], addr: str) -> list[str]:
     """`addr` "" = publish sshd on every address (the Head: no relay in front of it).
@@ -533,6 +566,10 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
     fbinds, fenv = feature_binds_env(spec.get("features", []))
     for src, dst, ro in fbinds:
         argv += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
+    # The Licence directory's activation state, merged into the home WRITABLE (where TurboActivate
+    # looks). After the feature binds and after the home mount, so it layers on top of /home/<user>.
+    for src, dst in licence_home_binds(spec.get("features", []), u):
+        argv += ["-v", f"{src}:{dst}"]
     for g in cdi:
         argv += ["--device", f"nvidia.com/gpu={g}"]
     # The Dive's own env wins over a Feature's, never the other way: a Feature arranges its runtime,

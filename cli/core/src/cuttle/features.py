@@ -242,11 +242,14 @@ def build_libs(features: list[dict]) -> None:
             run(["chmod", "-R", "a+rX", str(prefix)], sudo=True)
 
 
-def prepare(features: list[dict]) -> dict[str, list[str]]:
+def prepare(features: list[dict], licence_home: str = "") -> dict[str, list[str]]:
     """Bring everything a declared Feature needs into CCC's own state, and report the ABI tags that
     landed as `{feature: [abi, ...]}`.
 
     Order matters: `unpack_packages` clears the whole per-Feature tree, so the mirrors go in behind it.
+
+    `licence_home` is this Arm's one Licence directory — recorded in each licensed Feature's descriptor
+    so ccc-launch can bind its contents into a Dive's home (where TurboActivate reads the activation).
 
     Called on EVERY setup, including one that declares nothing — `forget_undeclared` is why. A re-run
     that drops a Feature has to erase the ~1 GB mirror describing it, and a caller that only ran this
@@ -258,7 +261,7 @@ def prepare(features: list[dict]) -> dict[str, list[str]]:
     for f in features:
         mirror_install(f)
         mirror_licence_key(f)
-        write_descriptor(f["name"], landed.get(f["name"], []))
+        write_descriptor(f["name"], landed.get(f["name"], []), licence_home)
     return landed
 
 
@@ -343,18 +346,27 @@ def descriptor_binds(name: str, abis: list[str]) -> list[dict]:
     return binds
 
 
-def write_descriptor(name: str, abis: list[str]) -> None:
+def write_descriptor(name: str, abis: list[str], licence_home: str = "") -> None:
     """Write `/var/lib/ccc/features/<name>/profile.json` — what ccc-launch binds for this Feature.
 
     Skipped for a Feature CCC only places (`isaaclab`: no ArmProfile, no binds). Staged by this
     process then `install`ed as root, like every other write into /var/lib/ccc here.
+
+    `licence_home` is recorded only for a LICENSED Feature with a Licence directory: ccc-launch merges
+    that directory's contents into the Dive's home, where TurboActivate (getpwuid->pw_dir) reads the
+    per-machine activation. It is the activation STATE, never the key — the key lives in this tree, not
+    the Licence directory.
     """
     binds = descriptor_binds(name, abis)
     if not binds:
         return
+    p = ARM_PROFILES.get(name)
+    desc = {"binds": binds, "env": {}}
+    if licence_home and p and p.licence_key:
+        desc["licence_home"] = licence_home
     dest = FEATURE_PKG_DIR / name / DESCRIPTOR_NAME
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
-        json.dump({"binds": binds, "env": {}}, tmp)
+        json.dump(desc, tmp)
         staging = tmp.name
     run(["install", "-D", "-m", "0644", staging, str(dest)], sudo=True)
     run(["rm", "-f", staging], check=False)

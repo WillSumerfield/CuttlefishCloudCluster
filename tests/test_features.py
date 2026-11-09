@@ -198,6 +198,21 @@ def test_a_feature_with_no_profile_gets_no_descriptor(tmp_path, monkeypatch):
     assert not (tmp_path / "isaaclab" / af.DESCRIPTOR_NAME).exists()
 
 
+def test_the_descriptor_records_the_licence_directory_only_when_there_is_one(tmp_path, monkeypatch):
+    """ccc-launch binds the Licence directory into a Dive's home (where TurboActivate reads the
+    activation); it learns the path from here. Recorded only for a licensed Feature with a directory —
+    never for an Arm that named none."""
+    import json
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
+    af.write_descriptor("vlearn", ["cp311"], "/opt/ccc/licence")
+    desc = json.loads((tmp_path / "vlearn" / af.DESCRIPTOR_NAME).read_text())
+    assert desc["licence_home"] == "/opt/ccc/licence"
+    af.write_descriptor("vlearn", ["cp311"], "")   # no Licence directory
+    desc = json.loads((tmp_path / "vlearn" / af.DESCRIPTOR_NAME).read_text())
+    assert "licence_home" not in desc
+
+
 def test_prepare_writes_a_descriptor_ccc_launch_can_apply(tmp_path, monkeypatch):
     """The whole round-trip: setup writes profile.json, ccc-launch's validator accepts the binds it
     lists (the two never import each other, so this is where they are proved to agree)."""

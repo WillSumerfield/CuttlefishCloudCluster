@@ -928,11 +928,14 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         # is a Dive that fails on an Arm whose setup said it succeeded.
         if head_features:
             ensure_guise_group()   # the mirrored licence key is group-owned by it, and this is early
-        feature_profiles.prepare(head_features)
+        feature_profiles.prepare(head_features, head_licence)
         _write_root_file(config.ARM_FEATURES_ENV,
                          enroll.render_features_env(head_features, head_licence))
         if head_licence:
             provision_licence_home(head_licence)
+            # Activation (feature_profiles.activate) is not run here: the Head builds its images below,
+            # after this step, so there is no base image yet — a licensed Feature the Head itself serves
+            # is activated by a later `cuttle setup --arm` pass, where the image is present.
     with ui.step("Configuring Slurm"):
         # `features` explicitly, not left to the registry: on a FIRST setup this box has no registry row
         # yet (register_head_arm runs below, after the admin exists), so there would be nothing to read
@@ -1541,7 +1544,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
         # where the packages and the mirrored install went.
         if features:
             ensure_guise_group()   # as on the Head — the mirrored licence key is group-owned by it
-        feature_profiles.prepare(features)
+        feature_profiles.prepare(features, licence_home)
         _write_root_file(config.ARM_FEATURES_ENV,
                          enroll.render_features_env(features, licence_home))
         if licence_home:
