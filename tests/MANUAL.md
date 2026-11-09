@@ -6,7 +6,7 @@ the other half.
 
 Everything under `tests/` renders a config, a unit file, a job script or an HTTP response — none of
 it needs Slurm, sudo, a GPU or a database. That is deliberate, and it is also the limit. Nothing in
-the suite has ever provisioned a box, placed a Spawn on real silicon, or looked at the screen.
+the suite has ever provisioned a box, placed a Dive on real silicon, or looked at the screen.
 
 Teardown-and-setup is the normal redeploy here, so a full pass is cheap. Do it on a real Head and at
 least one real Arm.
@@ -23,7 +23,8 @@ sinfo -N -o "%N %t %C %G"
 - [ ] The Head's own node is `idle` with its GPUs listed.
 - [ ] The Feature prompts offer what this box declared last time (on a re-run).
 - [ ] The LAN-only warning fires if and only if the address is LAN-only.
-- [ ] `https://<head>/` serves the dashboard behind one certificate warning.
+- [ ] `https://<head>/` serves the Dashboard behind one certificate warning, and `/wiki/` serves the
+      wiki behind the same sign-in.
 
 ## 2. An Arm enrolls
 
@@ -40,43 +41,69 @@ cuttle setup --arm --token <token>
 ```
 
 - [ ] `authorize` waits, then admits, without a second command.
-- [ ] The benchmark runs and the Arm gets a Weight.
-- [ ] `cuttle arm list` shows it **admitted**, not merely enrolled.
+- [ ] The benchmark runs and the Arm gets a Power.
+- [ ] `cuttle arm list` shows it **idle** (admitted), not merely enrolled.
 - [ ] A declared Feature with a wrong path is re-asked at the prompt, not accepted.
 - [ ] A second use of the same token is refused.
 
-## 3. Isolation actually isolates
+## 3. Tidepool and Dive, end to end
 
-From inside a Pod (nothing can open one in 2.0 until Dives):
+As an ordinary User, from a client box:
+
+```sh
+cuttle setup --client          # points at the Head, logs in, forces a password change
+cuttle upload ./myproject      # lands at ~/myproject in the Tidepool
+cuttle dive myproject --time 1h --vram 8 --env pyproject.toml
+```
+
+- [ ] `cuttle tidepool` gives a CPU-only shell with `sudo`, no GPU (`nvidia-smi` fails there).
+- [ ] The Dive lands on a GPU, `nvidia-smi` shows only the cards it was given, and the prompt says
+      `in a dive`.
+- [ ] The main folder is **read-only in the Tidepool** while the Dive holds it, and the Files page
+      marks it locked.
+- [ ] Edits in the Dive's main folder appear back in the Tidepool within ~a minute.
+- [ ] `--env` builds a `.venv` in the background; a new shell says "still building", then the packages
+      are importable.
+- [ ] `exit` leaves the Dive running; `cuttle dive attach` gets back in; `cuttle dive end` frees the
+      GPU and does a final mirror.
+- [ ] `apt install` inside the Dive comes back to the Tidepool when the Dive ends (one summary line
+      on the next `cuttle tidepool`).
+- [ ] `cuttle upload`/`download` work from inside a `cuttle` shell; a plain `ssh` session says it has
+      no link to your machine.
+
+## 4. Isolation actually isolates
+
+From inside a Dive's Pod:
 
 - [ ] `ls /` is the Pod, not the host.
-- [ ] Another User's spawn directory is unreachable.
-- [ ] `ps aux` shows nothing belonging to the host or another Spawn.
+- [ ] Another User's files and another Dive's working files are unreachable.
+- [ ] `ps aux` shows nothing belonging to the host or another Dive.
 - [ ] The Guise is not an account: `su - <guise>` fails.
+- [ ] A second Dive on the same main folder is refused while the first holds it.
 
-## 4. Retract does what it promises
+## 5. Retract does what it promises
 
-With someone else's Spawn running on the Arm:
+With someone else's Dive running on the Arm:
 
 ```sh
 cuttle arm retract test-arm
 ```
 
-- [ ] The running Spawn is signalled, gets its grace, and dies.
+- [ ] The running Dive is signalled, gets its grace, and dies.
 - [ ] It settles at **zero** — `cuttle karma ledger` on both sides shows no movement.
-- [ ] No new Spawn is placed there.
-- [ ] `cuttle arm return` reopens it, and does not resurrect the killed Spawn.
+- [ ] No new Dive is placed there.
+- [ ] `cuttle arm return` reopens it, and does not resurrect the killed Dive.
 
-## 5. The economy moves the right way
+## 6. The economy moves the right way
 
-- [ ] A Spawn on someone else's Arm debits the submitter and credits that owner, the same amount.
-- [ ] A Spawn on your own Arm is free.
-- [ ] A Spawn on a Commons Arm destroys the Karma — nobody is credited.
-- [ ] Queueing several Spawns suppresses your Share **immediately**, before any of them run.
+- [ ] A Dive on someone else's Arm debits the submitter and credits that owner, the same amount.
+- [ ] A Dive on your own Arm is free.
+- [ ] A Dive on a Commons Arm destroys the Karma — nobody is credited.
+- [ ] Queueing several Dives suppresses your Share **immediately**, before any of them run.
 - [ ] Over-declaring `--time` refunds at settlement.
 - [ ] `cuttle karma override` on an **admin** is refused.
 
-## 6. The interactive layer
+## 7. The interactive layer
 
 Typed, and looked at. This is the part the suite explicitly does not cover.
 
@@ -86,30 +113,32 @@ Typed, and looked at. This is the part the suite explicitly does not cover.
 - [ ] A destructive command (`teardown`, `arm remove`, `backup restore`) demands the typed name and
       cannot be answered by a confirmation reflex.
 
-## 7. Backup and restore
+## 8. Backup and restore
 
 ```sh
 cuttle backup create
-# make changes: a User, a Spawn, an Override
+# make changes: a User, a Dive, an Override
 cuttle backup restore <archive>
 ```
 
-- [ ] `create` causes no downtime — the dashboard stays up throughout.
+- [ ] `create` causes no downtime — the Dashboard stays up throughout.
 - [ ] `restore` stops and restarts everything, and the changes since are gone.
 - [ ] The nightly timer has produced archives, pruned to the newest three.
 
-## 8. The Dashboard
+## 9. The Dashboard
 
 - [ ] Every rail destination loads and shows the same data as its CLI counterpart.
+- [ ] Starting a Dive from the Queue page saves `cuttle.toml` and opens the Dive page.
+- [ ] The Files page uploads and downloads, including drag-and-drop of a folder.
 - [ ] Retract/Return work from the Arms page.
 - [ ] The Users page is visible to an Admin and read-only.
 - [ ] Logging out of one client does not log out the other.
 
-## 9. Docs still describe reality
+## 10. Docs still describe reality
 
-- [ ] Every command in [`../docs/CLI.md`](../docs/CLI.md) exists, and every command that exists is
+- [ ] Every command in the wiki's `Using CCC/CLI` page exists, and every command that exists is
       listed there.
-- [ ] The worked examples in the docs run as written.
+- [ ] The worked flows in the wiki (Getting started, Dives, Files) run as written.
 
 There is no automated check for any of this, deliberately — a doc test that policed the command list
 would fail on every rename and teach nobody anything.
