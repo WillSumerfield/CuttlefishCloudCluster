@@ -19,12 +19,14 @@ stands. It changes often; the working plan is `temp/2.0-plan.md` in the repo.
 | 5 | Transfer: `cuttle upload` / `download`, Dashboard Files page | Built, mostly hardware-tested |
 | 6 | Campus access: login throttling | Built; one end-to-end check left |
 | 7 | Docs move to this wiki | Done |
-| 8 | Loose ends: Feature runtime profiles in Dives | Not started |
+| 8 | Loose ends: Feature runtime profiles in Dives | Built; not yet hardware-tested |
 
 ## Next up
 
-- **Phase 8, loose ends.** Features with a runtime profile (such as `vlearn`) only constrain
-  placement today. Their activation step and the Licence bind inside a Dive still need building.
+- **Phase 8 on real hardware.** The `vlearn` profile is wired end to end — the Feature's package and
+  system libraries reach a Dive, the licensed package is swapped for the Arm's own, the machine is
+  activated at `setup --arm`, and the Licence directory is bound into the Dive. None of it has run on a
+  real box with a real licence and GPU yet.
 
 ## Still to test on real hardware
 
@@ -34,6 +36,8 @@ Unit tests can't cover these. They need real boxes.
   Dashboard, `cuttle tidepool`, attaching to an Arm Dive through the relay, upload and download.
 - The Dashboard Files page in a browser, especially drag-and-drop upload. The API behind it passes.
 - Replaying a User's package list after a Tidepool rebuild (unit-tested only).
+- A live `vlearn` Dive on an Arm with a real licence and GPU: activation at `setup --arm`, the
+  Feature's wheel + system libraries + Licence directory reaching the Dive, and `create_gym()`.
 
 ## Known gaps
 
