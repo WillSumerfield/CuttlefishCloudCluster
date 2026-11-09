@@ -1,9 +1,10 @@
 """**Guises** — who a Dive is on the machine that runs it.
 
 Every Dive runs as a Guise, not the **Mantle** (`ccc`, which owns head.db, head.key, every Dive's
-output) — Apptainer's "user inside is user outside" means containment flags alone
-can't keep a Dive from touching those. One Guise per User, the same one wherever the cluster places
-their work.
+output) — the container boundary alone can't keep a Dive off those: Slurm launches the job as the
+submitting account, so what the payload may touch on the host is decided by that account, not by the
+container. Running as the Guise — a real unprivileged host user — is what fences it off. One Guise per
+User, the same one wherever the cluster places their work.
 
 A Guise is `ccc-u<uid>` and nothing else, because of where the name has to be formed: the Prolog creates
 the account on whatever Arm Slurm picked, as root, with `SLURM_JOB_UID` as its ONLY input — no network,
