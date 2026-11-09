@@ -353,6 +353,41 @@ def test_a_feature_with_no_profile_keeps_the_path_its_owner_declared():
     assert af.install_path({"name": "isaaclab", "path": "/opt/isaaclab"}) == "/opt/isaaclab"
 
 
+def test_the_descriptor_binds_every_abi_and_the_install_never_the_key(tmp_path, monkeypatch):
+    """What ccc-launch reads: one read-only bind per held ABI (the hook picks one in-container) plus
+    the mirrored runtime data — and nothing else under the Feature's tree, least of all the key."""
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    binds = af.descriptor_binds("vlearn", ["cp310", "cp311"])
+    srcs = {b["src"] for b in binds}
+    assert str(tmp_path / "vlearn" / "cp310") in srcs and str(tmp_path / "vlearn" / "cp311") in srcs
+    assert str(tmp_path / "vlearn" / af.INSTALL_DIRNAME) in srcs
+    assert all(b["ro"] and b["dst"].startswith(f"{af.FEATURE_MOUNT}/vlearn/") for b in binds)
+    assert not any(af.LICENCE_KEY_NAME in b["src"] for b in binds)
+
+
+def test_a_feature_with_no_profile_gets_no_descriptor(tmp_path, monkeypatch):
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    assert af.descriptor_binds("isaaclab", ["cp311"]) == []
+    af.write_descriptor("isaaclab", ["cp311"])   # a no-op, writes nothing
+    assert not (tmp_path / "isaaclab" / af.DESCRIPTOR_NAME).exists()
+
+
+def test_prepare_writes_a_descriptor_ccc_launch_can_apply(tmp_path, monkeypatch):
+    """The whole round-trip: setup writes profile.json, ccc-launch's validator accepts the binds it
+    lists (the two never import each other, so this is where they are proved to agree)."""
+    from cuttle import ccc_launch as L
+    root = _fake_install(tmp_path / "vlearn")
+    dest = tmp_path / "pkgs"
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", dest)
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
+    af.prepare([{"name": "vlearn", "path": str(root)}])
+    desc = dest / "vlearn" / af.DESCRIPTOR_NAME
+    assert desc.exists()
+    monkeypatch.setattr(L, "FEATURE_STATE", dest)
+    binds, _env = L.feature_binds_env(["vlearn"])
+    assert any(dst == f"{af.FEATURE_MOUNT}/vlearn/cp311" for _src, dst, _ro in binds)
+
+
 def test_the_mirrored_licence_key_is_not_world_readable(tmp_path, monkeypatch):
     """The one thing here that is a credential. `--contain` means the real gate is that no ordinary
     Dive ever BINDS it, but the mode is the protection that survives a mistake in the bind — and it

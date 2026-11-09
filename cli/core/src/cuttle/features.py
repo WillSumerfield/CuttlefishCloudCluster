@@ -15,7 +15,9 @@ directory, since a container runs as a **Guise** with no relationship to the don
 0750 home. See `mirror_install`.
 """
 
+import json
 import re
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,6 +85,16 @@ LICENCE_KEY_NAME = "licence.key"
 # job script matches its own interpreter against, so it is the directory name too — the comparison is
 # then a `[ -d ]`, with no parsing on the Arm at run time.
 _ABI_RE = re.compile(r"-(cp\d{2,3})-\1[-.]")
+
+# The per-Feature descriptor ccc-launch reads to bind this Feature into a Dive (ccc_launch.py:
+# feature_binds_env). JSON of {"binds": [{src, dst, ro}], "env": {k: v}} — src a host path under this
+# Feature's state tree, dst a container path under /ccc. Root-written and world-readable: it names
+# paths, holds no secret.
+DESCRIPTOR_NAME = "profile.json"
+
+# Where a Feature's binds land inside the container (mirror of ccc_head_api.features.FEATURE_MOUNT — the
+# two packages never import each other, same split as FEATURE_NAMES; they must agree).
+FEATURE_MOUNT = "/ccc/feature"
 
 
 def check_install(name: str, path: str) -> list[str]:
@@ -168,6 +180,7 @@ def prepare(features: list[dict]) -> dict[str, list[str]]:
     for f in features:
         mirror_install(f)
         mirror_licence_key(f)
+        write_descriptor(f["name"], landed.get(f["name"], []))
     return landed
 
 
@@ -224,6 +237,44 @@ def mirror_licence_key(f: dict) -> None:
     dest = FEATURE_PKG_DIR / p.name / LICENCE_KEY_NAME
     run(["install", "-D", "-m", "0640", "-o", "root", "-g", config.GUISE_GROUP,
          f["key"], str(dest)], sudo=True)
+
+
+def descriptor_binds(name: str, abis: list[str]) -> list[dict]:
+    """The read-only binds a Dive gets for Feature `name` — the unpacked wheel (one per ABI the box
+    holds) and the mirrored runtime data. Each entry is `{src, dst, ro}`, `src` under this Feature's
+    own state tree, `dst` under FEATURE_MOUNT. Never the **Licence** key (ccc-launch refuses it too).
+
+    The ABI is picked INSIDE the container, after the Environment's interpreter is known (the feature
+    hook, phase 8c) — so every held ABI's wheel dir is bound and the hook chooses; here we only lay
+    out what it may choose from.
+    """
+    p = ARM_PROFILES.get(name)
+    if not p:
+        return []
+    root = FEATURE_PKG_DIR / name
+    binds = [{"src": str(root / abi), "dst": f"{FEATURE_MOUNT}/{name}/{abi}", "ro": True}
+             for abi in abis]
+    if p.requires:   # the mirrored assets/shaders/cache/… the Feature resolves its data against
+        binds.append({"src": str(root / INSTALL_DIRNAME),
+                      "dst": f"{FEATURE_MOUNT}/{name}/{INSTALL_DIRNAME}", "ro": True})
+    return binds
+
+
+def write_descriptor(name: str, abis: list[str]) -> None:
+    """Write `/var/lib/ccc/features/<name>/profile.json` — what ccc-launch binds for this Feature.
+
+    Skipped for a Feature CCC only places (`isaaclab`: no ArmProfile, no binds). Staged by this
+    process then `install`ed as root, like every other write into /var/lib/ccc here.
+    """
+    binds = descriptor_binds(name, abis)
+    if not binds:
+        return
+    dest = FEATURE_PKG_DIR / name / DESCRIPTOR_NAME
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
+        json.dump({"binds": binds, "env": {}}, tmp)
+        staging = tmp.name
+    run(["install", "-D", "-m", "0644", staging, str(dest)], sudo=True)
+    run(["rm", "-f", staging], check=False)
 
 
 def install_path(f: dict) -> str:
