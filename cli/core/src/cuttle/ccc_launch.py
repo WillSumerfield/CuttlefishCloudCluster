@@ -53,8 +53,11 @@ JOBS_DIR = Path("/var/lib/ccc/jobs")
 AUTH_FILE = "/etc/ccc/registry-auth.json"
 SPEC_PREFIX = "# ccc-launch-spec: "
 CONTAINER_PREFIX = "ccc-job-"
-SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir", "dive"}
+SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir", "dive", "features"}
 DIVE_KEYS = {"token", "user", "secret", "head", "main", "deps", "port"}
+FEATURE_STATE = Path("/var/lib/ccc/features")      # cuttle.features.FEATURE_PKG_DIR (config.CCC_LIB)
+FEATURE_DESC = "profile.json"                       # cuttle.features.DESCRIPTOR_NAME
+LICENCE_KEY_NAME = "licence.key"                    # cuttle.features.LICENCE_KEY_NAME — never bound here
 TIDEPOOL_HELPER = "/usr/local/sbin/ccc-tidepool"   # Head only (config.TIDEPOOL_HELPER_BIN)
 ENV_CACHE = Path("/var/lib/ccc/envcache")           # config.NODE_ENV_CACHE_DIR — parent of per-Guise caches
 MESH_IFACE = "ccc0"                                 # config.CCC_TS_TUN
@@ -81,6 +84,8 @@ CGROUP_RE = re.compile(r"^0::(?P<step>/.*/(?:(?P<node>[^/]+)_)?slurmstepd\.scope
 GRES_RE = re.compile(r"\bGRES=\S*?gpu[^(\s]*\(IDX:(?P<idx>[0-9,\-]*)\)")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DST_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
+FEATURE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+FEATURE_DST_RE = re.compile(r"^/ccc/[A-Za-z0-9._/-]+$")   # a Feature's binds land under /ccc only
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -165,6 +170,10 @@ def validate_spec(spec: dict) -> dict:
             raise Refused(f"bind {src!r}:{dst!r} must be a relative path under the job dir")
     if not DST_RE.match(spec.get("workdir", "/job")):
         raise Refused("bad workdir")
+    feats = spec.get("features", [])
+    if not isinstance(feats, list) or not all(isinstance(f, str) and FEATURE_NAME_RE.match(f)
+                                              for f in feats):
+        raise Refused("features must be a list of Feature names")
     if "dive" in spec:
         validate_dive(spec["dive"])
     return spec
@@ -412,6 +421,46 @@ def mesh_ip() -> str:
     return m[1]
 
 
+def feature_binds_env(names: list[str]) -> tuple[list[tuple[Path, str, bool]], dict[str, str]]:
+    """Each requested Feature's binds + env, from the Arm-written descriptor at
+    `/var/lib/ccc/features/<name>/profile.json` (cuttle.features.write_descriptor).
+
+    ccc-launch stays generic — it applies a descriptor, it has no vlearn-specific code; the Arm's
+    `setup --arm` decided the host paths. The descriptor is root-written and trusted, but the binds
+    are still fenced the way every other Dive bind is: a src must stay under this Feature's own state
+    tree and is never the **Licence** key (only an activation job sees that — a separate path), and a
+    dst lands under /ccc, the mount namespace CCC owns inside the container.
+    """
+    binds: list[tuple[Path, str, bool]] = []
+    env: dict[str, str] = {}
+    for name in names:
+        if not FEATURE_NAME_RE.match(name):
+            raise Refused(f"bad feature name {name!r}")
+        root = FEATURE_STATE / name
+        descf = root / FEATURE_DESC
+        if not descf.exists():
+            raise Refused(f"this Arm advertises no '{name}' Feature runtime ({descf} is missing) — "
+                          f"its owner should re-run 'cuttle setup --arm'")
+        try:
+            desc = json.loads(descf.read_text())
+        except (OSError, ValueError) as e:
+            raise Refused(f"unreadable '{name}' Feature descriptor: {e}")
+        for b in desc.get("binds", []):
+            src, dst, ro = Path(str(b.get("src", ""))).resolve(), b.get("dst", ""), b.get("ro", True)
+            if root != src and root not in src.parents:
+                raise Refused(f"'{name}' Feature bind {b.get('src')!r} is outside its state tree")
+            if src.name == LICENCE_KEY_NAME:
+                raise Refused(f"'{name}' Feature descriptor binds the Licence key — refused")
+            if not FEATURE_DST_RE.match(dst) or ".." in dst:
+                raise Refused(f"'{name}' Feature bind dst {dst!r} must be an absolute path under /ccc")
+            binds.append((src, dst, bool(ro)))
+        for k, v in desc.get("env", {}).items():
+            if not ENV_KEY_RE.match(k) or not isinstance(v, str):
+                raise Refused(f"bad env entry {k!r} in '{name}' Feature descriptor")
+            env[k] = v
+    return binds, env
+
+
 def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: list[str], jobdir: Path,
               home: Path, cache: Path, deps: list[str], addr: str) -> list[str]:
     """`addr` "" = publish sshd on every address (the Head: no relay in front of it).
@@ -448,9 +497,14 @@ def dive_argv(spec: dict, jid: str, base: int, step: str, cdi: list[str], gpus: 
         argv += ["-v", f"{home / dep}:/home/{u}/{dep}:ro"]
     for src, dst in dotfile_binds(home, u, [d["main"], *deps]):
         argv += ["-v", f"{src}:{dst}:ro"]
+    fbinds, fenv = feature_binds_env(spec.get("features", []))
+    for src, dst, ro in fbinds:
+        argv += ["-v", f"{src}:{dst}" + (":ro" if ro else "")]
     for g in cdi:
         argv += ["--device", f"nvidia.com/gpu={g}"]
-    for k, v in spec.get("env", {}).items():
+    # The Dive's own env wins over a Feature's, never the other way: a Feature arranges its runtime,
+    # it does not get to redefine CCC_USER or the cache dirs.
+    for k, v in {**fenv, **spec.get("env", {})}.items():
         argv += ["-e", f"{k}={v}"]
     return argv + [spec["image"], *spec.get("argv", [])]
 

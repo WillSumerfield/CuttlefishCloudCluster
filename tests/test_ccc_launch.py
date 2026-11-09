@@ -114,6 +114,65 @@ def test_resolve_binds_refuses_symlink_escape(tmp_path):
         [(tmp_path / "data", "/d", True)]
 
 
+@pytest.mark.parametrize("feats", [
+    "vlearn",                 # not a list
+    ["Vlearn"],               # not a lowercase name
+    ["../etc"],               # path, not a name
+    [""],
+    [1],
+])
+def test_validate_spec_refuses_bad_features(feats):
+    with pytest.raises(L.Refused):
+        L.validate_spec({"image": DIGEST, "features": feats})
+
+
+def test_validate_spec_allows_feature_names():
+    assert L.validate_spec({"image": DIGEST, "features": ["vlearn"]})["features"] == ["vlearn"]
+
+
+def _descriptor(tmp_path, monkeypatch, name, desc):
+    monkeypatch.setattr(L, "FEATURE_STATE", tmp_path)
+    root = tmp_path / name
+    root.mkdir(parents=True)
+    (root / L.FEATURE_DESC).write_text(json.dumps(desc))
+    return root
+
+
+def test_feature_binds_env_applies_the_descriptor(tmp_path, monkeypatch):
+    root = _descriptor(tmp_path, monkeypatch, "vlearn", {
+        "binds": [{"src": str(tmp_path / "vlearn/cp311"), "dst": "/ccc/feature/vlearn/cp311", "ro": True},
+                  {"src": str(tmp_path / "vlearn/install"), "dst": "/ccc/feature/vlearn/install"}],
+        "env": {"VL_X": "1"}})
+    (root / "cp311").mkdir()
+    (root / "install").mkdir()
+    binds, env = L.feature_binds_env(["vlearn"])
+    assert (root / "cp311", "/ccc/feature/vlearn/cp311", True) in binds
+    assert (root / "install", "/ccc/feature/vlearn/install", True) in binds   # ro defaults True
+    assert env == {"VL_X": "1"}
+
+
+def test_feature_binds_env_refuses_a_missing_descriptor(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, "FEATURE_STATE", tmp_path)
+    with pytest.raises(L.Refused):
+        L.feature_binds_env(["vlearn"])
+
+
+@pytest.mark.parametrize("desc", [
+    {"binds": [{"src": "/etc/passwd", "dst": "/ccc/x"}]},                  # outside the state tree
+    {"binds": [{"src": "SELF/licence.key", "dst": "/ccc/x"}]},            # the Licence key
+    {"binds": [{"src": "SELF/ok", "dst": "/job/x"}]},                     # dst not under /ccc
+    {"binds": [{"src": "SELF/ok", "dst": "/ccc/../etc"}]},                # dst escape
+    {"env": {"A B": "1"}},                                                 # bad env key
+])
+def test_feature_binds_env_fences_the_descriptor(tmp_path, monkeypatch, desc):
+    root = _descriptor(tmp_path, monkeypatch, "vlearn",
+                       json.loads(json.dumps(desc).replace("SELF", str(tmp_path / "vlearn"))))
+    (root / "ok").mkdir()
+    (root / "licence.key").write_text("secret")
+    with pytest.raises(L.Refused):
+        L.feature_binds_env(["vlearn"])
+
+
 SMI = """\
 GPU 0: NVIDIA RTX PRO 6000 (UUID: GPU-aaa)
 GPU 1: NVIDIA RTX PRO 6000 (UUID: GPU-bbb)

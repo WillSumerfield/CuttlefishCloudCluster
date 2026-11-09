@@ -232,11 +232,17 @@ def render_job(spec: dict, gpus: int, minutes: int, constraint: str, exclude: st
 
 
 def make_spec(user: str, tok: str, secret: str, image: str, main: str, deps: list[str], port: int,
-              env: str | None) -> dict:
-    return {"image": image, "argv": ["/bin/sh", "-c", DIVE_INIT], "network": True,
+              env: str | None, features: list[str]) -> dict:
+    spec = {"image": image, "argv": ["/bin/sh", "-c", DIVE_INIT], "network": True,
             "env": {"CCC_USER": user, "CCC_DIVE_MAIN": main, "CCC_DIVE_ENV": env or ""},
             "dive": {"token": tok, "user": user, "secret": secret, "head": MESH_IP, "main": main,
                      "deps": deps, "port": port}}
+    # ccc-launch resolves each name against this Arm's own /var/lib/ccc/features/<name>/profile.json
+    # (cuttle.features) and applies its binds + env. Only when some were asked for, so an ordinary
+    # Dive's spec is byte-for-byte what it was before Features existed.
+    if features:
+        spec["features"] = features
+    return spec
 
 
 # --- request --------------------------------------------------------------------
@@ -352,7 +358,7 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
         helper("dive-open", name, tok, stdin={
             "main": main, "deps": deps, "secret": secret, "image": image, "session": session,
             "toml": dump_toml(new) if load_toml(dump_toml(new)) != toml else None})
-        spec = make_spec(name, tok, secret, image, main, deps, port, s["env"])
+        spec = make_spec(name, tok, secret, image, main, deps, port, s["env"], s["features"])
         body = render_job(spec, s["gpus"], s["minutes"], constraint, exclude)
         try:
             r = subprocess.run(guises.as_owner(["sbatch", "--parsable", "--no-requeue"], guise),

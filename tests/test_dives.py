@@ -443,6 +443,28 @@ class TestArmDive:
         assert order[i + 1 + len(cps)][-1].endswith(f"/d{DIVE['token']}-back/")
         assert order[-2:] == [pod + ["rm", "-f", "ccc-job-77"], pod + ["rmi", spec["image"]]]
 
+    def test_requested_features_are_bound_from_the_arm_descriptor(self, tmp_path, monkeypatch):
+        """dive_argv applies /var/lib/ccc/features/<name>/profile.json — binds + env, generically."""
+        monkeypatch.setattr(L, "FEATURE_STATE", tmp_path / "features")
+        root = tmp_path / "features" / "vlearn"
+        (root / "cp311").mkdir(parents=True)
+        (root / L.FEATURE_DESC).write_text(json.dumps({
+            "binds": [{"src": str(root / "cp311"), "dst": "/ccc/feature/vlearn/cp311", "ro": True}],
+            "env": {"VL_X": "1"}}))
+        (tmp_path / "home").mkdir()
+        spec = {"image": "x", "dive": DIVE, "features": ["vlearn"]}
+        a = L.dive_argv(spec, "77", 2**31, "/s", [], [], tmp_path, tmp_path / "home",
+                        tmp_path / "cache", [], "")
+        s = " ".join(a)
+        assert f"{root}/cp311:/ccc/feature/vlearn/cp311:ro" in s and "-e VL_X=1" in s
+
+    def test_a_dive_without_features_binds_nothing_under_ccc_feature(self, tmp_path):
+        (tmp_path / "home").mkdir()
+        spec = {"image": "x", "dive": DIVE}   # no features key
+        a = L.dive_argv(spec, "77", 2**31, "/s", [], [], tmp_path, tmp_path / "home",
+                        tmp_path / "cache", [], "")
+        assert not any("/ccc/feature" in x for x in a)
+
     def test_a_dot_main_folder_is_never_bound_read_only(self, tmp_path):
         home = tmp_path / "home"
         (home / ".work").mkdir(parents=True)

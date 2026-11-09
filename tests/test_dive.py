@@ -46,10 +46,16 @@ class TestConstantsAgree:
     def test_the_spec_line_is_what_ccc_launch_reads(self, monkeypatch):
         monkeypatch.setattr(D, "MESH_IP", "100.99.0.1")
         spec = D.make_spec("alice", "ab" * 16, "s" * 43, "ccc.lab:5000/ccc/u-alice@sha256:" + "a" * 64,
-                           "proj", ["data"], 31000, "pyproject.toml")
+                           "proj", ["data"], 31000, "pyproject.toml", ["vlearn"])
         script = D.render_job(spec, 1, 60, "", "")
         got = L.validate_spec(L.read_spec(script))
         assert got == spec and got["dive"]["head"] == D.MESH_IP
+        assert got["features"] == ["vlearn"]
+
+    def test_an_ordinary_dives_spec_carries_no_features_key(self):
+        spec = D.make_spec("alice", "ab" * 16, "s" * 43, "ccc.lab:5000/ccc/u-alice@sha256:" + "a" * 64,
+                           "proj", [], 31000, None, [])
+        assert "features" not in spec   # byte-for-byte what it was before Features existed
 
 
 class TestSettings:
