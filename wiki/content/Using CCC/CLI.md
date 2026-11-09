@@ -40,6 +40,7 @@ More in [[Tidepool]].
 | --- | --- | --- |
 | `cuttle dive` | Start a Dive on a folder and go into it. | `cuttle dive fractals --time 4h --vram 16` |
 | `cuttle dive attach` | Go back into a running Dive, or wait for a queued one. | `cuttle dive attach 58` |
+| `cuttle dive wait` | Wait until a Dive is ready, then stop. Doesn't go in. | `cuttle dive wait 58` |
 | `cuttle dive end` | End a Dive. The main folder gets a final copy back. | `cuttle dive end 58` |
 | `cuttle dive status` | List your open Dives. | `cuttle dive status` |
 
@@ -54,8 +55,9 @@ Options for starting a Dive:
 | `--env` | Dependency file to build a Python environment from. | `--env pyproject.toml` |
 | `--feature` | An Arm Feature the Dive needs. Repeat for more. | `--feature vlearn` |
 | `--vscode` | Open in VS Code instead of a terminal (also on `attach`). | `--vscode` |
+| `--detach` | Queue it and stop, without going in. Add `--json` for scripts. | `--detach` |
 
-`attach` and `end` take the Dive's number. With only one Dive open you can leave it out. `end`
+`attach`, `wait` and `end` take the Dive's number. With only one Dive open you can leave it out. `end`
 asks before it ends anything (`--yes` skips that).
 
 More in [[Dives]].
@@ -79,6 +81,7 @@ Inside a Tidepool or Dive you entered with `cuttle`, they copy to and from your 
 | `cuttle history` | Finished Dives, with cost and outcome (`--days`, default 30). | `cuttle history --days 7` |
 | `cuttle karma` | Everyone's Karma standing. | `cuttle karma` |
 | `cuttle karma ledger` | Your own Karma history (`--days`, default 30). | `cuttle karma ledger` |
+| `cuttle arm list` | Every Arm: its GPUs, how fast they are, and whether they're free. | `cuttle arm list` |
 | `cuttle tide` | How busy each Arm has been, hour by hour (`--days`, default 7). | `cuttle tide --days 3` |
 | `cuttle feature list` | The Arm Features CCC knows about. | `cuttle feature list` |
 | `cuttle feature show` | What CCC sets up for one Feature. | `cuttle feature show vlearn` |

@@ -151,6 +151,18 @@ should keep running while you're away.
 Each Dive also gets its own SSH alias, your cluster name plus the Dive's number (for example
 `mycluster-58`), for VS Code or `scp`. `cuttle dive attach 58 --vscode` opens it in VS Code for you.
 
+### Without going in
+
+For scripts, start a Dive with `--detach`: it queues and stops, printing the Dive's number and how
+many Dives are ahead of it. `cuttle dive wait 58` then waits until it's ready. After that, run things
+in it with `ssh mycluster-58 'command'`:
+
+```bash
+cuttle dive fractals --time 4h --vram 16 --detach
+cuttle dive wait 58
+ssh mycluster-58 'cd fractals && tmux new -d "python train.py"'
+```
+
 ## Ending
 
 A Dive ends in one of three ways:
