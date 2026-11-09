@@ -185,8 +185,9 @@ Finished Dives show up in [History](dashboard:/history) (or `cuttle history`) wi
 - **timed out**: it ran to the end of its `--time`.
 - **lost**: it stopped early without anyone ending it, usually because the machine went away. You pay
   for what it used, and CCC never restarts it on its own.
-- **settling**: it has finished moments ago, and CCC is still working out the cost. This takes about half a
-  minute.
+
+Just after a Dive ends you may see it marked **settling** for about half a minute: that's not a final
+outcome, just CCC working out the cost before it lands on one of the three above.
 
 If an Arm's owner takes their machine back while your Dive is on it, your Dive gets a short grace
 period and then stops, and you pay nothing for it.
