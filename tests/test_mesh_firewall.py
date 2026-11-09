@@ -302,3 +302,55 @@ def test_teardown_closes_the_coordinator_port(monkeypatch):
 def test_head_setup_opens_the_coordinator_port():
     src = pathlib.Path(__import__("cuttle.setup").setup.__file__).read_text()
     assert "system.allow_tcp_port(config.HEADSCALE_PORT" in src
+
+
+@pytest.fixture
+def egress(tmp_path, monkeypatch):
+    """The shipped Dive egress script, loaded as a module, with root faked (same reasons as `fw`)."""
+    path = tmp_path / "ccc-dive-egress.py"
+    path.write_text(mesh._DIVE_EGRESS_SCRIPT)
+    spec = importlib.util.spec_from_file_location("ccc_dive_egress", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+    return mod
+
+
+class TestOffMeshSshAccept:
+    """The Head's FORWARD policy is DROP and the mesh DNAT accept is `-i ccc0` only, so a client off the
+    mesh could not reach a Tidepool's published sshd (ssh hung at connect). The Head accepts it by
+    dialled port; Arms don't need it (their Dives publish on the mesh IP only)."""
+
+    ACCEPT = "-m conntrack --ctstate DNAT --ctproto tcp --ctorigdstport {} -j ACCEPT"
+
+    def test_ranges_cover_tidepool_and_dive_ports(self):
+        assert config.DIVE_EGRESS_HEAD_ACCEPT_PORTS == ("32001:33182", "31000:31199")
+
+    def test_only_the_head_unit_passes_ranges(self):
+        ports = ",".join(config.DIVE_EGRESS_HEAD_ACCEPT_PORTS)
+        assert mesh._dive_egress_service_unit(head=True).splitlines()[-1].endswith(" " + ports)
+        assert ports not in mesh._dive_egress_service_unit(head=False)
+
+    def test_inserted_when_missing(self, egress, tools):
+        tools("iptables", '[ "$1" = -C ] && exit 1\nexit 0\n')
+        assert egress.main("10.89.0.0/16", "100.99.0.0/16", "32001:33182,31000:31199") == 0
+        calls = tools.calls()
+        for p in ("32001:33182", "31000:31199"):
+            assert f"iptables -I FORWARD 1 {self.ACCEPT.format(p)}" in calls
+
+    def test_left_alone_when_present(self, egress, tools):
+        tools("iptables", "exit 0\n")
+        egress.main("10.89.0.0/16", "100.99.0.0/16", "32001:33182")
+        assert not any(" -I " in c for c in tools.calls())
+
+    def test_arm_gets_none(self, egress, tools):
+        tools("iptables", '[ "$1" = -C ] && exit 1\nexit 0\n')
+        egress.main("10.89.0.0/16", "100.99.0.0/16")
+        assert not any("ctorigdstport" in c for c in tools.calls())
+
+    def test_teardown_deletes_them(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mesh, "run", lambda cmd, **k: calls.append(" ".join(cmd)))
+        mesh.remove_dive_egress()
+        for p in config.DIVE_EGRESS_HEAD_ACCEPT_PORTS:
+            assert f"iptables -D FORWARD {self.ACCEPT.format(p)}" in calls

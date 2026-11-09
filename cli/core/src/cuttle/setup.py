@@ -907,7 +907,8 @@ def _setup_head(address: str | None = None, update: bool = False) -> None:
         mesh.ensure_ts_exemption(_write_root_file)
         # Fence Dive/Tidepool containers off the mesh (and this host's loopback registry): the Head
         # runs both, and a container must not reach enroll/slurm/registry by NATing out as our mesh IP.
-        mesh.ensure_dive_egress(_write_root_file)
+        # head=True: also let off-mesh clients reach the Tidepool/Dive sshd this box publishes.
+        mesh.ensure_dive_egress(_write_root_file, head=True)
     with ui.step("Adding package repositories"):
         add_repos(head=True)  # NodeSource is added HERE and nowhere else in the fleet
     with ui.step("Installing Slurm, munge, Podman and Node"):

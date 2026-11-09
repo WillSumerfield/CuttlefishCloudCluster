@@ -835,6 +835,15 @@ DIVE_EGRESS_SRC_SUBNETS = ("10.88.0.0/16", TIDEPOOL_BRIDGE_SUBNETS)
 # Destinations a container has no business reaching: the mesh, and the host's own loopback (the Head's
 # push registry binds 127.0.0.1). v4 only — matches the mesh FW; the v6 ULA carries no services.
 DIVE_EGRESS_DST_SUBNETS = (MESH_V4_PREFIX, "127.0.0.0/8")
+# Head only: published container sshd ports a client may dial from OFF the mesh (LAN/campus). They are
+# DNAT'd, so they cross FORWARD, whose policy is DROP under ufw ("deny routed") or Docker; the mesh
+# accept (`mesh.allow_dnat_forward`) is `-i ccc0` only. Matched on the port the client DIALLED
+# (--ctorigdstport), so only these open — not the registry or anything else podman publishes.
+# Tidepool sshd (one per uid, tidepool.py) and Head Dive sshd / Arm-Dive relay (same range).
+DIVE_EGRESS_HEAD_ACCEPT_PORTS = (
+    f"{TIDEPOOL_SSH_PORT_BASE + 1}:{TIDEPOOL_SSH_PORT_BASE + GUISE_UID_MAX - CCC_UID}",
+    f"{TIDEPOOL_PORT_BASE}:{TIDEPOOL_PORT_BASE + TIDEPOOL_PORT_RANGE - 1}",
+)
 DIVE_EGRESS_INTERVAL_S = 60  # re-assert cadence after a netavark FORWARD rebuild (same math as MESH_FW)
 DIVE_EGRESS_BOOT_S = 5
 

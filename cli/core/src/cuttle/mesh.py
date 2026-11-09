@@ -782,11 +782,17 @@ def remove_ts_exemption() -> None:
 # Coexists with `allow_dnat_forward` (which accepts the inbound NEW+DNAT packet, src = a mesh host, not
 # a container — disjoint from these DROPs). A timer re-asserts after netavark rebuilds FORWARD, same
 # rationale as the ts-exemption timer.
+#
+# On the Head it also ACCEPTs off-mesh clients: a Tidepool's (and a Head Dive's) sshd is published on
+# every address, but `allow_dnat_forward` is `-i ccc0` only and Users are not Mesh members, so under a
+# DROP FORWARD policy (ufw "deny routed") a client's SYN vanished and `ssh` hung at "Connecting".
+# Scoped by the dialled port (config.DIVE_EGRESS_HEAD_ACCEPT_PORTS), any interface.
 _DIVE_EGRESS_SCRIPT = r'''"""Fence CCC container egress: a Dive/Tidepool must not reach the mesh or the host's loopback services.
 Installed by cuttle at this path and run by a timer; re-inserts the FORWARD rules netavark drops when
 it rebuilds the chain. Safe to run by hand (root) — prints only when it changes something. See
 cuttle/mesh.py for why this exists.
-Usage: sudo ccc-dive-egress.py <src1,src2,...> <dst1,dst2,...>"""
+Usage: sudo ccc-dive-egress.py <src1,src2,...> <dst1,dst2,...> [<lo:hi,lo:hi,...>]
+The optional third arg (Head only) is published sshd port ranges to accept from off the mesh."""
 import os, subprocess, sys
 
 
@@ -798,7 +804,12 @@ def _run(cmd):
         return None
 
 
-def main(src_arg, dst_arg):
+def dnat_accept(ports):
+    return ["-m", "conntrack", "--ctstate", "DNAT", "--ctproto", "tcp", "--ctorigdstport", ports,
+            "-j", "ACCEPT"]
+
+
+def main(src_arg, dst_arg, ports_arg=""):
     # Root-gated like the mesh FW script: unprivileged `iptables -C` exits non-zero exactly as it does
     # for an absent rule, so a hand-run would report "nothing to do" on a box that is wide open.
     if os.geteuid() != 0:
@@ -806,6 +817,7 @@ def main(src_arg, dst_arg):
         return 2
     srcs = [s for s in src_arg.split(",") if s]
     dsts = [d for d in dst_arg.split(",") if d]
+    ports = [p for p in ports_arg.split(",") if p]
     # Desired FORWARD order, top-first: the established-accept, then every DROP. Insert bottom-first
     # with `-I FORWARD 1` (each prepends) so the list ends up in this order. Only ever all-present
     # (no-op) or all-absent (full re-insert in order) in practice — netavark rebuilds FORWARD wholesale.
@@ -813,6 +825,8 @@ def main(src_arg, dst_arg):
     for s in srcs:
         for d in dsts:
             rules.append(["-s", s, "-d", d, "-j", "DROP"])
+    # Off-mesh clients' NEW connections to published sshd (src = the client, so disjoint from the DROPs).
+    rules += [dnat_accept(p) for p in ports]
     for rule in reversed(rules):
         chk = _run(["iptables", "-C", "FORWARD", *rule])
         if chk is None:
@@ -825,16 +839,20 @@ def main(src_arg, dst_arg):
 
 
 if __name__ == "__main__":
-    sys.exit(main(*sys.argv[1:3]))
+    sys.exit(main(*sys.argv[1:4]))
 '''
 
-_DIVE_EGRESS_SERVICE_UNIT = f"""\
+def _dive_egress_service_unit(head: bool) -> str:
+    """The Head also passes the off-mesh sshd port ranges (config.DIVE_EGRESS_HEAD_ACCEPT_PORTS): its
+    Tidepools and Dives publish sshd on every address, and clients are not Mesh members."""
+    ports = f" {','.join(config.DIVE_EGRESS_HEAD_ACCEPT_PORTS)}" if head else ""
+    return f"""\
 [Unit]
 Description=CCC Dive/Tidepool egress fence (keep containers off the mesh and host loopback)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 {config.DIVE_EGRESS_SCRIPT} {",".join(config.DIVE_EGRESS_SRC_SUBNETS)} {",".join(config.DIVE_EGRESS_DST_SUBNETS)}
+ExecStart=/usr/bin/python3 {config.DIVE_EGRESS_SCRIPT} {",".join(config.DIVE_EGRESS_SRC_SUBNETS)} {",".join(config.DIVE_EGRESS_DST_SUBNETS)}{ports}
 """
 
 # Timer, not ordering after netavark: the FORWARD rules die on every netavark rebuild (a container
@@ -854,12 +872,12 @@ WantedBy=timers.target
 """
 
 
-def ensure_dive_egress(write_unit) -> None:
+def ensure_dive_egress(write_unit, head: bool = False) -> None:
     """Install the egress fence and the timer that keeps it there. Every provisioned node (Head and
     Arm both run Dives). Idempotent; `start` on the oneshot blocks so the rules are in place on return.
     """
     write_unit(config.DIVE_EGRESS_SCRIPT, _DIVE_EGRESS_SCRIPT, "755")
-    write_unit(config.DIVE_EGRESS_SERVICE_UNIT, _DIVE_EGRESS_SERVICE_UNIT, "644")
+    write_unit(config.DIVE_EGRESS_SERVICE_UNIT, _dive_egress_service_unit(head), "644")
     write_unit(config.DIVE_EGRESS_TIMER_UNIT, _DIVE_EGRESS_TIMER_UNIT, "644")
     run(["systemctl", "daemon-reload"], sudo=True)
     run(["systemctl", "enable", "--now", f"{config.DIVE_EGRESS_SERVICE}.timer"], sudo=True)
@@ -876,6 +894,9 @@ def remove_dive_egress() -> None:
     for s in config.DIVE_EGRESS_SRC_SUBNETS:
         for d in config.DIVE_EGRESS_DST_SUBNETS:
             run(["iptables", "-D", "FORWARD", "-s", s, "-d", d, "-j", "DROP"], sudo=True, check=False)
+    for p in config.DIVE_EGRESS_HEAD_ACCEPT_PORTS:   # Head only; a no-op elsewhere
+        run(["iptables", "-D", "FORWARD", "-m", "conntrack", "--ctstate", "DNAT", "--ctproto", "tcp",
+             "--ctorigdstport", p, "-j", "ACCEPT"], sudo=True, check=False)
     run(["rm", "-f", str(config.DIVE_EGRESS_SCRIPT), str(config.DIVE_EGRESS_SERVICE_UNIT),
          str(config.DIVE_EGRESS_TIMER_UNIT)], sudo=True, check=False)
     run(["systemctl", "daemon-reload"], sudo=True, check=False)
