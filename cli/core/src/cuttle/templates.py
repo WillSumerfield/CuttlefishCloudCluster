@@ -255,8 +255,8 @@ set -e
 sink=/tmp/ccc-bench-$SLURM_JOB_ID.log
 trap '[ -s "$sink" ] || rm -f "$sink"' EXIT
 sudo -n {launch} "$SLURM_JOB_ID"
-# The cluster-lifetime [bench] secret — a Benchmark never goes through the Head API, so there is no
-# **Siphon** for it. The module is rooted at the bench subtree: this reaches the Power files only.
+# The cluster-lifetime [bench] secret — a Benchmark never goes through the Head API, so it gets no
+# per-Dive rsync module. The module is rooted at the bench subtree: this reaches the Power files only.
 export RSYNC_PASSWORD={bench_secret}
 rsync -a "{jobs_dir}/$SLURM_JOB_ID/power" "rsync://{bench_user}@{head_ip}/{bench_mod}/{node}/"
 """

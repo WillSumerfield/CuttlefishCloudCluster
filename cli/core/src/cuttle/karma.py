@@ -46,7 +46,7 @@ def ledger(days: int = 30, as_json: bool = False) -> None:
             ui.say(f"no ledger events in the last {days} days")
             return
         ui.table(
-            ["WHEN", "KIND", "KARMA", "WITH", "SPAWN", "NOTE"],
+            ["WHEN", "KIND", "KARMA", "WITH", "DIVE", "NOTE"],
             [[r["at"][:16].replace("T", " "), r["kind"], f"{r['amount']:+.1f}",
               r.get("counterparty") or "-", r.get("job_id") or "-", r.get("note") or "-"]
              for r in rows])

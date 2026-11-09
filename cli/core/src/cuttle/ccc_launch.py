@@ -476,7 +476,7 @@ def send_back(d: dict, jid: str, jobdir: Path) -> None:
 
 
 def drop_image(ref: str) -> None:
-    """Nothing of a User's stays on a donor: their snapshot goes once the container has (`--rm`).
+    """Nothing of a User's stays on a donor: the snapshot image goes once the container is gone.
     No `-f` — another Dive still running it keeps it, and `cuttle update`'s prune gets it later."""
     subprocess.run(["/usr/bin/nsenter", "--mount=/proc/1/ns/mnt", "--", "/usr/bin/podman", "rmi", ref],
                    capture_output=True)

@@ -66,10 +66,10 @@ def preflight() -> None:
     # Gating a supported platform, not an internal invariant — so ui.abort (a clean ✗ + a next step),
     # not `assert` (which prints a bare one-liner and vanishes entirely under `python -O`).
     if not system.is_native_linux_x86():
-        raise ui.abort("this MVP supports Linux x86_64 only",
+        raise ui.abort("CCC supports Linux x86_64 only",
                        next_step="run setup on a native x86_64 Ubuntu 24.04 box")
     if rel.get("VERSION_ID") != "24.04":
-        raise ui.abort(f"this MVP is pinned to Ubuntu 24.04 (this box is {rel.get('VERSION_ID')!r})",
+        raise ui.abort(f"CCC is pinned to Ubuntu 24.04 (this box is {rel.get('VERSION_ID')!r})",
                        next_step="use Ubuntu 24.04")
     run([system.nvidia_smi(), "--query-gpu=name,driver_version", "--format=csv,noheader"])
     # Before anything is installed, joined, or written: a box whose GPUs are not all the same cannot be
@@ -436,9 +436,9 @@ def ensure_bench_secret() -> None:
     """Mint the [bench] module's rsync secret if this Head has none.
 
     Cluster-lifetime rather than per-run: the enrollment benchmark never goes through the Head API, so
-    there is no **Siphon** to hand it. Root-owned 0600 — `enroll`
+    there is no per-Dive rsync credential to hand it. Root-owned 0600 — `enroll`
     reads it with sudo when it renders the benchmark's sbatch, and rsyncd (running as root) reads it to
-    check the login, which is what lets [bench] keep `strict modes = true` where a Siphon cannot.
+    check the login, which is what lets [bench] keep `strict modes = true` where a per-Dive secret cannot.
 
     Kept if it already exists, so a `setup --head` re-run does not invalidate a benchmark in flight."""
     if run(["test", "-s", str(config.RSYNCD_BENCH_SECRETS)], sudo=True, check=False).returncode == 0:
@@ -683,7 +683,7 @@ def build_spa() -> None:
     # Dive's (docs/TODO.md) per-Dive relay ports — one whole range, opened once, not one ufw rule
     # per Dive. Same LAN+mesh reachability as the Head API itself: a Dive's `ssh` connects here.
     system.allow_tcp_port_range(config.TIDEPOOL_PORT_BASE, config.TIDEPOOL_PORT_RANGE,
-                                "ccc tide pool relay (LAN+mesh)")
+                                "ccc Dive relay (LAN+mesh)")
     print(f"cuttle: Dashboard SPA built → {config.HEAD_API_WEB_DIR}")
 
 
@@ -1583,7 +1583,7 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
 
     ui.result("arm", node_name)
     ui.result("mesh ip", mesh_ip)
-    ui.result("check it", "run `sinfo` on the Head")
+    ui.result("check it", "find this Arm on the Dashboard's Arms page, or `cuttle arm list`")
     if system.is_wsl():
         ui.result("keep it up", f"in an admin Command Prompt (cmd): {system.wsl_keepalive_cmds()[0]}")
 

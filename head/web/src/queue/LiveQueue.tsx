@@ -45,10 +45,10 @@ function Group({
               dive={s}
               variant={variant}
               position={variant === "waiting" ? i + 1 : undefined}
-              // Your own, and only your own. An Admin may cancel anyone's — but not from here:
+              // Your own, and only your own. An Admin may end anyone's — but not from here:
               // DELETE /dives/{id} has no admin branch (the Head API has no admin writes at all), so
               // offering the button to an admin only ever produced a red refusal. Anyone else's is
-              // `cuttle cancel <id>` on the Head. See docs/Security.md.
+              // `cuttle dive end <id>` on the Head. See the wiki's Admin/Security page.
               canCancel={s.started_by === session.username}
               onCancelled={onCancelled}
             />

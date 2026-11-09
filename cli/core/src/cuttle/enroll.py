@@ -367,8 +367,8 @@ def list_features(as_json: bool = False) -> None:
 def render_features_env(features: list[dict], licence_home: str = "") -> str:
     """One `export <NAME>_PATH=<path>` line per declared Arm Feature, written to config.ARM_FEATURES_ENV
     by `setup --arm`. `export`, not a bare assignment: the Dive job script sources this file
-    with no `set -a`, and Apptainer's default (non `--cleanenv`) behaviour is to pass the WHOLE calling
-    environment into the container — so only an exported var actually reaches a Dive's payload.
+    with no `set -a`, so a bare assignment would stay a shell-local variable — only an exported var is
+    inherited by the commands the Dive job script then runs.
 
     A feature name may contain `.`/`-` (config.FEATURE_NAME_RE) which a shell identifier cannot, hence
     the substitution — `vsim-pro` becomes `VSIM_PRO_PATH`, not a syntax error.
@@ -599,8 +599,8 @@ def _bench_secret() -> str:
     """The [bench] rsync module's password, read off the root-owned secrets file `setup --head` minted.
 
     A benchmark stages its Power file home over rsync like any remote Dive, but it never goes through
-    the Head API, so there is no **Siphon** for it — it uses the one cluster-lifetime credential
-    instead. Read at render time rather than held anywhere: this runs
+    the Head API, so it gets no per-Dive rsync module of its own — it uses the one cluster-lifetime
+    [bench] secret instead. Read at render time rather than held anywhere: this runs
     on the Head, with an operator at a tty who has already primed sudo."""
     r = run(["cat", str(config.RSYNCD_BENCH_SECRETS)], sudo=True, capture_output=True, text=True)
     return r.stdout.strip().split(":", 1)[1]
