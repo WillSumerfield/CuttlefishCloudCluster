@@ -276,104 +276,94 @@ def test_a_spawn_installing_its_dependencies_is_simply_running(monkeypatch):
 import zipfile
 
 
-def _sourced(tmp_path, path="../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"):
-    """A project whose pyproject.toml path-sources vlearn, laid out like a real staging dir."""
-    proj = tmp_path / "projects" / "abc"
-    proj.mkdir(parents=True)
-    (proj / "pyproject.toml").write_text(
+VLEARN_WHEEL = "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
+
+
+def _sourced(path="../wheels/" + VLEARN_WHEEL):
+    """A pyproject.toml's TEXT, path-sourcing vlearn. The Head holds only this — never the project: it
+    reasons about the declaration from the bytes `dive-prep` hands back, not from any file on its disk."""
+    return (
         '[project]\nname = "t"\nversion = "0"\nrequires-python = "==3.11.14"\n'
         'dependencies = ["vlearn"]\n\n'
         f'[tool.uv.sources]\nvlearn = {{ path = "{path}" }}\n'
     )
-    return proj
 
 
-def test_a_features_package_may_be_declared_as_a_path(tmp_path):
+def test_a_features_package_may_be_declared_as_a_path():
     """The driver for this whole design: a real project pinning its own local wheel has to submit
     unmodified. Recognising it is what makes the substitution possible at all."""
-    proj = _sourced(tmp_path)
-    found = env.supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
+    found = env.supplied(_sourced(), "pyproject.toml")
     assert [(s.package, s.feature) for s in found] == [("vlearn", "vlearn")]
-    assert found[0].filename == "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
-    assert not found[0].inside_project, "../wheels is beside the project, not in it"
+    assert found[0].filename == VLEARN_WHEEL
+    assert found[0].pod_rel == "../wheels/" + VLEARN_WHEEL
 
 
-def test_an_ordinary_project_declares_nothing_supplied(tmp_path):
-    proj = _project(tmp_path, **{"pyproject.toml": '[project]\nname = "t"\nversion = "0"\n'})
-    assert env.supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml")) == []
+def test_an_ordinary_project_declares_nothing_supplied():
+    assert env.supplied('[project]\nname = "t"\nversion = "0"\n', "pyproject.toml") == []
 
 
-def test_declaring_a_features_package_without_the_feature_is_refused(tmp_path):
+def test_declaring_a_features_package_without_the_feature_is_refused():
     """The Dive would build cleanly, place on any Arm, and die at `import` — after the User paid to
     hold a GPU. Everything needed to know that is on the Head before the Dive exists."""
-    proj = _sourced(tmp_path)
-    m = env.Manifest(kind="uv-project", path="pyproject.toml")
     with pytest.raises(env.BuildError) as e:
-        env.check_supplied(proj, m, requested=[])
+        env.check_supplied(_sourced(), "pyproject.toml", requested=[])
     assert "--feature vlearn" in str(e.value)
-    assert env.check_supplied(proj, m, requested=["vlearn"])
+    assert env.check_supplied(_sourced(), "pyproject.toml", requested=["vlearn"])
 
 
-def test_a_path_source_may_not_reach_out_of_the_spawns_own_scratch(tmp_path):
-    """The stub is BOUND at `$proj/<pod_rel>`, and `$proj`'s parent is the Dive's node-local scratch.
+def test_a_path_source_may_not_reach_out_of_the_spawns_own_scratch():
+    """The stub is WRITTEN at `$proj/<pod_rel>`, and `$proj`'s parent is the Dive's node-local scratch.
     One `..` reaches that scratch; without this rule a `path` of `../../../etc` would name a directory
-    outside the Dive altogether as the mountpoint."""
-    proj = _sourced(tmp_path, path="../../../../etc/vlearn-0.3.9-py3-none-any.whl")
+    outside the Dive altogether."""
     with pytest.raises(env.BuildError) as e:
-        env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+        env.check_supplied(_sourced(path="../../../../etc/vlearn-0.3.9-py3-none-any.whl"),
+                           "pyproject.toml", ["vlearn"])
     assert "outside" in str(e.value)
 
 
-def test_the_depth_rule_is_read_off_the_declaration_not_off_the_head(tmp_path):
-    """Stated against what the User wrote, so it means the same thing wherever the tree sits."""
-    proj = _sourced(tmp_path, path="../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
-    m = env.Manifest(kind="uv-project", path="pyproject.toml")
-    assert env.supplied(proj, m)[0].pod_rel == "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
-    # The same declaration, read out of a tree at a completely different depth, says the same thing.
-    ws = tmp_path / "elsewhere" / "3" / "transformerrl"
-    ws.mkdir(parents=True)
-    (ws / "pyproject.toml").write_text((proj / "pyproject.toml").read_text())
-    assert env.supplied(ws, m)[0].pod_rel == env.supplied(proj, m)[0].pod_rel
-    env.check_supplied(ws, m, ["vlearn"])
+def test_the_source_path_is_read_relative_to_the_manifests_own_directory():
+    """`pod_rel` is project-root-relative, composed from the manifest's own directory and the declared
+    path — so the same declaration means the same file wherever the manifest sits, and whatever the
+    Head's own disk looks like (it has none to look at)."""
+    # Manifest at the root: `../wheels` is beside the project, the Dive's own scratch.
+    assert env.supplied(_sourced(), "pyproject.toml")[0].pod_rel == "../wheels/" + VLEARN_WHEEL
+    # The same `../wheels`, from a manifest one level down, lands INSIDE the project.
+    assert env.supplied(_sourced(), "sub/pyproject.toml")[0].pod_rel == "wheels/" + VLEARN_WHEEL
+    env.check_supplied(_sourced(), "sub/pyproject.toml", ["vlearn"])
 
 
-def test_an_absolute_path_source_is_refused(tmp_path):
+def test_an_absolute_path_source_is_refused():
     """`$proj` is the only root the Arm has. An absolute path names the Head's disk, or the donor's."""
-    proj = _sourced(tmp_path, path="/opt/vlearn/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
     with pytest.raises(env.BuildError) as e:
-        env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+        env.check_supplied(_sourced(path="/opt/vlearn/" + VLEARN_WHEEL), "pyproject.toml", ["vlearn"])
     assert "outside" in str(e.value)
 
 
-def test_a_path_source_that_could_be_shell_is_refused(tmp_path):
+def test_a_path_source_that_could_be_shell_is_refused():
     """The declared path is rendered into the job script's `--bind` list, inside a double-quoted shell
     string. It is User text, so it is held to an alphabet — a `$` or a backtick there would be shell
     the submitter wrote and the Head ran, and a comma is apptainer's own bind separator.
 
     A quote is not in the list because it never gets this far: it makes the inline table unparseable,
-    and `_uv_sources` leaves a broken `pyproject.toml` to uv, which says something far better about it
-    than this could."""
-    for i, bad in enumerate(("../$(id)/vlearn-0.3.9-py3-none-any.whl",
-                             "../a,b/vlearn-0.3.9-py3-none-any.whl",
-                             "../a`id`b/vlearn-0.3.9-py3-none-any.whl")):
-        proj = _sourced(tmp_path / str(i), path=bad)
+    and `_sources_from_text` leaves a broken `pyproject.toml` to uv, which says something far better
+    about it than this could."""
+    for bad in ("../$(id)/vlearn-0.3.9-py3-none-any.whl",
+                "../a,b/vlearn-0.3.9-py3-none-any.whl",
+                "../a`id`b/vlearn-0.3.9-py3-none-any.whl"):
         with pytest.raises(env.BuildError) as e:
-            env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"),
-                               ["vlearn"])
+            env.check_supplied(_sourced(path=bad), "pyproject.toml", ["vlearn"])
         assert "will not use as a path" in str(e.value)
 
 
-def test_a_sibling_directory_is_as_far_as_a_path_source_reaches(tmp_path):
+def test_a_sibling_directory_is_as_far_as_a_path_source_reaches():
     """One `..` is the ordinary layout — a checkout beside the project — and has to keep working, or
     the rule above would refuse the very case it exists to serve."""
-    proj = _sourced(tmp_path)
-    env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+    env.check_supplied(_sourced(), "pyproject.toml", ["vlearn"])
 
 
-def test_only_a_wheel_can_be_stubbed(tmp_path):
-    proj = _sourced(tmp_path, path="../vlearn-main")
+def test_only_a_wheel_can_be_stubbed():
     with pytest.raises(env.BuildError) as e:
-        env.check_supplied(proj, env.Manifest(kind="uv-project", path="pyproject.toml"), ["vlearn"])
+        env.check_supplied(_sourced(path="../vlearn-main"), "pyproject.toml", ["vlearn"])
     assert "not a wheel" in str(e.value)
 
 
@@ -381,98 +371,43 @@ class TestTheStubIsNotAWorkingPackage:
     """What the licensing rests on. The stub exists to satisfy a resolver and must never be something
     `import vlearn` could succeed against."""
 
-    def _built(self, tmp_path):
-        proj = _sourced(tmp_path)
-        files, binds, log = env.substitute_supplied(
-            proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
+    def _built(self):
+        found = env.check_supplied(_sourced(), "pyproject.toml", ["vlearn"])
+        files, digests, log = env.stub_payload(found)
         wheel = next(f for f in files if f.rel.endswith(".whl"))
-        return proj, files, binds, log, wheel
+        return files, digests, log, wheel
 
-    def test_the_package_it_installs_is_empty(self, tmp_path):
-        *_, wheel = self._built(tmp_path)
+    def test_the_package_it_installs_is_empty(self):
+        *_, wheel = self._built()
         with zipfile.ZipFile(io.BytesIO(wheel.data)) as z:
             assert z.read("vlearn/__init__.py") == b""
             assert not any(n.endswith(".so") for n in z.namelist())
 
-    def test_it_answers_to_the_name_and_version_the_user_declared(self, tmp_path):
+    def test_it_answers_to_the_name_and_version_the_user_declared(self):
         """Read out of the FILENAME, never out of the real wheel — the Head has never seen that file.
         It is on the submitter's own machine and is not uploaded, which is why this is synthesized
         rather than emptied."""
-        *_, wheel = self._built(tmp_path)
+        *_, wheel = self._built()
         with zipfile.ZipFile(io.BytesIO(wheel.data)) as z:
             meta = z.read("vlearn-0.3.9.dist-info/METADATA").decode()
             assert "Name: vlearn" in meta and "Version: 0.3.9" in meta
             # The compatibility tag has to match too, or uv rejects the wheel as unusable here.
             assert "Tag: cp311-cp311-linux_x86_64" in z.read("vlearn-0.3.9.dist-info/WHEEL").decode()
 
-    def test_nothing_is_written_into_the_project(self, tmp_path):
-        """The whole reason this is bytes and binds rather than files: the project is the User's."""
-        proj, *_ = self._built(tmp_path)
-        assert [p.name for p in proj.iterdir()] == ["pyproject.toml"]
+    def test_the_stub_is_keyed_at_the_path_the_declaration_names(self):
+        """PROJECT-RELATIVE, because only the Arm knows where the project landed on its own disk. The
+        Arm writes the stub in place over the declared wheel; `../wheels` resolves into the Dive's own
+        scratch beside `$proj`."""
+        _, _, _, wheel = self._built()
+        assert wheel.rel == "../wheels/" + VLEARN_WHEEL
 
-    def test_a_wheel_outside_the_project_is_bound_in_at_the_path_the_declaration_names(self, tmp_path):
-        """PROJECT-RELATIVE, because only the Arm knows where the project landed on its own disk — and
-        `$proj/../wheels` is the Dive's own scratch on both branches. The old form recorded the HEAD's
-        resolved path, which named a directory no Arm has."""
-        _, _, binds, _, wheel = self._built(tmp_path)
-        assert [(b.src, b.dest, b.over_project) for b in binds] == [("src0", "../wheels", False)]
-        assert wheel.rel == "src0/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
-
-def test_a_wheel_inside_the_project_is_bound_over_not_overwritten(tmp_path):
-    """The project carried a real wheel. It is covered by a FILE bind, and the copy on disk is left
-    exactly as its owner wrote it."""
-    proj = _sourced(tmp_path, path="wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl")
-    real = proj / "wheels" / "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl"
-    real.parent.mkdir()
-    real.write_bytes(b"the user's real, licensed wheel")
-    files, binds, _ = env.substitute_supplied(
-        proj, env.Manifest(kind="uv-project", path="pyproject.toml"))
-    assert [(b.dest, b.over_project) for b in binds] == [
-        ("wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", True)]
-    assert zipfile.is_zipfile(io.BytesIO(files[0].data))
-    assert real.read_bytes() == b"the user's real, licensed wheel"
-
-
-def test_the_lock_is_repointed_at_the_stub(tmp_path):
-    """Not an optimisation. uv records a sha256 of a path-sourced wheel and verifies it on EVERY sync,
-    plain or --locked; a mismatch is a hard failure with no re-resolve escape."""
-    import hashlib
-
-    proj = _sourced(tmp_path)
-    (proj / "uv.lock").write_text(
-        'version = 1\n\n'
-        '[[package]]\nname = "pyfiglet"\nversion = "1.0.4"\n'
-        'wheels = [{ url = "https://x/y.whl", hash = "sha256:' + "a" * 64 + '" }]\n\n'
-        '[[package]]\nname = "vlearn"\nversion = "0.3.9"\n'
-        'source = { path = "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl" }\n'
-        'wheels = [{ filename = "vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", '
-        'hash = "sha256:' + "b" * 64 + '" }]\n'
-    )
-    before = (proj / "uv.lock").read_text()
-    files, binds, _ = env.substitute_supplied(proj, env.Manifest(kind="uv-project",
-                                                                 path="pyproject.toml"))
-    stub = next(f for f in files if f.rel.endswith(".whl"))
-    lock = next(f for f in files if f.rel == "uv.lock")
-    text = lock.data.decode()
-    assert f"sha256:{hashlib.sha256(stub.data).hexdigest()}" in text
-    # Every OTHER package stays frozen at exactly what it was resolved to.
-    assert "sha256:" + "a" * 64 in text
-    assert "sha256:" + "b" * 64 not in text
-    # Bound over the User's own lock for the build, never written to it. Theirs still records the wheel
-    # they actually hold — a Head that rewrote it would leave them a hash matching nothing they have.
-    assert (proj / "uv.lock").read_text() == before
-    assert env.StubBind("uv.lock", "uv.lock", over_project=True) in binds
-
-
-def test_a_lock_that_names_no_supplied_package_is_left_alone(tmp_path):
-    """No bind, no copy, nothing shipped. The lock only enters this at all because uv verifies a
-    path-sourced wheel's hash — a lock that records none has nothing to disagree with."""
-    proj = _sourced(tmp_path)
-    (proj / "uv.lock").write_text('version = 1\n\n[[package]]\nname = "pyfiglet"\nversion = "1.0.4"\n')
-    files, binds, _ = env.substitute_supplied(proj, env.Manifest(kind="uv-project",
-                                                                 path="pyproject.toml"))
-    assert not any(f.rel == "uv.lock" for f in files)
-    assert not any(b.dest == "uv.lock" for b in binds)
+    def test_each_stub_carries_the_digest_the_lock_must_record(self):
+        """uv verifies a path-wheel's hash on EVERY sync, plain or --locked; a mismatch is a hard
+        failure with no re-resolve escape. The digest here is what the in-container relock stamps into
+        `uv.lock` — the bulky lock itself never travels to the Head."""
+        import hashlib
+        _, digests, _, wheel = self._built()
+        assert digests == {"vlearn": hashlib.sha256(wheel.data).hexdigest()}
 
 
 # --- the Feature's own system libraries -------------------------------------

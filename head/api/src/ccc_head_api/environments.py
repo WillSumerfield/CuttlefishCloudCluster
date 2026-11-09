@@ -330,71 +330,53 @@ class Supplied:
     expressed relative to the PROJECT ROOT — the only form that means anything on the Arm, since the
     project lands in node-local scratch under a name no Head path predicts. It may begin `../`, which is
     the ordinary `../my-wheels/x.whl` layout and resolves into the Dive's own scratch beside `$proj`.
-
-    `inside_project` says only where the stub is bound — over a file the project carries, or into a
-    directory beside it. Neither one is written into the project any more.
     """
     package: str
     feature: str
     declared: str
     pod_rel: str
     filename: str
-    inside_project: bool
 
 
 @dataclass(frozen=True)
 class StubFile:
-    """One file the Arm writes into `$scratch/STUB_ROOT` before the build. `rel` is under that root."""
+    """One placeholder wheel the Arm writes before the build. `rel` is the file's path relative to the
+    PROJECT ROOT — exactly where uv expects the declared wheel, which the Arm overwrites in place."""
     rel: str
     data: bytes
 
 
-@dataclass(frozen=True)
-class StubBind:
-    """One bind into the build container: `$scratch/STUB_ROOT/<src>` over `$proj/<dest>`.
+def _sources_from_text(pyproject_text: str) -> dict:
+    """`[tool.uv.sources]` parsed out of a `pyproject.toml`'s text, or `{}` for anything without one.
 
-    `dest` is project-relative and may begin `../`. `over_project` marks a bind that covers a file the
-    project itself carries — which is also why that file need not ride the transfer at all, since the
-    bind hides it on every node.
+    Text, not a path: the Head never holds the project, only the manifest bytes `dive-prep` returns.
+    A conda/pip Dive has no such table, and a parse error is uv's to report far better than this.
     """
-    src: str
-    dest: str
-    over_project: bool
-
-
-def _uv_sources(project: Path, m: Manifest) -> tuple[Path, dict]:
-    """`(project_root, [tool.uv.sources])` for a uv project, or `(root, {})` for anything else.
-
-    Only `pyproject.toml` has this table. A `uv.lock` manifest is named alongside one and uv reads both,
-    so the root is the manifest's own directory either way.
-    """
-    root = (project / m.path).parent
-    pp = root / "pyproject.toml"
-    if m.kind != "uv-project" or not pp.is_file():
-        return root, {}
     try:
-        data = tomllib.loads(pp.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, tomllib.TOMLDecodeError):
-        # Not this module's error to report. uv is about to read the same file and say something far
-        # more useful about it than "could not parse", and that message reaches the User as the build log.
-        return root, {}
+        data = tomllib.loads(pyproject_text)
+    except tomllib.TOMLDecodeError:
+        return {}
     src = data.get("tool", {}).get("uv", {}).get("sources", {})
-    return root, src if isinstance(src, dict) else {}
+    return src if isinstance(src, dict) else {}
 
 
-def supplied(project: Path, m: Manifest) -> list[Supplied]:
+def supplied(pyproject_text: str, env_rel: str) -> list[Supplied]:
     """Which of this project's declared dependencies come from an **Arm Feature** instead.
+
+    `env_rel` is the manifest's path relative to the project root (the `--env` the Dive carries); a
+    source path is written relative to the manifest's own directory, and `pod_rel` re-expresses it
+    against the project root — the only form the Arm can place.
 
     Reads `[tool.uv.sources]` and nothing else — a package is only claimed here if the User pointed at
     a local file for it, which is the one case CCC can honour by substitution. A bare `vlearn` in
     `dependencies` is left alone: it means the index, uv will fail to find it there, and uv's own
     message about that is clearer than anything invented here.
 
-    Pure. Raises nothing — `check_supplied` is what turns a bad one into a refusal.
+    Pure, text in. Raises nothing — `check_supplied` is what turns a bad one into a refusal.
     """
-    root, sources = _uv_sources(project, m)
+    manifest_dir = posixpath.dirname(env_rel)
     out = []
-    for pkg, spec in sources.items():
+    for pkg, spec in _sources_from_text(pyproject_text).items():
         # PEP 503 normalisation, so `Vlearn` and `v_learn` find the same profile as `vlearn`.
         feat = features.SUPPLIED_BY.get(re.sub(r"[-_.]+", "-", pkg).lower())
         if not feat:
@@ -403,35 +385,24 @@ def supplied(project: Path, m: Manifest) -> list[Supplied]:
             if not isinstance(one, dict) or not isinstance(one.get("path"), str):
                 continue
             declared = one["path"]
-            # Resolved so a `sub/../wheels/x.whl` says what it means, then re-expressed against the
-            # project root — the manifest may sit in a subdirectory, and the Arm knows only `$proj`.
-            target = (root / declared).resolve()
-            rel = os.path.relpath(target, project.resolve())
+            # Normalised so `sub/../wheels/x.whl` says what it means, re-expressed against the project
+            # root from the manifest's directory. All string maths — no file on the Head to resolve.
+            pod_rel = posixpath.normpath(posixpath.join(manifest_dir, declared))
             out.append(Supplied(
                 package=pkg, feature=feat, declared=declared,
-                pod_rel=Path(rel).as_posix(), filename=target.name,
-                inside_project=not rel.startswith(".." + os.sep) and rel != "..",
+                pod_rel=pod_rel, filename=posixpath.basename(declared),
             ))
     return out
 
 
-def lock_rel(project: Path, m: Manifest) -> str:
-    """Where uv keeps this declaration's lock, relative to the project root.
-
-    Beside the manifest, wherever that is — uv's own rule, not CCC's.
-    """
-    root, _ = _uv_sources(project, m)
-    return Path(os.path.relpath(root / "uv.lock", project.resolve())).as_posix()
-
-
-def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Supplied]:
+def check_supplied(pyproject_text: str, env_rel: str, requested: list[str]) -> list[Supplied]:
     """Validate every Feature-supplied dependency at SUBMIT time, and return them. Raises BuildError.
 
     Every check is a refusal rather than a build failure, and that is the point of doing them here:
     each one is certain before the Dive exists, and each would otherwise surface as an ImportError
     after the User has paid Karma to hold a GPU.
     """
-    found = supplied(project, m)
+    found = supplied(pyproject_text, env_rel)
     for s in found:
         # Asking for the package without asking for the Feature is always a mistake, never a choice:
         # CCC is about to replace the wheel with an empty stub (licensing — see features.VLEARN_SETUP),
@@ -439,7 +410,7 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
         # place anywhere, and die at `import`.
         if s.feature not in requested:
             raise BuildError(
-                f"{m.path} declares '{s.package}', which comes from the '{s.feature}' Arm Feature, but "
+                f"{env_rel} declares '{s.package}', which comes from the '{s.feature}' Arm Feature, but "
                 f"this Dive did not request it. Add --feature {s.feature}, or drop the dependency — "
                 f"CCC replaces a Feature's package with a placeholder and only the Feature puts the "
                 f"Arm's own licensed build back."
@@ -448,7 +419,7 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
         # need a whole synthesized project, and no Feature has ever wanted one.
         if not s.filename.endswith(".whl"):
             raise BuildError(
-                f"{m.path} points '{s.package}' at {s.declared}, which is not a wheel. A Feature's "
+                f"{env_rel} points '{s.package}' at {s.declared}, which is not a wheel. A Feature's "
                 f"package is replaced by a placeholder before the build, and CCC can only do that for "
                 f"a `.whl` — point the path at one."
             )
@@ -458,7 +429,7 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
         # Head ran. A comma would be no safer — that is the separator apptainer's own bind list uses.
         if not re.fullmatch(r"[A-Za-z0-9._+/-]+", s.declared):
             raise BuildError(
-                f"{m.path} points '{s.package}' at {s.declared}, which CCC will not use as a path. "
+                f"{env_rel} points '{s.package}' at {s.declared}, which CCC will not use as a path. "
                 f"Name it with letters, digits and `. _ + - /` only — the path is handed to the "
                 f"build's own mounts, and anything else there could not be told from an instruction."
             )
@@ -468,9 +439,9 @@ def check_supplied(project: Path, m: Manifest, requested: list[str]) -> list[Sup
         # reaches that scratch, which is what the ordinary `../my-wheels/x.whl` layout needs, and two
         # would name a directory outside the Dive altogether. Saying it this way makes it mean the
         # same thing on the Head and on the Arm.
-        if os.path.isabs(s.declared) or s.pod_rel.startswith("../../"):
+        if s.declared.startswith("/") or s.pod_rel.startswith("../../"):
             raise BuildError(
-                f"{m.path} points '{s.package}' at {s.declared}, which reaches outside the directory "
+                f"{env_rel} points '{s.package}' at {s.declared}, which reaches outside the directory "
                 f"CCC runs this project in. A path source may name a file in the project or in "
                 f"a sibling directory beside it, and no further up than that."
             )
@@ -514,94 +485,26 @@ def _stub_wheel(package: str, filename: str) -> bytes:
     return buf.getvalue()
 
 
-def _relock(text: str, package: str, digest: str) -> str:
-    """`uv.lock` with `package`'s recorded hash pointed at the stub. Unchanged if it says nothing.
+def stub_payload(found: list[Supplied]) -> tuple[list[StubFile], dict[str, str], list[str]]:
+    """The placeholder bytes + lock digests the Arm needs, computed Head-side at submit.
+    `(stub files, {package: sha256}, log lines)`.
 
-    Not an optimisation — without it the build cannot succeed. uv records a sha256 of a path-sourced
-    wheel in the lock and verifies it on EVERY sync, plain or `--locked`; there is no re-resolve escape
-    from a mismatch. The stub is a different file, so its hash has to be the one in the lock.
+    `found` is `check_supplied`'s return. For each supplied wheel: an empty stub wheel keyed by its
+    project-relative path (where the Arm writes it, in place over the declared path), and the sha256 the
+    in-container relock must stamp into `uv.lock` — uv verifies a path-wheel's hash on every sync, so
+    the stub's own hash has to be the one the lock records.
 
-    Text in, text out, and the User's own file is never the thing edited: the result is bound over the
-    lock for the build alone. The lock is its owner's — it describes the wheel they actually hold.
-
-    A targeted text edit rather than a TOML round-trip: `uv.lock` is uv's file, written in its own
-    style, and rewriting the whole thing to change one string would hand back a file it has to accept
-    in full. Only the `hash` inside this package's own `[[package]]` block moves; every other package
-    stays frozen at exactly what it was resolved to.
+    The bulky `uv.lock` never travels: only the digests do, and `cuttle _feature-stub` rewrites the
+    Arm-local copy of the lock from them before `uv sync`. Pure — the parsing stays here; the writing
+    happens in the container.
     """
-    # The block runs from its own `[[package]]` header to the next one (or the end of the file).
-    block = re.compile(
-        r'\[\[package\]\]\nname = "' + re.escape(package) + r'"\n(?:(?!\n\[\[package\]\]).)*',
-        re.S,
-    )
-    hit = block.search(text)
-    if not hit:
-        return text
-    fixed = re.sub(r'hash = "sha256:[0-9a-f]+"', f'hash = "sha256:{digest}"', hit.group(0))
-    return text[:hit.start()] + fixed + text[hit.end():]
-
-
-def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], list[StubBind], list[str]]:
-    """Stand a placeholder in for every Feature-supplied wheel. `(files, binds, log lines)`.
-
-    **PURE — nothing is written, and that is the point.** It used to write into the project: a stub over
-    the real wheel, a directory of stubs under a dot-name, an edit to `uv.lock`. Now the placeholder is
-    not something the Head writes but something the Arm *mounts*.
-
-    Decided HERE, at submit, even so: it is the same class of decision as `detect`, and it is where the
-    manifest is understood. The Arm receives bytes and binds and reasons about neither.
-
-    Three shapes, all of them binds:
-
-    * **A wheel outside the project** (`../vlearn-main/...`, the ordinary layout) — never uploaded, and
-      never on the Head at all. Its stubs go in one directory per destination, bound at `$proj/../…`,
-      which resolves into the Dive's own scratch. Apptainer creates that mountpoint even though its
-      parent is not itself bound, which is what makes it work under `--contain`.
-    * **A wheel inside it** — bound over as a single FILE. The project's own copy is untouched on the
-      host, and a Dive need not
-      transfer a licensed wheel to a donor at all (`StubBind.over_project`).
-    * **`uv.lock`** — rewritten in memory and bound over, when it records a hash for one of them. uv
-      verifies that hash on EVERY sync, so a stub the lock does not know about fails the build outright.
-
-    Each bind's `dest` is project-relative; only the Arm knows where the project landed, and
-    the job script prefixes `$proj`.
-    """
-    root, _ = _uv_sources(project, m)
     files: list[StubFile] = []
-    binds: list[StubBind] = []
-    log: list[str] = []
-    dirs: dict[str, str] = {}
     digests: dict[str, str] = {}
-    for i, s in enumerate(supplied(project, m)):
+    log: list[str] = []
+    for s in found:
         data = _stub_wheel(s.package, s.filename)
+        files.append(StubFile(s.pod_rel, data))
         digests[s.package] = hashlib.sha256(data).hexdigest()
-        if s.inside_project:
-            # One directory per bind rather than a shared one: this is a FILE bind over the User's own
-            # copy, and two of them could name the same basename in different directories.
-            files.append(StubFile(f"at{i}/{s.filename}", data))
-            binds.append(StubBind(f"at{i}/{s.filename}", s.pod_rel, over_project=True))
-        else:
-            where = posixpath.dirname(s.pod_rel)
-            src = dirs.get(where)
-            if src is None:
-                # Named by index, not by the declared basename: two sources could name directories with
-                # the same basename at different depths, and one dir per DESTINATION keeps them apart.
-                src = f"src{len(dirs)}"
-                dirs[where] = src
-                binds.append(StubBind(src, where, over_project=False))
-            files.append(StubFile(f"{src}/{s.filename}", data))
         log.append(f"ccc: '{s.package}' comes from the '{s.feature}' Arm Feature — {s.declared} is an "
                    f"empty placeholder for this build, and your own copy is untouched")
-    lock = root / "uv.lock"
-    if digests and lock.is_file():
-        text = lock.read_text(encoding="utf-8", errors="replace")
-        fixed = text
-        for pkg, digest in digests.items():
-            fixed = _relock(fixed, pkg, digest)
-        if fixed != text:
-            rel = lock_rel(project, m)
-            files.append(StubFile("uv.lock", fixed.encode()))
-            binds.append(StubBind("uv.lock", rel, over_project=True))
-            log.append(f"ccc: the copy of {rel} this build reads is repointed at that placeholder — "
-                       f"the one you keep still records your own wheel")
-    return files, binds, log
+    return files, digests, log
