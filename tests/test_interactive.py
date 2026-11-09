@@ -361,7 +361,7 @@ class TestTheMenuGatesByState:
         Arm-side commands leak out by design (the two tests below) — but its *operator* subcommands
         stay put."""
         head_only = {"user", "build-installer", "backup", "munge",
-                     "arm list", "arm authorize", "arm admit", "arm benchmark",
+                     "arm authorize", "arm admit", "arm benchmark",
                      "arm chown", "arm update", "arm remove", "karma override", "karma bump"}
         client = self._paths(logged_in=True, provisioned=False, pointed=True, on_head=False)
         assert head_only.isdisjoint(client)
@@ -372,8 +372,8 @@ class TestTheMenuGatesByState:
         from anywhere — so a logged-in client must reach them. They used to be hidden on a client with
         the whole of `arm`, leaving `cuttle arm retract` typable but invisible."""
         client = self._paths(logged_in=True, provisioned=False, pointed=True, on_head=False)
-        assert {"arm retract", "arm return"} <= client
-        assert client.isdisjoint({"arm list", "arm remove", "arm authorize"})  # not the operator's
+        assert {"arm retract", "arm return", "arm list"} <= client   # list: a User's view of the GPUs
+        assert client.isdisjoint({"arm remove", "arm authorize"})  # not the operator's
 
     def test_an_arm_box_reaches_sync_key(self):
         """Gap fixed. `arm sync-key` is the one arm command that runs ON the Arm (ARM), re-fetching

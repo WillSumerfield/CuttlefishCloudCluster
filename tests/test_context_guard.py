@@ -128,3 +128,23 @@ def test_a_bare_box_is_only_any(box):
     role- or session-gated may think it belongs here."""
     box()
     assert satisfied() == {Ctx.ANY}
+
+
+def test_a_user_sees_arms_from_their_own_machine(box, ran, monkeypatch):
+    """`arm list` is {HEAD, USER}: off the Head it reads the API (what a Dive can be sized against),
+    never the Head-local registry it doesn't have."""
+    from cuttle import enroll, queue
+    monkeypatch.setattr(queue, "arms", lambda **k: ran.__setitem__("user_arms", k))
+    monkeypatch.setattr(enroll, "list_arms", lambda **k: ran.__setitem__("head_arms", k))
+    box(pointed=True, logged_in=True)
+    runner.invoke(app, ["arm", "list", "--json"])
+    assert ran == {"user_arms": {"as_json": True}}
+
+
+def test_the_head_operator_keeps_the_admin_arm_view(box, ran, monkeypatch):
+    from cuttle import enroll, queue
+    monkeypatch.setattr(queue, "arms", lambda **k: ran.__setitem__("user_arms", k))
+    monkeypatch.setattr(enroll, "list_arms", lambda **k: ran.__setitem__("head_arms", k))
+    box(head=True)
+    runner.invoke(app, ["arm", "list"])
+    assert ran == {"head_arms": {"as_json": False}}

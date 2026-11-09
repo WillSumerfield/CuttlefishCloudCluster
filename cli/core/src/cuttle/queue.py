@@ -57,3 +57,22 @@ def history(days: int = 30, as_json: bool = False, limit: int = 0) -> None:
             ui.hint(f"showing {limit}; use --limit 0 for all")
 
     ui.emit(rows, as_json, render)
+
+
+def arms(as_json: bool = False) -> None:
+    """The Arms as a User sees them, off the Head: which cards exist and whether they're free — what
+    sizing a Dive needs. The Head's own `arm list` is the operator's view (enrollment, rollout)."""
+    rows = auth._api("GET", "/arms") or []
+
+    def render():
+        if not rows:
+            ui.say("no Arms")
+            return
+        ui.table(
+            ["NAME", "GPU", "VRAM", "POWER", "STATE", "OWNER"],
+            [[a["name"], f"{a['gpus']}x {a.get('gpu') or '?'}" if (a.get("gpus") or 0) > 1 else a.get("gpu") or "-",
+              f"{round(a['vram_mb'] / 1024)}G" if a.get("vram_mb") else "-",
+              f"{a['power']:.0f} TF" if a.get("power") else "-",
+              "retracted" if a.get("retracted") else a["state"], a.get("owner") or "-"] for a in rows])
+
+    ui.emit(rows, as_json, render)

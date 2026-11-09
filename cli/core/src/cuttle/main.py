@@ -249,10 +249,14 @@ def update():
 
 
 @arm_app.command("list")
-@requires(Ctx.HEAD)
+@requires(Ctx.HEAD, Ctx.USER)
 def arm_list(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
-    """Show Arms: who owns them, and whether they're authorized/enrolled/admitted."""
-    enroll_mod.list_arms(as_json=as_json)
+    """Show Arms. On the Head: who owns them, and whether they're authorized/enrolled/admitted.
+    Elsewhere: their GPUs and whether they're free."""
+    if menu_mod.is_head():
+        enroll_mod.list_arms(as_json=as_json)
+    else:
+        queue_mod.arms(as_json=as_json)
 
 
 @arm_app.command("authorize")
