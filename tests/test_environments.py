@@ -482,17 +482,13 @@ def test_a_lock_that_names_no_supplied_package_is_left_alone(tmp_path):
 # to install libassimp.so.5. So CCC builds them itself, into a prefix of its own.
 
 
-def test_a_uv_spawn_asking_for_a_feature_still_needs_micromamba(with_tools, tmp_path):
-    """The libraries are a conda prefix whatever the manifest is. A Head with uv but no micromamba
-    could build the Environment and not the Feature — and finding that out at BUILD time would cost the
-    User an Escrow for a Head that was never fully provisioned."""
+def test_a_uv_spawn_needs_only_its_manifest_tool_not_a_features_libraries(with_tools, tmp_path):
+    """A Feature's system libraries are built once at `cuttle setup --arm`, on the Arm that holds the
+    wheel they link into — not on the Head per Dive. So asking for a Feature no longer makes a uv Dive
+    need micromamba on the Head: only the manifest decides the tool."""
     env.MICROMAMBA_BIN.unlink()
     m = env.Manifest(kind="uv-project", path="pyproject.toml")
-    env.require_tool(m, [])              # no Feature: uv alone is enough
-    env.require_tool(m, ["isaaclab"])    # a Feature with no libraries needs nothing extra
-    with pytest.raises(env.BuildError) as e:
-        env.require_tool(m, ["vlearn"])
-    assert "micromamba" in str(e.value)
+    env.require_tool(m)   # uv alone is enough, Feature or no Feature
 
 
 def test_a_feature_with_no_libraries_asks_for_nothing_extra(with_tools):

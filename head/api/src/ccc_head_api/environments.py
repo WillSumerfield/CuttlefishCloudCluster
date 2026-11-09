@@ -244,12 +244,13 @@ def _classify(rel: str) -> str:
     )
 
 
-def require_tool(m: Manifest, feature_names: list[str] | None = None) -> None:
-    """Refuse now if this Head has not got a binary this Dive's build needs. Raises BuildError.
+def require_tool(m: Manifest) -> None:
+    """Refuse now if this Head has not got the binary this Dive's build needs. Raises BuildError.
 
-    `feature_names` matters because a Feature's system libraries are a conda prefix whatever the
-    manifest is (`build_feature_libs`) — so a uv Dive asking for one still needs micromamba, and
-    finding that out at build time would cost the User an Escrow for a Head problem.
+    Only the manifest decides it: uv for a uv/pip Dive, micromamba for a conda one. A Feature's system
+    libraries used to add micromamba here too, back when CCC built them on the Arm per Dive — they are
+    built once at `cuttle setup --arm` now (cuttle.features.build_libs), on the Arm, so a Feature no
+    longer changes what the Head must hold.
 
     A REJECTION, not a degradation. It used to be the latter — a Head provisioned before Environments
     existed ran the cluster base rather than refusing Dives that had worked for months. There is no
@@ -258,15 +259,12 @@ def require_tool(m: Manifest, feature_names: list[str] | None = None) -> None:
     and name the one command that fixes it. Nothing is Escrowed — this is decided before any Dive
     exists.
     """
-    needs = [MICROMAMBA_BIN if m.kind == "conda" else UV_BIN]
-    if features.lib_specs(feature_names or []):
-        needs.append(MICROMAMBA_BIN)
-    for need in needs:
-        if not need.exists():
-            raise BuildError(
-                f"this Head cannot build Environments — there is no {need.name} at {need}. Ask the "
-                f"operator to re-run `cuttle setup --head`, which installs it."
-            )
+    need = MICROMAMBA_BIN if m.kind == "conda" else UV_BIN
+    if not need.exists():
+        raise BuildError(
+            f"this Head cannot build Environments — there is no {need.name} at {need}. Ask the "
+            f"operator to re-run `cuttle setup --head`, which installs it."
+        )
 
 
 def describe(m: Manifest | None) -> str:
@@ -607,23 +605,3 @@ def substitute_supplied(project: Path, m: Manifest) -> tuple[list[StubFile], lis
             log.append(f"ccc: the copy of {rel} this build reads is repointed at that placeholder — "
                        f"the one you keep still records your own wheel")
     return files, binds, log
-
-
-def render_featlib_build(specs: dict[str, list[str]]) -> list[list[str]]:
-    """The commands that build each requested **Arm Feature**'s system libraries, in order. Pure.
-
-    Conda, and only conda, because these are not Python packages: `libassimp.so.5` and `libSDL2` have no
-    wheel and no manifest a submitter could put them in. They used to arrive inside the submitter's own
-    `environment.yml` — which is why a vlearn Dive had to be a conda Dive. Now that an Environment
-    carries its own interpreter, the manifest can be anything, and these have to come from somewhere
-    that does not care.
-
-    One prefix per Feature, under features.FEATLIB_MOUNT. No interpreter is installed into it and none is
-    wanted: it is bound for its `lib/` directory alone (on LD_LIBRARY_PATH), never run.
-
-    Built on the Arm alongside the Environment, and for the same reason — it is CCC's own multi-hundred-MB
-    conda prefix, and shipping it from the Head cost exactly what shipping the env cost.
-    """
-    return [[str(MICROMAMBA_BIN), "create", "--yes", "--quiet",
-             "--prefix", f"{features.FEATLIB_MOUNT}/{feat}", "-c", "conda-forge", *want]
-            for feat, want in specs.items()]
