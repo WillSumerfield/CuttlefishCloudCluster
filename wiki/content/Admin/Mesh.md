@@ -141,6 +141,9 @@ Common causes:
   `cuttle arm authorize` again for a new one.
 - **An Arm is enrolled but never admitted.** `cuttle arm admit <name>`.
 - **Arms dropped off after a key rotation.** Their owners need `cuttle arm sync-key`.
+- **Users' `ssh` to a Tidepool or Dive hangs at "Connecting", but Arms get in fine.** Users aren't on
+  the Mesh, so the Head has to let their ssh in separately (ports 32001–33182 and 31000–31199);
+  `ccc-dive-egress.timer` does that. A Head set up before it did needs `cuttle update`.
 - **Everything stopped after a reboot on a box with personal Tailscale.** Check
   `ccc-mesh-firewall.timer` is running.
 
