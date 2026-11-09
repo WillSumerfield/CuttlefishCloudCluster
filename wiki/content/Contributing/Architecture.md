@@ -271,7 +271,7 @@ or lost.
 | `wiki/` | This wiki. Pages in `wiki/content/`. |
 | `tests/` | The pytest suite for both Python packages. |
 | `examples/` | Example projects. |
-| `arm/`, `karma/`, `gateway/`, `telemetry/`, `shared/` | Each holds a `CONTEXT.md` (and some a `setup/README.md`) for that area. Their code lives in `cli/` and `head/`. |
+| `arm/`, `karma/`, `telemetry/`, `shared/` | Each holds a `CONTEXT.md` (and some a `setup/README.md`) for that area. Their code lives in `cli/` and `head/`. |
 | `CONTEXT.md` | The project's glossary, the authority on what each term means. |
 | `docs/` | The old 1.x docs. Being replaced by this wiki. |
 
