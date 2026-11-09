@@ -302,8 +302,8 @@ class TestATeardownLeavesNoSpawnRunning:
         assert names.index("pkill") < names.index("userdel")
 
     def test_term_comes_before_kill(self, monkeypatch):
-        """apptainer's own children (squashfuse, fuse-overlayfs) need a moment to unmount the container;
-        killed outright they leave mounts behind under /var/lib/apptainer."""
+        """A container's mount helpers (fuse-overlayfs and friends) need a moment to unmount cleanly;
+        killed outright they leave mounts behind under the container store."""
         from cuttle import teardown
         calls = self.teardown_calls(monkeypatch, self._passwd("ccc-u60002"))
         teardown.end_guise_processes()

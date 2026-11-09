@@ -791,8 +791,8 @@ class TestFeaturesEnv:
         assert config.LICENCE_HOME_VAR not in out
 
     def test_everything_is_exported_not_merely_assigned(self):
-        """The job script sources this with no `set -a`, and apptainer passes the calling environment in
-        (no --cleanenv) — so a bare assignment would reach the wrapper and stop at the container wall."""
+        """The job script sources this with no `set -a` — so a bare assignment would stay a shell-local
+        variable and never reach the commands the Dive job then runs; only an exported var does."""
         out = enroll.render_features_env([{"name": "vlearn", "path": "/opt/v"}],
                                          licence_home="/opt/ccc/licence")
         assert all(ln.startswith("export ") for ln in out.splitlines() if ln and not ln.startswith("#"))

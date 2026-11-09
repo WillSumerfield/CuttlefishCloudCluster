@@ -2,7 +2,7 @@
 
 Uncalled since 2.0 (nothing declares an Environment until Dives), but still the one tested place that
 says what a manifest means. Pure functions with remote consequences (CONTRIBUTING.md): nothing here
-needs apptainer, a Guise, or a network, but each decides what would run on a donor's box. Worth
+needs a container runtime, a Guise, or a network, but each decides what would run on a donor's box. Worth
 pinning: naming a manifest is mandatory and nothing is ever detected, an env inherits nothing and
 carries its own interpreter, and every build targets the SAME absolute path it's later run at.
 """
