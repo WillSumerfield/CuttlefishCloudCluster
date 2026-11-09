@@ -189,27 +189,24 @@ Two clients, one **Head**. Both speak to the Head over the network; neither is a
   at a local copy is often what makes their project resolve on their own machine — but what runs is
   always the Arm's: CCC replaces the declaration with an empty placeholder before building and removes
   it again on the Arm. Declaring such a package without also requesting its Feature is refused.
-  (Today a Feature only constrains **placement**; the profile wiring and **Licence** bind inside a Dive
-  are **unbuilt** — see the **Licence** terms below.)
 - **Licence** — permission to run a Feature's software, held by the *machine* rather than by the
   software or the **User**. An Arm has at most one set, covering every Feature it offers, because a
   licence is bound to hardware and an Arm is one machine. A Dive placed there runs under the Arm
   owner's licence and never carries its own — so a Feature that is licence-only still constrains
   **Eligibility**, even though every eligible Arm could install the software. It lives in one directory
-  per Arm, the home of the **Licence account**, bound at a **Guise**'s home inside the **Pod**.
-  **Unbuilt**: the per-Arm Licence directory is created at setup, but binding it into a Dive is not yet
-  wired up (planned alongside the **Activation job**).
+  per Arm, the home of the **Licence account**; its contents are merged into a **Guise**'s home inside
+  the **Pod** for a Dive that asked for the Feature, so the software finds the machine's activation
+  there.
 - **Licence account** — `ccc-licence`, an account whose only purpose is *owning* the Licence
-  directory, which keeps a Licence out of a human's home — the whole directory is bound into every Dive
-  that asks for a Feature. `teardown` removes the account but never the directory, since an activation
+  directory, which keeps a Licence out of a human's home — the directory's contents are merged into the
+  home of every Dive that asks for a Feature. `teardown` removes the account but never the directory, since an activation
   can be a finite resource and teardown+setup is the routine redeploy here.
-- **Activation job** — **unbuilt.** How a **Licence** comes to exist. A licence manager picks where to
-  keep its state with `getpwuid(getuid())->pw_dir` and ignores `$HOME`, so the only way to choose that
-  location is to choose which identity activates the software. CCC runs the vendor's activation as a
-  **Guise**, in a **Pod**, with the Licence directory bound at that Guise's home, so the state lands
-  there by construction. It is the one job permitted to see the Arm's product *key*, and nothing a User
-  can submit asks for that. (1.x called this an "Activation Spawn"; the activation call was dropped in
-  2.0 and is being rebuilt.)
+- **Activation** — how a **Licence** comes to exist. A licence manager picks where to keep its state
+  with `getpwuid(getuid())->pw_dir` and ignores `$HOME`, so the only way to choose that location is to
+  choose which identity activates the software. CCC runs the vendor's activation once per machine,
+  locally in a **Pod** during `cuttle setup --arm`, with the Licence directory as the running identity's
+  home so the state lands there by construction. It is the one run permitted to see the Arm's product
+  *key*, and nothing a User can submit asks for that.
 
 ## Economy concepts
 

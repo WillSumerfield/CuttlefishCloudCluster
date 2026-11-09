@@ -73,13 +73,12 @@ inside the **Pod** can set it for itself, and the system libraries Isaac links a
 packages that any **Environment** could install.
 
 Blocked on having the software to probe — the profile has to state real ABI tags, real library paths
-and real cache locations, and none of those can be guessed. Note that `features.py:239-242` and
-`test_features.py:41` currently record placement-only as the *finished* answer for `isaaclab`; both say
+and real cache locations, and none of those can be guessed. Note that `ccc_head_api.features` and
+`test_features.py` currently record placement-only as the *finished* answer for `isaaclab`; both say
 so deliberately and both change when this is built.
 
-The whole profile-build path (`features.PREAMBLE`/`setup_snippet`/`lib_specs`,
-`environments.build_feature_libs`) is still Apptainer-shaped — `apptainer exec --contain --bind`, a
-`base.sif` build, comma bind-lists — from before Phase 2 switched the live Dive to Podman. Nothing live
-renders it yet (`profiled()` gates submission on it; `dive.render_job` never emits it), so the comments
-and `test_features.py` still say `apptainer`. Re-targeting it at Podman is part of wiring the profile
-into a Dive, not a separate cleanup — do it here, not by a blind rename.
+The profile machinery `vlearn` uses is the model to copy: an Arm-side `ArmProfile`
+(`cuttle.features`) with the package wheels, system-library specs and a `profile.json` descriptor;
+the in-container hook (`cuttle.feature_hook`) that arranges it after the Environment build; and the
+Head-side `Profile` (`ccc_head_api.features`) holding the description and the supplied-package gate.
+It is all Podman/in-container now — the old Apptainer render path is gone.
