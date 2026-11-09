@@ -42,6 +42,12 @@ class ArmProfile:
     wheels: str = ""
     licence_key: str = ""
     licence_key_help: str = ""
+    # System-library conda specs CCC builds into this Feature's state tree at setup (build_libs). SPECS
+    # ONLY — a faithful mirror of ccc_head_api.features.Profile.libs/alt_libs (the "why" notes stay
+    # Head-side). `libs` is the main prefix; each `alt_libs` entry `(suffix, specs)` a second prefix for
+    # a spec that conflicts with it (a second CUDA major).
+    libs: tuple[str, ...] = ()
+    alt_libs: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 # vlearn is distributed as a checkout, not installed: a directory holding the vendor's wheels beside the
@@ -64,6 +70,15 @@ VLEARN = ArmProfile(
     licence_key_help="the product key vlearn was activated with. CCC copies it into this box's own "
                      "CCC state, readable by the cluster's accounts and nobody else, and reads it "
                      "once — from the activation CCC runs as this Arm joins. It never leaves the box.",
+    # libgym.so links all of these dynamically, resolving at LOAD time (missing one is an OSError on
+    # import, even headless). No Python manifest can carry them and uv cannot install libassimp.so.5, so
+    # CCC builds them into a conda prefix here (build_libs). Both CUDA majors ship (alt_libs): which one
+    # this Arm's wheel wants is a property of the build, and distinct SONAMEs mean the loader takes
+    # whichever the binary names. MUST agree with ccc_head_api.features.VLEARN.libs/alt_libs (specs
+    # only) — the two never import each other (same split as FEATURE_NAMES), and a spec added there but
+    # not here is an ImportError in a Dive on this Arm.
+    libs=("sdl2", "assimp=5", "zeromq", "czmq", "libglu", "mesalib", "cuda-cudart=13"),
+    alt_libs=(("cuda12", ("cuda-cudart=12",)),),
 )
 
 ARM_PROFILES: dict[str, ArmProfile] = {VLEARN.name: VLEARN}
@@ -95,6 +110,11 @@ DESCRIPTOR_NAME = "profile.json"
 # Where a Feature's binds land inside the container (mirror of ccc_head_api.features.FEATURE_MOUNT — the
 # two packages never import each other, same split as FEATURE_NAMES; they must agree).
 FEATURE_MOUNT = "/ccc/feature"
+
+# A Feature's SYSTEM-LIBRARY prefixes: micromamba-built into its state tree at setup (build_libs) and
+# bound read-only, the loader resolving a Feature's .so against them. The main conda prefix is "libs";
+# each alternate (a conflicting spec, a second CUDA major) is "libs-<suffix>".
+LIBS_DIRNAME = "libs"
 
 
 def check_install(name: str, path: str) -> list[str]:
@@ -165,6 +185,42 @@ def unpack_packages(features: list[dict]) -> dict[str, list[str]]:
     return landed
 
 
+def _lib_prefixes(p: ArmProfile) -> dict[str, list[str]]:
+    """`{dirname: [conda spec, ...]}` for one Feature — the main `libs` prefix and each conflicting
+    alternate (`libs-<suffix>`). Empty for a Feature with no system libraries."""
+    out: dict[str, list[str]] = {}
+    if p.libs:
+        out[LIBS_DIRNAME] = list(p.libs)
+    for suffix, extra in p.alt_libs:
+        out[f"{LIBS_DIRNAME}-{suffix}"] = list(extra)
+    return out
+
+
+def build_libs(features: list[dict]) -> None:
+    """micromamba-create each declared Feature's system-library prefix(es) into its state tree.
+
+    Once per `setup --arm`, not per Dive: these are CCC's own conda prefixes (libassimp.so.5, libSDL2,
+    libcudart, …) that a submitter's manifest cannot carry and uv cannot install. Built HERE, on the
+    Arm that holds the wheel they link into, rather than on the Head per Dive — shipping a half-gigabyte
+    prefix from the Head cost what shipping the Environment cost, and it is the same conda-forge solve
+    whatever the manifest. Both CUDA majors always (`alt_libs`).
+
+    Rebuilt from scratch each setup — `unpack_packages` already cleared the tree, so an in-place upgrade
+    cannot leave a prior release's libraries mixed in.
+    """
+    mm = str(config.ENV_TOOLS_DIR / "micromamba")
+    for f in features:
+        p = ARM_PROFILES.get(f["name"])
+        if not p:
+            continue
+        for dirname, specs in _lib_prefixes(p).items():
+            prefix = FEATURE_PKG_DIR / p.name / dirname
+            run(["rm", "-rf", str(prefix)], sudo=True, check=False)
+            run([mm, "create", "--yes", "--quiet", "--prefix", str(prefix),
+                 "-c", "conda-forge", *specs], sudo=True)
+            run(["chmod", "-R", "a+rX", str(prefix)], sudo=True)
+
+
 def prepare(features: list[dict]) -> dict[str, list[str]]:
     """Bring everything a declared Feature needs into CCC's own state, and report the ABI tags that
     landed as `{feature: [abi, ...]}`.
@@ -177,6 +233,7 @@ def prepare(features: list[dict]) -> dict[str, list[str]]:
     """
     forget_undeclared(features)
     landed = unpack_packages(features)
+    build_libs(features)
     for f in features:
         mirror_install(f)
         mirror_licence_key(f)
@@ -241,12 +298,14 @@ def mirror_licence_key(f: dict) -> None:
 
 def descriptor_binds(name: str, abis: list[str]) -> list[dict]:
     """The read-only binds a Dive gets for Feature `name` — the unpacked wheel (one per ABI the box
-    holds) and the mirrored runtime data. Each entry is `{src, dst, ro}`, `src` under this Feature's
-    own state tree, `dst` under FEATURE_MOUNT. Never the **Licence** key (ccc-launch refuses it too).
+    holds), the mirrored runtime data, and each system-library prefix's `lib/`. Each entry is
+    `{src, dst, ro}`, `src` under this Feature's own state tree, `dst` under FEATURE_MOUNT. Never the
+    **Licence** key (ccc-launch refuses it too).
 
     The ABI is picked INSIDE the container, after the Environment's interpreter is known (the feature
     hook, phase 8c) — so every held ABI's wheel dir is bound and the hook chooses; here we only lay
-    out what it may choose from.
+    out what it may choose from. The lib prefixes are both bound for the same reason both CUDA majors
+    ship: the loader takes whichever SONAME the binary names.
     """
     p = ARM_PROFILES.get(name)
     if not p:
@@ -257,6 +316,9 @@ def descriptor_binds(name: str, abis: list[str]) -> list[dict]:
     if p.requires:   # the mirrored assets/shaders/cache/… the Feature resolves its data against
         binds.append({"src": str(root / INSTALL_DIRNAME),
                       "dst": f"{FEATURE_MOUNT}/{name}/{INSTALL_DIRNAME}", "ro": True})
+    for dirname in _lib_prefixes(p):   # the system-library prefixes build_libs made
+        binds.append({"src": str(root / dirname / "lib"),
+                      "dst": f"{FEATURE_MOUNT}/{name}/{dirname}/lib", "ro": True})
     return binds
 
 
@@ -317,12 +379,14 @@ def features_env_extras(features: list[dict]) -> list[str]:
 
 
 def runtime_summary(name: str) -> str:
-    """What CCC arranges for `name`, **from the Head** (`GET /features/{name}/runtime`).
+    """The prose description of what CCC arranges for `name`, **from the Head**
+    (`GET /features/{name}/runtime`) — the one thing here that is not offline.
 
-    The one thing here that is not offline, and deliberately not local: the list of system libraries a
-    Feature's software links against belongs next to the code that builds against it, which is
-    `ccc_head_api.features`. A second copy in the CLI would be a second copy to forget when a release
-    adds a library, and the symptom of forgetting is an `ImportError` in someone else's Dive.
+    The library *specs* are mirrored Arm-side now (`ARM_PROFILES[...].libs`, which `build_libs` turns
+    into a prefix at setup), the same must-agree duplication as `FEATURE_NAMES`. But the annotated
+    *summary* — the "why is assimp pinned to 5" prose `cuttle feature show` prints — stays Head-side,
+    next to the code that builds against these libraries, rather than a second block of prose to keep in
+    step.
     """
     from . import api, auth
     client = auth._client()

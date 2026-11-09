@@ -361,6 +361,9 @@ def test_the_descriptor_binds_every_abi_and_the_install_never_the_key(tmp_path, 
     srcs = {b["src"] for b in binds}
     assert str(tmp_path / "vlearn" / "cp310") in srcs and str(tmp_path / "vlearn" / "cp311") in srcs
     assert str(tmp_path / "vlearn" / af.INSTALL_DIRNAME) in srcs
+    # Both system-library prefixes' lib/ (main + the conflicting CUDA major), by the same rule both ship.
+    assert str(tmp_path / "vlearn" / "libs" / "lib") in srcs
+    assert str(tmp_path / "vlearn" / "libs-cuda12" / "lib") in srcs
     assert all(b["ro"] and b["dst"].startswith(f"{af.FEATURE_MOUNT}/vlearn/") for b in binds)
     assert not any(af.LICENCE_KEY_NAME in b["src"] for b in binds)
 
@@ -380,12 +383,52 @@ def test_prepare_writes_a_descriptor_ccc_launch_can_apply(tmp_path, monkeypatch)
     dest = tmp_path / "pkgs"
     monkeypatch.setattr(af, "FEATURE_PKG_DIR", dest)
     monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
+    # The lib prefixes are a real conda-forge solve (build_libs is tested on its own); the descriptor
+    # names their paths without needing them to exist, which is the round-trip under test here.
+    monkeypatch.setattr(af, "build_libs", lambda feats: None)
     af.prepare([{"name": "vlearn", "path": str(root)}])
     desc = dest / "vlearn" / af.DESCRIPTOR_NAME
     assert desc.exists()
     monkeypatch.setattr(L, "FEATURE_STATE", dest)
     binds, _env = L.feature_binds_env(["vlearn"])
     assert any(dst == f"{af.FEATURE_MOUNT}/vlearn/cp311" for _src, dst, _ro in binds)
+
+
+def test_build_libs_creates_a_prefix_for_each_cuda_major(tmp_path, monkeypatch):
+    """Both majors ship — which one this Arm's wheel wants is a property of the build, so the loader is
+    given both and takes whichever SONAME the binary names. Built once at setup, into the Feature's own
+    state tree (not FEATLIB_MOUNT per Dive). The conda solve is not run here — the argv is."""
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    seen = []
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: seen.append(list(cmd)))
+    af.build_libs([{"name": "vlearn", "path": "/wherever"}])
+    creates = [c for c in seen if "create" in c]
+    prefixes = {c[c.index("--prefix") + 1] for c in creates}
+    assert str(tmp_path / "vlearn" / "libs") in prefixes
+    assert str(tmp_path / "vlearn" / "libs-cuda12") in prefixes
+    main = next(c for c in creates if c[c.index("--prefix") + 1].endswith("/libs"))
+    alt = next(c for c in creates if c[c.index("--prefix") + 1].endswith("/libs-cuda12"))
+    assert "cuda-cudart=13" in main and "assimp=5" in main
+    assert alt[-1] == "cuda-cudart=12" and "cuda-cudart=13" not in alt
+    assert all(str(config.ENV_TOOLS_DIR / "micromamba") == c[0] for c in creates)
+
+
+def test_the_arm_mirrors_the_heads_library_specs():
+    """The two packages never import each other, so nothing at runtime proves the duplicated spec lists
+    agree — this test is that proof. A library added Head-side but not Arm-side is an ImportError in a
+    Dive on this Arm; added Arm-side but not Head-side is a prefix `feature show` never explains."""
+    assert list(af.VLEARN.libs) == [s for s, _why in hf.VLEARN.libs]
+    assert {suffix: list(extra) for suffix, extra in af.VLEARN.alt_libs} == \
+           {suffix: [s for s, _why in extra] for suffix, extra in hf.VLEARN.alt_libs}
+
+
+def test_build_libs_does_nothing_for_a_feature_with_no_libraries(tmp_path, monkeypatch):
+    """`isaaclab` has no ArmProfile and no system libraries — no prefix, no conda solve at setup."""
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    seen = []
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: seen.append(list(cmd)))
+    af.build_libs([{"name": "isaaclab", "path": "/opt/isaaclab"}])
+    assert not any("create" in c for c in seen)
 
 
 def test_the_mirrored_licence_key_is_not_world_readable(tmp_path, monkeypatch):
