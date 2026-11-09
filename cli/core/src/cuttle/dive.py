@@ -1,5 +1,5 @@
 """Dives, client side: `cuttle dive [MAIN] …` requests one and drops you into it;
-`cuttle dive attach|end|status [id]` for the rest.
+`cuttle dive attach|wait|end|status [id]` for the rest.
 
 A Dive's shell is reached as `ssh <name>-<id>` — the same key and pinned host key as `ssh <name>`
 (sshconfig.py). It is its own container on whichever node Slurm picked — the Head included: the main
@@ -23,7 +23,7 @@ from pathlib import Path
 from . import auth, config, menu, sshconfig, tidepool, transfer, ui
 from .system import run
 
-VERBS = ("attach", "end", "status")
+VERBS = ("attach", "wait", "end", "status")
 _POLL_S = 2.0
 _REQUEST_TIMEOUT_S = 900       # the system layer is snapshotted + pushed before sbatch
 # Warn inside the shell before --time: a quarter of the total, between 30 s and 5 min.
@@ -62,7 +62,10 @@ def main_rel(main: str | None, cwd: Path | None = None, home: Path | None = None
 
 
 def request(main: str | None, deps: list[str] | None, gpus: int | None, vram: int | None,
-            time_: str | None, features: list[str] | None, env: str | None, vscode: bool = False) -> None:
+            time_: str | None, features: list[str] | None, env: str | None, vscode: bool = False,
+            detach: bool = False, as_json: bool = False) -> None:
+    if detach and vscode:
+        raise ui.abort("--detach and --vscode don't mix — open it later with `cuttle dive attach --vscode`")
     rel = main_rel(main)
     if not in_container():
         tidepool.connect()   # key uploaded, alias + pinned host key fresh
@@ -70,12 +73,51 @@ def request(main: str | None, deps: list[str] | None, gpus: int | None, vram: in
             "gpus": gpus, "vram": vram, "time": time_, "features": features or None, "env": env}
     with ui.step("snapshotting your Tidepool and queueing the Dive"):
         r = auth._api("POST", "/dives", body=body, timeout=_REQUEST_TIMEOUT_S)
+    if detach:
+        return _report_queued(r, as_json)
     deps_s = ", ".join(f"~/{d}" for d in r["deps"]) or "none"
     ui.ok(f"Dive {r['id']} queued — main ~/{r['main']}, deps {deps_s}, {r['gpus']} GPU, "
           f"{_minutes(r['minutes'])}, {r['size_gb']:.1f} GB to stage")
     for n in r.get("notes") or []:
         ui.warn(n)
     attach(r["id"], vscode=vscode)
+
+
+def ahead(dive_id: int, rows: list[dict] | None = None) -> int:
+    """Pending Dives ahead of this one in the live queue (which lists next-to-run first). 0 once it
+    runs, or if it isn't in the queue at all."""
+    rows = auth._api("GET", "/dives") if rows is None else rows
+    ids = [r["id"] for r in rows if r["state"] == "pending"]
+    return ids.index(dive_id) if dive_id in ids else 0
+
+
+def _report_queued(r: dict, as_json: bool) -> None:
+    """`--detach`: say what was queued and where it stands, then leave — no shell."""
+    n = ahead(r["id"])
+    deps_s = ", ".join(f"~/{d}" for d in r["deps"]) or "none"
+
+    def render():
+        ui.ok(f"Dive {r['id']} queued — main ~/{r['main']}, deps {deps_s}, {r['gpus']} GPU, "
+              f"{_minutes(r['minutes'])}")
+        for note in r.get("notes") or []:
+            ui.warn(note)
+        if n:
+            ui.say(f"  {n} Dive(s) ahead of it in the queue")
+        ui.hint(f"`cuttle dive wait {r['id']}` until it's ready, then `ssh {sshconfig.alias(r['id'])}`")
+
+    ui.emit({**r, "ahead": n}, as_json, render)
+
+
+def wait(dive_id: int | None = None) -> None:
+    """Block until the Dive's shell is ready and its alias is written, then exit — never a shell.
+    The script-friendly half of `attach`: an error exit if it ended first."""
+    dive_id = dive_id or _pick("Wait for which Dive?")
+    if in_container():
+        info = _wait_ready(dive_id)
+        ui.ok(f"Dive {dive_id} is ready on {info.get('node')}")
+        return
+    name, info = ensure_alias(dive_id)
+    ui.ok(f"Dive {dive_id} is ready on {info.get('node')} — `ssh {name}`")
 
 
 def _minutes(m: int) -> str:

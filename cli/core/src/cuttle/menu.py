@@ -105,6 +105,7 @@ LABELS = {
     "dive": "My Dives",
     "dive start": "Start one (pick folders)",
     "dive attach": "Enter one",
+    "dive wait": "Wait for one to be ready",
     "dive end": "End one",
     "dive status": "See them",
 

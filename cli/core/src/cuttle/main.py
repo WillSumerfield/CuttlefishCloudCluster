@@ -713,12 +713,23 @@ def dive_start(
     env: str = typer.Option(None, "--env", help="Dependency file in the main folder, built into .venv "
                                                 "beside it (pyproject.toml, requirements.txt)."),
     vscode: bool = typer.Option(False, "--vscode", help="Open it in VS Code instead of a shell."),
+    detach: bool = typer.Option(False, "--detach", help="Queue it and exit — no shell. "
+                                                        "`cuttle dive wait` for it to be ready."),
+    as_json: bool = typer.Option(False, "--json", help="With --detach: machine-readable output."),
 ):
     """Start a Dive and enter it. Settings come from the main folder's cuttle.toml; flags override
     and are saved there."""
     if main is None and not dive_mod.in_tidepool() and ui.interactive():
         main = ui.ask_text("Main folder (from your Tidepool home)?")
-    dive_mod.request(main, dep, gpus, vram, time_, feature, env, vscode=vscode)
+    dive_mod.request(main, dep, gpus, vram, time_, feature, env, vscode=vscode, detach=detach,
+                     as_json=as_json)
+
+
+@dive_app.command("wait")
+@requires(Ctx.USER)
+def dive_wait(dive_id: int = typer.Argument(None, help="Dive id (default: your only one).")):
+    """Wait until a Dive is ready, then exit (no shell): `ssh <name>-<id>` works after."""
+    dive_mod.wait(dive_id)
 
 
 @dive_app.command("attach")
