@@ -16,14 +16,14 @@ The cluster control plane. One logical role, Linux-only. Owns:
   submission (login, submit). A separate service from the **Enroll API** — the Enroll
   API is mesh-only and holds the munge key (a durable boundary), while the Head API must reach the LAN.
 - **Dashboard** — the web app (SPA) over the Head API: the **primary** surface for viewing cluster +
-  Spawn state and for submitting/managing jobs. Reachable on the CCC mesh **and** the LAN.
+  **Dive** state and for starting/managing Dives. Reachable on the CCC mesh **and** the LAN.
 - **Accounts** — the Head is the cluster's identity store: the **User** table (argon2 hashes) +
-  **Sessions** live here, authenticating logins and authorizing job submission.
-- **Attribution ledger** — the Head's record of which **User** submitted each **Spawn** (root term:
-  **Attribution**). The Head owns it because the Head is the sole submitter: every Spawn is launched
-  by the Head API as the **Mantle**, so the scheduler's own owner field says "Mantle" for all of them
-  and this ledger is the only place a Spawn's person is known.
-- **Prolog / Epilog** — Slurm job hooks that create/release a Spawn's **Guise** identity around each
+  **Sessions** live here, authenticating logins and authorizing Dive submission.
+- **Attribution ledger** — the Head's record of which **User** each **Dive** belongs to (root term:
+  **Attribution**). The Head owns it because the Head is the sole submitter: the Head API `sbatch`es
+  every Dive as that User's **Guise** (`sudo -u` the Guise, never root), so the scheduler's owner is a
+  Guise, and `head.db` is where a Dive's *person* — and the Dives of an ended one — are known.
+- **Prolog / Epilog** — Slurm job hooks that create/release a Dive's **Guise** identity around each
   run.
 
 Hosts the head-side of other domains ([`../karma`](../karma), [`../telemetry`](../telemetry)).
