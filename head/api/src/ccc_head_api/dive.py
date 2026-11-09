@@ -36,7 +36,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from . import db, guises, karma, slurm, tidepool as tp_mod
+from . import db, environments, guises, karma, slurm, tidepool as tp_mod
 from . import features as features_mod
 
 log = logging.getLogger("ccc.api")
@@ -175,10 +175,14 @@ if [ -n "${CCC_DIVE_ENV:-}" ]; then
   f="$h/$CCC_DIVE_MAIN/$CCC_DIVE_ENV"
   venv="$(dirname "$f")/.venv"
 fi
+# A requested Feature gets the one writable mount CCC owns in the container (its working dir), the
+# User's to populate from the in-container hook below.
+[ -n "${CCC_DIVE_FEATURES:-}" ] && install -d -o "$u" -g "$u" /ccc/vlwd
 cat >> /etc/zsh/zshenv <<EOF
 export UV_CACHE_DIR=/ccc-cache/uv MAMBA_ROOT_PREFIX=/ccc-cache/mamba PIP_CACHE_DIR=/ccc-cache/pip
 export CCC_JOB_ID=$CCC_JOB_ID CCC_DIVE_VENV="$venv"
 export PATH=/usr/local/lib/ccc/cuttle/path:\$PATH
+[ -f "$h/.ccc/featurenv" ] && . "$h/.ccc/featurenv"
 EOF
 cat >> /etc/zsh/zshrc <<'EOF'
 case "$(cat /run/ccc-env.status 2>/dev/null)" in
@@ -193,14 +197,24 @@ fi
 EOF
 if [ -n "$venv" ]; then
   echo building > /run/ccc-env.status
+  # A profiled Feature wraps the build with its hooks (cuttle.feature_hook): the stub + relock before,
+  # so uv resolves without the real licensed wheel; the per-Feature arrangement after, against the
+  # built interpreter. Both run as the User, under the same log + ok/failed status as the build itself.
   ( cd "$(dirname "$f")" && runuser -u "$u" -- env HOME="$h" UV_CACHE_DIR=/ccc-cache/uv \
-      MAMBA_ROOT_PREFIX=/ccc-cache/mamba PIP_CACHE_DIR=/ccc-cache/pip sh -c '
+      MAMBA_ROOT_PREFIX=/ccc-cache/mamba PIP_CACHE_DIR=/ccc-cache/pip \
+      CCC_FEATS="${CCC_DIVE_FEATURES:-}" CCC_PROJ="$h/$CCC_DIVE_MAIN" CCC_VENV="$venv" \
+      CCC_FENV="$h/.ccc/featurenv" sh -c '
+      set -e
+      cc=/usr/local/lib/ccc/cuttle/path/cuttle
+      if [ -n "$CCC_FEATS" ]; then "$cc" dive _feature-stub "$CCC_PROJ"; fi
       case "$(basename "$1")" in
         pyproject.toml|uv.lock) uv sync ;;
         *.txt) uv venv -q .venv && VIRTUAL_ENV="$PWD/.venv" uv pip install -r "$1" ;;
         *.yml|*.yaml) micromamba create -y -p .venv -f "$1" ;;
         *) echo "ccc: cannot build $1 — name a pyproject.toml, requirements .txt or environment.yml"; exit 1 ;;
-      esac' _ "$f" > /run/ccc-env.log 2>&1 \
+      esac
+      if [ -n "$CCC_FEATS" ]; then "$cc" dive _feature-setup "$CCC_VENV" "$CCC_FENV" "$CCC_FEATS"; fi
+      ' _ "$f" > /run/ccc-env.log 2>&1 \
     && echo ok > /run/ccc-env.status || echo failed > /run/ccc-env.status ) &
 fi
 exec /usr/sbin/sshd -D -e -f /etc/ssh/ccc-dive.conf -o "AllowUsers=$u"
@@ -232,16 +246,22 @@ def render_job(spec: dict, gpus: int, minutes: int, constraint: str, exclude: st
 
 
 def make_spec(user: str, tok: str, secret: str, image: str, main: str, deps: list[str], port: int,
-              env: str | None, features: list[str]) -> dict:
+              env: str | None, features: list[str], stubs: dict | None = None) -> dict:
     spec = {"image": image, "argv": ["/bin/sh", "-c", DIVE_INIT], "network": True,
             "env": {"CCC_USER": user, "CCC_DIVE_MAIN": main, "CCC_DIVE_ENV": env or ""},
             "dive": {"token": tok, "user": user, "secret": secret, "head": MESH_IP, "main": main,
                      "deps": deps, "port": port}}
     # ccc-launch resolves each name against this Arm's own /var/lib/ccc/features/<name>/profile.json
     # (cuttle.features) and applies its binds + env. Only when some were asked for, so an ordinary
-    # Dive's spec is byte-for-byte what it was before Features existed.
+    # Dive's spec is byte-for-byte what it was before Features existed. CCC_DIVE_FEATURES is what the
+    # in-container build block runs its Feature hooks for (cuttle.feature_hook).
     if features:
         spec["features"] = features
+        spec["env"]["CCC_DIVE_FEATURES"] = ",".join(features)
+    # The placeholder wheels + lock digests the in-container pre-hook writes before `uv sync`, so uv
+    # resolves without the real licensed wheel. ccc-launch lands this at the Dive's STUBS_FILE.
+    if stubs:
+        spec["dive"]["feature_stubs"] = stubs
     return spec
 
 
@@ -331,9 +351,28 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
         main, toml = prep["main"], load_toml(prep["toml"])
         s = settings(toml, {**args, "deps": deps})
         deps = prep["deps"] if deps is not None else list(s.get("deps") or [])
-        if deps != prep["deps"]:   # deps came from cuttle.toml: prep again so sizes + checks cover them
-            prep = helper("dive-prep", name, tok, stdin={"main": main, "deps": deps})
+        # Any Dive with an --env also surfaces the manifest text, so the Head can validate a
+        # Feature-supplied wheel and compute its stubs before a scrap of Karma is spent — including the
+        # case the manifest declares a Feature's package but the Dive never asked for the Feature, which
+        # check_supplied refuses. Folded into the same re-prep the dep triggers use.
+        want_manifest = bool(s["env"])
+        if deps != prep["deps"] or want_manifest:
+            prep = helper("dive-prep", name, tok, stdin={
+                "main": main, "deps": deps, "env": s["env"] if want_manifest else None})
         check_sizes(prep)
+        feature_stubs = None
+        if want_manifest:
+            try:
+                found = environments.check_supplied(prep.get("manifest") or "", s["env"], s["features"])
+            except environments.BuildError as e:
+                raise HTTPException(422, str(e)) from None
+            files, digests, _logs = environments.stub_payload(found)
+            if files:
+                feature_stubs = {
+                    "files": [{"rel": f.rel, "b64": base64.b64encode(f.data).decode()} for f in files],
+                    "digests": digests,
+                    "lock": os.path.join(os.path.dirname(s["env"]), "uv.lock"),
+                }
         notes = []
         with db.connect() as conn:
             for d in db.open_dives(conn, user["id"]):
@@ -358,7 +397,8 @@ def request(user: dict, main: str, deps: list[str] | None, args: dict) -> dict:
         helper("dive-open", name, tok, stdin={
             "main": main, "deps": deps, "secret": secret, "image": image, "session": session,
             "toml": dump_toml(new) if load_toml(dump_toml(new)) != toml else None})
-        spec = make_spec(name, tok, secret, image, main, deps, port, s["env"], s["features"])
+        spec = make_spec(name, tok, secret, image, main, deps, port, s["env"], s["features"],
+                         feature_stubs)
         body = render_job(spec, s["gpus"], s["minutes"], constraint, exclude)
         try:
             r = subprocess.run(guises.as_owner(["sbatch", "--parsable", "--no-requeue"], guise),

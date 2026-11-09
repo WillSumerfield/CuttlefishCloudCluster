@@ -56,6 +56,18 @@ class TestConstantsAgree:
         spec = D.make_spec("alice", "ab" * 16, "s" * 43, "ccc.lab:5000/ccc/u-alice@sha256:" + "a" * 64,
                            "proj", [], 31000, None, [])
         assert "features" not in spec   # byte-for-byte what it was before Features existed
+        assert "CCC_DIVE_FEATURES" not in spec["env"] and "feature_stubs" not in spec["dive"]
+
+    def test_a_feature_dives_spec_carries_the_features_env_and_the_stub_payload(self, monkeypatch):
+        monkeypatch.setattr(D, "MESH_IP", "100.99.0.1")
+        stubs = {"files": [{"rel": "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", "b64": "AA=="}],
+                 "digests": {"vlearn": "a" * 64}, "lock": "uv.lock"}
+        spec = D.make_spec("alice", "ab" * 16, "s" * 43, "ccc.lab:5000/ccc/u-alice@sha256:" + "a" * 64,
+                           "proj", [], 31000, "pyproject.toml", ["vlearn"], stubs)
+        assert spec["env"]["CCC_DIVE_FEATURES"] == "vlearn"   # what the in-container hook arranges for
+        assert spec["dive"]["feature_stubs"] == stubs
+        # Survives the base64 spec line and ccc-launch's own validation intact.
+        assert L.validate_spec(L.read_spec(D.render_job(spec, 1, 60, "", ""))) == spec
 
 
 class TestSettings:
@@ -177,6 +189,32 @@ class TestRequest:
         assert h.verbs() == ["dive-prep", "dive-prep", "dive-snap", "dive-open", "sbatch"]
         assert h.calls[1][1]["deps"] == ["data"]
         assert h.calls[3][1]["toml"] is None
+
+    _VLEARN_MANIFEST = ('[project]\nname = "t"\nversion = "0"\nrequires-python = "==3.11.14"\n'
+                        'dependencies = ["vlearn"]\n\n[tool.uv.sources]\n'
+                        'vlearn = { path = "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl" }\n')
+
+    def test_a_supplied_package_without_its_feature_is_refused_before_any_karma(self, conn_db, monkeypatch):
+        """The whole reason check_supplied runs at submit: the Dive would build cleanly, place anywhere,
+        and die at `import` — after the User paid to hold a GPU. Caught before snap/open/sbatch."""
+        h = FakeHead(monkeypatch, prep={**PREP, "manifest": self._VLEARN_MANIFEST})
+        with pytest.raises(HTTPException) as e:
+            D.request(ALICE, "proj", None, {"time": "1h", "vram": 8, "env": "pyproject.toml"})
+        assert e.value.status_code == 422 and "--feature vlearn" in e.value.detail
+        # The manifest re-prep ran, then the refusal cleaned up — nothing was pushed or submitted.
+        assert h.verbs() == ["dive-prep", "dive-prep", "dive-close"]
+
+    def test_a_feature_dive_ships_its_stub_payload_in_the_job_spec(self, conn_db, monkeypatch):
+        h = FakeHead(monkeypatch, prep={**PREP, "manifest": self._VLEARN_MANIFEST})
+        monkeypatch.setattr(slurm, "arms_with_features", lambda f: ["node1"])
+        monkeypatch.setattr(slurm, "feature_constraint", lambda f: "vlearn")
+        out = D.request(ALICE, "proj", None,
+                        {"time": "1h", "vram": 8, "env": "pyproject.toml", "features": ["vlearn"]})
+        spec = L.validate_spec(L.read_spec(h.calls[-1][1]))
+        assert spec["env"]["CCC_DIVE_FEATURES"] == "vlearn"
+        st = spec["dive"]["feature_stubs"]
+        assert st["files"][0]["rel"].endswith(".whl") and len(st["digests"]["vlearn"]) == 64
+        assert st["lock"] == "uv.lock" and out["features"] == ["vlearn"]
 
     def test_a_held_main_folder_is_refused(self, conn_db, monkeypatch):
         FakeHead(monkeypatch)

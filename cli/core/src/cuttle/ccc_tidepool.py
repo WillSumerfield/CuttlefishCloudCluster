@@ -530,6 +530,17 @@ def read_toml(uid: int, main_dir: Path) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def read_manifest(uid: int, main_dir: Path, env: str) -> str | None:
+    """The `--env` dependency file's text, read as the User — the Head reasons about a Feature-supplied
+    wheel from this (environments.check_supplied) without ever holding the project. A path inside the
+    main folder only (the same rule settings() applies to --env); None if there is no such file."""
+    if env.startswith("/") or ".." in env.split("/"):
+        raise Refused("env must be a dependency file inside the main folder")
+    r = subprocess.run([*as_user(uid), "head", "-c", "65536", str(main_dir / env)],
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
 def dive_settings(user: str, main: str) -> dict:
     """Read only: no bundle, snapshot, lock or settings write while browsing the Dashboard."""
     uid = record(check_user(user))["uid"]
@@ -566,10 +577,13 @@ def dive_prep(user: str, tok: str, req: dict) -> dict:
     sh(*as_user(uid), "rsync", "-a", "-m", *(f"--filter={r}" for r in DOTFILE_RULES),
        f"{mnt(user) / 'home'}/", f"{home}/", capture_output=True)
     dots = _tree(home)
-    return {"main": main, "deps": deps, "folders": folders,
-            "dotfiles": sum(b for b, _ in dots), "dotfile_cap": DOTFILE_CAP,
-            "dotfiles_biggest": [{"path": p, "bytes": b} for b, p in sorted(dots, reverse=True)[:5]],
-            "layer": layer_bytes(user), "toml": read_toml(uid, host_dir(user, main))}
+    out = {"main": main, "deps": deps, "folders": folders,
+           "dotfiles": sum(b for b, _ in dots), "dotfile_cap": DOTFILE_CAP,
+           "dotfiles_biggest": [{"path": p, "bytes": b} for b, p in sorted(dots, reverse=True)[:5]],
+           "layer": layer_bytes(user), "toml": read_toml(uid, host_dir(user, main))}
+    if req.get("env"):   # a Feature Dive: the Head needs the manifest text to check supplied wheels
+        out["manifest"] = read_manifest(uid, host_dir(user, main), req["env"])
+    return out
 
 
 def _auth_header() -> str:
