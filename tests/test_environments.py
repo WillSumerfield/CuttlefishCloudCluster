@@ -270,7 +270,7 @@ def test_a_spawn_installing_its_dependencies_is_simply_running(monkeypatch):
 # A **Feature**'s package is licensed to the Arm, not to the submitter, so the copy that RUNS has to be
 # the Arm's own. The submitter still has to be able to declare it or their project will not resolve —
 # so CCC accepts the declaration, replaces the wheel with an empty stub before building, and lets the
-# Feature put the real one back on the Arm (features.VLEARN_SETUP). What is pinned here is that the
+# Feature put the real one back on the Arm (cuttle.feature_hook). What is pinned here is that the
 # stub never becomes a working package, and that everything decidable about it is decided at SUBMIT.
 
 import zipfile
@@ -424,20 +424,6 @@ def test_a_uv_spawn_needs_only_its_manifest_tool_not_a_features_libraries(with_t
     env.MICROMAMBA_BIN.unlink()
     m = env.Manifest(kind="uv-project", path="pyproject.toml")
     env.require_tool(m)   # uv alone is enough, Feature or no Feature
-
-
-def test_a_feature_with_no_libraries_asks_for_nothing_extra(with_tools):
-    from ccc_head_api import features as hf
-    assert hf.lib_specs(["isaaclab"]) == {}
-    assert hf.lib_specs([])  == {}
-    assert "cuda-cudart=13" in hf.lib_specs(["vlearn"])["vlearn"]
-
-
-def test_the_library_prefix_installs_no_interpreter(with_tools):
-    """It is bound for its lib/ directory alone and never run. A Python in here would be a second one
-    on the box for no reason — and the reason it used to need one (a pip section) is gone."""
-    from ccc_head_api import features as hf
-    assert not any(s.startswith("python") for s in hf.lib_specs(["vlearn"])["vlearn"])
 
 
 def _ok():

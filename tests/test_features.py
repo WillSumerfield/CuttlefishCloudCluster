@@ -1,14 +1,16 @@
 """Arm **Feature** runtimes (temp/FEATURES_BUILTIN.md) — the profile that turns `--feature vlearn`
 from a placement constraint into a working Dive.
 
-Two halves, split the way the code is: the bash the Head splices into a job script
-(`ccc_head_api.features`, uncalled until Dives), and what an Arm has to have on disk before it may declare the Feature at all
-(`cuttle.features`). They never talk to each other directly — the whole channel between them is
-`/etc/ccc/features.env` — so what is worth pinning here is that both ends name the same variables.
+Two halves, split the way the code is: the Head's `Profile` (`ccc_head_api.features`) — the description
+`cuttle feature show` prints, the canonical library specs, and which packages a submitter must not
+install — and what an Arm must have on disk before it may declare the Feature at all (`cuttle.features`),
+which also prepares that state and activates a licensed Feature Arm-local at `setup --arm`. The per-Dive
+arrangement is a third thing, in-container and after the Environment build (`cuttle.feature_hook`), and
+is tested in test_feature_hook.py.
 
-The rendered bash is checked as bash (`bash -n`), not just as a string containing the right substrings.
-This snippet is spliced into a script that only ever runs on someone else's donated box, hours after
-anyone could notice a syntax error, and a broken one takes the Dive with it.
+The two packages never import each other — the channels between them are `/etc/ccc/features.env` and the
+duplicated spec lists — so what is worth pinning here is that both ends name the same variables and
+agree on the specs.
 """
 
 import shutil
@@ -24,204 +26,18 @@ from cuttle import enroll as cuttle_enroll
 from cuttle import features as af
 
 
-def _script(features: list[str]) -> str:
-    """The bash a Dive asking for `features` gets — dormant until Dives splice it into a job again."""
-    return hf.setup_snippet(features)
-
-
-# --- what a Feature without a profile costs --------------------------------
-
-def test_a_feature_with_no_profile_renders_nothing():
-    """`isaaclab` is a real, catalogued Feature that is nothing but placement plus $ISAACLAB_PATH. A
-    Dive asking for it must get the SAME script as a Dive asking for nothing — a profile is optional,
-    and an empty one is not allowed to leave a stray probe or an empty accumulator behind."""
-    assert hf.setup_snippet(["isaaclab"]) == ""
-    assert _script(features=["isaaclab"]) == _script(features=[])
-
-
-# --- the rendered profile ---------------------------------------------------
-
-def test_the_rendered_script_is_valid_bash():
-    """Both shapes, since the snippet lands in the same place either way."""
-    for feats in ([], ["vlearn"], ["vlearn", "isaaclab"]):
-        body = _script(features=feats)
-        r = subprocess.run(["bash", "-n"], input=body, text=True, capture_output=True)
-        assert r.returncode == 0, f"{feats}: {r.stderr}"
-
-
-def test_the_arm_package_wins_over_anything_the_submitter_installed():
-    """The point of the whole profile. vlearn is licensed per machine and its activation state is tied
-    to a release, so the copy that runs has to be the Arm's — PYTHONPATH, ahead of the Environment's
-    own site-packages."""
-    body = _script(features=["vlearn"])
-    assert f"PYTHONPATH={hf.FEATURE_MOUNT}/vlearn" in body
-    assert f"$vl_pkg:{hf.FEATURE_MOUNT}/vlearn:ro" in body
-
-
-def test_the_whole_unpacked_wheel_goes_on_the_path_not_the_package_dir():
-    """A wheel unpacks to three top-level entries, and `vlearn_bindings.<abi>.so` sits BESIDE the
-    package rather than inside it — binding `vlearn/` alone would leave `import vlearn` failing on a
-    box that has everything it needs."""
-    body = _script(features=["vlearn"])
-    assert f"PYTHONPATH={hf.FEATURE_MOUNT}/vlearn," in body + ","
-    assert f"PYTHONPATH={hf.FEATURE_MOUNT}/vlearn/vlearn" not in body
-
-
-def _run_vlwd(install: Path, scratch: Path) -> None:
-    """The profile's working-directory commands, lifted out and run for real against a fake install.
-
-    Prefix-matched rather than copied into the test, so the commands exercised are the ones that ship.
-    The `rm -rf "$vl_site/..."` above them is indented (it lives inside an `if`) and so is excluded."""
-    lines = [ln for ln in hf.VLEARN_SETUP.splitlines()
-             if ln.startswith(("vlwd=", "rm -rf ", "mkdir -p ", "ln -s ", "cp -r "))]
-    subprocess.run(["bash", "-e", "-c", "\n".join(lines)], check=True,
-                   env={"VLEARN_PATH": str(install), "scratch": str(scratch),
-                        "PATH": "/usr/bin:/bin"})
-
-
-def _fake_vlearn_install(root: Path) -> Path:
-    for d in ("assets", "shaders", "cache"):
-        (root / d).mkdir(parents=True)
-    (root / "assets" / "big.bin").write_bytes(b"x" * 4096)
-    (root / "TurboActivate.dat").write_text("dat")
-    (root / "cache" / "warm.bin").write_bytes(b"c")
-    return root
-
-
-def test_the_working_directory_is_ccc_s_own_and_never_the_project(tmp_path):
-    """The four names vlearn resolves against VL_WORKING_DIRECTORY are CCC's to site, and `$proj` is
-    the one place they must not be sited — planting them there deleted whatever its owner already kept
-    under those names."""
-    body = _script(features=["vlearn"])
-    assert f"VL_WORKING_DIRECTORY={hf.VLWD_MOUNT}" in body
-    assert f"$vlwd:{hf.VLWD_MOUNT}" in body, "and it is bound, writable — cache/ is written"
-    for name in ("assets", "shaders", "TurboActivate.dat", "cache"):
-        assert f'"$proj/{name}"' not in body
-
-
-def test_a_project_that_carried_its_own_vendor_names_is_left_alone(tmp_path):
-    """The case that named the bug. A project holding its own `assets/` — or `cache/`, which is an
-    ordinary enough name for anyone's tree — used to lose it to the profile's `rm -rf` the moment it
-    asked for the Feature."""
-    install = _fake_vlearn_install(tmp_path / "vlearn")
-    scratch = tmp_path / "scratch"
-    proj = scratch / "proj"
-    (proj / "assets").mkdir(parents=True)
-    (proj / "assets" / "mine.bin").write_text("theirs to keep")
-    (proj / "cache").mkdir()
-    _run_vlwd(install, scratch)
-    assert (proj / "assets" / "mine.bin").read_text() == "theirs to keep"
-    assert not (proj / "assets").is_symlink()
-    assert (proj / "cache").is_dir()
-
-
-def test_the_working_directory_entries_are_symlinks(tmp_path):
-    """Load-bearing, not tidy: assets/ alone is ~1 GB, and copying it per Dive would be a minute of
-    disk for vendor data that has not changed since the Arm's setup.
-
-    Run for real rather than asserted as a string: what matters is that the result is a link."""
-    install = _fake_vlearn_install(tmp_path / "vlearn")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    _run_vlwd(install, scratch)
-    vlwd = scratch / "vlwd"
-    assert (vlwd / "assets").is_symlink()
-    assert (vlwd / "shaders").is_symlink()
-    assert (vlwd / "TurboActivate.dat").is_symlink()
-    # ...and cache is the one real directory, because it is the one vlearn writes.
-    assert (vlwd / "cache").is_dir() and not (vlwd / "cache").is_symlink()
-    assert (vlwd / "cache" / "warm.bin").exists()
-
-
-def test_the_working_directory_is_rebuilt_rather_than_reused(tmp_path):
-    """An Arm reuses its scratch root. A stale
-    entry from a previous release's install must not survive into the next Dive's working directory —
-    the same rule `unpack_packages` follows on the Arm."""
-    install = _fake_vlearn_install(tmp_path / "vlearn")
-    scratch = tmp_path / "scratch"
-    (scratch / "vlwd").mkdir(parents=True)
-    (scratch / "vlwd" / "stale.bin").write_text("last release")
-    _run_vlwd(install, scratch)
-    assert not (scratch / "vlwd" / "stale.bin").exists()
-
-
-def test_the_licence_key_is_never_bound_into_an_ordinary_spawn():
-    """The vendor's README puts License.key at the checkout root. Only the individual subpaths a Dive
-    needs are bound, never $VLEARN_PATH itself — so the key stays outside a container that has no business
-    with it, and the licence's activation Dive remains the one thing that sees it."""
-    body = _script(features=["vlearn"])
-    assert '$VLEARN_PATH:' not in body
-    assert "License.key" not in body
-    for sub in ("assets", "shaders", "TurboActivate.dat"):
-        assert f"$VLEARN_PATH/{sub}:$VLEARN_PATH/{sub}:ro" in body
-
-
-def test_a_feature_failure_ends_the_spawn_the_way_every_other_failure_does():
-    """A Feature that cannot be set up is not a warning. It writes to the Dive's own `err`, records an
-    exit code, stops the periodic pusher and stages out — the same four things every other early exit
-    in the job script does, because a Dive that dies without them reads from the Head as "lost"."""
-    body = _script(features=["vlearn"])
-    fail = body.split("feature_fail() {", 1)[1].split("}", 1)[0]
-    assert '>> "$err"' in fail
-    assert 'echo 1 > "$exitf"' in fail
-    assert 'kill "$loop_pid"' in fail
-    assert "stage_out" in fail
-    assert "exit 1" in fail
-
-
-def test_an_absent_interpreter_is_caught_before_apptainer_sees_it():
-    """`$py` is unquoted in the probe — it has to be, so an empty interpreter vanishes rather than
-    becoming an empty argument. With no Environment declared it expands to NOTHING, apptainer takes
-    the next word as the command, and the Dive's `err` opens with
-
-        FATAL:   "-c": executable file not found in $PATH
-
-    an error about a flag, printed above the one line that explains what actually happened. So the
-    emptiness is tested for first, and the probe is never reached with nothing to run."""
-    body = _script(features=["vlearn"])
-    guard = '[ -n "$py" ] || feature_fail'
-    assert guard in body
-    assert body.index(guard) < body.index("feature_probe=$(apptainer")
-
-
-def test_the_two_interpreter_failures_say_different_things():
-    """"There is no interpreter" and "the interpreter said nothing useful" are different faults with
-    different remedies — declare one, versus go and read the build's output. One message for both sent
-    a User who HAD declared an Environment off looking for a --manifest they had already passed."""
-    body = _script(features=["vlearn"])
-    absent = body.split('[ -n "$py" ] || feature_fail', 1)[1].split("\n", 2)[1]
-    unusable = body.split('[ -n "$feature_abi" ] || feature_fail', 1)[1].split("\n", 2)[1]
-    assert "declared no Environment" in absent and "--manifest" in absent
-    assert "ran but could not be identified" in unusable
-    assert "Environment build is the place to look" in unusable
-
+# --- the submit-time gate ---------------------------------------------------
 
 def test_only_a_profiled_feature_needs_an_environment():
-    """`profiled()` is what the submit-time gate asks. An unprofiled Feature is placement plus
-    `$<NAME>_PATH` — it attaches to no interpreter, so a bare Dive may still ask for one."""
+    """`profiled()` is what the submit-time gate asks (dive.request). A profiled Feature attaches its
+    software to the Dive's **Environment**, so one asked for by a Dive that declared none has nothing to
+    attach to. An unprofiled Feature is placement plus `$<NAME>_PATH` — a bare Dive may still ask for it.
+
+    Sorted, so a refusal names them the same way however the User typed the request."""
     assert hf.profiled(["vlearn"]) == ["vlearn"]
     assert hf.profiled(["isaaclab"]) == []
     assert hf.profiled(["isaaclab", "vlearn"]) == ["vlearn"]
     assert hf.profiled([]) == []
-
-
-def test_the_abi_is_asked_of_the_interpreter_rather_than_assumed():
-    """vlearn ships binary wheels only, so the Environment's Python has to match one the Arm holds. Both
-    halves of that comparison exist only on the Arm — so the check runs there, at job start, and names
-    both sides when it fails."""
-    body = _script(features=["vlearn"])
-    assert 'feature_abi=$(printf %s "$feature_probe" | sed -n 1p)' in body
-    assert 'vl_pkg="$VLEARN_PKG_ROOT/$feature_abi"' in body
-    assert '[ -d "$vl_pkg" ]' in body
-    # The message names what the Dive asked for AND what the Arm actually has.
-    assert "$feature_abi" in body.split('[ -d "$vl_pkg" ]', 1)[1].split("\n#", 1)[0]
-
-
-def test_the_snippet_order_does_not_depend_on_how_the_user_typed_it():
-    """Same request, same script — otherwise two identical Dives render differently and nothing that
-    compares job scripts (or a human reading two of them) can tell them apart."""
-    assert hf.setup_snippet(["vlearn", "isaaclab"]) == hf.setup_snippet(["isaaclab", "vlearn"])
-    assert hf.setup_snippet(["vlearn", "vlearn"]) == hf.setup_snippet(["vlearn"])
 
 
 # --- what `cuttle feature show` describes ------------------------------------
@@ -252,6 +68,13 @@ def test_the_runtime_summary_does_not_ship_vlearn_itself():
     text = hf.runtime_summary("vlearn")
     assert ".whl" not in text
     assert "\n  vlearn" not in text.replace(f"\n{hf.VLEARN.name} —", "")
+
+
+def test_the_feature_description_lists_both_majors():
+    """`cuttle feature show vlearn` is the canonical answer to "what does CCC install for me". An
+    alternate prefix that only appeared in the job script would be half a gigabyte nothing explains."""
+    text = hf.runtime_summary("vlearn")
+    assert "cuda-cudart=13" in text and "cuda-cudart=12" in text
 
 
 def test_a_feature_with_no_profile_has_no_runtime_to_describe():
@@ -411,6 +234,9 @@ def test_build_libs_creates_a_prefix_for_each_cuda_major(tmp_path, monkeypatch):
     assert "cuda-cudart=13" in main and "assimp=5" in main
     assert alt[-1] == "cuda-cudart=12" and "cuda-cudart=13" not in alt
     assert all(str(config.ENV_TOOLS_DIR / "micromamba") == c[0] for c in creates)
+    # No interpreter in the prefix: it is bound for its lib/ alone and never run, and the reason it
+    # once needed a Python (a pip section) is gone.
+    assert not any(s.startswith("python") for c in creates for s in c)
 
 
 def test_the_arm_mirrors_the_heads_library_specs():
@@ -490,12 +316,31 @@ def test_unpacking_replaces_rather_than_merges(tmp_path, monkeypatch):
     assert not stale.exists()
 
 
+def test_un_declaring_a_feature_erases_its_mirror(tmp_path, monkeypatch):
+    """Shrinking a declaration has to be as real as growing one. A re-run that drops a Feature
+    leaves the registry and Slurm's `Feature=` line correct, so the only thing still claiming the
+    box serves it is the mirrored gigabyte — and the copy of the Licence key beside it."""
+    dest = tmp_path / "pkgs"
+    (dest / "vlearn" / "install").mkdir(parents=True)
+    (dest / "vlearn" / "licence.key").write_text("key")
+    (dest / "isaaclab").mkdir()
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", dest)
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
+
+    af.forget_undeclared([{"name": "isaaclab"}])
+    assert not (dest / "vlearn").exists()
+    assert (dest / "isaaclab").exists()
+
+    af.forget_undeclared([])
+    assert list(dest.iterdir()) == []
+
+
 # --- the one channel between the two sides ---------------------------------
 
 def test_features_env_carries_everything_the_profile_reads(tmp_path):
     """/etc/ccc/features.env is the ONLY channel from an Arm's setup to a Dive placed on it — the Head
     renders one script for the whole fleet and cannot know where a donor put anything. So every
-    variable the rendered profile reads has to be a variable this file writes."""
+    variable a Feature's runtime reads has to be a variable this file writes."""
     text = cuttle_enroll.render_features_env(
         [{"name": "vlearn", "path": "/opt/vlearn"}], licence_home="/opt/ccc/licence")
     # CCC's mirror, not /opt/vlearn — a container runs as a Guise and cannot be assumed able to reach the
@@ -503,13 +348,6 @@ def test_features_env_carries_everything_the_profile_reads(tmp_path):
     assert f"export VLEARN_PATH={af.FEATURE_PKG_DIR / 'vlearn' / af.INSTALL_DIRNAME}" in text
     assert f"export VLEARN_PKG_ROOT={af.FEATURE_PKG_DIR / 'vlearn'}" in text
     assert f"export {config.LICENCE_HOME_VAR}=/opt/ccc/licence" in text
-
-    body = _script(features=["vlearn"])
-    exported = {ln.split("=", 1)[0].removeprefix("export ") for ln in text.splitlines()
-                if ln.startswith("export ")}
-    for var in ("VLEARN_PATH", "VLEARN_PKG_ROOT"):
-        assert f"${var}" in body or f"${{{var}" in body
-        assert var in exported
 
 
 def test_a_feature_with_no_packages_adds_no_extra_lines():
@@ -534,33 +372,7 @@ def test_the_features_env_is_sourceable(tmp_path):
     assert r.stdout.strip() == str(af.FEATURE_PKG_DIR / "vlearn")
 
 
-# --- activation -------------------------------------------------------------
-
-def test_the_licence_key_is_bound_only_for_an_activation_spawn():
-    """The one asymmetry in the whole profile. An ordinary Dive runs against activation STATE that
-    already exists in the Arm's Licence directory; the key that produced it is the credential, and it
-    reaches exactly one container."""
-    ordinary = _script(features=["vlearn"])
-    assert "VLEARN_LICENCE_KEY" not in ordinary
-    assert "VL_LICENSE_KEY_PATH" not in ordinary
-
-    activating = hf.setup_snippet(["vlearn"], activation=True)
-    assert "$VLEARN_LICENCE_KEY:$VLEARN_LICENCE_KEY:ro" in activating
-    assert "VL_LICENSE_KEY_PATH=$VLEARN_LICENCE_KEY" in activating
-    # Everything the ordinary Dive got, it still gets — activation is an addition, not a variant.
-    # Through `setup_snippet` rather than substituting the tokens here: a second copy of that list is a
-    # second place to forget a mount, and forgetting one makes this pass for the wrong reason.
-    assert hf.setup_snippet(["vlearn"]).strip() in activating
-
-
-def test_an_activation_with_no_licence_directory_fails_instead_of_burning_one():
-    """No Licence directory bound = `$HOME` is a tmpfs: TurboActivate would activate into it, exit 0, and
-    the Arm would be marked activated with nothing kept. The guard must precede the activation itself."""
-    activating = hf.setup_snippet(["vlearn"], activation=True)
-    guard = activating.index('[ -n "$licbind" ] || feature_fail')
-    assert guard < activating.index('ln -sf "$VLEARN_LICENCE_KEY"')
-    assert '[ -n "$licbind" ]' not in _script(features=["vlearn"])
-
+# --- activation (Arm-local, once per machine) ------------------------------
 
 def test_a_licensed_feature_never_gets_past_setup_without_a_licence_directory(monkeypatch):
     """Enter on the old "does this box hold a licence?" (default no) left a vlearn Arm with none."""
@@ -580,143 +392,6 @@ def test_a_licensed_feature_never_gets_past_setup_without_a_licence_directory(mo
         ui.install_answers(None)
     assert not any("Does this box hold" in m for m in a.asked)
 
-
-def test_the_activation_snippet_is_valid_bash():
-    r = subprocess.run(["bash", "-n"], input=hf.setup_snippet(["vlearn"], activation=True),
-                       text=True, capture_output=True)
-    assert r.returncode == 0, r.stderr
-
-
-def test_the_activation_project_declares_only_the_interpreter_vlearn_needs():
-    """CCC writes this manifest, so it says the one thing it actually knows: the ABI a binary wheel was
-    built for. The system libraries are no longer in here — they are the prefix CCC builds for any
-    Dive asking for the Feature, and this Dive asks for it like any other."""
-    project = hf.activation_project("vlearn")
-    assert set(project) == {"pyproject.toml", "activate.py"}
-    assert 'requires-python = "==3.11.*"' in project["pyproject.toml"]
-    assert "create_gym(with_render=False)" in project["activate.py"]
-    # No vlearn in the Environment: the package comes from the Arm's own unpacked wheel, which is the
-    # build its licence covers. Installing a second one from an index would activate the wrong thing.
-    assert 'dependencies = []' in project["pyproject.toml"]
-
-
-def test_a_feature_with_no_activation_is_admitted_without_one():
-    assert hf.needs_activation(["isaaclab"]) == []
-    assert hf.needs_activation(["vlearn", "isaaclab"]) == ["vlearn"]
-    with pytest.raises(KeyError):
-        hf.activation_project("isaaclab")
-
-
-def test_the_activation_project_is_exactly_two_files():
-    project = hf.activation_project("vlearn")
-    assert sorted(project) == ["activate.py", "pyproject.toml"]
-    assert "import vlearn" in project["activate.py"]
-
-
-def test_un_declaring_a_feature_erases_its_mirror(tmp_path, monkeypatch):
-    """Shrinking a declaration has to be as real as growing one. A re-run that drops a Feature
-    leaves the registry and Slurm's `Feature=` line correct, so the only thing still claiming the
-    box serves it is the mirrored gigabyte — and the copy of the Licence key beside it."""
-    dest = tmp_path / "pkgs"
-    (dest / "vlearn" / "install").mkdir(parents=True)
-    (dest / "vlearn" / "licence.key").write_text("key")
-    (dest / "isaaclab").mkdir()
-    monkeypatch.setattr(af, "FEATURE_PKG_DIR", dest)
-    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
-
-    af.forget_undeclared([{"name": "isaaclab"}])
-    assert not (dest / "vlearn").exists()
-    assert (dest / "isaaclab").exists()
-
-    af.forget_undeclared([])
-    assert list(dest.iterdir()) == []
-
-
-# --- the placeholder is removed on the Arm ----------------------------------
-# The Head replaced the submitter's declared vlearn with an empty stub before building the Environment
-# (environments.substitute_supplied), because the copy that RUNS has to be the one this Arm's owner
-# activated. That leaves an empty `vlearn/` in site-packages, and this is where it goes away again.
-
-
-def test_the_placeholder_vlearn_is_deleted_from_the_environment():
-    """sys.path would already resolve `import vlearn` to the PYTHONPATH entry, which precedes
-    site-packages. That ordering is not a thing to rest a LICENSING invariant on — it is subtle, it is
-    Python's to change, and a `.pth` in site-packages can reorder it. So the stub is deleted outright
-    and there is only one vlearn on the box to find."""
-    body = _script(features=["vlearn"])
-    assert "$vl_site/vlearn" in body
-    for pattern in ("vlearn-*.dist-info", "vlearn_bindings*.so", "*vlearn*.pth"):
-        assert pattern in body, pattern
-
-
-def test_the_deletion_happens_on_the_arms_filesystem_not_inside_a_pod():
-    """The Environment is bound READ-ONLY into every container, so this could not be done from inside one.
-    The probe reports a container-side path; the prefix has to be rewritten to the Arm's own."""
-    body = _script(features=["vlearn"])
-    assert 'vl_site="$scratch/env${feature_purelib#$envmount}"' in body
-
-
-def test_the_deletion_is_skipped_when_there_is_no_environment_to_delete_from():
-    """A **Dive** may decline to declare one. `rm -rf` on a path built from two empty variables
-    would be `rm -rf /vlearn`, which is nothing on this box — but only by luck."""
-    body = _script(features=["vlearn"])
-    guard = next(ln for ln in body.splitlines() if ln.startswith('if [ -n "$envmount" ]'))
-    assert '[ -n "$feature_purelib" ]' in guard
-
-
-def test_the_interpreter_is_asked_where_its_site_packages_is():
-    """One probe, three answers, no assumptions: a conda prefix and a uv venv put site-packages at
-    different depths, and only the interpreter knows which this is."""
-    body = _script(features=["vlearn"])
-    assert 'print(sysconfig.get_paths()["purelib"])' in body
-    assert "feature_purelib=$(printf %s \"$feature_probe\" | sed -n 3p)" in body
-
-
-# --- the Feature's system libraries reach the Arm ---------------------------
-
-def test_both_cuda_majors_are_on_the_library_path():
-    """The CUDA major belongs to the ARM's vlearn build, but the pin lives on the Head and applies to
-    every Arm. A wheel built against CUDA 12 died on `OSError: libcudart.so.12` with only the 13
-    prefix on the path — and nothing in CCC could distinguish that Arm from one needing 13. Both
-    prefixes ship; distinct SONAMEs mean the loader takes whichever the binary actually names."""
-    body = _script(features=["vlearn"])
-    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" in body
-    assert f"{hf.FEATLIB_MOUNT}/vlearn-cuda12/lib" in body
-
-
-def test_the_conflicting_majors_get_separate_prefixes():
-    """One conda prefix cannot hold two versions of the same package, which is the whole reason
-    `alt_libs` exists rather than another entry in `libs`."""
-    specs = hf.lib_specs(["vlearn"])
-    assert "cuda-cudart=13" in specs["vlearn"]
-    assert specs["vlearn-cuda12"] == ["cuda-cudart=12"]
-    assert "cuda-cudart=12" not in specs["vlearn"]
-
-
-def test_an_alternate_prefix_is_not_described_as_a_feature():
-    """It is a second prefix for one Feature, not a Feature — a Dive's build log saying it is
-    installing "the 'vlearn-cuda12' Arm Feature" would name something no Arm can declare."""
-    assert hf.lib_prefix_label("vlearn") == "the 'vlearn' Arm Feature's system libraries"
-    label = hf.lib_prefix_label("vlearn-cuda12")
-    assert "vlearn-cuda12" not in label and "'vlearn'" in label and "cuda12" in label
-
-
-def test_the_feature_description_lists_both_majors():
-    """`cuttle feature show vlearn` is the canonical answer to "what does CCC install for me". An
-    alternate prefix that only appeared in the job script would be half a gigabyte nothing explains."""
-    text = hf.runtime_summary("vlearn")
-    assert "cuda-cudart=13" in text and "cuda-cudart=12" in text
-
-
-def test_a_spawn_that_asked_for_no_feature_never_mounts_one():
-    """Nothing is rendered at all now — no mkdir, no build, no bind. The Head knows at submit which
-    Features were asked for, so the absent case is absent rather than an inert run-time branch."""
-    body = _script(features=[])
-    assert "$scratch/featlibs" not in body
-    assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" not in body
-
-
-# --- activation (Arm-local, once per machine) ------------------------------
 
 def _run_recorder(seen):
     def _run(cmd, sudo=False, **kw):

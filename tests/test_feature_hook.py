@@ -115,10 +115,11 @@ def test_setup_vlearn_fails_loudly_when_the_arm_holds_no_wheel_for_this_abi(tmp_
         fh.setup_vlearn(venv, tmp_path / "e", "cp311")
 
 
-def test_the_mounts_mirror_the_head():
-    """The two Feature packages never import each other, so the mount constants are duplicated and must
-    agree (same split as FEATURE_NAMES)."""
+def test_the_mount_contract_is_fixed():
+    """The mount paths are the contract between what `cuttle.features` writes into the descriptor (bind
+    dst), what `ccc_launch` applies, and what this hook reads — all Arm-side now. The hook takes them
+    FROM `cuttle.features`, so they cannot drift; this pins the literal values a careless rename would
+    change under everyone."""
     from cuttle import features as cf
-    from ccc_head_api import features as hf
-    assert cf.FEATURE_MOUNT == hf.FEATURE_MOUNT
-    assert cf.VLWD_MOUNT == hf.VLWD_MOUNT
+    assert fh.FEATURE_MOUNT is cf.FEATURE_MOUNT == "/ccc/feature"
+    assert fh.VLWD_MOUNT is cf.VLWD_MOUNT == "/ccc/vlwd"

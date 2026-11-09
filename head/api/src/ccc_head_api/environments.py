@@ -405,7 +405,7 @@ def check_supplied(pyproject_text: str, env_rel: str, requested: list[str]) -> l
     found = supplied(pyproject_text, env_rel)
     for s in found:
         # Asking for the package without asking for the Feature is always a mistake, never a choice:
-        # CCC is about to replace the wheel with an empty stub (licensing — see features.VLEARN_SETUP),
+        # CCC is about to replace the wheel with an empty stub (licensing — see cuttle.feature_hook),
         # and only the Feature puts the Arm's real one back. Without it the Dive would build cleanly,
         # place anywhere, and die at `import`.
         if s.feature not in requested:

@@ -107,11 +107,12 @@ _ABI_RE = re.compile(r"-(cp\d{2,3})-\1[-.]")
 # paths, holds no secret.
 DESCRIPTOR_NAME = "profile.json"
 
-# Where a Feature's binds land inside the container (mirror of ccc_head_api.features.FEATURE_MOUNT — the
-# two packages never import each other, same split as FEATURE_NAMES; they must agree).
+# Where a Feature's binds land inside the container. The contract between the descriptor this module
+# writes (bind dst), `ccc_launch` which applies it, and `feature_hook` which reads it back — all
+# Arm-side, so one constant, imported where it is needed rather than duplicated.
 FEATURE_MOUNT = "/ccc/feature"
 
-# The one writable Feature directory inside the container (mirror of ccc_head_api.features.VLWD_MOUNT):
+# The one writable Feature directory inside the container:
 # vlearn resolves assets/shaders/cache/TurboActivate.dat against VL_WORKING_DIRECTORY, and cache/ is
 # written at run time, so it cannot be a read-only bind. Created + chowned to the User by DIVE_INIT, laid
 # out by the in-container feature hook (feature_hook.setup_vlearn).
@@ -130,10 +131,9 @@ LIBS_DIRNAME = "libs"
 # `.<ACTIVATED_MARKER>-<feature>` so one Licence directory can mark several Features.
 ACTIVATED_MARKER = "ccc-activated"
 
-# Mirror of ccc_head_api.features.VLEARN_ACTIVATE_PY — the vendor's own activation. Creating a gym is
-# what makes TurboActivate write this machine's activation into the Licence directory (bound as $HOME);
-# headless, because an Arm has no display and rendering is not what is licensed. Duplicated rather than
-# imported, like everything else here (the two packages never import each other, as with FEATURE_NAMES).
+# The vendor's own activation line — creating a gym is what makes TurboActivate write this machine's
+# activation into the Licence directory. Headless, because an Arm has no display and rendering is not
+# what is licensed. Activation is Arm-local now (this package's `activate`), so this lives only here.
 VLEARN_ACTIVATE_PY = "import vlearn\n\nvlearn.create_gym(with_render=False)\nprint('vlearn activated on this Arm')\n"
 ACTIVATE_SCRIPTS = {"vlearn": VLEARN_ACTIVATE_PY}
 

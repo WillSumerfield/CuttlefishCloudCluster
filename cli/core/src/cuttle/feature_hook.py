@@ -13,8 +13,8 @@ Two hidden `cuttle` subcommands (registered in `main.py`) wrap this:
                                                    (sourced by the Dive's zshenv).
 
 The two Feature packages never import each other, so none of `ccc_head_api` is here: the stub payload
-arrives as data (ccc-launch writes it to `STUBS_FILE`), and the per-Feature setup is a mirror of the
-behaviour `ccc_head_api.features.VLEARN_SETUP` documents. The build block redirects this whole block's
+arrives as data (ccc-launch writes it to `STUBS_FILE`), and the per-Feature setup is the Arm's own, run
+where the built `.venv` is. The build block redirects this whole block's
 output to `/run/ccc-env.log` and records `ok`/`failed`, so a failure here is just a loud message + a
 non-zero exit.
 """
@@ -115,10 +115,9 @@ def _append_env(env_file: Path, entries: dict[str, str]) -> None:
 
 
 def setup_vlearn(venv: Path, env_file: Path, abi: str) -> None:
-    """Arrange vlearn around the built Environment. Mirrors `ccc_head_api.features.VLEARN_SETUP`, but
-    in-container and after the build: the wheel dirs and runtime data are already bound read-only under
-    FEATURE_MOUNT (`cuttle.features.descriptor_binds`); this picks the ABI, makes the licensing
-    invariant true, and sets the runtime env."""
+    """Arrange vlearn around the built Environment, in-container and after the build: the wheel dirs and
+    runtime data are already bound read-only under FEATURE_MOUNT (`cuttle.features.descriptor_binds`);
+    this picks the ABI, makes the licensing invariant true, and sets the runtime env."""
     root = Path(FEATURE_MOUNT) / "vlearn"
     pkg = root / abi
     if not pkg.is_dir():
