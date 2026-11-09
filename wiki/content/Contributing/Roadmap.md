@@ -18,14 +18,11 @@ stands. It changes often; the working plan is `temp/2.0-plan.md` in the repo.
 | 4c | apt installs made in a Dive come back to the Tidepool | Built, tested on real boxes |
 | 5 | Transfer: `cuttle upload` / `download`, Dashboard Files page | Built, mostly hardware-tested |
 | 6 | Campus access: login throttling | Built; one end-to-end check left |
-| 7 | Docs move to this wiki | In progress |
+| 7 | Docs move to this wiki | Done |
 | 8 | Loose ends: Feature runtime profiles in Dives | Not started |
 
 ## Next up
 
-- **Phase 7, docs to wiki.** Write every Section from the current code, then rewrite the root
-  `README.md`, `CONTRIBUTING.md` and `CONTEXT.md` (taking in the 2.0 glossary), fix stale Dashboard
-  tooltips, and delete `docs/`.
 - **Phase 8, loose ends.** Features with a runtime profile (such as `vlearn`) only constrain
   placement today. Their activation step and the Licence bind inside a Dive still need building.
 
