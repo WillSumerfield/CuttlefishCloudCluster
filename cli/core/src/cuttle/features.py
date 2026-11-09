@@ -111,6 +111,12 @@ DESCRIPTOR_NAME = "profile.json"
 # two packages never import each other, same split as FEATURE_NAMES; they must agree).
 FEATURE_MOUNT = "/ccc/feature"
 
+# The one writable Feature directory inside the container (mirror of ccc_head_api.features.VLWD_MOUNT):
+# vlearn resolves assets/shaders/cache/TurboActivate.dat against VL_WORKING_DIRECTORY, and cache/ is
+# written at run time, so it cannot be a read-only bind. Created + chowned to the User by DIVE_INIT, laid
+# out by the in-container feature hook (feature_hook.setup_vlearn).
+VLWD_MOUNT = "/ccc/vlwd"
+
 # A Feature's SYSTEM-LIBRARY prefixes: micromamba-built into its state tree at setup (build_libs) and
 # bound read-only, the loader resolving a Feature's .so against them. The main conda prefix is "libs";
 # each alternate (a conflicting spec, a second CUDA major) is "libs-<suffix>".

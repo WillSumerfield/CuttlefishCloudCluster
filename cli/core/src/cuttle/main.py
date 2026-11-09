@@ -759,6 +759,21 @@ def dive_holders(folder: str = typer.Argument(...)):
         print(line)
 
 
+@dive_app.command("_feature-stub", hidden=True)
+def feature_stub(project_root: str = typer.Argument(...)):
+    """Inside a Dive, before the env build: write the Head's Feature-stub wheels + relock uv.lock."""
+    from . import feature_hook
+    feature_hook.stub(Path(project_root))
+
+
+@dive_app.command("_feature-setup", hidden=True)
+def feature_setup(venv: str = typer.Argument(...), env_file: str = typer.Argument(...),
+                  features: str = typer.Argument(...)):
+    """Inside a Dive, after the env build: arrange each profiled Feature around the built Environment."""
+    from . import feature_hook
+    feature_hook.setup(Path(venv), Path(env_file), [f for f in features.split(",") if f])
+
+
 @dive_app.command("status")
 @requires(Ctx.USER)
 def dive_status(as_json: bool = typer.Option(False, "--json", help="Machine-readable output.")):
