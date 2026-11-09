@@ -76,3 +76,10 @@ Blocked on having the software to probe — the profile has to state real ABI ta
 and real cache locations, and none of those can be guessed. Note that `features.py:239-242` and
 `test_features.py:41` currently record placement-only as the *finished* answer for `isaaclab`; both say
 so deliberately and both change when this is built.
+
+The whole profile-build path (`features.PREAMBLE`/`setup_snippet`/`lib_specs`,
+`environments.build_feature_libs`) is still Apptainer-shaped — `apptainer exec --contain --bind`, a
+`base.sif` build, comma bind-lists — from before Phase 2 switched the live Dive to Podman. Nothing live
+renders it yet (`profiled()` gates submission on it; `dive.render_job` never emits it), so the comments
+and `test_features.py` still say `apptainer`. Re-targeting it at Podman is part of wiring the profile
+into a Dive, not a separate cleanup — do it here, not by a blind rename.
