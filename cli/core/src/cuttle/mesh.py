@@ -533,8 +533,8 @@ def _wipe_local_state() -> None:
 # Upstream has a supported knob for this, and it is deliberately not what we use: the node attribute
 # `disable-linux-cgnat-drop-rule` (tailcfg, capver 136) flips that daemon to CGNATModeReturn for the
 # whole /10. It is a *control-plane* attribute of the PERSONAL tailnet — CCC's Headscale cannot reach
-# it, and a donor may not administer the tailnet their laptop is on. Documented in docs/elements/mesh.md
-# as an alternative for those who can.
+# it, and a donor may not administer the tailnet their laptop is on. Documented in the wiki's
+# Admin/Mesh page as an alternative for those who can.
 
 _FW_SCRIPT = r'''"""Keep ccc0 exempt from a personal Tailscale's CGNAT anti-spoof DROP.
 Installed by cuttle at this path and run by a timer; safe to run by hand when diagnosing — it prints

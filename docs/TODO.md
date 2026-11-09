@@ -1,7 +1,7 @@
 # Durable TODOs
 
-Designed but not built. Everything in [`Architecture.md`](Architecture.md) exists; everything here
-does not.
+Designed but not built. Everything in the wiki's Contributing/Architecture exists; everything here
+does not. (This file is the dev design backlog; it still uses some 1.x terms — "Spawn" means a Dive.)
 
 ## Feature: Automatic GPU partitioning — the Beak — [effort: high]
 

@@ -17,7 +17,7 @@ import { EndDive } from "./EndDive";
  *
  * Attribution (who submitted) is plain ink, never pigment — pigment means karma and nothing else.
  *
- * The whole row opens the Dive (docs/Dashboard.md: "Click a Dive anywhere"), which History has always
+ * The whole row opens the Dive (wiki Using CCC/Dashboard tour: "Click a Dive anywhere"), which History has always
  * honoured and this did not. It is a STRETCHED `<a>` — absolutely positioned over the row — rather than a
  * wrapper, because this row has a button in it and History does not. A wrapper would nest a `<button>`
  * inside an `<a>` (invalid, and one click would both cancel and navigate); an onClick on the `<li>` would

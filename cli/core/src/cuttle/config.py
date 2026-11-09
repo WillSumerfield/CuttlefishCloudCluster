@@ -149,7 +149,7 @@ HOSTS_MARKER = "# cuttle"
 # Dives. It can do that with ZERO privilege, because every Dive runs as the Mantle — so the Head is
 # the *owner* of every job in the queue, and lowering your own job's priority is an owner's right.
 # (Only NEGATIVE nice — a boost — needs an operator; that's the admin Queue bump, which goes through
-# sudo. See docs/Architecture.md, "Scheduling: Slurm, and no accounting database".)
+# sudo. See the wiki's Contributing/Architecture, "The Karma tick" / scheduling without slurmdbd.)
 #
 # Treat a Dive's priority as a SIGNED int32 whose zero sits at 2^31. Slurm's priority is a `uint32_t`
 # and it clamps: with no base, a *fresh* Dive (age factor 0) computes `-nice`, which underflows to the

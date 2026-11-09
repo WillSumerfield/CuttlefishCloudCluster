@@ -1,4 +1,4 @@
-"""Per-Dive **Environment** declaration and build-command rendering (docs/elements/environments.md).
+"""Per-Dive **Environment** declaration and build-command rendering (wiki Using CCC/Environments).
 
 Uncalled since 2.0 (nothing declares an Environment until Dives), but still the one tested place that
 says what a manifest means. Pure functions with remote consequences (CONTRIBUTING.md): nothing here

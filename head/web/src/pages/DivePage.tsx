@@ -106,7 +106,7 @@ export function DivePage({ id }: { id: string }) {
   const v = detail ? verdict(detail) : null;
   // End is for an OUTSTANDING Dive — queued or running, `done` says which. Your own only: an Admin
   // may end anyone's, but that road is `cuttle dive end <id>` on the Head, not this button — the API's
-  // ownership test is unconditional and gets no admin branch (docs/Security.md). The row you clicked in
+  // ownership test is unconditional and gets no admin branch (wiki Admin/Security). The row you clicked in
   // from can still be stopped from here.
   const canCancel =
     !!detail && !detail.outcome && detail.state !== "ending" && detail.started_by === session.username;
