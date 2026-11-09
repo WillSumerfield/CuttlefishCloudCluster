@@ -714,3 +714,92 @@ def test_a_spawn_that_asked_for_no_feature_never_mounts_one():
     body = _script(features=[])
     assert "$scratch/featlibs" not in body
     assert f"{hf.FEATLIB_MOUNT}/vlearn/lib" not in body
+
+
+# --- activation (Arm-local, once per machine) ------------------------------
+
+def _run_recorder(seen):
+    def _run(cmd, sudo=False, **kw):
+        seen.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+    return _run
+
+
+def test_held_abis_lists_only_the_unpacked_wheel_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    for d in ("cp310", "cp311", af.INSTALL_DIRNAME, "libs", "libs-cuda12"):
+        (tmp_path / "vlearn" / d).mkdir(parents=True)
+    assert af.held_abis("vlearn") == ["cp310", "cp311"]
+    assert af.held_abis("never-unpacked") == []
+
+
+def test_activation_argv_binds_the_feature_read_only_and_lands_in_the_licence_home(tmp_path, monkeypatch):
+    """The activation container gets the Feature's own state read-only and writes ONLY into the Licence
+    directory — bound at /root because TurboActivate keys its store off getpwuid, not $HOME."""
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    argv = af.activation_argv("base:img", "vlearn", "cp311", "/opt/ccc/licence", "/tmp/act.py")
+    root = tmp_path / "vlearn"
+    assert argv[:5] == ["podman", "run", "--rm", "--network", "none"]   # CPU-only, no GPU, no net
+    assert f"{root / 'cp311'}:{af.FEATURE_MOUNT}/vlearn/cp311:ro" in argv
+    assert f"{root / af.INSTALL_DIRNAME}:{af.FEATURE_MOUNT}/vlearn/{af.INSTALL_DIRNAME}:ro" in argv
+    assert f"{root / 'libs' / 'lib'}:{af.FEATURE_MOUNT}/vlearn/libs/lib:ro" in argv
+    assert f"{root / 'libs-cuda12' / 'lib'}:{af.FEATURE_MOUNT}/vlearn/libs-cuda12/lib:ro" in argv
+    assert f"{root / af.LICENCE_KEY_NAME}:/ccc/key/License.key:ro" in argv
+    assert "/tmp/act.py:/ccc/activate.py:ro" in argv
+    assert "/opt/ccc/licence:/root" in argv          # the ONE writable mount
+    assert "uv venv --python 3.11 /ccc/venv" in " ".join(argv)   # interpreter matches the wheel ABI
+
+
+def test_activation_argv_never_binds_the_licence_key_writable(tmp_path, monkeypatch):
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    argv = af.activation_argv("base", "vlearn", "cp310", "/lh", "/a.py")
+    key = next(v for v in argv if "/ccc/key/" in v)
+    assert key.endswith(":ro")
+    assert "uv venv --python 3.10 /ccc/venv" in " ".join(argv)   # cp310 -> 3.10
+
+
+def test_activate_runs_once_then_marks_and_hands_the_files_to_the_licence_account(tmp_path, monkeypatch):
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    (tmp_path / "vlearn" / "cp311").mkdir(parents=True)
+    lh = tmp_path / "licence"
+    lh.mkdir()
+    seen = []
+
+    def _run(cmd, sudo=False, **kw):
+        seen.append(list(cmd))
+        if cmd[0] == "touch":
+            Path(cmd[1]).write_text("")   # as the live touch would, so the marker becomes real
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(af, "run", _run)
+    feats = [{"name": "vlearn", "path": "/x", "key": "/k"}]
+    af.activate(feats, "base:img", str(lh))
+    assert any(c[0] == "podman" for c in seen)
+    assert (lh / f".{af.ACTIVATED_MARKER}-vlearn").exists()
+    assert any(c[0] == "chown" and config.LICENCE_USER in c[2] for c in seen)
+    # A re-setup must not spend another TurboActivate seat.
+    seen.clear()
+    af.activate(feats, "base:img", str(lh))
+    assert not any(c[0] == "podman" for c in seen)
+
+
+def test_activate_skips_without_a_licence_home_a_key_or_a_script(tmp_path, monkeypatch):
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    (tmp_path / "vlearn" / "cp311").mkdir(parents=True)
+    (tmp_path / "isaaclab" / "cp311").mkdir(parents=True)
+    lh = tmp_path / "licence"
+    lh.mkdir()
+    seen = []
+    monkeypatch.setattr(af, "run", _run_recorder(seen))
+    af.activate([{"name": "vlearn", "path": "/x", "key": "/k"}], "base", "")           # no Licence dir
+    af.activate([{"name": "vlearn", "path": "/x"}], "base", str(lh))                   # no key
+    af.activate([{"name": "isaaclab", "path": "/x", "key": "/k"}], "base", str(lh))    # no activation script
+    assert not any(c[0] == "podman" for c in seen)

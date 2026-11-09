@@ -122,6 +122,21 @@ VLWD_MOUNT = "/ccc/vlwd"
 # each alternate (a conflicting spec, a second CUDA major) is "libs-<suffix>".
 LIBS_DIRNAME = "libs"
 
+# Marker CCC drops once it has activated a Feature on this box. Activation is licensed per machine
+# (TurboActivate) and wasting one is expensive, so it runs exactly once — `activate` skips a re-run when
+# the marker is present. It lives in the **Licence** directory, NOT the per-Feature state tree, because
+# `prepare` rebuilds that tree every `setup --arm`: the Licence directory survives a re-setup (and a
+# teardown), which is exactly the lifetime of "this machine is activated". Basename stem; the file is
+# `.<ACTIVATED_MARKER>-<feature>` so one Licence directory can mark several Features.
+ACTIVATED_MARKER = "ccc-activated"
+
+# Mirror of ccc_head_api.features.VLEARN_ACTIVATE_PY — the vendor's own activation. Creating a gym is
+# what makes TurboActivate write this machine's activation into the Licence directory (bound as $HOME);
+# headless, because an Arm has no display and rendering is not what is licensed. Duplicated rather than
+# imported, like everything else here (the two packages never import each other, as with FEATURE_NAMES).
+VLEARN_ACTIVATE_PY = "import vlearn\n\nvlearn.create_gym(with_render=False)\nprint('vlearn activated on this Arm')\n"
+ACTIVATE_SCRIPTS = {"vlearn": VLEARN_ACTIVATE_PY}
+
 
 def check_install(name: str, path: str) -> list[str]:
     """What `path` is missing before it can serve `name` — empty when it is good, or when CCC has no
@@ -343,6 +358,115 @@ def write_descriptor(name: str, abis: list[str]) -> None:
         staging = tmp.name
     run(["install", "-D", "-m", "0644", staging, str(dest)], sudo=True)
     run(["rm", "-f", staging], check=False)
+
+
+# --- activation (Arm-local, once per machine) -----------------------------------
+
+# The container entry the activation runs. Lays out VL_WORKING_DIRECTORY exactly as the in-container
+# Dive hook does (feature_hook.setup_vlearn), makes an ABI-matched interpreter with uv, and runs the
+# vendor's activate.py against the unpacked wheel on PYTHONPATH. CPU-only — no GPU is bound and rendering
+# is off; TurboActivate fingerprints CPU/MAC/disk, not the card.
+_ACTIVATE_ENTRY = """\
+set -e
+install={feat}/{install}
+mkdir -p {vlwd}
+ln -sfn "$install/assets" {vlwd}/assets
+ln -sfn "$install/shaders" {vlwd}/shaders
+ln -sfn "$install/TurboActivate.dat" {vlwd}/TurboActivate.dat
+rm -rf {vlwd}/cache
+cp -a "$install/cache" {vlwd}/cache 2>/dev/null || mkdir -p {vlwd}/cache
+export PYTHONPATH={feat}/{abi}
+export LD_LIBRARY_PATH={feat}/{abi}/vlearn/lib:{feat}/{libs}/lib:{feat}/{libs}-cuda12/lib
+export VL_WORKING_DIRECTORY={vlwd}
+export VL_LICENSE_KEY_PATH={key}
+uv venv --python {pyver} /ccc/venv
+/ccc/venv/bin/python /ccc/activate.py
+"""
+
+
+def held_abis(name: str) -> list[str]:
+    """The Python ABI tags this box has already unpacked a `name` wheel for (the `cp\\d` dirs
+    `unpack_packages` made), e.g. `["cp310", "cp311"]`. Read off disk, after `prepare`."""
+    root = FEATURE_PKG_DIR / name
+    if not root.is_dir():
+        return []
+    return sorted(d.name for d in root.iterdir()
+                  if d.is_dir() and re.fullmatch(r"cp\d{2,3}", d.name))
+
+
+def activation_argv(image: str, name: str, abi: str, licence_home: str, activate_py: str) -> list[str]:
+    """The `podman run` argv that activates `name` on this box. Pure — builds nothing, runs nothing.
+
+    Mirrors `enroll.bench_locally`: a one-shot container on the base image, `--network none`, the
+    Feature's own read-only state bound under FEATURE_MOUNT (the ABI wheel, the mirrored install, both
+    system-library prefixes), plus the mirrored Licence key read-only and `activate_py` to run.
+
+    The Licence directory is bound at `/root` and the container runs as root: TurboActivate chooses its
+    state directory with `getpwuid(getuid())->pw_dir` (ignoring $HOME), so the activation lands in root's
+    home — which IS the Licence directory here. `activate` chowns it back to the Licence account
+    afterwards, the identity a real Dive activates against (setup.provision_licence_home).
+    """
+    p = ARM_PROFILES[name]
+    root = FEATURE_PKG_DIR / name
+    feat = f"{FEATURE_MOUNT}/{name}"
+    key = f"/ccc/key/{p.licence_key}"
+    pyver = f"{abi[2]}.{abi[3:]}"   # cp311 -> 3.11, cp310 -> 3.10, cp39 -> 3.9
+    binds = [
+        (root / abi, f"{feat}/{abi}"),
+        (root / INSTALL_DIRNAME, f"{feat}/{INSTALL_DIRNAME}"),
+        (root / LIBS_DIRNAME / "lib", f"{feat}/{LIBS_DIRNAME}/lib"),
+        (root / f"{LIBS_DIRNAME}-cuda12" / "lib", f"{feat}/{LIBS_DIRNAME}-cuda12/lib"),
+    ]
+    argv = ["podman", "run", "--rm", "--network", "none", "--authfile", str(config.REGISTRY_AUTH)]
+    for src, dst in binds:
+        argv += ["-v", f"{src}:{dst}:ro"]
+    argv += ["-v", f"{root / LICENCE_KEY_NAME}:{key}:ro",
+             "-v", f"{activate_py}:/ccc/activate.py:ro",
+             "-v", f"{licence_home}:/root", "-e", "HOME=/root"]
+    entry = _ACTIVATE_ENTRY.format(feat=feat, install=INSTALL_DIRNAME, vlwd=VLWD_MOUNT,
+                                   abi=abi, libs=LIBS_DIRNAME, key=key, pyver=pyver)
+    argv += [image, "bash", "-lc", entry]
+    return argv
+
+
+def activate(features: list[dict], image: str, licence_home: str) -> None:
+    """Activate each declared Feature that needs it, Arm-local in Podman, once per machine.
+
+    Run from `setup --arm` after the Licence directory exists. The marker in that directory makes it
+    exactly-once (ACTIVATED_MARKER): a re-setup must not spend another TurboActivate seat on hardware
+    already activated. Skipped when there is no Licence directory, no key, or no activation script, and
+    when the box holds no wheel to import the Feature from.
+    """
+    if not licence_home:
+        return
+    for f in features:
+        name = f["name"]
+        p = ARM_PROFILES.get(name)
+        script = ACTIVATE_SCRIPTS.get(name)
+        if not p or not script or not p.licence_key or not f.get("key"):
+            continue
+        marker = Path(licence_home) / f".{ACTIVATED_MARKER}-{name}"
+        if marker.exists():
+            ui.result(name, "already activated (delete the marker in the Licence directory to re-run)")
+            continue
+        abis = held_abis(name)
+        if not abis:
+            continue
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+            tmp.write(script)
+            activate_py = tmp.name
+        Path(activate_py).chmod(0o644)
+        try:
+            run(activation_argv(image, name, abis[0], licence_home, activate_py), sudo=True)
+        finally:
+            run(["rm", "-f", activate_py], check=False)
+        # The activation ran as root, so its files are root-owned; hand them to the Licence account and
+        # make them group-writable, as provision_licence_home set the directory itself — a Dive runs as a
+        # Guise (a different uid, in GUISE_GROUP) and rewrites them on periodic online re-validation.
+        run(["chown", "-R", f"{config.LICENCE_USER}:{config.GUISE_GROUP}", licence_home], sudo=True)
+        run(["chmod", "-R", "g+rwX", licence_home], sudo=True)
+        run(["touch", str(marker)], sudo=True)
+        ui.result(name, "activated")
 
 
 def install_path(f: dict) -> str:

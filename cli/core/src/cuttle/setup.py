@@ -1546,6 +1546,10 @@ def _setup_arm(token: str | None, re_enroll: bool = False, update: bool = False)
                          enroll.render_features_env(features, licence_home))
         if licence_home:
             provision_licence_home(licence_home)
+            # Activate licensed Features here, Arm-local in Podman (not a Head/Slurm job): the enroll
+            # endpoint only records, so the box must do its own one-time setup, as with the Power
+            # benchmark below. Once per machine — skipped when already marked (feature_profiles.activate).
+            feature_profiles.activate(features, info["images"]["base"], licence_home)
 
     # Before slurmd, so its Weight rides in `--conf`. Once per hardware: a re-run reuses the Power the
     # Head already holds (`cuttle arm benchmark` on the Head re-measures).
