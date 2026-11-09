@@ -346,6 +346,22 @@ class TestLaunchSpec:
         with pytest.raises(L.Refused):
             L.validate_dive({**DIVE, **bad})
 
+    def test_a_dive_with_a_stub_payload_passes(self):
+        L.validate_dive({**DIVE, "feature_stubs": {
+            "files": [{"rel": "../wheels/vlearn-0.3.9-cp311-cp311-linux_x86_64.whl", "b64": "AA=="}],
+            "digests": {"vlearn": "a" * 64}, "lock": "uv.lock"}})
+
+    @pytest.mark.parametrize("bad", [
+        {"files": [{"rel": "/etc/x.whl", "b64": "AA=="}], "digests": {}, "lock": None},   # absolute
+        {"files": [{"rel": "../../x.whl", "b64": "AA=="}], "digests": {}, "lock": None},  # two `..`
+        {"files": [{"rel": "x.whl"}], "digests": {}, "lock": None},                       # no b64
+        {"files": [], "digests": {"vlearn": "zz"}, "lock": None},                         # bad digest
+        {"files": [], "digests": {}, "lock": "/etc/uv.lock"},                             # absolute lock
+        {"files": [], "digests": {}, "nope": 1}])                                         # stray key
+    def test_bad_stub_payloads_refused(self, bad):
+        with pytest.raises(L.Refused):
+            L.validate_dive({**DIVE, "feature_stubs": bad})
+
 
 class TestArmDive:
     def test_stage_in_pulls_main_last_and_owns_new_dirs(self, tmp_path, monkeypatch):
@@ -366,6 +382,17 @@ class TestArmDive:
         assert calls[-1][-1] == f"{home}/proj/a/"
         assert {u for _, u in chowned} == {4242}
         assert {p for p, _ in chowned} >= {str(home), str(home / "proj"), str(home / "proj/a")}
+
+    def test_stage_in_lands_the_stub_payload_for_the_pre_hook(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(L.subprocess, "run", lambda a, **k: None)
+        monkeypatch.setattr(L.os, "chown", lambda p, u, g: None)
+        (tmp_path / "sys").mkdir(mode=0o700)
+        payload = {"files": [{"rel": "../wheels/x.whl", "b64": "AA=="}],
+                   "digests": {"vlearn": "a" * 64}, "lock": "uv.lock"}
+        L.stage_in({**DIVE, "feature_stubs": payload}, tmp_path, 4242)
+        f = tmp_path / "sys" / L.STUBS_REL
+        assert json.loads(f.read_text()) == payload       # what cuttle.feature_hook.stub will read
+        assert f.stat().st_mode & 0o777 == 0o644           # the User's build (not root) runs the hook
 
     def test_mirror_is_main_only_with_delete_and_the_filters(self, monkeypatch, tmp_path):
         seen = []

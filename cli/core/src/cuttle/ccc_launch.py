@@ -55,6 +55,8 @@ SPEC_PREFIX = "# ccc-launch-spec: "
 CONTAINER_PREFIX = "ccc-job-"
 SPEC_KEYS = {"image", "argv", "env", "binds", "network", "workdir", "dive", "features"}
 DIVE_KEYS = {"token", "user", "secret", "head", "main", "deps", "port"}
+DIVE_OPT_KEYS = {"feature_stubs"}   # present only on a Feature Dive that path-sources a Feature's wheel
+STUBS_REL = "feature-stubs.json"    # under jobdir/sys → /etc/ccc/dive (cuttle.feature_hook.STUBS_FILE)
 FEATURE_STATE = Path("/var/lib/ccc/features")      # cuttle.features.FEATURE_PKG_DIR (config.CCC_LIB)
 FEATURE_DESC = "profile.json"                       # cuttle.features.DESCRIPTOR_NAME
 LICENCE_KEY_NAME = "licence.key"                    # cuttle.features.LICENCE_KEY_NAME — never bound here
@@ -185,8 +187,8 @@ def _rel_ok(rel) -> bool:
 
 
 def validate_dive(d: dict) -> None:
-    if set(d) != DIVE_KEYS:
-        raise Refused(f"dive spec keys must be {sorted(DIVE_KEYS)}")
+    if not DIVE_KEYS <= set(d) or set(d) - DIVE_KEYS - DIVE_OPT_KEYS:
+        raise Refused(f"dive spec keys must be {sorted(DIVE_KEYS)} (+ optional {sorted(DIVE_OPT_KEYS)})")
     if not TOKEN_RE.match(d["token"]) or not USER_RE.match(d["user"]) or \
             not SECRET_RE.match(d["secret"]) or not HOST_RE.match(d["head"]):
         raise Refused("bad dive token/user/secret/head")
@@ -195,6 +197,33 @@ def validate_dive(d: dict) -> None:
         raise Refused("dive folders must be relative paths under the home")
     if not isinstance(d["port"], int) or not 1024 < d["port"] < 65536:
         raise Refused("bad dive port")
+    if "feature_stubs" in d:
+        validate_feature_stubs(d["feature_stubs"])
+
+
+def _stub_rel_ok(rel) -> bool:
+    """pod_rel: project-root-relative, no further out than the one leading `..` an `../wheels/x.whl`
+    layout needs — the same bound the Head's `check_supplied` applies, restated on the Arm."""
+    if not isinstance(rel, str) or rel.startswith("/"):
+        return False
+    parts = rel.split("/")
+    if parts[:1] == [".."]:                     # one leading `..` is allowed; nothing further up
+        parts = parts[1:]
+    return bool(parts) and all(p and p != ".." and re.fullmatch(r"[A-Za-z0-9._+-]+", p) for p in parts)
+
+
+def validate_feature_stubs(st: dict) -> None:
+    """The Head's stub payload, written verbatim to the Dive's STUBS_FILE for the in-container pre-hook."""
+    if not isinstance(st, dict) or set(st) - {"files", "digests", "lock"}:
+        raise Refused("bad feature_stubs")
+    for f in st.get("files", []):
+        if not isinstance(f, dict) or set(f) != {"rel", "b64"} or not _stub_rel_ok(f["rel"]):
+            raise Refused(f"bad feature_stubs file {f!r}")
+    if st.get("lock") is not None and not _stub_rel_ok(st["lock"]):
+        raise Refused(f"bad feature_stubs lock {st.get('lock')!r}")
+    if not all(isinstance(k, str) and re.fullmatch(r"[0-9a-f]{64}", v or "")
+               for k, v in (st.get("digests") or {}).items()):
+        raise Refused("bad feature_stubs digests")
 
 
 def resolve_binds(spec: dict, jobdir: Path) -> list[tuple[Path, str, bool]]:
@@ -387,6 +416,10 @@ def stage_in(d: dict, jobdir: Path, owner: int) -> Path:
     # session: the User), so 0711 lets each reach only its own.
     os.chown(jobdir / "sys", owner - INNER_UID, owner - INNER_UID)
     (jobdir / "sys").chmod(0o711)
+    if d.get("feature_stubs"):   # the pre-hook reads this from /etc/ccc/dive; the User's build runs it
+        stubf = jobdir / "sys" / STUBS_REL
+        stubf.write_text(json.dumps(d["feature_stubs"]))
+        stubf.chmod(0o644)
     run(rsync_argv(module(d, "dot"), f"{home}/", filters=False))
     for i, dep in enumerate(d["deps"]):
         run(rsync_argv(module(d, f"dep{i}"), f"{_mkdirs(home, dep, owner)}/"))
