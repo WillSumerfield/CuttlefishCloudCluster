@@ -184,9 +184,10 @@ def test_the_descriptor_binds_every_abi_and_the_install_never_the_key(tmp_path, 
     srcs = {b["src"] for b in binds}
     assert str(tmp_path / "vlearn" / "cp310") in srcs and str(tmp_path / "vlearn" / "cp311") in srcs
     assert str(tmp_path / "vlearn" / af.INSTALL_DIRNAME) in srcs
-    # Both system-library prefixes' lib/ (main + the conflicting CUDA major), by the same rule both ship.
-    assert str(tmp_path / "vlearn" / "libs" / "lib") in srcs
-    assert str(tmp_path / "vlearn" / "libs-cuda12" / "lib") in srcs
+    # Both system-library prefixes WHOLE (not just lib/): conda's CUDA libs live under targets/, which
+    # lib/'s symlinks point into, so binding lib/ alone would dangle.
+    assert str(tmp_path / "vlearn" / "libs") in srcs
+    assert str(tmp_path / "vlearn" / "libs-cuda12") in srcs
     assert all(b["ro"] and b["dst"].startswith(f"{af.FEATURE_MOUNT}/vlearn/") for b in binds)
     assert not any(af.LICENCE_KEY_NAME in b["src"] for b in binds)
 
@@ -444,8 +445,8 @@ def test_activation_argv_binds_the_feature_read_only_and_lands_in_the_licence_ho
     assert "nvidia.com/gpu=GPU-abc" in argv and "nvidia.com/gpu=GPU-def" in argv   # the GPU, like a Dive
     assert f"{root / 'cp311'}:{af.FEATURE_MOUNT}/vlearn/cp311:ro" in argv
     assert f"{root / af.INSTALL_DIRNAME}:{af.FEATURE_MOUNT}/vlearn/{af.INSTALL_DIRNAME}:ro" in argv
-    assert f"{root / 'libs' / 'lib'}:{af.FEATURE_MOUNT}/vlearn/libs/lib:ro" in argv
-    assert f"{root / 'libs-cuda12' / 'lib'}:{af.FEATURE_MOUNT}/vlearn/libs-cuda12/lib:ro" in argv
+    assert f"{root / 'libs'}:{af.FEATURE_MOUNT}/vlearn/libs:ro" in argv            # whole prefix
+    assert f"{root / 'libs-cuda12'}:{af.FEATURE_MOUNT}/vlearn/libs-cuda12:ro" in argv
     assert f"{root / af.LICENCE_KEY_NAME}:/ccc/key/License.key:ro" in argv
     assert "/tmp/act.py:/ccc/activate.py:ro" in argv
     assert "/opt/ccc/licence:/root" in argv          # the ONE writable mount

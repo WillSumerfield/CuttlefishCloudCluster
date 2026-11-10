@@ -322,7 +322,7 @@ def mirror_licence_key(f: dict) -> None:
 
 def descriptor_binds(name: str, abis: list[str]) -> list[dict]:
     """The read-only binds a Dive gets for Feature `name` — the unpacked wheel (one per ABI the box
-    holds), the mirrored runtime data, and each system-library prefix's `lib/`. Each entry is
+    holds), the mirrored runtime data, and each system-library prefix. Each entry is
     `{src, dst, ro}`, `src` under this Feature's own state tree, `dst` under FEATURE_MOUNT. Never the
     **Licence** key (ccc-launch refuses it too).
 
@@ -340,9 +340,9 @@ def descriptor_binds(name: str, abis: list[str]) -> list[dict]:
     if p.requires:   # the mirrored assets/shaders/cache/… the Feature resolves its data against
         binds.append({"src": str(root / INSTALL_DIRNAME),
                       "dst": f"{FEATURE_MOUNT}/{name}/{INSTALL_DIRNAME}", "ro": True})
-    for dirname in _lib_prefixes(p):   # the system-library prefixes build_libs made
-        binds.append({"src": str(root / dirname / "lib"),
-                      "dst": f"{FEATURE_MOUNT}/{name}/{dirname}/lib", "ro": True})
+    for dirname in _lib_prefixes(p):   # the whole prefix, not just lib/: conda's CUDA libs live under
+        binds.append({"src": str(root / dirname),   # <prefix>/targets/.../lib and lib/ only symlinks in,
+                      "dst": f"{FEATURE_MOUNT}/{name}/{dirname}", "ro": True})   # so lib/ alone dangles
     return binds
 
 
@@ -431,8 +431,8 @@ def activation_argv(image: str, name: str, abi: str, licence_home: str, activate
     binds = [
         (root / abi, f"{feat}/{abi}"),
         (root / INSTALL_DIRNAME, f"{feat}/{INSTALL_DIRNAME}"),
-        (root / LIBS_DIRNAME / "lib", f"{feat}/{LIBS_DIRNAME}/lib"),
-        (root / f"{LIBS_DIRNAME}-cuda12" / "lib", f"{feat}/{LIBS_DIRNAME}-cuda12/lib"),
+        (root / LIBS_DIRNAME, f"{feat}/{LIBS_DIRNAME}"),                     # whole prefix, not lib/:
+        (root / f"{LIBS_DIRNAME}-cuda12", f"{feat}/{LIBS_DIRNAME}-cuda12"),   # CUDA libs live in targets/
     ]
     # Networked, unlike bench_locally's --network none: TurboActivate phones the licence server to
     # activate the key, and uv fetches the matching CPython for the venv -- both need egress.
