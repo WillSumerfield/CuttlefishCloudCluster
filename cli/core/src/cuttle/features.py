@@ -409,8 +409,8 @@ def held_abis(name: str) -> list[str]:
 def activation_argv(image: str, name: str, abi: str, licence_home: str, activate_py: str) -> list[str]:
     """The `podman run` argv that activates `name` on this box. Pure — builds nothing, runs nothing.
 
-    Mirrors `enroll.bench_locally`: a one-shot container on the base image, `--network none`, the
-    Feature's own read-only state bound under FEATURE_MOUNT (the ABI wheel, the mirrored install, both
+    Like `enroll.bench_locally`: a one-shot container on the base image, with the Feature's own
+    read-only state bound under FEATURE_MOUNT (the ABI wheel, the mirrored install, both
     system-library prefixes), plus the mirrored Licence key read-only and `activate_py` to run.
 
     The Licence directory is bound at `/root` and the container runs as root: TurboActivate chooses its
@@ -429,7 +429,9 @@ def activation_argv(image: str, name: str, abi: str, licence_home: str, activate
         (root / LIBS_DIRNAME / "lib", f"{feat}/{LIBS_DIRNAME}/lib"),
         (root / f"{LIBS_DIRNAME}-cuda12" / "lib", f"{feat}/{LIBS_DIRNAME}-cuda12/lib"),
     ]
-    argv = ["podman", "run", "--rm", "--network", "none", "--authfile", str(config.REGISTRY_AUTH)]
+    # Networked, unlike bench_locally's --network none: TurboActivate phones the licence server to
+    # activate the key, and uv fetches the matching CPython for the venv -- both need egress.
+    argv = ["podman", "run", "--rm", "--authfile", str(config.REGISTRY_AUTH)]
     for src, dst in binds:
         argv += ["-v", f"{src}:{dst}:ro"]
     argv += ["-v", f"{root / LICENCE_KEY_NAME}:{key}:ro",

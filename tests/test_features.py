@@ -438,7 +438,8 @@ def test_activation_argv_binds_the_feature_read_only_and_lands_in_the_licence_ho
     monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
     argv = af.activation_argv("base:img", "vlearn", "cp311", "/opt/ccc/licence", "/tmp/act.py")
     root = tmp_path / "vlearn"
-    assert argv[:5] == ["podman", "run", "--rm", "--network", "none"]   # CPU-only, no GPU, no net
+    assert argv[:4] == ["podman", "run", "--rm", "--authfile"]   # networked: TurboActivate + uv need egress
+    assert "none" not in argv                                    # NOT --network none, unlike bench_locally
     assert f"{root / 'cp311'}:{af.FEATURE_MOUNT}/vlearn/cp311:ro" in argv
     assert f"{root / af.INSTALL_DIRNAME}:{af.FEATURE_MOUNT}/vlearn/{af.INSTALL_DIRNAME}:ro" in argv
     assert f"{root / 'libs' / 'lib'}:{af.FEATURE_MOUNT}/vlearn/libs/lib:ro" in argv
