@@ -48,54 +48,134 @@ def fail(msg):
         print(msg, file=sys.stderr)
         sys.exit(1)
 
-meta = json.load(urllib.request.urlopen(HEAD + "/cuttle", timeout=15))
-try:
-    rec = json.load(open(%r))
-except OSError:
-    w = "/tmp/" + meta["wheel"]
-    fail("this Arm was set up before updates from the Head, so the Head doesn't know where its "
-         "cuttle lives. Its owner must install the new cuttle and update once, on the Arm:\\n"
-         "  curl -fo " + w + " " + HEAD + "/cuttle/wheel && uv tool install --force " + w +
-         " && cuttle update")
-pw = pwd.getpwnam(rec["user"])
-# In the owner's home, not /tmp: Slurm gives this job a private /tmp only root can enter.
-d = tempfile.mkdtemp(prefix=".ccc-update-", dir=rec["home"])
-wheel = os.path.join(d, meta["wheel"])
-with urllib.request.urlopen(HEAD + "/cuttle/wheel", timeout=300) as r, open(wheel, "wb") as f:
-    f.write(r.read())
-# F3: verify the wheel's ed25519 signature against the pinned Head pubkey BEFORE anything runs it. The
-# signature is channel-independent, so a Head impersonator (or tampered mesh route) cannot forge an
-# install even over the same plain-HTTP enroll channel. Missing pin or bad signature: refuse, don't run.
-sig = wheel + ".sig"
-with urllib.request.urlopen(HEAD + "/cuttle/wheel.sig", timeout=60) as r, open(sig, "wb") as f:
-    f.write(r.read())
-if not os.path.exists(PIN):
+def rm(p):
+    # Remove a file/symlink/tree if present; True iff it is now gone. Best effort -- a file owned by
+    # another user (the EPERM that used to break updates mid-swap) blocks it, reported not fatal.
+    try:
+        if os.path.islink(p) or os.path.isfile(p):
+            os.unlink(p)
+        elif os.path.isdir(p):
+            shutil.rmtree(p)
+    except OSError:
+        pass
+    return not os.path.lexists(p)
+
+def report_foreign(root, uid):
+    # Log every entry under `root` not owned by `uid`. The diagnostic: when a leftover tool env cannot
+    # be cleaned, name who owns the stray files (the unexplained nobody-owned ones), so the next
+    # occurrence pins their source instead of being guessed at.
+    for base, dirs, files in os.walk(root):
+        for n in dirs + files:
+            p = os.path.join(base, n)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if st.st_uid != uid:
+                try:
+                    who = pwd.getpwuid(st.st_uid).pw_name
+                except KeyError:
+                    who = str(st.st_uid)
+                print("ccc-update: " + p + " is owned by " + who + ", not the Arm's owner "
+                      "-- a container or another user wrote into the tool directory", file=sys.stderr)
+
+def swap_tool(toolenv, exe, uid, install, verify):
+    # Replace the cuttle tool env + its shim, keeping the working build until the new one is proven.
+    # install() runs the uv install and returns (rc, output); verify() returns a returncode from the new
+    # executable. The old env/shim are RENAMED aside first -- that needs only the owner's write on the
+    # PARENT dir, so a stray unremovable file inside the old env can no longer block the install the way
+    # an in-place --force rmtree did (the bug that left cuttle missing). On any failure the old build is
+    # renamed back, so a failed update never removes the working command. Returns an error string, else
+    # None.
+    bak_env, bak_exe = toolenv + ".ccc-old", exe + ".ccc-old"
+    rm(bak_env)
+    rm(bak_exe)                                     # clear a prior crash's leftovers first
+    moved = []
+    for live, bak in ((toolenv, bak_env), (exe, bak_exe)):
+        if os.path.lexists(live):
+            os.rename(live, bak)
+            moved.append((live, bak))
+    rc, out = install()
+    if rc == 0 and verify() == 0:
+        for live, bak in moved:                     # new build proven -- drop the old copy
+            if not rm(bak):
+                report_foreign(bak, uid)            # could not: name the owner (harmless now), take rest
+                rm(bak)
+        return None
+    for live, bak in moved:                         # failed -- restore the working build over the half-install
+        rm(live)
+        if os.path.lexists(bak):
+            os.rename(bak, live)
+    return ("installing the new cuttle failed; kept the previous build:\\n" + out)[-3000:]
+
+def main():
+    meta = json.load(urllib.request.urlopen(HEAD + "/cuttle", timeout=15))
+    try:
+        rec = json.load(open(%r))
+    except OSError:
+        w = "/tmp/" + meta["wheel"]
+        fail("this Arm was set up before updates from the Head, so the Head doesn't know where its "
+             "cuttle lives. Its owner must install the new cuttle and update once, on the Arm:\\n"
+             "  curl -fo " + w + " " + HEAD + "/cuttle/wheel && uv tool install --force " + w +
+             " && cuttle update")
+    pw = pwd.getpwnam(rec["user"])
+    # In the owner's home, not /tmp: Slurm gives this job a private /tmp only root can enter.
+    d = tempfile.mkdtemp(prefix=".ccc-update-", dir=rec["home"])
+    wheel = os.path.join(d, meta["wheel"])
+    with urllib.request.urlopen(HEAD + "/cuttle/wheel", timeout=300) as r, open(wheel, "wb") as f:
+        f.write(r.read())
+    # F3: verify the wheel's ed25519 signature against the pinned Head pubkey BEFORE anything runs it.
+    # The signature is channel-independent, so a Head impersonator (or tampered mesh route) cannot forge
+    # an install even over the same plain-HTTP enroll channel. Missing pin or bad signature: refuse.
+    sig = wheel + ".sig"
+    with urllib.request.urlopen(HEAD + "/cuttle/wheel.sig", timeout=60) as r, open(sig, "wb") as f:
+        f.write(r.read())
+    if not os.path.exists(PIN):
+        shutil.rmtree(d, ignore_errors=True)
+        fail("this Arm has no pinned rollout-signing key, so it cannot verify the Head's cuttle. Its "
+             "owner must re-authorize it -- on the Head run\\n  cuttle arm authorize " + NAME +
+             " --user <owner>\\nthen re-run `cuttle setup --arm --token <token>` on the Arm.")
+    v = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", PIN, "-rawin", "-in", wheel,
+                        "-sigfile", sig], capture_output=True, text=True)
+    if v.returncode:
+        shutil.rmtree(d, ignore_errors=True)
+        fail("the Head's cuttle wheel FAILED signature verification -- refusing to install it. This is "
+             "either a corrupt download or an impostor Head. (" + (v.stdout + v.stderr).strip()[-500:] + ")")
+    os.chown(d, pw.pw_uid, pw.pw_gid)
+    os.chown(wheel, pw.pw_uid, pw.pw_gid)
+    env = {"HOME": rec["home"], "PATH": rec["path"], "USER": rec["user"], "LOGNAME": rec["user"]}
+
+    def runu(*cmd):
+        return subprocess.run(["runuser", "-u", rec["user"], "--", *cmd], env=env,
+                              capture_output=True, text=True)
+
+    def install():
+        r = runu(rec["uv"], "tool", "install", "--force", wheel)
+        return r.returncode, (r.stdout + r.stderr)[-3000:]
+
+    # The whole import path must come up, not just the shim exist -- a broken venv is exactly the
+    # half-installed state this guards against, and `--version` imports cuttle to print the build.
+    def verify():
+        return runu(rec["cuttle"], "--no-input", "--version").returncode
+
+    # The tool env uv would otherwise rmtree in place; moved aside so a stray file in it can't block us.
+    td = runu(rec["uv"], "tool", "dir")
+    toolenv = os.path.join(td.stdout.strip(), "cuttle") if td.returncode == 0 and td.stdout.strip() else ""
+    err = swap_tool(toolenv, rec["cuttle"], pw.pw_uid, install, verify)
     shutil.rmtree(d, ignore_errors=True)
-    fail("this Arm has no pinned rollout-signing key, so it cannot verify the Head's cuttle. Its owner "
-         "must re-authorize it -- on the Head run\\n  cuttle arm authorize " + NAME +
-         " --user <owner>\\nthen re-run `cuttle setup --arm --token <token>` on the Arm.")
-v = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", PIN, "-rawin", "-in", wheel,
-                    "-sigfile", sig], capture_output=True, text=True)
-if v.returncode:
-    shutil.rmtree(d, ignore_errors=True)
-    fail("the Head's cuttle wheel FAILED signature verification -- refusing to install it. This is "
-         "either a corrupt download or an impostor Head. (" + (v.stdout + v.stderr).strip()[-500:] + ")")
-os.chown(d, pw.pw_uid, pw.pw_gid)
-os.chown(wheel, pw.pw_uid, pw.pw_gid)
-env = {"HOME": rec["home"], "PATH": rec["path"], "USER": rec["user"], "LOGNAME": rec["user"]}
-r = subprocess.run(["runuser", "-u", rec["user"], "--", rec["uv"], "tool", "install", "--force", wheel],
-                   env=env, capture_output=True, text=True)
-shutil.rmtree(d, ignore_errors=True)
-if r.returncode:
-    fail("installing the new cuttle failed:\\n" + (r.stdout + r.stderr)[-3000:])
-# Outside this job's cgroup and namespace: the update restarts slurmd, and must outlive this job.
-r = subprocess.run(["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
-                    "--setenv=HOME=" + rec["home"], "--setenv=CCC_HOME=" + rec["ccc_home"],
-                    "--setenv=PATH=" + rec["path"], rec["cuttle"], "--no-input", "update"],
-                   stdin=subprocess.DEVNULL, capture_output=True, text=True)
-subprocess.run(["chown", "-R", "%%d:%%d" %% (pw.pw_uid, pw.pw_gid), rec["ccc_home"]])
-if r.returncode:
-    fail("cuttle update failed:\\n" + (r.stdout + r.stderr)[-3000:])
+    if err:
+        fail(err)
+    # Outside this job's cgroup and namespace: the update restarts slurmd, and must outlive this job.
+    r = subprocess.run(["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
+                        "--setenv=HOME=" + rec["home"], "--setenv=CCC_HOME=" + rec["ccc_home"],
+                        "--setenv=PATH=" + rec["path"], rec["cuttle"], "--no-input", "update"],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    subprocess.run(["chown", "-R", "%%d:%%d" %% (pw.pw_uid, pw.pw_gid), rec["ccc_home"]])
+    if r.returncode:
+        fail("cuttle update failed:\\n" + (r.stdout + r.stderr)[-3000:])
+
+if __name__ == "__main__":
+    main()
 """
 
 

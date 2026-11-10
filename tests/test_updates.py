@@ -2,6 +2,7 @@
 rollout that pushes a new build to Arms (cuttle.buildid / dist / selfupdate / rollout)."""
 
 import json
+import os
 import subprocess
 import zipfile
 
@@ -271,6 +272,87 @@ class TestTheRollout:
         ns: dict = {}
         exec(rollout._SCRIPT, ns)
         compile(ns["JOB"] % ("http://h", "arm1", "new", str(config.ARM_UPDATER_RECORD)), "job", "exec")
+
+
+# --- the Arm update job's tool swap (the part that broke an install mid-update) -----------------
+
+def _job():
+    """The helpers from the Arm-side update JOB, loaded without running its network `main()`."""
+    outer: dict = {"__name__": "rollout"}
+    exec(rollout._SCRIPT, outer)
+    job = outer["JOB"] % ("http://h", "arm1", "new", str(config.ARM_UPDATER_RECORD))
+    ns: dict = {"__name__": "job-test"}
+    exec(job, ns)
+    return ns
+
+
+def _tool(tmp_path):
+    """A pretend installed cuttle: a tool-env dir with a file, and a shim."""
+    toolenv = tmp_path / "tools" / "cuttle"
+    toolenv.mkdir(parents=True)
+    (toolenv / "old").write_text("old-env")
+    exe = tmp_path / "bin" / "cuttle"
+    exe.parent.mkdir()
+    exe.write_text("old-shim")
+    return toolenv, exe
+
+
+class TestTheToolSwap:
+    def test_a_proven_install_replaces_the_old_build_and_drops_it(self, tmp_path):
+        toolenv, exe = _tool(tmp_path)
+
+        def install():   # uv builds a fresh env + shim (old was renamed aside first)
+            toolenv.mkdir(parents=True, exist_ok=True)
+            (toolenv / "new").write_text("new-env")
+            exe.write_text("new-shim")
+            return 0, "installed"
+
+        err = _job()["swap_tool"](str(toolenv), str(exe), os.getuid(), install, lambda: 0)
+        assert err is None
+        assert (toolenv / "new").exists() and not (toolenv / "old").exists()
+        assert exe.read_text() == "new-shim"
+        assert not (tmp_path / "tools" / "cuttle.ccc-old").exists()   # old copy dropped
+        assert not (tmp_path / "bin" / "cuttle.ccc-old").exists()
+
+    def test_a_failed_install_restores_the_working_build(self, tmp_path):
+        toolenv, exe = _tool(tmp_path)
+
+        def install():   # uv leaves a half-built env then fails
+            toolenv.mkdir(parents=True, exist_ok=True)
+            (toolenv / "half").write_text("broken")
+            exe.write_text("broken-shim")
+            return 1, "uv exploded"
+
+        err = _job()["swap_tool"](str(toolenv), str(exe), os.getuid(), install, lambda: 0)
+        assert "kept the previous build" in err and "uv exploded" in err
+        assert (toolenv / "old").read_text() == "old-env" and not (toolenv / "half").exists()
+        assert exe.read_text() == "old-shim"
+
+    def test_an_install_that_does_not_verify_is_rolled_back(self, tmp_path):
+        toolenv, exe = _tool(tmp_path)
+
+        def install():
+            toolenv.mkdir(parents=True, exist_ok=True)
+            exe.write_text("new-but-broken")
+            return 0, "installed"
+
+        err = _job()["swap_tool"](str(toolenv), str(exe), os.getuid(), install, lambda: 1)
+        assert err and exe.read_text() == "old-shim" and (toolenv / "old").exists()
+
+    def test_report_foreign_names_the_owner_of_a_stray_file(self, tmp_path, capsys):
+        root = tmp_path / "env"
+        root.mkdir()
+        (root / "stray").write_text("x")
+        _job()["report_foreign"](str(root), os.getuid() + 1)   # pretend the owner is someone else
+        err = capsys.readouterr().err
+        assert "stray" in err and "not the Arm's owner" in err
+
+    def test_report_foreign_is_silent_when_everything_is_the_owners(self, tmp_path, capsys):
+        root = tmp_path / "env"
+        root.mkdir()
+        (root / "mine").write_text("x")
+        _job()["report_foreign"](str(root), os.getuid())
+        assert capsys.readouterr().err == ""
 
 
 # --- the Head's update jobs aren't Dives ---------------------------------------
