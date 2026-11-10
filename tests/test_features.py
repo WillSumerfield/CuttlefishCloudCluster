@@ -409,10 +409,15 @@ def test_a_licensed_feature_never_gets_past_setup_without_a_licence_directory(mo
 
 
 def _run_recorder(seen):
-    def _run(cmd, sudo=False, **kw):
+    def _run(cmd, sudo=False, check=True, **kw):
         seen.append(list(cmd))
+        rc = 0
+        if cmd[0] == "touch":
+            Path(cmd[1]).write_text("")                 # the marker becomes real, as the live touch would
+        elif cmd[:2] == ["test", "-e"]:
+            rc = 0 if Path(cmd[2]).exists() else 1       # marker check -- live code runs this via sudo
         class R:
-            returncode = 0
+            returncode = rc
             stdout = ""
             stderr = ""
         return R()
@@ -458,23 +463,14 @@ def test_activate_runs_once_then_marks_and_hands_the_files_to_the_licence_accoun
     lh = tmp_path / "licence"
     lh.mkdir()
     seen = []
-
-    def _run(cmd, sudo=False, **kw):
-        seen.append(list(cmd))
-        if cmd[0] == "touch":
-            Path(cmd[1]).write_text("")   # as the live touch would, so the marker becomes real
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        return R()
-
-    monkeypatch.setattr(af, "run", _run)
+    monkeypatch.setattr(af, "run", _run_recorder(seen))
     feats = [{"name": "vlearn", "path": "/x", "key": "/k"}]
     af.activate(feats, "base:img", str(lh))
     assert any(c[0] == "podman" for c in seen)
     assert (lh / f".{af.ACTIVATED_MARKER}-vlearn").exists()
     assert any(c[0] == "chown" and config.LICENCE_USER in c[2] for c in seen)
+    # The marker is probed through sudo (a plain stat would EACCES on the 2770 Licence dir).
+    assert any(c[:2] == ["test", "-e"] for c in seen)
     # A re-setup must not spend another TurboActivate seat.
     seen.clear()
     af.activate(feats, "base:img", str(lh))

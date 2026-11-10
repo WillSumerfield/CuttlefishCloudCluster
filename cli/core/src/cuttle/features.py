@@ -458,7 +458,9 @@ def activate(features: list[dict], image: str, licence_home: str) -> None:
         if not p or not script or not p.licence_key or not f.get("key"):
             continue
         marker = Path(licence_home) / f".{ACTIVATED_MARKER}-{name}"
-        if marker.exists():
+        # Via sudo, not marker.exists(): the Licence directory is 2770 ccc-licence:ccc-guises and the
+        # setup user cannot traverse it, so a plain stat raises EACCES instead of answering the question.
+        if run(["test", "-e", str(marker)], sudo=True, check=False).returncode == 0:
             ui.result(name, "already activated (delete the marker in the Licence directory to re-run)")
             continue
         abis = held_abis(name)
