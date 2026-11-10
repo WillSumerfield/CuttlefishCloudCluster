@@ -406,12 +406,17 @@ def held_abis(name: str) -> list[str]:
                   if d.is_dir() and re.fullmatch(r"cp\d{2,3}", d.name))
 
 
-def activation_argv(image: str, name: str, abi: str, licence_home: str, activate_py: str) -> list[str]:
+def activation_argv(image: str, name: str, abi: str, licence_home: str, activate_py: str,
+                    cdi: list[str]) -> list[str]:
     """The `podman run` argv that activates `name` on this box. Pure — builds nothing, runs nothing.
 
     Like `enroll.bench_locally`: a one-shot container on the base image, with the Feature's own
     read-only state bound under FEATURE_MOUNT (the ABI wheel, the mirrored install, both
     system-library prefixes), plus the mirrored Licence key read-only and `activate_py` to run.
+
+    Gets the box's GPU(s) the same way a Dive does — `--device nvidia.com/gpu=<cdi>` — NOT CPU-only:
+    importing vlearn dlopens libgym.so, which links libcuda.so.1 (the driver), so the NVIDIA runtime
+    has to inject the driver stack even though activation only fingerprints CPU/MAC/disk.
 
     The Licence directory is bound at `/root` and the container runs as root: TurboActivate chooses its
     state directory with `getpwuid(getuid())->pw_dir` (ignoring $HOME), so the activation lands in root's
@@ -432,6 +437,8 @@ def activation_argv(image: str, name: str, abi: str, licence_home: str, activate
     # Networked, unlike bench_locally's --network none: TurboActivate phones the licence server to
     # activate the key, and uv fetches the matching CPython for the venv -- both need egress.
     argv = ["podman", "run", "--rm", "--authfile", str(config.REGISTRY_AUTH)]
+    for g in cdi:
+        argv += ["--device", f"nvidia.com/gpu={g}"]
     for src, dst in binds:
         argv += ["-v", f"{src}:{dst}:ro"]
     argv += ["-v", f"{root / LICENCE_KEY_NAME}:{key}:ro",
@@ -441,6 +448,18 @@ def activation_argv(image: str, name: str, abi: str, licence_home: str, activate
                                    abi=abi, libs=LIBS_DIRNAME, key=key, pyver=pyver)
     argv += [image, "bash", "-lc", entry]
     return argv
+
+
+def _activation_cdi() -> list[str]:
+    """CDI device names for ALL this box's GPUs, refreshed so Podman can resolve them — the GPU the
+    activation container needs (see activation_argv). Reuses the Dive launcher's enumeration so the two
+    agree. Empty on a box with no GPU, where activation can't work anyway."""
+    from . import ccc_launch as cl
+    wsl = cl.WSL_DXG.exists() and not cl._device_minors()
+    gpus = cl.gpu_ids([0] if wsl else list(range(len(cl._device_minors()))))
+    cdi = cl.cdi_names(gpus, wsl)
+    cl.ensure_cdi(cdi)
+    return cdi
 
 
 def activate(features: list[dict], image: str, licence_home: str) -> None:
@@ -468,12 +487,13 @@ def activate(features: list[dict], image: str, licence_home: str) -> None:
         abis = held_abis(name)
         if not abis:
             continue
+        cdi = _activation_cdi()
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
             tmp.write(script)
             activate_py = tmp.name
         Path(activate_py).chmod(0o644)
         try:
-            run(activation_argv(image, name, abis[0], licence_home, activate_py), sudo=True)
+            run(activation_argv(image, name, abis[0], licence_home, activate_py, cdi), sudo=True)
         finally:
             run(["rm", "-f", activate_py], check=False)
         # The activation ran as root, so its files are root-owned; hand them to the Licence account and

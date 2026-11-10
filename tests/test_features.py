@@ -436,10 +436,12 @@ def test_activation_argv_binds_the_feature_read_only_and_lands_in_the_licence_ho
     """The activation container gets the Feature's own state read-only and writes ONLY into the Licence
     directory — bound at /root because TurboActivate keys its store off getpwuid, not $HOME."""
     monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
-    argv = af.activation_argv("base:img", "vlearn", "cp311", "/opt/ccc/licence", "/tmp/act.py")
+    argv = af.activation_argv("base:img", "vlearn", "cp311", "/opt/ccc/licence", "/tmp/act.py",
+                              ["GPU-abc", "GPU-def"])
     root = tmp_path / "vlearn"
     assert argv[:4] == ["podman", "run", "--rm", "--authfile"]   # networked: TurboActivate + uv need egress
     assert "none" not in argv                                    # NOT --network none, unlike bench_locally
+    assert "nvidia.com/gpu=GPU-abc" in argv and "nvidia.com/gpu=GPU-def" in argv   # the GPU, like a Dive
     assert f"{root / 'cp311'}:{af.FEATURE_MOUNT}/vlearn/cp311:ro" in argv
     assert f"{root / af.INSTALL_DIRNAME}:{af.FEATURE_MOUNT}/vlearn/{af.INSTALL_DIRNAME}:ro" in argv
     assert f"{root / 'libs' / 'lib'}:{af.FEATURE_MOUNT}/vlearn/libs/lib:ro" in argv
@@ -452,7 +454,7 @@ def test_activation_argv_binds_the_feature_read_only_and_lands_in_the_licence_ho
 
 def test_activation_argv_never_binds_the_licence_key_writable(tmp_path, monkeypatch):
     monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
-    argv = af.activation_argv("base", "vlearn", "cp310", "/lh", "/a.py")
+    argv = af.activation_argv("base", "vlearn", "cp310", "/lh", "/a.py", [])
     key = next(v for v in argv if "/ccc/key/" in v)
     assert key.endswith(":ro")
     assert "uv venv --python 3.10 /ccc/venv" in " ".join(argv)   # cp310 -> 3.10
@@ -465,9 +467,11 @@ def test_activate_runs_once_then_marks_and_hands_the_files_to_the_licence_accoun
     lh.mkdir()
     seen = []
     monkeypatch.setattr(af, "run", _run_recorder(seen))
+    monkeypatch.setattr(af, "_activation_cdi", lambda: ["GPU-x"])   # don't touch the real GPU/CDI
     feats = [{"name": "vlearn", "path": "/x", "key": "/k"}]
     af.activate(feats, "base:img", str(lh))
     assert any(c[0] == "podman" for c in seen)
+    assert any(c == "nvidia.com/gpu=GPU-x" for pod in seen if pod[0] == "podman" for c in pod)
     assert (lh / f".{af.ACTIVATED_MARKER}-vlearn").exists()
     assert any(c[0] == "chown" and config.LICENCE_USER in c[2] for c in seen)
     # The marker is probed through sudo (a plain stat would EACCES on the 2770 Licence dir).
