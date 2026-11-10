@@ -339,6 +339,26 @@ class TestTheToolSwap:
         err = _job()["swap_tool"](str(toolenv), str(exe), os.getuid(), install, lambda: 1)
         assert err and exe.read_text() == "old-shim" and (toolenv / "old").exists()
 
+    def test_a_leftover_backup_that_cannot_be_removed_does_not_jam_the_next_update(self, tmp_path):
+        ns = _job()
+        toolenv, exe = _tool(tmp_path)
+        stuck = tmp_path / "tools" / "cuttle.ccc-old"   # a prior run's backup, unremovable here
+        stuck.mkdir()
+        (stuck / "nobody-file").write_text("x")
+        real_rm = ns["rm"]
+        ns["rm"] = lambda p: False if os.path.abspath(p) == str(stuck) else real_rm(p)
+
+        def install():
+            toolenv.mkdir(parents=True, exist_ok=True)
+            (toolenv / "new").write_text("new-env")
+            exe.write_text("new-shim")
+            return 0, "ok"
+
+        err = ns["swap_tool"](str(toolenv), str(exe), os.getuid(), install, lambda: 0)
+        assert err is None                               # stepped past the stuck backup, no OSError
+        assert (toolenv / "new").exists() and exe.read_text() == "new-shim"
+        assert stuck.exists()                            # left in place, not clobbered
+
     def test_report_foreign_names_the_owner_of_a_stray_file(self, tmp_path, capsys):
         root = tmp_path / "env"
         root.mkdir()

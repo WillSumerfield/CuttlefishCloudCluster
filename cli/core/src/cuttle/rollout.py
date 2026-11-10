@@ -87,12 +87,20 @@ def swap_tool(toolenv, exe, uid, install, verify):
     # an in-place --force rmtree did (the bug that left cuttle missing). On any failure the old build is
     # renamed back, so a failed update never removes the working command. Returns an error string, else
     # None.
-    bak_env, bak_exe = toolenv + ".ccc-old", exe + ".ccc-old"
-    rm(bak_env)
-    rm(bak_exe)                                     # clear a prior crash's leftovers first
+    def free_bak(live):
+        # A backup name nothing is sitting on. A prior run's .ccc-old can survive if it held an
+        # unremovable (nobody-owned) file; reusing it would make os.rename hit a non-empty dir and jam
+        # every future update, so step to .ccc-old.1, .2, ... until one is free (or removable).
+        bak, i = live + ".ccc-old", 0
+        while os.path.lexists(bak) and not rm(bak):
+            i += 1
+            bak = live + ".ccc-old.%%d" %% i
+        return bak
+
     moved = []
-    for live, bak in ((toolenv, bak_env), (exe, bak_exe)):
+    for live in (toolenv, exe):
         if os.path.lexists(live):
+            bak = free_bak(live)
             os.rename(live, bak)
             moved.append((live, bak))
     rc, out = install()
