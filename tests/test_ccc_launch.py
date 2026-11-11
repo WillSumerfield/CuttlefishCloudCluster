@@ -186,6 +186,19 @@ def test_licence_home_binds_merges_the_activation_into_the_home(tmp_path, monkey
     assert (lh / "state", "/home/alice/state") in binds
 
 
+def test_licence_home_binds_skips_a_dangling_entry(tmp_path, monkeypatch):
+    """A stale symlink in the Licence home (e.g. a VS Code `.vscode-server` leftover) points nowhere.
+    Binding it makes podman statfs a missing path and abort the whole Dive, so it must be skipped."""
+    lh = tmp_path / "licence"
+    lh.mkdir()
+    (lh / ".turbo-activation").write_text("activated")
+    (lh / ".vscode-server").symlink_to(tmp_path / "gone")   # target does not exist
+    _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": [], "licence_home": str(lh)})
+    binds = L.licence_home_binds(["vlearn"], "alice")
+    assert (lh / ".turbo-activation", "/home/alice/.turbo-activation") in binds
+    assert not any(src.name == ".vscode-server" for src, _dst in binds)
+
+
 def test_licence_home_binds_is_empty_without_a_licence_directory(tmp_path, monkeypatch):
     _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": []})   # no licence_home key
     assert L.licence_home_binds(["vlearn"], "alice") == []

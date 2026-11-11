@@ -523,7 +523,11 @@ def licence_home_binds(names: list[str], user: str) -> list[tuple[Path, str]]:
         home = Path(str(lh))
         if not home.is_absolute() or not home.is_dir():
             raise Refused(f"'{name}' Feature Licence directory {lh!r} is not an absolute existing path")
-        out += [(entry, f"/home/{user}/{entry.name}") for entry in sorted(home.iterdir())]
+        # A dangling entry (e.g. a stale VS Code `.vscode-server` symlink left in the Licence home)
+        # would make podman statfs a path that is not there and abort the whole Dive before sshd —
+        # skip anything that no longer resolves.
+        out += [(entry, f"/home/{user}/{entry.name}") for entry in sorted(home.iterdir())
+                if entry.exists()]
     return out
 
 
