@@ -100,6 +100,13 @@ LICENCE_KEY_NAME = "licence.key"
 # job script matches its own interpreter against, so it is the directory name too — the comparison is
 # then a `[ -d ]`, with no parsing on the Arm at run time.
 _ABI_RE = re.compile(r"-(cp\d{2,3})-\1[-.]")
+_CU_RE = re.compile(r"\+cu(\d+)")
+
+
+def _cu_major(name: str) -> int:
+    """The CUDA major a wheel's local version tags (`+cu130` → 130), or -1 if it names none."""
+    m = _CU_RE.search(name)
+    return int(m.group(1)) if m else -1
 
 # The per-Feature descriptor ccc-launch reads to bind this Feature into a Dive (ccc_launch.py:
 # feature_binds_env). JSON of {"binds": [{src, dst, ro}], "env": {k: v}} — src a host path under this
@@ -184,25 +191,31 @@ def unpack_packages(features: list[dict]) -> dict[str, list[str]]:
             continue
         dest_root = FEATURE_PKG_DIR / p.name
         run(["rm", "-rf", str(dest_root)], sudo=True, check=False)
-        tags = []
+        # One wheel per ABI: the ABI dir holds a single build (one vlearn_bindings.so on PYTHONPATH),
+        # so when a box ships several CUDA variants for the same ABI (vlearn's +cu128/+cu130), take the
+        # highest CUDA major — both lib prefixes ship, so either resolves, and merging them would clash.
+        chosen: dict[str, Path] = {}
         for whl in sorted(Path(f["path"]).glob(p.wheels)):
             m = _ABI_RE.search(whl.name)
             if not m:
                 continue
-            dest = dest_root / m.group(1)
+            abi = m.group(1)
+            if abi not in chosen or _cu_major(whl.name) > _cu_major(chosen[abi].name):
+                chosen[abi] = whl
+        for abi, whl in sorted(chosen.items()):
+            dest = dest_root / abi
             run(["install", "-d", "-m", "0755", str(dest)], sudo=True)
             # Extracted to a staging dir this process owns, then moved into place as root: zipfile
             # writes with THIS user's privileges, and /var/lib/ccc is not ours to write into.
-            staging = Path("/tmp") / f"ccc-unpack-{p.name}-{m.group(1)}"
+            staging = Path("/tmp") / f"ccc-unpack-{p.name}-{abi}"
             run(["rm", "-rf", str(staging)], check=False)
             with zipfile.ZipFile(whl) as z:
                 z.extractall(staging)
             run(["cp", "-a", f"{staging}/.", str(dest)], sudo=True)
             run(["chmod", "-R", "a+rX", str(dest)], sudo=True)
             run(["rm", "-rf", str(staging)], check=False)
-            tags.append(m.group(1))
-        if tags:
-            landed[p.name] = tags
+        if chosen:
+            landed[p.name] = sorted(chosen)
     return landed
 
 

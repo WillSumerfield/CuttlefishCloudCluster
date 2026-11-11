@@ -147,6 +147,32 @@ def test_unpacking_a_wheel_keeps_the_bindings_beside_the_package(tmp_path, monke
     assert list(out.glob("vlearn_bindings.*.so")), "the sibling extension module is what import needs"
 
 
+def test_one_wheel_per_abi_even_with_several_cuda_builds(tmp_path, monkeypatch):
+    """A checkout can ship a +cu128 and a +cu130 wheel for the SAME ABI. The ABI dir holds one build,
+    so unpack takes the highest CUDA major and reports the ABI once — else its tag doubles and the
+    descriptor binds the same dst twice, which podman refuses and the Dive is lost before it starts."""
+    root = tmp_path / "vlearn"
+    root.mkdir(parents=True)
+    for d in ("assets", "shaders", "cache"):
+        (root / d).mkdir()
+    (root / "TurboActivate.dat").write_text("dat")
+    for abi in ("cp310", "cp311"):
+        for cu, marker in (("cu128", "OLD"), ("cu130", "NEW")):
+            whl = root / f"vlearn-0.3.14+{cu}-{abi}-{abi}-linux_x86_64.whl"
+            with zipfile.ZipFile(whl, "w") as z:
+                z.writestr("vlearn/__init__.py", marker)
+                z.writestr(f"vlearn_bindings.{abi}-x86_64-linux-gnu.so", "")
+                z.writestr(f"vlearn-0.3.14+{cu}.dist-info/METADATA", "")
+    dest = tmp_path / "pkgs"
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", dest)
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: subprocess.run(cmd, **kw))
+    landed = af.unpack_packages([{"name": "vlearn", "path": str(root)}])
+    assert landed == {"vlearn": ["cp310", "cp311"]}               # each ABI once, not twice
+    assert (dest / "vlearn" / "cp311" / "vlearn" / "__init__.py").read_text() == "NEW"  # cu130 wins
+    infos = [p.name for p in (dest / "vlearn" / "cp311").glob("*.dist-info")]
+    assert infos == ["vlearn-0.3.14+cu130.dist-info"]             # only the chosen build's, not merged
+
+
 def test_a_spawn_is_never_pointed_at_the_owners_own_directory(tmp_path, monkeypatch):
     """A container runs as a **Guise**, which has no relationship to the donor and cannot traverse a 0750
     home — and one un-traversable ancestor fails the whole container, not just that bind. So what a
