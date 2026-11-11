@@ -299,6 +299,29 @@ def test_build_libs_does_nothing_for_a_feature_with_no_libraries(tmp_path, monke
     assert not any("create" in c for c in seen)
 
 
+def test_rpath_points_the_wheel_so_at_the_lib_prefixes_in_the_dive(tmp_path, monkeypatch):
+    """Each unpacked wheel .so gets both system-lib prefixes added to its RUNPATH, named at the fixed
+    in-Dive mount — so `import` resolves them without a Dive-wide LD_LIBRARY_PATH. Only real ELF files
+    are patched: a symlink (e.g. libcudart.so -> .so.13) or a non-ELF stray is left alone."""
+    monkeypatch.setattr(af, "FEATURE_PKG_DIR", tmp_path)
+    abi = tmp_path / "vlearn" / "cp311"
+    (abi / "vlearn" / "lib").mkdir(parents=True)
+    (abi / "vlearn_bindings.cp311-x86_64-linux-gnu.so").write_bytes(b"\x7fELF....")
+    (abi / "vlearn" / "lib" / "libgym.so").write_bytes(b"\x7fELF....")
+    (abi / "vlearn" / "lib" / "libcudart.so").symlink_to("libcudart.so.13")   # dangling symlink
+    (abi / "vlearn" / "lib" / "notelf.so").write_bytes(b"not an elf")          # stray, no ELF magic
+    seen = []
+    monkeypatch.setattr(af, "run", lambda cmd, sudo=False, **kw: seen.append(list(cmd)))
+    af.rpath_wheel_libs("vlearn", ["cp311"])
+
+    patched = {c[-1] for c in seen}
+    assert patched == {str(abi / "vlearn_bindings.cp311-x86_64-linux-gnu.so"),
+                       str(abi / "vlearn" / "lib" / "libgym.so")}
+    want = f"{af.FEATURE_MOUNT}/vlearn/libs/lib:{af.FEATURE_MOUNT}/vlearn/libs-cuda12/lib"
+    for c in seen:
+        assert c[-3:-1] == ["--add-rpath", want]
+
+
 def test_the_mirrored_licence_key_is_not_world_readable(tmp_path, monkeypatch):
     """The one thing here that is a credential. `--contain` means the real gate is that no ordinary
     Dive ever BINDS it, but the mode is the protection that survives a mistake in the bind — and it

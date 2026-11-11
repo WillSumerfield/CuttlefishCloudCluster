@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 from . import config
-from .features import FEATURE_MOUNT, INSTALL_DIRNAME, LIBS_DIRNAME, VLWD_MOUNT
+from .features import FEATURE_MOUNT, INSTALL_DIRNAME, VLWD_MOUNT
 
 # ccc-launch writes the Head's stub payload here; it is `$jobdir/sys/feature-stubs.json`, bound at
 # /etc/ccc/dive read-only (ccc_launch.STUBS_REL / DIVE_SYS_MOUNT).
@@ -155,17 +155,13 @@ def setup_vlearn(venv: Path, env_file: Path, abi: str) -> None:
         cache.mkdir(parents=True, exist_ok=True)
 
     # The whole unpacked wheel on PYTHONPATH (`vlearn/`, its .dist-info, and the sibling
-    # vlearn_bindings.<abi>.so `import vlearn` fails without). LD_LIBRARY_PATH is read by the loader at
-    # exec: the wheel's own lib, then the Feature's system-library prefixes (both CUDA majors — the
-    # loader takes whichever SONAME the binary names), then any nvidia wheel dirs the venv carries.
-    ld = [str(pkg / "vlearn" / "lib"),
-          f"{FEATURE_MOUNT}/vlearn/{LIBS_DIRNAME}/lib",
-          f"{FEATURE_MOUNT}/vlearn/{LIBS_DIRNAME}-cuda12/lib"]
-    if sp:
-        ld += [str(d) for d in sorted(sp.glob("nvidia/*/lib")) if d.is_dir()]
+    # vlearn_bindings.<abi>.so `import vlearn` fails without). No LD_LIBRARY_PATH: the wheel's `.so`
+    # files carry the Feature's system-library prefixes in their own RUNPATH (features.rpath_wheel_libs),
+    # so the loader resolves libcudart/libstdc++/... from the `.so` itself. A Dive-wide LD_LIBRARY_PATH
+    # would be read by every process in the shell and shadow the base system's own libs, breaking
+    # ordinary tools (tmux and friends link the libtinfo/ncurses the prefix also ships).
     _append_env(env_file, {"PYTHONPATH": str(pkg),
-                           "VL_WORKING_DIRECTORY": str(vlwd),
-                           "LD_LIBRARY_PATH": ":".join(ld)})
+                           "VL_WORKING_DIRECTORY": str(vlwd)})
 
 
 SETUP = {"vlearn": setup_vlearn}

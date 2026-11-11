@@ -101,9 +101,9 @@ def test_setup_vlearn_matches_the_abi_cleans_the_stub_lays_out_vlwd_and_sets_env
     body = env_file.read_text()
     assert f'PYTHONPATH="{feat}/vlearn/cp311${{PYTHONPATH:+:$PYTHONPATH}}"' in body
     assert f'VL_WORKING_DIRECTORY="{vlwd}' in body
-    assert f"{feat}/vlearn/cp311/vlearn/lib" in body          # the wheel's own lib, first
-    assert f"{feat}/vlearn/libs/lib" in body and f"{feat}/vlearn/libs-cuda12/lib" in body
-    assert f"{sp}/nvidia/cublas/lib" in body                  # the venv's nvidia wheels, last
+    # No LD_LIBRARY_PATH: the wheel's .so files carry the lib prefixes in their own RUNPATH
+    # (features.rpath_wheel_libs), so a Dive-wide one that would shadow the base system is not set.
+    assert "LD_LIBRARY_PATH" not in body
 
 
 def test_setup_vlearn_fails_loudly_when_the_arm_holds_no_wheel_for_this_abi(tmp_path, monkeypatch):

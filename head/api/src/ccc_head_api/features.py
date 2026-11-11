@@ -116,7 +116,7 @@ def profiled(features: list[str]) -> list[str]:
     """Which of `features` carry a **runtime profile** — the ones whose setup needs an interpreter.
 
     A profiled Feature attaches its software to the Dive's **Environment** (the in-container hook picks
-    the ABI, deletes the stub, and sets LD_LIBRARY_PATH). So one requested by a Dive that declared no
+    the ABI, deletes the stub, and sets PYTHONPATH). So one requested by a Dive that declared no
     Environment has nothing to attach to, and cannot work — `dive.request` refuses it.
 
     Sorted, so a refusal names them the same way however the User typed the request.

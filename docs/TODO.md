@@ -68,9 +68,9 @@ system libraries arranged on the Dive's behalf.
 
 That is what is missing. A Feature carrying a profile is the difference between CCC knowing what a
 name *means* and CCC merely placing on it, and the parts a submitter cannot do for themselves are
-exactly the parts a profile exists for: `LD_LIBRARY_PATH` is read by the loader at `exec`, so nothing
-inside the **Pod** can set it for itself, and the system libraries Isaac links against are not Python
-packages that any **Environment** could install.
+exactly the parts a profile exists for: the system libraries Isaac links against are CCC's to arrange
+Arm-side — unpacked prefixes put on the wheel's `.so` RUNPATH, as `vlearn` now does
+(`cuttle.features.rpath_wheel_libs`) — not Python packages that any **Environment** could install.
 
 Blocked on having the software to probe — the profile has to state real ABI tags, real library paths
 and real cache locations, and none of those can be guessed. Note that `ccc_head_api.features` and

@@ -255,6 +255,42 @@ def build_libs(features: list[dict]) -> None:
             run(["chmod", "-R", "a+rX", str(prefix)], sudo=True)
 
 
+# patchelf, run from the pinned uv (CLAUDE: uv for packages); edits the unpacked wheel's RUNPATH.
+PATCHELF = [str(config.ENV_TOOLS_DIR / "uv"), "tool", "run", "patchelf"]
+
+
+def _is_elf(path: Path) -> bool:
+    try:
+        with path.open("rb") as fh:
+            return fh.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def rpath_wheel_libs(name: str, abis: list[str]) -> None:
+    """Add this Feature's system-library prefixes to each unpacked wheel `.so`'s RUNPATH, named at their
+    fixed in-Dive mount (FEATURE_MOUNT) — the path ccc-launch binds them to.
+
+    Then `import` resolves libcudart/libzmq/libstdc++/... from the `.so` itself, so a Dive needs no
+    LD_LIBRARY_PATH for the Feature. A Dive-wide LD_LIBRARY_PATH would be read by EVERY process in the
+    shell and, because the prefix ships a whole userland (libtinfo, libncurses, libstdc++, libssl, ...),
+    would shadow the base system's own and break ordinary tools like tmux. RUNPATH is the `.so`'s own, so
+    only what links against it is affected. `--add-rpath` appends, keeping the wheel's `$ORIGIN` entries
+    (its intra-wheel deps), and the tree is rebuilt from scratch each setup so nothing is appended twice.
+    """
+    p = ARM_PROFILES.get(name)
+    if not p:
+        return
+    extra = ":".join(f"{FEATURE_MOUNT}/{name}/{d}/lib" for d in _lib_prefixes(p))
+    if not extra:
+        return
+    root = FEATURE_PKG_DIR / name
+    for abi in abis:
+        for so in sorted((root / abi).rglob("*.so*")):
+            if so.is_file() and not so.is_symlink() and _is_elf(so):
+                run([*PATCHELF, "--add-rpath", extra, str(so)], sudo=True)
+
+
 def prepare(features: list[dict], licence_home: str = "") -> dict[str, list[str]]:
     """Bring everything a declared Feature needs into CCC's own state, and report the ABI tags that
     landed as `{feature: [abi, ...]}`.
@@ -272,6 +308,7 @@ def prepare(features: list[dict], licence_home: str = "") -> dict[str, list[str]
     landed = unpack_packages(features)
     build_libs(features)
     for f in features:
+        rpath_wheel_libs(f["name"], landed.get(f["name"], []))
         mirror_install(f)
         mirror_licence_key(f)
         write_descriptor(f["name"], landed.get(f["name"], []), licence_home)
