@@ -199,6 +199,22 @@ def test_licence_home_binds_skips_a_dangling_entry(tmp_path, monkeypatch):
     assert not any(src.name == ".vscode-server" for src, _dst in binds)
 
 
+def test_licence_home_binds_skips_the_dive_owned_dotfiles(tmp_path, monkeypatch):
+    """The activation ran `uv venv` as root with HOME=the Licence directory, so it left a `.local`
+    (CPython), caches and skel files there. Merged writable they shadow the dirs the Dive's own uv and
+    shell need — so the activation state merges but those never do."""
+    lh = tmp_path / "licence"
+    lh.mkdir()
+    (lh / ".turbo-activation").write_text("activated")   # real activation state -> must merge
+    for name in (".local", ".cache", ".config", ".bashrc", ".zshenv", ".ssh", ".nv"):
+        (lh / name).mkdir() if name in (".local", ".cache", ".config", ".ssh", ".nv") \
+            else (lh / name).write_text("x")
+    _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": [], "licence_home": str(lh)})
+    binds = L.licence_home_binds(["vlearn"], "alice")
+    assert (lh / ".turbo-activation", "/home/alice/.turbo-activation") in binds
+    assert {src.name for src, _dst in binds} == {".turbo-activation"}
+
+
 def test_licence_home_binds_is_empty_without_a_licence_directory(tmp_path, monkeypatch):
     _descriptor(tmp_path, monkeypatch, "vlearn", {"binds": []})   # no licence_home key
     assert L.licence_home_binds(["vlearn"], "alice") == []

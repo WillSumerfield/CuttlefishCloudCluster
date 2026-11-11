@@ -494,6 +494,15 @@ def feature_binds_env(names: list[str]) -> tuple[list[tuple[Path, str, bool]], d
     return binds, env
 
 
+# Names never merged from a Licence directory into a Dive's home: shell skel / init the Dive owns, and
+# the XDG / cache / uv dirs the activation polluted the directory with (see licence_home_binds).
+LICENCE_HOME_SKIP = frozenset({
+    ".bashrc", ".bash_logout", ".bash_history", ".bash_profile", ".profile",
+    ".zshrc", ".zshenv", ".zprofile", ".zsh_history", ".python_history",
+    ".cache", ".config", ".local", ".nv", ".triton", ".ssh",
+})
+
+
 def licence_home_binds(names: list[str], user: str) -> list[tuple[Path, str]]:
     """The Licence directory's contents, to merge into a Dive's home — `(src, dst)` per top-level entry,
     bound WRITABLE at `/home/<user>/<entry>`.
@@ -526,8 +535,16 @@ def licence_home_binds(names: list[str], user: str) -> list[tuple[Path, str]]:
         # A dangling entry (e.g. a stale VS Code `.vscode-server` symlink left in the Licence home)
         # would make podman statfs a path that is not there and abort the whole Dive before sshd —
         # skip anything that no longer resolves.
+        #
+        # LICENCE_HOME_SKIP: the activation ran `uv venv` as root with HOME=the Licence directory
+        # (features.activation_argv), so uv dropped a CPython into its `.local`, caches into `.cache`
+        # / `.config`, etc. — all owned by the Licence account, not the Guise. Merged WRITABLE over the
+        # Dive's home they shadow the dirs the Dive's own tooling needs (uv can't write `~/.local`, so
+        # `--env` can't build), and skel/shell files (`.bashrc`, `.zshenv`) would override the Dive's
+        # init that sources the Feature env. Only TurboActivate's activation state has to reach the
+        # home, and that is never one of these, so skip them — keeps even a polluted Licence home safe.
         out += [(entry, f"/home/{user}/{entry.name}") for entry in sorted(home.iterdir())
-                if entry.exists()]
+                if entry.exists() and entry.name not in LICENCE_HOME_SKIP]
     return out
 
 
